@@ -2009,8 +2009,15 @@ class Agent:
             if box is not None:
                 # The owner restores the borrowed box for every seat on it; the run
                 # continues on it from its own conversation cut.
-                await box.replace(failed_run.box_generation)
                 checkpoint = None
+                try:
+                    await box.replace(failed_run.box_generation)
+                except Exception as error:  # noqa: BLE001 - recorded on the replacement
+                    # A box that would not start is the replacement's failure, as a
+                    # failed open is: its step fails at once.
+                    replacement = make_run(task, checkpoint, failed)
+                    replacement.fail(error)
+                    return replacement
             # A failed open is captured on the replacement: its step fails at once.
             replacement = make_run(task, checkpoint, failed)
             await replacement.open()

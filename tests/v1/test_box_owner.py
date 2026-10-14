@@ -334,3 +334,30 @@ async def test_a_box_from_a_checkpoint_continues_no_later_checkpoint(model, stor
         async with agent.provision(task(), checkpoint="X") as box:
             fresh = await agent.run(task(), runtime=box, key="solve")
     assert fresh.ok and fresh.resumed_from is None
+
+
+async def test_a_borrowed_retry_whose_box_will_not_start_ends_the_turn(
+    model, monkeypatch
+):
+    """The owner cannot start the restored box: the turn ends with that failure on
+    the replacement's trace instead of raising out of `turn()`."""
+    FakeRuntime.doomed["b.txt"] = box_lost
+    original = FakeRuntime.start
+
+    async def start(self):
+        if self.source is not None:
+            raise vf.SandboxError("restored box would not start")
+        await original(self)
+
+    monkeypatch.setattr(FakeRuntime, "start", start)
+    agent = make(model, save="per_call", interaction_retries=1)
+    async with agent.provision(task()) as box:
+        async with agent.interaction(task(), runtime=box) as interaction:
+            segment = await interaction.turn()
+        assert segment.terminated
+        (failed,) = interaction.failed_attempts
+        assert failed.errors[-1].type == "SandboxError"
+        trace = interaction.trace
+        assert not trace.ok and trace.resumed_from == failed.id
+        assert "would not start" in trace.errors[-1].message
+        assert vf.box_of(box).generation == 0
