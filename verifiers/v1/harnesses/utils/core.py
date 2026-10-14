@@ -166,11 +166,19 @@ def run_bash(command: str, timeout: int = 3600) -> str:
     # until the timeout; with files the call returns when bash itself exits. The command
     # runs in its own process group, so a timeout kills what it started too (a hung
     # child would otherwise outlive `bash`), and the output so far is still returned.
+    # The command goes in a script file, never argv: `bash -c <command>` puts the text
+    # in the shell's own command line, so a `pkill -f <word>` in the command matches,
+    # and kills, the shell that runs it.
     note = ""
+    script = None
     try:
+        with tempfile.NamedTemporaryFile(suffix=".sh", delete=False) as file:
+            # Encoded as argv would be, so the shell sees the same bytes.
+            file.write(os.fsencode(command))
+            script = file.name
         with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
             process = subprocess.Popen(
-                ["bash", "-c", command],
+                ["bash", script],
                 stdout=out,
                 stderr=err,
                 start_new_session=True,
@@ -188,6 +196,12 @@ def run_bash(command: str, timeout: int = 3600) -> str:
             return stdout + err.read().decode(errors="replace") + note
     except Exception as e:  # noqa: BLE001 - tool failures are returned to the model
         return f"error: {e}"
+    finally:
+        if script is not None:
+            try:
+                os.unlink(script)
+            except OSError:
+                pass
 
 
 def run_edit(path: str, old_str: str, new_str: str) -> str:

@@ -121,6 +121,27 @@ def test_a_finished_command_leaves_its_background_children_running(tmp_path):
         os.kill(child, signal.SIGKILL)
 
 
+def test_pkill_f_on_its_own_command_text_spares_the_shell_running_it():
+    # `bash -c <command>` put the text in the shell's argv, so the pattern matched,
+    # and killed, the shell before `echo` ran.
+    marker = f"vf-selfkill-marker-{os.getpid()}"
+    output = core.run_bash(f"pkill -f {marker}; echo survived", 10)
+    assert output == "survived\n"
+
+
+def test_a_command_keeps_its_cwd_env_exit_status_and_leaves_no_script(tmp_path):
+    os.environ["VF_RUN_BASH_PROBE"] = "probe"
+    try:
+        output = core.run_bash(
+            "pwd; echo $VF_RUN_BASH_PROBE; (exit 3); echo $?; echo $0", 10
+        )
+    finally:
+        del os.environ["VF_RUN_BASH_PROBE"]
+    cwd, env, status, script = output.splitlines()
+    assert (cwd, env, status) == (os.getcwd(), "probe", "3")
+    assert not os.path.exists(script)
+
+
 def test_undecodable_output_is_replaced_not_raised():
     assert core.run_bash("printf 'a\\x80b'; printf '\\xff' >&2") == "a�b�"
 
