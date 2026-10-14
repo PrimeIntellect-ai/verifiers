@@ -23,7 +23,8 @@ def bundle_program(program: str, *modules: ModuleType) -> str:
 
 # The shared Null/Bash chat program is the utils modules themselves: `core` ends with
 # the `__main__` entry point, so the program text is only the script metadata. Secrets
-# use argv so tools do not inherit them.
+# reach it in its launch file, neither argv (`ps` shows it to the agent) nor its
+# environment (which the agent's commands inherit).
 CHAT_PROGRAM = (
     '# /// script\n# requires-python = ">=3.10"\n'
     '# dependencies = ["openai", "mcp==2.0.0", "httpx", "httpx2", "tenacity", "certifi"]\n'
@@ -45,16 +46,14 @@ async def launch_chat_program(
     prompt: str | Messages | None,
     *,
     extra_args: Sequence[str] = (),
+    credentials: dict[str, str] | None = None,
     env: dict[str, str] | None = None,
     activate: bool = True,
 ) -> ProgramResult:
-    """Prepare and run a standalone chat program with the shared wire arguments."""
-    args = [
-        f"--base-url={endpoint}",
-        f"--api-key={secret}",
-        f"--model={ctx.model}",
-        *extra_args,
-    ]
+    """Prepare and run a standalone chat program with the shared wire arguments.
+    `credentials` are extra secrets for the program's launch file, keyed as it reads
+    them (the bash program's `serper_key`)."""
+    args = [f"--model={ctx.model}", *extra_args]
     if mcp_urls:
         args.append(
             "--mcp-config="
@@ -67,8 +66,10 @@ async def launch_chat_program(
                 }
             )
         )
-    # The conversation goes in a file, never argv: an agent command such as
-    # `pkill -f <word from the task>` would otherwise match, and kill, its own harness.
+    # The endpoint, its key and the conversation go in a file the program reads and
+    # deletes, never argv: the box's `ps` would show the key to the agent (and into
+    # its trace), and an agent command such as `pkill -f <word from the task>` would
+    # match, and kill, its own harness.
     initial: list[dict] = []
     if system_prompt:
         initial.append({"role": "system", "content": system_prompt})
@@ -77,10 +78,16 @@ async def launch_chat_program(
             initial.append({"role": "user", "content": prompt})
     elif prompt is not None:
         initial.extend(message_to_wire(message) for message in prompt)
-    if initial:
-        path = f".vf-initial-messages-{trace.id}.json"
-        await runtime.write(path, json.dumps(initial).encode())
-        args.append(f"--initial-messages-file={path}")
+    launch = {
+        **(credentials or {}),
+        "base_url": endpoint,
+        "api_key": secret,
+        "messages": initial,
+    }
+    path = f".vf-launch-{trace.id}.json"
+    await runtime.write(path, json.dumps(launch).encode())
+    await runtime.run(["chmod", "600", path], {})
+    args.append(f"--launch-file={path}")
     program = await runtime.prepare_uv_script(
         source, config.resolved_env, activate=activate
     )

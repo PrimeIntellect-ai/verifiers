@@ -189,25 +189,23 @@ async def chat(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--base-url", required=True)
-    parser.add_argument("--api-key", required=True)
+    parser.add_argument("--launch-file", required=True)
     parser.add_argument("--model", required=True)
     parser.add_argument("--state-dir", required=True)
     parser.add_argument("--browser", default="chromium")
     parser.add_argument("--cdp-url", default="")
-    parser.add_argument("--initial-messages-file", default="")
     parser.add_argument("--mcp-config", default="")
     return parser.parse_args()
 
 
 async def main() -> None:
     args = parse_args()
-    initial = []
-    if args.initial_messages_file:
-        path = Path(args.initial_messages_file)
-        payload = path.read_bytes()
-        path.unlink()
-        initial = json.loads(payload)
+    # The endpoint, key and opening conversation come in a file, never argv
+    # (`launch_chat_program`); it is deleted once read.
+    path = Path(args.launch_file)
+    launch = json.loads(path.read_bytes())
+    path.unlink()
+    initial = launch.get("messages", [])
     state_dir = Path(args.state_dir)
     state_dir.mkdir(parents=True, exist_ok=True)
     endpoint = (
@@ -221,7 +219,7 @@ async def main() -> None:
             "BU_CDP_WS" if urlsplit(endpoint).scheme in {"ws", "wss"} else "BU_CDP_URL"
         ): endpoint,
     }
-    client = AsyncOpenAI(base_url=args.base_url, api_key=args.api_key)
+    client = AsyncOpenAI(base_url=launch["base_url"], api_key=launch["api_key"])
     config = json.loads(args.mcp_config or "{}")
     tools = [BROWSER_TOOL]
     reserved = {"browser"}

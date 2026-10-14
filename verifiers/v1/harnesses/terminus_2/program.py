@@ -49,8 +49,6 @@ class LocalEnvironment:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--base-url", required=True)
-    parser.add_argument("--api-key", required=True)
     parser.add_argument("--model", required=True)
     parser.add_argument("--prompt-file", required=True)
     return parser.parse_args()
@@ -58,7 +56,8 @@ def parse_args() -> argparse.Namespace:
 
 async def main() -> None:
     args = parse_args()
-    # The prompts come in a file, never argv (see the harness's `launch`).
+    # The endpoint, key and prompts come in a file, never argv (see the harness's
+    # `launch`).
     path = Path(args.prompt_file)
     prompts = json.loads(path.read_bytes())
     path.unlink()
@@ -70,8 +69,8 @@ async def main() -> None:
     agent = Terminus2(
         logs_dir=logs_dir,
         model_name=model,
-        api_base=args.base_url,
-        llm_kwargs={"custom_llm_provider": "openai", "api_key": args.api_key},
+        api_base=prompts["base_url"],
+        llm_kwargs={"custom_llm_provider": "openai", "api_key": prompts["api_key"]},
         record_terminal_session=False,
         interleaved_thinking=True,
     )

@@ -1,9 +1,11 @@
 """The bash harness and its chat program: model-call retries, command timeouts, skills.
 No model or sandbox: the launch is captured and the program's pieces run locally."""
 
+import json
 import os
 import signal
 import sys
+import tempfile
 import time
 from types import SimpleNamespace
 
@@ -61,7 +63,10 @@ async def client_kwargs(monkeypatch, *flags: str) -> dict:
         raise StopMain
 
     monkeypatch.setattr(core, "AsyncOpenAI", fake_client)
-    argv = ["prog", "--base-url=http://e", "--api-key=k", "--model=m", *flags]
+    launch_file = tempfile.NamedTemporaryFile(suffix=".json", delete=False)
+    with launch_file:
+        launch_file.write(json.dumps({"base_url": "http://e", "api_key": "k"}).encode())
+    argv = ["prog", f"--launch-file={launch_file.name}", "--model=m", *flags]
     monkeypatch.setattr(sys, "argv", argv)
     with pytest.raises(StopMain):
         await core.main()
@@ -80,6 +85,29 @@ async def test_program_builds_its_client_with_the_retry_flag(monkeypatch):
     assert (await client_kwargs(monkeypatch, "--bash", "--max-retries=7"))[
         "max_retries"
     ] == 7
+
+
+async def test_program_reads_its_key_from_the_launch_file_and_deletes_it(
+    monkeypatch, tmp_path
+):
+    launch_file = tmp_path / "launch.json"
+    launch_file.write_text(
+        json.dumps(
+            {
+                "base_url": "http://e",
+                "api_key": "k",
+                "serper_key": "s",
+                "messages": [{"role": "user", "content": "go"}],
+            }
+        )
+    )
+    monkeypatch.setattr(
+        sys, "argv", ["prog", f"--launch-file={launch_file}", "--model=m"]
+    )
+    args = core.parse_args()
+    assert (args.base_url, args.api_key, args.serper_key) == ("http://e", "k", "s")
+    assert args.initial_messages == [{"role": "user", "content": "go"}]
+    assert not launch_file.exists()
 
 
 async def test_program_keeps_the_sdk_default_without_the_flag(monkeypatch):

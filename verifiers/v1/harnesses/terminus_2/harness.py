@@ -48,21 +48,25 @@ class Terminus2Harness(Harness[Terminus2HarnessConfig]):
             **self.config.resolved_env,
             "TMUX_TMPDIR": tmux_dir,
         }
-        # The prompts go in a file, never argv: an agent command such as
-        # `pkill -f <word from the task>` would otherwise match, and kill, its own
-        # harness (as with `launch_chat_program`).
+        # The endpoint, its key and the prompts go in a file the program reads and
+        # deletes, never argv: the box's `ps` would show the key to the agent, and an
+        # agent command such as `pkill -f <word from the task>` would match, and kill,
+        # its own harness (as with `launch_chat_program`).
         prompt_file = f".vf-terminus-2-prompt-{trace.id}.json"
-        args = [
-            f"--base-url={endpoint}",
-            f"--api-key={secret}",
-            f"--model={ctx.model}",
-            f"--prompt-file={prompt_file}",
-        ]
+        args = [f"--model={ctx.model}", f"--prompt-file={prompt_file}"]
         try:
             await runtime.write(
                 prompt_file,
-                json.dumps({"system_prompt": system_prompt, "task": prompt}).encode(),
+                json.dumps(
+                    {
+                        "base_url": endpoint,
+                        "api_key": secret,
+                        "system_prompt": system_prompt,
+                        "task": prompt,
+                    }
+                ).encode(),
             )
+            await runtime.run(["chmod", "600", prompt_file], {})
             source = PROGRAM_SOURCE.replace("{version}", self.config.version)
             program = await runtime.prepare_uv_script(source, self.config.resolved_env)
             return await runtime.run_program([*program, *args], env)

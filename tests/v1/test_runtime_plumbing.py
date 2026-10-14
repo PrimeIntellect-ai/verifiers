@@ -11,6 +11,16 @@ import pytest
 
 from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.errors import SandboxError
+from verifiers.v1.harnesses.bash import BashHarness, BashHarnessConfig
+from verifiers.v1.harnesses.browser_use import (
+    BrowserUseHarness,
+    BrowserUseHarnessConfig,
+)
+from verifiers.v1.harnesses.mini_swe_agent import (
+    MiniSWEAgentHarness,
+    MiniSWEAgentHarnessConfig,
+)
+from verifiers.v1.harnesses.null import NullHarness, NullHarnessConfig
 from verifiers.v1.harnesses.terminus_2 import Terminus2Harness, Terminus2HarnessConfig
 from verifiers.v1.harnesses.utils.launch import launch_chat_program
 from verifiers.v1.runtimes import prime
@@ -26,6 +36,8 @@ class RecordingRuntime:
     def __init__(self):
         self.files: dict[str, bytes] = {}
         self.argv: list[str] = []
+        self.env: dict[str, str] = {}
+        self.private: set[str] = set()
 
     async def write(self, path, data):
         self.files[path] = data
@@ -35,9 +47,12 @@ class RecordingRuntime:
 
     async def run_program(self, argv, env):
         self.argv = argv
+        self.env = env
         return ProgramResult(exit_code=0, stdout="", stderr="")
 
     async def run(self, argv, env):
+        if argv[:2] == ["chmod", "600"]:
+            self.private.add(argv[2])
         return ProgramResult(exit_code=0, stdout="", stderr="")
 
 
@@ -62,8 +77,8 @@ async def test_the_conversation_reaches_the_program_in_a_file_not_argv(prompt):
     )
     assert not any("needle" in arg for arg in runtime.argv)
     (path,) = runtime.files
-    assert f"--initial-messages-file={path}" in runtime.argv
-    assert json.loads(runtime.files[path]) == [
+    assert f"--launch-file={path}" in runtime.argv
+    assert json.loads(runtime.files[path])["messages"] == [
         {"role": "system", "content": "system needle"},
         {"role": "user", "content": "pkill -f needle"},
     ]
@@ -85,9 +100,52 @@ async def test_terminus_2_gets_its_prompts_in_a_file_not_argv():
     (path,) = runtime.files
     assert f"--prompt-file={path}" in runtime.argv
     assert json.loads(runtime.files[path]) == {
+        "base_url": "http://e",
+        "api_key": "secret",
         "system_prompt": "system needle",
         "task": "pkill -f needle",
     }
+
+
+# --- no harness puts the model key on argv --------------------------------------------
+
+KEY = "sk-needle-model-key"
+SERPER_KEY = "serper-needle-key"
+
+
+def _harnesses():
+    return [
+        NullHarness(NullHarnessConfig(id="null")),
+        BashHarness(
+            BashHarnessConfig(id="bash", search=True, env={"SERPER_API_KEY": SERPER_KEY})
+        ),
+        BrowserUseHarness(BrowserUseHarnessConfig(id="browser-use")),
+        Terminus2Harness(Terminus2HarnessConfig(id="terminus-2")),
+        MiniSWEAgentHarness(MiniSWEAgentHarnessConfig(id="mini-swe-agent")),
+    ]
+
+
+@pytest.mark.parametrize("harness", _harnesses(), ids=lambda h: h.config.id)
+async def test_no_launched_argv_carries_the_model_key(harness):
+    # The box's `ps` showed the bash program's `--api-key=` and `--serper-key=` to
+    # the agent, and from its tool output into stored traces.
+    runtime = RecordingRuntime()
+    await harness.launch(
+        SimpleNamespace(model="m"),
+        SimpleNamespace(id="t1"),
+        runtime,
+        "https://t-0-needle.tunnel/v1",
+        KEY,
+        {},
+        TaskData(idx=0, prompt="go"),
+    )
+    assert runtime.argv
+    for secret in (KEY, SERPER_KEY, "t-0-needle"):
+        assert not any(secret in arg for arg in runtime.argv)
+        assert not any(secret in value for value in runtime.env.values())
+    (path,) = runtime.files
+    assert path in runtime.private
+    assert KEY.encode() in runtime.files[path]
 
 
 # --- Prime jobs, gateway errors, restored boxes ---------------------------------------

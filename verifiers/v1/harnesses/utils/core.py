@@ -134,8 +134,8 @@ def format_results(results, query: str) -> str:
 def run_search(query: str, api_key: str, num_results: int = 5) -> str:
     """Serper Google web search -> formatted organic results.
 
-    The key arrives as an argument (handed in by the harness over argv, like the interception
-    secret) instead of from `$SERPER_API_KEY`, so the agent's `bash` subprocesses never inherit it.
+    The key arrives as an argument (read from the launch file, like the interception secret)
+    instead of from `$SERPER_API_KEY`, so the agent's `bash` subprocesses never inherit it.
     The whole call is wrapped so a bad query or malformed payload becomes a tool error rather than
     raising out of the chat loop and killing the rollout."""
     if not api_key:
@@ -472,12 +472,19 @@ async def run_chat_loop(
             messages = await compactor.compact(messages)
 
 
+def read_launch_file(path: str) -> dict:
+    """The launch file's endpoint, key and opening conversation; the file is deleted
+    once read, before the agent runs a command (see `launch_chat_program`)."""
+    file = Path(path)
+    payload = file.read_bytes()
+    file.unlink()
+    return json.loads(payload)
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--base-url", required=True)
-    parser.add_argument("--api-key", required=True)
+    parser.add_argument("--launch-file", required=True)
     parser.add_argument("--model", required=True)
-    parser.add_argument("--initial-messages-file", default="")
     parser.add_argument("--mcp-config", default="")
     parser.add_argument("--tool-interception-url", default="")
     parser.add_argument("--bash", action="store_true")
@@ -485,23 +492,23 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--summarize-at-tokens", type=int)
     parser.add_argument("--edit", action="store_true")
     parser.add_argument("--search", action="store_true")
-    parser.add_argument("--serper-key", default="")
     # Client retries per model call; the interception relays a pre-commit 429/5xx for
     # the program's SDK to retry. A 429/529 a request gate already retried comes back
     # with `x-should-retry: false`, which the SDK obeys.
     parser.add_argument("--max-retries", type=int, default=2)
     parser.add_argument("--command-timeout", type=int, default=3600)
-    return parser.parse_args()
+    args = parser.parse_args()
+    launch = read_launch_file(args.launch_file)
+    args.base_url = launch["base_url"]
+    args.api_key = launch["api_key"]
+    args.serper_key = launch.get("serper_key", "")
+    args.initial_messages = launch.get("messages", [])
+    return args
 
 
 async def main() -> None:
     args = parse_args()
-    initial = []
-    if args.initial_messages_file:
-        path = Path(args.initial_messages_file)
-        payload = path.read_bytes()
-        path.unlink()
-        initial = json.loads(payload)
+    initial = args.initial_messages
     # Minimal task images may lack a system CA bundle.
     client = AsyncOpenAI(
         base_url=args.base_url,

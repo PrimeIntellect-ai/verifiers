@@ -66,8 +66,8 @@ class BashHarnessConfig(HarnessConfig):
 
     search: bool = False
     """Offer a `search` tool (Google web results via serper.dev). Requires `SERPER_API_KEY` in the
-    eval environment; the key is handed to the program over argv (like the interception secret) so
-    the agent's `bash` subprocesses don't inherit it."""
+    eval environment; the key is handed to the program in its launch file (like the interception
+    secret) so the agent's `bash` subprocesses don't inherit it."""
 
     model_retries: NonNegativeInt = 10
     """Retries of a failed model call (429, 5xx, a dropped connection or stream), with
@@ -144,6 +144,7 @@ class BashHarness(Harness[BashHarnessConfig]):
             p for p in (" ".join(fragments), system_prompt, skills) if p
         )
         env = {**self.config.resolved_env}
+        credentials: dict[str, str] = {}
         args = [
             "--bash",
             f"--max-retries={self.config.model_retries}",
@@ -159,8 +160,8 @@ class BashHarness(Harness[BashHarnessConfig]):
         if self.config.edit:
             args.append("--edit")
         if self.config.search:
-            # Resolve the key and keep it OUT of the program env: it's handed to the program over
-            # argv (--serper-key), so popping it here stops the agent's `bash` subprocesses from
+            # Resolve the key and keep it OUT of the program env: it's handed to the program in
+            # its launch file, so popping it here stops the agent's `bash` subprocesses from
             # inheriting it via $SERPER_API_KEY / /proc/self/environ. Prefer a key set in the harness
             # env (harness config env / forward_env); fall back to the host env only when the key is
             # *absent* (None), not present-but-empty — a rollout setting SERPER_API_KEY="" is
@@ -175,7 +176,8 @@ class BashHarness(Harness[BashHarnessConfig]):
                     "bash search=true requires SERPER_API_KEY in the eval environment "
                     "(the host env or the harness config's env)"
                 )
-            args += ["--search", f"--serper-key={serper_key}"]
+            args.append("--search")
+            credentials["serper_key"] = serper_key
         return await launch_chat_program(
             CHAT_PROGRAM_SOURCE,
             self.config,
@@ -188,6 +190,7 @@ class BashHarness(Harness[BashHarnessConfig]):
             system_prompt,
             prompt,
             extra_args=args,
+            credentials=credentials,
             env=env,
             activate=False,
         )

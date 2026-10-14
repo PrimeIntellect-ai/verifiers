@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 from verifiers.v1.clients import ModelContext
@@ -69,5 +70,8 @@ class MiniSWEAgentHarness(Harness[MiniSWEAgentHarnessConfig]):
             "MSWEA_CONFIGURED": "true",
             "MSWEA_SILENT_STARTUP": "true",
         }
+        args_file = f".vf-mini-swe-agent-args-{trace.id}.json"
+        await runtime.write(args_file, json.dumps(args).encode())
+        await runtime.run(["chmod", "600", args_file], {})
         program = await runtime.prepare_uv_script(source, self.config.resolved_env)
-        return await runtime.run_program([*program, *args], env)
+        return await runtime.run_program([*program, args_file], env)
