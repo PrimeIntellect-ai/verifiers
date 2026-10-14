@@ -19,24 +19,8 @@ async with agent.interaction(task) as interaction:
 trace = interaction.trace
 ```
 
-## Runtime
-
-A `Runtime` provides command and file access with immutable user, `HOME`, and
-environment bindings. Task and harness hooks receive it as `runtime: vf.Runtime`.
-`runtime.with_user(...)` and `runtime.with_env(...)` return independent views of
-the same resource; existing views keep their bindings. Working directory comes
-from the runtime config.
-
-An internal `RuntimeBackend` holds provider state and owns resource operations,
-including startup, network policy, and teardown. Views share that backend and
-its caches. `runtime.backend` exposes it for explicit infrastructure operations;
-ordinary task hooks only need the execution view. A view is not an isolation
-boundary: backend permissions enforce the selected user.
-
-`Agent.provision()` lends a runtime whose owning context controls cleanup.
-Trusted task setup and grading use the default-user view; agent execution and
-colocated tools use the task's agent-user view. No shared user or environment
-state is mutated when deriving a view.
+See [Runtime](runtime.md) for execution handles, resource ownership, and deployment
+of the harness, task workspace, and supporting services.
 
 ## Verification placement
 

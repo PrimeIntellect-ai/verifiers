@@ -106,11 +106,14 @@ shared and separate verifiers.
 
 ## Docker Compose
 
-Select `runtime.type = "docker"` to run Compose tasks locally.
+Select `runtime.type = "docker"` to run Compose tasks locally. Docker Compose v2
+(`docker compose`) is required on local Docker and provider VM hosts. Custom host
+images must provide the v2 plugin; standalone `docker-compose` v1 is unsupported.
 
-With the default Harbor env, tasks containing `environment/docker-compose.yaml`
-run their topology through Harbor on local Docker, Prime VMs, or Modal's VM runtime.
-Local Docker requires `--env.trust-compose`: task definitions can mount host files
+Tasks containing `environment/docker-compose.yaml` declare a composition that the
+deployment provisions on local Docker, Prime VMs, or Modal's VM runtime. Harbor is a
+task-format adapter and works under the ordinary single-agent and best-of-N Envs.
+Local Docker requires `--env.agent.deployment.trust-compose`: task definitions can mount host files
 and request Docker privileges, so only enable it for trusted packages. Local Compose
 receives Docker connection settings and infrastructure variables rather than the
 evaluator's full environment. Task-local `.env` files and declared task env remain available.
@@ -140,15 +143,18 @@ daemon instead of the stock one. Docker is installed only when the image lacks i
 `docker save` archives shipped in `/opt/verifiers/compose-images/` load before the
 services start, so services referencing their tags pull nothing from a registry.
 
-The Harbor environment removes the entire project or remote sandbox before
-separate grading, which retains the ordinary fresh verifier runtime. A verifier
+For separate grading, the rollout stops the workspace container before collecting
+sidecar evidence. The deployment then releases the Compose project and any host VM
+before provisioning a fresh verifier runtime. A verifier
 without its own image inherits the resolved main image; a fresh copy also inherits
 main's working directory. Images built only
 inside a cloud host must be published separately and declared in the verifier environment.
 
-Compose projects are owned by the Harbor environment; agents borrow the existing
-Docker main container. Failures retry with a fresh project through
-`--env.retries`, rather than retrying an agent inside the same project.
+The rollout's deployment owns the Compose project and exposes `main` as its
+workspace handle. Agent rollout retries create a fresh deployment and project;
+scoring retries reuse the collected submission in fresh verifier environments.
+See [deployment and services](runtime.md#deployment-and-services) for the ownership
+and execution roles.
 
 ## Network policies
 
@@ -181,7 +187,7 @@ tool and provider-held resource remains disabled.
 
 Prime VM bounded reads stream binary data. Collected archives remain in host memory for grading and are excluded from persisted traces.
 
-`artifacts = [...]` and `[[verifier.collect]]` are read from `task.toml` ([Harbor Docs](https://www.harborframework.com/docs/run-jobs/results-and-artifacts)). Each entry's `service` selects the source runtime, defaulting to `main`; additional services come from the Harbor-owned Compose project. Main's hooks and artifacts are collected during `finalize`. For separate grading, the Harbor environment then stops main and collects sidecar evidence; a shared verifier grades in main and skips sidecar entries. Declared paths and main's `/logs/artifacts/` convention directory are restored at their original paths in the grader.
+`artifacts = [...]` and `[[verifier.collect]]` are read from `task.toml` ([Harbor Docs](https://www.harborframework.com/docs/run-jobs/results-and-artifacts)). Each entry's `service` selects the source runtime, defaulting to `main`; additional services come from the deployment's Compose project. Main's hooks and artifacts are collected during `finalize`. For separate grading, the rollout stops main through the deployment and collects sidecar evidence; a shared verifier grades in main and skips sidecar entries. Declared paths and main's `/logs/artifacts/` convention directory are restored at their original paths in the grader.
 
 Artifact roots from different services must not overlap, since they share the grader's filesystem.
 
@@ -192,7 +198,7 @@ Two deliberate differences from `harbor run`:
 
 ## Separate verifier environments
 
-`[verifier].environment_mode = "separate"` selects isolated task verification. The rollout collects declared artifacts, provisions a fresh verifier, restores the submission, and invokes the task's scoring hooks. Configure placement and retries through `--env.agent.scoring.*`. Compose tasks use the Harbor env to collect service artifacts before invoking the same verifier lifecycle. Scores come from `/logs/verifier/reward.json`, falling back to `reward.txt`.
+`[verifier].environment_mode = "separate"` grades in a second box the agent never touched, instead of the one it worked in ([Harbor Docs](https://www.harborframework.com/docs/tasks/verifier)). The ordinary task lifecycle collects the solver's declared artifacts and `/logs/artifacts/` while its deployment is alive, stops the workspace before collecting sidecar evidence, and provisions a fresh grading target. It restores artifacts, stages trusted verifier inputs, and records rewards on the same attempt. This works with single-agent, best-of-N, and other compatible Envs; Harbor contributes task requirements rather than agent control flow. Setup, restoration, and scoring retry twice in fresh targets before failing the attempt. The score is read from `/logs/verifier/reward.json` — a finite number, or an object of finite numbers: with a `reward` key that key is the score and the rest are recorded as metrics; without one every key is recorded as a separate reward. Missing or invalid, it falls back to `reward.txt`.
 
 Which image the verifier boots from follows Harbor: a declared `[verifier.environment]` if there is one, otherwise a fresh copy of `[environment]`, which is the task's own image. A dedicated `[verifier.environment].docker_image` must contain the complete `/tests` suite, including `/tests/test.sh` and its dependencies; that suite runs without uploading packaged tests, matching Harbor. When grading in a fresh copy of the solver image (including the `ignore_dockerfile` fallback), `/tests` is replaced with the task package's tests so stale image files cannot affect grading. Solver artifacts rooted under `/tests` are rejected before the tests run, and old reward files are cleared in either case.
 
@@ -208,6 +214,14 @@ verifiers does not have parity with Harbor yet, so some features are missing and
 - Switching to a different verifier-phase network policy for a *shared* verifier ([Harbor Docs](https://www.harborframework.com/docs/tasks/network-policy)); a separate verifier's own policy is applied
 - Building a verifier image from `tests/Dockerfile`, which Harbor does when a declared `[verifier.environment]` names no `docker_image`. A separate verifier image itself is supported — it just has to be pre-built and pullable (see above), because verifiers never builds images
 - Multi-step tasks ([Harbor Docs](https://www.harborframework.com/docs/tasks/multi-step))
+
+## Verifier placement
+
+Harbor's verifier mode becomes the task's default scoring placement.
+Leaving `env.agent.scoring.mode` unset honors it; `"shared"` and `"isolated"`
+explicitly override it. Fresh graders use the same image resolver and reward parser as shared
+graders, and receive only declared artifacts, including collected sidecar evidence.
+The taskset works with ordinary single-agent, best-of-n, and agentic-judge programs.
 
 Harbor `[verifier.env]` supplies task scoring defaults. `agent.scoring.env` merges
 over those values and applies in shared or isolated scoring, including agentic

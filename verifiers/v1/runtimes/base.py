@@ -191,6 +191,11 @@ class RuntimeBackend(ABC):
 
         return Runtime(self, env=self.env if env is None else env)
 
+    def deploy(self, **kwargs):
+        from verifiers.v1.runtimes.deployment import Deployment
+
+        return Deployment(self, **kwargs)
+
     @property
     def type(self) -> str:
         return self.config.type

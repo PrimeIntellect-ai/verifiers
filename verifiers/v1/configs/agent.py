@@ -17,6 +17,7 @@ from verifiers.v1.configs.harness import HarnessConfig, WireHarnessConfig
 from verifiers.v1.configs.retries import RetryConfig
 from verifiers.v1.configs.scoring import ScoringConfig
 from verifiers.v1.runtimes import PrimeConfig, RuntimeConfig
+from verifiers.v1.runtimes.deployment import DeploymentConfig
 from verifiers.v1.types import SamplingConfig
 from verifiers.v1.utils.generic import merge_defaults
 
@@ -46,6 +47,9 @@ class AgentConfig(BaseConfig):
 
     scoring: ScoringConfig = ScoringConfig()
     """Scoring overrides; unset fields inherit the task’s scoring defaults."""
+
+    deployment: DeploymentConfig = DeploymentConfig()
+    """Workspace and service placement, including trust for local Compose tasks."""
 
     model: str | None = None
     """Model id (None = the run's model, i.e. the policy under evaluation/training)."""
