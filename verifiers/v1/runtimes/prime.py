@@ -149,6 +149,7 @@ class PrimeProcess(RuntimeProcess):
 
 class PrimeRuntime(Runtime):
     supports_user: ClassVar[bool] = True
+    supports_expose: ClassVar[bool] = False
     is_local: ClassVar[bool] = False
 
     def __init__(self, config: PrimeConfig, name: str | None = None) -> None:
