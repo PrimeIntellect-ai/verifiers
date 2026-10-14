@@ -1,6 +1,5 @@
-"""Live checks against the Prime API: a digest-cached image build in the configured team's
-registry, a label sweep, and a chunked transfer through a real sandbox. Each creates and
-removes its own resources under a unique label or tag.
+"""Live checks against the Prime API: a label sweep and a chunked transfer through a real
+sandbox. Each creates and removes its own resources under a unique label.
 
     PRIME_API_KEY=... uv run pytest tests/v1/test_prime_live.py -m prime -s
 """
