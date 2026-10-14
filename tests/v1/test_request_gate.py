@@ -1,14 +1,17 @@
 """The request gate against a fake provider that enforces a concurrency limit with 429s."""
 
 import asyncio
+import gc
 import json
 import os
 import signal
 import subprocess
 import sys
 import textwrap
+import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Self
 
 import httpx
@@ -17,6 +20,7 @@ from aiohttp import web
 from openai import AsyncOpenAI
 
 import verifiers.v1 as vf
+from verifiers.v1.clients import gate as gate_module
 from verifiers.v1.clients.base import build_async_httpx
 from verifiers.v1.clients.eval import EvalClient
 from verifiers.v1.clients.gate import GatedAsyncClient, ModelGate, gate_key
@@ -447,3 +451,50 @@ async def test_a_rejection_cancelled_while_closing_returns_its_permit(tmp_path):
     gate = ModelGate(tmp_path / "gates", gate_key(request.url, "", MODEL), MODEL)
     slot, _ = gate.try_admit(config)
     assert slot == 0, "the only slot is free again"
+
+
+def test_a_stream_collected_unclosed_inside_the_gate_does_not_deadlock(
+    tmp_path, monkeypatch
+):
+    """An unclosed streamed response is freed by the cyclic garbage collector, which can
+    run inside the gate's own mutex section; its finalizer's release must not wait on
+    that mutex. The requests run in a thread so a deadlock fails the test, not the run."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, stream=httpx.ByteStream(b"{}"))
+
+    collect = False
+    real_loads = json.loads
+
+    def loads(raw):  # the collector firing at an allocation inside `try_admit`
+        if collect:
+            gc.collect()
+        return real_loads(raw)
+
+    monkeypatch.setattr(
+        gate_module, "json", SimpleNamespace(loads=loads, dumps=json.dumps)
+    )
+    config = gate_config(tmp_path, max_concurrent=1)
+
+    async def main() -> int:
+        nonlocal collect
+        http = GatedAsyncClient(config, transport=httpx.MockTransport(handler))
+        request = http.build_request("POST", "http://x/v1", json={"model": MODEL})
+        streamed = await http.send(request, stream=True)
+        del streamed  # never closed: only the cyclic collector frees it
+        collect = True
+        request = http.build_request("POST", "http://x/v1", json={"model": MODEL})
+        return (await http.send(request)).status_code
+
+    statuses: list[int] = []
+    gc.disable()
+    try:
+        thread = threading.Thread(
+            target=lambda: statuses.append(asyncio.run(main())), daemon=True
+        )
+        thread.start()
+        thread.join(10)
+    finally:
+        gc.enable()
+    assert not thread.is_alive(), "the gate deadlocked on its own mutex"
+    assert statuses == [200], "the collected stream's permit was returned"

@@ -36,6 +36,7 @@ import tempfile
 import threading
 import time
 import weakref
+from collections import deque
 from collections.abc import AsyncIterator, Callable, Iterator
 from pathlib import Path
 from typing import Any, Literal
@@ -84,6 +85,8 @@ class ModelGate:
         self.prefix = directory / f"{_slug(model)}-{key}"
         self.state_path = self.prefix.with_name(self.prefix.name + ".state.json")
         self._mutex = threading.Lock()
+        self._releases: deque[tuple[int, RequestGateConfig, Outcome]] = deque()
+        """Releases not yet applied (see `release`)."""
         self._fds: dict[int, int] = {}
         self._held: set[int] = set()
         self._state_fd: int | None = None
@@ -131,62 +134,83 @@ class ModelGate:
     def try_admit(self, config: RequestGateConfig) -> tuple[int | None, int]:
         """Take a free slot if fewer than the limit are held host-wide: (slot or None,
         the integer limit it was checked against)."""
-        with self._mutex, self._state() as state:
-            limit = int(self._limit(state, config))
-            held, free = 0, None
-            for slot in range(config.max_concurrent):
-                if slot in self._held:
-                    held += 1
-                    continue
-                fd = self._slot_fd(slot)
-                try:
-                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                except BlockingIOError:
-                    held += 1
-                    continue
-                if free is None:
-                    free = slot
-                else:
-                    fcntl.flock(fd, fcntl.LOCK_UN)
-            if free is not None and held >= limit:
-                fcntl.flock(self._fds[free], fcntl.LOCK_UN)
-                free = None
-            if free is not None:
-                self._held.add(free)
-                state["admitted"] = state.get("admitted", 0) + 1
-            state.update(model=self.model, cap=config.max_concurrent)
-            state["limit"] = self._limit(state, config)
-            state["in_flight"] = held + (free is not None)
-            return free, limit
+        try:
+            with self._mutex, self._state() as state:
+                limit = int(self._limit(state, config))
+                held, free = 0, None
+                for slot in range(config.max_concurrent):
+                    if slot in self._held:
+                        held += 1
+                        continue
+                    fd = self._slot_fd(slot)
+                    try:
+                        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    except BlockingIOError:
+                        held += 1
+                        continue
+                    if free is None:
+                        free = slot
+                    else:
+                        fcntl.flock(fd, fcntl.LOCK_UN)
+                if free is not None and held >= limit:
+                    fcntl.flock(self._fds[free], fcntl.LOCK_UN)
+                    free = None
+                if free is not None:
+                    self._held.add(free)
+                    state["admitted"] = state.get("admitted", 0) + 1
+                state.update(model=self.model, cap=config.max_concurrent)
+                state["limit"] = self._limit(state, config)
+                state["in_flight"] = held + (free is not None)
+                return free, limit
+        finally:
+            self._apply_releases()
 
     def release(self, slot: int, config: RequestGateConfig, outcome: Outcome) -> None:
-        """Return `slot` and feed the call's outcome to the adaptive limit."""
-        with self._mutex:
-            if slot not in self._held:
+        """Return `slot` and feed the call's outcome to the adaptive limit. A release
+        may come from a garbage-collector finalizer (an unclosed stream), which can run
+        inside this thread's own `_mutex` section; `_mutex` is not reentrant, so the
+        release is queued, and applied here when `_mutex` is free, else by its holder
+        when it leaves."""
+        self._releases.append((slot, config, outcome))
+        self._apply_releases()
+
+    def _apply_releases(self) -> None:
+        # Recheck after each pass: a release queued while the mutex was held, by
+        # another thread or a finalizer, finds it busy and leaves the work to us.
+        while self._releases and self._mutex.acquire(blocking=False):
+            try:
+                while self._releases:
+                    self._release(*self._releases.popleft())
+            finally:
+                self._mutex.release()
+
+    def _release(self, slot: int, config: RequestGateConfig, outcome: Outcome) -> None:
+        """`release` under `_mutex`."""
+        if slot not in self._held:
+            return
+        self._held.discard(slot)
+        fcntl.flock(self._fds[slot], fcntl.LOCK_UN)
+        if outcome == "other":
+            return
+        with self._state() as state:
+            limit = self._limit(state, config)
+            now = time.time()
+            if outcome == "ok":
+                state["limit"] = min(config.max_concurrent, limit + 1 / limit)
                 return
-            self._held.discard(slot)
-            fcntl.flock(self._fds[slot], fcntl.LOCK_UN)
-            if outcome == "other":
-                return
-            with self._state() as state:
-                limit = self._limit(state, config)
-                now = time.time()
-                if outcome == "ok":
-                    state["limit"] = min(config.max_concurrent, limit + 1 / limit)
-                    return
-                state["rejections"] = state.get("rejections", 0) + 1
-                if (
-                    config.adaptive
-                    and now - state.get("decreased_at", 0.0) >= config.decrease_cooldown
-                ):
-                    lowered = max(config.min_concurrent, limit * config.decrease_factor)
-                    state.update(limit=lowered, decreased_at=now)
-                    logger.warning(
-                        "request gate %s: provider rejected a request, limit %d -> %d",
-                        self.model,
-                        int(limit),
-                        int(lowered),
-                    )
+            state["rejections"] = state.get("rejections", 0) + 1
+            if (
+                config.adaptive
+                and now - state.get("decreased_at", 0.0) >= config.decrease_cooldown
+            ):
+                lowered = max(config.min_concurrent, limit * config.decrease_factor)
+                state.update(limit=lowered, decreased_at=now)
+                logger.warning(
+                    "request gate %s: provider rejected a request, limit %d -> %d",
+                    self.model,
+                    int(limit),
+                    int(lowered),
+                )
 
     async def acquire(self, config: RequestGateConfig) -> int:
         """Wait for a slot."""
@@ -209,6 +233,7 @@ class ModelGate:
                     os.close(fd)
         self._fds.clear()
         self._held.clear()
+        self._releases.clear()
         self._state_fd = None
         self._mutex = threading.Lock()
 
