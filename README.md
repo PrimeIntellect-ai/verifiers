@@ -10,19 +10,102 @@
 
 # Overview
 
-verifiers is our library for creating environments to train and evaluate LLMs.
+verifiers is a library of modular building blocks for training and evaluating LLMs: a **Task** bundles one row of data with its scoring, a **Taskset** loads and configures tasks, an **Agent** is a harness × model × runtime that turns a task into a **Trace**, and an **Env** composes multiple agents into multi-agent environments.
 
-verifiers is tightly integrated with the [Environments Hub](https://app.primeintellect.ai/dashboard/environments?ex_sort=most_stars), as well as our training framework [prime-rl](https://github.com/PrimeIntellect-ai/prime-rl) and our [Hosted Training](https://app.primeintellect.ai/dashboard/training) platform.
+verifiers is tightly integrated with the [Environments Hub](https://app.primeintellect.ai/dashboard/environments?ex_sort=most_stars), our training framework [prime-rl](https://github.com/PrimeIntellect-ai/prime-rl), and our [Hosted Training](https://app.primeintellect.ai/dashboard/training) platform.
 
 ## Installation
 
-We recommend installing the [Prime CLI](https://github.com/PrimeIntellect-ai/prime) to interact with the environments.
+Use it as a library:
 
 ```bash
-# install uv
-curl -LsSf https://astral.sh/uv/install.sh | sh
-# install the prime CLI
+uv add verifiers
+```
+
+To interact with the Environments Hub, Hosted Training, and hosted evals, install the Prime CLI:
+
+```bash
 uv tool install prime
+```
+
+## Building blocks
+
+A taskset in a few dozen lines — data, scoring, and config:
+
+```python
+import verifiers.v1 as vf
+
+
+class AdditionData(vf.TaskData):
+    answer: int
+
+
+class AdditionTask(vf.Task[AdditionData]):
+    @vf.reward
+    async def exact_match(self, trace: vf.Trace) -> float:
+        return float(trace.last_reply == str(self.data.answer))
+
+
+class AdditionConfig(vf.TasksetConfig):
+    num_tasks: int = 100
+
+
+class AdditionTaskset(vf.Taskset[AdditionTask, AdditionConfig]):
+    def load(self) -> list[AdditionTask]:
+        return [
+            AdditionTask(
+                AdditionData(prompt=f"What is {i} + {i}?", answer=2 * i),
+                self.config.task,
+            )
+            for i in range(self.config.num_tasks)
+        ]
+```
+
+One task, one agent, one trace:
+
+```python
+import verifiers.v1 as vf
+
+solver = vf.make_agent(vf.AgentConfig(model="z-ai/glm-5.3"))
+task = vf.Task(vf.TaskData(prompt="What is 2+2? Answer with just the number."))
+
+async with solver:
+    trace = await solver.run(task)
+```
+
+The harness — Claude Code, Codex, mini-swe-agent, a plain bash shell, or your own — and the runtime it executes in (a Prime sandbox, Docker, subprocess) are pure config on the agent. Everything else extends the same way: a `vf.Toolset` installs custom tools as MCP servers into supporting harnesses, a `vf.Env` composes multiple agents with control flow and judging, and the `vf.Trace` records the full rollout — messages, tool calls, rewards, and usage.
+
+## Evaluate
+
+```bash
+uv run vf-eval addition-v1 -n 100
+```
+
+One command per workflow: `vf-validate` checks a taskset without an agent, `vf-debug` runs setup plus one command, `vf-replay` re-scores a finished run's saved traces, and `vf-gepa` optimizes prompts with GEPA.
+
+## Train and evaluate
+
+**Locally with [prime-rl](https://github.com/PrimeIntellect-ai/prime-rl)** — configs reference a taskset by id:
+
+```toml
+[[orchestrator.train.source]]
+name = "wordle"
+env.taskset.id = "wordle"
+env.player.harness.id = "null"
+env.player.runtime.type = "subprocess"
+```
+
+```bash
+uv run rl @ examples/basic/wordle/rl.toml   # async RL training
+uv run eval gsm8k -n 32 -r 4 -c 8           # standalone eval
+```
+
+**Hosted with the [prime](https://github.com/PrimeIntellect-ai/prime) CLI**:
+
+```bash
+prime env push          # publish your taskset to the Environments Hub
+prime eval wordle       # run a hosted evaluation
+prime train config.toml # launch a Hosted Training run
 ```
 
 ## Further reading
