@@ -253,7 +253,8 @@ class PrimeConfig(NetworkPolicyConfig):
     the boot, the workdir) before it fails (`io`) and the late box is deleted; None
     leaves each phase its own budget."""
     outage_budget_s: float = Field(0, ge=0)
-    """Seconds an idempotent platform call (the create, the boot wait, a job poll, an
+    """Seconds an idempotent platform call (the create, whose every send carries one
+    idempotency key so a repeat never makes a second box; the boot wait, a job poll, an
     upload or download) is held and sent again through a provider outage (an `io` or
     `quota` failure: no route to the box, the API or file gateway dropping connections,
     a 5xx, a 429) before the error reaches the caller: minutes-long outages are ridden
@@ -419,6 +420,11 @@ class PrimeRuntime(Runtime):
         scope = run_scope()
         labels = [*BASE_LABELS, *self.config.labels, scope]
 
+        # Every send of this create carries one idempotency key: a send repeated after
+        # its reply was lost (the platform may have made the box) gets that box back
+        # instead of a second one nobody would delete.
+        idempotency_key = uuid.uuid4().hex
+
         # Shielded through the id capture: a cancel that aborts the POST mid-flight
         # leaves the platform creating a sandbox this side never learned the id of —
         # teardown() then cannot delete it
@@ -427,6 +433,7 @@ class PrimeRuntime(Runtime):
                 CreateSandboxRequest(
                     name=self.name,
                     labels=list(dict.fromkeys(labels)),
+                    idempotency_key=idempotency_key,
                     **source,
                     environment_vars=self.env,
                     **{k: v for k, v in options.items() if v is not None},

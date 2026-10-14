@@ -3,6 +3,7 @@
 against fake SDK clients: no sandbox is created."""
 
 import asyncio
+import uuid
 from types import SimpleNamespace
 
 import httpx
@@ -121,12 +122,14 @@ class Client:
 
     def __init__(self, create=None, boot=None) -> None:
         self.create_calls = 0
+        self.create_keys: list[str | None] = []
         self._create = create
         self._boot = boot
         self.deleted: list[str] = []
 
     async def create(self, request):
         self.create_calls += 1
+        self.create_keys.append(request.idempotency_key)
         if self._create is not None:
             await self._create()
         return SimpleNamespace(id="sb1", pending_image_build_id=None)
@@ -172,6 +175,34 @@ async def test_a_create_held_through_an_outage(monkeypatch, sleeps):
     await runtime.start()
     assert client.create_calls == 3 and runtime.placed
     await runtime.teardown()
+
+
+async def test_a_create_whose_reply_was_lost_is_resent_with_its_idempotency_key(
+    monkeypatch, sleeps
+):
+    """A create that timed out after the platform made the box is sent again with the
+    same idempotency key, so the platform hands back that box instead of a second."""
+    boxes: dict[str, str] = {}
+
+    class Platform(Client):
+        async def create(self, request):
+            # Without a key of the caller's, the SDK mints a fresh one per send.
+            key = request.idempotency_key or uuid.uuid4().hex
+            self.create_keys.append(key)
+            box = boxes.setdefault(key, f"sb{len(boxes) + 1}")
+            if len(self.create_keys) == 1:
+                raise httpx.ReadTimeout("reply lost after the box was made")
+            return SimpleNamespace(id=box, pending_image_build_id=None)
+
+    client = Platform()
+    install(monkeypatch, client)
+    runtime = make(monkeypatch, outage_budget_s=300)
+    runtime.info.id = None
+    await runtime.start()
+    assert len(client.create_keys) == 2
+    assert boxes == {client.create_keys[0]: "sb1"}, "one box, never a second"
+    await runtime.teardown()
+    assert client.deleted == ["sb1"]
 
 
 async def test_provisioning_past_its_bound_fails_and_the_late_box_is_deleted(
