@@ -605,6 +605,7 @@ class Rollout:
 
     async def _score_harness(self, runtime: Runtime, deadline: float | None) -> None:
         """Collect best-effort metrics without replacing a task failure."""
+        started = asyncio.get_running_loop().time()
         try:
             async with asyncio.timeout_at(deadline):
                 await self.harness.score(self.trace, self._agent_runtime or runtime)
@@ -614,6 +615,10 @@ class Rollout:
                 "message": str(error),
             }
             logger.warning("harness scoring failed", exc_info=True)
+        finally:
+            self.trace.info["harness_scoring_seconds"] = (
+                asyncio.get_running_loop().time() - started
+            )
 
     async def close(self) -> Trace:
         """Finish the rollout: tool servers and interception down, task `finalize`

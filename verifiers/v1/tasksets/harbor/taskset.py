@@ -346,7 +346,7 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
             trace.state.artifacts.update(collected)
 
     async def stage_verifier(self, trace: Trace, runtime: Runtime) -> None:
-        if any(
+        if self.scoring.mode == "isolated" and any(
             PurePosixPath(root).is_relative_to("/tests")
             for root in trace.state.artifacts
         ):

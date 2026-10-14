@@ -1,6 +1,7 @@
 """Harbor service orchestration with common task verification."""
 
 import asyncio
+import time
 from pathlib import Path
 
 import verifiers.v1 as vf
@@ -83,10 +84,13 @@ class HarborEnv(vf.Env[HarborEnvConfig]):
                     config,
                     timeouts,
                     scoring,
-                    scoring_elapsed=trace.timing.scoring.duration,
+                    scoring_elapsed=trace.info.get("harness_scoring_seconds", 0.0),
                 )
             except TimeoutError:
                 trace.record_timeout("scoring")
             except Exception as error:
                 trace.record_error(error)
                 raise
+            finally:
+                trace.timing.scoring.end = time.time()
+                trace.notify()
