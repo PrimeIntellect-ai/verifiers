@@ -3,8 +3,8 @@
 The Harbor CLI downloads and caches each task directory. Its verifier runs in the
 runtime the harness edited — or, when the task asks for it with
 ``[verifier].environment_mode = "separate"``, in a second box the agent never
-touched, carrying only what the task declared — the harbor env provisions and
-grades that box (see ``env.py``). Either way the score lands in
+touched, carrying only what the task declared — the rollout provisions and
+grades that box. Either way the score lands in
 ``/logs/verifier/reward.json`` or the legacy ``reward.txt``.
 
 A pullable ``[environment].docker_image`` becomes ``TaskData.image``. Verifiers does
@@ -31,6 +31,7 @@ from pathlib import Path, PurePosixPath
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
+from verifiers.v1.configs.scoring import ScoringConfig
 from verifiers.v1.configs.task import TaskConfig
 from verifiers.v1.configs.taskset import TasksetConfig
 from verifiers.v1.errors import SandboxError, TaskError
@@ -41,6 +42,7 @@ from verifiers.v1.taskset import Taskset
 from verifiers.v1.trace import Trace
 from verifiers.v1.utils.artifacts import MAX_ARTIFACT_BYTES, Artifact, collect
 from verifiers.v1.utils.decorators import reward
+from verifiers.v1.utils.env import resolve_env
 
 logger = logging.getLogger(__name__)
 
@@ -207,6 +209,29 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
             for server in config.mcp_servers
         ]
 
+    @property
+    def scoring(self) -> ScoringConfig:
+        # Keep tasksets that populate verifier_env compatible with the common policy.
+        return self.data.scoring.model_copy(
+            update={"env": {**self.data.verifier_env, **(self.data.scoring.env or {})}}
+        )
+
+    def grading_task(self, runtime: Runtime, *, scoring: ScoringConfig):
+        # Custom Harbor verifiers may still pass verifier_env explicitly to run().
+        # Give them the merged raw values, without resolving or mutating solver data.
+        task = self.with_data(verifier_env=dict(scoring.env or {}), scoring=scoring)
+        if scoring.mode == "shared":
+            return task.with_data(verifier=None, verifier_image=None)
+        if task.data.verifier is None:
+            task = task.with_data(
+                verifier=VerifierConfig(fresh_copy=True, env=task.data.env)
+            )
+        if task.data.verifier_image is None:
+            task = task.with_data(
+                image=runtime.config.image, workdir=runtime.config.workdir
+            )
+        return type(self)(verifier_box_data(task.data), self.config)
+
     def runtime_env(self) -> dict[str, str]:
         return resolve_env(self.data.env)
 
@@ -321,12 +346,12 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
             trace.state.artifacts.update(collected)
 
     async def stage_verifier(self, trace: Trace, runtime: Runtime) -> None:
-        if any(
+        if self.scoring.mode == "isolated" and any(
             PurePosixPath(root).is_relative_to("/tests")
             for root in trace.state.artifacts
         ):
             raise TaskError("Harbor artifacts cannot restore into /tests")
-        await self.stage_tests(runtime, wipe=True)
+        await self.stage_tests(runtime, wipe=self.data.verifier is not None)
         self.verifier_staged = True
 
     async def stage_tests(self, runtime: Runtime, wipe: bool = False) -> None:
@@ -365,14 +390,15 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
                 raise TaskError(
                     f"task {self.data.name!r} declares a separate verifier "
                     '([verifier].environment_mode = "separate"); grade it through '
-                    "the harbor env (this taskset's default), or force shared "
+                    "the standard task execution lifecycle, or force shared "
                     "grading with --taskset.ignore-separate-verifier"
                 )
         else:
             # Grading is trusted: a shared-box verifier must not inherit the agent
             # phase's network restrictions (Harbor test scripts install their tools).
             await runtime.backend.prepare_execution(None)
-            await self.stage_tests(runtime)
+            if not self.verifier_staged:
+                await self.stage_tests(runtime)
         return await self.run_verifier(runtime, trace)
 
     async def run_verifier(
@@ -382,7 +408,7 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
         # script the same way, and scripts do grade the agent's work at `$PWD`.
         # The reward file is authoritative even when the script exits nonzero.
         result = await runtime.run(
-            ["bash", "/tests/test.sh"], resolve_env(self.data.verifier_env)
+            ["bash", "/tests/test.sh"], resolve_env(self.scoring.env or {})
         )
         scores = await self.read_reward_json(runtime)
         if scores is None:
@@ -439,7 +465,7 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
 
 
 def verifier_box_data(data: HarborData) -> HarborData:
-    """The verifier's box, declared as task data — the harbor env resolves the
+    """The verifier's box, declared as task data — the rollout resolves the
     grading runtime from it (image, workdir, resources, network policy), exactly
     as the solver's box resolves from the solver task's.
 
@@ -704,6 +730,7 @@ def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborD
         )
     return HarborData(
         idx=idx,
+        scoring=ScoringConfig(mode="isolated" if verifier is not None else "shared"),
         artifact_max_bytes=harbor_config.artifact_max_bytes,
         name=harbor_task.name,
         description=task.description if task else None,
@@ -868,18 +895,6 @@ def parse_verifier_environment(
             else list(network.allowed_hosts)
         ),
     )
-
-
-def resolve_env(values: dict[str, str]) -> dict[str, str]:
-    """Resolve templates at execution time so host secrets are never serialized."""
-    if not values:
-        return {}
-
-    # Harbor is an optional dependency, so importing this module must still work
-    # for users who do not install the Harbor extra.
-    from harbor.utils.env import resolve_env_vars
-
-    return resolve_env_vars(values)
 
 
 # Downloaded task directories are immutable. Cache the current task's environment

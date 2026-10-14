@@ -21,6 +21,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from typing_extensions import TypeVar
 
 from verifiers.v1.configs.harness import SkillSource
+from verifiers.v1.configs.scoring import ScoringConfig
 from verifiers.v1.configs.task import TaskConfig
 from verifiers.v1.errors import TaskError, boundary
 from verifiers.v1.state import StateT
@@ -94,6 +95,9 @@ class TaskData(BaseModel):
     """Initial user prompt; unset if the user opens the conversation."""
     system_prompt: str | None = None
     """Optional system prompt to prepend to the user prompt."""
+
+    scoring: ScoringConfig = ScoringConfig()
+    """Task scoring defaults; explicitly set agent.scoring fields take precedence."""
 
     image: str | None = None
     """Optional Docker image to use for the task. Only relevant for tasks that run in a container."""
@@ -181,6 +185,15 @@ class Task(Generic[DataT, StateT, ConfigT]):
     def runtime_env(self) -> dict[str, str]:
         """Live-only process environment; unlike TaskData, it is not traced."""
         return {}
+
+    @property
+    def scoring(self) -> ScoringConfig:
+        """Task scoring defaults, including any task-format-specific defaults."""
+        return self.data.scoring
+
+    def grading_task(self, runtime: Runtime, *, scoring: ScoringConfig) -> Self:
+        """Adapt scoring inputs to the resolved policy without changing the solver task."""
+        return self
 
     async def setup(self, trace: Trace, runtime: Runtime) -> None:
         return None

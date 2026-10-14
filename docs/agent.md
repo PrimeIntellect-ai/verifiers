@@ -37,3 +37,16 @@ boundary: backend permissions enforce the selected user.
 Trusted task setup and grading use the default-user view; agent execution and
 colocated tools use the task's agent-user view. No shared user or environment
 state is mutated when deriving a view.
+
+## Verification placement
+
+`agent.scoring.mode` selects `shared` or `isolated` scoring. Tasks declare defaults
+through `TaskData.scoring`, using the same `ScoringConfig`. Explicit agent fields
+override task fields; otherwise scoring defaults to `shared`. Isolated verification
+restores collected artifacts into a fresh runtime before task scoring.
+`agent.scoring.runtime` overrides the isolated verifier's runtime.
+`agent.scoring.env` merges over task scoring variables in either placement;
+`${VAR}` and `${VAR:-default}` templates resolve only when scoring starts.
+`agent.scoring.retries` uses `RetryConfig` for isolated scoring, with a default
+`max_retries = 2`. Its rules select retryable errors; retries reuse the completed
+submission in a fresh scoring environment. Shared scoring is not retried.
