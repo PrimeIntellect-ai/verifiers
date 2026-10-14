@@ -1,11 +1,12 @@
-"""Attempt-scoped target ownership, independent of placement."""
+"""Attempt-scoped target ownership and supervision, independent of placement."""
 
 from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import AsyncExitStack, asynccontextmanager
+from dataclasses import dataclass
 from typing import Literal
 
 from pydantic_config import BaseConfig
@@ -25,9 +26,24 @@ from verifiers.v1.utils.aio import run_shielded
 logger = logging.getLogger(__name__)
 
 
+@dataclass(frozen=True)
+class ExecutionConnection:
+    """Launch transport bound to a source and destination, not a provider topology.
+
+    The deployment supplies the command used by a harness to launch its worker.
+    """
+
+    source_runtime: Runtime
+    target_runtime: Runtime
+    launch: Callable[[list[str]], list[str]]
+
+    def command(self, argv: list[str]) -> list[str]:
+        return self.launch(argv)
+
+
 class DeploymentConfig(BaseConfig):
-    mode: Literal["colocated"] = "colocated"
-    """Harness and tools share the workspace."""
+    mode: Literal["colocated", "split"] = "colocated"
+    """Shared workspace, or a container workspace inside a Prime VM."""
     trust_compose: bool = False
     """Permit task-authored Compose privileges and bind mounts on local Docker."""
 
@@ -35,16 +51,48 @@ class DeploymentConfig(BaseConfig):
 class _DeploymentStrategy:
     """Placement, connectivity and lifecycle hooks for one deployment attempt."""
 
+    def resolve_execution(
+        self, harness: RuntimeConfig, execution: RuntimeConfig
+    ) -> RuntimeConfig:
+        return execution
+
     async def start(self, deployment: Deployment) -> None:
         raise NotImplementedError
+
+    async def connect(
+        self,
+        deployment: Deployment,
+        source_runtime: Runtime,
+        target_runtime: Runtime,
+    ) -> ExecutionConnection:
+        try:
+            target_runtime.backend.execution_command(source_runtime, target_runtime, [])
+        except NotImplementedError as exc:
+            raise NotImplementedError(
+                f"{type(self).__name__} has no transport from {source_runtime.type} to "
+                f"{target_runtime.type}"
+            ) from exc
+        return ExecutionConnection(
+            source_runtime,
+            target_runtime,
+            lambda argv: target_runtime.backend.execution_command(
+                source_runtime, target_runtime, argv
+            ),
+        )
 
     async def prepare_execution(
         self, deployment: Deployment, routes: list[str]
     ) -> None:
         await deployment.harness_backend.prepare_execution(routes)
+        if deployment.split:
+            await deployment.execution_backend.prepare_execution([])
 
     async def prepare_grading(self, deployment: Deployment) -> None:
         await deployment.execution_backend.prepare_execution(None)
+
+    async def quiesce(self, deployment: Deployment) -> None:
+        if deployment.split:
+            await deployment.execution_backend.quiesce()
 
     async def stop_execution(self, deployment: Deployment) -> None:
         return
@@ -56,7 +104,7 @@ class _DeploymentStrategy:
         return
 
     def verifier_config(self, deployment: Deployment) -> RuntimeConfig:
-        return deployment.backend.config
+        return deployment.execution_config or deployment.backend.config
 
     @asynccontextmanager
     async def verifier(
@@ -79,23 +127,36 @@ class Deployment:
         backend: RuntimeBackend,
         *,
         spec: ComposeSpec | None = None,
+        execution: RuntimeConfig | None = None,
         env: dict[str, str] | None = None,
         config: DeploymentConfig | None = None,
         borrowed_runtime: Runtime | None = None,
     ):
         self.backend = backend
         self.spec = spec
+        self.execution_config = execution
         self.env = dict(env or {})
         self.config = config or DeploymentConfig()
         self.borrowed_runtime = borrowed_runtime
         from verifiers.v1.runtimes.strategies import _deployment_strategy
 
         self._strategy = _deployment_strategy(self.config, backend.config, spec)
+        if self.config.mode == "split":
+            from verifiers.v1.runtimes import DockerConfig
+
+            if borrowed_runtime is not None:
+                raise ValueError("split execution cannot borrow a runtime")
+            self.execution_config = self._strategy.resolve_execution(
+                backend.config, execution or DockerConfig()
+            )
+        elif execution is not None:
+            raise ValueError("agent.execution requires deployment.mode = 'split'")
         self.target_backends: dict[str, RuntimeBackend] = {}
         self.harness_backend: RuntimeBackend | None = None
         self.execution_backend: RuntimeBackend | None = None
         self._stack = AsyncExitStack()
         self._owned: set[int] = set()
+        self._quiesced = False
         self._close_task: asyncio.Task[None] | None = None
 
     async def own(self, backend: RuntimeBackend) -> RuntimeBackend:
@@ -158,6 +219,15 @@ class Deployment:
             else self.target_backends[name].bind()
         )
 
+    @property
+    def split(self) -> bool:
+        return self.execution_backend is not self.harness_backend
+
+    async def connection(
+        self, source_runtime: Runtime, target_runtime: Runtime
+    ) -> ExecutionConnection:
+        return await self._strategy.connect(self, source_runtime, target_runtime)
+
     @asynccontextmanager
     async def verifier(
         self, config: RuntimeConfig, env: dict[str, str]
@@ -180,6 +250,11 @@ class Deployment:
 
     def verifier_config(self) -> RuntimeConfig:
         return self._strategy.verifier_config(self)
+
+    async def quiesce(self) -> None:
+        if not self._quiesced:
+            await self._strategy.quiesce(self)
+            self._quiesced = True
 
     async def stop_execution(self) -> None:
         await self._strategy.stop_execution(self)

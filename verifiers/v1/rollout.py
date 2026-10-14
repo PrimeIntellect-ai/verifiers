@@ -104,6 +104,7 @@ class Rollout:
         harness: Harness,
         ctx: ModelContext,
         runtime_config: RuntimeConfig,
+        task_runtime_config: RuntimeConfig | None = None,
         has_user: bool = False,
         timeouts: RolloutTimeouts,
         limits: RolloutLimits,
@@ -123,6 +124,8 @@ class Rollout:
         self._grading_config = None
         self._scoring_task = task
         self._grader = None
+        self.task_runtime_config = task_runtime_config
+        self.harness_runtime: Runtime | None = None
         self.deployment = None
         self._deployment_config = agent_config.deployment
         self._has_user = has_user
@@ -152,7 +155,7 @@ class Rollout:
             for fn in discover_decorated(task, "intercept")
         ]
         stops = [(hook_boundary(fn, allow_trace=True), fn) for fn in task.hooks("stop")]
-        execution_policy = runtime_config
+        execution_policy = task_runtime_config or runtime_config
         self._session = RolloutSession(
             ctx=ctx,
             trace=self.trace,
@@ -290,6 +293,7 @@ class Rollout:
                     )
                 self.deployment = runtime.backend.deploy(
                     spec=self.task.deployment_spec(),
+                    execution=self.task_runtime_config,
                     env=runtime.env,
                     config=self._deployment_config,
                     borrowed_runtime=self._borrowed_runtime,
@@ -301,6 +305,15 @@ class Rollout:
                 finally:
                     # Providers may assign an ID before startup fails; retain it for diagnostics.
                     self.trace.agent.runtime = runtime.info.model_copy()
+                self.harness_runtime = (
+                    self.deployment.harness_backend.bind()
+                    if self.deployment.split
+                    else runtime
+                )
+                if self.deployment.split:
+                    self.trace.agent.harness_runtime = (
+                        self.harness_runtime.info.model_copy()
+                    )
                 if not self.task.scoring_deferred:
                     isolated = self._scoring_policy.mode == "isolated"
                     self._scoring_task = self.task.grading_task(
@@ -340,7 +353,19 @@ class Rollout:
                     self._agent_runtime = await resolve_agent_runtime(
                         runtime, self.task.data.agent_user
                     )
-                    await self.harness.setup(self._agent_runtime)
+                    harness_runtime = (
+                        self.harness_runtime
+                        if self.deployment.split
+                        else self._agent_runtime
+                    )
+                    await self.harness.setup(harness_runtime)
+                    if self.deployment.split:
+                        connection = await self.deployment.connection(
+                            harness_runtime, self._agent_runtime
+                        )
+                        await self.harness.setup_execution(
+                            harness_runtime, self._agent_runtime, connection
+                        )
                 async with boundary(ToolsetError, "building tool servers"):
                     toolsets = self.task.toolsets(self.task.config)
                 # `base_url` is the interception server's reachable URL for this rollout.
@@ -354,18 +379,22 @@ class Rollout:
                 ) = await self._stack.enter_async_context(
                     serve_interception(
                         self._interception,
-                        runtime,
+                        self.harness_runtime,
                         self._session,
                         toolsets,
                         self._shared_tools,
                     )
                 )
-                self._endpoint = runtime.host_url(f"{base_url.rstrip('/')}/v1")
+                self._endpoint = self.harness_runtime.host_url(
+                    f"{base_url.rstrip('/')}/v1"
+                )
                 self._secret = model_secret
                 self._urls = await self._stack.enter_async_context(
                     serve_tools(
                         toolsets,
-                        self._agent_runtime,
+                        self.harness_runtime
+                        if self.deployment.split
+                        else self._agent_runtime,
                         shared=self._shared_tools,
                         state_secret=state_secret,
                         state_route=self.trace.id,
@@ -466,7 +495,7 @@ class Rollout:
                     if not self._session.stopped:
                         session_kwargs = (
                             {
-                                "tool_interception_url": runtime.host_url(
+                                "tool_interception_url": self.harness_runtime.host_url(
                                     f"{base_url.rstrip('/')}/tool"
                                 )
                             }
@@ -480,7 +509,9 @@ class Rollout:
                         self._harness_session = await self.harness.session(
                             self.ctx,
                             self.trace,
-                            self._agent_runtime,
+                            self.harness_runtime
+                            if self.deployment.split
+                            else self._agent_runtime,
                             self._endpoint,
                             self._secret,
                             self._urls,
@@ -623,7 +654,7 @@ class Rollout:
             await self._stack.aclose()
         if self.runtime is not None:
             with contextlib.suppress(Exception):
-                await self._cleanup_harness(self.runtime)
+                await self._cleanup_harness(self.harness_runtime or self.runtime)
         if self.deployment is not None:
             with contextlib.suppress(Exception):
                 await self.deployment.close()
@@ -639,7 +670,12 @@ class Rollout:
         """Collect best-effort metrics without replacing a task failure."""
         try:
             async with asyncio.timeout_at(deadline):
-                await self.harness.score(self.trace, self._agent_runtime or runtime)
+                await self.harness.score(
+                    self.trace,
+                    self.harness_runtime
+                    if self.deployment.split
+                    else self._agent_runtime or runtime,
+                )
         except Exception as error:
             self.trace.info["harness_scoring_error"] = {
                 "type": type(error).__name__,
@@ -702,7 +738,9 @@ class Rollout:
                         ):
                             await self.harness.score(
                                 trace,
-                                self._agent_runtime or runtime,
+                                self.harness_runtime
+                                if self.deployment.split
+                                else self._agent_runtime or runtime,
                             )
                     except Exception as error:
                         # Metrics are best-effort; their failure must not prevent
@@ -721,6 +759,7 @@ class Rollout:
                         asyncio.timeout(self._timeouts.finalize),
                         boundary(TaskError, "task finalize"),
                     ):
+                        await self.deployment.quiesce()
                         await invoke(
                             self.task.finalize,
                             {
@@ -739,8 +778,7 @@ class Rollout:
                                 max_bytes=self.task.data.artifact_max_bytes,
                             )
                         if grader is not None:
-                            finalize_phase = "service finalization"
-                            await self._cleanup_harness(runtime)
+                            await self._cleanup_harness(self.harness_runtime or runtime)
                             await self.deployment.stop_execution()
                             await self.task.finalize_services(
                                 trace,
@@ -870,7 +908,7 @@ class Rollout:
                     span.end = now
             trace.split_agent_time()
             if runtime is not None:
-                await self._cleanup_harness(runtime)
+                await self._cleanup_harness(self.harness_runtime or runtime)
             # Tear down here — the env's `score()` (later) needs only the traces,
             # not a live runtime. A borrowed runtime is its creator's to tear down,
             # not this rollout's.

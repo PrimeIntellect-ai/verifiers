@@ -218,6 +218,29 @@ class ContainerBackend(RuntimeBackend):
         `env` in its environment; `stdin` keeps the caller's stdin attached."""
         raise NotImplementedError
 
+    def execution_command(
+        self, caller_runtime: Runtime, target_runtime: Runtime, argv: list[str]
+    ) -> list[str]:
+        if caller_runtime.backend is not self._host_backend and not (
+            self._host_backend is None and caller_runtime.type == "subprocess"
+        ):
+            return super().execution_command(caller_runtime, target_runtime, argv)
+        return [
+            *self._exec(
+                target_runtime.process_env({}), stdin=True, user=target_runtime.user
+            ),
+            *argv,
+        ]
+
+    async def quiesce(self) -> None:
+        result = await self._run_host(
+            self.engine, "restart", "--time", "1", self._container
+        )
+        if result.exit_code:
+            raise SandboxError(
+                f"cannot quiesce execution target: {result.stderr[-1000:]}"
+            )
+
     async def _run(
         self, runtime: Runtime, argv: list[str], env: dict[str, str]
     ) -> ProgramResult:

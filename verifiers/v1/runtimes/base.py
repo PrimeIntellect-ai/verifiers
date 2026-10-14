@@ -196,6 +196,19 @@ class RuntimeBackend(ABC):
 
         return Deployment(self, **kwargs)
 
+    def execution_command(
+        self, caller_runtime: Runtime, target_runtime: Runtime, argv: list[str]
+    ) -> list[str]:
+        """Launch a worker from a trusted caller into this execution target."""
+        if caller_runtime == target_runtime:
+            return argv
+        raise NotImplementedError(
+            "this target has no execution transport from the caller"
+        )
+
+    async def quiesce(self) -> None:
+        raise NotImplementedError("this target cannot stop all agent processes")
+
     @property
     def type(self) -> str:
         return self.config.type

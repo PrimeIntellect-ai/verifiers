@@ -134,7 +134,7 @@ class DockerBackend(ContainerBackend):
             backend.config = config.model_copy(
                 update={"image": info["Image"], "workdir": info["WorkingDir"] or "/"}
             )
-            if host_backend is None:
+            if host_backend is None or isinstance(backend.info, DockerRuntimeInfo):
                 backend.info.id = container
             backend.info.image = backend.config.image
             backend.info.workdir = backend.config.workdir
@@ -273,33 +273,7 @@ class DockerBackend(ContainerBackend):
                 raise SandboxError(
                     f"Requested {self.config.gpu!r}, but Docker exposed: {', '.join(names) or 'no GPUs'}"
                 )
-        inspected = await cli(
-            self.engine, "inspect", "--format", "{{json .Config}}", self._container
-        )
-        if inspected.exit_code != 0:
-            raise SandboxError(
-                f"{self.engine} environment inspection failed: {inspected.stderr.strip()}"
-            )
-        container = json.loads(inspected.stdout)
-        self._image_env = dict(entry.split("=", 1) for entry in container["Env"] or [])
-        # Create missing workdirs for either engine, owned by the image's execution user.
-        made = await cli(
-            self.engine,
-            "exec",
-            "--user",
-            "0",
-            self._container,
-            "sh",
-            "-c",
-            'if [ ! -d "$1" ]; then mkdir -p "$1" && chown "$2" "$1"; fi',
-            "vf-workdir",
-            self.config.workdir,
-            container["User"] or "0",
-        )
-        if made.exit_code != 0:
-            raise SandboxError(
-                f"{self.engine} workdir setup failed: {made.stderr.strip()}"
-            )
+        await self._initialize_environment()
         published = await cli(
             self.engine, "port", self._container, f"{SERVICE_PORT}/tcp"
         )
@@ -329,6 +303,36 @@ class DockerBackend(ContainerBackend):
             self._container,
             self.config.image,
         )
+
+    async def _initialize_environment(self) -> None:
+        """Read image defaults and create the configured workdir for its user."""
+        inspected = await self._run_host(
+            self.engine, "inspect", "--format", "{{json .Config}}", self._container
+        )
+        if inspected.exit_code != 0:
+            raise SandboxError(
+                f"{self.engine} environment inspection failed: {inspected.stderr.strip()}"
+            )
+        container = json.loads(inspected.stdout)
+        self._image_env = dict(entry.split("=", 1) for entry in container["Env"] or [])
+        # Create missing workdirs for either engine, owned by the image's execution user.
+        made = await self._run_host(
+            self.engine,
+            "exec",
+            "--user",
+            "0",
+            self._container,
+            "sh",
+            "-c",
+            'if [ ! -d "$1" ]; then mkdir -p "$1" && chown "$2" "$1"; fi',
+            "vf-workdir",
+            self.config.workdir,
+            container["User"] or "0",
+        )
+        if made.exit_code != 0:
+            raise SandboxError(
+                f"{self.engine} workdir setup failed: {made.stderr.strip()}"
+            )
 
     def host_url(self, url: str) -> str:
         if self._host_backend is not None:
