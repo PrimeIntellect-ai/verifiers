@@ -390,8 +390,10 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
         output, and the text files it left in /logs/verifier besides the reward (test logs,
         reports), each cut to its last VERIFIER_OUTPUT_BYTES."""
         listing = (
-            "for f in $(find /logs/verifier -maxdepth 2 -type f ! -name reward.json "
-            "! -name reward.txt 2>/dev/null | sort | head -n 20); do "
+            # The most recently written logs: the stage that failed wrote last.
+            "for f in $(find /logs/verifier -maxdepth 3 -type f ! -name reward.json "
+            "! -name reward.txt -printf '%T@ %p\\n' 2>/dev/null | sort -n | tail -n 20 "
+            "| cut -d' ' -f2-); do "
             'grep -Iq . "$f" 2>/dev/null || continue; '
             f'printf "==> %s <==\\n" "$f"; tail -c {VERIFIER_OUTPUT_BYTES} "$f"; echo; done'
         )
