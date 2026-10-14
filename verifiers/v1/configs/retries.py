@@ -55,5 +55,6 @@ class RetryConfig(BaseConfig):
     no checkpoints and retries from scratch; so does a run with no retry budget.
     Snapshots are freed when the run is final. Known limits: a harness with
     concurrent sub-agents can snapshot while one of them is mid-tool, processes the
-    agent left running are not restored (a restore cold boots), and the harness must
-    be able to continue a conversation it is handed."""
+    agent left running are not restored (a restore cold boots), and only a harness
+    that relaunches on a transcript resumes (`SUPPORTS_RESUME`: bash, null,
+    browser-use) — the ACP harnesses retry from scratch and take no checkpoints."""

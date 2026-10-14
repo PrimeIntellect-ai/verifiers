@@ -1,7 +1,10 @@
 """A retry resumes from the box's newest filesystem checkpoint (checkpoint-resume-v1: the
 first attempt dies as turn 3 goes upstream; the retry restores the turn-2 snapshot,
-keeps turn 1, and finishes). Prime is the one runtime with checkpoints, so this runs
-there only."""
+keeps turn 1, and finishes). One cell: prime is the one runtime with checkpoints, and
+of the harnesses that relaunch on a transcript (`SUPPORTS_RESUME`) bash is the one
+the fixture can drive — null has no shell and takes one turn, browser-use needs a
+browser image. The ACP harnesses take no checkpoints (they start a fresh process
+on user turns, not a handed conversation)."""
 
 import pytest
 from checkpoint_resume_v1 import FAIL_AFTER_TURNS

@@ -672,18 +672,21 @@ class Agent:
         alive. Retries while the trace ends with a retryable error (`config.retries`)
         — never into a borrowed box. A retry resumes from the failed attempt's newest
         checkpoint when it has one (`retries.checkpoint` on a runtime that supports
-        them, a harness that can continue a conversation), keeping that trace and
+        them, a harness that relaunches on a transcript), keeping that trace and
         its turns up to there; otherwise it starts over. The final trace keeps every
         attempt's errors."""
         if self._closed:
             raise RuntimeError("Agent is closed; create a new agent")
         retry = self.config.retries
         retry_state = RetryState(retry)
+        # A checkpoint resume relaunches the program on the trace's transcript; a
+        # harness with only a live-session resume (ACP) starts a fresh process that
+        # takes user turns, not a handed conversation.
         can_resume = (
             retry.checkpoint
             and retry_state.max_retries > 0
             and runtime is None
-            and self._supports_resume()
+            and self.harness.SUPPORTS_RESUME
         )
         history: list[Error] = []  # errors of the attempts started over from
         trace: Trace | None = None
