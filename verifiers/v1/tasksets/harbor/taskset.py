@@ -428,12 +428,19 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
             except (SandboxError, OSError, ValueError) as exc:
                 # The trace of a failed grading may not survive it: the error carries
                 # the logs the verifier left (a service's own log names the cause).
-                logs = trace.info.get("verifier", {}).get("files", "")
+                # The end of each log, so one long log (a download's progress) cannot
+                # crowd out the one that names the cause.
+                files = trace.info.get("verifier", {}).get("files", "")
+                logs = "".join(
+                    f"==> {block[: block.find(chr(10)) + 1]}"
+                    + block[block.find(chr(10)) + 1 :][-800:]
+                    for block in files.split("==> ")[1:]
+                )
                 raise TaskError(
                     "Harbor verifier produced no reward.json and no valid reward.txt "
                     f"(exit {result.exit_code}): "
                     f"{(result.stderr or result.stdout).strip()[-500:]}"
-                    + (f"\nverifier logs:\n{logs[-3000:]}" if logs else "")
+                    + (f"\nverifier logs:\n{logs[-8000:]}" if logs else "")
                 ) from exc
         key = self.config.reward_key
         if key not in scores:
