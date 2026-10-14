@@ -17,7 +17,8 @@ earlier run does not carry over to the next. The limit is AIMD: a 429/529 multip
 most once per `decrease_cooldown`), each success adds `1/limit`, bounded by
 `[min_concurrent, max_concurrent]`. A rejected request returns its permit, waits for
 `Retry-After` (else exponential backoff) and queues again, up to `max_rejections` times;
-after that the provider's response reaches the caller unchanged.
+after that the provider's response reaches the caller unchanged, as final: the
+interception server neither reruns it nor lets the harness SDK retry it.
 
 A streamed response holds its permit until it is closed.
 """

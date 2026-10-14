@@ -63,7 +63,8 @@ class RequestGateConfig(BaseConfig):
     burst of rejections is one signal."""
     max_rejections: int = Field(10, ge=0)
     """Rejections absorbed per request (each waits, then queues again). The next one is
-    returned to the caller, who sees the provider's 429 as before."""
+    final: it reaches the caller marked not retryable, and the interception server does
+    not rerun it. 0 absorbs none and leaves 429s to the usual retries, as without a gate."""
     backoff: float = Field(1.0, gt=0)
     """Base wait in seconds after a rejection without `Retry-After`; doubles per rejection."""
     max_backoff: float = Field(60.0, gt=0)

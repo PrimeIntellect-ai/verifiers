@@ -92,7 +92,8 @@ KEEPALIVE_GRACE_SECONDS = 60
 # A committed stream can report a failure only as an SSE error event, which harness SDKs do
 # not retry, so a retryable failure (5xx/429) after commit is rerun here, up to this many
 # attempts in all, waiting longer before each (keepalives hold the stream meanwhile). With a
-# request gate on the endpoint, a 429/529 has already used the gate's retries: it is final.
+# request gate that absorbs rejections (`max_rejections > 0`), a 429/529 has already used
+# the gate's retries: it is final.
 COMMITTED_TURN_ATTEMPTS = 5
 COMMITTED_TURN_BACKOFF_SECONDS = 2.0
 COMMITTED_TURN_BACKOFF_MAX_SECONDS = 30.0
@@ -711,7 +712,9 @@ class InterceptionServer(Interception):
             body = json.loads(raw)
         body = dialect.apply_overrides(body, session.ctx.model, session.ctx.sampling)
         streaming = dialect.streaming(body)
-        gated = session.ctx.client.request_gate is not None
+        # The gate is the one retry layer for 429/529 only if it absorbs some.
+        gate = session.ctx.client.request_gate
+        gated = gate is not None and gate.max_rejections > 0
         # A streamed request is served whole once its turn commits: the eval client's
         # provider stream is read to the end, and the train client generates the response.
         relay = streaming and not isinstance(session.ctx.client, TrainClientConfig)

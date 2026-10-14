@@ -521,3 +521,34 @@ def test_a_learned_limit_lasts_only_while_a_process_uses_the_gate(tmp_path):
     while (slot := later.try_admit(config)[0]) is not None:
         slots.append(slot)
     assert len(slots) == 32, "a later run starts from max_concurrent"
+
+
+async def test_a_gate_that_absorbs_no_rejections_leaves_429s_to_the_harness_sdk(
+    tmp_path, monkeypatch
+):
+    """With `max_rejections = 0` the gate retries no 429, so the harness SDK still does:
+    a gated run never retries 429s less than an ungated one."""
+    monkeypatch.setenv("FAKE_KEY", "k")
+    async with FakeProvider(limit=2, reject_first=2, retry_after="0.01") as provider:
+        agent = vf.Agent(
+            vf.AgentConfig(
+                model=MODEL,
+                client={
+                    "type": "eval",
+                    "base_url": provider.url,
+                    "api_key_var": "FAKE_KEY",
+                    "request_gate": {
+                        "max_concurrent": 2,
+                        "max_rejections": 0,
+                        "dir": str(tmp_path / "gates"),
+                    },
+                },
+                runtime={"type": "subprocess"},
+                harness={"id": "null"},
+            )
+        )
+        agent.harness = OneCallHarness(agent.harness.config)
+        agent.harness.sdk_retries = 3
+        trace = await agent.run(vf.Task(vf.TaskData(idx=0, prompt="go")))
+    assert trace.ok, trace.errors
+    assert provider.rejected == 2, "both 429s reached the SDK, which retried them"
