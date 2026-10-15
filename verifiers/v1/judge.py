@@ -57,6 +57,7 @@ import json
 import re
 from collections.abc import Callable, Mapping, Sequence
 from typing import TYPE_CHECKING, Any, Generic, Literal, cast
+from urllib.parse import urlsplit
 
 from openai.types.chat.completion_create_params import (
     CompletionCreateParamsNonStreaming,
@@ -156,9 +157,11 @@ class Judge(Generic[ParsedT, ConfigT]):
         """Ask structured decision questions and record usage even if validation fails."""
         request = {"model": self.config.model, "state": state, "questions": questions}
         if endpoint is None:
-            endpoint = self.config.base_url.rstrip("/")
-            if not endpoint.endswith("/evaluations"):
-                endpoint += "/evaluations"
+            url = urlsplit(self.config.base_url)
+            path = url.path.rstrip("/")
+            if not path.endswith("/evaluations"):
+                path += "/evaluations"
+            endpoint = url._replace(path=path).geturl()
         async with build_async_openai(self.config) as client:
             raw = await client.post(endpoint, cast_to=dict[str, Any], body=request)
         result = raw.get("result", raw)
