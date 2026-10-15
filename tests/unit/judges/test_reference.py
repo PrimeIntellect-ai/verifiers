@@ -18,9 +18,10 @@ def test_reference_parse():
         judge.parse(JudgeResponse(text="gibberish"))
 
 
-async def test_reference_score(fake_judge_model, make_trace):
+@pytest.mark.parametrize("model", ["cloudflare/clef", "openai/gpt-6-luna"])
+async def test_reference_score(fake_judge_model, make_trace, model):
     trace = make_trace()
-    verdict = await vf.ReferenceJudge(vf.ReferenceJudgeConfig(id="reference")).score(
+    verdict = await vf.ReferenceJudge(vf.ReferenceJudgeConfig(model=model)).score(
         trace.task.data, trace
     )
     assert verdict == 1.0
@@ -30,15 +31,17 @@ async def test_reference_score(fake_judge_model, make_trace):
     assert len(trace.info["judge_calls"]) == 1  # the call is recorded onto the trace
     judge_record = trace.info["judge_calls"][0]
     assert judge_record["name"] == "reference"
-    assert judge_record["request"]["model"] == "openai/gpt-6-luna"
-    assert "Capital of France?" in judge_record["request"]["messages"][0]["content"]
-    assert judge_record["response"]["message"] == {
-        "role": "assistant",
-        "content": "yes",
-        "reasoning_content": None,
-        "tool_calls": None,
-        "provider_state": None,
-    }
+    assert judge_record["request"]["model"] == model
+    if model == "cloudflare/clef":
+        assert "Capital of France?" in judge_record["request"]["state"]["prompt"]
+        assert judge_record["request"]["questions"]["verdict"]["criteria"] == {
+            "yes": "Correct",
+            "no": "Incorrect",
+        }
+        assert trace.extra_usage[-1].prompt_tokens == 10
+    else:
+        assert "Capital of France?" in judge_record["request"]["messages"][0]["content"]
+        assert judge_record["response"]["message"]["content"] == "yes"
     assert judge_record["response"]["parsed"] == 1.0
 
     request_messages = [{"role": "user", "content": "original"}]
@@ -146,7 +149,9 @@ async def test_reference_list_answer(fake_judge_model, make_trace):
 async def test_reference_choices(fake_judge_model, make_trace):
     # Verdict labels are configurable; the positive (first) label scores 1.0 and the
     # default prompt asks for the configured labels (not a hardcoded yes/no).
-    judge = vf.ReferenceJudge(vf.ReferenceJudgeConfig(choices=("A", "B")))
+    judge = vf.ReferenceJudge(
+        vf.ReferenceJudgeConfig(model="openai/gpt-6-luna", choices=("A", "B"))
+    )
     assert judge.parse(JudgeResponse(text="A")) == 1.0
     assert judge.parse(JudgeResponse(text="Final verdict: B")) == 0.0
     with pytest.raises(ValueError, match="no A/B verdict"):

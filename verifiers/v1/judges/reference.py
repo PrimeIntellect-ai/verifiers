@@ -5,7 +5,7 @@ be retried instead of being scored against the model.
 """
 
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 from pydantic import model_validator
 
@@ -31,6 +31,7 @@ class ReferenceJudgeConfig(JudgeConfig):
     id: ID = "reference"
     """Pinned to the built-in, so a code-level default entry needs no explicit id (a TOML
     entry's `id` selects the config type before this default is ever seen)."""
+    model: str = "cloudflare/clef"
     answer_field: str = "answer"
     """The task field holding the reference answer (works for extra/wire fields too). A
     list-valued field is rendered as one acceptable answer per line — the response must
@@ -62,6 +63,25 @@ class ReferenceJudgeConfig(JudgeConfig):
 
 class ReferenceJudge(Judge[float, ReferenceJudgeConfig]):
     prompt = REFERENCE_PROMPT
+
+    async def evaluate(
+        self, *, trace: Trace | None = None, **fields: Any
+    ) -> JudgeResponse[float]:
+        if not self.uses_decisions:
+            return await super().evaluate(trace=trace, **fields)
+        positive, negative = self.config.choices
+        return await self.decide(
+            {"prompt": self.build_messages(**fields)},
+            {
+                "verdict": {
+                    "type": "choice",
+                    "instructions": "Select the verdict requested by the prompt.",
+                    "criteria": {positive: "Correct", negative: "Incorrect"},
+                }
+            },
+            trace=trace,
+            parse=lambda answers: float(answers["verdict"]["choice"] == positive),
+        )
 
     def parse(self, response: JudgeResponse[float]) -> float:
         return float(

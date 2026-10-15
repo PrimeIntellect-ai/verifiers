@@ -24,13 +24,11 @@ SKIP_EVAL = {
     "proposer_solver": "the CI model's proposer reasons past the token cap",
 }
 
-# Point each bundled judge at the CI model and effort.
+# Classification judges use their own model, independently of the solver.
 JUDGE_OVERRIDES = {
     "interception": [
         "--env.taskset.task.judge.model",
-        CI_MODEL,
-        "--env.taskset.task.judge.sampling.reasoning-effort",
-        CI_REASONING_EFFORT,
+        CI_JUDGE["model"],
     ],
     "wiki_search": [
         "--env.taskset.task.judges",

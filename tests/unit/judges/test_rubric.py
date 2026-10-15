@@ -94,10 +94,11 @@ def test_rubric_rejects_bad_files(tmp_path):
         ).criteria
 
 
-async def test_rubric_score(tmp_path, fake_judge_model, make_trace):
+@pytest.mark.parametrize("model", ["cloudflare/clef", "openai/gpt-6-luna"])
+async def test_rubric_score(tmp_path, fake_judge_model, make_trace, model):
     # verdicts: mentions_paris=1 (w=3), is_polite=0 (w=1) -> weighted mean 0.75, from ONE
     # judge call; each verdict lands as a `<name>/<criterion>` metric.
-    judge = rubric_judge(tmp_path)
+    judge = rubric_judge(tmp_path, model=model)
     trace = make_trace()
     assert await judge.score(trace.task.data, trace) == 0.75
     assert trace.metrics == {"rubric/mentions_paris": 1.0, "rubric/is_polite": 0.0}
@@ -112,7 +113,7 @@ async def test_rubric_verdict_mismatch_raises(tmp_path, monkeypatch, make_trace)
         return JudgeResponse(text=json.dumps(verdicts), parsed=None)
 
     monkeypatch.setattr(Judge, "complete", wrong_names)
-    judge = rubric_judge(tmp_path)
+    judge = rubric_judge(tmp_path, model="openai/gpt-6-luna")
     trace = make_trace()
     with pytest.raises(ValueError, match="expected the batch"):
         await judge.score(trace.task.data, trace)
@@ -125,7 +126,9 @@ async def test_rubric_choices_normalize(tmp_path, monkeypatch, make_trace):
         return JudgeResponse(text=json.dumps(v), parsed=None)
 
     monkeypatch.setattr(Judge, "complete", graded)
-    judge = rubric_judge(tmp_path, body=CHOICES_TOML, name="q")
+    judge = rubric_judge(
+        tmp_path, body=CHOICES_TOML, name="q", model="openai/gpt-6-luna"
+    )
     trace = make_trace()
     assert await judge.score(trace.task.data, trace) == 0.5
     assert trace.metrics == {"q/depth": 0.5}
@@ -138,7 +141,7 @@ async def test_rubric_off_menu_answer_raises(tmp_path, monkeypatch, make_trace):
         return JudgeResponse(text=json.dumps(v), parsed=None)
 
     monkeypatch.setattr(Judge, "complete", off_menu)
-    judge = rubric_judge(tmp_path, body=CHOICES_TOML)
+    judge = rubric_judge(tmp_path, body=CHOICES_TOML, model="openai/gpt-6-luna")
     trace = make_trace()
     with pytest.raises(ValueError, match="expected one of"):
         await judge.score(trace.task.data, trace)
