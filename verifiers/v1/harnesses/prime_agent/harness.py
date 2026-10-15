@@ -14,6 +14,7 @@ from verifiers.v1.harnesses.utils.replay import drop_blank_text
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
+from verifiers.v1.types import Message
 
 logger = logging.getLogger(__name__)
 
@@ -97,11 +98,13 @@ class PrimeAgentHarnessConfig(HarnessConfig):
 
 class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
-    # Its pi-ai fork drops whitespace-only assistant text on replay. Recheck on bumps:
-    # https://github.com/PrimeIntellect-ai/prime-agent/blob/v0.9.5/packages/ai/src/providers/openai-completions.ts#L895
-    replay_view = staticmethod(drop_blank_text)
     SUPPORTS_MCP = True
     SUPPORTS_SKILLS = True
+
+    # Its pi-ai fork drops whitespace-only assistant text on replay. Recheck on bumps:
+    # https://github.com/PrimeIntellect-ai/prime-agent/blob/v0.9.5/packages/ai/src/providers/openai-completions.ts#L895
+    def replay_view(self, message: Message) -> Message:
+        return drop_blank_text(message)
 
     def acp_turn_result(self, trace: Trace, result: ACPTurn) -> None:
         events = [
