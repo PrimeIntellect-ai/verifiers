@@ -17,6 +17,10 @@ class BindMount(BaseConfig):
     source: str = Field(pattern=r"^/[^\x00]*$")
     """Absolute host path. The runtime never creates or removes the source."""
     read_only: bool = True
+    selinux_relabel: bool = False
+    """Podman: relabel the host source for shared container access on SELinux hosts.
+    Opt in for ordinary host paths; this changes host labels recursively and requires
+    a filesystem that supports SELinux labels (cloud FUSE mounts may not)."""
 
 
 Mount = TypeVar("Mount", bound=BaseConfig)

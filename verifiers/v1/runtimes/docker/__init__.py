@@ -244,6 +244,9 @@ class DockerBackend(ContainerBackend):
         ]
         for target, mount in getattr(self.config, "mounts", {}).items():
             bind_options = ["type=bind", f"source={mount.source}", f"target={target}"]
+            if self.engine == "podman" and mount.selinux_relabel:
+                # Rollout and grading containers can share the same host source.
+                bind_options.append("relabel=shared")
             if mount.read_only:
                 bind_options += ["readonly", "bind-propagation=rprivate"]
                 if self.engine == "docker":
