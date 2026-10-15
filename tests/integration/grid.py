@@ -82,13 +82,6 @@ def harness_id(harness: str | dict) -> str:
     return harness if isinstance(harness, str) else harness["id"]
 
 
-def harness_label(harness: str | dict) -> str:
-    """The cell id for a harness: its id, then any config values (`pi-responses`)."""
-    if isinstance(harness, str):
-        return harness
-    return "-".join([harness["id"], *(str(v) for k, v in harness.items() if k != "id")])
-
-
 def mark(name: str) -> pytest.MarkDecorator:
     return getattr(pytest.mark, name.replace("-", "_"))
 
@@ -188,7 +181,7 @@ def grid(
                     harness,
                     runtime_config(runtime, harness),
                     marks=marks,
-                    id=f"{harness_label(harness)}-in-{runtime}",
+                    id=f"{harness_id(harness)}-in-{runtime}",
                 )
             )
     return cells
