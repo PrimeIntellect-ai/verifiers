@@ -254,9 +254,11 @@ def response_from_wire(completion: dict) -> Response:
         sampling_mask = choice.get("sampling_mask")
         if sampling_mask is not None:
             sampling_mask = SamplingMask.from_sampling_mask(sampling_mask)
-            if len(sampling_mask.counts) != len(completion_ids) or int(
-                sampling_mask.counts.sum()
-            ) != len(sampling_mask.ids):
+            if (
+                len(sampling_mask.counts) != len(completion_ids)
+                or (sampling_mask.counts < 0).any()
+                or int(sampling_mask.counts.sum()) != len(sampling_mask.ids)
+            ):
                 raise ValueError("sampling masks must align with completion token IDs")
         tokens = TurnTokens(
             prompt_ids=prompt_ids,
