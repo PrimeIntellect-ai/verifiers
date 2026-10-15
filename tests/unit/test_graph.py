@@ -269,6 +269,42 @@ def test_reasoning_content_participates_in_graph_prefix_matching():
     assert len(tool_call_nodes) == 2
 
 
+@pytest.mark.parametrize(
+    "sampled,replayed",
+    [
+        # Clients drop whitespace-only text emitted before a tool call.
+        ({"content": "\n\n"}, {"content": None}),
+        (
+            {"content": "\n\n", "reasoning_content": "plan"},
+            {"reasoning_content": "plan"},
+        ),
+        # Some clients pad a missing reasoning field with whitespace.
+        ({"content": None}, {"reasoning_content": " "}),
+    ],
+)
+def test_replayed_whitespace_differences_extend_one_branch(sampled, replayed):
+    trace = vf.Trace(
+        agent=vf.AgentInfo(config=vf.AgentConfig()),
+        task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt="use a tool")),
+    )
+    user = vf.UserMessage(content="use a tool")
+    call = vf.ToolCall(id="call_0", name="lookup", arguments="{}")
+
+    graph.prepare_turn(trace, [user]).commit(
+        _response(vf.AssistantMessage(tool_calls=[call], **sampled))
+    )
+    graph.prepare_turn(
+        trace,
+        [
+            user,
+            vf.AssistantMessage(tool_calls=[call], **replayed),
+            vf.ToolMessage(content="result", tool_call_id="call_0"),
+        ],
+    ).commit(_response(vf.AssistantMessage(content="done")))
+
+    assert trace.num_branches == 1
+
+
 @pytest.mark.parametrize("same_tools", [False, True])
 def test_parallel_commits_reconcile_shared_prompt_prefix(same_tools):
     """Two requests prepared from the same graph snapshot share any common prompt prefix that

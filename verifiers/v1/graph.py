@@ -240,10 +240,11 @@ _PROVIDER_STATE_FIELDS = frozenset({"encrypted_content", "signature", "data", "p
 
 def message_hash(message: Message) -> str:
     """Stable content hash on the fields that round-trip through a prompt — role, content
-    (None and "" equal), assistant reasoning content when present, assistant tool calls,
-    opaque continuation state, tool call id. Two messages hash equal iff they're the same
-    conversational message, so a re-stated prefix message dedups to one node. The message part
-    of the prefix key; salt-free so it is identical across processes and after deserialization."""
+    (None, "" and whitespace-only assistant text equal), assistant reasoning content when
+    not blank, assistant tool calls, opaque continuation state, tool call id. Two messages
+    hash equal iff they're the same conversational message, so a re-stated prefix message
+    dedups to one node. The message part of the prefix key; salt-free so it is identical
+    across processes and after deserialization."""
     digest = hashlib.blake2b(digest_size=16)
 
     def add(value: str) -> None:
@@ -261,10 +262,16 @@ def message_hash(message: Message) -> str:
             else:
                 add(part.image_url.url)
     else:
+        content = message.content or ""
+        # Clients drop whitespace-only assistant text (e.g. "\n\n" before a tool call)
+        # when they replay a turn, so it must not distinguish the replayed message.
+        if isinstance(message, AssistantMessage) and not content.strip():
+            content = ""
         add("content_text")
-        add(message.content or "")
+        add(content)
     if isinstance(message, AssistantMessage):
-        if message.reasoning_content is not None:
+        # Some clients pad a missing reasoning field with whitespace on replay.
+        if message.reasoning_content and message.reasoning_content.strip():
             add("reasoning_content")
             add(message.reasoning_content)
         for item in message.provider_state or []:
