@@ -2,9 +2,12 @@
 
 import argparse
 import asyncio
+import itertools
 import json
 import logging
+import os
 import subprocess
+import tempfile
 import traceback
 from contextlib import AsyncExitStack
 from pathlib import Path
@@ -157,16 +160,84 @@ def run_search(query: str, api_key: str, num_results: int = 5) -> str:
         return f"search failed ({e}). Try again or rephrase the query."
 
 
-def run_bash(command: str) -> str:
+BASH_LOG_DIR: Path | None = None
+"""Where `run_bash` writes command output; created on first use."""
+
+BACKGROUNDED: list[subprocess.Popen] = []
+"""Commands still running past the timeout, reaped once they exit."""
+
+BASH_CALLS = itertools.count(1)
+
+
+def held_open(path: Path) -> bool:
+    """Whether another process still has `path` open (False when /proc can't
+    tell, e.g. macOS)."""
     try:
-        result = subprocess.run(
-            ["bash", "-c", command],
-            capture_output=True,
-            text=True,
-            timeout=3600,
-            check=False,
-        )
-        return result.stdout + result.stderr
+        target = path.stat()
+    except OSError:
+        return False
+    own = Path(f"/proc/{os.getpid()}/fd")
+    for fd_dir in Path("/proc").glob("[0-9]*/fd"):
+        if fd_dir == own:
+            continue
+        try:
+            fds = list(fd_dir.iterdir())
+        except OSError:  # gone, or another user's process
+            continue
+        for fd in fds:
+            try:
+                st = fd.stat()
+            except OSError:
+                continue
+            if (st.st_dev, st.st_ino) == (target.st_dev, target.st_ino):
+                return True
+    return False
+
+
+def run_bash(command: str, timeout: float) -> str:
+    """Run `command` and return its stdout + stderr.
+
+    Output goes to a log file, not pipes, and the call waits on bash itself: a
+    process the command backgrounds (`server &`, `nohup ... &`) would inherit a
+    pipe and hold it open, so waiting for EOF would block on it. A command still
+    running after `timeout` seconds is left running: the call returns its output
+    so far and where the rest goes, so long builds and test runs aren't lost. A
+    finished command's log is deleted unless a process it backgrounded still
+    writes to it; then it stays, and the agent is told where."""
+    global BASH_LOG_DIR
+    BACKGROUNDED[:] = [proc for proc in BACKGROUNDED if proc.poll() is None]
+    try:
+        # The command may wipe $TMPDIR (`rm -rf /tmp/*`): recreate the directory,
+        # and read output through the open file rather than its path
+        if BASH_LOG_DIR is None or not BASH_LOG_DIR.is_dir():
+            BASH_LOG_DIR = Path(tempfile.mkdtemp(prefix="vf-bash-"))
+        log = BASH_LOG_DIR / f"{next(BASH_CALLS)}.log"
+        # Append mode: seeking back to read must not move where the command's
+        # still-running processes write
+        with log.open("a+b") as out:
+            proc = subprocess.Popen(
+                ["bash", "-c", command],
+                stdin=subprocess.DEVNULL,
+                stdout=out,
+                stderr=subprocess.STDOUT,
+            )
+            try:
+                proc.wait(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                BACKGROUNDED.append(proc)
+                out.seek(0)
+                output = out.read().decode(errors="replace")
+                return (
+                    f"{output}\n[still running after {timeout:g}s: moved to the background as pid "
+                    f"{proc.pid}; output continues in {log}. Check it with `tail -n 50 {log}`, "
+                    f"stop it with `pkill -P {proc.pid}; kill {proc.pid}`.]"
+                )
+            out.seek(0)
+            output = out.read().decode(errors="replace")
+            if held_open(log):
+                return f"{output}\n[processes this command backgrounded still send their output to {log}]"
+        log.unlink(missing_ok=True)
+        return output
     except Exception as e:  # noqa: BLE001 - tool failures are returned to the model
         return f"error: {e}"
 
@@ -412,7 +483,7 @@ async def run_chat_loop(
                     content = await call_mcp(servers, dispatch, name, tool_args)
                 elif name == "bash" and args.bash:
                     content = await asyncio.to_thread(
-                        run_bash, tool_args.get("command", "")
+                        run_bash, tool_args.get("command", ""), args.tool_timeout
                     )
                 elif name == "edit" and args.edit:
                     content = await asyncio.to_thread(
@@ -450,6 +521,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--mcp-config", default="")
     parser.add_argument("--tool-interception-url", default="")
     parser.add_argument("--bash", action="store_true")
+    parser.add_argument("--tool-timeout", type=float, default=600.0)
     parser.add_argument("--compaction", action="store_true")
     parser.add_argument("--summarize-at-tokens", type=int)
     parser.add_argument("--edit", action="store_true")
