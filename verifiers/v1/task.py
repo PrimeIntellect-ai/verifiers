@@ -151,6 +151,14 @@ DataT = TypeVar("DataT", bound=TaskData)
 ConfigT = TypeVar("ConfigT", bound=TaskConfig, default=TaskConfig)
 
 
+def source_hash(obj: Any) -> str | None:
+    """A short hash of `obj`'s source as it reads on disk now, or None without one."""
+    try:
+        return hashlib.sha256(inspect.getsource(obj).encode()).hexdigest()[:16]
+    except (OSError, TypeError):
+        return None
+
+
 class Task(Generic[DataT, StateT, ConfigT]):
     NEEDS_CONTAINER: ClassVar[bool] = False
     """Whether the task needs a containerized environment (isolated filesystem, ...)."""
@@ -158,6 +166,14 @@ class Task(Generic[DataT, StateT, ConfigT]):
     """Paths the verifier stages after isolated scoring restores the submission's
     artifacts. No restored symlink may reach them, so a submission cannot read or
     replace the grader's own files."""
+    __source_hash__: ClassVar[str | None]
+    """The class's source hash as loaded, set on each subclass at creation."""
+
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        super().__init_subclass__(**kwargs)
+        # Hash the source now: `inspect.getsource` rereads the file, so a later hash
+        # would follow the checkout on disk rather than the code that is running.
+        cls.__source_hash__ = source_hash(cls)
 
     def __init__(self, data: DataT, config: ConfigT | None = None) -> None:
         self.data = data

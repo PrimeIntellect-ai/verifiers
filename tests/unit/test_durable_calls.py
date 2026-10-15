@@ -11,7 +11,10 @@ checkpointing boxes of `test_agent_resume`.
 # ruff: noqa: F811 - the fixtures imported from test_agent_resume are parameters
 
 import asyncio
+import importlib
 import json
+import linecache
+import sys
 from pathlib import Path
 from typing import ClassVar
 
@@ -36,7 +39,14 @@ import verifiers.v1.box as box_module
 import verifiers.v1.runtimes as runtimes_module
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.client import EvalClientConfig
-from verifiers.v1.durable import call_parts, call_ref, latest, refs_of, resolve_call
+from verifiers.v1.durable import (
+    call_parts,
+    call_ref,
+    code_hash,
+    latest,
+    refs_of,
+    resolve_call,
+)
 from verifiers.v1.errors import SandboxError
 from verifiers.v1.utils.retries import RETRY_NOTE
 
@@ -1313,3 +1323,40 @@ def test_a_ref_points_at_the_trace_that_moved_last(tmp_path):
     store.write(earlier)
     assert store.get("r").id == earlier.id
     assert store.get("other") is None
+
+
+# -- code_hash -------------------------------------------------------------------
+
+TASK_MODULE = """
+import verifiers.v1 as vf
+
+
+class Mixin:
+    def helper(self):
+        return {version}
+
+
+class EditedTask(Mixin, vf.Task):
+    def extra(self):
+        return {version}
+"""
+
+
+def test_code_hash_follows_the_loaded_code_not_the_file_on_disk(tmp_path, monkeypatch):
+    """`inspect.getsource` rereads the file, so a hash taken after a checkout moves
+    would fingerprint code the process never ran. The hash is the one taken at load."""
+    path = tmp_path / "edited_task_module.py"
+    path.write_text(TASK_MODULE.format(version=1))
+    monkeypatch.syspath_prepend(str(tmp_path))
+    monkeypatch.delitem(sys.modules, "edited_task_module", raising=False)
+    module = importlib.import_module("edited_task_module")
+    before = code_hash(module.EditedTask)
+
+    path.write_text(TASK_MODULE.format(version=2) + "\n# moved on\n")
+    linecache.checkcache(str(path))
+    assert code_hash(module.EditedTask) == before
+
+    # A fresh process (a fresh import) sees the new code.
+    monkeypatch.delitem(sys.modules, "edited_task_module")
+    reloaded = importlib.import_module("edited_task_module")
+    assert code_hash(reloaded.EditedTask) != before

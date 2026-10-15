@@ -68,12 +68,12 @@ import contextlib
 import contextvars
 import copy
 import hashlib
-import inspect
 import json
 import logging
 import os
 import random
 import tempfile
+import weakref
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -81,6 +81,7 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from pydantic import BaseModel
 
+from verifiers.v1.task import source_hash
 from verifiers.v1.trace import LABELS_KEY, Checkpoint, Trace, WireTrace
 
 if TYPE_CHECKING:
@@ -262,11 +263,19 @@ def _hash(value: Any) -> str:
     return hashlib.sha256(data).hexdigest()[:16]
 
 
-def _source_hash(obj: Any) -> str | None:
-    try:
-        return hashlib.sha256(inspect.getsource(obj).encode()).hexdigest()[:16]
-    except (OSError, TypeError):
-        return None
+_MIXIN_HASHES: weakref.WeakKeyDictionary[type, str | None] = weakref.WeakKeyDictionary()
+
+
+def _class_hash(cls: type) -> str | None:
+    """The source hash of `cls` as it was loaded. `inspect.getsource` reads the file
+    on disk, so a hash taken later follows the checkout, not the running code. A
+    `vf.Task` subclass stores its hash at class creation (`__source_hash__`); any
+    other class is hashed once per process, on first use."""
+    if "__source_hash__" in cls.__dict__:
+        return cls.__dict__["__source_hash__"]
+    if cls not in _MIXIN_HASHES:
+        _MIXIN_HASHES[cls] = source_hash(cls)
+    return _MIXIN_HASHES[cls]
 
 
 def code_hash(cls: type, framework: Iterable[str] = ()) -> str:
@@ -283,7 +292,7 @@ def code_hash(cls: type, framework: Iterable[str] = ()) -> str:
         package = base.__module__.split(".")[0]
         if package in skip:
             continue
-        parts.append(f"{base.__module__}:{base.__qualname__}:{_source_hash(base)}")
+        parts.append(f"{base.__module__}:{base.__qualname__}:{_class_hash(base)}")
     return _hash(parts)
 
 
