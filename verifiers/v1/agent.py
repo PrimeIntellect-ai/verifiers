@@ -63,7 +63,7 @@ from verifiers.v1.durable import (
     plan_call,
     resolve_call,
 )
-from verifiers.v1.errors import SandboxError
+from verifiers.v1.errors import HarnessKilled, SandboxError
 from verifiers.v1.harness import Harness
 from verifiers.v1.interception import Interception, InterceptionServer
 from verifiers.v1.mcp import SharedToolServer
@@ -91,10 +91,12 @@ from verifiers.v1.utils.compile import (
     validate_pairing,
 )
 from verifiers.v1.utils.retries import (
+    KILLED_NOTE,
     MODEL_RETRY_NOTE,
     RETRY_NOTE,
     RetryState,
     backoff,
+    retry_note,
     retryable_error,
 )
 
@@ -784,7 +786,11 @@ class Interaction:
             task = self._opening.task.with_data(
                 prompt=[
                     *conversation,
-                    UserMessage(content=RETRY_NOTE),
+                    UserMessage(
+                        content=KILLED_NOTE
+                        if isinstance(failure, HarnessKilled)
+                        else RETRY_NOTE
+                    ),
                     *([] if held else (turn_input or [])),
                 ]
             )
@@ -1951,7 +1957,7 @@ class Agent:
         if resolved.resume is not None and again is None:
             logger.info("call %r runs fresh: its box cannot be restored", key)
         if again is not None:
-            resume, at, note = again, again_at, RETRY_NOTE
+            resume, at, note = again, again_at, retry_note(again.last_error)
         store = _call_store(found, runtime)
         trace = await self.run(
             task,

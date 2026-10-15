@@ -12,9 +12,11 @@ from verifiers.v1.configs.harness import HarnessConfig, skill_destination
 from verifiers.v1.errors import (
     MODEL_TRANSPORT_ERROR_EXIT_CODE,
     HarnessError,
+    HarnessKilled,
     InterceptionError,
     SandboxError,
     boundary,
+    killed_by,
 )
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.task import TaskData
@@ -193,6 +195,12 @@ copy_failed=$(
         if result.exit_code == MODEL_TRANSPORT_ERROR_EXIT_CODE:
             raise InterceptionError(
                 f"harness {self.config.id!r} model connection to interception failed: {detail}"
+            )
+        if (signal := killed_by(result.exit_code)) is not None:
+            raise HarnessKilled(
+                f"harness {self.config.id!r} was killed by signal {signal} "
+                f"(exit {result.exit_code}): {detail}",
+                signal=signal,
             )
         raise HarnessError(
             f"harness {self.config.id!r} exited {result.exit_code}: {detail}"

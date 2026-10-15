@@ -73,6 +73,25 @@ class HarnessError(RolloutError):
     """The harness failed to install or launch, or its agent process exited unsuccessfully."""
 
 
+class HarnessKilled(HarnessError):
+    """The harness's agent process was killed by a signal (`signal`, from its exit
+    status 128 + n) while its box stayed up. In a sandbox a SIGKILL is almost always the
+    box's memory limit: the agent's last command used more memory than the box has. A
+    continued run is told so (`utils.retries.retry_note`), so the agent can work around
+    it instead of repeating the command."""
+
+    def __init__(self, message: str = "", *, signal: int) -> None:
+        super().__init__(message)
+        self.signal = signal
+
+
+def killed_by(exit_code: int | None) -> int | None:
+    """The signal an exit status reports (a shell's 128 + n), or None."""
+    if exit_code is None or not 128 < exit_code <= 128 + 64:
+        return None
+    return exit_code - 128
+
+
 class ToolsetError(RolloutError):
     """A task's `Toolset` could not be built or served."""
 

@@ -210,6 +210,27 @@ RETRY_NOTE = (
 """The user message an interaction retry continues with on a box restored from the
 trace's latest checkpoint."""
 
+KILLED_NOTE = (
+    "The host reopened this session after your agent process was killed by a signal "
+    "while the box stayed up. In this sandbox that almost always means your "
+    "last command used more memory than the box has. Files are as they were at the last "
+    "saved point of this conversation; background processes you started are gone. Do "
+    "not run that command the same way again: find the step that needs the memory and "
+    "make it smaller (fewer parallel jobs, streaming instead of loading whole files, a "
+    "smaller build or data set), then continue."
+)
+"""The user message a run continues with after its agent process was killed
+(`errors.HarnessKilled`)."""
+
+
+def retry_note(error: Error | None) -> str:
+    """The note a failed run continues with: `KILLED_NOTE` when its agent process was
+    killed by a signal (`HarnessKilled`), else `RETRY_NOTE`."""
+    if error is not None and error.type == "HarnessKilled":
+        return KILLED_NOTE
+    return RETRY_NOTE
+
+
 MODEL_RETRY_NOTE = (
     "The host retried this turn after a model call failed. Nothing on the box "
     "changed; continue where you left off."

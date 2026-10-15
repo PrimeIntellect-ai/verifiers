@@ -83,6 +83,7 @@ from verifiers.v1.episode import (
 from verifiers.v1.errors import (
     EnvError,
     HarnessError,
+    HarnessKilled,
     InterceptionError,
     Outage,
     OutageKind,
@@ -344,6 +345,7 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "json_object",
     "parse_markdown",
     "HarnessError",
+    "HarnessKilled",
     "ToolsetError",
     "SandboxError",
     "SandboxErrorKind",
