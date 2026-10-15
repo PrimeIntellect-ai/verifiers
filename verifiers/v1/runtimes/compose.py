@@ -57,6 +57,20 @@ INSTALL_DOCKER = (
     "docker-cli docker-compose iptables > /tmp/docker-install.log 2>&1 "
     "|| { tail -40 /tmp/docker-install.log; exit 1; }; }"
 )
+# A Prime VM is lost (the sandbox terminates) under sustained disk writes of a few hundred
+# MB/s, which pulling and building multi-GB service images reaches; at this rate it holds.
+# The daemon and every container it starts write through one cgroup capped at it.
+PRIME_WRITE_BPS = 100 * 2**20
+PRIME_DOCKERD = (
+    "dev=$(awk '$5==\"/\" {print $3; exit}' /proc/self/mountinfo) && "
+    'echo "+io +memory +cpu +pids" > /sys/fs/cgroup/cgroup.subtree_control && '
+    "mkdir -p /sys/fs/cgroup/vf-docker/daemon /sys/fs/cgroup/vf-docker/containers && "
+    'echo "+io +memory +cpu +pids" > /sys/fs/cgroup/vf-docker/cgroup.subtree_control && '
+    'echo "+io +memory +cpu +pids" > /sys/fs/cgroup/vf-docker/containers/cgroup.subtree_control && '
+    f'echo "$dev wbps={PRIME_WRITE_BPS}" > /sys/fs/cgroup/vf-docker/io.max && '
+    "echo $$ > /sys/fs/cgroup/vf-docker/daemon/cgroup.procs && "
+    "exec dockerd --host=unix:///var/run/docker.sock --cgroup-parent=/vf-docker/containers"
+)
 # A host image can ship `docker save` archives here so services need no registry.
 # Each archive is removed once loaded, returning its disk space to the services.
 COMPOSE_IMAGES = "/opt/verifiers/compose-images"
@@ -218,7 +232,9 @@ async def compose_services(
                             f"Docker bootstrap failed: {install.stderr} {install.stdout}"
                         )
                 await host_backend.bind().run_background(
-                    ["dockerd", "--host=unix:///var/run/docker.sock"],
+                    ["sh", "-c", PRIME_DOCKERD]
+                    if isinstance(config, PrimeConfig)
+                    else ["dockerd", "--host=unix:///var/run/docker.sock"],
                     {},
                     "/tmp/dockerd.log",
                 )
