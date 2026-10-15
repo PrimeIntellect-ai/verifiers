@@ -1,9 +1,11 @@
-"""Harbor's verifier run: what it records on the trace."""
+"""Harbor's verifier run: what it records on the trace and how a missing reward fails."""
+
+import pytest
 
 import verifiers.v1 as vf
-from verifiers.v1.errors import SandboxError
+from verifiers.v1.errors import SandboxError, TaskError
 from verifiers.v1.runtimes import ProgramResult
-from verifiers.v1.tasksets.harbor.taskset import HarborData, HarborTask
+from verifiers.v1.tasksets.harbor.taskset import HarborData, HarborTask, log_tails
 
 LOGS = "==> /logs/verifier/pg.log <==\nFATAL: could not start\n\n"
 
@@ -60,3 +62,22 @@ async def test_a_failed_log_listing_leaves_grading_to_the_reward():
     runtime = FakeRuntime(b"1", listing=SandboxError("wrapper died", kind="exec"))
     assert await task.run_verifier(runtime, trace) == {"reward": 1.0}
     assert trace.info["verifier"]["files"] == ""
+
+
+async def test_a_verifier_that_writes_no_reward_fails_the_task_with_its_logs():
+    task = make_task()
+    with pytest.raises(TaskError) as raised:
+        await task.run_verifier(FakeRuntime(None), make_trace(task))
+    # A task failure, not a box failure: the reward's absence is the cause.
+    assert isinstance(raised.value.__cause__, SandboxError)
+    assert raised.value.__cause__.kind == "missing"
+    assert "FATAL: could not start" in str(raised.value)
+
+
+def test_log_tails_keep_the_end_of_every_log():
+    noisy = "==> /logs/verifier/download.log <==\n" + "x" * 5000 + "\n"
+    cause = "==> /logs/verifier/pg.log <==\nstart\nFATAL: no space\n"
+    tails = log_tails(noisy + cause, size=100)
+    assert tails.startswith("==> /logs/verifier/download.log <==\n")
+    assert tails.count("x") <= 100
+    assert tails.endswith(cause)

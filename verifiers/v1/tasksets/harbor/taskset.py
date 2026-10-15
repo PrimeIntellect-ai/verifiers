@@ -19,6 +19,7 @@ import asyncio
 import hashlib
 import io
 import logging
+import re
 import shutil
 import subprocess
 import sys
@@ -470,10 +471,14 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
                 )
                 scores = {"reward": REWARD_SCALAR_ADAPTER.validate_python(float(value))}
             except (SandboxError, OSError, ValueError) as exc:
+                # The trace of a failed grading may not survive it: the error carries
+                # the logs the verifier left (a service's own log names the cause).
+                logs = log_tails(trace.info.get("verifier", {}).get("files", ""))
                 raise TaskError(
                     "Harbor verifier produced no reward.json and no valid reward.txt "
                     f"(exit {result.exit_code}): "
                     f"{(result.stderr or result.stdout).strip()[-500:]}"
+                    + (f"\nverifier logs:\n{logs[-8000:]}" if logs else "")
                 ) from exc
         key = self.config.reward_key
         if key not in scores:
@@ -548,6 +553,17 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
                 "expected an object of finite numeric rewards"
             ) from exc
         return {name: float(value) for name, value in scores.items()}
+
+
+def log_tails(files: str, size: int = 800) -> str:
+    """The end of each log in a `record_verifier_output` listing, so one long log (a
+    download's progress) cannot crowd out the one that names the cause."""
+    tails = []
+    for block in re.split(r"(?m)^(?===> .* <==$)", files):
+        header, _, body = block.partition("\n")
+        if header.startswith("==> "):
+            tails.append(f"{header}\n{body[-size:]}")
+    return "".join(tails)
 
 
 def verifier_box_data(data: HarborData) -> HarborData:
