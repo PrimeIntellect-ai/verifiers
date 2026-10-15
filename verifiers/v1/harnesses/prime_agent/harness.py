@@ -37,7 +37,6 @@ export PATH="/var/tmp/vf-node/bin:$PATH"
 prefix="$VF_PRIME_AGENT_DIR/$PRIME_AGENT_COMMIT"
 [ -x "$prefix/bin/prime-agent" ] && [ -f "$PRIME_AGENT_KERNEL_VENV/.bootstrap-version" ] && exit 0
 export NPM_CONFIG_PREFIX="$prefix"
-export PRIME_AGENT_BOOTSTRAP_KERNEL_ON_INSTALL=1
 release_url="$VF_PRIME_AGENT_GITHUB_RELEASE_URL/v$PRIME_AGENT_RELEASE_VERSION"
 agent_tarball="prime-agent-$PRIME_AGENT_RELEASE_VERSION.tgz"
 ai_tarball="prime-agent-ai-$PRIME_AGENT_RELEASE_VERSION.tgz"
@@ -82,7 +81,24 @@ repacked="$(npm pack "$download_dir/package-root/package" \
 PRIME_AGENT_BOOTSTRAP_TOOLS_ON_INSTALL=1 npm install -g \
     --no-fund --no-audit --loglevel=error --progress=false \
     "$download_dir/repacked/$repacked"
-[ -f "$PRIME_AGENT_KERNEL_VENV/.bootstrap-version" ]
+# Bootstrap the venv with the python skills a fresh session requests; sessions
+# cannot write it to sync them. A skill that fails to install fails the install.
+agent_dir="$(mktemp -d "$download_dir/agent.XXXXXX")"
+PRIME_AGENT_INSTALL_UV=1 node --input-type=module - \
+    "$prefix/lib/node_modules/prime-agent/dist" "$agent_dir" <<'NODE'
+const [dist, agentDir] = process.argv.slice(2);
+const { createAgentSessionServices } = await import(`${dist}/core/agent-session-services.js`);
+const { getPythonSkillRuntimeInfo } = await import(`${dist}/core/skills.js`);
+const { ensureKernelPython } = await import(`${dist}/core/kernel/bootstrap.js`);
+const { resourceLoader } = await createAgentSessionServices({ cwd: agentDir, agentDir, telemetryDisabled: true });
+await ensureKernelPython({
+    pythonSkills: getPythonSkillRuntimeInfo(resourceLoader.getSkills().skills),
+    onProgress: (message) => {
+        if (message.startsWith("Warning:")) throw new Error(message);
+        console.error(message);
+    },
+});
+NODE
 """
 
 
