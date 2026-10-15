@@ -167,3 +167,28 @@ async def test_rubric_reference_answer_optional(tmp_path, fake_judge_model, make
     await rubric_judge(tmp_path, answer_field="answer").score(t.task.data, t)
     assert "Reference solution" in fake_judge_model[-1]
     assert "ZEBRA-GOLD" in fake_judge_model[-1]
+
+
+def test_rubric_config_takes_exactly_one_criteria_source(tmp_path):
+    inline = [vf.Criterion(name="cites", text="Cites a source.")]
+    assert vf.RubricJudgeConfig(criteria=inline).criteria == inline
+    with pytest.raises(ValueError):
+        vf.RubricJudgeConfig(path=tmp_path / "r.toml", criteria=inline)
+    with pytest.raises(ValueError):
+        vf.RubricJudgeConfig()
+    with pytest.raises(ValueError):
+        vf.RubricJudge(vf.RubricJudgeConfig(criteria=[])).criteria
+
+
+async def test_rubric_grades_given_text_against_inline_criteria(fake_judge_model):
+    # `grade` judges explicit text (a deliverable, not a transcript) in one call.
+    criteria = [
+        vf.Criterion(name="mentions_paris", text="The response mentions Paris."),
+        vf.Criterion(name="is_polite", text="The response is polite."),
+    ]
+    judge = vf.RubricJudge(vf.RubricJudgeConfig(criteria=criteria))
+    scores = await judge.grade(
+        question="Where?", response="Paris, thanks.", criteria=judge.criteria
+    )
+    assert scores == {"mentions_paris": 1.0, "is_polite": 0.0}
+    assert len(fake_judge_model) == 1

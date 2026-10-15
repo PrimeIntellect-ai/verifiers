@@ -8,7 +8,7 @@ from functools import cached_property
 from pathlib import Path
 from typing import Annotated, cast
 
-from pydantic import BaseModel, Field, TypeAdapter, field_validator
+from pydantic import BaseModel, Field, TypeAdapter, field_validator, model_validator
 
 from verifiers.v1.configs.judge import JudgeConfig
 from verifiers.v1.judge import Judge, JudgeView, judge_question, judge_response
@@ -85,16 +85,28 @@ def load_criteria(
     text = path.read_text(encoding="utf-8")
     data = tomllib.loads(text) if path.suffix.lower() == ".toml" else json.loads(text)
     items = data.get("criteria", []) if isinstance(data, dict) else data
-    criteria = CRITERIA_ADAPTER.validate_python(items)
+    return checked_criteria(
+        CRITERIA_ADAPTER.validate_python(items), weights, f"rubric file '{path}'"
+    )
+
+
+def checked_criteria(
+    criteria: list[Criterion],
+    weights: dict[str, CriterionWeight] | None,
+    source: str,
+) -> list[Criterion]:
+    """`criteria` with the config's weight overrides applied, refusing an empty list,
+    duplicate names, an override naming no criterion, and a total weight that is not
+    positive and finite."""
     if not criteria:
-        raise ValueError(f"rubric file '{path}' lists no criteria")
+        raise ValueError(f"{source} lists no criteria")
     names = [criterion.name for criterion in criteria]
     if len(set(names)) != len(names):
-        raise ValueError(f"rubric file '{path}' has duplicate criterion names")
+        raise ValueError(f"{source} has duplicate criterion names")
     overrides = weights or {}
     if unknown := set(overrides) - set(names):
         raise ValueError(
-            f"`weights` overrides name no criterion in '{path}': {sorted(unknown)}"
+            f"`weights` overrides name no criterion in {source}: {sorted(unknown)}"
         )
     criteria = [
         criterion.model_copy(
@@ -104,18 +116,20 @@ def load_criteria(
     ]
     total = sum(criterion.weight for criterion in criteria)
     if total == float("inf"):
-        raise ValueError(f"rubric '{path}' has a non-finite total criterion weight")
+        raise ValueError(f"{source} has a non-finite total criterion weight")
     if total <= 0:
-        raise ValueError(f"rubric '{path}' has no positive criterion weight")
+        raise ValueError(f"{source} has no positive criterion weight")
     return criteria
 
 
 class RubricJudgeConfig(JudgeConfig):
     id: ID = "rubric"
     """Pinned to the built-in, so a code-level default entry needs no explicit id."""
-    path: Path
+    path: Path | None = None
     """A `.toml` or `.json` file containing a `criteria` list. Relative paths resolve
-    against the evaluation's working directory."""
+    against the evaluation's working directory. Exactly one of `path` and `criteria`."""
+    criteria: list[Criterion] | None = None
+    """The criteria inline, instead of a `path` file."""
     weights: dict[str, CriterionWeight] = Field(default_factory=dict)
     """Per-criterion weight overrides by criterion name (config wins over the file)."""
     question_field: str = ""
@@ -140,7 +154,15 @@ class RubricJudgeConfig(JudgeConfig):
     output parsed as JSON when `False` (the default). Plain text is far more reliable on endpoints
     whose structured decoding is flaky (e.g. GLM-5.2 and other non-OpenAI models on some providers
     return empty completions for structured calls, especially over long transcripts); OpenAI models
-    handle either. Transient HTTP failures are already retried by the OpenAI client."""
+    handle either. Transient HTTP failures are retried under the config's `retry` budget."""
+
+    @model_validator(mode="after")
+    def _one_criteria_source(self) -> "RubricJudgeConfig":
+        if (self.path is None) == (self.criteria is None):
+            raise ValueError(
+                "a rubric judge needs exactly one of `path` and `criteria`"
+            )
+        return self
 
 
 class CriterionVerdict(BaseModel):
@@ -189,14 +211,16 @@ class RubricJudge(Judge[RubricVerdicts, RubricJudgeConfig]):
 
     @cached_property
     def criteria(self) -> list[Criterion]:
+        if self.config.criteria is not None:
+            return checked_criteria(
+                self.config.criteria, self.config.weights, "the inline rubric"
+            )
+        assert self.config.path is not None
         return load_criteria(self.config.path, self.config.weights)
 
     async def grade_batch(
         self, task: TaskData, trace: Trace, batch: list[Criterion]
     ) -> dict[str, float]:
-        def render(c: Criterion) -> str:
-            return f"- {c.name}: {c.text} (answer one of, worst to best: {', '.join(c.choices)})"
-
         reference = ""
         if self.config.answer_field:
             answer = getattr(task, self.config.answer_field, None)
@@ -219,10 +243,33 @@ class RubricJudge(Judge[RubricVerdicts, RubricJudgeConfig]):
                 f"{fence}\n{answer}\n{fence}\n"
             )
 
+        return await self.grade(
+            question=judge_question(task, self.config.question_field),
+            response=judge_response(trace, self.config.view),
+            criteria=batch,
+            reference=reference,
+            trace=trace,
+        )
+
+    async def grade(
+        self,
+        *,
+        question: str,
+        response: str,
+        criteria: list[Criterion],
+        reference: str = "",
+        trace: Trace | None = None,
+    ) -> dict[str, float]:
+        """Grade `response` against `criteria` in one call: each criterion's answer
+        normalized to [0, 1] by name. A malformed or incomplete verdict raises."""
+
+        def render(c: Criterion) -> str:
+            return f"- {c.name}: {c.text} (answer one of, worst to best: {', '.join(c.choices)})"
+
         fields = {
-            "question": judge_question(task, self.config.question_field),
-            "response": judge_response(trace, self.config.view),
-            "criteria": "\n".join(render(c) for c in batch),
+            "question": question,
+            "response": response,
+            "criteria": "\n".join(render(c) for c in criteria),
             "reference": reference,
         }
         if self.config.structured_output:
@@ -238,7 +285,7 @@ class RubricJudge(Judge[RubricVerdicts, RubricJudgeConfig]):
                 )
             verdicts = RubricVerdicts.model_validate(obj).verdicts
         # A malformed verdict is a judge failure and must error the rollout, not score the model.
-        return score_verdicts(verdicts, batch, "the batch's")
+        return score_verdicts(verdicts, criteria, "the batch's")
 
     async def score(self, task: TaskData, trace: Trace) -> float:
         criteria = self.criteria
