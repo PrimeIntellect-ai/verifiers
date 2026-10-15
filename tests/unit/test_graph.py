@@ -5,6 +5,7 @@ import pytest
 
 import verifiers.v1 as vf
 from verifiers.v1 import graph
+from verifiers.v1.harnesses.utils.replay import drop_blank_text, strip_text
 from verifiers.v1.types import TurnTokens
 
 
@@ -270,39 +271,42 @@ def test_reasoning_content_participates_in_graph_prefix_matching():
 
 
 @pytest.mark.parametrize(
-    "sampled,replayed",
+    "view,sampled,replayed",
     [
-        # Clients drop whitespace-only text emitted before a tool call.
-        ({"content": "\n\n"}, {"content": None}),
+        (drop_blank_text, {"content": "\n\n"}, {"content": None}),
         (
+            drop_blank_text,
             {"content": "\n\n", "reasoning_content": "plan"},
             {"reasoning_content": "plan"},
         ),
-        # Some clients pad a missing reasoning field with whitespace.
-        ({"content": None}, {"reasoning_content": " "}),
+        (strip_text, {"content": "Calling it.\n\n"}, {"content": "Calling it."}),
+        (strip_text, {"content": None}, {"reasoning_content": " "}),
     ],
 )
-def test_replayed_whitespace_differences_extend_one_branch(sampled, replayed):
-    trace = vf.Trace(
-        agent=vf.AgentInfo(config=vf.AgentConfig()),
-        task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt="use a tool")),
-    )
-    user = vf.UserMessage(content="use a tool")
-    call = vf.ToolCall(id="call_0", name="lookup", arguments="{}")
+def test_replay_view_matches_cosmetically_rewritten_turns(view, sampled, replayed):
+    def run(replay_view):
+        trace = vf.Trace(
+            agent=vf.AgentInfo(config=vf.AgentConfig()),
+            task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt="go")),
+        )
+        trace._replay_view = replay_view
+        user = vf.UserMessage(content="go")
+        call = vf.ToolCall(id="call_0", name="lookup", arguments="{}")
+        graph.prepare_turn(trace, [user]).commit(
+            _response(vf.AssistantMessage(tool_calls=[call], **sampled))
+        )
+        graph.prepare_turn(
+            trace,
+            [
+                user,
+                vf.AssistantMessage(tool_calls=[call], **replayed),
+                vf.ToolMessage(content="result", tool_call_id="call_0"),
+            ],
+        ).commit(_response(vf.AssistantMessage(content="done")))
+        return trace
 
-    graph.prepare_turn(trace, [user]).commit(
-        _response(vf.AssistantMessage(tool_calls=[call], **sampled))
-    )
-    graph.prepare_turn(
-        trace,
-        [
-            user,
-            vf.AssistantMessage(tool_calls=[call], **replayed),
-            vf.ToolMessage(content="result", tool_call_id="call_0"),
-        ],
-    ).commit(_response(vf.AssistantMessage(content="done")))
-
-    assert trace.num_branches == 1
+    assert run(None).num_branches == 2
+    assert run(view).num_branches == 1
 
 
 @pytest.mark.parametrize("same_tools", [False, True])

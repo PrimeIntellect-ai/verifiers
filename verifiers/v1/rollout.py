@@ -145,6 +145,7 @@ class Rollout:
             # this trace can be reproduced with.
             agent=AgentInfo(config=agent_config),
         )
+        self.trace._replay_view = harness.replay_view
         if on_trace is not None:
             on_trace(self.trace)
         interceptors = [

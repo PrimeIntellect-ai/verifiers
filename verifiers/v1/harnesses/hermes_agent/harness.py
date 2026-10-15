@@ -7,6 +7,7 @@ from verifiers.v1.acp import ACPConfig, ACPHarness
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig, PinnedVersion
 from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
+from verifiers.v1.harnesses.utils.replay import strip_text
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.runtimes.base import _ENSURE_UV
 from verifiers.v1.task import TaskData
@@ -34,6 +35,8 @@ class HermesAgentHarnessConfig(HarnessConfig):
 
 class HermesAgentHarness(ACPHarness[HermesAgentHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
+    # Hermes stores assistant text stripped and pads missing reasoning with " ".
+    replay_view = staticmethod(strip_text)
     SUPPORTS_MCP = True
     SUPPORTS_SKILLS = True
 
