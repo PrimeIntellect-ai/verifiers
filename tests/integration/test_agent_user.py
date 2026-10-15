@@ -52,5 +52,6 @@ async def test_agent_user_harness(run, harness, harness_runtime, scripted_model)
         client=scripted_model,
     )
     (trace,) = episode.traces
+    assert trace.num_branches == 1
     assert trace.ok, [error.message for error in trace.errors]
     assert trace.num_turns >= 1
