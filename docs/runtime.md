@@ -65,4 +65,11 @@ host files and Docker privileges.
 For model-free validation of an isolated task, finalize the submission and collect
 its artifacts, then call `vf.grade_submission(task, trace, runtime)`. This uses the
 task's normal grader, verifier image, timeouts, and retries without taking ownership
-of the supplied solver runtime.
+of the supplied solver runtime. A composed task needs its services, so provision its
+deployment yourself (`backend.deploy(spec=task.deployment_spec(), ...)`), run the
+task's `setup` and `finalize` in `deployment.workspace`, and pass the deployment:
+`vf.grade_submission(task, trace, runtime, deployment=deployment)` stops the workspace,
+collects sidecar evidence, and releases the services before the verifier starts, as a
+rollout does. The caller still closes the deployment. `vf.check_restore(artifacts,
+protected=...)` checks a collected submission on the host, before any grader exists,
+for every defect `restore` would refuse.

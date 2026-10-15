@@ -5,6 +5,7 @@ import copy
 import logging
 from contextlib import AsyncExitStack, contextmanager
 from pathlib import PurePosixPath
+from typing import TYPE_CHECKING
 
 from verifiers.v1.configs.scoring import ScoringConfig
 from verifiers.v1.errors import TaskError, boundary
@@ -21,6 +22,9 @@ from verifiers.v1.utils.compile import resolve_runtime_config
 from verifiers.v1.utils.decorators import invoke
 from verifiers.v1.utils.env import resolve_env
 from verifiers.v1.utils.retries import RetryState, backoff
+
+if TYPE_CHECKING:
+    from verifiers.v1.runtimes.deployment import Deployment
 
 logger = logging.getLogger(__name__)
 
@@ -176,11 +180,16 @@ async def grade_submission(
     runtime: Runtime,
     *,
     scoring: ScoringConfig | None = None,
+    deployment: "Deployment | None" = None,
 ) -> None:
-    """Grade captured artifacts in a fresh verifier, leaving the borrowed solver alive.
+    """Grade captured artifacts in a fresh verifier, as a rollout's close does.
 
     The caller finalizes the submission and collects artifacts into the trace first.
     Uses the task's grader, scoring policy, and timeouts, including retry behavior.
+    Without `deployment`, `runtime` is borrowed and stays alive. With the `Deployment`
+    that owns `runtime` (a model-free run of a composed task), grading stops its
+    workspace, collects sidecar evidence (`Task.finalize_services`), and releases its
+    resources before the verifier starts; the caller still closes it.
     """
     from verifiers.v1.runtimes.deployment import Deployment
 
@@ -188,12 +197,20 @@ async def grade_submission(
     if policy.mode != "isolated":
         raise ValueError("grade_submission requires isolated scoring")
     grader = task.grading_task(runtime, scoring=policy)
-    config = verifier_runtime(grader, runtime, runtime.config, policy)
-    deployment = Deployment(
-        runtime.backend, borrowed_runtime=runtime, env=dict(runtime.env)
-    )
-    await deployment.start()
+    borrowed = deployment is None
+    if borrowed:
+        deployment = Deployment(
+            runtime.backend, borrowed_runtime=runtime, env=dict(runtime.env)
+        )
+        await deployment.start()
     try:
+        if not borrowed:
+            await deployment.stop_execution()
+            await task.finalize_services(
+                trace,
+                {name: deployment.target(name) for name in deployment.target_backends},
+            )
+        config = verifier_runtime(grader, runtime, deployment.verifier_config(), policy)
         await grade_task(grader, trace, config, task.data.timeout, policy, deployment)
     except TimeoutError:
         trace.record_timeout("scoring")
@@ -202,4 +219,5 @@ async def grade_submission(
         trace.record_error(error)
         raise
     finally:
-        await deployment.close()
+        if borrowed:
+            await deployment.close()
