@@ -1,5 +1,6 @@
 """Judge transport: transient-failure retries under the config's `retry` budget and the
-input-size check before a call. The provider is an in-process `httpx.MockTransport`."""
+input-size checks before and after a call. The provider is an in-process
+`httpx.MockTransport`."""
 
 import json
 from typing import ClassVar
@@ -10,7 +11,7 @@ import pytest
 
 import verifiers.v1 as vf
 from verifiers.v1.clients import base as client_base
-from verifiers.v1.judge import input_token_bound
+from verifiers.v1.judge import BYTES_PER_TOKEN, input_token_floor
 
 FAST_RETRY = vf.ProviderRetryConfig(budget=5.0, max_backoff=0.01)
 
@@ -41,7 +42,7 @@ def provider(monkeypatch):
     return Provider
 
 
-def chat(text: str) -> httpx.Response:
+def chat(text: str, prompt_tokens: int = 1) -> httpx.Response:
     return httpx.Response(
         200,
         json={
@@ -56,13 +57,20 @@ def chat(text: str) -> httpx.Response:
                     "message": {"role": "assistant", "content": text},
                 }
             ],
-            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+            "usage": {
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": 1,
+                "total_tokens": prompt_tokens + 1,
+            },
         },
     )
 
 
-def evaluation(score: float) -> httpx.Response:
-    return httpx.Response(200, json={"answers": {"grade": {"score": score}}})
+def evaluation(score: float, input_tokens: int | None = None) -> httpx.Response:
+    body: dict = {"answers": {"grade": {"score": score}}}
+    if input_tokens is not None:
+        body["usage"] = {"inputTokens": input_tokens, "outputTokens": 0}
+    return httpx.Response(200, json=body)
 
 
 def judge(**config) -> vf.Judge:
@@ -119,22 +127,33 @@ async def test_a_request_error_is_not_retried(provider):
     assert len(provider.requests) == 1
 
 
-async def test_an_oversized_input_raises_before_any_call(provider):
+async def test_a_far_oversized_input_raises_before_any_call(provider):
     with pytest.raises(vf.JudgeInputTooLarge) as raised:
-        await judge(max_input_tokens=100).complete("x" * 200)
+        await judge(max_input_tokens=100).complete("x" * 1000)
     assert raised.value.limit == 100 and raised.value.tokens > 100
+    assert not raised.value.reported
     assert provider.requests == []
 
 
-async def test_an_input_within_the_limit_is_sent(provider):
-    provider.replies = [chat("yes")]
-    await judge(max_input_tokens=200).complete("x" * 50)
+async def test_an_input_over_the_limit_in_bytes_but_not_tokens_is_sent(provider):
+    provider.replies = [chat("yes", prompt_tokens=60)]
+    response = await judge(max_input_tokens=100).complete("x" * 300)
+    assert response.text == "yes"
     assert len(provider.requests) == 1
 
 
-def test_the_token_bound_counts_utf8_bytes():
-    assert input_token_bound("é") > input_token_bound("e")
-    assert input_token_bound("a" * 1000) >= 1000
+async def test_a_reported_input_count_at_the_limit_raises(provider):
+    provider.replies = [chat("yes", prompt_tokens=100)]
+    with pytest.raises(vf.JudgeInputTooLarge) as raised:
+        await judge(max_input_tokens=100).complete("Is it done?")
+    assert raised.value.reported and raised.value.tokens == 100
+    assert len(provider.requests) == 1
+
+
+def test_the_token_floor_divides_utf8_bytes():
+    assert input_token_floor("é") >= input_token_floor("e")
+    assert input_token_floor("a" * 900) * BYTES_PER_TOKEN >= 900
+    assert input_token_floor("a" * 900) < 900
 
 
 def decision(**config) -> vf.DecisionJudge:
@@ -175,3 +194,30 @@ async def test_a_decision_judge_refuses_oversized_state_before_the_call(provider
             question="Is it done?", response="y" * 500
         )
     assert provider.requests == []
+
+
+async def test_a_decision_judge_grades_state_over_the_limit_in_bytes(provider):
+    provider.replies = [evaluation(1.0, input_tokens=150)]
+
+    result = await decision(max_input_tokens=200).evaluate(
+        question="Is it done?", response="y" * 500
+    )
+
+    assert result.parsed == 1.0
+    assert len(provider.requests) == 1
+
+
+async def test_a_decision_judge_refuses_a_cut_input_after_the_call(
+    provider, make_trace
+):
+    # A truncating endpoint reports exactly its cap and grades the head it kept.
+    provider.replies = [evaluation(1.0, input_tokens=64)]
+    trace = make_trace()
+
+    with pytest.raises(vf.JudgeInputTooLarge) as raised:
+        await decision(max_input_tokens=64).evaluate(
+            trace=trace, question="Is it done?", response="done"
+        )
+
+    assert raised.value.reported and raised.value.tokens == 64
+    assert len(trace.info["judge_calls"]) == 1

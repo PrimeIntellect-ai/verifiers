@@ -42,8 +42,9 @@ for a pure call (e.g. in tests).
 A judge call the provider fails transiently (a 5xx, 408 or 429, a dropped connection or a
 timeout) is sent again under the config's `retry` budget (`ProviderRetryConfig`); the failure
 it gives up on raises, so a judge error never becomes a score. With `max_input_tokens` set, a
-request whose conservative token count (`input_token_bound`) exceeds it raises
-`JudgeInputTooLarge` before any call: some judge endpoints truncate longer input silently.
+call whose reported input tokens reach it raises `JudgeInputTooLarge` instead of returning a
+grade: some judge endpoints cut longer input silently and report exactly their cap. A request
+too large by a wide margin (`input_token_floor`) raises before the call, unbilled.
 
 A judge can also be *plugged* rather than called from task code: a judge with an `id` and a
 `score` implementation is a plugin (like a taskset or harness — see `verifiers.v1.judges` for the
@@ -58,6 +59,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import re
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import TYPE_CHECKING, Any, Generic, Literal, cast
@@ -95,25 +97,38 @@ RETRY_BACKOFF_SECONDS = 1.0
 doubles per failure up to `ProviderRetryConfig.max_backoff`."""
 
 
+BYTES_PER_TOKEN = 4.5
+"""The most UTF-8 bytes of JSON request content one token covers in ordinary text
+(English prose and code measure 3.8-3.9). Only the pre-call shortcut uses it: text with
+long whitespace runs can take more bytes per token, so it never decides alone."""
+
+
 class JudgeInputTooLarge(ValueError):
-    """A judge request exceeds the judge's `max_input_tokens`. Raised before the call:
-    the input is the task's to bound, and an endpoint that truncates it would grade
+    """A judge request reaches the judge's `max_input_tokens`: the endpoint's reported
+    input count is at the limit (``reported``), or the request is far over it before the
+    call. The input is the task's to bound, and an endpoint that cuts it would grade
     part of it."""
 
-    def __init__(self, tokens: int, limit: int) -> None:
+    def __init__(self, tokens: int, limit: int, *, reported: bool) -> None:
         super().__init__(
-            f"judge input may need {tokens} tokens, over the judge's max_input_tokens "
-            f"of {limit}"
+            f"judge read {tokens} input tokens, at the judge's max_input_tokens of "
+            f"{limit}: the endpoint may have cut the input"
+            if reported
+            else f"judge input needs at least {tokens} tokens, over the judge's "
+            f"max_input_tokens of {limit}"
         )
         self.tokens = tokens
         self.limit = limit
+        self.reported = reported
 
 
-def input_token_bound(payload: object) -> int:
-    """An upper bound on the tokens `payload` (JSON-serializable request content) takes:
-    its UTF-8 size as JSON. A byte-level tokenizer emits at most one token per byte, and
-    the JSON keys and quoting stand in for the chat template's tokens."""
-    return len(json.dumps(payload, ensure_ascii=False).encode())
+def input_token_floor(payload: object) -> int:
+    """About the fewest tokens `payload` (JSON-serializable request content) can take:
+    its UTF-8 size as JSON over `BYTES_PER_TOKEN`. A heuristic for refusing a clearly
+    oversized request before the call; the endpoint's own count is the authority."""
+    return math.ceil(
+        len(json.dumps(payload, ensure_ascii=False).encode()) / BYTES_PER_TOKEN
+    )
 
 
 def _retry_after(error: APIStatusError) -> float | None:
@@ -208,11 +223,21 @@ class Judge(Generic[ParsedT, ConfigT]):
         )
 
     def check_input(self, payload: object) -> None:
-        """Raise `JudgeInputTooLarge` when `payload`, the request content the model
-        reads, may exceed the config's `max_input_tokens`."""
+        """Raise `JudgeInputTooLarge` before the call when `payload`, the request content
+        the model reads, is far over the config's `max_input_tokens`
+        (`input_token_floor`)."""
         limit = self.config.max_input_tokens
-        if limit is not None and (tokens := input_token_bound(payload)) > limit:
-            raise JudgeInputTooLarge(tokens, limit)
+        if limit is not None and (tokens := input_token_floor(payload)) > limit:
+            raise JudgeInputTooLarge(tokens, limit, reported=False)
+
+    def check_usage(self, usage: Usage | None) -> None:
+        """Raise `JudgeInputTooLarge` when the endpoint reports input tokens at or over
+        the config's `max_input_tokens`: an endpoint that cuts input reports exactly its
+        cap, so a count at the limit means the model may have read only part of it. A
+        response without a count leaves only the pre-call check."""
+        limit = self.config.max_input_tokens
+        if limit is not None and usage is not None and usage.input_tokens >= limit:
+            raise JudgeInputTooLarge(usage.input_tokens, limit, reported=True)
 
     async def send(self, call: Callable[[], Awaitable[T]]) -> T:
         """Run one provider call, sending it again while it fails transiently and the
@@ -306,6 +331,7 @@ class Judge(Generic[ParsedT, ConfigT]):
                         parsed=choice.message.parsed,
                         usage=Usage.from_openai(completion.usage),
                     )
+                    self.check_usage(response.usage)
                     if choice.message.refusal is not None:
                         raise RuntimeError(
                             f"judge refused structured output: {choice.message.refusal}"
@@ -322,6 +348,7 @@ class Judge(Generic[ParsedT, ConfigT]):
                         text=completion.choices[0].message.content or "",
                         usage=Usage.from_openai(completion.usage),
                     )
+                    self.check_usage(response.usage)
             if parse is not None:
                 response.parsed = parse(response)
             return response

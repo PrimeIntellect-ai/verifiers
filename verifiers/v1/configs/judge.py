@@ -22,8 +22,9 @@ class JudgeConfig(BaseClientConfig):
     prompt: Path | None = None
     """File whose text overrides the judge's default prompt template."""
     max_input_tokens: int | None = Field(None, ge=1)
-    """The most input tokens the judge model reads in full. A request that may exceed it
-    (`judge.input_token_bound`) raises `JudgeInputTooLarge` before the call. None checks
+    """The input tokens at which the judge endpoint may cut its input. A call whose
+    reported input count reaches it raises `JudgeInputTooLarge` instead of grading; a
+    request far over it (`judge.input_token_floor`) raises before the call. None checks
     nothing."""
 
 

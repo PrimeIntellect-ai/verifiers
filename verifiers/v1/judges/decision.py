@@ -74,6 +74,7 @@ class DecisionJudge(Judge[float, DecisionJudgeConfig]):
                     ),
                     cost=usage.get("cost"),
                 )
+            self.check_usage(response.usage)
             score = result["answers"]["grade"]["score"] / (len(self.config.levels) - 1)
             if not 0 <= score <= 1:
                 raise ValueError(f"decision judge score {score!r} is outside [0, 1]")
