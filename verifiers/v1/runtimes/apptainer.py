@@ -10,7 +10,6 @@ import tempfile
 import uuid
 from pathlib import Path
 from typing import ClassVar, Literal, Self
-from urllib.parse import urlsplit
 from weakref import WeakValueDictionary
 
 from pydantic import model_validator
@@ -24,7 +23,7 @@ from verifiers.v1.runtimes.container import (
     cli,
     container_listener,
 )
-from verifiers.v1.runtimes.egress import EgressProxy, NetworkPolicy, is_loopback_host
+from verifiers.v1.runtimes.egress import EgressProxy, NetworkPolicy
 from verifiers.v1.utils.paths import CACHE_DIR
 
 logger = logging.getLogger(__name__)
@@ -201,11 +200,6 @@ class ApptainerBackend(ContainerBackend):
         logger.info(
             "apptainer: started instance %s (image=%s)", self.name, self.config.image
         )
-
-    def host_url(self, url: str) -> str:
-        if self._proxy is not None and is_loopback_host(urlsplit(url).hostname or ""):
-            return self._proxy.callback_url(url, "127.0.0.1")
-        return url
 
     async def prepare_execution(self, routes: list[str] | None) -> None:
         if self.network_restricted:

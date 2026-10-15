@@ -218,6 +218,11 @@ class ContainerBackend(RuntimeBackend):
     _host_backend: RuntimeBackend | None = None
     _proxy: EgressProxy | None = None
 
+    def host_url(self, url: str) -> str:
+        if self._host_backend is not None:
+            return self._host_backend.host_url(url)
+        return self._proxy.host_url(url) if self._proxy is not None else url
+
     async def teardown(self) -> None:
         if self._proxy is not None:
             await self._proxy.stop()

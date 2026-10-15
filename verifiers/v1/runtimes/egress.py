@@ -120,12 +120,12 @@ class _Callback:
     host: str
     port: int
     authority: str
-    host_alias: str
 
 
 class EgressProxy:
-    def __init__(self, policy: NetworkPolicy) -> None:
+    def __init__(self, policy: NetworkPolicy, host: str = "127.0.0.1") -> None:
         self.policy = policy
+        self.host = host  # Address used by clients inside the container.
         self.token = secrets.token_urlsafe(32)
         self._authorization = b"Basic " + base64.b64encode(
             f"verifiers:{self.token}".encode()
@@ -136,31 +136,35 @@ class EgressProxy:
         self.server: asyncio.Server | None = None
         self.port = 0
 
-    def callback_url(self, url: str, host_alias: str = HOST_ALIAS) -> str:
-        """Route one framework-owned host-loopback HTTP(S)/WebSocket origin."""
+    def host_url(self, url: str) -> str:
+        """Route host-loopback HTTP(S)/WebSocket origins through this proxy."""
         parsed = urlsplit(url)
+        if not is_loopback_host(parsed.hostname or ""):
+            return url
         scheme = {"ws": "http", "wss": "https"}.get(parsed.scheme, parsed.scheme)
         host = (parsed.hostname or "").lower().rstrip(".")
-        if scheme not in ("http", "https") or not is_loopback_host(host):
+        if scheme not in ("http", "https"):
             raise ValueError(f"unsupported host callback URL: {url}")
         port = parsed.port or (443 if scheme == "https" else 80)
         authority = parsed.netloc.rpartition("@")[2]
-        callback = _Callback(scheme, host, port, authority, host_alias)
+        callback = _Callback(scheme, host, port, authority)
         token = self._callback_tokens.get(callback)
         if token is None:
             token = secrets.token_urlsafe(32)
             self._callback_tokens[callback] = token
             self._callbacks[token] = callback
         userinfo, separator, _ = parsed.netloc.rpartition("@")
-        netloc = f"{userinfo}{separator}{host_alias}:{self.port}"
+        netloc = f"{userinfo}{separator}{self.host}:{self.port}"
         path = f"{_CALLBACK_PREFIX}{token}{parsed.path or '/'}"
         visible_scheme = "ws" if parsed.scheme in ("ws", "wss") else "http"
         return urlunsplit((visible_scheme, netloc, path, parsed.query, parsed.fragment))
 
-    def environment(self, host: str = "127.0.0.1") -> dict[str, str]:
+    def environment(self) -> dict[str, str]:
         """Proxy all external HTTP(S), leaving instance-local services reachable."""
-        proxy = f"http://verifiers:{self.token}@{host}:{self.port}"
-        exclusions = ",".join(dict.fromkeys(("localhost", "127.0.0.1", "::1", host)))
+        proxy = f"http://verifiers:{self.token}@{self.host}:{self.port}"
+        exclusions = ",".join(
+            dict.fromkeys(("localhost", "127.0.0.1", "::1", self.host))
+        )
         env = {"http_proxy": proxy, "https_proxy": proxy, "no_proxy": exclusions}
         return env | {key.upper(): value for key, value in env.items()}
 
@@ -397,7 +401,7 @@ class EgressProxy:
                     excluded.discard(b"upgrade")
                 origin_rewrites = (
                     {
-                        f"http://{callback.host_alias}:{self.port}".lower().encode(): f"{scheme}://{callback.authority}".encode()
+                        f"http://{self.host}:{self.port}".lower().encode(): f"{scheme}://{callback.authority}".encode()
                     }
                     if callback is not None
                     else {}
@@ -522,11 +526,10 @@ class EgressProxy:
                                     or (443 if redirected.scheme == "https" else 80),
                                 ) == (scheme, host, port):
                                     # Redirects cannot grant access to another host service.
-                                    value = self.callback_url(
+                                    value = self.host_url(
                                         redirected._replace(
                                             netloc=callback.authority
-                                        ).geturl(),
-                                        callback.host_alias,
+                                        ).geturl()
                                     ).encode("latin-1")
                             headers.append((name, value))
                         response = replace(

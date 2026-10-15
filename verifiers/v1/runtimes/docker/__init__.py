@@ -15,7 +15,6 @@ import tempfile
 import uuid
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, ClassVar, Literal
-from urllib.parse import urlsplit
 
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.errors import SandboxError
@@ -31,11 +30,7 @@ from verifiers.v1.runtimes.container import (
     cli,
     container_listener,
 )
-from verifiers.v1.runtimes.egress import (
-    EgressProxy,
-    NetworkPolicy,
-    is_loopback_host,
-)
+from verifiers.v1.runtimes.egress import EgressProxy, NetworkPolicy
 from verifiers.v1.runtimes.runtime import Runtime
 from verifiers.v1.utils.scope import run_scope
 
@@ -135,7 +130,9 @@ class DockerBackend(ContainerBackend):
             backend.info.workdir = backend.config.workdir
             backend._service_url = service_url
             if host_backend is None and service_url is not None:
-                backend._proxy = EgressProxy(NetworkPolicy(NetworkPolicyConfig(), []))
+                backend._proxy = EgressProxy(
+                    NetworkPolicy(NetworkPolicyConfig(), []), _PROXY_ADDRESS
+                )
                 if sys.platform == "linux":
                     await backend._proxy.start(
                         listener=await backend._container_listener()
@@ -317,7 +314,8 @@ class DockerBackend(ContainerBackend):
                 NetworkPolicyConfig(allow=["*"] if restricted else []),
                 [],
                 allow_non_global=restricted,
-            )
+            ),
+            _PROXY_ADDRESS,
         )
         if sys.platform == "linux":
             await self._proxy.start(listener=await self._container_listener())
@@ -329,15 +327,6 @@ class DockerBackend(ContainerBackend):
             self._container,
             self.config.image,
         )
-
-    def host_url(self, url: str) -> str:
-        if self._host_backend is not None:
-            return self._host_backend.host_url(url)
-        parts = urlsplit(url)
-        if not is_loopback_host(parts.hostname or ""):
-            return url
-        assert self._proxy is not None
-        return self._proxy.callback_url(url, _PROXY_ADDRESS)
 
     async def expose(self, port: int) -> str:
         if self._host_backend is not None:
@@ -470,7 +459,7 @@ class DockerBackend(ContainerBackend):
         assert self._container is not None
         if self.network_restricted and self._cut:
             assert self._proxy is not None
-            env = {**env, **self._proxy.environment(_PROXY_ADDRESS)}
+            env = {**env, **self._proxy.environment()}
         else:
             values = {**self._image_env, **env}
             exclusions = dict.fromkeys(
@@ -501,7 +490,7 @@ class DockerBackend(ContainerBackend):
     ) -> None:
         # A setup server outlives the network cut and needs the initially open proxy.
         if self.network_restricted and self._proxy is not None:
-            env = {**env, **self._proxy.environment(_PROXY_ADDRESS)}
+            env = {**env, **self._proxy.environment()}
         # The engine owns the background server as a detached exec process.
         command = self._exec(runtime.process_env(env), user=runtime.user)
         command.insert(2, "--detach")

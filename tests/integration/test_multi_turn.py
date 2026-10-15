@@ -1,31 +1,20 @@
 """One task, many turns: the model completes a shell task (echo-agentic-v1: write a phrase
 to a file, checked in the runtime) across the harness x runtime grid."""
 
-import shutil
-
 import pytest
-from grid import grid, mark
+from grid import grid
 
 MULTI_TURN = [
     *grid(needs=("shell",)),
-    pytest.param(
-        "bash",
-        {"type": "apptainer", "allow": []},
-        marks=[
-            mark("bash"),
-            mark("apptainer"),
-            pytest.mark.skipif(
-                shutil.which("apptainer") is None, reason="needs apptainer"
-            ),
-        ],
-        id="bash-in-apptainer-framework-only",
-    ),
-    pytest.param(
-        "bash",
-        {"type": "modal", "allow": []},
-        marks=[mark("bash"), mark("modal")],
-        id="bash-in-modal-framework-only",
-    ),
+    *[
+        pytest.param(
+            cell.values[0],
+            {**cell.values[1], "allow": []},
+            marks=cell.marks,
+            id=f"{cell.id}-framework-only",
+        )
+        for cell in grid(harnesses=["bash"], runtimes=["apptainer", "modal"])
+    ],
 ]
 
 
