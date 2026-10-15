@@ -205,10 +205,17 @@ async def live_ctx():
 
 
 @pytest.fixture
-async def scripted_model():
+def upstream_requests() -> list[tuple[str, dict]]:
+    """The `(endpoint, body)` of every request `scripted_model` received, in order."""
+    return []
+
+
+@pytest.fixture
+async def scripted_model(upstream_requests):
     """A deterministic upstream model: every call gets a plain "OK" in the caller's own
     dialect (chat completions, Responses, or Anthropic messages), streamed through that
-    dialect's own encoder when asked. Yields a client config pointing at it."""
+    dialect's own encoder when asked. Yields a client config pointing at it; the
+    requests it received land in `upstream_requests`."""
     from aiohttp import web
 
     from verifiers.v1.dialects.anthropic import AnthropicDialect
@@ -275,11 +282,10 @@ async def scripted_model():
 
     async def answer(request: web.Request) -> web.StreamResponse:
         body = await request.json()
-        dialect, build = next(
-            (dialect, build)
-            for suffix, dialect, build in routes
-            if request.path.endswith(suffix)
+        endpoint, dialect, build = next(
+            route for route in routes if request.path.endswith(route[0])
         )
+        upstream_requests.append((endpoint, body))
         raw = build(str(body.get("model", "scripted")))
         if not dialect.streaming(body):
             return web.json_response(raw)
