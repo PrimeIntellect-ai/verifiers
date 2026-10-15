@@ -283,7 +283,7 @@ async def scripted_model():
             if request.path.endswith(suffix)
         )
         raw = build(str(body.get("model", "scripted")))
-        if not dialect.streaming(body):
+        if not body.get("stream"):
             return web.json_response(raw)
         response = web.StreamResponse(headers={"Content-Type": "text/event-stream"})
         await response.prepare(request)
