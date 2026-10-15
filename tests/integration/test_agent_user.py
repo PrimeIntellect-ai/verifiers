@@ -24,6 +24,7 @@ async def test_agent_user_cannot_act_as_root(run, harness_runtime, preinstalled_
         taskset_overrides={"preinstalled_tools": preinstalled_tools},
     )
     (trace,) = episode.traces
+    assert trace.num_branches == 1
     report = trace.info["agent_user_report"]
     for key in ("user", "uv_user", "written_owner", "tool_user"):
         assert report[key] == "vf-agent", key
@@ -52,5 +53,6 @@ async def test_agent_user_harness(run, harness, harness_runtime, scripted_model)
         client=scripted_model,
     )
     (trace,) = episode.traces
+    assert trace.num_branches == 1
     assert trace.ok, [error.message for error in trace.errors]
     assert trace.num_turns >= 1

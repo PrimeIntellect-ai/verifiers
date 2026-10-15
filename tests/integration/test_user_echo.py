@@ -3,7 +3,6 @@ conversation each turn (echo-user-sim-v1), across the harness x runtime grid; an
 caller drives an agent turn by turn through `agent.interaction`."""
 
 import pytest
-from conftest import assert_one_branch
 from grid import grid
 
 import verifiers.v1 as vf
@@ -26,6 +25,7 @@ async def test_user(run, harness, harness_runtime):
         max_tokens=8192,
     )
     (trace,) = episode.traces
+    assert trace.num_branches == 1
     assert trace.ok, [error.message for error in trace.errors]
     assert trace.num_turns >= 2  # genuinely multi-turn
     assert trace.stop_condition == "user_closed"  # leaving the interaction ended it
@@ -68,4 +68,4 @@ async def test_interaction(live_ctx):
     assert trace is not None and trace.errors == []
     assert trace.stop_condition == "user_closed"  # closing the interaction ended it
     assert trace.num_turns == 2
-    assert_one_branch([trace])
+    assert trace.num_branches == 1

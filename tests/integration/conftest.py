@@ -165,17 +165,6 @@ def _eval_config(
     )
 
 
-def assert_one_branch(traces) -> None:
-    """Every trace that recorded messages extends one branch: each request replays the
-    turns the trace already holds, so a fork means a replay no longer matches them."""
-    for trace in traces:
-        harness = trace.agent.config.harness
-        # Kimi Code's resumed requests replay history that differs from the turns it
-        # sampled (seen on prime), so its graph forks instead of extending one branch.
-        if trace.nodes and (harness is None or harness.id != "kimi-code"):
-            assert trace.num_branches == 1, (trace.agent.name, trace.num_branches)
-
-
 @pytest.fixture
 def run():
     """Run a taskset's episodes in-process through the `Env` API: the calls `vf-eval`
@@ -190,7 +179,7 @@ def run():
             client=config.client, model=config.model, sampling=config.sampling
         )
         async with env.serving():
-            episodes = list(
+            return list(
                 await asyncio.gather(
                     *(
                         env.run_slot(slot, ctx)
@@ -199,8 +188,6 @@ def run():
                     )
                 )
             )
-        assert_one_branch(trace for episode in episodes for trace in episode.traces)
-        return episodes
 
     return _run
 
