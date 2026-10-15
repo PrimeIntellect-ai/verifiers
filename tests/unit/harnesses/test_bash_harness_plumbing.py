@@ -1,6 +1,7 @@
 """The bash harness and its chat program: model-call retries, command timeouts, skills.
 No model or sandbox: the launch is captured and the program's pieces run locally."""
 
+import errno
 import json
 import os
 import signal
@@ -10,11 +11,12 @@ import time
 from types import SimpleNamespace
 
 import pytest
+from openai.types.chat import ChatCompletion
 
 from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.harness import Harness
 from verifiers.v1.harnesses.bash import harness as bash
-from verifiers.v1.harnesses.utils import core
+from verifiers.v1.harnesses.utils import compaction, core, mcp
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.runtimes.subprocess import SubprocessBackend, SubprocessConfig
 from verifiers.v1.task import TaskData
@@ -213,17 +215,128 @@ def test_pkill_f_on_its_own_command_text_spares_the_shell_running_it():
     assert output == "survived\n"
 
 
-def test_a_command_keeps_its_cwd_env_exit_status_and_leaves_no_script(tmp_path):
-    os.environ["VF_RUN_BASH_PROBE"] = "probe"
-    try:
-        output = core.run_bash(
-            "pwd; echo $VF_RUN_BASH_PROBE; (exit 3); echo $?; echo $0", 10
-        )
-    finally:
-        del os.environ["VF_RUN_BASH_PROBE"]
-    cwd, env, status, script = output.splitlines()
-    assert (cwd, env, status) == (os.getcwd(), "probe", "3")
-    assert not os.path.exists(script)
+def test_a_command_keeps_its_cwd_env_exit_status_and_leaves_no_script(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    monkeypatch.setenv("VF_RUN_BASH_PROBE", "probe")
+    output = core.run_bash("pwd; echo $VF_RUN_BASH_PROBE; (exit 3); echo $?", 10)
+    assert output.splitlines() == [os.getcwd(), "probe", "3"]
+    assert list(tmp_path.iterdir()) == []
+
+
+# --- a full disk ---------------------------------------------------------------------
+
+
+def full_disk(monkeypatch) -> None:
+    """Files fail to open as on a full disk, except on the memory-backed /dev/shm."""
+    real_open = os.open
+
+    def open_on_full_disk(path, *args, **kwargs):
+        if not os.fspath(path).startswith("/dev/shm/"):
+            raise OSError(errno.ENOSPC, os.strerror(errno.ENOSPC), path)
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "open", open_on_full_disk)
+
+
+def tool_call_completion(call_id: str, command: str | None) -> ChatCompletion:
+    message: dict = {"role": "assistant", "content": None if command else "done"}
+    if command is not None:
+        message["tool_calls"] = [
+            {
+                "id": call_id,
+                "type": "function",
+                "function": {
+                    "name": "bash",
+                    "arguments": json.dumps({"command": command}),
+                },
+            }
+        ]
+    return ChatCompletion.model_validate(
+        {
+            "id": call_id,
+            "object": "chat.completion",
+            "created": 0,
+            "model": "test/fake-model",
+            "choices": [
+                {
+                    "index": 0,
+                    "message": message,
+                    "finish_reason": "tool_calls" if command else "stop",
+                }
+            ],
+        }
+    )
+
+
+async def agent_round(monkeypatch, commands: list[str]) -> list[dict]:
+    """Run the chat program's loop over a scripted model that issues each command as
+    a bash call, then stops. Returns the conversation."""
+    # The bundled program defines these at top level; the package module imports them
+    # only for type checking.
+    for name in ("bound_tool_message", "compactable", "estimated_tokens"):
+        monkeypatch.setattr(core, name, getattr(compaction, name), raising=False)
+    monkeypatch.setattr(core, "call_mcp", mcp.call_mcp, raising=False)
+    replies = [
+        tool_call_completion(f"call-{i}", command)
+        for i, command in enumerate([*commands, None])
+    ]
+
+    class Inbox:
+        async def get(self, path, cast_to):
+            return {"messages": []}
+
+    class ScriptedModel:
+        client = Inbox()
+        enabled = False
+        threshold = None
+
+        async def complete(self, messages):
+            return replies.pop(0), messages
+
+        def reached(self, completion, extra_tokens=0):
+            return False
+
+    args = SimpleNamespace(
+        tool_interception_url=None,
+        bash=True,
+        edit=False,
+        search=False,
+        command_timeout=30,
+    )
+    messages: list[dict] = []
+    await core.run_chat_loop(args, ScriptedModel(), messages, {}, {}, None)
+    assert replies == [], "the round ended before the model's last turn"
+    return messages
+
+
+@pytest.mark.skipif(not os.path.isdir("/dev/shm"), reason="no memory-backed fs")
+async def test_a_full_disk_still_runs_the_agents_commands(tmp_path, monkeypatch):
+    victim = tmp_path / "big.log"
+    victim.write_text("x" * 100)
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    full_disk(monkeypatch)
+    messages = await agent_round(
+        monkeypatch, [f"du -b {victim}", f"rm {victim}; echo freed"]
+    )
+    results = [m["content"] for m in messages if m["role"] == "tool"]
+    assert results == [f"100\t{victim}\n", "freed\n"]
+    assert not victim.exists()
+    assert messages[-1] == {"role": "assistant", "content": "done"}
+
+
+async def test_a_command_that_cannot_start_on_a_full_disk_is_a_tool_error(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    full_disk(monkeypatch)
+    monkeypatch.setattr(core, "scratch_dir", lambda: None)
+    messages = await agent_round(monkeypatch, ["echo unreachable", "echo again"])
+    results = [m["content"] for m in messages if m["role"] == "tool"]
+    assert len(results) == 2
+    assert all(os.strerror(errno.ENOSPC) in result for result in results)
+    assert messages[-1] == {"role": "assistant", "content": "done"}
 
 
 def test_undecodable_output_is_replaced_not_raised():

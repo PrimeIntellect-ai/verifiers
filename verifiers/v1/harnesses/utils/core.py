@@ -2,6 +2,7 @@
 
 import argparse
 import asyncio
+import errno
 import json
 import logging
 import os
@@ -181,27 +182,41 @@ def run_search(query: str, api_key: str, num_results: int = 5, exclude=()) -> st
         return f"search failed ({e}). Try again or rephrase the query."
 
 
+def scratch_dir() -> str | None:
+    """Where `run_bash` keeps a command's script and output: the box's memory-backed
+    /dev/shm when it has one, so a command still starts and prints on a full disk
+    (the agent needs `du` and `rm` to free space); otherwise the default temp dir."""
+    shm = "/dev/shm"
+    return shm if os.path.isdir(shm) and os.access(shm, os.W_OK | os.X_OK) else None
+
+
 def run_bash(command: str, timeout: int = 3600) -> str:
     # Output goes to files, not pipes: a process the command leaves running in the
     # background (a server started with `&`) would hold a pipe open and block the call
     # until the timeout; with files the call returns when bash itself exits. The command
     # runs in its own process group, so a timeout kills what it started too (a hung
     # child would otherwise outlive `bash`), and the output so far is still returned.
-    # The command goes in a script file, never argv: `bash -c <command>` puts the text
-    # in the shell's own command line, so a `pkill -f <word>` in the command matches,
-    # and kills, the shell that runs it.
+    # The command goes in an unnamed file bash reads through /dev/fd, never argv:
+    # `bash -c <command>` puts the text in the shell's own command line, so a
+    # `pkill -f <word>` in the command matches, and kills, the shell that runs it.
     note = ""
-    script = None
     try:
-        with tempfile.NamedTemporaryFile(suffix=".sh", delete=False) as file:
+        scratch = scratch_dir()
+        with (
+            tempfile.TemporaryFile(dir=scratch) as script,
+            tempfile.TemporaryFile(dir=scratch) as out,
+            tempfile.TemporaryFile(dir=scratch) as err,
+        ):
             # Encoded as argv would be, so the shell sees the same bytes.
-            file.write(os.fsencode(command))
-            script = file.name
-        with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
+            script.write(os.fsencode(command))
+            script.flush()
+            script.seek(0)
+            fd = script.fileno()
             process = subprocess.Popen(
-                ["bash", script],
+                ["bash", f"/dev/fd/{fd}"],
                 stdout=out,
                 stderr=err,
+                pass_fds=(fd,),
                 start_new_session=True,
             )
             try:
@@ -215,14 +230,15 @@ def run_bash(command: str, timeout: int = 3600) -> str:
             # Commands print binary freely; undecodable bytes must not lose the output.
             stdout = out.read().decode(errors="replace")
             return stdout + err.read().decode(errors="replace") + note
+    except OSError as e:
+        if e.errno in (errno.ENOSPC, errno.EDQUOT):
+            return (
+                f"error: the disk is full, so the command could not start ({e}). "
+                "Free space (delete files you no longer need) and run it again."
+            )
+        return f"error: {e}"
     except Exception as e:  # noqa: BLE001 - tool failures are returned to the model
         return f"error: {e}"
-    finally:
-        if script is not None:
-            try:
-                os.unlink(script)
-            except OSError:
-                pass
 
 
 def run_edit(path: str, old_str: str, new_str: str) -> str:
