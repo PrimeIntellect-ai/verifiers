@@ -11,7 +11,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
-from conftest import CI_MODEL, CI_REASONING_EFFORT, CI_VISION_MODEL
+from conftest import CI_JUDGE, CI_MODEL, CI_REASONING_EFFORT, CI_VISION_MODEL
 from grid import agent_seats
 
 EVAL_TIMEOUT = 600  # 10 minutes for a capped eval (-n 1 -r 1)
@@ -24,15 +24,18 @@ SKIP_EVAL = {"nemo_gym_weather"}
 # Tasksets that send images, which the text-only CI model rejects.
 VISION_TASKSETS = {"color_codeword", "grayscale_interception"}
 
-# Point each bundled judge at the CI model.
+# Point each bundled judge at the CI model and effort.
 JUDGE_OVERRIDES = {
-    "interception": ["--env.taskset.task.judge.model", CI_MODEL],
+    "interception": [
+        "--env.taskset.task.judge.model",
+        CI_MODEL,
+        "--env.taskset.task.judge.sampling.reasoning-effort",
+        CI_REASONING_EFFORT,
+    ],
     "wiki_search": [
         "--env.taskset.task.judges",
         # The list replaces the default entry, so restate its `question_field`.
-        json.dumps(
-            [{"id": "wiki-search", "model": CI_MODEL, "question_field": "question"}]
-        ),
+        json.dumps([{"id": "wiki-search", "question_field": "question", **CI_JUDGE}]),
     ],
 }
 

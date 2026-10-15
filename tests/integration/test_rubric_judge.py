@@ -1,6 +1,6 @@
 """A config-plugged rubric judge scores the rollout on top of the task's own reward."""
 
-from conftest import CI_MODEL
+from conftest import CI_JUDGE
 
 
 async def test_rubric_judge(run, tmp_path):
@@ -20,9 +20,7 @@ async def test_rubric_judge(run, tmp_path):
         harness="null",
         runtime={"type": "subprocess"},
         taskset_overrides={
-            "task": {
-                "judges": [{"id": "rubric", "path": str(rubric), "model": CI_MODEL}]
-            }
+            "task": {"judges": [{"id": "rubric", "path": str(rubric), **CI_JUDGE}]}
         },
         max_turns=2,
     )

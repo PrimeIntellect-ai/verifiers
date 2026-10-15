@@ -26,6 +26,8 @@ from verifiers.v1.utils.loaders import harness_config_type, load_environment
 CI_MODEL = "internal/glm-5.3-fast"
 CI_REASONING_EFFORT = "low"
 CI_VISION_MODEL = "internal/deepseek-v4.1-flash"
+# Judge config fields that keep config-plugged judges on the CI model and effort.
+CI_JUDGE = {"model": CI_MODEL, "sampling": {"reasoning_effort": CI_REASONING_EFFORT}}
 
 # Fixture tasksets (echo-v1, echo-agentic-v1, ...) live in tests/integration/fixtures,
 # added to the path via `pythonpath` in pyproject so the loader resolves them by id.
