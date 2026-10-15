@@ -756,6 +756,21 @@ class PrimeBackend(RuntimeBackend):
         _discards.add(task)
         task.add_done_callback(_discards.discard)
 
+    async def checkpoint_sizes(self, checkpoint_ids: list[str]) -> dict[str, int]:
+        """Stored bytes per checkpoint, from the platform's batch lookup (100 ids a
+        request) on a short-lived client of its own; missing ids are left out."""
+        from prime_sandboxes import AsyncSandboxClient
+
+        sizes: dict[str, int] = {}
+        async with AsyncSandboxClient() as client:
+            for start in range(0, len(checkpoint_ids), 100):
+                batch = list(dict.fromkeys(checkpoint_ids[start : start + 100]))
+                found = await _repeat(lambda batch=batch: client.get_checkpoints(batch))
+                for checkpoint in found.checkpoints:
+                    if checkpoint.stored_bytes is not None:
+                        sizes[checkpoint.id] = checkpoint.stored_bytes
+        return sizes
+
     async def delete_checkpoint(
         self, checkpoint_id: str, *, own_client: bool = False
     ) -> None:

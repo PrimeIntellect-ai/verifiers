@@ -286,6 +286,11 @@ class RuntimeBackend(ABC):
             f"{type(self).__name__} has no filesystem checkpoints"
         )
 
+    async def checkpoint_sizes(self, checkpoint_ids: list[str]) -> dict[str, int]:
+        """The stored bytes of each of `checkpoint_ids` the provider still holds and
+        reports a size for; ids it does not hold are left out. Default: none known."""
+        return {}
+
     async def delete_checkpoint(self, checkpoint_id: str) -> None:
         """Delete a checkpoint this backend's provider holds (a `checkpoint()` id).
         Works on a backend that was never started or is already torn down: the

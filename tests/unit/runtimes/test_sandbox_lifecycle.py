@@ -220,3 +220,37 @@ async def test_delete_image(monkeypatch):
     with pytest.raises(APIError):
         await delete_image("task", "broken")
     assert calls[0] == ("DELETE", "/images/task/v1", {"teamId": "t1"})
+
+
+@pytest.mark.asyncio
+async def test_prime_reports_the_stored_bytes_of_the_checkpoints_it_still_holds(
+    monkeypatch,
+):
+    from types import SimpleNamespace
+
+    import prime_sandboxes
+
+    from verifiers.v1.runtimes import PrimeConfig
+    from verifiers.v1.runtimes.prime import PrimeBackend
+
+    asked: list[list[str]] = []
+
+    class Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return None
+
+        async def get_checkpoints(self, ids):
+            asked.append(list(ids))
+            held = [
+                SimpleNamespace(id=i, stored_bytes=len(i)) for i in ids if i != "gone"
+            ]
+            return SimpleNamespace(checkpoints=held)
+
+    monkeypatch.setattr(prime_sandboxes, "AsyncSandboxClient", Client)
+    ids = [f"ck{n}" for n in range(150)] + ["gone"]
+    sizes = await PrimeBackend(PrimeConfig()).checkpoint_sizes(ids)
+    assert [len(batch) for batch in asked] == [100, 51]
+    assert len(sizes) == 150 and sizes["ck7"] == 3 and "gone" not in sizes
