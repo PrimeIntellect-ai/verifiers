@@ -184,8 +184,8 @@ class ApptainerBackend(ContainerBackend):
                 f"apptainer instance start failed: {started.stderr.strip()}"
             )
         self.info.id = self._instance
-        if await validate_runtime_mounts(self, []):
-            await self.prepare_uv_script(MOUNT_ARCHIVE_SCRIPT)
+        if await validate_runtime_mounts(self.bind(), []):
+            await self.bind().prepare_uv_script(MOUNT_ARCHIVE_SCRIPT)
         logger.info(
             "apptainer: started instance %s (image=%s)", self.name, self.config.image
         )

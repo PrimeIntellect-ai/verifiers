@@ -42,11 +42,14 @@ def archive_node(
         info = tarfile.TarInfo(name)
         info.mode = stat.S_IMODE(status.st_mode)
         info.mtime = status.st_mtime
+        info.uid = status.st_uid
+        info.gid = status.st_gid
         if stat.S_ISREG(status.st_mode):
-            info.size = status.st_size
             # Reopen the pinned inode, not its path, which the agent can replace.
+            # tarfile preserves ownership and encodes repeated inodes as hard links.
             with open(f"/proc/self/fd/{descriptor}", "rb") as source:
-                archive.addfile(info, source)
+                info = archive.gettarinfo(fileobj=source, arcname=name)
+                archive.addfile(info, source if info.isreg() else None)
         elif stat.S_ISDIR(status.st_mode):
             info.type = tarfile.DIRTYPE
             archive.addfile(info)

@@ -119,8 +119,8 @@ class DockerBackend(ContainerBackend):
         host_backend: RuntimeBackend | None = None,
     ) -> AsyncIterator[DockerBackend]:
         """Borrow an existing container; its caller owns creation and removal."""
-        if isinstance(config, ContainerConfig) and config.mounts:
-            raise ValueError("Bind mounts cannot be added to an existing container")
+        if getattr(config, "mounts", {}):
+            raise ValueError("Mounts cannot be added to an existing container")
         backend = cls(config, host_backend=host_backend)
         backend._container = container
         backend.info.borrowed = True  # cleanup never removes a borrowed container
@@ -320,8 +320,8 @@ class DockerBackend(ContainerBackend):
             raise SandboxError(
                 f"{self.engine} workdir setup failed: {made.stderr.strip()}"
             )
-        if await validate_runtime_mounts(self, []):
-            await self.prepare_uv_script(MOUNT_ARCHIVE_SCRIPT)
+        if await validate_runtime_mounts(self.bind(), []):
+            await self.bind().prepare_uv_script(MOUNT_ARCHIVE_SCRIPT)
         published = await cli(
             self.engine, "port", self._container, f"{SERVICE_PORT}/tcp"
         )
