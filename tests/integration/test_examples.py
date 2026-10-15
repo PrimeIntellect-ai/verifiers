@@ -11,7 +11,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
-from conftest import CI_JUDGE, CI_MODEL, CI_REASONING_EFFORT, CI_VISION_MODEL
+from conftest import CI_JUDGE, CI_MODEL, CI_REASONING_EFFORT
 from grid import agent_seats
 
 EVAL_TIMEOUT = 600  # 10 minutes for a capped eval (-n 1 -r 1)
@@ -20,9 +20,6 @@ ENVIRONMENTS = Path(__file__).parent.parent.parent / "environments"
 
 # V1 tasksets that aren't part of the default CI install.
 SKIP_EVAL = {"nemo_gym_weather"}
-
-# Tasksets that send images, which the text-only CI model rejects.
-VISION_TASKSETS = {"color_codeword", "grayscale_interception"}
 
 # Point each bundled judge at the CI model and effort.
 JUDGE_OVERRIDES = {
@@ -58,7 +55,7 @@ def test_eval(taskset: str, tmp_path: Path):
         pytest.skip(f"{taskset} can't run a plain-CI smoke eval")
     if os.getenv("PRIME_API_KEY"):
         model = [
-            "-m", CI_VISION_MODEL if taskset in VISION_TASKSETS else CI_MODEL,
+            "-m", CI_MODEL,
             "--sampling.reasoning-effort", CI_REASONING_EFFORT,
             "--client.base-url", "https://api.pinference.ai/api/v1",
             "--client.api-key-var", "PRIME_API_KEY",
