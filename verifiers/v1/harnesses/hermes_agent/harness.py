@@ -35,7 +35,10 @@ class HermesAgentHarnessConfig(HarnessConfig):
 
 class HermesAgentHarness(ACPHarness[HermesAgentHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
-    # Hermes stores assistant text stripped and pads missing reasoning with " ".
+    # Hermes stores assistant text stripped and pads missing reasoning with " " on
+    # replay. Recheck on version bumps:
+    # https://github.com/NousResearch/hermes-agent/blob/v2026.9.14/agent/chat_completion_helpers.py#L1444
+    # https://github.com/NousResearch/hermes-agent/blob/v2026.9.14/agent/message_sanitization.py#L545
     replay_view = staticmethod(strip_text)
     SUPPORTS_MCP = True
     SUPPORTS_SKILLS = True

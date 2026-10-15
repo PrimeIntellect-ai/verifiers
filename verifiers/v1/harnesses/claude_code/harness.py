@@ -37,7 +37,8 @@ class ClaudeCodeHarnessConfig(HarnessConfig):
 
 class ClaudeCodeHarness(ACPHarness[ClaudeCodeHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
-    # Claude Code drops whitespace-only text blocks when it replays a turn.
+    # Claude Code drops whitespace-only text blocks on replay. Closed source: observed
+    # with 2.1.278, recheck on version bumps.
     replay_view = staticmethod(drop_blank_text)
     SUPPORTS_MCP = True
     SUPPORTS_SKILLS = True

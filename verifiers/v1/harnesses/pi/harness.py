@@ -60,7 +60,8 @@ class PiHarnessConfig(HarnessConfig):
 
 class PiHarness(ACPHarness[PiHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
-    # pi-ai drops whitespace-only text blocks when it replays an assistant turn.
+    # pi-ai drops whitespace-only assistant text on replay. Recheck on version bumps:
+    # https://github.com/earendil-works/pi/blob/v0.86.1/packages/ai/src/api/openai-completions.ts#L1290
     replay_view = staticmethod(drop_blank_text)
     SUPPORTS_MCP = True
     SUPPORTS_TOOL_INTERCEPTION = True

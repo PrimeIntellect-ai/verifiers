@@ -97,7 +97,8 @@ class PrimeAgentHarnessConfig(HarnessConfig):
 
 class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
-    # Its pi-ai fork drops whitespace-only text blocks when it replays a turn.
+    # Its pi-ai fork drops whitespace-only assistant text on replay. Recheck on bumps:
+    # https://github.com/PrimeIntellect-ai/prime-agent/blob/v0.9.5/packages/ai/src/providers/openai-completions.ts#L895
     replay_view = staticmethod(drop_blank_text)
     SUPPORTS_MCP = True
     SUPPORTS_SKILLS = True
