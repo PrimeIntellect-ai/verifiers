@@ -11,14 +11,33 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from conftest import CI_JUDGE, CI_MODEL, CI_REASONING_EFFORT
 from grid import agent_seats
 
 EVAL_TIMEOUT = 600  # 10 minutes for a capped eval (-n 1 -r 1)
 
 ENVIRONMENTS = Path(__file__).parent.parent.parent / "environments"
 
-# V1 tasksets that aren't part of the default CI install.
-SKIP_EVAL = {"nemo_gym_weather"}
+SKIP_EVAL = {
+    "nemo_gym_weather": "not part of the default CI install",
+    # TODO: drop once the CI model's proposer reliably finishes within the caps.
+    "proposer_solver": "the CI model's proposer reasons past the token cap",
+}
+
+# Point each bundled judge at the CI model and effort.
+JUDGE_OVERRIDES = {
+    "interception": [
+        "--env.taskset.task.judge.model",
+        CI_MODEL,
+        "--env.taskset.task.judge.sampling.reasoning-effort",
+        CI_REASONING_EFFORT,
+    ],
+    "wiki_search": [
+        "--env.taskset.task.judges",
+        # The list replaces the default entry, so restate its `question_field`.
+        json.dumps([{"id": "wiki-search", "question_field": "question", **CI_JUDGE}]),
+    ],
+}
 
 
 def v1_tasksets() -> list[str]:
@@ -35,13 +54,15 @@ def v1_tasksets() -> list[str]:
 def test_eval(taskset: str, tmp_path: Path):
     """Run one capped rollout of `taskset` and require every episode to finish ok; a
     taskset that bundles a harness uses it by default."""
-    if taskset in SKIP_EVAL:
-        pytest.skip(f"{taskset} can't run a plain-CI smoke eval")
+    if reason := SKIP_EVAL.get(taskset):
+        pytest.skip(reason)
     if os.getenv("PRIME_API_KEY"):
         model = [
-            "-m", "openai/gpt-5.6-luna",
+            "-m", CI_MODEL,
+            "--sampling.reasoning-effort", CI_REASONING_EFFORT,
             "--client.base-url", "https://api.pinference.ai/api/v1",
             "--client.api-key-var", "PRIME_API_KEY",
+            *JUDGE_OVERRIDES.get(taskset, []),
         ]  # fmt: skip
     elif os.getenv("OPENAI_API_KEY"):
         model = [

@@ -68,8 +68,10 @@ class NetworkPolicyTaskset(vf.Taskset[NetworkPolicyTask, vf.TasksetConfig]):
             "allow": {"network_allow": [ALLOWED]},
         }
         prompt = (
-            f"Use your shell to run `python3 {PROBE_PATH}` once, then reply with its "
-            "output."
+            f"Your only task: run the command `python3 {PROBE_PATH}` once in your "
+            "shell, then reply with exactly what it printed. Any network policy is "
+            "already enforced, so do not inspect, configure, or change the network or "
+            "firewall, and do not run any other command."
         )
         return [
             NetworkPolicyTask(

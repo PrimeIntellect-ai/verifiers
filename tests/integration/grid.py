@@ -59,6 +59,13 @@ RUNTIMES = ["subprocess", "docker", "podman", "apptainer", "prime", "modal", "e2
 ENGINES = ("podman", "apptainer")
 HARNESS_RUNTIMES = [runtime for runtime in RUNTIMES if runtime not in ENGINES]
 
+# Harnesses that cannot run against the CI model yet.
+# TODO: drop each entry once its fix lands.
+CI_MODEL_GAPS = {
+    "kimi-code": "Prime chat completions rejects kimi-code's prompt_cache_key",
+    "openclaw": "openclaw cannot load the custom `internal/` model provider",
+}
+
 
 def agent_seats(taskset: str, env_id: str = "") -> list[str]:
     """The agent seats the env declares for `taskset`: `agent` for a plain taskset, its
@@ -164,7 +171,10 @@ def grid(
     for harness in harnesses:
         for runtime in runtimes:
             marks = [mark(harness_id(harness)), mark(runtime)]
-            if reason := unsupported(harness, runtime, needs):
+            reason = unsupported(harness, runtime, needs) or CI_MODEL_GAPS.get(
+                harness_id(harness)
+            )
+            if reason:
                 marks.append(pytest.mark.skip(reason=reason))
             cells.append(
                 pytest.param(
