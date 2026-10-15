@@ -79,10 +79,22 @@ class Provider:
             headers = {"Retry-After": "0.3"} if failure == 429 else None
             return web.Response(text=text, status=failure, headers=headers)
         completion = reply(body["messages"])
+        if failure == "leak":
+            # the provider's parser missed the model's tool call: no content, no
+            # tool_calls, the raw markup left in the reasoning
+            completion["choices"][0]["message"] = {
+                "role": "assistant",
+                "content": None,
+                "reasoning_content": "I will list the files.<tool_call>bash"
+                "<arg_key>command</arg_key><arg_value>ls</arg_value></tool_call>",
+            }
+            completion["choices"][0]["finish_reason"] = "stop"
         if not body.get("stream"):
             return web.json_response(completion)
         message = completion["choices"][0]["message"]
         delta = {"role": "assistant", "content": message.get("content")}
+        if message.get("reasoning_content"):
+            delta["reasoning_content"] = message["reasoning_content"]
         if calls := message.get("tool_calls"):
             delta["tool_calls"] = [{"index": i, **c} for i, c in enumerate(calls)]
         chunk = {
@@ -252,6 +264,22 @@ async def test_a_transient_failure_is_retried_in_place(failure):
         False,
     ]
     assert all(call.error is not None for call in trace.calls if call.node is None)
+
+
+@pytest.mark.parametrize(
+    "harness", [ScriptHarness, StreamHarness], ids=["json", "stream"]
+)
+async def test_an_empty_turn_with_tool_call_markup_in_its_reasoning_is_retried(harness):
+    """A reply whose tool calls the provider failed to parse (no content, no tool calls,
+    raw tool-call markup in the reasoning) is a provider failure, retried in place,
+    not an empty final turn that ends the run."""
+    async with Provider("leak", "ok", "ok", "ok") as provider:
+        agent = make(provider, harness)
+        trace = await agent.run(task())
+    assert trace.ok, trace.errors
+    assert trace.calls[0].node is None
+    assert trace.calls[0].error is not None and trace.calls[0].error.status_code == 502
+    assert len(provider.requests) == (4 if harness is ScriptHarness else 2)
 
 
 async def test_a_read_timeout_is_retried_in_place():

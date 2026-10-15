@@ -58,6 +58,7 @@ from verifiers.v1.errors import (
     ProviderError,
     RolloutError,
     TaskError,
+    model_error,
 )
 from verifiers.v1.interception.base import BaseInterceptionConfig, Interception, Slot
 from verifiers.v1.interception.tunnel import (
@@ -144,6 +145,27 @@ async def _request_digest(raw: bytes) -> bytes:
     if len(raw) <= HASH_INLINE_MAX:
         return _body_digest(raw)
     return await asyncio.to_thread(_body_digest, raw)
+
+
+LEAKED_TOOL_CALL = "<tool_call>"
+"""Raw tool-call markup a provider's parser left in a reply's reasoning."""
+
+
+def _check_tool_call_leak(response: Response) -> None:
+    """Raise a transient `ProviderError` for a reply with no content and no tool calls
+    whose reasoning holds raw tool-call markup: the provider failed to parse the model's
+    tool calls, and the empty turn would otherwise end the harness's run."""
+    message = response.message
+    if (
+        not (message.content or "").strip()
+        and not message.tool_calls
+        and LEAKED_TOOL_CALL in (message.reasoning_content or "")
+    ):
+        raise model_error(
+            "malformed upstream response: an empty turn whose reasoning holds "
+            "unparsed tool-call markup",
+            status_code=502,
+        )
 
 
 def _completion_response(completion: dict | None) -> web.Response:
@@ -857,16 +879,19 @@ class InterceptionServer(Interception):
                     headers=upstream_headers,
                     session_id=session.trace.id,
                 )
-                return await _collect_stream(dialect, reply)
-            response = await session.client.get_response(
-                dialect,
-                body,
-                session.ctx.sampling,
-                headers=upstream_headers,
-                session_id=session.trace.id,
-                turn=turn,
-            )
-            return response, None
+                response, events = await _collect_stream(dialect, reply)
+            else:
+                response = await session.client.get_response(
+                    dialect,
+                    body,
+                    session.ctx.sampling,
+                    headers=upstream_headers,
+                    session_id=session.trace.id,
+                    turn=turn,
+                )
+                events = None
+            _check_tool_call_leak(response)
+            return response, events
 
         async def sample() -> web.Response:
             session.error = None
