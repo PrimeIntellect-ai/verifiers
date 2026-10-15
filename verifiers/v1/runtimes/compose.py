@@ -58,8 +58,9 @@ INSTALL_DOCKER = (
     "|| { tail -40 /tmp/docker-install.log; exit 1; }; }"
 )
 # A Prime VM is lost (the sandbox terminates) under sustained disk writes of a few hundred
-# MB/s, which pulling and building multi-GB service images reaches; at this rate it holds.
-# The daemon and every container it starts write through one cgroup capped at it.
+# MB/s, which pulling and building multi-GB service images reaches. The daemon and every
+# container it starts write through one cgroup capped at this rate, so they also cannot
+# fill the page cache faster than PRIME_CACHE_DROP empties it.
 PRIME_WRITE_BPS = 100 * 2**20
 PRIME_DOCKERD = (
     "dev=$(awk '$5==\"/\" {print $3; exit}' /proc/self/mountinfo) && "
@@ -71,6 +72,10 @@ PRIME_DOCKERD = (
     "echo $$ > /sys/fs/cgroup/vf-docker/daemon/cgroup.procs && "
     "exec dockerd --host=unix:///var/run/docker.sock --cgroup-parent=/vf-docker/containers"
 )
+# A Prime VM is also lost when its page cache fills the guest's memory: cached file pages
+# stay backed by the host, which only reclaims free pages, and pulling and building multi-GB
+# images fills the cache in minutes. The host keeps dropping clean cache while the VM lives.
+PRIME_CACHE_DROP = "while sleep 5; do sync; echo 1 > /proc/sys/vm/drop_caches; done"
 # A host image can ship `docker save` archives here so services need no registry.
 # Each archive is removed once loaded, returning its disk space to the services.
 COMPOSE_IMAGES = "/opt/verifiers/compose-images"
@@ -238,6 +243,10 @@ async def compose_services(
                     {},
                     "/tmp/dockerd.log",
                 )
+                if isinstance(config, PrimeConfig):
+                    await host_backend.bind().run_background(
+                        ["sh", "-c", PRIME_CACHE_DROP], {}, "/tmp/cache-drop.log"
+                    )
                 async with asyncio.timeout(60):
                     while (await run_host("docker", "info")).exit_code:
                         await asyncio.sleep(1)
