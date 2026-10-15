@@ -175,6 +175,7 @@ class Rollout:
         self._continues = resumes is not None
         """This run continues a trace: on a box started from a checkpoint, it restores
         the task (`Task.restore`) instead of setting it up."""
+        self._resumes_id = resumes.id if resumes is not None else None
         if resumes is not None:
             # A continuation (`resume=`, an interaction retry) links the trace it
             # continues and carries its info, as one session's would.
@@ -450,19 +451,36 @@ class Rollout:
                 # A box started from a checkpoint already holds setup's files, but
                 # only for the run continuing the trace that took it: a fresh run on
                 # such a box (a task of another seat, a judge) sets its own task up.
+                # A continuation of a run that ran on this very box (a borrowed box,
+                # not replaced since) finds the task as that run left it, its processes
+                # included: neither setup nor restore runs (`Box.hosted`).
+                live = (
+                    self._box is not None
+                    and self._resumes_id is not None
+                    and self._box.generation == self.box_generation
+                    and self._resumes_id in self._box.hosted
+                )
                 restored = self._continues and runtime.backend.restored
                 setup = self.task.restore if restored else self.task.setup
-                async with (
-                    boundary(TaskError, "task restore" if restored else "task setup"),
+                if not live:
+                    async with (
+                        boundary(
+                            TaskError, "task restore" if restored else "task setup"
+                        ),
+                    ):
+                        await invoke(
+                            setup,
+                            {
+                                "trace": self.trace,
+                                "runtime": runtime,
+                                "deployment": self.deployment,
+                            },
+                        )
+                if (
+                    self._box is not None
+                    and self._box.generation == self.box_generation
                 ):
-                    await invoke(
-                        setup,
-                        {
-                            "trace": self.trace,
-                            "runtime": runtime,
-                            "deployment": self.deployment,
-                        },
-                    )
+                    self._box.hosted.add(self.trace.id)
                 async with (
                     boundary(HarnessError, "harness setup"),
                 ):

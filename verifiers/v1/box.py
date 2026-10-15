@@ -16,6 +16,11 @@ to the runtime, is what lets those borrowed runs be saved and recovered:
   checkpoint its runs recorded or started on (`verifiers.v1.durable`), and their
   durable runs resume against it.
 
+- **Live continuation.** A run that continues a trace whose run ran on this same box
+  (`run(resume=trace, runtime=box)`, not replaced since) finds the task as that run left
+  it, processes included: it runs neither `Task.setup` nor `Task.restore` (`hosted`).
+  This is how a conversation takes turns on one box (`verifiers.v1.conversation`).
+
 Seats that take turns on a box resume exactly; seats that change it at the same time
 resume each on its own latest checkpoint, with the box as of the latest of all.
 """
@@ -78,6 +83,10 @@ class Box:
         started from."""
         self.generation = 0
         """How many times `replace` swapped the box."""
+        self.hosted: set[str] = set()
+        """The traces whose runs set up or continued on the current box (this
+        generation). A continuation of one of them finds the task as that run left it:
+        it runs neither `Task.setup` nor `Task.restore` (`Rollout.open`)."""
         self._lock = asyncio.Lock()
         # On the backend: every view of the box (`with_env`, `with_user`) shares it.
         runtime.backend.__dict__[_ATTR] = self
@@ -134,6 +143,7 @@ class Box:
             old = backend.adopt(fresh)
             backend.__dict__[_ATTR] = self
             self.generation += 1
+            self.hosted = set()
             self.restored = self.latest = Checkpoint(
                 id=source.id, turns=0, restored=True, time=time.time()
             )
