@@ -508,8 +508,15 @@ class PrimeBackend(RuntimeBackend):
                     kind="io",
                 ) from e
             kind = sandbox_error_kind(e)
-            if self.config.checkpoint and http_status(e) in (404, 410):
-                # The create named a checkpoint the platform no longer has.
+            if (
+                self.config.checkpoint
+                and self.info.id is None
+                and not isinstance(e, SandboxError)
+                and http_status(e) in (404, 410)
+            ):
+                # The create itself, which named the checkpoint, was refused as not
+                # found: the platform no longer has the checkpoint. A 404 once the
+                # box exists (a box reaped while booting) is about the box.
                 kind = "checkpoint_missing"
             raise SandboxError(
                 f"prime sandbox provisioning failed: {e}", kind=kind

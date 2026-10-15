@@ -269,6 +269,30 @@ async def test_prime_restore_of_a_gone_checkpoint_is_checkpoint_missing(
     assert caught.value.kind == ("missing" if status == 404 else "box_lost")
 
 
+async def test_prime_a_restored_box_lost_while_booting_is_not_checkpoint_missing(
+    monkeypatch,
+):
+    monkeypatch.setattr(prime, "ensure_prime_auth", lambda: None)
+    created = prime_sandboxes.models.Sandbox.model_construct(
+        id="sb-restored", pending_image_build_id=None
+    )
+
+    class Client(FakeSandboxClient):
+        async def create(self, request):
+            return created
+
+    monkeypatch.setattr(
+        prime_sandboxes,
+        "AsyncSandboxClient",
+        lambda **_: Client(wait_for_creation=APIError("HTTP 404: sandbox not found")),
+    )
+    restoring = PrimeBackend(PrimeConfig(checkpoint="ck-present"))
+    with pytest.raises(SandboxError) as caught:
+        await restoring.start()
+    await restoring.teardown()
+    assert caught.value.kind != "checkpoint_missing"
+
+
 async def test_prime_io_and_exec_failures_are_typed(runtime, no_sleep):
     runtime.info.id = "sb1"
     runtime._client = FakeSandboxClient(
