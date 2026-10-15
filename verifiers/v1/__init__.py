@@ -169,6 +169,7 @@ from verifiers.v1.types import (
 from verifiers.v1.utils.artifacts import (
     ARTIFACTS_DIR,
     Artifact,
+    check_restore,
     collect,
     restore,
 )
@@ -416,6 +417,7 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     # grading artifacts
     "ARTIFACTS_DIR",
     "Artifact",
+    "check_restore",
     "collect",
     "restore",
     # scoring

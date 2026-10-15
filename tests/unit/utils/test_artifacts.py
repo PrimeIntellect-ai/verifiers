@@ -144,3 +144,33 @@ async def test_isolated_scoring_keeps_restored_links_out_of_the_tasks_grader_pat
     assert commands == []  # refused before the grading box was touched
     await stage_verifier(vf.Task(vf.TaskData(idx=0)), trace, runtime)
     assert commands
+
+
+def test_a_submission_is_checked_for_restore_on_the_host() -> None:
+    from verifiers.v1.utils.artifacts import check_restore
+
+    check_restore({"/app": archive(("app/", None), ("app/x", None))}, protected=GRADER)
+    with pytest.raises(RuntimeError, match="grader's own files"):
+        check_restore(
+            {"/app": archive(("app/", None), ("app/t", "/tests"))}, protected=GRADER
+        )
+
+
+@pytest.mark.asyncio
+async def test_an_archive_over_the_budget_is_a_submission_defect() -> None:
+    from verifiers.v1.utils.artifacts import Artifact, collect
+
+    async def run(argv, env):
+        command = argv[-1]
+        if command.startswith("for source"):
+            return SimpleNamespace(exit_code=0, stdout="1\n", stderr="")
+        return SimpleNamespace(exit_code=0, stdout="4096\n", stderr="")
+
+    async def read(path, max_bytes=None):
+        raise AssertionError("an archive over the budget is never transferred")
+
+    runtime = SimpleNamespace(
+        config=SimpleNamespace(type="docker", workdir="/app"), run=run, read=read
+    )
+    with pytest.raises(RuntimeError, match="over the 1024-byte collection budget"):
+        await collect(runtime, [Artifact(source="/app")], max_bytes=1024, sweep=False)

@@ -166,6 +166,38 @@ async def restore(
             "refusing to restore artifacts into the subprocess runtime: extraction "
             "writes to absolute paths on the host. Grade in a container."
         )
+    check_restore(collected, protected=protected)
+    # Clear every root up front, not per entry: a later nested root would otherwise
+    # delete content an earlier one just restored. Clearing also drops any file or
+    # symlink the image left at the target.
+    roots = " ".join(shlex.quote(root) for root in collected)
+    # Container exec requires its configured cwd to exist, including while a
+    # submission replaces the entire working directory (or one of its parents).
+    workdir = shlex.quote(getattr(runtime.config, "workdir", None) or "/")
+    await _run(
+        runtime,
+        f"rm -rf -- {roots} && mkdir -p -- {workdir}",
+        "clear artifact roots",
+    )
+    for root, archive in collected.items():
+        if archive is None:
+            continue
+        path = f"/tmp/vf-artifact-{uuid.uuid4().hex}.tar"
+        await runtime.write(path, archive)
+        await _run(
+            runtime,
+            f"tar -xf {shlex.quote(path)} -C / && rm -f {shlex.quote(path)}",
+            f"restore artifact {root!r}",
+        )
+
+
+def check_restore(
+    collected: dict[str, bytes | None], *, protected: Sequence[str] = ()
+) -> None:
+    """Raise `RuntimeError` for any archive `restore` would refuse, on the host and
+    without a runtime: a member outside its root, a special file, an unsafe link, a
+    path that traverses another archive's link, or a link that reaches `protected`.
+    A caller can check a collected submission before it provisions a grader."""
     links: dict[PurePosixPath, str] = {}
     owners: dict[PurePosixPath, str] = {}
     for root, archive in collected.items():
@@ -193,28 +225,6 @@ async def restore(
                 f"artifact symlink {str(link)!r} -> {links[link]!r} reaches the "
                 "grader's own files"
             )
-    # Clear every root up front, not per entry: a later nested root would otherwise
-    # delete content an earlier one just restored. Clearing also drops any file or
-    # symlink the image left at the target.
-    roots = " ".join(shlex.quote(root) for root in collected)
-    # Container exec requires its configured cwd to exist, including while a
-    # submission replaces the entire working directory (or one of its parents).
-    workdir = shlex.quote(getattr(runtime.config, "workdir", None) or "/")
-    await _run(
-        runtime,
-        f"rm -rf -- {roots} && mkdir -p -- {workdir}",
-        "clear artifact roots",
-    )
-    for root, archive in collected.items():
-        if archive is None:
-            continue
-        path = f"/tmp/vf-artifact-{uuid.uuid4().hex}.tar"
-        await runtime.write(path, archive)
-        await _run(
-            runtime,
-            f"tar -xf {shlex.quote(path)} -C / && rm -f {shlex.quote(path)}",
-            f"restore artifact {root!r}",
-        )
 
 
 async def _tar_out(runtime: Runtime, artifact: Artifact, budget: int) -> bytes:
@@ -222,12 +232,21 @@ async def _tar_out(runtime: Runtime, artifact: Artifact, budget: int) -> bytes:
     excludes = " ".join(f"--exclude={shlex.quote(p)}" for p in artifact.exclude)
     try:
         # macOS tar otherwise adds AppleDouble sidecars next to a directory root.
-        await _run(
+        size = await _run(
             runtime,
             f"COPYFILE_DISABLE=1 tar -cf {shlex.quote(path)} -C / {excludes} -- "
-            f"{shlex.quote(artifact.source.lstrip('/'))}",
+            f"{shlex.quote(artifact.source.lstrip('/'))} && wc -c < {shlex.quote(path)}",
             f"collect artifact {artifact.source!r}",
         )
+        # An archive over the budget is the submission's size, not a transfer fault:
+        # say so as the other submission defects do, before moving any bytes. The
+        # bounded read below still enforces the budget whatever the box reports.
+        reported = size.split()
+        if reported and reported[-1].isdigit() and int(reported[-1]) > budget:
+            raise RuntimeError(
+                f"artifact {artifact.source!r} is {reported[-1]} bytes, over the "
+                f"{budget}-byte collection budget"
+            )
         # The runtime enforces the remaining collection budget while transferring the
         # bytes, so replacing or growing the archive cannot race a separate size probe.
         archive, dropped = _drop_special_files(
