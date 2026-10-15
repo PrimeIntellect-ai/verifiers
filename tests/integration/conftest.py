@@ -67,6 +67,9 @@ def pytest_configure(config) -> None:
     inherits `PYTHONPATH` but not pytest's in-process `pythonpath`. Put the fixture dir on
     `PYTHONPATH` so a fixture server module (e.g. `tool_response_image_v1`)
     resolves there too — an installed example package (e.g. `glossary`) already would."""
+    config.addinivalue_line(
+        "markers", "opencode: integration cells on the OpenCode harness"
+    )
     fixtures = str(Path(__file__).parent / "fixtures")
     existing = os.environ.get("PYTHONPATH", "")
     if fixtures not in existing.split(os.pathsep):
