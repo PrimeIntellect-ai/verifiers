@@ -266,3 +266,30 @@ def test_sampling_mask_from_packed_matches_lists():
     ):
         np.testing.assert_array_equal(mask.ids, ids)
         np.testing.assert_array_equal(mask.counts, counts)
+
+
+def test_a_deep_copy_of_a_watched_trace_watches_nothing_and_the_original_keeps_its_watcher():
+    import copy
+    import threading
+
+    class Watcher:
+        def __init__(self) -> None:
+            self.lock = threading.Lock()  # does not copy
+            self.seen = 0
+
+        def changed(self, trace: vf.Trace) -> None:
+            self.seen += 1
+
+    trace = vf.Trace(
+        agent=vf.AgentInfo(config=resolve_agent(vf.AgentConfig())),
+        task=vf.TraceTask(
+            type="Task", data=vf.TaskData(idx=0, prompt="p"), key="k", hash="h"
+        ),
+    )
+    watcher = Watcher()
+    trace.watch(watcher.changed)
+    copied = copy.deepcopy(trace)
+    copied.notify()
+    assert watcher.seen == 0
+    trace.notify()
+    assert watcher.seen == 1

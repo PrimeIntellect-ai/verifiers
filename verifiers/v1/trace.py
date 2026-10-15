@@ -6,7 +6,7 @@ import time
 import traceback
 import uuid
 from collections.abc import Callable, Iterable, Iterator, Mapping
-from typing import TYPE_CHECKING, Any, Generic, Literal
+from typing import TYPE_CHECKING, Any, Generic, Literal, Self
 
 import numpy as np
 from pydantic import (
@@ -620,6 +620,14 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     def watch(self, on_change: Callable[[Trace], None]) -> None:
         """Have `on_change` called at each of this trace's phase changes and turns."""
         self._on_change = on_change
+
+    def __deepcopy__(self, memo: dict[int, Any] | None = None) -> Self:
+        """A deep copy watches nothing: its watcher belongs to the original trace
+        (and may hold locks or open files that do not copy)."""
+        memo = {} if memo is None else memo
+        if self._on_change is not None:
+            memo[id(self._on_change)] = None
+        return super().__deepcopy__(memo)
 
     def record_checkpoint(
         self, checkpoint_id: str, turns: int | None = None
