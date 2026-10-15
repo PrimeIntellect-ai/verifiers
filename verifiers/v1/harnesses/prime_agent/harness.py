@@ -257,7 +257,7 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
             args += ["--append-system-prompt", system_prompt]
 
         return ACPConfig(
-            env=self._env(trace, secret),
+            env=self._env(trace, secret, runtime.user),
             # Expand the sandbox's PATH while keeping every agent argument literal.
             command=[
                 "/bin/sh",
@@ -287,9 +287,9 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
         digest = hashlib.sha256(trace.id.encode()).hexdigest()[:16]
         return f"{STATE_ROOT}/{digest}"
 
-    def _env(self, trace: Trace, secret: str) -> dict[str, str]:
+    def _env(self, trace: Trace, secret: str, user: str | None) -> dict[str, str]:
         root = self._root(trace)
-        return {
+        env = {
             **self.config.resolved_env,
             KEY_VAR: secret,
             ENV_AGENT_DIR: f"{root}/agent",
@@ -297,3 +297,10 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
             "PRIME_AGENT_KERNEL_VENV": self._kernel_venv(),
             "PRIME_AGENT_TELEMETRY": "0",
         }
+        if user is not None:
+            # The session user cannot write the root-owned venv, so the kernel
+            # bootstrap must not try to lock and rebuild it: point it at the venv
+            # python, which the override path only reads (missing python skills
+            # are disabled with a warning).
+            env["PRIME_AGENT_KERNEL_PYTHON"] = f"{self._kernel_venv()}/bin/python"
+        return env
