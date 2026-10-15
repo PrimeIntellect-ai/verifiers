@@ -5,7 +5,7 @@ import pytest
 from pydantic import Field
 
 import verifiers.v1 as vf
-from verifiers.v1.envs.agentic_judge import ScoreConfig
+from verifiers.v1.envs.agentic_judge import JudgeTaskConfig, ScoreConfig
 from verifiers.v1.judge import Judge, JudgeResponse
 from verifiers.v1.utils.loaders import judge_class, judge_config_type, load_judge
 
@@ -241,3 +241,21 @@ async def test_task_score_runs_plugged_judges(tmp_path, fake_judge_model, make_t
     assert (
         len(trace.info["judge_calls"]) == 2
     )  # every judge call recorded (rubric = one call)
+
+
+def test_an_agentic_judge_task_takes_its_criteria_from_a_rubric_or_inline(tmp_path):
+    rubric = tmp_path / "rubric.toml"
+    rubric.write_text(RUBRIC_TOML)
+    inline = [vf.Criterion(name="answer", text="The answer is 42.", weight=2.0)]
+
+    assert [c.name for c in JudgeTaskConfig().resolved_criteria()] == ["solved"]
+    from_file = JudgeTaskConfig(rubric=rubric).resolved_criteria()
+    assert [(c.name, c.weight) for c in from_file] == [
+        ("mentions_paris", 3.0),
+        ("is_polite", 1.0),
+    ]
+    assert JudgeTaskConfig(criteria=inline).resolved_criteria() == inline
+    with pytest.raises(ValueError):
+        JudgeTaskConfig(rubric=rubric, criteria=inline)
+    with pytest.raises(ValueError):
+        JudgeTaskConfig(criteria=inline * 2).resolved_criteria()

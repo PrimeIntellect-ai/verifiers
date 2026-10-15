@@ -97,6 +97,11 @@ Task scores and the agentic verdict share the verifier's scoring budget; isolate
 retries start in fresh workspaces and commit rewards only after judging succeeds.
 The judge borrows that workspace. Judge model and harness settings live under
 `env.judge`; workspace placement belongs to `env.solver.scoring`.
+`judge_solution(judge, solution, runtime, config, isolated=...)`
+(`verifiers.v1.envs.agentic_judge`) is that judge run on its own: any `on_score`
+callback can call it with its scoring workspace and get each criterion's score
+from the judge's verdict, or an error when the judge gives none. `JudgeTaskConfig`
+takes its criteria from a `rubric` file or inline as `criteria`.
 
 ## Durable episodes
 

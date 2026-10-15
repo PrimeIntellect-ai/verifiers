@@ -10,7 +10,7 @@ import json
 import re
 from pathlib import Path
 
-from pydantic import FiniteFloat
+from pydantic import FiniteFloat, model_validator
 
 import verifiers.v1 as vf
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
@@ -18,6 +18,7 @@ from verifiers.v1.configs.scoring import resolve_scoring
 from verifiers.v1.judges.rubric import (
     Criterion,
     RubricVerdicts,
+    checked_criteria,
     load_criteria,
     score_verdicts,
 )
@@ -154,7 +155,7 @@ class JudgeTask(vf.Task):
             # A policy that doesn't place the task statement itself still needs it.
             body += "\n\n" + _render(TASK_SECTION, prompt=solved.prompt_text)
         workspace_note = ISOLATED_WORKSPACE_NOTE if isolated else SHARED_WORKSPACE_NOTE
-        sections = [body, _verdict_section(config.criteria()), workspace_note]
+        sections = [body, _verdict_section(config.resolved_criteria()), workspace_note]
         if (hint := config.build_hint()) is not None:
             sections.insert(1, _render(HINT_SECTION, hint=hint))
         prompt = "\n\n".join(sections)
@@ -220,7 +221,10 @@ class JudgeTaskConfig(vf.BaseConfig):
     rubric: Path | None = None
     """Criteria the judge grades against: a `.toml`/`.json` file with a
     `criteria` list — the plugged rubric judge's format, so the same rubric
-    files work for both. None grades the single built-in `solved` criterion."""
+    files work for both. None (and no `criteria`) grades the single built-in
+    `solved` criterion."""
+    criteria: list[Criterion] | None = None
+    """The criteria inline, instead of a `rubric` file; at most one of the two."""
     include_hidden_reasoning: bool = False
     """Include assistant reasoning and opaque provider state in `/tmp/trace.json`.
     Disabled by default so the judge grades only observable agent behavior."""
@@ -240,7 +244,17 @@ class JudgeTaskConfig(vf.BaseConfig):
     def build_hint(self) -> str | None:
         return self._resolve(self.hint) if self.hint is not None else None
 
-    def criteria(self) -> list[Criterion]:
+    @model_validator(mode="after")
+    def _one_criteria_source(self) -> "JudgeTaskConfig":
+        if self.rubric is not None and self.criteria is not None:
+            raise ValueError("a judge task takes `rubric` or `criteria`, not both")
+        return self
+
+    def resolved_criteria(self) -> list[Criterion]:
+        """The criteria the judge grades: the inline ones, the rubric file's, or
+        the built-in `solved` criterion."""
+        if self.criteria is not None:
+            return checked_criteria(self.criteria, None, "the inline criteria")
         if self.rubric is None:
             return [SOLVED]
         return load_criteria(self.rubric)
@@ -254,6 +268,53 @@ class ScoreConfig(vf.BaseConfig):
     """Scale applied to the taskset's own rewards; 1 keeps them next to the verdict."""
     judge_weight: FiniteFloat = 1.0
     """Weight of the judge's verdict in the solver's reward."""
+
+
+async def judge_solution(
+    judge: vf.Agent,
+    solution: vf.Trace,
+    runtime: vf.Runtime,
+    config: JudgeTaskConfig,
+    *,
+    isolated: bool,
+    durable: bool | None = None,
+) -> tuple[dict[str, float], vf.Trace]:
+    """Run `judge` on `solution` in its scoring workspace `runtime`, the box an
+    `on_score` callback gets, and return each criterion's score (its verdict
+    normalized to [0, 1], `score_verdicts`) with the judge's trace. `isolated` says
+    whether `runtime` is a fresh verifier or the solver's own box; `durable`, when
+    given, is passed to the judge's `run`. A judge run that fails, or a verdict that
+    is malformed or misses a criterion, raises: no score."""
+    judge_task = JudgeTask.from_trace(solution, config, isolated=isolated)
+    # The workspace already has the verifier's image and network policy.
+    # Do not reapply the solver's requirements to an overridden verifier.
+    updates = {
+        "image": runtime.config.image,
+        "workdir": runtime.config.workdir,
+    }
+    if isinstance(runtime.config, NetworkPolicyConfig):
+        updates.update(
+            network_allow=runtime.config.allow,
+            network_block=runtime.config.block,
+        )
+    judge_task = judge_task.with_data(**updates)
+    # A per-invocation view retains episode accounting and concurrency while
+    # binding placement to the already provisioned scoring workspace.
+    judge_agent = copy.copy(judge)
+    judge_agent.runtime_config = runtime.config
+    judge_agent.config = judge_agent.config.model_copy(
+        update={"runtime": runtime.config}
+    )
+    options = {} if durable is None else {"durable": durable}
+    verdict = await judge_agent.run(judge_task, runtime=runtime, **options)
+    if not verdict.ok:
+        raise RuntimeError(
+            "agentic judge failed: "
+            + "; ".join(error.message for error in verdict.errors)
+        )
+    verdicts = RubricVerdicts.model_validate(verdict.info.get("verdict")).verdicts
+    scores = score_verdicts(verdicts, config.resolved_criteria(), "the rubric's")
+    return scores, verdict
 
 
 class AgenticJudgeEnvConfig(vf.EnvConfig):
@@ -275,7 +336,7 @@ class AgenticJudgeEnv(vf.Env[AgenticJudgeEnvConfig]):
         # A missing policy file or a malformed rubric fails here, not mid-episode.
         config.task.build_prompt()
         config.task.build_hint()
-        config.task.criteria()
+        config.task.resolved_criteria()
 
     def _check_agents(self) -> None:
         """The judge executes real code, never on the host — refuse an impossible
@@ -297,10 +358,8 @@ class AgenticJudgeEnv(vf.Env[AgenticJudgeEnvConfig]):
         # The judge grades the policy; its tokens are never training data.
         agents.judge.trainable = False
 
-    def _record_verdict(self, solution: vf.Trace, verdict: vf.Trace) -> None:
-        verdicts = RubricVerdicts.model_validate(verdict.info.get("verdict")).verdicts
-        criteria = self.config.task.criteria()
-        scores = score_verdicts(verdicts, criteria, "the rubric's")
+    def _record_verdict(self, solution: vf.Trace, scores: dict[str, float]) -> None:
+        criteria = self.config.task.resolved_criteria()
         for criterion in criteria:
             solution.record_metric(f"judge/{criterion.name}", scores[criterion.name])
         if self.config.score.task_weight != 1.0:
@@ -321,37 +380,13 @@ class AgenticJudgeEnv(vf.Env[AgenticJudgeEnvConfig]):
         validate_pairing(self._harnesses["judge"], JudgeTask, workspace)
 
         async def judge(solution: vf.Trace, runtime: vf.Runtime) -> None:
-            isolated = policy.mode == "isolated"
-            judge_task = JudgeTask.from_trace(
+            scores, _ = await judge_solution(
+                agents.judge,
                 solution,
+                runtime,
                 self.config.task,
-                isolated=isolated,
+                isolated=policy.mode == "isolated",
             )
-            # The workspace already has the verifier's image and network policy.
-            # Do not reapply the solver's requirements to an overridden verifier.
-            updates = {
-                "image": runtime.config.image,
-                "workdir": runtime.config.workdir,
-            }
-            if isinstance(runtime.config, NetworkPolicyConfig):
-                updates.update(
-                    network_allow=runtime.config.allow,
-                    network_block=runtime.config.block,
-                )
-            judge_task = judge_task.with_data(**updates)
-            # A per-invocation view retains episode accounting and concurrency while
-            # binding placement to the already provisioned scoring workspace.
-            judge_agent = copy.copy(agents.judge)
-            judge_agent.runtime_config = runtime.config
-            judge_agent.config = judge_agent.config.model_copy(
-                update={"runtime": runtime.config}
-            )
-            verdict = await judge_agent.run(judge_task, runtime=runtime)
-            if not verdict.ok:
-                raise RuntimeError(
-                    "agentic judge failed: "
-                    + "; ".join(error.message for error in verdict.errors)
-                )
-            self._record_verdict(solution, verdict)
+            self._record_verdict(solution, scores)
 
         await agents.solver.run(task, on_score=judge)
