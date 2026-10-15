@@ -6,6 +6,7 @@ concurrency:
 
 on:
   pull_request:
+    branches: [main]
     paths:
       - "**.py"
       - "pyproject.toml"
