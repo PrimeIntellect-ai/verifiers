@@ -2,9 +2,9 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Annotated
 
-from pydantic import Field
+from pydantic import Field, SerializeAsAny
 
-from verifiers.v1.configs.runtime import NetworkPolicyConfig
+from verifiers.v1.configs.runtime import ImageConfig, NetworkPolicyConfig
 from verifiers.v1.runtimes.backends.custom import (
     CustomRuntimeConfig,
     CustomRuntimeInfo,
@@ -41,14 +41,17 @@ from verifiers.v1.runtimes.base import (
 )
 from verifiers.v1.runtimes.runtime import Runtime
 
-RuntimeConfig = Annotated[
-    SubprocessConfig
-    | DockerConfig
-    | PrimeConfig
-    | ModalConfig
-    | E2BConfig
-    | CustomRuntimeConfig,
-    Field(discriminator="type"),
+# Serialized by the runtime type, so a custom runtime's typed config keeps its fields.
+RuntimeConfig = SerializeAsAny[
+    Annotated[
+        SubprocessConfig
+        | DockerConfig
+        | PrimeConfig
+        | ModalConfig
+        | E2BConfig
+        | CustomRuntimeConfig,
+        Field(discriminator="type"),
+    ]
 ]
 
 RuntimeInfo = Annotated[
@@ -127,6 +130,7 @@ __all__ = [
     "E2BBackend",
     "E2BConfig",
     "E2BRuntimeInfo",
+    "ImageConfig",
     "ModalBackend",
     "ModalConfig",
     "ModalRuntimeInfo",

@@ -5,7 +5,7 @@ them at construction where the pairing is statically decidable."""
 import logging
 from collections.abc import Collection
 
-from verifiers.v1.configs.runtime import NetworkPolicyConfig
+from verifiers.v1.configs.runtime import ImageConfig, NetworkPolicyConfig
 from verifiers.v1.harness import Harness
 from verifiers.v1.runtimes import (
     PrimeConfig,
@@ -29,7 +29,7 @@ def resolve_runtime_config(
     config = base
     updates: dict = {}
     if task.data.image is not None:
-        if not backend_cls(config).supports_image:
+        if not isinstance(config, ImageConfig):
             raise ValueError(
                 f"task {task.data.idx!r} requires image {task.data.image!r}, but the "
                 f"{config.type} runtime cannot run images; use a supported runtime"
@@ -105,7 +105,7 @@ def validate_pairing(
             "`skills` is set. Run them with a harness whose program discovers "
             "skills (e.g. --env.agent.harness.id claude-code)."
         )
-    container = backend_cls(runtime_config).supports_image
+    container = isinstance(runtime_config, ImageConfig)
     if harness.NEEDS_CONTAINER and not container:
         raise ValueError(
             f"Harness {harness.config.id!r} needs a container runtime "

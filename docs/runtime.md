@@ -24,16 +24,17 @@ fields such as `agent.runtime` continue to describe runtime policy.
 
 ## Capabilities
 
-Each backend declares its features as class attributes. Before it provisions
-anything, the framework refuses a run that needs a feature the runtime does not
-declare, and the error names the runtime and the gap.
+Each runtime declares its features through its config's base classes and its
+backend's class attributes. Before it provisions anything, the framework refuses a
+run that needs a feature the runtime does not declare, and the error names the
+runtime and the gap.
 
 | Feature | Declared by | Built-in runtimes |
 | --- | --- | --- |
-| Task image, container-only harnesses, isolated scoring | `supports_image` | docker, prime, modal, e2b |
+| Task image, container-only harnesses, isolated scoring | config inherits `ImageConfig` | docker, prime, modal, e2b |
+| Task network policy | config inherits `NetworkPolicyConfig` | prime, modal, e2b |
 | Task `agent_user` | `supports_user` | docker, prime |
 | Tool server in its own runtime | `supports_expose` | subprocess, docker, modal, e2b |
-| Task network policy | config inherits `NetworkPolicyConfig` | prime, modal, e2b |
 | Docker Compose services | `supports_compose` | prime, modal |
 
 ## Runtime plugins
@@ -44,35 +45,44 @@ Select `type = "custom"` to use a `RuntimeBackend` subclass from your own packag
 [env.agent.runtime]
 type = "custom"
 import_path = "my_package.runtime.MyBackend"
-kwargs = { region = "us-east-1" }
+region = "us-east-1"
 ```
 
-The framework constructs the class as `MyBackend(config, name)`, like the built-in
-backends. Install the package in every process that runs rollouts. A plugin
-implements `start`, `_run`, `_read`, `_write`, and `cleanup` (or `teardown`), and
-optionally `_open_process` and `_run_background`. It sets `self.config` and
-`self.info`, and reads its own settings from `config.kwargs`. After `start`,
-`config.workdir` must name the directory its commands run in; the framework
-installs tool servers there.
+The backend sets `config_class` to its own `CustomRuntimeConfig` subclass. That class
+validates every field next to `import_path` when the config loads, and its bases
+declare the config-level capabilities. The framework constructs the backend as
+`MyBackend(config, name)` with the validated config, like the built-in backends:
 
 ```python
 from typing import ClassVar
 
-from verifiers.v1.runtimes import CustomRuntimeConfig, CustomRuntimeInfo, RuntimeBackend
+from verifiers.v1.runtimes import (
+    CustomRuntimeConfig,
+    CustomRuntimeInfo,
+    ImageConfig,
+    RuntimeBackend,
+)
+
+
+class MyConfig(CustomRuntimeConfig, ImageConfig):
+    region: str
 
 
 class MyBackend(RuntimeBackend):
+    config_class = MyConfig
     is_local: ClassVar[bool] = False
-    supports_image: ClassVar[bool] = True
 
-    def __init__(self, config: CustomRuntimeConfig, name: str | None = None) -> None:
+    def __init__(self, config: MyConfig, name: str | None = None) -> None:
         super().__init__(name)
         self.config = config
         self.info = CustomRuntimeInfo(**config.model_dump())
 ```
 
-The capability attributes default to off. Plugins cannot enforce task network
-policies. `tests/unit/runtimes/test_custom.py` has a complete example.
+A plugin implements `start`, `_run`, `_read`, `_write`, and `cleanup` (or `teardown`),
+and optionally `_open_process` and `_run_background`. Install its package in every
+process that loads the config, because validation imports the backend. The capability
+attributes default to off. `tests/unit/runtimes/test_custom.py` has a complete
+example.
 
 ## Deployment and services
 

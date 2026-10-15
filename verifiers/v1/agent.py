@@ -28,7 +28,7 @@ from verifiers.v1.configs.agent import (
     agent_config_fields,
     resolve_agent,
 )
-from verifiers.v1.configs.runtime import NetworkPolicyConfig
+from verifiers.v1.configs.runtime import ImageConfig, NetworkPolicyConfig
 from verifiers.v1.dialects import parse_message
 from verifiers.v1.harness import Harness
 from verifiers.v1.interception import Interception, InterceptionServer
@@ -37,7 +37,6 @@ from verifiers.v1.rollout import Rollout, RolloutTimeouts
 from verifiers.v1.runtimes import (
     Runtime,
     RuntimeConfig,
-    backend_cls,
     provision_backend,
     runtime_is_local,
 )
@@ -127,7 +126,7 @@ def _check_borrowed_placement(
             )
     if task.data.image is None:
         return
-    if not runtime.backend.supports_image:
+    if not isinstance(runtime.config, ImageConfig):
         raise TypeError(
             f"task {task.data.idx!r} requires image {task.data.image!r}, but the "
             f"borrowed {runtime.type} runtime cannot run images; borrow a container "
@@ -722,10 +721,7 @@ class Agent:
         on_score: Callable[[Trace, Runtime], Awaitable[None]] | None,
     ) -> Trace:
         params = self._rollout_params(task, runtime, dict(shared_tools or {}))
-        if (
-            collect_artifacts
-            and not backend_cls(params["runtime_config"]).supports_image
-        ):
+        if collect_artifacts and not isinstance(params["runtime_config"], ImageConfig):
             raise TypeError(
                 "artifact collection requires a runtime with its own filesystem; the "
                 f"{params['runtime_config'].type} runtime cannot run images"

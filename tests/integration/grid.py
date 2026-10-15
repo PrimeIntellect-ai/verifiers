@@ -11,8 +11,8 @@ reason (`Harness.EXECUTES_CODE`, `SUPPORTS_MCP`, `SUPPORTS_SKILLS`, resume suppo
 
 A runtime without a capability the behavior needs still runs, marked `refused`: the run
 must fail with the framework's message for that gap, which the `run` fixture checks.
-The runtime gaps are `RuntimeBackend.supports_image` (for `Harness.NEEDS_CONTAINER`),
-`supports_user`, `supports_expose`, and `NetworkPolicyConfig`.
+The runtime gaps are an `ImageConfig` (for `Harness.NEEDS_CONTAINER`), a
+`NetworkPolicyConfig`, and `RuntimeBackend.supports_user` and `supports_expose`.
 
 CI deselects `modal` and `e2b` by mark: external sandboxes.
 
@@ -32,7 +32,7 @@ import pytest
 from pydantic import TypeAdapter
 
 import verifiers.v1 as vf
-from verifiers.v1.configs.runtime import NetworkPolicyConfig
+from verifiers.v1.configs.runtime import ImageConfig, NetworkPolicyConfig
 from verifiers.v1.harness import Harness
 from verifiers.v1.runtimes import RuntimeConfig, backend_cls
 from verifiers.v1.utils.loaders import harness_class
@@ -106,11 +106,6 @@ def runtime_cls(runtime: str) -> type:
     )
 
 
-def runtime_supports_network_policy(runtime: str) -> bool:
-    config = TypeAdapter(RuntimeConfig).validate_python(runtime_config(runtime))
-    return isinstance(config, NetworkPolicyConfig)
-
-
 def resumes(cls: type[Harness]) -> bool:
     """The same rule as `Agent.interaction`: transcript replay, a native resume, or a
     rollout-scoped session."""
@@ -140,11 +135,14 @@ def refused(harness: str | dict, runtime: str, needs: tuple[str, ...]) -> list[s
     """The gaps the runtime may refuse this cell with; the first check to run wins."""
     cls = runtime_cls(runtime)
     gaps = []
-    if harness_class(harness_id(harness)).NEEDS_CONTAINER and not cls.supports_image:
+    config = TypeAdapter(RuntimeConfig).validate_python(runtime_config(runtime))
+    if harness_class(harness_id(harness)).NEEDS_CONTAINER and not isinstance(
+        config, ImageConfig
+    ):
         gaps.append("container")
     if "user" in needs and not cls.supports_user:
         gaps.append("user")
-    if "network" in needs and not runtime_supports_network_policy(runtime):
+    if "network" in needs and not isinstance(config, NetworkPolicyConfig):
         gaps.append("network")
     return gaps
 

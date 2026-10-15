@@ -82,6 +82,8 @@ from verifiers.v1.mcp import (
 from verifiers.v1.runtimes import (
     CustomRuntimeConfig,
     DockerConfig,
+    ImageConfig,
+    NetworkPolicyConfig,
     PrimeConfig,
     ProgramResult,
     Runtime,
@@ -315,6 +317,8 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "SubprocessConfig",
     "DockerConfig",
     "CustomRuntimeConfig",
+    "ImageConfig",
+    "NetworkPolicyConfig",
     "PrimeConfig",
     "Env",
     "SingleAgentEnv",

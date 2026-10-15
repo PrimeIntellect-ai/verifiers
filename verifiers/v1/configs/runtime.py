@@ -1,4 +1,4 @@
-"""Shared configuration for execution-time network policy."""
+"""Shared runtime configuration: task images and execution-time network policy."""
 
 from fnmatch import fnmatchcase
 from glob import has_magic
@@ -52,6 +52,16 @@ def intersect_network_hosts(left: str, right: str) -> str:
     ):
         raise ValueError(f"cannot intersect network hosts {left!r} and {right!r}")
     return ""
+
+
+class ImageConfig(BaseConfig):
+    """Shared surface for runtimes that boot a task image in their own filesystem.
+
+    Tasks with an image, container-only harnesses, and isolated scoring require it."""
+
+    image: str = "python:3.11-slim"
+    workdir: str | None = None
+    """Working directory override; None uses the task's workdir, or /app."""
 
 
 class NetworkPolicyConfig(BaseConfig):

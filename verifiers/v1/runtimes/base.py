@@ -151,10 +151,6 @@ class RuntimeBackend(ABC):
     subprocess and docker; remote runtimes override to False and use a host `Tunnel`
     inward plus `expose` outward."""
 
-    supports_image: ClassVar[bool] = False
-    """Whether the runtime boots a task image in its own filesystem. Tasks with an image,
-    container-only harnesses, and isolated grading require it."""
-
     supports_compose: ClassVar[bool] = False
     """Whether the runtime can host a task's Docker Compose services."""
 
