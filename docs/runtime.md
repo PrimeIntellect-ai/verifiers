@@ -72,7 +72,7 @@ class MyBackend(RuntimeBackend):
 ```
 
 The capability attributes default to off. Plugins cannot enforce task network
-policies. `tests/integration/fixtures/plugin_runtime.py` is a complete example.
+policies. `tests/unit/runtimes/test_custom.py` has a complete example.
 
 ## Deployment and services
 

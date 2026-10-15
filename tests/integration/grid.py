@@ -2,9 +2,8 @@
 cell is skipped.
 
 Each behavior module fixes one task and fans it over `grid(...)`: every bundled harness
-x every runtime kind, including `custom`, a runtime plugin from the fixtures
-(`plugin_runtime.HostBackend`). Every reason a cell cannot run derives from a capability
-the code declares, never from a list of names, so the grid follows the code.
+x every runtime kind. Every reason a cell cannot run derives from a capability the code
+declares, never from a list of names, so the grid follows the code.
 
 A harness without a capability the behavior needs is collected as a skip with its
 reason (`Harness.EXECUTES_CODE`, `SUPPORTS_MCP`, `SUPPORTS_SKILLS`, resume support via
@@ -52,8 +51,7 @@ HARNESSES: list[str | dict] = [
     "mini-swe-agent",
     "prime-agent",
 ]
-RUNTIMES = ["subprocess", "docker", "prime", "modal", "e2b", "custom"]
-PLUGIN = "plugin_runtime.HostBackend"
+RUNTIMES = ["subprocess", "docker", "prime", "modal", "e2b"]
 
 # The framework's message for each runtime gap; a refused cell must fail with it.
 REFUSALS = {
@@ -92,8 +90,6 @@ def mark(name: str) -> pytest.MarkDecorator:
 
 def runtime_config(runtime: str, harness: str | dict | None = None) -> dict:
     config: dict = {"type": runtime}
-    if runtime == "custom":
-        config["import_path"] = PLUGIN
     program = harness is not None and harness_class(harness_id(harness)).NEEDS_CONTAINER
     # The default sandboxes are too small to install and run an agent CLI: e2b's box
     # starves rlm's ACP startup, and prime's 1 CPU / 2 GB gets openclaw terminated.
