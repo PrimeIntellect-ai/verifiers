@@ -31,6 +31,7 @@ from verifiers.v1.mcp.server import (
 )
 from verifiers.v1.runtimes import (
     Runtime,
+    backend_cls,
     provision_backend,
 )
 from verifiers.v1.runtimes.base import _ENSURE_UV
@@ -451,6 +452,12 @@ async def _serve(
             )
         if colocated and harness_runtime is not None:
             runtime = harness_runtime
+        elif not backend_cls(cfg.runtime).supports_expose:
+            raise ToolsetError(
+                f"server {server.server_name!r} cannot run in its own "
+                f"{cfg.runtime.type} runtime, which cannot expose a port; colocate it "
+                "with the harness or use another runtime"
+            )
         else:
             backend = await stack.enter_async_context(provision_backend(cfg.runtime))
             runtime = backend.bind()

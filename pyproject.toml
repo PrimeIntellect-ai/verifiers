@@ -225,11 +225,11 @@ markers = [
     # is applied per axis, so it matches every cell touching that value on any axis.
     "subprocess: integration cells touching the subprocess (host) runtime",
     "docker: integration cells touching the docker runtime",
-    "podman: integration cells touching the podman runtime (needs the engine on the host; local-only)",
-    "apptainer: integration cells touching the apptainer runtime (needs the engine on the host; local-only)",
     "prime: integration cells touching the prime runtime (real sandbox + tunnel)",
     "modal: integration cells touching the modal runtime (external sandbox; local-only, excluded in CI)",
     "e2b: integration cells touching the e2b runtime (external sandbox; local-only, excluded in CI)",
+    "custom: integration cells touching the custom runtime (the plugin_runtime fixture plugin)",
+    "refused: integration cells whose runtime must refuse the behavior with this message",
     "colocated: integration cells with a tool server colocated in the harness runtime",
     "null: integration cells on the null harness",
     "bash: integration cells on the bash harness",

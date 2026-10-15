@@ -127,8 +127,7 @@ For Prime, set `runtime.type = "prime"`. One VM hosts Docker and all
 services, and its network policy applies to every service after trusted setup.
 For Modal, set `runtime.type = "modal"`; Compose uses the SDK's experimental VM
 backend with Docker support and requires `network_access = true` and access to that
-backend. Local Docker Compose also requires unrestricted networking. GPU Compose
-tasks are unsupported.
+backend. GPU Compose tasks are unsupported.
 
 The runtime's CPU and memory settings size the entire remote sandbox, so allow room
 for sidecars. Prime also applies the disk request; Modal has no disk-size setting.
@@ -158,8 +157,9 @@ and execution roles.
 
 ## Network policies
 
-Harbor's effective agent network policy is applied to Docker or Prime VM harness
-runtimes. An `[agent].network_mode` override takes precedence over the `[environment]`
+Harbor's effective agent network policy is applied to Prime VM harness runtimes.
+Docker enforces no network policy, so it refuses tasks that restrict the network.
+An `[agent].network_mode` override takes precedence over the `[environment]`
 baseline; legacy `[environment].allow_internet` is normalized by Harbor's schema.
 
 | Harbor mode | Task network policy |
@@ -173,9 +173,8 @@ agent and stays active through finalization and scoring. Interception and MCP UR
 added automatically in allowlist and framework-only modes. Concrete task/runtime
 allowlists retain their shared entries, while blocklists combine; framework-only access on
 either side takes precedence, and concrete allowlists cannot be combined with blocklists.
-Docker framework routes take precedence over deny rules, while ordinary Prime deny rules
-are applied unchanged and may block a matching route. Restricted Harbor tasks require
-Docker or a Prime VM; Prime accepts host-level entries. Provider-resolved URLs are retained
+Ordinary Prime deny rules are applied unchanged and may block a matching route.
+Restricted Harbor tasks require a Prime VM; Prime accepts host-level entries. Provider-resolved URLs are retained
 when their initial destination matches the effective policy. OpenAI Responses web search and
 Anthropic web search/fetch receive wildcard host allowlists translated to provider domains;
 policies that cannot be translated without widening still disable them. Every other hosted

@@ -163,7 +163,7 @@ jobs:
 
       - name: Run integration tests
         run: |
-          uv run pytest ${{ matrix.tests }} -vv -n 8 --dist worksteal -m "not podman and not apptainer and not modal and not e2b" --durations=25 --junitxml=test-results.xml
+          uv run pytest ${{ matrix.tests }} -vv -n 8 --dist worksteal -m "not modal and not e2b" --durations=25 --junitxml=test-results.xml
 
       - name: Upload test results
         if: always()

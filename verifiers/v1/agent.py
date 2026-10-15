@@ -37,7 +37,7 @@ from verifiers.v1.rollout import Rollout, RolloutTimeouts
 from verifiers.v1.runtimes import (
     Runtime,
     RuntimeConfig,
-    SubprocessConfig,
+    backend_cls,
     provision_backend,
     runtime_is_local,
 )
@@ -127,10 +127,10 @@ def _check_borrowed_placement(
             )
     if task.data.image is None:
         return
-    if isinstance(runtime.config, SubprocessConfig):
+    if not runtime.backend.supports_image:
         raise TypeError(
             f"task {task.data.idx!r} requires image {task.data.image!r}, but the "
-            "borrowed runtime is subprocess-backed (no container); borrow a container "
+            f"borrowed {runtime.type} runtime cannot run images; borrow a container "
             "box (e.g. agent.provision(task)) or drop the task's image"
         )
     box_image = getattr(runtime.config, "image", None)
@@ -722,10 +722,13 @@ class Agent:
         on_score: Callable[[Trace, Runtime], Awaitable[None]] | None,
     ) -> Trace:
         params = self._rollout_params(task, runtime, dict(shared_tools or {}))
-        if collect_artifacts and isinstance(params["runtime_config"], SubprocessConfig):
+        if (
+            collect_artifacts
+            and not backend_cls(params["runtime_config"]).supports_image
+        ):
             raise TypeError(
-                "artifact collection requires a container runtime; subprocess "
-                "artifacts live in a host-only temporary working directory"
+                "artifact collection requires a runtime with its own filesystem; the "
+                f"{params['runtime_config'].type} runtime cannot run images"
             )
         run = Rollout(
             task=task,

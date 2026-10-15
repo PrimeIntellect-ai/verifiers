@@ -103,8 +103,6 @@ async def compose_services(
         )
     if config.gpu:
         raise ValueError("Compose currently supports CPU tasks")
-    if local and config.network_restricted:
-        raise ValueError("Compose on local Docker requires public networking")
     if isinstance(config, ModalConfig) and not config.network_access:
         raise ValueError("Compose on Modal requires network_access=True")
     project = ["docker", "compose", "--project-name", f"vf-{uuid.uuid4().hex}"]

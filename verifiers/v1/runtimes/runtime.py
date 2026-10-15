@@ -39,7 +39,7 @@ class Runtime:
     def __post_init__(self) -> None:
         if self.user is not None and not self.backend.supports_user:
             raise ValueError(
-                f"{type(self.backend).__name__} cannot run as another user"
+                f"the {self.backend.type} runtime cannot run as another user"
             )
         if self.user is None and self.home is not None:
             raise ValueError("home requires a user binding")

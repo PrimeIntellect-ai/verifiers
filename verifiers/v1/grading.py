@@ -12,7 +12,7 @@ from verifiers.v1.runtimes import (
     PrimeConfig,
     Runtime,
     RuntimeConfig,
-    SubprocessConfig,
+    backend_cls,
 )
 from verifiers.v1.task import Task
 from verifiers.v1.trace import Error, Trace
@@ -57,8 +57,11 @@ def verifier_runtime(
     config = resolve_runtime_config(source, task)
     if policy.runtime is not None and "image" in policy.runtime.model_fields_set:
         config = config.model_copy(update={"image": policy.runtime.image})
-    if isinstance(config, SubprocessConfig):
-        raise TaskError("isolated verification requires an isolated filesystem")
+    if not backend_cls(config).supports_image:
+        raise TaskError(
+            f"isolated verification requires an isolated filesystem; the "
+            f"{config.type} runtime cannot run images"
+        )
     relative = [
         a.source
         for a in task.data.artifacts

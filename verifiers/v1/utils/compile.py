@@ -10,7 +10,7 @@ from verifiers.v1.harness import Harness
 from verifiers.v1.runtimes import (
     PrimeConfig,
     RuntimeConfig,
-    SubprocessConfig,
+    backend_cls,
     runtime_is_local,
 )
 from verifiers.v1.task import Task
@@ -29,10 +29,10 @@ def resolve_runtime_config(
     config = base
     updates: dict = {}
     if task.data.image is not None:
-        if isinstance(config, SubprocessConfig):
+        if not backend_cls(config).supports_image:
             raise ValueError(
-                f"task {task.data.idx!r} requires image {task.data.image!r}, but the subprocess "
-                "runtime has no container; use the docker or prime runtime"
+                f"task {task.data.idx!r} requires image {task.data.image!r}, but the "
+                f"{config.type} runtime cannot run images; use a supported runtime"
             )
         updates["image"] = task.data.image
     workdir_spec = type(config).model_fields.get("workdir")
@@ -42,6 +42,12 @@ def resolve_runtime_config(
         and config.workdir == workdir_spec.default
     ):
         updates["workdir"] = task.data.workdir
+    if task.data.agent_user is not None and not backend_cls(config).supports_user:
+        raise ValueError(
+            f"task {task.data.idx!r} runs its agent as {task.data.agent_user!r}, but "
+            f"the {config.type} runtime cannot run as another user; use a supported "
+            "runtime"
+        )
     task_network_policy = "*" not in task.data.network_allow or bool(
         task.data.network_block
     )
@@ -49,7 +55,8 @@ def resolve_runtime_config(
         if not isinstance(config, NetworkPolicyConfig):
             raise ValueError(
                 f"task {task.data.idx!r} requires a network policy, but the "
-                f"{config.type} runtime does not support framework-aware policies"
+                f"{config.type} runtime does not enforce network policies; use a "
+                "supported runtime"
             )
         config = config.with_task_network_policy(
             task.data.network_allow, task.data.network_block
@@ -98,17 +105,18 @@ def validate_pairing(
             "`skills` is set. Run them with a harness whose program discovers "
             "skills (e.g. --env.agent.harness.id claude-code)."
         )
-    if harness.NEEDS_CONTAINER and isinstance(runtime_config, SubprocessConfig):
+    container = backend_cls(runtime_config).supports_image
+    if harness.NEEDS_CONTAINER and not container:
         raise ValueError(
             f"Harness {harness.config.id!r} needs a container runtime "
-            "(NEEDS_CONTAINER), but this run resolves to the subprocess runtime; "
-            "use --env.agent.runtime.type docker or prime."
+            f"(NEEDS_CONTAINER), but this run resolves to the {runtime_config.type} "
+            "runtime; use a supported runtime."
         )
-    if task_cls.NEEDS_CONTAINER and isinstance(runtime_config, SubprocessConfig):
+    if task_cls.NEEDS_CONTAINER and not container:
         raise ValueError(
             f"{task_cls.__name__} needs a container runtime (NEEDS_CONTAINER), but "
-            "this run resolves to the subprocess runtime; use "
-            "--env.<agent>.runtime.type docker or prime."
+            f"this run resolves to the {runtime_config.type} runtime; use a "
+            "supported runtime."
         )
 
 

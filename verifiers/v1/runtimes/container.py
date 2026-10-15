@@ -35,9 +35,7 @@ class ContainerConfig(BaseConfig):
     """Hard memory limit in GB. None = unlimited."""
     gpu: str | None = None
     """GPU spec, e.g. "A100" or "2". Docker exposes that many GPUs (needs the nvidia
-    container toolkit) and checks requested types with nvidia-smi; Podman selects
-    that many NVIDIA CDI devices. Apptainer exposes
-    all accessible NVIDIA GPUs, so its count is advisory. None = none."""
+    container toolkit) and checks requested types with nvidia-smi. None = none."""
     disk: float | None = None
     """Advisory disk request in GB. Local containers have no portable per-container size
     limit, so this is accepted (so a task can declare it without a warning) but not

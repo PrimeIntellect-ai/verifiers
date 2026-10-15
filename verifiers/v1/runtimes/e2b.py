@@ -338,6 +338,7 @@ async def _template_lock(name: str):
 
 
 class E2BBackend(RuntimeBackend):
+    supports_image: ClassVar[bool] = True
     is_local: ClassVar[bool] = False
 
     def __init__(self, config: E2BConfig, name: str | None = None) -> None:

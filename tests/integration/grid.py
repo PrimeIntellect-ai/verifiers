@@ -2,35 +2,31 @@
 cell is skipped.
 
 Each behavior module fixes one task and fans it over `grid(...)`: every bundled harness
-x every runtime kind. The harness grid runs one local container engine (`docker`);
-`podman` / `apptainer` share its container runtime code and are exercised by the
-runtime-only grids (`placements`, `runtimes_grid`), where the harness is fixed. A cell
-the stack cannot run is collected as a skip with its reason. Every reason derives from a
-capability the code declares, never from a list of names, so the grid follows the code:
+x every runtime kind, including `custom`, a runtime plugin from the fixtures
+(`plugin_runtime.HostBackend`). Every reason a cell cannot run derives from a capability
+the code declares, never from a list of names, so the grid follows the code.
 
-- `Harness.NEEDS_CONTAINER`: the harness never runs on the host (`subprocess`)
-- `Harness.EXECUTES_CODE`, `SUPPORTS_MCP`, `SUPPORTS_SKILLS`, resume support
-  (`SUPPORTS_RESUME` or a native session): the behavior needs a shell, MCP tools,
-  skills, or a resumable exchange
-- `RuntimeBackend.supports_user`, `RuntimeBackend.supports_expose`, `NetworkPolicyConfig`: the
-  behavior needs a user switch, a tool server reachable from another runtime, or a
-  network policy
-- `podman` / `apptainer` need their engine on the host
+A harness without a capability the behavior needs is collected as a skip with its
+reason (`Harness.EXECUTES_CODE`, `SUPPORTS_MCP`, `SUPPORTS_SKILLS`, resume support via
+`SUPPORTS_RESUME` or a native session).
 
-CI deselects `podman`, `apptainer`, `modal` and `e2b` by mark: local engines and external
-sandboxes.
+A runtime without a capability the behavior needs still runs, marked `refused`: the run
+must fail with the framework's message for that gap, which the `run` fixture checks.
+The runtime gaps are `RuntimeBackend.supports_image` (for `Harness.NEEDS_CONTAINER`),
+`supports_user`, `supports_expose`, and `NetworkPolicyConfig`.
+
+CI deselects `modal` and `e2b` by mark: external sandboxes.
 
 Every cell carries its axes' marks, so `-m` selects subsets:
 
-    uv run pytest tests/integration -n 8 -m "not podman and not apptainer and not modal and not e2b"  # CI
+    uv run pytest tests/integration -n 8 -m "not modal and not e2b"  # CI
     uv run pytest tests/integration -n 8 -m "docker and codex"
-    uv run pytest tests/integration -n 8 -m e2b                                                      # local
+    uv run pytest tests/integration -n 8 -m e2b                      # local
 
 `terminus-2` (drives the host tmux) and `browser-use` (needs its Playwright image, which
 prime cannot pull) stay outside the grid.
 """
 
-import shutil
 from collections.abc import Sequence
 
 import pytest
@@ -39,7 +35,7 @@ from pydantic import TypeAdapter
 import verifiers.v1 as vf
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.harness import Harness
-from verifiers.v1.runtimes import RuntimeConfig, _backend_cls
+from verifiers.v1.runtimes import RuntimeConfig, backend_cls
 from verifiers.v1.utils.loaders import harness_class
 
 HARNESSES: list[str | dict] = [
@@ -56,9 +52,16 @@ HARNESSES: list[str | dict] = [
     "mini-swe-agent",
     "prime-agent",
 ]
-RUNTIMES = ["subprocess", "docker", "podman", "apptainer", "prime", "modal", "e2b"]
-ENGINES = ("podman", "apptainer")
-HARNESS_RUNTIMES = [runtime for runtime in RUNTIMES if runtime not in ENGINES]
+RUNTIMES = ["subprocess", "docker", "prime", "modal", "e2b", "custom"]
+PLUGIN = "plugin_runtime.HostBackend"
+
+# The framework's message for each runtime gap; a refused cell must fail with it.
+REFUSALS = {
+    "container": "needs a container runtime",
+    "user": "cannot run as another user",
+    "network": "does not enforce network policies",
+    "expose": "cannot expose a port",
+}
 
 # Harnesses that cannot run against the CI model yet.
 # TODO: drop each entry once its fix lands.
@@ -89,6 +92,8 @@ def mark(name: str) -> pytest.MarkDecorator:
 
 def runtime_config(runtime: str, harness: str | dict | None = None) -> dict:
     config: dict = {"type": runtime}
+    if runtime == "custom":
+        config["import_path"] = PLUGIN
     program = harness is not None and harness_class(harness_id(harness)).NEEDS_CONTAINER
     # The default sandboxes are too small to install and run an agent CLI: e2b's box
     # starves rlm's ACP startup, and prime's 1 CPU / 2 GB gets openclaw terminated.
@@ -100,15 +105,13 @@ def runtime_config(runtime: str, harness: str | dict | None = None) -> dict:
 
 
 def runtime_cls(runtime: str) -> type:
-    return _backend_cls(TypeAdapter(RuntimeConfig).validate_python({"type": runtime}))
-
-
-def runtime_supports_user(runtime: str) -> bool:
-    return runtime_cls(runtime).supports_user
+    return backend_cls(
+        TypeAdapter(RuntimeConfig).validate_python(runtime_config(runtime))
+    )
 
 
 def runtime_supports_network_policy(runtime: str) -> bool:
-    config = TypeAdapter(RuntimeConfig).validate_python({"type": runtime})
+    config = TypeAdapter(RuntimeConfig).validate_python(runtime_config(runtime))
     return isinstance(config, NetworkPolicyConfig)
 
 
@@ -122,16 +125,10 @@ def resumes(cls: type[Harness]) -> bool:
     )
 
 
-def unsupported(
-    harness: str | dict, runtime: str, needs: tuple[str, ...]
-) -> str | None:
-    """Why this cell cannot run, or None when it can."""
+def unsupported(harness: str | dict, needs: tuple[str, ...]) -> str | None:
+    """Why the harness cannot run this behavior, or None when it can."""
     name = harness_id(harness)
     cls = harness_class(name)
-    if runtime in ENGINES and shutil.which(runtime) is None:
-        return f"needs {runtime} on the host"
-    if runtime == "subprocess" and cls.NEEDS_CONTAINER:
-        return f"{name} needs a container runtime"
     if "shell" in needs and not cls.EXECUTES_CODE:
         return f"{name} gives the model no shell"
     if "mcp" in needs and not cls.SUPPORTS_MCP:
@@ -140,11 +137,30 @@ def unsupported(
         return f"{name} has no native skill support"
     if "resume" in needs and not resumes(cls):
         return f"{name} cannot resume an exchange"
-    if "user" in needs and not runtime_supports_user(runtime):
-        return f"{runtime} cannot run commands as another user"
+    return CI_MODEL_GAPS.get(name)
+
+
+def refused(harness: str | dict, runtime: str, needs: tuple[str, ...]) -> list[str]:
+    """The gaps the runtime may refuse this cell with; the first check to run wins."""
+    cls = runtime_cls(runtime)
+    gaps = []
+    if harness_class(harness_id(harness)).NEEDS_CONTAINER and not cls.supports_image:
+        gaps.append("container")
+    if "user" in needs and not cls.supports_user:
+        gaps.append("user")
     if "network" in needs and not runtime_supports_network_policy(runtime):
-        return f"{runtime} has no network policy"
-    return None
+        gaps.append("network")
+    return gaps
+
+
+def cell_marks(
+    harness: str | dict, runtime: str, needs: tuple[str, ...]
+) -> list[pytest.MarkDecorator]:
+    if reason := unsupported(harness, needs):
+        return [pytest.mark.skip(reason=reason)]
+    if gaps := refused(harness, runtime, needs):
+        return [pytest.mark.refused("|".join(REFUSALS[gap] for gap in gaps))]
+    return []
 
 
 def runtimes_grid(
@@ -153,30 +169,27 @@ def runtimes_grid(
     """`harness_runtime` cells for a behavior with no harness axis."""
     cells = []
     for runtime in runtimes:
-        marks = [mark(runtime)]
-        if reason := unsupported("null", runtime, needs):
-            marks.append(pytest.mark.skip(reason=reason))
+        marks = [mark(runtime), *cell_marks("null", runtime, needs)]
         cells.append(pytest.param(runtime, marks=marks, id=f"harness-in-{runtime}"))
     return cells
 
 
 def grid(
     harnesses: Sequence[str | dict] = HARNESSES,
-    runtimes: Sequence[str] = HARNESS_RUNTIMES,
+    runtimes: Sequence[str] = RUNTIMES,
     *,
     needs: tuple[str, ...] = (),
 ) -> list:
-    """`(harness, harness_runtime)` cells, each marked by its axes and skipped with a
-    reason where the behavior's `needs` or the runtime rule it out."""
+    """`(harness, harness_runtime)` cells, each marked by its axes, skipped where the
+    harness rules the behavior out, and refused where the runtime does."""
     cells = []
     for harness in harnesses:
         for runtime in runtimes:
-            marks = [mark(harness_id(harness)), mark(runtime)]
-            reason = unsupported(harness, runtime, needs) or CI_MODEL_GAPS.get(
-                harness_id(harness)
-            )
-            if reason:
-                marks.append(pytest.mark.skip(reason=reason))
+            marks = [
+                mark(harness_id(harness)),
+                mark(runtime),
+                *cell_marks(harness, runtime, needs),
+            ]
             cells.append(
                 pytest.param(
                     harness,
@@ -213,23 +226,11 @@ def placements(
     for harness_runtime in harness_runtimes:
         for tool_runtime in tool_runtimes:
             marks = [mark(harness_runtime), mark(tool_runtime)]
-            missing = [
-                engine
-                for engine in {harness_runtime, tool_runtime} & set(ENGINES)
-                if shutil.which(engine) is None
-            ]
-            if missing:
-                marks.append(pytest.mark.skip(reason=f"needs {missing[0]} on the host"))
-            elif (
+            if (
                 tool_runtime != "colocated"
                 and not runtime_cls(tool_runtime).supports_expose
             ):
-                marks.append(
-                    pytest.mark.skip(
-                        reason=f"{tool_runtime} cannot expose a port; a tool server "
-                        "there is reachable only colocated"
-                    )
-                )
+                marks.append(pytest.mark.refused(REFUSALS["expose"]))
             cells.append(
                 pytest.param(
                     harness_runtime,

@@ -148,8 +148,12 @@ class RuntimeBackend(ABC):
 
     is_local: bool = True
     """Whether this runtime exchanges host-local URLs without a public tunnel. True for
-    subprocess and the local container runtimes; remote runtimes override to False and
-    use a host `Tunnel` inward plus `expose` outward."""
+    subprocess and docker; remote runtimes override to False and use a host `Tunnel`
+    inward plus `expose` outward."""
+
+    supports_image: ClassVar[bool] = False
+    """Whether the runtime boots a task image in its own filesystem. Tasks with an image,
+    container-only harnesses, and isolated grading require it."""
 
     supports_user: ClassVar[bool] = False
     """Whether handles can bind another existing user."""
@@ -328,8 +332,8 @@ class RuntimeBackend(ABC):
         """A fixed port this runtime exposes to the outside at startup, declared up front to the
         provider (Modal forwards only ports named at `Sandbox.create`). When set, a server placed
         here binds it instead of a host-chosen free port, and `expose` returns its public URL.
-        `None` for runtimes whose services already sit on host loopback (subprocess,
-        apptainer), which pick a free port."""
+        `None` for runtimes whose services already sit on host loopback (subprocess),
+        which pick a free port."""
         return None
 
     async def expose(self, port: int) -> str:

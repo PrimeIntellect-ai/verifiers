@@ -151,6 +151,7 @@ class PrimeProcess(RuntimeProcess):
 
 
 class PrimeBackend(RuntimeBackend):
+    supports_image: ClassVar[bool] = True
     supports_user: ClassVar[bool] = True
     supports_expose: ClassVar[bool] = False
     is_local: ClassVar[bool] = False
