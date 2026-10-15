@@ -134,6 +134,11 @@ def _eval_config(
             if isinstance(harness, str)
             else harness
         )
+    if harness and env_cfg["agent"]["harness"].id == "deepseek":
+        # The Messages gateway requires a complete thinking configuration.
+        env_cfg["agent"].setdefault("sampling", {}).setdefault(
+            "thinking", {"type": "adaptive"}
+        )
     if runtime:
         runtime_cfg = dict(runtime)
         _label_prime_runtimes(runtime_cfg)
