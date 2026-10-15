@@ -76,6 +76,9 @@ PRIME_DOCKERD = (
 # stay backed by the host, which only reclaims free pages, and pulling and building multi-GB
 # images fills the cache in minutes. The host keeps dropping clean cache while the VM lives.
 PRIME_CACHE_DROP = "while sleep 5; do sync; echo 1 > /proc/sys/vm/drop_caches; done"
+# The project's name on its host VM, so a host restored from a checkpoint brings the same
+# containers (and the files they held) back up instead of creating new ones.
+PROJECT_FILE = "/var/lib/vf-compose/project"
 # A host image can ship `docker save` archives here so services need no registry.
 # Each archive is removed once loaded, returning its disk space to the services.
 COMPOSE_IMAGES = "/opt/verifiers/compose-images"
@@ -247,6 +250,24 @@ async def compose_services(
                     await host_backend.bind().run_background(
                         ["sh", "-c", PRIME_CACHE_DROP], {}, "/tmp/cache-drop.log"
                     )
+                if host_backend.restored:
+                    saved = await run_host("cat", PROJECT_FILE)
+                    if saved.exit_code or not saved.stdout.strip():
+                        raise SandboxError("restored Compose host has no project name")
+                    project[-1] = compose_argv[project.index("--project-name") + 1] = (
+                        saved.stdout.strip()
+                    )
+                else:
+                    saved = await run_host(
+                        "sh",
+                        "-c",
+                        f"mkdir -p {shlex.quote(str(Path(PROJECT_FILE).parent))} && "
+                        f"printf %s {shlex.quote(project[-1])} > {shlex.quote(PROJECT_FILE)}",
+                    )
+                    if saved.exit_code:
+                        raise SandboxError(
+                            f"Recording the Compose project failed: {saved.stderr}"
+                        )
                 async with asyncio.timeout(60):
                     while (await run_host("docker", "info")).exit_code:
                         await asyncio.sleep(1)

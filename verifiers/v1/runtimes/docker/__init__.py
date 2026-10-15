@@ -105,6 +105,30 @@ class DockerBackend(ContainerBackend):
         # Helper containers carry the run label, including for borrowed containers.
         self._label_args = ["--label", f"verifiers.run={run_scope()}"]
 
+    @property
+    def supports_checkpoint(self) -> bool:
+        # A container on a host VM (Compose) is saved with its host: the checkpoint holds
+        # the Docker daemon's data, so a host restored from it brings the container back.
+        return self._host_backend is not None and self._host_backend.supports_checkpoint
+
+    @property
+    def restored(self) -> bool:
+        return self._host_backend is not None and self._host_backend.restored
+
+    async def checkpoint(self) -> str:
+        if not self.supports_checkpoint:
+            raise NotImplementedError(
+                f"{type(self).__name__} has no filesystem checkpoints"
+            )
+        return await self._host_backend.checkpoint()
+
+    async def delete_checkpoint(self, checkpoint_id: str) -> None:
+        if not self.supports_checkpoint:
+            raise NotImplementedError(
+                f"{type(self).__name__} has no filesystem checkpoints"
+            )
+        await self._host_backend.delete_checkpoint(checkpoint_id)
+
     @classmethod
     @contextlib.asynccontextmanager
     async def attach(
