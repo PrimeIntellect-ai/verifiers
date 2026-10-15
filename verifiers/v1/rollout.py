@@ -311,7 +311,8 @@ class Rollout:
                         self._grading_config = verifier_runtime(
                             self._grader,
                             runtime,
-                            self.deployment.verifier_config(),
+                            # Solver task requirements must not override the verifier's.
+                            self.trace.agent.config.runtime,
                             self._scoring_policy,
                         )
                     elif self._scoring_policy.runtime is not None:
