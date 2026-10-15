@@ -54,6 +54,8 @@ GRADER_PATHS = ("/tests", "/logs/verifier")
 """Where a Harbor verifier keeps its tests and writes its reward: grader-owned, so no
 restored submission may link into them."""
 MAX_REWARD_BYTES = 1024 * 1024
+VERIFIER_OUTPUT_BYTES = 16_000
+"""How much of the verifier's output, and of each log it leaves, a trace keeps."""
 # Booleans count as 1/0, as Harbor reads them (CyberGym's verifier writes flags alongside its reward).
 REWARD_JSON_ADAPTER = TypeAdapter(
     dict[str, bool | float],
@@ -451,6 +453,7 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
     ) -> float | dict[str, float]:
         # The reward file is authoritative even when the script exits nonzero.
         result = await self.launch_verifier(runtime, trace)
+        await self.record_verifier_output(runtime, trace, result)
         scores = await self.read_reward_json(runtime)
         if scores is None:
             try:
@@ -481,6 +484,35 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
             {name: value for name, value in scores.items() if name != key}
         )
         return {key: scores[key]}
+
+    async def record_verifier_output(
+        self, runtime: Runtime, trace: Trace, result: ProgramResult
+    ) -> None:
+        """Keep what the verifier reported at `trace.info["verifier"]`: `test.sh`'s exit
+        code and output, and the end of each text file it left in /logs/verifier besides
+        the reward (test logs, reports). The most recently written files are kept, down
+        to depth 3, so the stage that failed is among them.
+
+        A diagnostic only: when listing the files fails, the reward reads that follow
+        decide the grade, and a failed box surfaces there."""
+        listing = (
+            "{ for f in $(find /logs/verifier -maxdepth 3 -type f ! -name reward.json "
+            "! -name reward.txt -printf '%T@ %p\\n' 2>/dev/null | sort -n | tail -n 20 "
+            "| cut -d' ' -f2-); do "
+            'grep -Iq . "$f" 2>/dev/null || continue; '
+            f'printf "==> %s <==\\n" "$f"; tail -c {VERIFIER_OUTPUT_BYTES} "$f"; echo; '
+            f"done; }} | tail -c {4 * VERIFIER_OUTPUT_BYTES}"
+        )
+        try:
+            files = (await runtime.run(["sh", "-c", listing], {})).stdout
+        except SandboxError as exc:
+            logger.warning("listing the verifier's logs failed: %s", exc)
+            files = ""
+        trace.info["verifier"] = {
+            "exit_code": result.exit_code,
+            "output": (result.stdout + result.stderr)[-VERIFIER_OUTPUT_BYTES:],
+            "files": files,
+        }
 
     async def launch_verifier(self, runtime: Runtime, trace: Trace) -> ProgramResult:
         """Run `/tests/test.sh` and return its result; `run_verifier` then reads the
