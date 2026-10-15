@@ -228,11 +228,21 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
     def deployment_spec(self):
         from verifiers.v1.runtimes.compose import ComposeSpec
 
-        if (Path(self.data.task_dir) / "environment/docker-compose.yaml").is_file():
+        authored = (
+            Path(self.data.task_dir) / "environment/docker-compose.yaml"
+        ).is_file()
+        sidecars = {
+            m.bundle: m.sidecar_service()
+            for m in self.data.tools
+            if m.placement == "sidecar"
+        }
+        if authored or sidecars:
             return ComposeSpec(
                 self.data.task_dir,
+                file="environment/docker-compose.yaml" if authored else None,
                 host_image=self.data.compose_host_image,
                 image_override=self.data.image is not None,
+                services=sidecars,
             )
         return super().deployment_spec()
 
@@ -305,17 +315,40 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
                     f"{(result.stderr or result.stdout).strip()[-500:]}"
                 )
         if self.data.tools:
-            await toolbundles.mount(
-                runtime, self.data.tools, agent_user=self.data.agent_user
-            )
+            await self.mount_tools(runtime, deployment)
         if self.data.healthcheck is not None:
             await self.wait_for_health(runtime, self.data.healthcheck)
 
-    async def restore(self, runtime: Runtime) -> None:
+    def _sidecars(
+        self, deployment: Deployment | None
+    ) -> list[tuple[Runtime, ToolMount]]:
+        sidecars = [m for m in self.data.tools if m.placement == "sidecar"]
+        if sidecars and deployment is None:
+            raise TaskError("sidecar tool bundles need the task's Compose deployment")
+        return [(deployment.target(m.service), m) for m in sidecars]
+
+    async def mount_tools(
+        self, runtime: Runtime, deployment: Deployment | None
+    ) -> None:
+        """Install each tool bundle where it runs (`toolbundles.mount`): the box-placed
+        ones and every endpoint in the solver's box, each sidecar's in its service."""
+        boxed = [m for m in self.data.tools if m.placement == "box"]
+        for target, mount in self._sidecars(deployment):
+            await toolbundles.mount(target, [mount])
+        await toolbundles.mount(
+            runtime, boxed, endpoints=self.data.tools, agent_user=self.data.agent_user
+        )
+
+    async def restore(
+        self, runtime: Runtime, deployment: Deployment | None = None
+    ) -> None:
         """A box from a checkpoint keeps its files but no process: start the tool
         servers again over the state they left on disk."""
-        if self.data.tools:
-            await toolbundles.start(runtime, self.data.tools)
+        await toolbundles.start(
+            runtime, [m for m in self.data.tools if m.placement == "box"]
+        )
+        for target, mount in self._sidecars(deployment):
+            await toolbundles.start(target, [mount])
 
     async def wait_for_health(self, runtime: Runtime, healthcheck: dict) -> None:
         from harbor.environments.base import HealthcheckError
@@ -802,7 +835,8 @@ def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborD
     artifacts, hooks, verifier = parse_verifier_extras(task_dir, parsed, harbor_config)
     environment = parsed.environment
     # Harbor ignores the `[[tools]]` table; each bundle compiles to an MCP server
-    # entry and a collect hook that dumps its end state before the authored hooks.
+    # entry, a collect hook that dumps its end state before the authored hooks (in
+    # the service it runs in), and that dump as a declared artifact.
     tools = toolbundles.parse_mounts(
         task_dir, tomllib.loads((task_dir / "task.toml").read_text()).get("tools")
     )
@@ -812,7 +846,21 @@ def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborD
             f"{task_dir.name}: tool bundles and mcp_servers share names {sorted(clash)}"
         )
     mcp_servers += [m.mcp_server() for m in tools]
-    hooks = [CollectHook(command=m.dump_command()) for m in tools] + hooks
+    hooks = [
+        CollectHook(command=m.dump_command(), service=m.service) for m in tools
+    ] + hooks
+    artifacts += [HarborArtifact(source=m.dump_file, service=m.service) for m in tools]
+    compose = task_dir / "environment" / "docker-compose.yaml"
+    if compose.is_file() and any(m.placement == "sidecar" for m in tools):
+        import yaml
+
+        declared = set(yaml.safe_load(compose.read_text())["services"])
+        if clash := sorted(
+            declared & {m.bundle for m in tools if m.placement == "sidecar"}
+        ):
+            raise ValueError(
+                f"{task_dir.name}: sidecar tool bundles {clash} share a Compose service name"
+            )
     image = resolve_image(
         task_dir,
         environment.docker_image,

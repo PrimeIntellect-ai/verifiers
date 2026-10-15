@@ -13,9 +13,9 @@ import sys
 import tarfile
 import tempfile
 import uuid
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import AsyncExitStack, asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import partial
 from pathlib import Path
 
@@ -97,10 +97,15 @@ class ComposeSpec:
     """
 
     directory: str
-    file: str = "environment/docker-compose.yaml"
+    file: str | None = "environment/docker-compose.yaml"
+    """The task's Compose file, relative to `directory`; None when the task authors
+    none and only `services` join its workspace."""
     workspace: str = "main"
     host_image: str | None = None
     image_override: bool = False
+    services: Mapping[str, dict] = field(default_factory=dict)
+    """Services the framework adds beside the authored ones (a task's tool sidecars),
+    as Compose service definitions. A name the task's file also declares is refused."""
 
 
 @asynccontextmanager
@@ -189,7 +194,13 @@ async def compose_services(
                     directory / "task",
                 )
             )
-            authored = yaml.safe_load((directory / "task" / spec.file).read_text())
+            authored = (
+                yaml.safe_load((directory / "task" / spec.file).read_text())
+                if spec.file is not None
+                else {"services": {}}
+            )
+            if clash := sorted(spec.services.keys() & authored["services"].keys()):
+                raise SandboxError(f"Compose services {clash} are declared twice")
             for kind in ("volumes", "networks"):
                 if any(
                     value and (value.get("name") or value.get("external"))
@@ -221,6 +232,9 @@ async def compose_services(
             (directory / "base.json").write_text(json.dumps(base))
             (directory / "env.json").write_text(
                 json.dumps({"services": {spec.workspace: {"environment": environment}}})
+            )
+            (directory / "services.json").write_text(
+                json.dumps({"services": dict(spec.services)})
             )
 
             root = str(directory)
@@ -297,11 +311,16 @@ async def compose_services(
                     "host; install the Compose v2 plugin or use a host image that "
                     "includes it. Standalone `docker-compose` v1 is unsupported."
                 )
-            project_dir = f"{root}/task/{Path(spec.file).parent}"
+            project_dir = (
+                f"{root}/task/{Path(spec.file).parent}"
+                if spec.file is not None
+                else f"{root}/task"
+            )
             compose_argv += ["--project-directory", project_dir]
             for file in (
                 "base.json",
-                f"task/{spec.file}",
+                *([f"task/{spec.file}"] if spec.file is not None else []),
+                "services.json",
                 "env.json",
             ):
                 compose_argv += ["-f", f"{root}/{file}"]

@@ -5,16 +5,22 @@ A task declares bundles in `task.toml`:
     [[tools]]
     bundle = "crm-suite"                  # tools/crm-suite/ in the task dir
     seed = "tools/seed/crm-suite.json"    # default: tools/seed/<bundle>.json
-    placement = "box"                     # the only placement so far
+    placement = "box"                     # or "sidecar"
 
 A bundle dir holds `bundle.toml` (name, version, owner, interface, kind) and a
 `tools.py` written against the stdlib runtime `vf_tools.py`, which ships into the box.
 The server speaks MCP over streamable HTTP; the task reaches it as a Harbor MCP
 server. After the agent stops, a collect hook dumps the bundle's state to
-`/logs/artifacts/tools/<bundle>.json`, which travels to the grader like any artifact.
+`/logs/tools/<bundle>.json`, a declared artifact that travels to the grader.
 
-`box` placement runs the server as root in the solver's box; its code and state dirs
-are 0700 root, so a non-root agent changes state only through the tools.
+- `box` runs the server as root in the solver's box; its code and state dirs are 0700
+  root, so a non-root agent changes state only through the tools.
+- `sidecar` runs it in a Compose service of its own (`ComposeSpec.services`), which
+  the agent reaches only over the network, whatever user it runs as. A task without a
+  Compose file becomes a Compose deployment for it: on Prime, a VM per rollout.
+
+Either way the solver's box gets the `vf-tools` CLI and the endpoint map, so scripts
+there (an oracle) call the tools as the agent does.
 """
 
 from __future__ import annotations
@@ -44,7 +50,9 @@ BUNDLES_DIR = "/opt/vf-tools"
 """0700 root: bundle code."""
 STATE_DIR = "/var/lib/vf-tools"
 """0700 root: bundle state."""
-DUMP_DIR = "/logs/artifacts/tools"
+DUMP_DIR = "/logs/tools"
+SIDECAR_IMAGE = "python:3.12-slim"
+IDLE = ["sh", "-c", "trap 'exit 0' TERM; while :; do sleep 3600 & wait $!; done"]
 BASE_PORT = 18400
 NAME_PATTERN = r"^[a-z][a-z0-9-]{0,39}$"
 
@@ -87,14 +95,26 @@ class ToolMount(BaseModel):
     """Host path to the bundle dir."""
     seed: str | None = None
     """Host path to the seed JSON; None starts from `{}`."""
-    placement: Literal["box"] = "box"
+    placement: Literal["box", "sidecar"] = "box"
     port: int
     interface: Literal["direct", "search_execute"] = "direct"
     version: int = 1
     owner: Literal["registry", "task"] = "registry"
 
     @property
+    def service(self) -> str:
+        """The Compose service the server runs in."""
+        return "main" if self.placement == "box" else self.bundle
+
+    @property
     def url(self) -> str:
+        """Where the solver's box reaches the server."""
+        host = "127.0.0.1" if self.placement == "box" else self.bundle
+        return f"http://{host}:{self.port}/mcp"
+
+    @property
+    def local_url(self) -> str:
+        """Where the server's own box reaches it."""
         return f"http://127.0.0.1:{self.port}/mcp"
 
     @property
@@ -115,6 +135,11 @@ class ToolMount(BaseModel):
             f"--out {shlex.quote(self.dump_file)}"
         )
 
+    def sidecar_service(self) -> dict:
+        """The Compose service a sidecar-placed server runs in: an idle Python box that
+        setup fills, seeds and starts as it does the solver's."""
+        return {"image": SIDECAR_IMAGE, "command": IDLE}
+
     def serve_command(self) -> list[str]:
         return [
             "python3",
@@ -127,7 +152,7 @@ class ToolMount(BaseModel):
             "--state",
             self.state_file,
             "--host",
-            "127.0.0.1",
+            "127.0.0.1" if self.placement == "box" else "0.0.0.0",
             "--port",
             str(self.port),
             "--interface",
@@ -241,12 +266,18 @@ async def _sh(runtime: Runtime, script: str, what: str, *args: str) -> None:
 
 
 async def mount(
-    runtime: Runtime, mounts: list[ToolMount], *, agent_user: str | None = None
+    runtime: Runtime,
+    mounts: list[ToolMount],
+    *,
+    endpoints: list[ToolMount] | None = None,
+    agent_user: str | None = None,
 ) -> None:
-    """Install the runtime and the bundles, seed their state, and start
-    their servers. Runs as the box's default user (root), before the agent starts."""
-    if not mounts:
-        return
+    """Install the runtime, the `vf-tools` CLI and the endpoint map of ``endpoints``
+    (default: ``mounts``), then the bundles of ``mounts``: seed their state and start
+    their servers. Runs as the box's default user (root), before the agent starts.
+    The solver's box gets every task's endpoint and its box-placed bundles; a sidecar
+    gets its own bundle."""
+    endpoints = mounts if endpoints is None else endpoints
     await _sh(runtime, _PYTHON_CHECK, "tool bundles need python3 >= 3.9 in the image")
     if agent_user is not None:
         await _sh(
@@ -254,7 +285,7 @@ async def mount(
         )
     files: dict[str, bytes | Path] = {"runtime/vf_tools.py": RUNTIME_SOURCE}
     files["runtime/endpoints.json"] = json.dumps(
-        {m.bundle: m.url for m in mounts}, sort_keys=True
+        {m.bundle: m.url for m in endpoints}, sort_keys=True
     ).encode()
     for m in mounts:
         files[f"bundles/{m.bundle}"] = Path(m.directory)
@@ -263,7 +294,7 @@ async def mount(
     await runtime.write(archive, _tar(files))
     seeds = " ".join(
         f"python3 {RUNTIME} seed --state {shlex.quote(m.state_file)} "
-        f"--seed /var/tmp/vf-tools/seeds/{m.bundle}.json &&"
+        f"--seed /var/tmp/vf-tools/seeds/{m.bundle}.json;"
         for m in mounts
     )
     await _sh(
@@ -287,14 +318,15 @@ async def mount(
 
 
 async def start(runtime: Runtime, mounts: list[ToolMount]) -> None:
-    """Start the servers over their current state and wait until each
-    lists its tools. `mount` calls this; a box restored from a checkpoint calls it
-    alone, so the run continues from the state on disk."""
+    """Start the servers of ``mounts`` in ``runtime`` over their current state and wait
+    until each lists its tools. `mount` calls this; a box restored from a checkpoint
+    calls it alone, so the run continues from the state on disk."""
     for m in mounts:
         log = f"/var/log/vf-tools-{m.bundle}.log"
         await runtime.run_background(m.serve_command(), {}, log)
         result = await runtime.run(
-            ["sh", "-c", _READY.format(runtime=RUNTIME, url=shlex.quote(m.url))], {}
+            ["sh", "-c", _READY.format(runtime=RUNTIME, url=shlex.quote(m.local_url))],
+            {},
         )
         if result.exit_code != 0:
             tail = await runtime.run(["tail", "-c", "2000", log], {})

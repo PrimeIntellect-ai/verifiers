@@ -5,7 +5,7 @@ import tomllib
 
 import pytest
 
-from verifiers.v1.tasksets.harbor import HarborConfig
+from verifiers.v1.tasksets.harbor import HarborConfig, HarborTask
 from verifiers.v1.tasksets.harbor.taskset import parse_task, verifier_box_data
 from verifiers.v1.toolbundles import BASE_PORT, bundle_digest, parse_mounts
 
@@ -54,9 +54,43 @@ def test_a_bundle_compiles_to_an_mcp_server_and_a_dump_hook(tmp_path, make_bundl
         }
     ]
     assert data.collect[0].command == mount.dump_command()
+    assert data.collect[0].service == "main"
     assert data.collect[1].command == "true"
+    assert [(a.source, a.service) for a in data.artifacts][-1] == (
+        mount.dump_file,
+        "main",
+    )
     grader = verifier_box_data(data)
     assert grader.tools == [] and grader.mcp_servers == []
+    assert HarborTask(data).deployment_spec() is None
+
+
+def test_a_sidecar_bundle_gets_a_service_of_its_own(tmp_path, make_bundle):
+    task = make_task(
+        tmp_path, '[[tools]]\nbundle = "crm"\nplacement = "sidecar"\n', make_bundle
+    )
+    data = parse_task(task, 0, HarborConfig())
+    (mount,) = data.tools
+    assert data.mcp_servers[-1]["url"] == f"http://crm:{BASE_PORT}/mcp"
+    assert data.collect[0].service == "crm"
+    assert [(a.source, a.service) for a in data.artifacts][-1] == (
+        mount.dump_file,
+        "crm",
+    )
+    spec = HarborTask(data).deployment_spec()
+    assert spec.file is None and set(spec.services) == {"crm"}
+
+
+def test_a_sidecar_may_not_take_an_authored_service_name(tmp_path, make_bundle):
+    task = make_task(
+        tmp_path, '[[tools]]\nbundle = "crm"\nplacement = "sidecar"\n', make_bundle
+    )
+    (task / "environment").mkdir()
+    (task / "environment" / "docker-compose.yaml").write_text(
+        "services:\n  main:\n    image: x\n  crm:\n    image: y\n"
+    )
+    with pytest.raises(ValueError):
+        parse_task(task, 0, HarborConfig())
 
 
 @pytest.mark.parametrize(

@@ -44,7 +44,7 @@ TEST_SH = textwrap.dedent(
     """\
     python3 - <<'EOF'
     import json
-    state = json.load(open("/logs/artifacts/tools/crm.json"))
+    state = json.load(open("/logs/tools/crm.json"))
     names = [c["name"] for c in state["crm"]["contacts"]]
     open("/logs/verifier/reward.txt", "w").write("1" if "Grace" in names else "0")
     EOF
@@ -52,16 +52,18 @@ TEST_SH = textwrap.dedent(
 )
 
 
-@pytest.fixture
-def task(tmp_path) -> HarborTask:
-    root = tmp_path / "crm-task"
+def make_task(
+    tmp_path, *, placement: str = "box", agent_user: bool = True
+) -> HarborTask:
+    root = tmp_path / f"crm-{placement}"
     (root / "tests").mkdir(parents=True)
     (root / "tests" / "test.sh").write_text(TEST_SH)
     (root / "instruction.md").write_text("Add Grace to the CRM.\n")
     (root / "task.toml").write_text(
         f'version = "1.0"\n[environment]\ndocker_image = "{IMAGE}"\n'
-        '[agent]\nuser = "agent"\n[verifier]\nenvironment_mode = "separate"\n'
-        '[[tools]]\nbundle = "crm"\n'
+        + ('[agent]\nuser = "agent"\n' if agent_user else "")
+        + '[verifier]\nenvironment_mode = "separate"\n'
+        f'[[tools]]\nbundle = "crm"\nplacement = "{placement}"\n'
     )
     bundle = root / "tools" / "crm"
     bundle.mkdir(parents=True)
@@ -74,13 +76,20 @@ def task(tmp_path) -> HarborTask:
     return HarborTask(parse_task(root, 0, HarborConfig()))
 
 
+@pytest.fixture
+def task(tmp_path) -> HarborTask:
+    return make_task(tmp_path)
+
+
 async def graded(task: HarborTask, act) -> vf.Trace:
     trace = vf.Trace(
         task=vf.TraceTask.of(task),
         agent=vf.AgentInfo(config=vf.AgentConfig(model="unused")),
     )
     backend = make_backend(vf.DockerConfig(image=IMAGE, workdir="/app"))
-    deployment = backend.deploy(spec=task.deployment_spec())
+    deployment = backend.deploy(
+        spec=task.deployment_spec(), config=vf.DeploymentConfig(trust_compose=True)
+    )
     try:
         await deployment.start()
         runtime = deployment.workspace
@@ -134,3 +143,27 @@ async def test_the_untouched_seed_scores_zero(task):
 
     trace = await graded(task, act)
     assert trace.reward == 0, [e.message for e in trace.errors]
+
+
+async def test_a_sidecar_keeps_the_state_out_of_a_root_agents_box(tmp_path):
+    """A sidecar-placed bundle runs in its own Compose service: a root agent reaches it
+    only through the tools, and its dump travels from that service to the grader."""
+    task = make_task(tmp_path, placement="sidecar", agent_user=False)
+    seen = {}
+
+    async def act(task, runtime):
+        seen["added"] = await runtime.run(
+            [
+                "vf-tools",
+                "call",
+                "crm_add_contact",
+                '{"name": "Grace", "email": "g@x"}',
+            ],
+            {},
+        )
+        seen["state"] = await runtime.run(["ls", "/var/lib/vf-tools/crm"], {})
+
+    trace = await graded(task, act)
+    assert seen["added"].exit_code == 0, seen["added"].stderr
+    assert seen["state"].exit_code != 0
+    assert trace.reward == 1, [e.message for e in trace.errors]
