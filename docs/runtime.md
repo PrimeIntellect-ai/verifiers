@@ -70,6 +70,9 @@ deployment yourself (`backend.deploy(spec=task.deployment_spec(), ...)`), run th
 task's `setup` and `finalize` in `deployment.workspace`, and pass the deployment:
 `vf.grade_submission(task, trace, runtime, deployment=deployment)` stops the workspace,
 collects sidecar evidence, and releases the services before the verifier starts, as a
-rollout does. The caller still closes the deployment. `vf.check_restore(artifacts,
+rollout does. The caller still closes the deployment. `on_score=` runs a callback
+after task scoring in the verifier, as `Agent.run(on_score=...)` does: a judge agent
+borrowing the verifier's box, inside the scoring budget and retries, whose failure
+commits none of the attempt's scores. `vf.check_restore(artifacts,
 protected=...)` checks a collected submission on the host, before any grader exists,
 for every defect `restore` would refuse.

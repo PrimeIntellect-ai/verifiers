@@ -3,6 +3,7 @@
 import asyncio
 import copy
 import logging
+from collections.abc import Awaitable, Callable
 from contextlib import AsyncExitStack, contextmanager
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING
@@ -181,6 +182,7 @@ async def grade_submission(
     *,
     scoring: ScoringConfig | None = None,
     deployment: "Deployment | None" = None,
+    on_score: Callable[[Trace, Runtime], Awaitable[None]] | None = None,
 ) -> None:
     """Grade captured artifacts in a fresh verifier, as a rollout's close does.
 
@@ -190,6 +192,10 @@ async def grade_submission(
     that owns `runtime` (a model-free run of a composed task), grading stops its
     workspace, collects sidecar evidence (`Task.finalize_services`), and releases its
     resources before the verifier starts; the caller still closes it.
+
+    `on_score(trace, runtime)` runs after task scoring in the verifier, as `Agent.run`'s
+    does: inside its timeout and retry boundary, and only an attempt it finishes
+    commits the scores it left on the trace.
     """
     from verifiers.v1.runtimes.deployment import Deployment
 
@@ -211,7 +217,15 @@ async def grade_submission(
                 {name: deployment.target(name) for name in deployment.target_backends},
             )
         config = verifier_runtime(grader, runtime, deployment.verifier_config(), policy)
-        await grade_task(grader, trace, config, task.data.timeout, policy, deployment)
+        await grade_task(
+            grader,
+            trace,
+            config,
+            task.data.timeout,
+            policy,
+            deployment,
+            on_score=on_score,
+        )
     except TimeoutError:
         trace.record_timeout("scoring")
         raise
