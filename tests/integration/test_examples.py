@@ -11,7 +11,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
-from conftest import CI_JUDGE, CI_MODEL, CI_REASONING_EFFORT
+from conftest import CI_DECISION_JUDGE, CI_MODEL, CI_REASONING_EFFORT
 from grid import agent_seats
 
 EVAL_TIMEOUT = 600  # 10 minutes for a capped eval (-n 1 -r 1)
@@ -24,16 +24,27 @@ SKIP_EVAL = {
     "proposer_solver": "the CI model's proposer reasons past the token cap",
 }
 
-# Classification judges use their own model, independently of the solver.
+# Chat guards use the CI model; configurable grading uses the decision judge.
 JUDGE_OVERRIDES = {
     "interception": [
         "--env.taskset.task.judge.model",
-        CI_JUDGE["model"],
+        CI_MODEL,
+        "--env.taskset.task.judge.sampling.reasoning-effort",
+        CI_REASONING_EFFORT,
     ],
     "wiki_search": [
         "--env.taskset.task.judges",
-        # The list replaces the default entry, so restate its `question_field`.
-        json.dumps([{"id": "wiki-search", "question_field": "question", **CI_JUDGE}]),
+        # Replace the reference judge with the existing decision judge in CI.
+        json.dumps(
+            [
+                {
+                    "id": "decision",
+                    "question_field": "question",
+                    "answer_field": "answer",
+                    **CI_DECISION_JUDGE,
+                }
+            ]
+        ),
     ],
 }
 

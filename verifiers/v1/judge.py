@@ -32,10 +32,6 @@ in which case `JudgeResponse.parsed` is the validated pydantic object.
 A judge is cheap to construct (the HTTP client is opened per call, inside `complete`, and
 closed when the call returns), so build it where you use it.
 
-`decide` submits structured choice/score questions to the evaluations API. It shares
-the endpoint configuration and trace accounting with `complete`; built-in reference
-and rubric judges use it for Clef models.
-
 Passing `trace=` records the call onto it — a request/response record appended to
 `trace.info["judge_calls"]` and
 the call's tokens + cost added to `trace.extra_usage` (kept separate from the agent's `trace.usage`),
@@ -53,11 +49,9 @@ pre-plug them as class defaults) — and `Task.score` builds and runs it after t
 
 from __future__ import annotations
 
-import json
 import re
 from collections.abc import Callable, Mapping, Sequence
 from typing import TYPE_CHECKING, Any, Generic, Literal, cast
-from urllib.parse import urlsplit
 
 from openai.types.chat.completion_create_params import (
     CompletionCreateParamsNonStreaming,
@@ -140,67 +134,6 @@ class Judge(Generic[ParsedT, ConfigT]):
             r"(?<!^)(?=[A-Z])", "_", type(self).__name__.removesuffix("Judge")
         ).lower()
         return judge_key(self.config) or fallback or "judge"
-
-    @property
-    def uses_decisions(self) -> bool:
-        return self.config.model in {"cloudflare/clef", "cloudflare/clef-flash"}
-
-    async def decide(
-        self,
-        state: Any,
-        questions: dict[str, dict[str, Any]],
-        *,
-        trace: Trace | None = None,
-        parse: Callable[[dict[str, Any]], Any] | None = None,
-        endpoint: str | None = None,
-    ) -> JudgeResponse[Any]:
-        """Ask structured decision questions and record usage even if validation fails."""
-        request = {"model": self.config.model, "state": state, "questions": questions}
-        if endpoint is None:
-            url = urlsplit(self.config.base_url)
-            path = url.path.rstrip("/")
-            if not path.endswith("/evaluations"):
-                path += "/evaluations"
-            endpoint = url._replace(path=path).geturl()
-        async with build_async_openai(self.config) as client:
-            raw = await client.post(endpoint, cast_to=dict[str, Any], body=request)
-        result = raw.get("result", raw)
-        response = JudgeResponse[Any](text=json.dumps(raw))
-        try:
-            if usage := result.get("usage"):
-                response.usage = Usage(
-                    prompt_tokens=usage.get("inputTokens", usage.get("input_tokens")),
-                    completion_tokens=usage.get(
-                        "outputTokens", usage.get("output_tokens")
-                    ),
-                    cost=usage.get("cost"),
-                )
-            answers = result.get("answers")
-            if not isinstance(answers, dict) or set(answers) != set(questions):
-                raise ValueError("decision judge returned unexpected answer ids")
-            for name, question in questions.items():
-                answer = answers[name]
-                if (
-                    not isinstance(answer, dict)
-                    or answer.get("type") != question["type"]
-                ):
-                    raise ValueError(
-                        f"decision judge returned an invalid answer for {name!r}"
-                    )
-                if question["type"] == "choice" and (
-                    not isinstance(answer.get("choice"), str)
-                    or answer["choice"] not in question["criteria"]
-                ):
-                    raise ValueError(
-                        f"decision judge returned an unknown choice for {name!r}"
-                    )
-            response.parsed = parse(answers) if parse is not None else answers
-            return response
-        finally:
-            if trace is not None:
-                trace.record_judge_call(
-                    name=self.reward_name, request=request, response=response
-                )
 
     def build_messages(self, **fields: Any) -> str | Messages:
         template = self.prompt

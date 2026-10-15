@@ -1,22 +1,26 @@
 """Config-plugged judges score the rollout on top of the task's own reward."""
 
 import pytest
-from conftest import CI_JUDGE
+from conftest import CI_DECISION_JUDGE, CI_JUDGE
 
 
-@pytest.mark.parametrize("judge_id", ["reference", "rubric", "decision"])
-async def test_plugged_judge(run, tmp_path, judge_id):
-    """Judge config, calls, rewards, rubric metrics and usage reach the trace.
+@pytest.mark.parametrize("judge_id", ["rubric", "decision"])
+async def test_rubric_judge(run, tmp_path, judge_id):
+    """Keep rubric coverage and exercise Clef through the existing decision judge.
 
-    The reference answer is echoed exactly and the rubric's criterion is always
-    satisfied, so this checks the integration rather than grading quality."""
+    Both variants verify config loading, grading, trace records and usage; the
+    rubric variant also checks its per-criterion metric.
+    """
     rubric = tmp_path / "rubric.toml"
     rubric.write_text(
         "[[criteria]]\n"
         'name = "always_yes"\n'
         'text = "Always satisfied — answer yes regardless of the response."\n'
     )
-    judge = {"id": judge_id, **CI_JUDGE}
+    judge = {
+        "id": judge_id,
+        **(CI_DECISION_JUDGE if judge_id == "decision" else CI_JUDGE),
+    }
     if judge_id == "rubric":
         judge["path"] = str(rubric)
     (episode,) = await run(
@@ -32,5 +36,5 @@ async def test_plugged_judge(run, tmp_path, judge_id):
     if judge_id == "rubric":
         assert trace.metrics["rubric/always_yes"] == 1.0
     assert trace.info["judge_calls"]  # the call was recorded onto the trace
-    assert trace.info["judge_calls"][0]["request"]["model"] == "cloudflare/clef"
+    assert trace.info["judge_calls"][0]["request"]["model"] == judge["model"]
     assert trace.extra_usage[-1].prompt_tokens > 0

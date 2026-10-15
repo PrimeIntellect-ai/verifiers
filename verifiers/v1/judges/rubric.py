@@ -131,16 +131,16 @@ class RubricJudgeConfig(JudgeConfig):
     transcript — rubric criteria typically grade the process (tool use, citations,
     intermediate steps), not just the final answer."""
     max_criteria: int | None = Field(default=None, ge=1)
-    """How many criteria to grade per judge call. `None` (default) grades criteria together,
-    up to the endpoint's limit. `1` sends one call per criterion; `k` batches them k-at-a-time.
+    """How many criteria to grade per judge call. `None` (default) grades all criteria in one
+    call. `1` sends one call per criterion (n independent judges); `k` batches them k-at-a-time.
     Batches are graded concurrently and merged. Smaller batches trade more calls for focus/
     robustness. Must be >= 1."""
     structured_output: bool = False
-    """For chat models, grade via JSON-schema structured output (`response_format`) when `True`; grade via plain-text
+    """Grade via JSON-schema structured output (`response_format`) when `True`; grade via plain-text
     output parsed as JSON when `False` (the default). Plain text is far more reliable on endpoints
     whose structured decoding is flaky (e.g. GLM-5.2 and other non-OpenAI models on some providers
     return empty completions for structured calls, especially over long transcripts); OpenAI models
-    handle either. Decision models return native structured answers."""
+    handle either. Transient HTTP failures are already retried by the OpenAI client."""
 
 
 class CriterionVerdict(BaseModel):
@@ -225,31 +225,7 @@ class RubricJudge(Judge[RubricVerdicts, RubricJudgeConfig]):
             "criteria": "\n".join(render(c) for c in batch),
             "reference": reference,
         }
-        if self.uses_decisions:
-            if any(len(c.choices) > 255 for c in batch):
-                raise ValueError("decision rubric criteria support at most 255 choices")
-            # Stable API question ids need not restrict the rubric's display names.
-            names = {f"criterion_{i}": c for i, c in enumerate(batch)}
-            result = await self.decide(
-                {"prompt": self.build_messages(**fields)},
-                {
-                    name: {
-                        "type": "choice",
-                        "instructions": criterion.text,
-                        "criteria": {choice: None for choice in criterion.choices},
-                    }
-                    for name, criterion in names.items()
-                },
-                trace=trace,
-                parse=lambda answers: [
-                    CriterionVerdict(
-                        name=criterion.name, reason="", verdict=answers[name]["choice"]
-                    )
-                    for name, criterion in names.items()
-                ],
-            )
-            verdicts = result.parsed
-        elif self.config.structured_output:
+        if self.config.structured_output:
             result = await self.evaluate(trace=trace, **fields)
             verdicts = cast(RubricVerdicts, result.parsed).verdicts
         else:
@@ -267,8 +243,6 @@ class RubricJudge(Judge[RubricVerdicts, RubricJudgeConfig]):
     async def score(self, task: TaskData, trace: Trace) -> float:
         criteria = self.criteria
         k = self.config.max_criteria
-        if self.uses_decisions:
-            k = min(k or 64, 64)
         batches = (
             [criteria]
             if k is None

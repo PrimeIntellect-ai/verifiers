@@ -1,9 +1,11 @@
 """Decision-model judge using Prime's evaluations API by default."""
 
+import json
 from typing import Any, cast
 
 from pydantic import Field
 
+from verifiers.v1.clients.base import build_async_openai
 from verifiers.v1.configs.judge import JudgeConfig
 from verifiers.v1.judge import (
     Judge,
@@ -14,7 +16,7 @@ from verifiers.v1.judge import (
 )
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
-from verifiers.v1.types import ID
+from verifiers.v1.types import ID, Usage
 
 
 class DecisionJudgeConfig(JudgeConfig):
@@ -43,25 +45,43 @@ class DecisionJudge(Judge[float, DecisionJudgeConfig]):
     async def evaluate(
         self, *, trace: Trace | None = None, **fields: Any
     ) -> JudgeResponse[float]:
-        def parse(answers: dict[str, Any]) -> float:
-            score = answers["grade"]["score"] / (len(self.config.levels) - 1)
-            if not 0 <= score <= 1:
-                raise ValueError(f"decision judge score {score!r} is outside [0, 1]")
-            return score
-
-        return await self.decide(
-            fields,
-            {
+        request = {
+            "model": self.config.model,
+            "state": fields,
+            "questions": {
                 "grade": {
                     "type": "score",
                     "instructions": self.build_messages(**fields),
                     "criteria": self.config.levels,
                 }
             },
-            trace=trace,
-            parse=parse,
-            endpoint=self.config.base_url,
-        )
+        }
+        async with build_async_openai(self.config) as client:
+            raw = await client.post(
+                self.config.base_url, cast_to=dict[str, Any], body=request
+            )
+        result = raw.get("result", raw)  # Workers AI wraps its response in `result`.
+        response = JudgeResponse[float](text=json.dumps(raw))
+        try:
+            if usage := result.get("usage"):
+                response.usage = Usage(
+                    prompt_tokens=usage.get("inputTokens", usage.get("input_tokens")),
+                    completion_tokens=usage.get(
+                        "outputTokens", usage.get("output_tokens")
+                    ),
+                    cost=usage.get("cost"),
+                )
+            score = result["answers"]["grade"]["score"] / (len(self.config.levels) - 1)
+            if not 0 <= score <= 1:
+                raise ValueError(f"decision judge score {score!r} is outside [0, 1]")
+            response.parsed = score
+            return response
+        finally:
+            # The call was billed even if the score could not be parsed.
+            if trace is not None:
+                trace.record_judge_call(
+                    name=self.reward_name, request=request, response=response
+                )
 
     async def score(self, task: TaskData, trace: Trace) -> float:
         response = judge_response(trace, self.config.view)

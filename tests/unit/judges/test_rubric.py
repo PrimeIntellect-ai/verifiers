@@ -94,11 +94,10 @@ def test_rubric_rejects_bad_files(tmp_path):
         ).criteria
 
 
-@pytest.mark.parametrize("model", ["cloudflare/clef", "openai/gpt-6-luna"])
-async def test_rubric_score(tmp_path, fake_judge_model, make_trace, model):
+async def test_rubric_score(tmp_path, fake_judge_model, make_trace):
     # verdicts: mentions_paris=1 (w=3), is_polite=0 (w=1) -> weighted mean 0.75, from ONE
     # judge call; each verdict lands as a `<name>/<criterion>` metric.
-    judge = rubric_judge(tmp_path, model=model)
+    judge = rubric_judge(tmp_path)
     trace = make_trace()
     assert await judge.score(trace.task.data, trace) == 0.75
     assert trace.metrics == {"rubric/mentions_paris": 1.0, "rubric/is_polite": 0.0}

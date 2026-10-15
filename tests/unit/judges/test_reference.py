@@ -18,10 +18,9 @@ def test_reference_parse():
         judge.parse(JudgeResponse(text="gibberish"))
 
 
-@pytest.mark.parametrize("model", ["cloudflare/clef", "openai/gpt-6-luna"])
-async def test_reference_score(fake_judge_model, make_trace, model):
+async def test_reference_score(fake_judge_model, make_trace):
     trace = make_trace()
-    verdict = await vf.ReferenceJudge(vf.ReferenceJudgeConfig(model=model)).score(
+    verdict = await vf.ReferenceJudge(vf.ReferenceJudgeConfig(id="reference")).score(
         trace.task.data, trace
     )
     assert verdict == 1.0
@@ -31,17 +30,15 @@ async def test_reference_score(fake_judge_model, make_trace, model):
     assert len(trace.info["judge_calls"]) == 1  # the call is recorded onto the trace
     judge_record = trace.info["judge_calls"][0]
     assert judge_record["name"] == "reference"
-    assert judge_record["request"]["model"] == model
-    if model == "cloudflare/clef":
-        assert "Capital of France?" in judge_record["request"]["state"]["prompt"]
-        assert judge_record["request"]["questions"]["verdict"]["criteria"] == {
-            "yes": "Correct",
-            "no": "Incorrect",
-        }
-        assert trace.extra_usage[-1].prompt_tokens == 10
-    else:
-        assert "Capital of France?" in judge_record["request"]["messages"][0]["content"]
-        assert judge_record["response"]["message"]["content"] == "yes"
+    assert judge_record["request"]["model"] == "openai/gpt-6-luna"
+    assert "Capital of France?" in judge_record["request"]["messages"][0]["content"]
+    assert judge_record["response"]["message"] == {
+        "role": "assistant",
+        "content": "yes",
+        "reasoning_content": None,
+        "tool_calls": None,
+        "provider_state": None,
+    }
     assert judge_record["response"]["parsed"] == 1.0
 
     request_messages = [{"role": "user", "content": "original"}]

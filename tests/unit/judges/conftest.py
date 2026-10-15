@@ -1,4 +1,4 @@
-"""Fake chat and decision responses so judge tests need no network."""
+"""Fakes the judge model at `Judge.complete`, so judge tests need no network."""
 
 import json
 import re
@@ -62,27 +62,4 @@ def fake_judge_model(monkeypatch):
         return response
 
     monkeypatch.setattr(Judge, "complete", fake_complete)
-
-    class DecisionClient:
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *args):
-            pass
-
-        async def post(self, endpoint, *, cast_to, body):
-            prompt = body["state"]["prompt"]
-            prompts.append(prompt)
-            answers = {}
-            for name, question in body["questions"].items():
-                if name == "verdict":
-                    choice = "yes" if "Paris" in prompt.split("Response:")[-1] else "no"
-                else:
-                    choice = "yes" if "Paris" in question["instructions"] else "no"
-                answers[name] = {"type": "choice", "choice": choice}
-            return {"answers": answers, "usage": {"inputTokens": 10, "outputTokens": 0}}
-
-    monkeypatch.setattr(
-        "verifiers.v1.judge.build_async_openai", lambda config: DecisionClient()
-    )
     return prompts

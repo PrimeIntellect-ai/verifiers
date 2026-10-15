@@ -5,7 +5,7 @@ be retried instead of being scored against the model.
 """
 
 from pathlib import Path
-from typing import Any, cast
+from typing import cast
 
 from pydantic import model_validator
 
@@ -62,25 +62,6 @@ class ReferenceJudgeConfig(JudgeConfig):
 
 class ReferenceJudge(Judge[float, ReferenceJudgeConfig]):
     prompt = REFERENCE_PROMPT
-
-    async def evaluate(
-        self, *, trace: Trace | None = None, **fields: Any
-    ) -> JudgeResponse[float]:
-        if not self.uses_decisions:
-            return await super().evaluate(trace=trace, **fields)
-        positive, negative = self.config.choices
-        return await self.decide(
-            {"prompt": self.build_messages(**fields)},
-            {
-                "verdict": {
-                    "type": "choice",
-                    "instructions": "Select the verdict requested by the prompt.",
-                    "criteria": {positive: "Correct", negative: "Incorrect"},
-                }
-            },
-            trace=trace,
-            parse=lambda answers: float(answers["verdict"]["choice"] == positive),
-        )
 
     def parse(self, response: JudgeResponse[float]) -> float:
         return float(

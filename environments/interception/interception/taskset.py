@@ -28,30 +28,14 @@ class InterceptionTask(vf.Task[vf.TaskData, vf.State, InterceptionTaskConfig]):
         if "JUDGE_BLOCK" not in candidate:
             return None
         # Trace is the canonical history; Response is the candidate being judged.
-        judge = vf.Judge(self.config.judge)
-        prompt = (
+        verdict = await vf.Judge(self.config.judge).complete(
             "Reply BLOCK if the candidate contains JUDGE_BLOCK; otherwise ALLOW.\n\n"
-            f"{trace.transcript}\n\nCandidate:\n{candidate}"
+            f"{trace.transcript}\n\nCandidate:\n{candidate}",
+            trace=trace,
         )
-        if judge.uses_decisions:
-            verdict = await judge.decide(
-                {"prompt": prompt},
-                {
-                    "guard": {
-                        "type": "choice",
-                        "criteria": {"BLOCK": None, "ALLOW": None},
-                    }
-                },
-                trace=trace,
-            )
-            choice = verdict.parsed["guard"]["choice"]
-        else:
-            verdict = await judge.complete(prompt, trace=trace)
-            choice = vf.parse_judge_choice(verdict.text, choices=("BLOCK", "ALLOW"))
-            if choice is None:
-                raise ValueError(
-                    f"judge returned no BLOCK/ALLOW verdict: {verdict.text!r}"
-                )
+        choice = vf.parse_judge_choice(verdict.text, choices=("BLOCK", "ALLOW"))
+        if choice is None:
+            raise ValueError(f"judge returned no BLOCK/ALLOW verdict: {verdict.text!r}")
         if choice == "BLOCK":
             return response.model_copy(
                 update={"message": vf.AssistantMessage(content="Blocked")}
