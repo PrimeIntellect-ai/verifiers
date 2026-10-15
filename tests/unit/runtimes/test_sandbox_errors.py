@@ -246,6 +246,29 @@ async def test_prime_provisioning_refused_for_billing_is_an_account_error(
     )
 
 
+@pytest.mark.parametrize("status", [404, 410])
+async def test_prime_restore_of_a_gone_checkpoint_is_checkpoint_missing(
+    monkeypatch, status
+):
+    monkeypatch.setattr(prime, "ensure_prime_auth", lambda: None)
+    monkeypatch.setattr(
+        prime_sandboxes,
+        "AsyncSandboxClient",
+        lambda **_: FakeSandboxClient(create=APIError(f"HTTP {status}: not found")),
+    )
+    restoring = PrimeBackend(PrimeConfig(checkpoint="ck-gone"))
+    with pytest.raises(SandboxError) as caught:
+        await restoring.start()
+    await restoring.teardown()
+    assert caught.value.kind == "checkpoint_missing"
+
+    fresh = PrimeBackend(PrimeConfig())
+    with pytest.raises(SandboxError) as caught:
+        await fresh.start()
+    await fresh.teardown()
+    assert caught.value.kind == ("missing" if status == 404 else "box_lost")
+
+
 async def test_prime_io_and_exec_failures_are_typed(runtime, no_sleep):
     runtime.info.id = "sb1"
     runtime._client = FakeSandboxClient(

@@ -507,8 +507,12 @@ class PrimeBackend(RuntimeBackend):
                     f"{self.config.create_timeout_s:g}s: {e}",
                     kind="io",
                 ) from e
+            kind = sandbox_error_kind(e)
+            if self.config.checkpoint and http_status(e) in (404, 410):
+                # The create named a checkpoint the platform no longer has.
+                kind = "checkpoint_missing"
             raise SandboxError(
-                f"prime sandbox provisioning failed: {e}", kind=sandbox_error_kind(e)
+                f"prime sandbox provisioning failed: {e}", kind=kind
             ) from e
 
     async def _boot(self) -> None:

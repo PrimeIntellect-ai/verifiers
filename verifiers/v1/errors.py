@@ -84,7 +84,15 @@ class EnvError(RolloutError):
 
 
 SandboxErrorKind = Literal[
-    "account", "quota", "box_lost", "missing", "disk_full", "io", "exec", "unknown"
+    "account",
+    "quota",
+    "box_lost",
+    "missing",
+    "checkpoint_missing",
+    "disk_full",
+    "io",
+    "exec",
+    "unknown",
 ]
 """What a `SandboxError` means for the caller, set where the runtime raises it:
 
@@ -96,6 +104,10 @@ SandboxErrorKind = Literal[
   lost). Never a path: what may take a missing path as absent may not take this.
 - `missing`: a path the operation named does not exist (ENOENT, the SDK's file not
   found, 404). The transfer worked; the box is there.
+- `checkpoint_missing`: a box cannot be restored because its checkpoint is gone: the
+  provider no longer has the checkpoint a box starts from (a 404 or 410 on a restore),
+  or no checkpoint was recorded where a replay needs its box. Another try fails the
+  same way; the caller starts the work again without it.
 - `disk_full`: the box's disk is full (ENOSPC, 507). Repeating waits for nothing.
 - `io`: a transfer or the platform failed in transit (a dropped connection, a timeout,
   a gateway 5xx, the platform unavailable). Retryable; an outage is held through.

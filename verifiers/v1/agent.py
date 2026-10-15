@@ -53,6 +53,7 @@ from verifiers.v1.durable import (
     plan_call,
     resolve_call,
 )
+from verifiers.v1.errors import SandboxError
 from verifiers.v1.harness import Harness
 from verifiers.v1.interception import Interception, InterceptionServer
 from verifiers.v1.mcp import SharedToolServer
@@ -1120,8 +1121,8 @@ class DurableInteraction:
     async def box(self) -> Runtime:
         """The box as the turns given so far left it: the live exchange's, the borrowed
         one, or, while replaying, the one restored for those turns, restored now when
-        it is not yet (see the class docs). Raises RuntimeError when no checkpoint
-        recorded there matches the box."""
+        it is not yet (see the class docs). Raises a `checkpoint_missing`
+        `SandboxError` when no checkpoint recorded there matches the box."""
         if self._live is not None:
             runtime = self._live.runtime
             assert runtime is not None
@@ -1130,10 +1131,11 @@ class DurableInteraction:
             return self._borrowed
         point = self._replay_point()
         if point is None:
-            raise RuntimeError(
+            raise SandboxError(
                 f"no checkpoint of the recorded exchange holds its box after turn "
                 f"{self._next}: restoring the box during a replay needs a checkpoint at "
-                "the end of each turn (save='per_call', or interaction.checkpoint())"
+                "the end of each turn (save='per_call', or interaction.checkpoint())",
+                kind="checkpoint_missing",
             )
         return await self._restore(point)
 

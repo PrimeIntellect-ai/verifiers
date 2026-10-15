@@ -37,6 +37,7 @@ import verifiers.v1.runtimes as runtimes_module
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.client import EvalClientConfig
 from verifiers.v1.durable import call_parts, call_ref, latest, refs_of, resolve_call
+from verifiers.v1.errors import SandboxError
 from verifiers.v1.utils.retries import RETRY_NOTE
 
 
@@ -705,8 +706,9 @@ async def test_a_replay_without_turn_end_checkpoints_cannot_read(
         await drive(agent)
         async with agent.interaction(task(None), key="talk") as exchange:
             await exchange.turn("first")
-            with pytest.raises(RuntimeError, match="checkpoint"):
+            with pytest.raises(SandboxError, match="checkpoint") as caught:
                 await exchange.runtime.read("a.txt")
+            assert caught.value.kind == "checkpoint_missing"
 
 
 # -- a continuation cut off before it moved ----------------------------------------
