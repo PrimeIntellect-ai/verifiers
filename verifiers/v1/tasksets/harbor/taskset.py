@@ -35,7 +35,7 @@ from verifiers.v1.configs.scoring import ScoringConfig
 from verifiers.v1.configs.task import TaskConfig
 from verifiers.v1.configs.taskset import TasksetConfig
 from verifiers.v1.errors import SandboxError, TaskError
-from verifiers.v1.runtimes import Runtime
+from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.runtimes.deployment import Deployment
 from verifiers.v1.state import State
 from verifiers.v1.task import Task, TaskData, TaskResources, TaskTimeout
@@ -449,12 +449,8 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
     async def run_verifier(
         self, runtime: Runtime, trace: Trace
     ) -> float | dict[str, float]:
-        # By absolute path, in the runtime's configured workdir: Harbor execs the
-        # script the same way, and scripts do grade the agent's work at `$PWD`.
         # The reward file is authoritative even when the script exits nonzero.
-        result = await runtime.run(
-            ["bash", "/tests/test.sh"], resolve_env(self.scoring.env or {})
-        )
+        result = await self.launch_verifier(runtime, trace)
         scores = await self.read_reward_json(runtime)
         if scores is None:
             try:
@@ -485,6 +481,16 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
             {name: value for name, value in scores.items() if name != key}
         )
         return {key: scores[key]}
+
+    async def launch_verifier(self, runtime: Runtime, trace: Trace) -> ProgramResult:
+        """Run `/tests/test.sh` and return its result; `run_verifier` then reads the
+        reward. By absolute path, in the runtime's configured workdir: Harbor execs the
+        script the same way, and scripts do grade the agent's work at `$PWD`. A task
+        that keeps the launch's output (a diagnostic report) overrides this."""
+        del trace
+        return await runtime.run(
+            ["bash", "/tests/test.sh"], resolve_env(self.scoring.env or {})
+        )
 
     async def read_reward_json(self, runtime: Runtime) -> dict[str, float] | None:
         """JSON takes precedence whenever present; invalid or unreadable JSON fails.
