@@ -56,6 +56,17 @@ from verifiers.v1.contracts import (
     json_object,
     parse_markdown,
 )
+from verifiers.v1.conversation import (
+    CONVERSATION_KEY,
+    Conversation,
+    ConversationTurn,
+    ModelUser,
+    ScriptedUser,
+    User,
+    UserReply,
+    converse,
+    grade_live,
+)
 from verifiers.v1.durable import (
     Durable,
     TraceDir,
@@ -279,6 +290,15 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "Checkpoint",
     "Box",
     "box_of",
+    "CONVERSATION_KEY",
+    "Conversation",
+    "ConversationTurn",
+    "ModelUser",
+    "ScriptedUser",
+    "User",
+    "UserReply",
+    "converse",
+    "grade_live",
     "Durable",
     "DurableInteraction",
     "ReplayBox",
