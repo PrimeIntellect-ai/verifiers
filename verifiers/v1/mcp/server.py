@@ -214,6 +214,10 @@ class ServerBase(Generic[ConfigT, StateT]):
     async def _setup_task_from_channel(
         self, state_url: str | None, secret: str
     ) -> None:
+        # A task-agnostic server never imports the task: its class may live in a
+        # package the server's runtime does not have.
+        if type(self).setup_task is ServerBase.setup_task:
+            return
         task = await self._fetch_task(state_url, secret)
         if task is not None:
             await self.setup_task(task)
