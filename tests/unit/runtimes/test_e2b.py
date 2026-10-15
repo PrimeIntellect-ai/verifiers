@@ -3,7 +3,7 @@
 import pytest
 
 from verifiers.v1.runtimes import E2BConfig
-from verifiers.v1.runtimes.e2b import _egress_update
+from verifiers.v1.runtimes.backends.e2b import _egress_update
 
 
 @pytest.mark.parametrize(

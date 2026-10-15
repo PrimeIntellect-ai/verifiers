@@ -1,15 +1,11 @@
-"""Provider-independent Compose deployment on local Docker or a provider VM."""
+"""Compose deployment on a provider VM that hosts the Docker daemon."""
 
 import asyncio
-import atexit
 import io
 import json
 import logging
-import os
 import shlex
 import shutil
-import subprocess
-import sys
 import tarfile
 import tempfile
 import uuid
@@ -22,7 +18,6 @@ from pathlib import Path
 from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes import (
     DockerBackend,
-    DockerConfig,
     ModalConfig,
     PrimeConfig,
     RuntimeBackend,
@@ -30,22 +25,10 @@ from verifiers.v1.runtimes import (
     provision_backend,
 )
 from verifiers.v1.runtimes.base import SERVICE_PORT, ProgramResult
-from verifiers.v1.runtimes.container import cli
 from verifiers.v1.utils.aio import run_shielded
 
 logger = logging.getLogger(__name__)
 
-# Docker routing and credential-helper lookup need these; local Compose must not see
-# unrelated evaluator secrets through shell interpolation.
-DOCKER_ENV = (
-    "PATH",
-    "HOME",
-    "DOCKER_HOST",
-    "DOCKER_CONTEXT",
-    "DOCKER_CONFIG",
-    "DOCKER_TLS_VERIFY",
-    "DOCKER_CERT_PATH",
-)
 # One provider VM hosts the Docker daemon and every service.
 VM_HOST = {
     PrimeConfig: {"image": "python:3.11-slim-trixie", "workdir": "/"},
@@ -87,35 +70,24 @@ async def compose_services(
     spec: ComposeSpec,
     environment: dict[str, str],
     *,
-    trust_compose: bool = False,
     setup_timeout: float | None = None,
 ) -> AsyncIterator[
-    tuple[dict[str, DockerBackend], Callable[[], Awaitable[str]], RuntimeBackend | None]
+    tuple[dict[str, DockerBackend], Callable[[], Awaitable[str]], RuntimeBackend]
 ]:
     """Own one Compose attempt and lend its services until the context exits."""
-    if not isinstance(config, (DockerConfig, PrimeConfig, ModalConfig)):
-        raise TypeError("Compose requires Docker, Prime VM or Modal VM")
-    local = isinstance(config, DockerConfig)
-    if local and not trust_compose:
-        raise ValueError(
-            "Local Compose tasks can access host files and Docker privileges; "
-            "only run trusted tasks with --env.agent.deployment.trust-compose"
-        )
+    assert isinstance(config, (PrimeConfig, ModalConfig))
     if config.gpu:
         raise ValueError("Compose currently supports CPU tasks")
     if isinstance(config, ModalConfig) and not config.network_access:
         raise ValueError("Compose on Modal requires network_access=True")
     project = ["docker", "compose", "--project-name", f"vf-{uuid.uuid4().hex}"]
     compose_argv = list(project)
-    compose_env = {
-        key: os.environ[key] for key in DOCKER_ENV if local and key in os.environ
-    }
-    host_backend = None
+    compose_env: dict[str, str] = {}
+    host_backend: RuntimeBackend | None = None
     stack = AsyncExitStack()
 
     async def run_host(*argv: str) -> ProgramResult:
-        if host_backend is None:
-            return await cli(*argv, env=compose_env)
+        assert host_backend is not None
         return await host_backend.bind().run(list(argv), compose_env)
 
     async def compose(*args: str, timeout: float | None = None) -> str:
@@ -126,29 +98,6 @@ async def compose_services(
                 f"Compose {args[0]} failed: {result.stderr or result.stdout}"
             )
         return result.stdout
-
-    def down() -> None:
-        # Compose finds the project by its labels; the atexit backstop stays until
-        # removal succeeds.
-        subprocess.run(
-            [*project, "down", "--volumes", "--remove-orphans"],
-            env=compose_env,
-            capture_output=True,
-            timeout=60,
-            check=True,
-        )
-        atexit.unregister(down)
-
-    async def release() -> None:
-        # Like a provider sandbox's deletion, a failed removal must not fail the
-        # rollout or mask its error; the atexit backstop retries it.
-        try:
-            await asyncio.to_thread(down)
-        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
-            detail = e.stderr.decode(errors="replace").strip() if e.stderr else ""
-            logger.warning(
-                "Compose project %s removal failed: %s %s", project[-1], e, detail
-            )
 
     try:
         async with asyncio.timeout(setup_timeout):
@@ -199,49 +148,47 @@ async def compose_services(
                 json.dumps({"services": {spec.workspace: {"environment": environment}}})
             )
 
-            root = str(directory)
-            if not local:
-                host_config = VM_HOST[type(config)]
-                if spec.host_image is not None:
-                    host_config = {**host_config, "image": spec.host_image}
-                host_backend = await stack.enter_async_context(
-                    provision_backend(config.model_copy(update=host_config))
+            host_config = VM_HOST[type(config)]
+            if spec.host_image is not None:
+                host_config = {**host_config, "image": spec.host_image}
+            host_backend = await stack.enter_async_context(
+                provision_backend(config.model_copy(update=host_config))
+            )
+            if isinstance(config, PrimeConfig):
+                install = await host_backend.bind().run(
+                    ["sh", "-c", INSTALL_DOCKER], {}
                 )
-                if isinstance(config, PrimeConfig):
-                    install = await host_backend.bind().run(
-                        ["sh", "-c", INSTALL_DOCKER], {}
-                    )
-                    if install.exit_code:
-                        raise SandboxError(
-                            f"Docker bootstrap failed: {install.stderr} {install.stdout}"
-                        )
-                await host_backend.bind().run_background(
-                    ["dockerd", "--host=unix:///var/run/docker.sock"],
-                    {},
-                    "/tmp/dockerd.log",
-                )
-                async with asyncio.timeout(60):
-                    while (await run_host("docker", "info")).exit_code:
-                        await asyncio.sleep(1)
-                loaded = await run_host("sh", "-c", LOAD_IMAGES)
-                if loaded.exit_code:
+                if install.exit_code:
                     raise SandboxError(
-                        f"Loading host images failed: {loaded.stderr or loaded.stdout}"
+                        f"Docker bootstrap failed: {install.stderr} {install.stdout}"
                     )
-                root = "/vf-deployment"
-                await host_backend.bind().write(
-                    "/tmp/vf-deployment.tar.gz",
-                    pack_directory(directory),
+            await host_backend.bind().run_background(
+                ["dockerd", "--host=unix:///var/run/docker.sock"],
+                {},
+                "/tmp/dockerd.log",
+            )
+            async with asyncio.timeout(60):
+                while (await run_host("docker", "info")).exit_code:
+                    await asyncio.sleep(1)
+            loaded = await run_host("sh", "-c", LOAD_IMAGES)
+            if loaded.exit_code:
+                raise SandboxError(
+                    f"Loading host images failed: {loaded.stderr or loaded.stdout}"
                 )
-                staged = await run_host(
-                    "sh",
-                    "-c",
-                    f"mkdir -p {shlex.quote(root)} && tar -xzf /tmp/vf-deployment.tar.gz -C {shlex.quote(root)}",
+            root = "/vf-deployment"
+            await host_backend.bind().write(
+                "/tmp/vf-deployment.tar.gz",
+                pack_directory(directory),
+            )
+            staged = await run_host(
+                "sh",
+                "-c",
+                f"mkdir -p {shlex.quote(root)} && tar -xzf /tmp/vf-deployment.tar.gz -C {shlex.quote(root)}",
+            )
+            if staged.exit_code:
+                raise SandboxError(
+                    f"Compose environment staging failed: {staged.stderr}"
                 )
-                if staged.exit_code:
-                    raise SandboxError(
-                        f"Compose environment staging failed: {staged.stderr}"
-                    )
             probe = await run_host("docker", "compose", "version")
             if probe.exit_code:
                 raise SandboxError(
@@ -260,7 +207,8 @@ async def compose_services(
             compose_env.update(
                 (key, value)
                 for key, value in environment.items()
-                if key not in DOCKER_ENV and not key.startswith(("DOCKER_", "COMPOSE_"))
+                if key not in ("PATH", "HOME")
+                and not key.startswith(("DOCKER_", "COMPOSE_"))
             )
             compose_env.update(
                 {
@@ -311,40 +259,18 @@ async def compose_services(
             overlay = {"services": {spec.workspace: main}}
             # Port publication belongs to the service that owns main's network.
             publish = overlay["services"].setdefault(owner, {})
-            if local:
-                if config.cpu is not None:
-                    main["cpus"] = config.cpu
-                if config.memory is not None:
-                    main["mem_limit"] = f"{config.memory}g"
-                publish["ports"] = [f"127.0.0.1::{SERVICE_PORT}"]
-                if sys.platform != "linux":
-                    publish["extra_hosts"] = {"host.docker.internal": "host-gateway"}
-            elif isinstance(config, ModalConfig):
+            if isinstance(config, ModalConfig):
                 publish["ports"] = [f"{SERVICE_PORT}:{SERVICE_PORT}"]
-            if host_backend is None:
-                (directory / "overlay.json").write_text(json.dumps(overlay))
-            else:
-                await host_backend.bind().write(
-                    f"{root}/overlay.json", json.dumps(overlay).encode()
-                )
+            await host_backend.bind().write(
+                f"{root}/overlay.json", json.dumps(overlay).encode()
+            )
             compose_argv += ["-f", f"{root}/overlay.json"]
 
-            if local:
-                atexit.register(down)
-                stack.push_async_callback(release)
-            # Cancellation kills the local CLI; the stack removes the project or VM.
+            # Cancellation stops the CLI; the stack removes the VM.
             await compose("up", "--detach", "--wait")
             containers = await compose(
                 "ps", "--all", "--format", "{{.ID}} {{.Service}}"
             )
-            service_url = None
-            if local:
-                published = await compose("port", owner, str(SERVICE_PORT))
-                service_url = "http://" + next(
-                    address
-                    for address in published.splitlines()
-                    if address.startswith("127.0.0.1:")
-                )
             backends: dict[str, DockerBackend] = {}
             for line in containers.splitlines():
                 container, service = line.split()
@@ -353,7 +279,6 @@ async def compose_services(
                         config,
                         container,
                         host_backend=host_backend,
-                        service_url=service_url if service == spec.workspace else None,
                     )
                 )
             if spec.workspace not in backends:

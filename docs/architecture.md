@@ -15,7 +15,7 @@ The **rollout** is the executable combination of one loaded task, the harness, a
 
 Only the sandbox runtimes enforce task network policies. The `subprocess` and `docker` runtimes refuse tasks that declare one.
 
-For offline Docker use on Linux, cache the task image and, if it lacks Python 3, `docker.io/library/python:3.11-alpine` for host callbacks.
+On Linux, Docker containers share the host network. On other platforms, they reach host services through `host.docker.internal`. Compose tasks run on Prime and Modal VMs only.
 
 The harness runs inside the rollout runtime to interact with the taskset. The harness does _not_ call the provider endpoint directly. Instead, model traffic goes through an **interception server** over a local connection or [Prime Tunnel](https://docs.primeintellect.ai/sandboxes/tunnel).
 

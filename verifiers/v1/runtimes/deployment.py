@@ -28,8 +28,6 @@ logger = logging.getLogger(__name__)
 class DeploymentConfig(BaseConfig):
     mode: Literal["colocated"] = "colocated"
     """Harness and tools share the workspace."""
-    trust_compose: bool = False
-    """Permit task-authored Compose privileges and bind mounts on local Docker."""
 
 
 class _DeploymentStrategy:
@@ -87,7 +85,7 @@ class Deployment:
         self.borrowed_runtime = borrowed_runtime
         from verifiers.v1.runtimes.strategies import _deployment_strategy
 
-        self._strategy = _deployment_strategy(self.config, backend.config, spec)
+        self._strategy = _deployment_strategy(self.config, backend, spec)
         self.target_backends: dict[str, RuntimeBackend] = {}
         self.harness_backend: RuntimeBackend | None = None
         self.execution_backend: RuntimeBackend | None = None

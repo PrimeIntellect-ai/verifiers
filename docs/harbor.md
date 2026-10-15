@@ -106,17 +106,13 @@ shared and separate verifiers.
 
 ## Docker Compose
 
-Select `runtime.type = "docker"` to run Compose tasks locally. Docker Compose v2
-(`docker compose`) is required on local Docker and provider VM hosts. Custom host
-images must provide the v2 plugin; standalone `docker-compose` v1 is unsupported.
-
 Tasks containing `environment/docker-compose.yaml` declare a composition that the
-deployment provisions on local Docker, Prime VMs, or Modal's VM runtime. Harbor is a
-task-format adapter and works under the ordinary single-agent and best-of-N Envs.
-Local Docker requires `--env.agent.deployment.trust-compose`: task definitions can mount host files
-and request Docker privileges, so only enable it for trusted packages. Local Compose
-receives Docker connection settings and infrastructure variables rather than the
-evaluator's full environment. Task-local `.env` files and declared task env remain available.
+deployment provisions on Prime VMs or Modal's VM runtime. Other runtimes, including
+local Docker, refuse Compose tasks. Harbor is a task-format adapter and works under
+the ordinary single-agent and best-of-N Envs. Docker Compose v2 (`docker compose`) is
+required on the VM host. Custom host images must provide the v2 plugin; standalone
+`docker-compose` v1 is unsupported. Task-local `.env` files and declared task env
+remain available.
 
 Compose preserves service entrypoints, commands, dependencies, health checks,
 networking, and volumes; the agent executes in a single `main` container.

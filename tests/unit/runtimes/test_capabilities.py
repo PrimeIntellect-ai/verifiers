@@ -2,6 +2,7 @@
 runtime refuses a task feature it does not declare before anything is provisioned."""
 
 import contextlib
+from types import SimpleNamespace
 from typing import ClassVar
 
 import pytest
@@ -14,6 +15,8 @@ from verifiers.v1.runtimes import (
     RuntimeConfig,
     backend_cls,
 )
+from verifiers.v1.runtimes.compose import ComposeSpec
+from verifiers.v1.runtimes.strategies import _deployment_strategy
 from verifiers.v1.utils.compile import resolve_runtime_config, validate_pairing
 from verifiers.v1.utils.loaders import harness_class, harness_config_type
 
@@ -71,6 +74,7 @@ def test_custom_runtime_rejects_a_bad_import_path(import_path, error, match) -> 
 IMAGE = ["docker", "prime", "modal", "e2b", "container-plugin"]
 USER = ["docker", "prime", "container-plugin"]
 NETWORK = ["prime", "modal", "e2b"]
+COMPOSE = ["prime", "modal"]
 ALL = [
     "subprocess",
     "docker",
@@ -117,3 +121,11 @@ def test_container_harness_needs_image_support(runtime) -> None:
     codex = harness_class("codex")(harness_config_type("codex")(id="codex"))
     with expect(runtime in IMAGE, "needs a container runtime"):
         validate_pairing(codex, vf.Task, config(runtime))
+
+
+@pytest.mark.parametrize("runtime", ALL)
+def test_compose_needs_compose_support(runtime) -> None:
+    cls = backend_cls(config(runtime))
+    backend = SimpleNamespace(supports_compose=cls.supports_compose, type=runtime)
+    with expect(runtime in COMPOSE, "cannot run Compose services"):
+        _deployment_strategy(None, backend, ComposeSpec(directory="."))

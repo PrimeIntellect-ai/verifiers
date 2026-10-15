@@ -3,7 +3,6 @@
 import logging
 from contextlib import AsyncExitStack
 
-from verifiers.v1.runtimes import DockerConfig, ModalConfig, PrimeConfig
 from verifiers.v1.runtimes.compose import compose_services
 from verifiers.v1.runtimes.deployment import _DeploymentStrategy
 
@@ -36,9 +35,7 @@ class _ContainerDeployment(_DeploymentStrategy):
             raise ValueError("a composed deployment cannot borrow a single target")
         self._services = await d.enter(AsyncExitStack())
         services, self._stop_main, _ = await self._services.enter_async_context(
-            compose_services(
-                d.backend.config, d.spec, d.env, trust_compose=d.config.trust_compose
-            )
+            compose_services(d.backend.config, d.spec, d.env)
         )
         d.target_backends = dict(services)
         d.execution_backend = d.harness_backend = services[d.spec.workspace]
@@ -56,9 +53,12 @@ class _ContainerDeployment(_DeploymentStrategy):
             )
 
 
-def _deployment_strategy(config, runtime_config, spec):
+def _deployment_strategy(config, backend, spec):
     if spec is not None:
-        if not isinstance(runtime_config, (DockerConfig, PrimeConfig, ModalConfig)):
-            raise ValueError("Compose requires Docker, Prime, or Modal VM runtime")
+        if not backend.supports_compose:
+            raise ValueError(
+                f"the task deploys Compose services, but the {backend.type} runtime "
+                "cannot run Compose services; use a supported runtime"
+            )
         return _ContainerDeployment()
     return _ColocatedDeployment()

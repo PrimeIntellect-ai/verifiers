@@ -174,6 +174,7 @@ class ModalProcess(RuntimeProcess):
 
 class ModalBackend(RuntimeBackend):
     supports_image: ClassVar[bool] = True
+    supports_compose: ClassVar[bool] = True
     is_local: ClassVar[bool] = False
 
     def __init__(self, config: ModalConfig, name: str | None = None) -> None:

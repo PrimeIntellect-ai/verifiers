@@ -155,6 +155,9 @@ class RuntimeBackend(ABC):
     """Whether the runtime boots a task image in its own filesystem. Tasks with an image,
     container-only harnesses, and isolated grading require it."""
 
+    supports_compose: ClassVar[bool] = False
+    """Whether the runtime can host a task's Docker Compose services."""
+
     supports_user: ClassVar[bool] = False
     """Whether handles can bind another existing user."""
 

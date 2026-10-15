@@ -34,6 +34,7 @@ declare, and the error names the runtime and the gap.
 | Task `agent_user` | `supports_user` | docker, prime |
 | Tool server in its own runtime | `supports_expose` | subprocess, docker, modal, e2b |
 | Task network policy | config inherits `NetworkPolicyConfig` | prime, modal, e2b |
+| Docker Compose services | `supports_compose` | prime, modal |
 
 ## Runtime plugins
 
@@ -95,9 +96,7 @@ Without a Compose specification, the deployment manages a single runtime.
 Task hooks can receive `deployment` and use `deployment.target(name)` to access a
 named service through a runtime view. `finalize_services()` collects sidecar evidence
 before verification. See [Harbor's Compose support](harbor.md#docker-compose) for
-provider details. Local Docker Compose requires
-`agent.deployment.trust_compose = true` because task-authored Compose can access
-host files and Docker privileges.
+provider details. Compose runs on Prime and Modal VMs.
 
 For model-free validation of an isolated task, finalize the submission and collect
 its artifacts, then call `vf.grade_submission(task, trace, runtime)`. This uses the
