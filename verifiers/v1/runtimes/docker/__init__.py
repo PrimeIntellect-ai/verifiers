@@ -86,7 +86,7 @@ class DockerBackend(ContainerBackend):
         host_backend: RuntimeBackend | None = None,
     ) -> None:
         super().__init__(name)
-        self.config = config.model_copy(update={"workdir": config.workdir or "/app"})
+        self.config = config
         self._host_backend = host_backend
         self.is_local = host_backend is None or host_backend.is_local
         self.info = (
@@ -156,6 +156,11 @@ class DockerBackend(ContainerBackend):
         return SERVICE_PORT
 
     async def start(self) -> None:
+        # Compose keeps its authored workdir; only standalone containers default to /app.
+        self.config = self.config.model_copy(
+            update={"workdir": self.config.workdir or "/app"}
+        )
+        self.info.workdir = self.config.workdir
         try:
             version = await cli(self.engine, "version")
         except FileNotFoundError as e:
