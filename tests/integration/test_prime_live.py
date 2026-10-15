@@ -32,11 +32,11 @@ async def test_sweep_deletes_a_labelled_sandbox():
     from prime_sandboxes import AsyncSandboxClient
 
     label = _label()
-    runtime = PrimeBackend(PrimeConfig(labels=[label]))
+    backend = PrimeBackend(PrimeConfig(labels=[label]))
     started = time.monotonic()
     try:
-        await runtime.start()
-        print(f"\nsandbox {runtime.info.id} up in {time.monotonic() - started:.0f}s")
+        await backend.start()
+        print(f"\nsandbox {backend.info.id} up in {time.monotonic() - started:.0f}s")
         swept = time.monotonic()
         report = await sweep.sweep([label])
         print(f"sweep {report} in {time.monotonic() - swept:.1f}s")
@@ -48,7 +48,7 @@ async def test_sweep_deletes_a_labelled_sandbox():
             await client.aclose()
         assert [s.id for s in listing.sandboxes] == []
     finally:
-        await runtime.stop()
+        await backend.stop()
 
 
 async def test_chunked_transfer_round_trips_300_mib():
