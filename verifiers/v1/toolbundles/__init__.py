@@ -151,9 +151,7 @@ def parse_mounts(task_dir: Path, entries: object) -> list[ToolMount]:
             )
         name = entry.get("bundle")
         if not isinstance(name, str):
-            raise TypeError(
-                f"{task_dir.name}: [[tools]] entry {index} names no bundle"
-            )
+            raise TypeError(f"{task_dir.name}: [[tools]] entry {index} names no bundle")
         directory = _inside(task_dir, f"tools/{name}")
         manifest = BundleManifest.read(directory)
         if manifest.name != name:

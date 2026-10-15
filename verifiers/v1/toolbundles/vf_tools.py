@@ -7,7 +7,8 @@ JSON state document plus keyword arguments and return JSON. This file is:
 - `Bundle` and `Session`: load a bundle and call its tools on a state, in-process
   (hosts use them for replay and tests);
 - an MCP server over streamable HTTP (JSON responses, stateless);
-- a CLI: `serve`, `seed`, `dump`, `call`, `schemas`.
+- a CLI: `serve`, `seed`, `dump`, `call`, `schemas`, and `replay` (calls in order
+  against a seed, in-process: import validates a drafted mock this way).
 
 It needs python3 >= 3.9 and nothing else. Tools must be deterministic: ids come from
 `new_id` (a counter in the state) and the clock is `state["meta"]["now"]`.
@@ -475,6 +476,10 @@ def main(argv=None):
     schemas = sub.add_parser("schemas")
     schemas.add_argument("--bundle", required=True)
     schemas.add_argument("--interface", default="direct", choices=INTERFACES)
+    replay = sub.add_parser("replay")
+    replay.add_argument("--bundle", required=True)
+    replay.add_argument("--seed")
+    replay.add_argument("--calls", required=True)
     args = parser.parse_args(argv)
 
     if args.command == "serve":
@@ -522,6 +527,16 @@ def main(argv=None):
                 indent=2,
             )
         )
+    elif args.command == "replay":
+        bundle = Bundle.load(args.bundle)
+        session = Session(bundle, read_state(args.seed) if args.seed else {})
+        with open(args.calls) as handle:
+            calls = json.load(handle)
+        results = []
+        for item in calls:
+            ok, result = session.call(item["name"], item.get("arguments") or {})
+            results.append({"ok": ok, "result": result})
+        print(json.dumps({"results": results, "state": session.state}))
     return 0
 
 
