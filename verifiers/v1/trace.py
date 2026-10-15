@@ -86,15 +86,30 @@ class Error(BaseModel):
     message: str
     status_code: int | None = None
     traceback: str | None = None
+    details: dict[str, Any] | None = None
+    """Structured diagnostics accompanying this failure, when available."""
 
-
-class ScoringAttempt(BaseModel):
-    """Diagnostics from a failed isolated scoring attempt, not committed scores."""
-
-    attempt: int = Field(ge=1)
-    error: Error
-    info: dict[str, Any] = Field(default_factory=dict)
-    metrics: dict[str, float | None] = Field(default_factory=dict)
+    @classmethod
+    def from_exception(
+        cls, error: Exception, *, details: dict[str, Any] | None = None
+    ) -> Error:
+        """Reuse a failure's record as it propagates through nested boundaries."""
+        existing = getattr(error, "_verifiers_error", None)
+        if isinstance(existing, cls):
+            return existing
+        recorded = cls(
+            type=type(error).__name__,
+            message=str(error),
+            status_code=getattr(error, "status_code", None),
+            traceback=None
+            if isinstance(error, ProviderError)
+            else "".join(traceback.format_exception(error)),
+            details=details,
+        )
+        # Keep the record on the exception, not vice versa: saved traces must not
+        # retain traceback frames and their runtime resources.
+        error._verifiers_error = recorded
+        return recorded
 
 
 class VersionInfo(BaseModel):
@@ -438,8 +453,6 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     """Whether a stage deadline (setup, agent, finalize, or scoring) expired."""
     errors: list[Error] = Field(default_factory=list)
     """Every error captured across attempts, oldest to newest."""
-    scoring_attempts: list[ScoringAttempt] = Field(default_factory=list)
-    """Framework-owned failure diagnostics retained across isolated scoring retries."""
     timing: Timing = Field(default_factory=Timing)
 
     _head_index: dict = PrivateAttr(default_factory=dict)
@@ -753,18 +766,11 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     def record_error(self, error: Exception) -> None:
         """Record an error, and stop the trace as failed: `<boundary>_error` for a
         typed rollout error (`errors.stop_condition`), `error` for any other."""
-        self.errors.append(
-            Error(
-                type=type(error).__name__,
-                message=str(error),
-                status_code=getattr(error, "status_code", None),
-                # Provider errors already carry the actionable upstream diagnostic.
-                # Keep full tracebacks for every other failure.
-                traceback=None
-                if isinstance(error, ProviderError)
-                else "".join(traceback.format_exception(error)),
-            )
-        )
+        # Scoring may already have recorded this failure, including its evidence,
+        # before propagating it to the rollout's terminal error boundary.
+        recorded = Error.from_exception(error)
+        if not any(existing is recorded for existing in self.errors):
+            self.errors.append(recorded)
         self.ok = False
         self.stop(stop_condition(error))
 

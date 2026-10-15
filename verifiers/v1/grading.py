@@ -15,7 +15,7 @@ from verifiers.v1.runtimes import (
     SubprocessConfig,
 )
 from verifiers.v1.task import Task
-from verifiers.v1.trace import Error, ScoringAttempt, Trace
+from verifiers.v1.trace import Error, Trace
 from verifiers.v1.utils.artifacts import restore
 from verifiers.v1.utils.compile import resolve_runtime_config
 from verifiers.v1.utils.decorators import invoke
@@ -161,16 +161,11 @@ async def grade_task(
                     logger.warning("verifier teardown failed", exc_info=True)
                 return
         except Exception as error:
-            recorded = Error(
-                type=type(error).__name__,
-                message=str(error),
-                status_code=getattr(error, "status_code", None),
-            )
-            trace.scoring_attempts.append(
-                ScoringAttempt(
-                    attempt=attempt + 1,
-                    error=recorded,
-                    info=copy.deepcopy(
+            recorded = Error.from_exception(
+                error,
+                details={
+                    "attempt": attempt + 1,
+                    "info": copy.deepcopy(
                         {
                             key: value
                             for key, value in (
@@ -179,15 +174,17 @@ async def grade_task(
                             if key not in previous_info or value != previous_info[key]
                         }
                     ),
-                    metrics={
+                    "metrics": {
                         key: value
                         for key, value in (
                             result.metrics.items() if result is not None else ()
                         )
                         if key not in previous_metrics or value != previous_metrics[key]
                     },
-                )
+                },
             )
+            trace.errors.append(recorded)
+            trace.notify()
             if attempt == retry.max_retries or retry.next_error([recorded]) is None:
                 raise
             logger.warning(
