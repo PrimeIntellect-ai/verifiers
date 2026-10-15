@@ -23,7 +23,8 @@ from verifiers.v1.episode import Episode
 from verifiers.v1.types import SamplingConfig
 from verifiers.v1.utils.loaders import harness_config_type, load_environment
 
-CI_MODEL = "deepseek/deepseek-v4.1-flash"
+CI_MODEL = "internal/glm-5.3-fast"
+CI_REASONING_EFFORT = "low"
 
 # Fixture tasksets (echo-v1, echo-agentic-v1, ...) live in tests/integration/fixtures,
 # added to the path via `pythonpath` in pyproject so the loader resolves them by id.
@@ -104,7 +105,8 @@ def _eval_config(
     taskset_overrides: dict | None = None,
     runtime: dict | None = None,
     env: dict | None = None,
-    reasoning_effort: str | None = None,
+    reasoning_effort: str | None = CI_REASONING_EFFORT,
+    model: str = CI_MODEL,
     client: dict | None = None,
 ) -> EvalConfig:
     """Build the smallest `EvalConfig` that still exercises the path, used by the `run`
@@ -156,7 +158,7 @@ def _eval_config(
             "max_tokens": max_tokens,
             "reasoning_effort": reasoning_effort,
         },
-        model=CI_MODEL,
+        model=model,
         **({"client": client} if client else {}),
     )
 
@@ -196,7 +198,7 @@ async def live_ctx():
     yield ModelContext(
         model=CI_MODEL,
         client=EvalClientConfig(),
-        sampling=SamplingConfig(max_tokens=2048),
+        sampling=SamplingConfig(max_tokens=2048, reasoning_effort=CI_REASONING_EFFORT),
     )
 
 

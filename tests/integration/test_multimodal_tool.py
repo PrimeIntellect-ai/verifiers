@@ -8,6 +8,8 @@ async def test_multimodal_tool(run):
         "tool-response-image-v1",
         harness="null",
         runtime={"type": "subprocess"},
+        # The CI model is text-only.
+        model="deepseek/deepseek-v4.1-flash",
         reasoning_effort="none",
         max_turns=4,
     )
