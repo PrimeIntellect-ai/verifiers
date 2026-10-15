@@ -23,7 +23,7 @@ from verifiers.v1.episode import Episode
 from verifiers.v1.types import SamplingConfig
 from verifiers.v1.utils.loaders import harness_config_type, load_environment
 
-CI_MODEL = "openai/gpt-5.6-luna"
+CI_MODEL = "deepseek/deepseek-v4.1-flash"
 
 # Fixture tasksets (echo-v1, echo-agentic-v1, ...) live in tests/integration/fixtures,
 # added to the path via `pythonpath` in pyproject so the loader resolves them by id.

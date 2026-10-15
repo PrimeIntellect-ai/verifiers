@@ -11,6 +11,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from conftest import CI_MODEL
 from grid import agent_seats
 
 EVAL_TIMEOUT = 600  # 10 minutes for a capped eval (-n 1 -r 1)
@@ -39,7 +40,7 @@ def test_eval(taskset: str, tmp_path: Path):
         pytest.skip(f"{taskset} can't run a plain-CI smoke eval")
     if os.getenv("PRIME_API_KEY"):
         model = [
-            "-m", "openai/gpt-5.6-luna",
+            "-m", CI_MODEL,
             "--client.base-url", "https://api.pinference.ai/api/v1",
             "--client.api-key-var", "PRIME_API_KEY",
         ]  # fmt: skip
