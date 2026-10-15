@@ -145,6 +145,7 @@ def _eval_config(
     # seat dict wins over the shared defaults).
     for seat in agent_seats(taskset, env_cfg.get("id", "")):
         seat_cfg = env_cfg.setdefault(seat, {})
+        seat_cfg.setdefault("runtime", {"type": "docker"})
         seat_cfg.setdefault("max_turns", max_turns)
         seat_cfg.setdefault("max_output_tokens", max_tokens)
         seat_cfg.setdefault("timeout", {"rollout": rollout_timeout, "scoring": 60})
