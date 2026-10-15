@@ -20,7 +20,7 @@
 
 ## Skills
 
-- **Use bundled skills first**: the `release` skill in `skills/` documents the stable-version release workflow.
+- **Use bundled skills first**: the `release` skill in `skills/` documents the stable-version release workflow, and the `bump` skill documents how to bump a pinned harness version.
 
 ## Testing
 
