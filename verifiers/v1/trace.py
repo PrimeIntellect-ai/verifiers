@@ -106,6 +106,9 @@ class Error(BaseModel):
     cause: str | None = Field(default=None, exclude_if=lambda cause: cause is None)
     """The type of the exception a boundary wrapped into this error
     (`errors.error_cause`); left out of the record otherwise."""
+    seat: str | None = Field(default=None, exclude_if=lambda seat: seat is None)
+    """The seat (agent name) whose call raised it, when a caller set `seat` on the
+    exception; left out of the record otherwise."""
 
     @classmethod
     def of(cls, error: BaseException) -> Error:
@@ -117,6 +120,7 @@ class Error(BaseModel):
             status_code=getattr(error, "status_code", None),
             kind=error_kind(error),
             cause=error_cause(error),
+            seat=getattr(error, "seat", None),
             traceback=None
             if isinstance(error, ProviderError)
             else "".join(traceback.format_exception(error)),

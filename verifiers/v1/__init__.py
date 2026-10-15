@@ -84,6 +84,8 @@ from verifiers.v1.errors import (
     EnvError,
     HarnessError,
     InterceptionError,
+    Outage,
+    OutageKind,
     ProviderError,
     RolloutError,
     SandboxError,
@@ -91,6 +93,7 @@ from verifiers.v1.errors import (
     TaskError,
     ToolsetError,
     TunnelError,
+    outage_kind,
 )
 from verifiers.v1.grading import grade_submission
 from verifiers.v1.graph import MessageNode
@@ -110,6 +113,7 @@ from verifiers.v1.mcp import (
     Toolset,
     ToolsetConfig,
 )
+from verifiers.v1.probe import ProbeCheck, ProbeReport, probe
 from verifiers.v1.runtimes import (
     ApptainerConfig,
     DockerConfig,
@@ -325,6 +329,12 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "RolloutError",
     "EnvError",
     "ProviderError",
+    "Outage",
+    "OutageKind",
+    "ProbeCheck",
+    "ProbeReport",
+    "outage_kind",
+    "probe",
     "Contract",
     "ContractError",
     "ContractFailed",

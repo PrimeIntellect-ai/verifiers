@@ -1831,7 +1831,7 @@ class Agent:
         for attempt in range(1, attempts + 1):
             traces.append(trace)
             if not trace.ok:
-                raise RunFailed(trace)
+                raise RunFailed(trace, seat=self.name)
             try:
                 value = contract.check(await contract.text(trace, runtime))
             except ContractError as broken:
@@ -1839,7 +1839,7 @@ class Agent:
             else:
                 return Reply(value=value, trace=trace, traces=traces)
             if attempt == attempts:
-                raise ContractFailed(errors, attempts, trace)
+                raise ContractFailed(errors, attempts, trace, seat=self.name)
             note = repair_note(repair, errors, attempt, attempts)
             trace = await self.run(
                 task,

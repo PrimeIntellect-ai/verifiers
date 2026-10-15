@@ -78,10 +78,19 @@ class ContractFailed(Exception):
     """A reply broke its contract on every attempt: a role failure (the model did not
     comply), not an infrastructure outage."""
 
-    def __init__(self, errors: list[str], attempts: int, trace: Trace) -> None:
-        self.errors, self.attempts, self.trace = errors, attempts, trace
+    def __init__(
+        self, errors: list[str], attempts: int, trace: Trace, *, seat: str | None = None
+    ) -> None:
+        self.errors, self.attempts, self.trace, self.seat = (
+            errors,
+            attempts,
+            trace,
+            seat,
+        )
         self.trace_id = trace.id
-        self.error = Error(type="ContractFailed", message="; ".join(errors)[:2000])
+        self.error = Error(
+            type="ContractFailed", message="; ".join(errors)[:2000], seat=seat
+        )
         super().__init__(
             f"the reply broke its contract after {attempts} attempts: {'; '.join(errors)[:1000]}"
         )
@@ -92,10 +101,11 @@ class RunFailed(Exception):
     `error` is its trace's error record, so `isinstance(e, Outage)` holds when the
     failure was infrastructure."""
 
-    def __init__(self, trace: Trace) -> None:
-        self.trace, self.trace_id = trace, trace.id
-        self.error = trace.last_error or Error(
-            type="RolloutError", message="the run failed"
+    def __init__(self, trace: Trace, *, seat: str | None = None) -> None:
+        self.trace, self.trace_id, self.seat = trace, trace.id, seat
+        error = trace.last_error or Error(type="RolloutError", message="the run failed")
+        self.error = (
+            error.model_copy(update={"seat": seat}) if seat is not None else error
         )
         super().__init__(f"{self.error.type}: {self.error.message}")
 

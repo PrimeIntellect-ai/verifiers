@@ -352,6 +352,87 @@ def sandbox_error_kind(
     return default
 
 
+OutageKind = Literal["account", "quota", "io"]
+"""An infrastructure failure, by what it waits for:
+
+- `account`: billing or auth refused (401, 402, 403; a sandbox `account`): nothing
+  passes until someone fixes the account. Pause.
+- `quota`: refused for capacity or rate (429; a sandbox `quota`). Retry later.
+- `io`: the provider or platform failed in transit (a 5xx, 408, a dropped connection,
+  a read timeout; a sandbox `io`). Retry; hold through a long one."""
+
+
+def outage_kind(error: object) -> OutageKind | None:
+    """The outage `error` is, from typed evidence only (never its message): a
+    `ProviderError`'s status, a `SandboxError`'s kind, an untyped exception's type,
+    errno or HTTP status, or an error record (`trace.Error`, or an exception carrying
+    one as `.error`, e.g. a failed run's) by its type and status or kind. None when it
+    is not infrastructure: a contract broken, a task's own failure, a full disk."""
+    record = getattr(error, "error", None)
+    if not isinstance(error, BaseException) or (
+        record is not None and not isinstance(error, RolloutError)
+    ):
+        record = record if record is not None else error
+        kind = getattr(record, "kind", None)
+        status = getattr(record, "status_code", None)
+        name = getattr(record, "type", None)
+        if name == "SandboxError" or (name is None and kind is not None):
+            return kind if kind in ("account", "quota", "io") else None
+        if name == "ProviderError" and isinstance(status, int):
+            return _status_outage(status)
+        if name in _IO_TYPES:
+            return "io"
+        return None
+    for current in _chain(error):
+        if type.__instancecheck__(Outage, current):
+            return current.kind  # type: ignore[attr-defined]
+        if isinstance(current, ProviderError):
+            return _status_outage(current.status_code)
+        if isinstance(current, SandboxError):
+            return current.kind if current.kind in ("account", "quota", "io") else None
+        if isinstance(current, RolloutError):
+            continue
+        if isinstance(current, (ConnectionError, TimeoutError)) and not isinstance(
+            current, FileNotFoundError
+        ):
+            return "io"
+        kind = _typed_kind(current)
+        if kind in ("account", "quota", "io"):
+            return kind
+    return None
+
+
+def _status_outage(status: int) -> OutageKind | None:
+    if status in _ACCOUNT_STATUSES:
+        return "account"
+    if status == 429:
+        return "quota"
+    if status >= 500 or status == 408:
+        return "io"
+    return None
+
+
+class _OutageType(type):
+    def __instancecheck__(cls, instance: object) -> bool:
+        return type.__instancecheck__(cls, instance) or (
+            isinstance(instance, BaseException) and outage_kind(instance) is not None
+        )
+
+
+class Outage(RolloutError, metaclass=_OutageType):
+    """An infrastructure failure (`OutageKind`): `isinstance(error, Outage)` holds for
+    any error `outage_kind` names one, raised as this type or not, so a caller holds
+    or retries the work instead of recording it as the work's failure. Raise one with
+    its `kind` (and the `seat` it hit) where only a record of the failure is at hand."""
+
+    def __init__(
+        self, message: str = "", *, kind: OutageKind = "io", seat: str | None = None
+    ) -> None:
+        super().__init__(message)
+        self.kind: OutageKind = kind
+        self.seat = seat
+
+
 class TaskError(RolloutError):
     """Task-authored code raised — `setup`, `finalize`, or a `@reward`/`@metric`."""
 
