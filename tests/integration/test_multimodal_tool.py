@@ -1,6 +1,8 @@
 """A tool that returns an image: MCP image content from a tool result survives into the
 trace (tool-response-image-v1; needs a vision model)."""
 
+from conftest import CI_VISION_MODEL
+
 
 async def test_multimodal_tool(run):
     """MCP image content from a tool result survives into the v1 trace (needs a vision model)."""
@@ -8,8 +10,7 @@ async def test_multimodal_tool(run):
         "tool-response-image-v1",
         harness="null",
         runtime={"type": "subprocess"},
-        # The CI model is text-only.
-        model="deepseek/deepseek-v4.1-flash",
+        model=CI_VISION_MODEL,
         reasoning_effort="none",
         max_turns=4,
     )

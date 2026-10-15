@@ -11,7 +11,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
-from conftest import CI_MODEL, CI_REASONING_EFFORT
+from conftest import CI_MODEL, CI_REASONING_EFFORT, CI_VISION_MODEL
 from grid import agent_seats
 
 EVAL_TIMEOUT = 600  # 10 minutes for a capped eval (-n 1 -r 1)
@@ -20,6 +20,21 @@ ENVIRONMENTS = Path(__file__).parent.parent.parent / "environments"
 
 # V1 tasksets that aren't part of the default CI install.
 SKIP_EVAL = {"nemo_gym_weather"}
+
+# Tasksets that send images, which the text-only CI model rejects.
+VISION_TASKSETS = {"color_codeword", "grayscale_interception"}
+
+# Point each bundled judge at the CI model.
+JUDGE_OVERRIDES = {
+    "interception": ["--env.taskset.task.judge.model", CI_MODEL],
+    "wiki_search": [
+        "--env.taskset.task.judges",
+        # The list replaces the default entry, so restate its `question_field`.
+        json.dumps(
+            [{"id": "wiki-search", "model": CI_MODEL, "question_field": "question"}]
+        ),
+    ],
+}
 
 
 def v1_tasksets() -> list[str]:
@@ -40,10 +55,11 @@ def test_eval(taskset: str, tmp_path: Path):
         pytest.skip(f"{taskset} can't run a plain-CI smoke eval")
     if os.getenv("PRIME_API_KEY"):
         model = [
-            "-m", CI_MODEL,
+            "-m", CI_VISION_MODEL if taskset in VISION_TASKSETS else CI_MODEL,
             "--sampling.reasoning-effort", CI_REASONING_EFFORT,
             "--client.base-url", "https://api.pinference.ai/api/v1",
             "--client.api-key-var", "PRIME_API_KEY",
+            *JUDGE_OVERRIDES.get(taskset, []),
         ]  # fmt: skip
     elif os.getenv("OPENAI_API_KEY"):
         model = [
