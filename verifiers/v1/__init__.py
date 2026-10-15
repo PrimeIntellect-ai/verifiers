@@ -46,6 +46,16 @@ from verifiers.v1.configs.task import (
     TaskConfig,
 )
 from verifiers.v1.configs.taskset import SharedTasksetConfig, TasksetConfig
+from verifiers.v1.contracts import (
+    Contract,
+    ContractError,
+    ContractFailed,
+    Markdown,
+    Reply,
+    RunFailed,
+    json_object,
+    parse_markdown,
+)
 from verifiers.v1.durable import (
     Durable,
     TraceDir,
@@ -315,6 +325,14 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "RolloutError",
     "EnvError",
     "ProviderError",
+    "Contract",
+    "ContractError",
+    "ContractFailed",
+    "Markdown",
+    "Reply",
+    "RunFailed",
+    "json_object",
+    "parse_markdown",
     "HarnessError",
     "ToolsetError",
     "SandboxError",

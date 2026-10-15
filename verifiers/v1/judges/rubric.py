@@ -11,6 +11,7 @@ from typing import Annotated, cast
 from pydantic import BaseModel, Field, TypeAdapter, field_validator, model_validator
 
 from verifiers.v1.configs.judge import JudgeConfig
+from verifiers.v1.contracts import json_object
 from verifiers.v1.judge import Judge, JudgeView, judge_question, judge_response
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
@@ -37,24 +38,6 @@ JSON_SUFFIX = (
 
 def normalize_choice(choice: str, choices: list[str]) -> float:
     return choices.index(choice) / (len(choices) - 1)
-
-
-def first_verdicts_object(text: str) -> dict | None:
-    """The first balanced JSON object in `text` that carries a `verdicts` key. Scanning for the
-    key (not just the first `{`) skips prose and, crucially, an echoed format example — the one
-    in `JSON_SUFFIX` fails to parse (its trailing `...` isn't JSON) and is passed over rather
-    than mistaken for the answer. Returns `None` if no such object is found."""
-    decoder = json.JSONDecoder()
-    idx = text.find("{")
-    while idx != -1:
-        try:
-            obj, _ = decoder.raw_decode(text[idx:])
-        except json.JSONDecodeError:
-            obj = None
-        if isinstance(obj, dict) and "verdicts" in obj:
-            return obj
-        idx = text.find("{", idx + 1)
-    return None
 
 
 class Criterion(BaseModel):
@@ -278,11 +261,7 @@ class RubricJudge(Judge[RubricVerdicts, RubricJudgeConfig]):
         else:
             messages = cast(str, self.build_messages(**fields)) + JSON_SUFFIX
             result = await self.complete(messages, trace=trace)
-            obj = first_verdicts_object(result.text)
-            if obj is None:
-                raise ValueError(
-                    f"judge returned no verdicts JSON object: {result.text!r}"
-                )
+            obj = json_object(result.text, key="verdicts")
             verdicts = RubricVerdicts.model_validate(obj).verdicts
         # A malformed verdict is a judge failure and must error the rollout, not score the model.
         return score_verdicts(verdicts, criteria, "the batch's")

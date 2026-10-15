@@ -1,0 +1,5 @@
+Your reply does not meet the required format (reply {attempt} of {attempts}):
+
+{errors}
+
+Reply again with the whole corrected reply in the required format. Change only what these errors name.

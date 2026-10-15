@@ -19,6 +19,7 @@ from contextlib import (
 )
 from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
+from pathlib import Path
 from typing import Any, Generic, Literal, Self, cast
 from weakref import WeakValueDictionary
 
@@ -36,6 +37,15 @@ from verifiers.v1.configs.agent import (
     resolve_agent,
 )
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
+from verifiers.v1.contracts import (
+    Contract,
+    ContractError,
+    ContractFailed,
+    Reply,
+    RunFailed,
+    repair_key,
+    repair_note,
+)
 from verifiers.v1.dialects import parse_message
 from verifiers.v1.durable import (
     BOX_LABEL,
@@ -66,7 +76,7 @@ from verifiers.v1.runtimes import (
     runtime_is_local,
 )
 from verifiers.v1.session import RolloutLimits
-from verifiers.v1.task import Task
+from verifiers.v1.task import Task, TaskData
 from verifiers.v1.trace import Checkpoint, Trace
 from verifiers.v1.types import (
     AssistantMessage,
@@ -95,6 +105,8 @@ __all__ = [
     "TimeoutConfig",
     "make_agent",
 ]
+
+ContractT = TypeVar("ContractT")
 
 logger = logging.getLogger(__name__)
 
@@ -1790,6 +1802,54 @@ class Agent:
             trace.errors = history + trace.errors
         finish(trace)
         return trace
+
+    async def until_valid(
+        self,
+        task: Task | str,
+        contract: Contract[ContractT],
+        *,
+        attempts: int = 3,
+        repair: Path | str | None = None,
+        key: str | None = None,
+        runtime: Runtime | None = None,
+        **run: Any,
+    ) -> Reply[ContractT]:
+        """Run the agent on `task` (a prompt is a task of it) until its reply meets
+        `contract` (`verifiers.v1.contracts`), at most `attempts` replies: each reply
+        that breaks it is answered in the same conversation with the `repair` prompt
+        file, the errors filled in. Each reply is one `run` (keyed `key`,
+        `key.repair1`, ... when `key` is given, so a durable caller finds each again).
+        Raises `ContractFailed` after the last reply breaks it, and `RunFailed` when a
+        run fails (an `Outage` when its error is infrastructure). `run` takes `run`'s
+        other options."""
+        if attempts < 1:
+            raise ValueError(f"attempts must be at least 1, not {attempts}")
+        if isinstance(task, str):
+            task = Task(TaskData(prompt=task))
+        traces: list[Trace] = []
+        trace = await self.run(task, key=repair_key(key, 1), runtime=runtime, **run)
+        for attempt in range(1, attempts + 1):
+            traces.append(trace)
+            if not trace.ok:
+                raise RunFailed(trace)
+            try:
+                value = contract.check(await contract.text(trace, runtime))
+            except ContractError as broken:
+                errors = broken.errors
+            else:
+                return Reply(value=value, trace=trace, traces=traces)
+            if attempt == attempts:
+                raise ContractFailed(errors, attempts, trace)
+            note = repair_note(repair, errors, attempt, attempts)
+            trace = await self.run(
+                task,
+                key=repair_key(key, attempt + 1),
+                resume=trace,
+                note=note,
+                runtime=runtime,
+                **run,
+            )
+        raise AssertionError("unreachable")
 
     def _box_watch(
         self,
