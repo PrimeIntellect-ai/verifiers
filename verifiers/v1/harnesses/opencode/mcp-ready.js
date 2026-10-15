@@ -3,6 +3,14 @@ import { Context, Effect } from "effect";
 export default {
   id: "verifiers.mcp-ready",
   effect: Effect.fn(function* (ctx) {
+    // ACP registrations bypass OpenCode's configured MCP server timeout defaults.
+    yield* ctx.mcp.transform((editor) => {
+      for (const name of ctx.options.servers) {
+        editor.update(name, (server) => {
+          server.timeout = { ...server.timeout, execution: ctx.options.timeout };
+        });
+      }
+    });
     yield* ctx.session.hook(
       "prompt",
       Effect.fn(function* () {

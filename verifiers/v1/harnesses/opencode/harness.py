@@ -94,7 +94,6 @@ class OpenCodeHarness(ACPHarness[OpenCodeHarnessConfig]):
             "default_agent": "build",
             # Auxiliary title/summary model calls must not become rollout turns.
             "agents": {"title": {"disabled": True}, "summary": {"disabled": True}},
-            "mcp": {"timeout": {"execution": int(self.config.tool_timeout * 1000)}},
             "permissions": [
                 {"action": "*", "resource": "*", "effect": "allow"},
                 *(
