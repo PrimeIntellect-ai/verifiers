@@ -414,9 +414,11 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
                 f"{'rm -rf /tests && ' if wipe else ''}"
                 "mkdir -p /tests && tar -xzf /tmp/tests.tgz -C /tests"
             )
+        # World-writable, as Harbor makes it: a verifier may log as an unprivileged
+        # service user (`su postgres -c "pg_ctl -l /logs/verifier/pg.log"`).
         command = (
             "rm -f /logs/verifier/reward.json /logs/verifier/reward.txt && "
-            f"mkdir -p /logs/verifier && {stage}"
+            f"mkdir -p /logs/verifier && chmod 777 /logs/verifier && {stage}"
         )
         result = await runtime.run(["sh", "-c", command], {})
         if result.exit_code:
