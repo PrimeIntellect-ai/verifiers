@@ -61,7 +61,6 @@ dev = [
     "ty>=0.0.63",
     "pytest>=7.0.0,<9.1.0",
     "pytest-asyncio>=0.21.0",
-    "pytest-cov>=4.0.0",
     "pytest-xdist>=3.8.0",
 ]
 # V1 examples and support packages, resolved from their local sources below.
@@ -158,7 +157,6 @@ vf-eval = "verifiers.v1.cli.eval.main:main"
 vf-validate = "verifiers.v1.cli.validate:main"
 vf-debug = "verifiers.v1.cli.debug:main"
 vf-replay = "verifiers.v1.cli.replay:main"
-vf-init = "verifiers.v1.cli.init:main"
 vf-gepa = "verifiers.v1.cli.gepa:main"
 
 # hatchling configuration
@@ -193,7 +191,6 @@ include = [
 exclude = [
     "/wandb",
     "/scratch",
-    "/configs",
     "/environments",
 ]
 
@@ -213,7 +210,7 @@ known-first-party = ["verifiers"]
 [tool.pytest.ini_options]
 minversion = "7.0"
 testpaths = ["tests"]
-pythonpath = ["tests/v1/fixtures"]
+pythonpath = ["tests/integration", "tests/integration/fixtures"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
@@ -224,27 +221,27 @@ addopts = [
     "--quiet",
 ]
 markers = [
-    "e2e: marks end-to-end eval-run tests (need a model API key; skipped without one)",
-    # v1 e2e matrix axes — select subsets with `-m` (see tests/v1/conftest.py). A mark is applied
-    # per axis, so it matches every case touching that value on any axis.
-    "subprocess: v1 e2e cases touching the subprocess (host) runtime",
-    "docker: v1 e2e cases touching the docker runtime",
-    "podman: v1 e2e cases touching the podman runtime",
-    "apptainer: v1 e2e cases touching the apptainer runtime",
-    "prime: v1 e2e cases touching the prime runtime (real sandbox + tunnel; local-only, excluded in CI)",
-    "modal: v1 e2e cases touching the modal runtime (local-only setup; excluded in CI)",
-    "e2b: v1 e2e cases touching the e2b runtime (real sandbox; local-only, excluded in CI)",
-    "colocated: v1 e2e cases with a user/tool server colocated in the harness runtime",
-    "null: v1 e2e cases on the null harness",
-    "bash: v1 e2e cases on the bash harness",
-    "browser_use: v1 e2e cases on the browser_use harness",
-    "claude_code: v1 e2e cases on the claude-code harness",
-    "openclaw: v1 e2e cases on the OpenClaw harness",
-    "hermes_agent: v1 e2e cases on the hermes-agent harness",
-    "rlm: v1 e2e cases on the rlm harness",
-    "kimi_code: v1 e2e cases on the kimi-code harness",
-    "pi: v1 e2e cases on the pi harness",
-    "codex: v1 e2e cases on the codex harness",
+    # Integration grid axes — select subsets with `-m` (see tests/integration/grid.py). A mark
+    # is applied per axis, so it matches every cell touching that value on any axis.
+    "subprocess: integration cells touching the subprocess (host) runtime",
+    "docker: integration cells touching the docker runtime",
+    "podman: integration cells touching the podman runtime (needs the engine on the host; local-only)",
+    "apptainer: integration cells touching the apptainer runtime (needs the engine on the host; local-only)",
+    "prime: integration cells touching the prime runtime (real sandbox + tunnel)",
+    "modal: integration cells touching the modal runtime (external sandbox; local-only, excluded in CI)",
+    "e2b: integration cells touching the e2b runtime (external sandbox; local-only, excluded in CI)",
+    "colocated: integration cells with a tool server colocated in the harness runtime",
+    "null: integration cells on the null harness",
+    "bash: integration cells on the bash harness",
+    "claude_code: integration cells on the claude-code harness",
+    "openclaw: integration cells on the OpenClaw harness",
+    "hermes_agent: integration cells on the hermes-agent harness",
+    "rlm: integration cells on the rlm harness",
+    "kimi_code: integration cells on the kimi-code harness",
+    "pi: integration cells on the pi harness",
+    "codex: integration cells on the codex harness",
+    "mini_swe_agent: integration cells on the mini-swe-agent harness",
+    "prime_agent: integration cells on the prime-agent harness",
     "asyncio: marks tests as async tests",
 ]
 filterwarnings = [
@@ -268,23 +265,3 @@ redundant-cast = "ignore"
 # verifiers/v1 is vendored (heavily typed upstream for a different checker); it is not part
 # of verifiers' ty gate. environments/ are user-authored envs, also out of scope.
 exclude = ["environments", "verifiers/v1"]
-
-
-[tool.coverage.run]
-source = ["verifiers"]
-omit = [
-    "*/tests/*",
-    "*/__pycache__/*",
-    "*/site-packages/*",
-]
-
-[tool.coverage.report]
-exclude_lines = [
-    "pragma: no cover",
-    "def __repr__",
-    "if self.debug:",
-    "raise AssertionError",
-    "raise NotImplementedError",
-    "if __name__ == .__main__.:",
-    "if TYPE_CHECKING:",
-]

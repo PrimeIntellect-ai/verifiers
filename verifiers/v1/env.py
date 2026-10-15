@@ -220,7 +220,7 @@ class Env(ABC, Generic[ConfigT]):
         unless it names a `key=`, so an episode run again after a crash returns its
         finished calls and continues its cut-off ones from their checkpoints. Host code
         between the calls must then be cheap and deterministic given their results (see
-        docs/v1/env.md, "Durable episodes"). The scope is the durable's `match`; left
+        docs/env.md, "Durable episodes"). The scope is the durable's `match`; left
         None, this episode's `trace_labels(task)`, which every trace carries. The scope
         is the episode's identity: unique to it (two rollouts of one task differ, e.g.
         by a rollout index the runner puts in the task) and the same when it runs

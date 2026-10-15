@@ -2,7 +2,7 @@ import os
 import secrets
 import shlex
 
-from pydantic import NonNegativeInt, PositiveInt, field_validator
+from pydantic import Field, NonNegativeInt, PositiveInt, field_validator
 from pydantic_config import BaseConfig
 
 from verifiers.v1.clients import ModelContext
@@ -69,7 +69,7 @@ class BashHarnessConfig(HarnessConfig):
     eval environment; the key is handed to the program in its launch file (like the interception
     secret) so the agent's `bash` subprocesses don't inherit it."""
 
-    search_exclude: list[str] = []
+    search_exclude: list[str] = Field(default_factory=list)
     """Sites the `search` tool never returns, each a host (its subdomains included) or a
     host and path prefix such as `github.com/some-org`. Each also goes into the query as
     a `-site:` term so excluded pages don't take the result slots. The list reaches the

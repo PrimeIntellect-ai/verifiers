@@ -9,7 +9,7 @@ to the runtime, is what lets those borrowed runs be saved and recovered:
   provisioning agent's is, and on `Interaction.checkpoint()`. Each checkpoint is
   recorded on the run's own trace, matching that run's conversation.
 - **Restore.** The owner restores the box, never a borrower: `replace()` starts a fresh
-  box from the latest checkpoint any seat took and swaps it in under the same runtime
+  box from the latest checkpoint any seat took and swaps it in under the same backend
   object, so every seat sharing the box (and every view of it) sees the restored box. An
   interaction retry on a borrowed box goes through it (`AgentConfig.interaction_retries`).
   After a crash, a durable `agent.provision(task)` restores the box from the latest
@@ -34,8 +34,8 @@ from verifiers.v1.durable import BOX_LABEL, Durable
 from verifiers.v1.runtimes import (
     Runtime,
     RuntimeConfig,
-    make_runtime,
-    provision_runtime,
+    make_backend,
+    provision_backend,
     restore_config,
 )
 from verifiers.v1.trace import Checkpoint
@@ -79,7 +79,8 @@ class Box:
         self.generation = 0
         """How many times `replace` swapped the box."""
         self._lock = asyncio.Lock()
-        runtime.__dict__[_ATTR] = self
+        # On the backend: every view of the box (`with_env`, `with_user`) shares it.
+        runtime.backend.__dict__[_ATTR] = self
 
     @property
     def labels(self) -> dict[str, Any]:
@@ -102,7 +103,7 @@ class Box:
         """Checkpoint the box, one at a time across its seats. The caller records the
         returned id on its run's trace, with the turns its conversation is at."""
         async with self._lock:
-            checkpoint_id = await self.runtime.checkpoint()
+            checkpoint_id = await self.runtime.backend.checkpoint()
             self.latest = Checkpoint(id=checkpoint_id, turns=0, time=time.time())
             return self.latest
 
@@ -122,14 +123,16 @@ class Box:
                 self.runtime.name,
                 source.id,
             )
-            fresh = make_runtime(restore_config(self.config, source.id))
+            backend = self.runtime.backend
+            fresh = make_backend(restore_config(self.config, source.id))
+            fresh.env = dict(backend.env)
             try:
                 await fresh.start()
             except BaseException:
                 await fresh.stop()
                 raise
-            old = self.runtime.adopt(fresh)
-            self.runtime.__dict__[_ATTR] = self
+            old = backend.adopt(fresh)
+            backend.__dict__[_ATTR] = self
             self.generation += 1
             self.restored = self.latest = Checkpoint(
                 id=source.id, turns=0, restored=True, time=time.time()
@@ -142,9 +145,8 @@ class Box:
 def box_of(runtime: Runtime | None) -> Box | None:
     """The owner of a box `Agent.provision` handed out (any view of it); None for a
     box made some other way."""
-    if runtime is None:
-        return None
-    return runtime.__dict__.get(_ATTR)
+    backend = getattr(runtime, "backend", None)
+    return getattr(backend, "__dict__", {}).get(_ATTR)
 
 
 @asynccontextmanager
@@ -162,12 +164,12 @@ async def provision_box(
     """Provision a box from `config` (started from `checkpoint` when given) with its
     `Box` owner, and tear it down on exit."""
     start = restore_config(config, checkpoint.id) if checkpoint is not None else config
-    async with provision_runtime(start) as runtime:
-        runtime.env = dict(env or {})
+    async with provision_backend(start, env=dict(env or {})) as backend:
+        runtime = backend.bind()
         Box(
             runtime,
             config,
-            save=save and runtime.supports_checkpoint,
+            save=save and backend.supports_checkpoint,
             key=key,
             fingerprint=fingerprint,
             ref=ref,

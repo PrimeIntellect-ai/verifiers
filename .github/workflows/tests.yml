@@ -1,0 +1,174 @@
+name: Tests
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "**.py"
+      - "pyproject.toml"
+      - "packages/**"
+      - ".github/workflows/tests.yml"
+  push:
+    branches: [main]
+    paths:
+      - "**.py"
+      - "pyproject.toml"
+      - "packages/**"
+      - ".github/workflows/tests.yml"
+
+env:
+  HF_HOME: ${{ github.workspace }}/.cache/huggingface
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    name: Unit (${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - parallel:
+          - name: Install uv
+            uses: astral-sh/setup-uv@v10.0.1
+
+          - name: Cache Hugging Face tokenizers
+            uses: actions/cache@v6
+            with:
+              path: ${{ env.HF_HOME }}
+              key: hf-tokenizers-${{ runner.os }}-${{ hashFiles('uv.lock') }}
+              restore-keys: |
+                hf-tokenizers-${{ runner.os }}-
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Run unit tests
+        run: uv run pytest tests/unit -vv -n auto
+
+  integration:
+    name: Integration / ${{ matrix.behavior }}
+    if: >-
+      github.event_name != 'pull_request' ||
+      (github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.user.login != 'dependabot[bot]')
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - behavior: Single-Turn
+            tests: tests/integration/test_single_turn.py
+          - behavior: Multi-Turn
+            tests: tests/integration/test_multi_turn.py
+          - behavior: Multi-Turn Tool
+            tests: tests/integration/test_multi_turn_tool.py
+          - behavior: Stateful Tool
+            tests: tests/integration/test_stateful_tool.py
+          - behavior: Shared Tool
+            tests: tests/integration/test_shared_tool.py
+          - behavior: Multimodal Tool
+            tests: tests/integration/test_multimodal_tool.py
+          - behavior: User Echo
+            tests: tests/integration/test_user_echo.py
+          - behavior: Resume Tool
+            tests: tests/integration/test_resume_tool.py
+          - behavior: User Sim
+            tests: tests/integration/test_user_sim.py
+          - behavior: Agent User
+            tests: tests/integration/test_agent_user.py
+          - behavior: Network Policy
+            tests: tests/integration/test_network_policy.py
+          - behavior: Skills
+            tests: tests/integration/test_skills.py
+          - behavior: Limits
+            tests: tests/integration/test_limits.py
+          - behavior: Rubric Judge
+            tests: tests/integration/test_rubric_judge.py
+          - behavior: Agentic Judge
+            tests: tests/integration/test_agentic_judge.py
+          - behavior: Multi-Agent
+            tests: tests/integration/test_multi_agent.py
+          - behavior: Examples
+            tests: tests/integration/test_examples.py
+    env:
+      PRIME_API_KEY: ${{ secrets.PRIME_API_KEY }}
+      PRIME_TEAM_ID: ${{ secrets.PRIME_TEAM_ID }}
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - parallel:
+          - name: Install uv
+            uses: astral-sh/setup-uv@v10.0.1
+
+          - name: Cache Hugging Face tokenizers
+            uses: actions/cache@v6
+            with:
+              path: ${{ env.HF_HOME }}
+              key: hf-tokenizers-${{ runner.os }}-${{ hashFiles('uv.lock') }}
+              restore-keys: |
+                hf-tokenizers-${{ runner.os }}-
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Resolve wiki-search corpus revision
+        if: matrix.behavior == 'Examples'
+        id: wiki-corpus
+        run: |
+          uv run python - <<'PY' >> "$GITHUB_OUTPUT"
+          from huggingface_hub import dataset_info
+          from wiki_search.servers.wiki import DATASET
+          print(f"revision={dataset_info(DATASET).sha}")
+          PY
+
+      - name: Cache wiki-search index and embedding model
+        if: matrix.behavior == 'Examples'
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cache/wiki_search
+            ~/.cache/chroma
+          key: wiki-search-${{ runner.os }}-${{ steps.wiki-corpus.outputs.revision }}-${{ hashFiles('uv.lock', 'environments/wiki_search/wiki_search/servers/wiki.py') }}
+
+      - name: Run integration tests
+        run: |
+          uv run pytest ${{ matrix.tests }} -vv -n 8 --dist worksteal -m "not podman and not apptainer and not modal and not e2b" --durations=25 --junitxml=test-results.xml
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: integration-results-${{ strategy.job-index }}
+          path: test-results.xml
+

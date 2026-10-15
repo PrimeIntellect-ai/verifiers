@@ -1,5 +1,7 @@
 """Remote Prime VM sandbox runtime."""
 
+from __future__ import annotations
+
 import asyncio
 import contextlib
 import io
@@ -31,11 +33,12 @@ from verifiers.v1.errors import (
 from verifiers.v1.runtimes.base import (
     BaseRuntimeInfo,
     ProgramResult,
-    Runtime,
+    RuntimeBackend,
     RuntimeProcess,
     parse_gpu,
 )
 from verifiers.v1.runtimes.limiters import CreationBacklogFull, creation_limiter
+from verifiers.v1.runtimes.runtime import Runtime
 from verifiers.v1.utils.aio import cancel_requested, run_shielded
 from verifiers.v1.utils.prime import ensure_prime_auth
 from verifiers.v1.utils.retries import retrying
@@ -267,7 +270,7 @@ class PrimeConfig(NetworkPolicyConfig):
     is gone at once (`box_lost`), never held."""
 
     @model_validator(mode="after")
-    def _validate_egress(self) -> "PrimeConfig":
+    def _validate_egress(self) -> PrimeConfig:
         if not self.network_restricted:
             return self
         if not self.allow:
@@ -307,8 +310,9 @@ class PrimeProcess(RuntimeProcess):
         await self._process.kill()
 
 
-class PrimeRuntime(Runtime):
+class PrimeBackend(RuntimeBackend):
     supports_user: ClassVar[bool] = True
+    supports_expose: ClassVar[bool] = False
     is_local: ClassVar[bool] = False
 
     def __init__(self, config: PrimeConfig, name: str | None = None) -> None:
@@ -590,15 +594,17 @@ class PrimeRuntime(Runtime):
             policy.get("deny"),
         )
 
-    async def run(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
+    async def _run(
+        self, runtime: Runtime, argv: list[str], env: dict[str, str]
+    ) -> ProgramResult:
         try:
             # Poll directly so rollout cancellation owns the execution timeout.
             job = await self._client.start_background_job(
                 self.info.id,
                 shlex.join(argv),
                 working_dir=self.config.workdir,
-                env=self.process_env(env),
-                user=self.user,
+                env=runtime.process_env(env),
+                user=runtime.user,
             )
             delay = 0.1
             output_retries = 0
@@ -625,7 +631,7 @@ class PrimeRuntime(Runtime):
                     output_retries += 1
                 elif loop.time() >= next_check:
                     next_check = loop.time() + _LIVENESS_INTERVAL_SECONDS
-                    alive = await self._job_alive(job)
+                    alive = await self._job_alive(job, runtime.user)
                     misses = 0 if alive is not False else misses + 1
                     if misses >= _LIVENESS_MISSES:
                         raise _JobDied(
@@ -654,7 +660,7 @@ class PrimeRuntime(Runtime):
             stderr=result.stderr or "",
         )
 
-    async def _job_alive(self, job: Any) -> bool | None:
+    async def _job_alive(self, job: Any, user: str | None) -> bool | None:
         """Whether a job without an exit file still runs: some process holds its output
         open, or the exit file has appeared since. None when the check itself failed.
         Runs as the job's user, who can read the job's own file descriptors."""
@@ -666,7 +672,7 @@ class PrimeRuntime(Runtime):
         )
         try:
             result = await self._client.execute_command(
-                self.info.id, command, timeout=60, user=self.user
+                self.info.id, command, timeout=60, user=user
             )
         except Exception as e:  # noqa: BLE001 - an unknown liveness is not a death
             logger.debug("prime: liveness check of job %s failed: %s", job.job_id, e)
@@ -674,16 +680,16 @@ class PrimeRuntime(Runtime):
         verdict = (result.stdout or "").strip()
         return {"alive": True, "dead": False}.get(verdict)
 
-    async def open_process(
-        self, argv: list[str], env: dict[str, str]
+    async def _open_process(
+        self, runtime: Runtime, argv: list[str], env: dict[str, str]
     ) -> RuntimeProcess:
         try:
             process = await self._client.open_process(
                 self.info.id,
                 shlex.join(argv),
                 working_dir=self.config.workdir,
-                env=self.process_env(env),
-                user=self.user,
+                env=runtime.process_env(env),
+                user=runtime.user,
             )
         except Exception as e:
             raise SandboxError(
@@ -789,8 +795,8 @@ class PrimeRuntime(Runtime):
             "with its consumer, or use a docker or modal service runtime"
         )
 
-    async def run_background(
-        self, argv: list[str], env: dict[str, str], log: str
+    async def _run_background(
+        self, runtime: Runtime, argv: list[str], env: dict[str, str], log: str
     ) -> None:
         command = f"exec {shlex.join(argv)} > {shlex.quote(log)} 2>&1"
         try:
@@ -798,8 +804,8 @@ class PrimeRuntime(Runtime):
                 self.info.id,
                 command,
                 working_dir=self.config.workdir,
-                env=self.process_env(env),
-                user=self.user,
+                env=runtime.process_env(env),
+                user=runtime.user,
             )
         except Exception as e:
             raise SandboxError(
@@ -807,9 +813,11 @@ class PrimeRuntime(Runtime):
                 kind=self._kind(e, "exec"),
             ) from e
 
-    async def _read(self, path: str, max_bytes: int | None = None) -> bytes:
+    async def _read(
+        self, runtime: Runtime, path: str, max_bytes: int | None = None
+    ) -> bytes:
         # The file API acts as the default user; a user view reads through exec.
-        if max_bytes is not None or self.user is not None:
+        if max_bytes is not None or runtime.user is not None:
             reader = "cat" if max_bytes is None else f"head -c {max_bytes}"
             try:
                 # Stream binary output: execute_command buffers base64 text for the
@@ -818,8 +826,8 @@ class PrimeRuntime(Runtime):
                     self.info.id,
                     f"{reader} -- {shlex.quote(path)}",
                     working_dir=self.config.workdir,
-                    env=self.process_env({}),
-                    user=self.user,
+                    env=runtime.process_env({}),
+                    user=runtime.user,
                 )
                 async with contextlib.aclosing(process):
                     with io.BytesIO() as data:
@@ -859,7 +867,7 @@ class PrimeRuntime(Runtime):
         except Exception as e:
             raise SandboxError(f"read {path!r}: {e}", kind=self._kind(e, "io")) from e
 
-    async def write(self, path: str, data: bytes) -> None:
+    async def _write(self, runtime: Runtime, path: str, data: bytes) -> None:
         # The gateway creates missing parents and uploads binary data without command-line
         # limits. Resolve relative paths here because uploads do not use this runtime's workdir.
         target = (
@@ -867,7 +875,7 @@ class PrimeRuntime(Runtime):
             if path.startswith("/")
             else f"{self.config.workdir.rstrip('/')}/{path}"
         )
-        if self.user is None:
+        if runtime.user is None:
             try:
                 if len(data) <= _TRANSFER_PART_BYTES:
                     await self._upload(target, data)
@@ -879,13 +887,13 @@ class PrimeRuntime(Runtime):
                 ) from e
             return
         # Uploads act as the default user: stage the bytes, then copy them in as the user.
-        root = self.with_user(None)
+        root = runtime.with_user(None)
         staged = f"/tmp/vf-write-{uuid.uuid4().hex}"
         try:
             await root.write(staged, data)
             await root.run(["chmod", "644", staged], {})
             copy = 'mkdir -p "$(dirname "$1")" && cat -- "$2" > "$1"'
-            result = await self.run(["sh", "-c", copy, "sh", target, staged], {})
+            result = await runtime.run(["sh", "-c", copy, "sh", target, staged], {})
         finally:
             await root.run(["rm", "-f", staged], {})
         if result.exit_code != 0:
@@ -946,7 +954,7 @@ class PrimeRuntime(Runtime):
         stem = f"{target}.vf-part-{uuid.uuid4().hex[:12]}"
         size = _TRANSFER_PART_BYTES
         parts = [f"{stem}.{n:05d}" for n in range(math.ceil(len(data) / size))]
-        root = self.with_user(None)  # uploads land as the default user
+        root = self.bind()  # uploads land as the default user
         try:
             for n, part in enumerate(parts):
                 await self._upload(part, data[n * size : (n + 1) * size])
@@ -984,7 +992,7 @@ class PrimeRuntime(Runtime):
         grows while it is read (a log) gives its first `size` bytes; one that shrinks
         fails the read."""
         stem = f"/tmp/vf-read-{uuid.uuid4().hex[:12]}"
-        root = self.with_user(None)
+        root = self.bind()
         chunks: list[bytes] = []
         try:
             for n, offset in enumerate(range(0, size, _TRANSFER_PART_BYTES)):

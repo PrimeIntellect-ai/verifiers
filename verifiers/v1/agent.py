@@ -17,6 +17,7 @@ from contextlib import (
     asynccontextmanager,
     nullcontext,
 )
+from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
 from typing import Any, Generic, Literal, Self, cast
 from weakref import WeakValueDictionary
@@ -95,6 +96,11 @@ __all__ = [
 ]
 
 logger = logging.getLogger(__name__)
+
+# Only nested runs in this scoring attempt participate in its rollback.
+_scoring_runs: ContextVar[list[tuple["_EpisodeAgent", Trace]] | None] = ContextVar(
+    "scoring_runs", default=None
+)
 
 
 def resolve_rollout_timeouts(timeout: TimeoutConfig, task: Task) -> RolloutTimeouts:
@@ -978,7 +984,7 @@ class DurableInteraction:
     the first use of it (or `await box()`) restores the box from the checkpoint
     recorded at the end of the turns given so far (with per-call saves, every final
     reply has one) and keeps it. A later replayed turn moves the kept box to that
-    turn's checkpoint, in place (`Runtime.adopt`: a reference to it stays valid). When
+    turn's checkpoint, in place (`RuntimeBackend.adopt`: a reference to it stays valid). When
     the replay hands over to the live exchange, the live exchange continues on the
     kept box (borrowed from the exchange, with what the driver wrote to it since), moved
     first to the checkpoint it continues from when that is another one. A replay that
@@ -1658,6 +1664,7 @@ class Agent:
         key: str | None = None,
         depends: object = None,
         durable: Durable | bool | None = None,
+        on_score: Callable[[Trace, Runtime], Awaitable[None]] | None = None,
     ) -> Trace:
         """Run this agent on `task` once and return the trace: one segment — the
         program runs on the task's prompt until it exits (a multi-turn exchange
@@ -1694,7 +1701,8 @@ class Agent:
         its fingerprint: a finished one is kept, a cut-off one continues from its own
         latest checkpoint, and another origin runs it fresh from the origin. A call
         passing `checkpoint` (or `at`/`note` without `resume`) without `key` is a
-        plain one."""
+        plain one. `on_score(trace, runtime)` runs after task scoring in the
+        selected verifier workspace, inside its timeout and retry boundary."""
         if self._closed:
             raise RuntimeError("Agent is closed; create a new agent")
         if durable is not False:
@@ -1711,6 +1719,7 @@ class Agent:
                     on_trace=on_trace,
                     collect_artifacts=collect_artifacts,
                     on_save=on_save,
+                    on_score=on_score,
                     depends=depends,
                     resume=resume,
                     at=at,
@@ -1727,6 +1736,7 @@ class Agent:
                 at=at,
                 note=note,
                 on_save=on_save,
+                on_score=on_score,
                 durable=False,
             )
         runtime = await _real_runtime(runtime)
@@ -1748,6 +1758,7 @@ class Agent:
                 opening.checkpoint,
                 on_save,
                 resumes=opening.source,
+                on_score=on_score,
             )
             if attempt == retry_state.max_retries or trace.ok:
                 break
@@ -1857,6 +1868,7 @@ class Agent:
         collect_artifacts: bool,
         on_save: OnSave | None,
         depends: object,
+        on_score: Callable[[Trace, Runtime], Awaitable[None]] | None = None,
         resume: Trace | None = None,
         at: str | int | None = None,
         note: str | None = None,
@@ -1888,6 +1900,7 @@ class Agent:
             at=at,
             note=note,
             on_save=_chain_save(on_save, store),
+            on_score=on_score,
             durable=False,
         )
         if store is not None:
@@ -1905,6 +1918,7 @@ class Agent:
         on_save: OnSave | None = None,
         *,
         resumes: Trace | None = None,
+        on_score: Callable[[Trace, Runtime], Awaitable[None]] | None = None,
     ) -> Trace:
         params = self._rollout_params(
             task, runtime, dict(shared_tools or {}), checkpoint
@@ -1921,6 +1935,7 @@ class Agent:
             on_save=on_save,
             resumes=resumes,
             restored=_box_start(runtime, resumes),
+            on_score=on_score,
             **params,
         )
         try:
@@ -2413,12 +2428,50 @@ class _EpisodeAgent(Agent):
             if last is not None and self._on_discard is not None:
                 self._on_discard(last)
             last = trace
+            if (runs := _scoring_runs.get()) is not None:
+                runs.append((self, trace))
             if self._on_trace is not None:
                 self._on_trace(trace)
             if on_trace is not None:
                 on_trace(trace)
 
         return watch
+
+    def _scoring_callback(self, callback):
+        if callback is None:
+            return None
+
+        async def score(trace, runtime):
+            parent_runs = _scoring_runs.get()
+            runs = []
+            token = _scoring_runs.set(runs)
+            # The solver is idle while an Env runs a judge. Release its permit
+            # so a one-agent episode can enter the nested judge rollout.
+            if self._gate is not None:
+                self._gate.release()
+            try:
+                try:
+                    await callback(trace, runtime)
+                finally:
+                    _scoring_runs.reset(token)
+                    if self._gate is not None:
+                        await run_shielded(self._gate.acquire())
+            except BaseException:
+                for agent, child in runs:
+                    agent._completed[:] = [
+                        t for t in agent._completed if t is not child
+                    ]
+                    if agent._on_discard is not None:
+                        agent._on_discard(child)
+                    if child.usage is not None:
+                        trace.extra_usage.append(child.usage)
+                    trace.extra_usage.extend(child.extra_usage)
+                raise
+            else:
+                if parent_runs is not None:
+                    parent_runs.extend(runs)
+
+        return score
 
     async def run(
         self,
@@ -2436,6 +2489,7 @@ class _EpisodeAgent(Agent):
         key: str | None = None,
         depends: object = None,
         durable: Durable | bool | None = None,
+        on_score: Callable[[Trace, Runtime], Awaitable[None]] | None = None,
     ) -> Trace:
         if durable is not False:
             # The call resolves as durable or plain first (a durable one may run
@@ -2454,6 +2508,7 @@ class _EpisodeAgent(Agent):
                 key=key,
                 depends=depends,
                 durable=durable,
+                on_score=on_score,
             )
             if trace.kept:
                 # A kept trace is part of this episode's result too: the attempt that
@@ -2472,6 +2527,7 @@ class _EpisodeAgent(Agent):
                 at=at,
                 note=note,
                 on_save=on_save,
+                on_score=self._scoring_callback(on_score),
                 durable=False,
             )
         self._completed.append(trace)
