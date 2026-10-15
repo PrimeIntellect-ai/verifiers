@@ -4,7 +4,7 @@ from typing import Annotated
 
 from pydantic import Field, SerializeAsAny
 
-from verifiers.v1.configs.runtime import ImageConfig, NetworkPolicyConfig
+from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.runtimes.backends.custom import (
     CustomRuntimeConfig,
     CustomRuntimeInfo,
@@ -130,7 +130,6 @@ __all__ = [
     "E2BBackend",
     "E2BConfig",
     "E2BRuntimeInfo",
-    "ImageConfig",
     "ModalBackend",
     "ModalConfig",
     "ModalRuntimeInfo",

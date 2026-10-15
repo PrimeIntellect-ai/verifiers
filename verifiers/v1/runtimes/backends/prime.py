@@ -19,7 +19,7 @@ from urllib.parse import urlsplit
 from prime_sandboxes.models import validate_egress_lists
 from pydantic import Field, model_validator
 
-from verifiers.v1.configs.runtime import ImageConfig, NetworkPolicyConfig
+from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes.base import (
     BaseRuntimeInfo,
@@ -77,13 +77,15 @@ def set_base_sandbox_labels(labels: list[str]) -> None:
     BASE_LABELS = list(labels)
 
 
-class PrimeConfig(ImageConfig, NetworkPolicyConfig):
+class PrimeConfig(NetworkPolicyConfig):
     type: Literal["prime"] = "prime"
     image: str = "python:3.11-slim"
     """Docker image to run. Any pullable ref works: on the first use of an image, the
     platform auto-builds the VM image that the sandbox needs from it (~10 minutes)
     and caches the result, so later sandboxes on the same ref start in
     seconds."""
+    workdir: str | None = None
+    """Working directory override; None uses the task's workdir, or /app."""
     region: str | None = None
     """Region to provision in (None = provider-chosen)."""
     labels: list[str] = Field(default_factory=list)
@@ -149,6 +151,7 @@ class PrimeProcess(RuntimeProcess):
 
 
 class PrimeBackend(RuntimeBackend):
+    supports_image: ClassVar[bool] = True
     supports_compose: ClassVar[bool] = True
     supports_user: ClassVar[bool] = True
     supports_expose: ClassVar[bool] = False

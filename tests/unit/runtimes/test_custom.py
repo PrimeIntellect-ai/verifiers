@@ -7,6 +7,7 @@ import contextlib
 import shutil
 import tempfile
 from pathlib import Path
+from typing import ClassVar
 
 import pytest
 from pydantic import TypeAdapter, ValidationError
@@ -15,7 +16,6 @@ import verifiers.v1 as vf
 from verifiers.v1.runtimes import (
     CustomRuntimeConfig,
     CustomRuntimeInfo,
-    ImageConfig,
     ProgramResult,
     Runtime,
     RuntimeBackend,
@@ -73,12 +73,14 @@ class HostBackend(RuntimeBackend):
             shutil.rmtree(self.root, ignore_errors=True)
 
 
-class ImageHostConfig(CustomRuntimeConfig, ImageConfig):
-    pass
+class ImageHostConfig(CustomRuntimeConfig):
+    image: str = "python:3.11-slim"
+    workdir: str | None = None
 
 
 class ImageHostBackend(HostBackend):
     config_class = ImageHostConfig
+    supports_image: ClassVar[bool] = True
 
 
 class UntypedBackend(HostBackend):
@@ -148,7 +150,7 @@ def test_custom_runtime_rejects_a_bad_import_path(import_path, error, match) -> 
 
 
 @pytest.mark.parametrize("backend", ["HostBackend", "ImageHostBackend"])
-def test_custom_runtime_config_declares_image_support(backend) -> None:
+def test_custom_runtime_declares_image_support(backend) -> None:
     task = vf.Task(data=vf.TaskData(idx=0, prompt=None, image="alpine"))
     supported = backend == "ImageHostBackend"
     with (

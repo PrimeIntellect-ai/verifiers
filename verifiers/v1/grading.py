@@ -6,13 +6,13 @@ import logging
 from contextlib import AsyncExitStack, contextmanager
 from pathlib import PurePosixPath
 
-from verifiers.v1.configs.runtime import ImageConfig
 from verifiers.v1.configs.scoring import ScoringConfig
 from verifiers.v1.errors import TaskError, boundary
 from verifiers.v1.runtimes import (
     PrimeConfig,
     Runtime,
     RuntimeConfig,
+    backend_cls,
 )
 from verifiers.v1.task import Task
 from verifiers.v1.trace import Error, Trace
@@ -57,7 +57,7 @@ def verifier_runtime(
     config = resolve_runtime_config(source, task)
     if policy.runtime is not None and "image" in policy.runtime.model_fields_set:
         config = config.model_copy(update={"image": policy.runtime.image})
-    if not isinstance(config, ImageConfig):
+    if not backend_cls(config).supports_image:
         raise TaskError(
             f"isolated verification requires an isolated filesystem; the "
             f"{config.type} runtime cannot run images"

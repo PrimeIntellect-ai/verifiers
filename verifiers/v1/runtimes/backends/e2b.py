@@ -34,7 +34,7 @@ from urllib.parse import urlsplit
 
 from pydantic import Field, model_validator
 
-from verifiers.v1.configs.runtime import ImageConfig, NetworkPolicyConfig
+from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes.base import (
     SERVICE_PORT,
@@ -142,13 +142,15 @@ def _egress_update(config: E2BConfig, routes: list[str] | None) -> dict:
     return {"allow_out": entries, "deny_out": ["0.0.0.0/0"]}
 
 
-class E2BConfig(ImageConfig, NetworkPolicyConfig):
+class E2BConfig(NetworkPolicyConfig):
     """Requires an E2B Pro plan: sandboxes are created with E2B's 24-hour maximum
     lifetime, which the Base plan caps at one hour (the API rejects the request)."""
 
     type: Literal["e2b"] = "e2b"
     image: str = "python:3.11-slim"
     """Public Debian-based Docker image used to build a cached E2B template."""
+    workdir: str | None = None
+    """Working directory override; None uses the task's workdir, or /app."""
     # TaskData.resources uses these units; non-default runtime config values take precedence.
     cpu: float = Field(default=2.0, ge=1)
     """CPU cores. E2B templates require 1 or an even whole number."""
@@ -336,6 +338,7 @@ async def _template_lock(name: str):
 
 
 class E2BBackend(RuntimeBackend):
+    supports_image: ClassVar[bool] = True
     is_local: ClassVar[bool] = False
 
     def __init__(self, config: E2BConfig, name: str | None = None) -> None:

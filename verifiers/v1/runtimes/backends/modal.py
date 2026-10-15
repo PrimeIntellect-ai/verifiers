@@ -22,11 +22,7 @@ from typing import ClassVar, Literal
 
 from pydantic import model_validator
 
-from verifiers.v1.configs.runtime import (
-    ImageConfig,
-    NetworkPolicyConfig,
-    parse_network_rule,
-)
+from verifiers.v1.configs.runtime import NetworkPolicyConfig, parse_network_rule
 from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes.base import (
     SERVICE_PORT,
@@ -80,10 +76,13 @@ def _egress_domain(rule: str, *, framework: bool = False) -> str | None:
     return host
 
 
-class ModalConfig(ImageConfig, NetworkPolicyConfig):
+class ModalConfig(NetworkPolicyConfig):
     type: Literal["modal"] = "modal"
     vm: bool = False
     """Use a VM sandbox for workloads requiring a Docker daemon."""
+    image: str = "python:3.11-slim"
+    workdir: str | None = None
+    """Working directory override; None uses the task's workdir, or /app."""
     network_access: bool = True
     """Allow network access at creation. False blocks all egress, including setup;
     it cannot be combined with execution-time allow/block policies."""
@@ -174,6 +173,7 @@ class ModalProcess(RuntimeProcess):
 
 
 class ModalBackend(RuntimeBackend):
+    supports_image: ClassVar[bool] = True
     supports_compose: ClassVar[bool] = True
     is_local: ClassVar[bool] = False
 

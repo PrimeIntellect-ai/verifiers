@@ -24,14 +24,14 @@ fields such as `agent.runtime` continue to describe runtime policy.
 
 ## Capabilities
 
-Each runtime declares its features through its config's base classes and its
-backend's class attributes. Before it provisions anything, the framework refuses a
+Each runtime declares its features through its backend's class attributes, and
+network policy support through its config. Before it provisions anything, the framework refuses a
 run that needs a feature the runtime does not declare, and the error names the
 runtime and the gap.
 
 | Feature | Declared by | Built-in runtimes |
 | --- | --- | --- |
-| Task image, container-only harnesses, isolated scoring | config inherits `ImageConfig` | docker, prime, modal, e2b |
+| Task image, container-only harnesses, isolated scoring | `supports_image` | docker, prime, modal, e2b |
 | Task network policy | config inherits `NetworkPolicyConfig` | prime, modal, e2b |
 | Task `agent_user` | `supports_user` | docker, prime |
 | Tool server in its own runtime | `supports_expose` | subprocess, docker, modal, e2b |
@@ -49,28 +49,28 @@ region = "us-east-1"
 ```
 
 The backend sets `config_class` to its own `CustomRuntimeConfig` subclass. That class
-validates every field next to `import_path` when the config loads, and its bases
-declare the config-level capabilities. The framework constructs the backend as
-`MyBackend(config, name)` with the validated config, like the built-in backends:
+validates every field next to `import_path` when the config loads. The framework
+constructs the backend as `MyBackend(config, name)` with the validated config, like
+the built-in backends. A backend with `supports_image` declares `image` and `workdir`
+fields, and a config that inherits `NetworkPolicyConfig` enforces task network
+policies:
 
 ```python
 from typing import ClassVar
 
-from verifiers.v1.runtimes import (
-    CustomRuntimeConfig,
-    CustomRuntimeInfo,
-    ImageConfig,
-    RuntimeBackend,
-)
+from verifiers.v1.runtimes import CustomRuntimeConfig, CustomRuntimeInfo, RuntimeBackend
 
 
-class MyConfig(CustomRuntimeConfig, ImageConfig):
+class MyConfig(CustomRuntimeConfig):
     region: str
+    image: str = "python:3.11-slim"
+    workdir: str | None = None
 
 
 class MyBackend(RuntimeBackend):
     config_class = MyConfig
     is_local: ClassVar[bool] = False
+    supports_image: ClassVar[bool] = True
 
     def __init__(self, config: MyConfig, name: str | None = None) -> None:
         super().__init__(name)

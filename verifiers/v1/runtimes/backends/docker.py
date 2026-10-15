@@ -23,7 +23,8 @@ from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, ClassVar, Literal
 from urllib.parse import urlsplit
 
-from verifiers.v1.configs.runtime import ImageConfig
+from pydantic_config import BaseConfig
+
 from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes.backends.subprocess import SubprocessProcess
 from verifiers.v1.runtimes.base import (
@@ -48,8 +49,11 @@ _HOST_NETWORK = sys.platform == "linux"
 _HOST_ALIAS = "host.docker.internal"
 
 
-class DockerConfig(ImageConfig):
+class DockerConfig(BaseConfig):
     type: Literal["docker"] = "docker"
+    image: str = "python:3.11-slim"
+    workdir: str | None = None
+    """Working directory override; None uses the task's workdir, or /app."""
     # TaskData.resources uses these units; non-default runtime config values take precedence.
     cpu: float | None = None
     """Pin the container to this many CPU cores. None = unlimited."""
@@ -212,6 +216,7 @@ async def _abort_process_startup(
 class DockerBackend(RuntimeBackend):
     """A container reached through the docker CLI: every operation is an `exec`."""
 
+    supports_image: ClassVar[bool] = True
     supports_user: ClassVar[bool] = True
 
     def __init__(
