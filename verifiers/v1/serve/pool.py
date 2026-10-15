@@ -1,7 +1,7 @@
 """Env-server worker pool: a ROUTER broker over N worker processes.
 
 A lone `EnvServer` runs every rollout as an `asyncio.Task` on one event loop, so
-CPU-bound work (renderer tokenization, scoring) competes for that loop; the pool
+CPU-bound task setup and scoring compete for that loop; the pool
 spreads that work across processes.
 
 A broker binds the client-facing ROUTER (the *same* wire protocol as a lone

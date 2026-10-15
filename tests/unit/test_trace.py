@@ -243,12 +243,12 @@ def test_transcript(make_full_trace):
     assert "SECRET REASONING" not in transcript  # reasoning is excluded
 
 
-def test_sampling_mask_from_packed_matches_lists():
+def test_packed_training_records_match_native_arrays():
     import base64
 
     import numpy as np
 
-    from verifiers.v1.types import SamplingMask
+    from verifiers.v1.dialects.chat import response_from_wire
 
     rows = [[4, 7], [], [9]]
     ids, counts = np.array([4, 7, 9], np.int32), np.array([2, 0, 1], np.int32)
@@ -260,9 +260,46 @@ def test_sampling_mask_from_packed_matches_lists():
         }
         for name, a in (("ids", ids), ("counts", counts))
     }
-    for mask in (
-        SamplingMask.from_sampling_mask(rows),
-        SamplingMask.from_sampling_mask(packed),
+    logprobs = np.array([-0.5, -1.0, -1.5], np.float32)
+    for mask_payload, logprob_field in (
+        (
+            rows,
+            {
+                "logprobs": {
+                    "content": [
+                        {"token": f"token_id:{token_id}", "logprob": float(logprob)}
+                        for token_id, logprob in zip([4, 7, 9], logprobs, strict=True)
+                    ]
+                }
+            },
+        ),
+        (
+            packed,
+            {
+                "completion_logprobs": {
+                    "data": base64.b64encode(logprobs.tobytes()).decode(),
+                    "shape": [3],
+                    "dtype": "float32",
+                }
+            },
+        ),
     ):
+        response = response_from_wire(
+            {
+                "prompt_token_ids": [1, 2],
+                "choices": [
+                    {
+                        "message": {"role": "assistant", "content": "done"},
+                        "token_ids": [4, 7, 9],
+                        "sampling_mask": mask_payload,
+                        **logprob_field,
+                    }
+                ],
+            }
+        )
+        assert response.tokens is not None
+        np.testing.assert_array_equal(response.tokens.completion_logprobs, logprobs)
+        mask = response.tokens.sampling_mask
+        assert mask is not None
         np.testing.assert_array_equal(mask.ids, ids)
         np.testing.assert_array_equal(mask.counts, counts)

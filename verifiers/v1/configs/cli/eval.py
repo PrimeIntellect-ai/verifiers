@@ -6,7 +6,7 @@ from uuid import uuid4
 from pydantic import AliasChoices, Field, PrivateAttr, SerializeAsAny, model_validator
 from pydantic_config import BaseConfig
 
-from verifiers.v1.clients import ClientConfig, EvalClientConfig
+from verifiers.v1.clients import ClientConfig
 from verifiers.v1.configs.cli.env import narrowed_env_annotation, resolve_env_field
 from verifiers.v1.configs.env import EnvConfig
 from verifiers.v1.configs.select import SelectCLIConfig
@@ -83,7 +83,7 @@ class EvalConfig(BaseConfig):
         "deepseek/deepseek-v4-flash", validation_alias=AliasChoices("model", "m")
     )
     """Model id."""
-    client: ClientConfig = EvalClientConfig()
+    client: ClientConfig = ClientConfig()
     sampling: SamplingConfig = SamplingConfig()
     select: SelectCLIConfig = SelectCLIConfig()
     """Which of the taskset's tasks to evaluate, under `--select.*` (`-n` sets
