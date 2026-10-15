@@ -368,6 +368,7 @@ class ChatDialect(Dialect):
             "object": "chat.completion.chunk",
             "choices": [
                 {
+                    **{key: value for key, value in choice.items() if key != "message"},
                     "index": 0,
                     "delta": message,
                     "finish_reason": choice.get("finish_reason"),

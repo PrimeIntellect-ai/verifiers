@@ -585,30 +585,26 @@ def _attribute_routed_experts(
     prefix_node_ids: list[int],
     new_node_ids: list[int],
     path_len: int,
-    payload: Any,
+    arr: np.ndarray | None,
+    start: int | None,
 ) -> None:
     """Attach each new node's slice of this turn's MoE expert-routing array. A compact
-    payload's array covers the turn's prompt+completion from `payload["start"]` (0 = from token
+    payload's array covers the turn's prompt+completion from `start` (0 = from token
     0); the nodes created this turn tile sequence positions `[path_len:]` in creation order, so
     we hand each node `arr[off : off+len(node.token_ids)]` and advance. Reused-prefix nodes keep
     the routing attributed when they were first created, except for the one position this turn
     corrects (see `_replace_placeholder_routing_row`). A node whose slice falls outside the
     array (a `start` past `path_len`, e.g. an unexpected prefix-cache delta) is left unset — the
     branch then reports no routing rather than misaligning."""
-    if payload is None:
+    if arr is None:
         return
     new_tokens = sum(len(trace.nodes[nid].token_ids) for nid in new_node_ids)
-    if isinstance(payload, str):
-        arr = np.load(io.BytesIO(binascii.a2b_base64(payload)), allow_pickle=False)
+    if start is None:
         # Native vLLM .npy omits the final sampled token and any skipped prompt prefix;
         # its row count therefore locates the new suffix without an explicit start field.
         off = arr.shape[0] + 1 - new_tokens
     else:
-        raw = binascii.a2b_base64(payload["data"])
-        arr = np.frombuffer(raw, dtype=np.dtype(payload.get("dtype", "uint8"))).reshape(
-            payload["shape"]
-        )
-        off = path_len - int(payload.get("start", 0) or 0)
+        off = path_len - start
     _replace_placeholder_routing_row(trace, prefix_node_ids, arr, off)
     needed = off + new_tokens
     for nid in new_node_ids:
@@ -644,6 +640,29 @@ def _commit_turn(turn: PendingTurn, response: Response) -> int:
     trace = turn.trace
     prompt = turn.prompt
     tokens = response.tokens
+    # Decode routing before publishing nodes: a malformed payload must leave the graph intact.
+    routed_experts = None
+    routing_start = None
+    if tokens is not None and tokens.routed_experts is not None:
+        payload = tokens.routed_experts
+        if isinstance(payload, str):
+            routed_experts = np.load(
+                io.BytesIO(binascii.a2b_base64(payload)), allow_pickle=False
+            )
+        else:
+            raw = binascii.a2b_base64(payload["data"])
+            routed_experts = np.frombuffer(
+                raw, dtype=np.dtype(payload.get("dtype", "uint8"))
+            ).reshape(payload["shape"])
+            routing_start = int(payload.get("start", 0) or 0)
+        if (
+            not isinstance(routed_experts, np.ndarray)
+            or routed_experts.ndim != 3
+            or routed_experts.dtype.kind not in "iu"
+        ):
+            raise ValueError(
+                "routed experts must be an integer [tokens, layers, top_k] array"
+            )
     # Constant per renderer, so re-stamping every turn is idempotent.
     if tokens is not None and tokens.mm_token_type_id_map:
         trace.mm_token_type_id_map = tokens.mm_token_type_id_map
@@ -774,7 +793,7 @@ def _commit_turn(turn: PendingTurn, response: Response) -> int:
     # nodes in creation order, then the assistant node), each getting the routing for its tokens.
     # The prefix goes in too, so the position the previous turn could only pad can be corrected.
     _attribute_routed_experts(
-        trace, prefix, new_node_ids, path_len, tokens.routed_experts if tokens else None
+        trace, prefix, new_node_ids, path_len, routed_experts, routing_start
     )
 
     # Sampling masks are completion-aligned, so only the sampled node carries them.
