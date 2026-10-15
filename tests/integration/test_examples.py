@@ -11,8 +11,10 @@ import subprocess
 from pathlib import Path
 
 import pytest
-from conftest import CI_JUDGE, CI_MODEL, CI_REASONING_EFFORT
+from conftest import CI_JUDGE, CI_MODEL, CI_REASONING_EFFORT, assert_one_branch
 from grid import agent_seats
+
+import verifiers.v1 as vf
 
 EVAL_TIMEOUT = 600  # 10 minutes for a capped eval (-n 1 -r 1)
 
@@ -107,3 +109,8 @@ def test_eval(taskset: str, tmp_path: Path):
         for holder in (episode, *episode["traces"])
         for error in holder.get("errors") or []
     ]
+    assert_one_branch(
+        trace
+        for episode in episodes
+        for trace in vf.WireEpisode.model_validate(episode).traces
+    )
