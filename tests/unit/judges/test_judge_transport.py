@@ -2,6 +2,7 @@
 input-size check before a call. The provider is an in-process `httpx.MockTransport`."""
 
 import json
+from typing import ClassVar
 
 import httpx
 import openai
@@ -20,8 +21,8 @@ def provider(monkeypatch):
     recording each request body in `provider.requests`."""
 
     class Provider:
-        replies: list[httpx.Response | Exception] = []
-        requests: list[dict] = []
+        replies: ClassVar[list[httpx.Response | Exception]] = []
+        requests: ClassVar[list[dict]] = []
 
     def handle(request: httpx.Request) -> httpx.Response:
         Provider.requests.append(json.loads(request.content))

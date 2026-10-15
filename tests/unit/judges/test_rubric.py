@@ -177,7 +177,7 @@ def test_rubric_config_takes_exactly_one_criteria_source(tmp_path):
     with pytest.raises(ValueError):
         vf.RubricJudgeConfig()
     with pytest.raises(ValueError):
-        vf.RubricJudge(vf.RubricJudgeConfig(criteria=[])).criteria
+        _ = vf.RubricJudge(vf.RubricJudgeConfig(criteria=[])).criteria
 
 
 async def test_rubric_grades_given_text_against_inline_criteria(fake_judge_model):
