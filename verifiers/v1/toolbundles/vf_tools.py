@@ -449,16 +449,103 @@ def _endpoint(args):
     return next(iter(endpoints.values()))
 
 
+_WRITE_FLAGS = os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC | os.O_APPEND
+
+
+def _within(path, prefixes):
+    path = os.path.realpath(os.fsdecode(path))
+    return any(path == p or path.startswith(p.rstrip("/") + "/") for p in prefixes)
+
+
+def install_guard(endpoints, commands=()):
+    """Confine this process (an environment-kind server) to its declared endpoints:
+    sockets connect only to a declared ``host:port`` (or a Unix socket under a
+    declared path), files are written only under a declared path, and only a
+    declared command runs as a subprocess. A Python audit hook cannot be removed, so
+    bundle code cannot lift it; the processes it starts run unconfined but as the
+    server's unprivileged user."""
+    import socket
+
+    addresses, paths = set(), []
+    for entry in endpoints:
+        if entry.startswith("/"):
+            paths.append(os.path.realpath(entry))
+            continue
+        host, _, port = entry.rpartition(":")
+        addresses.add((host, int(port)))
+        try:
+            for info in socket.getaddrinfo(host, int(port), proto=socket.IPPROTO_TCP):
+                addresses.add((info[4][0], int(port)))
+        except OSError:
+            pass
+    allowed_commands = {os.path.basename(c) for c in commands}
+
+    def refuse(what):
+        raise PermissionError(f"undeclared endpoint: {what}")
+
+    def hook(event, args):
+        if event == "socket.connect":
+            address = args[1]
+            if isinstance(address, tuple):
+                if (address[0], int(address[1])) not in addresses:
+                    refuse(f"{address[0]}:{address[1]}")
+            elif not _within(address, paths):
+                refuse(address)
+        elif event == "open":
+            path, mode, flags = args
+            writes = (isinstance(mode, str) and any(c in mode for c in "wax+")) or (
+                isinstance(flags, int) and flags & _WRITE_FLAGS
+            )
+            if writes and isinstance(path, (str, bytes)) and not _within(path, paths):
+                refuse(os.fsdecode(path))
+        elif event == "subprocess.Popen":
+            executable, argv = args[0], args[1]
+            name = os.path.basename(
+                os.fsdecode(executable or (argv[0] if argv else ""))
+            )
+            if name not in allowed_commands:
+                refuse(f"command {name}")
+        elif event in (
+            "os.system",
+            "os.exec",
+            "os.posix_spawn",
+            "os.spawn",
+            "os.fork",
+            "ctypes.dlopen",
+        ):
+            refuse(event)
+
+    sys.addaudithook(hook)
+
+
+def drop_to(user):
+    """Run on as ``user`` from here on (the server's socket is already bound)."""
+    import pwd
+
+    record = pwd.getpwnam(user)
+    os.setgroups([])
+    os.setgid(record.pw_gid)
+    os.setuid(record.pw_uid)
+    os.environ["HOME"] = record.pw_dir or "/"
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="vf-tools")
     sub = parser.add_subparsers(dest="command", required=True)
     serve = sub.add_parser("serve")
     serve.add_argument("--bundle", required=True)
     serve.add_argument("--name")
-    serve.add_argument("--state", required=True)
+    serve.add_argument("--state")
     serve.add_argument("--host", default="127.0.0.1")
     serve.add_argument("--port", type=int, required=True)
     serve.add_argument("--interface", default="direct", choices=INTERFACES)
+    serve.add_argument("--run-as")
+    serve.add_argument("--endpoints", help="a JSON list: confine the server to these")
+    serve.add_argument("--commands", default="[]", help="a JSON list of executables")
+    observe = sub.add_parser("observe")
+    observe.add_argument("--user")
+    observe.add_argument("--out", required=True)
+    observe.add_argument("shell_command")
     seed = sub.add_parser("seed")
     seed.add_argument("--state", required=True)
     seed.add_argument("--seed")
@@ -483,12 +570,36 @@ def main(argv=None):
     args = parser.parse_args(argv)
 
     if args.command == "serve":
+        holder = Session(Bundle(args.name or "vf-tools", {}), {})
+        server = make_server(holder, args.host, args.port, args.name or "vf-tools")
+        if args.run_as:
+            drop_to(args.run_as)
+        if args.endpoints is not None:
+            sys.dont_write_bytecode = True
+            install_guard(json.loads(args.endpoints), json.loads(args.commands))
         bundle = Bundle.load(args.bundle, args.name, args.interface)
-        session = Session(
-            bundle, read_state(args.state), lambda s: write_state(args.state, s)
-        )
-        server = make_server(session, args.host, args.port, bundle.name)
+        holder.bundle = bundle
+        if args.state:
+            holder.state = read_state(args.state)
+            holder.on_commit = lambda s: write_state(args.state, s)
         server.serve_forever()
+    elif args.command == "observe":
+        import subprocess
+
+        result = subprocess.run(
+            ["sh", "-c", args.shell_command],
+            capture_output=True,
+            check=False,
+            user=args.user,
+            group=None,
+            extra_groups=[] if args.user else None,
+        )
+        os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
+        with open(args.out, "wb") as handle:
+            handle.write(result.stdout)
+        if result.returncode != 0:
+            sys.stderr.write(result.stderr.decode(errors="replace")[-2000:])
+            return result.returncode
     elif args.command == "seed":
         state = read_state(args.seed) if args.seed else {}
         if not isinstance(state, dict):

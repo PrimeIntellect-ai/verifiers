@@ -167,3 +167,81 @@ async def test_a_sidecar_keeps_the_state_out_of_a_root_agents_box(tmp_path):
     assert seen["added"].exit_code == 0, seen["added"].stderr
     assert seen["state"].exit_code != 0
     assert trace.reward == 1, [e.message for e in trace.errors]
+
+
+ENV_TOOLS = textwrap.dedent(
+    '''
+    import os
+    import pwd
+
+    from vf_tools import tool
+
+
+    @tool
+    def add_note(state, text: str) -> int:
+        """Append a note to the team's notes file."""
+        with open("/app/data/notes.txt", "a") as handle:
+            return handle.write(text + "\\n")
+
+
+    @tool
+    def whoami(state) -> str:
+        return pwd.getpwuid(os.getuid()).pw_name
+
+
+    @tool
+    def tamper(state) -> int:
+        with open("/app/elsewhere.txt", "w") as handle:
+            return handle.write("x")
+    '''
+)
+
+ENV_TEST_SH = textwrap.dedent(
+    """\
+    python3 - <<'EOF'
+    text = open("/logs/tools/notes.out").read()
+    open("/logs/verifier/reward.txt", "w").write("1" if "hello" in text else "0")
+    EOF
+    """
+)
+
+
+async def test_an_environment_bundle_runs_confined_as_its_own_user(tmp_path):
+    """An environment-kind bundle works on the task's own files: its server runs as an
+    unprivileged user of its own, writes only under its declared path, and its declared
+    dump command observes the result for the grader."""
+    root = tmp_path / "notes-task"
+    (root / "tests").mkdir(parents=True)
+    (root / "tests" / "test.sh").write_text(ENV_TEST_SH)
+    (root / "instruction.md").write_text("Leave a note saying hello.\n")
+    (root / "task.toml").write_text(
+        f'version = "1.0"\n[environment]\ndocker_image = "{IMAGE}"\n'
+        '[agent]\nuser = "agent"\n[verifier]\nenvironment_mode = "separate"\n'
+        '[[tools]]\nbundle = "notes"\n'
+    )
+    bundle = root / "tools" / "notes"
+    bundle.mkdir(parents=True)
+    (bundle / "bundle.toml").write_text(
+        'name = "notes"\nversion = 1\nowner = "task"\nkind = "environment"\n'
+        'endpoints = ["/app/data"]\ndump = "cat /app/data/notes.txt"\n'
+    )
+    (bundle / "tools.py").write_text(ENV_TOOLS)
+    task = HarborTask(parse_task(root, 0, HarborConfig()))
+    seen = {}
+
+    async def act(task, runtime):
+        agent = await resolve_agent_runtime(runtime, "agent")
+        for name, arguments in (
+            ("add_note", '{"text": "hello"}'),
+            ("whoami", "{}"),
+            ("tamper", "{}"),
+        ):
+            seen[name] = await agent.run(["vf-tools", "call", name, arguments], {})
+        seen["code"] = await agent.run(["ls", "/opt/vf-tools/notes"], {})
+
+    trace = await graded(task, act)
+    assert seen["add_note"].exit_code == 0, seen["add_note"].stdout
+    assert json.loads(seen["whoami"].stdout) == "vf-tools-notes"
+    assert seen["tamper"].exit_code != 0
+    assert seen["code"].exit_code != 0
+    assert trace.reward == 1, [e.message for e in trace.errors]

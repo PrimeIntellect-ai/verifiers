@@ -34,7 +34,7 @@ import tomllib
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 if TYPE_CHECKING:
     from verifiers.v1.runtimes import Runtime
@@ -66,10 +66,36 @@ class BundleManifest(BaseModel):
     version: int = Field(ge=1)
     owner: Literal["registry", "task"] = "registry"
     """`registry`: a versioned shared environment. `task`: a one-off owned by one task."""
-    kind: Literal["state"] = "state"
-    """`state`: pure tools over one JSON state document (the only kind so far)."""
+    kind: Literal["state", "environment"] = "state"
+    """`state`: pure tools over one JSON state document, served as root. `environment`:
+    tools over the task's own services, served as an unprivileged user of their own and
+    confined to `endpoints`; the task's services hold the state and `dump` observes it."""
     interface: Literal["direct", "search_execute"] = "direct"
     description: str = ""
+    endpoints: list[str] = Field(default_factory=list)
+    """An environment bundle's reach: `host:port` sockets and absolute path prefixes it
+    may write under (declare /tmp for scratch space)."""
+    commands: list[str] = Field(default_factory=list)
+    """Executables an environment bundle may run."""
+    dump: str | None = None
+    """An environment bundle's observation: a shell command whose stdout is its dump,
+    run as the bundle's user after the agent stops."""
+
+    @model_validator(mode="after")
+    def _kind_fields(self) -> BundleManifest:
+        if self.kind == "state" and (self.endpoints or self.commands or self.dump):
+            raise ValueError(
+                "endpoints, commands and dump belong to environment bundles"
+            )
+        if self.kind == "environment" and not self.dump:
+            raise ValueError("an environment bundle declares its dump command")
+        for entry in self.endpoints:
+            if entry.startswith("/"):
+                continue
+            host, _, port = entry.rpartition(":")
+            if not host or not port.isdigit():
+                raise ValueError(f"endpoint {entry!r} is neither host:port nor a path")
+        return self
 
     @classmethod
     def read(cls, directory: Path) -> BundleManifest:
@@ -100,6 +126,15 @@ class ToolMount(BaseModel):
     interface: Literal["direct", "search_execute"] = "direct"
     version: int = 1
     owner: Literal["registry", "task"] = "registry"
+    kind: Literal["state", "environment"] = "state"
+    endpoints: list[str] = Field(default_factory=list)
+    commands: list[str] = Field(default_factory=list)
+    dump: str | None = None
+
+    @property
+    def user(self) -> str | None:
+        """The unprivileged user an environment bundle's server runs as."""
+        return f"vf-tools-{self.bundle}"[:32] if self.kind == "environment" else None
 
     @property
     def service(self) -> str:
@@ -123,13 +158,20 @@ class ToolMount(BaseModel):
 
     @property
     def dump_file(self) -> str:
-        return f"{DUMP_DIR}/{self.bundle}.json"
+        suffix = "json" if self.kind == "state" else "out"
+        return f"{DUMP_DIR}/{self.bundle}.{suffix}"
 
     def mcp_server(self) -> dict:
         """The Harbor `mcp_servers` entry the harness connects through."""
         return {"name": self.bundle, "transport": "streamable-http", "url": self.url}
 
     def dump_command(self) -> str:
+        if self.kind == "environment":
+            assert self.dump is not None and self.user is not None
+            return (
+                f"python3 {RUNTIME} observe --user {shlex.quote(self.user)} "
+                f"--out {shlex.quote(self.dump_file)} {shlex.quote(self.dump)}"
+            )
         return (
             f"python3 {RUNTIME} dump --state {shlex.quote(self.state_file)} "
             f"--out {shlex.quote(self.dump_file)}"
@@ -141,6 +183,18 @@ class ToolMount(BaseModel):
         return {"image": SIDECAR_IMAGE, "command": IDLE}
 
     def serve_command(self) -> list[str]:
+        confined = (
+            [
+                "--run-as",
+                self.user,
+                "--endpoints",
+                json.dumps(self.endpoints),
+                "--commands",
+                json.dumps(self.commands),
+            ]
+            if self.user is not None
+            else ["--state", self.state_file]
+        )
         return [
             "python3",
             RUNTIME,
@@ -149,8 +203,7 @@ class ToolMount(BaseModel):
             f"{BUNDLES_DIR}/{self.bundle}",
             "--name",
             self.bundle,
-            "--state",
-            self.state_file,
+            *confined,
             "--host",
             "127.0.0.1" if self.placement == "box" else "0.0.0.0",
             "--port",
@@ -187,6 +240,11 @@ def parse_mounts(task_dir: Path, entries: object) -> list[ToolMount]:
         seed = _inside(task_dir, seed_rel)
         if "seed" in entry and not seed.is_file():
             raise ValueError(f"{task_dir.name}: seed {seed_rel} does not exist")
+        if manifest.kind == "environment" and seed.is_file():
+            raise ValueError(
+                f"{task_dir.name}: environment bundle {name} takes no seed: the task's "
+                "own services hold its state"
+            )
         mounts.append(
             ToolMount(
                 bundle=name,
@@ -197,6 +255,10 @@ def parse_mounts(task_dir: Path, entries: object) -> list[ToolMount]:
                 interface=manifest.interface,
                 version=manifest.version,
                 owner=manifest.owner,
+                kind=manifest.kind,
+                endpoints=manifest.endpoints,
+                commands=manifest.commands,
+                dump=manifest.dump,
             )
         )
     names = [m.bundle for m in mounts]
@@ -252,6 +314,10 @@ _CREATE_USER = (
     'id -u "$1" >/dev/null 2>&1 || useradd -m -s /bin/sh "$1" 2>/dev/null '
     '|| adduser -D -s /bin/sh "$1"'
 )
+_CREATE_SYSTEM_USER = (
+    "id -u {user} >/dev/null 2>&1 || useradd -r -M -s /bin/false {user} 2>/dev/null "
+    "|| adduser -S -D -H {user}"
+)
 _READY = (
     "for i in $(seq 1 300); do python3 {runtime} ping --url {url} 2>/dev/null && exit 0; "
     "sleep 0.1; done; exit 1"
@@ -296,6 +362,23 @@ async def mount(
         f"python3 {RUNTIME} seed --state {shlex.quote(m.state_file)} "
         f"--seed /var/tmp/vf-tools/seeds/{m.bundle}.json;"
         for m in mounts
+        if m.kind == "state"
+    )
+    # An environment bundle's server runs as a user of its own, which reads its code
+    # (group) and nothing else of the tools: the bundles' root is traversable only.
+    users = " ".join(
+        f"{_CREATE_SYSTEM_USER.format(user=shlex.quote(m.user))}; "
+        f"chgrp -R {shlex.quote(m.user)} {BUNDLES_DIR}/{m.bundle}; "
+        f"chmod -R g+rX {BUNDLES_DIR}/{m.bundle};"
+        + "".join(
+            # A declared path is the bundle's to write: its group gets write access.
+            f" mkdir -p {shlex.quote(path)}; chgrp -R {shlex.quote(m.user)} "
+            f"{shlex.quote(path)}; chmod -R g+rwX {shlex.quote(path)};"
+            for path in m.endpoints
+            if path.startswith("/")
+        )
+        for m in mounts
+        if m.user is not None
     )
     await _sh(
         runtime,
@@ -311,7 +394,8 @@ async def mount(
             f"mkdir -p {STATE_DIR}/{m.bundle};"
             for m in mounts
         )
-        + f" {seeds} chmod -R go-rwx {BUNDLES_DIR} {STATE_DIR}; rm -rf /var/tmp/vf-tools",
+        + f" {seeds} chmod -R go-rwx {BUNDLES_DIR} {STATE_DIR}; chmod 711 {BUNDLES_DIR}; "
+        + f"{users} rm -rf /var/tmp/vf-tools",
         "installing tool bundles",
     )
     await start(runtime, mounts)
