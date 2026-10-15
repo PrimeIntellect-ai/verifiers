@@ -293,8 +293,8 @@ class ACPHarnessSession(HarnessSession):
         if not response.get("ok"):
             error = response.get("error") or "ACP steering failed"
             if error.startswith("NotImplementedError"):
-                # The agent does not advertise steering: the rollout steers through
-                # the interception instead.
+                # The agent does not advertise steering: the rollout decides
+                # (`Rollout.steer`).
                 raise NotImplementedError(error)
             raise RuntimeError(error)
         result = response.get("result")

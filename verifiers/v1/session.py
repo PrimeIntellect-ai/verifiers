@@ -136,35 +136,6 @@ class ReplayResponse:
 
 
 @dataclass
-class PendingSteer:
-    """A steer delivered through the interception: added as a user message to the
-    rollout's model requests. The harness never learns of it, so it keeps sending its
-    own conversation; the message is re-inserted at the same place (its anchor) on every
-    later request that extends that conversation, until the harness's own request
-    carries it."""
-
-    record: SteerRecord
-    message: UserMessage
-    anchor: tuple[int, str] | None = None
-    """Where it goes: before message `index` of the harness's own request, whose
-    messages before it digest to `prefix`. None until a request first carries it."""
-    prepared: bool = False
-    """Counted in `prepared_users`, so request interceptors leave it alone."""
-    echoed: bool = False
-    """The harness's own request carries it: never inserted again."""
-
-
-def _prefix_digests(messages: Messages) -> list[str]:
-    """`digests[i]` identifies `messages[:i]`."""
-    digest = hashlib.blake2b(digest_size=16)
-    digests = [digest.hexdigest()]
-    for message in messages:
-        digest.update(graph.message_hash(message).encode())
-        digests.append(digest.hexdigest())
-    return digests
-
-
-@dataclass
 class RolloutSession:
     ctx: ModelContext
     trace: Trace
@@ -221,8 +192,11 @@ class RolloutSession:
     gated_tools: set[tuple[str, str]] = field(default_factory=set)
     """Calls the harness's gate asked about before executing."""
     prepared_users: Counter[str] = field(default_factory=Counter)
-    steers: list[PendingSteer] = field(default_factory=list)
-    """Steers delivered through the interception, in arrival order (`queue_steer`)."""
+    inbox: list[SteerRecord] = field(default_factory=list)
+    """Steers waiting for the harness's next inbox fetch, in arrival order
+    (`queue_steer`, `take_inbox`)."""
+    fetched: list[SteerRecord] = field(default_factory=list)
+    """Steers the harness fetched that no committed model call holds yet (`land_steers`)."""
     peers: dict[str, str] | None = None
     """The episode's seats to their live trace ids, which the agent's `message_agent`
     tool steers (`AgentConfig.message_agents`); None when messaging is off."""
@@ -234,79 +208,59 @@ class RolloutSession:
     def queue_steer(
         self, text: str, *, message_id: str | None = None, sender: str | None = None
     ) -> dict:
-        """Accept a steer for the rollout's next model request (`Rollout.steer`
+        """Hold a steer for the harness's next inbox fetch (`Rollout.steer`
         deduplicates message ids first)."""
         record = SteerRecord(
-            id=message_id,
-            text=text,
-            sender=sender,
-            time=time.time(),
-            delivery="interception",
+            id=message_id, text=text, sender=sender, time=time.time(), delivery="inbox"
         )
         self.trace.steers.append(record)
-        self.steers.append(PendingSteer(record, UserMessage(content=text)))
+        self.inbox.append(record)
         self.trace.notify()
-        return {"outcome": "injected", "delivery": "interception"}
+        return {"outcome": "injected", "delivery": "inbox"}
 
-    def place_steers(
-        self, request: Request
-    ) -> tuple[list[tuple[int, UserMessage]], list[PendingSteer]]:
-        """Where this harness request needs steer messages: `(index, message)` pairs, each
-        inserted before `request.messages[index]` (in list order at equal indexes), and
-        the steers placed. A new steer is anchored at the end of the first request that
-        carries it; an anchored one is re-inserted whenever the request extends the
-        conversation it was anchored to and does not already carry it. A request on
-        another branch (a subagent, a compacted history) gets nothing."""
-        live = [steer for steer in self.steers if not steer.echoed]
-        if not live:
-            return [], []
-        messages = request.messages
-        digests = _prefix_digests(messages)
-        placed: list[PendingSteer] = []
-        for steer in live:
-            if steer.anchor is None:
-                steer.anchor = (len(messages), digests[-1])
-            index, prefix = steer.anchor
-            if index >= len(digests) or digests[index] != prefix:
-                continue
-            key = graph.message_hash(steer.message)
-            if any(
-                isinstance(message, UserMessage) and graph.message_hash(message) == key
-                for message in messages[index:]
-            ):
-                steer.echoed = True
-                continue
-            if self.request_interceptors and not steer.prepared:
-                # Framework input, like a caller's prepared turn: hooks leave it alone.
-                self.prepared_users[key] += 1
-                steer.prepared = True
-            placed.append(steer)
-        inserts = sorted(
-            ((steer.anchor[0], steer.message) for steer in placed if steer.anchor),
-            key=lambda insert: insert[0],
-        )
-        return inserts, placed
+    def take_inbox(self) -> list[SteerRecord]:
+        """Hand the harness its pending steers, oldest first; taking them is the
+        acknowledgement. The harness adds them to its own conversation as user
+        messages, so the interception never edits a request for them."""
+        taken, self.inbox = self.inbox, []
+        self.fetched.extend(taken)
+        if self.request_interceptors:
+            # Framework input, like a caller's prepared turn: hooks leave it alone.
+            self.prepared_users.update(
+                graph.message_hash(UserMessage(content=record.text)) for record in taken
+            )
+        return taken
 
-    def land_steers(self, steers: list[PendingSteer], node: int, call: int) -> None:
-        """Record that `steers` reached the model in the call committing `node`."""
-        landed = False
-        for steer in steers:
-            if steer.record.call is not None:
+    def land_steers(self, node: int, call: int, fresh: int) -> None:
+        """Record which fetched steers reached the model in the call committing `node`:
+        those that are user messages among the `fresh` messages its request added to
+        the conversation. The newest steer takes the nearest match."""
+        claimed = {record.node for record in self.trace.steers}
+        path: list[int] = []
+        parent = self.trace.nodes[node].parent
+        while parent is not None and len(path) < fresh:
+            path.append(parent)
+            parent = self.trace.nodes[parent].parent
+        waiting: list[SteerRecord] = []
+        for record in reversed(self.fetched):
+            key = graph.message_hash(UserMessage(content=record.text))
+            found = next(
+                (
+                    index
+                    for index in path
+                    if index not in claimed
+                    and not self.trace.nodes[index].sampled
+                    and graph.message_hash(self.trace.nodes[index].message) == key
+                ),
+                None,
+            )
+            if found is None:
+                waiting.insert(0, record)
                 continue
-            steer.record.call = call
-            key = graph.message_hash(steer.message)
-            parent = self.trace.nodes[node].parent
-            while parent is not None:
-                candidate = self.trace.nodes[parent]
-                if (
-                    not candidate.sampled
-                    and graph.message_hash(candidate.message) == key
-                ):
-                    steer.record.node = parent
-                    break
-                parent = candidate.parent
-            landed = True
-        if landed:
+            record.call, record.node = call, found
+            claimed.add(found)
+        if len(waiting) != len(self.fetched):
+            self.fetched = waiting
             self.trace.notify()
 
     def tool_result_keys(self, request: Request) -> dict[int, tuple[str, str]]:

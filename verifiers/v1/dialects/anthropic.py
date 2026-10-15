@@ -594,68 +594,6 @@ class AnthropicDialect(Dialect[AnthropicMessage]):
                     inserted = True
             native["content"] = updated
 
-    def insert_user_messages(
-        self,
-        body: dict,
-        request: Request,
-        inserts: list[tuple[int, UserMessage]],
-    ) -> None:
-        # A user turn's tool results parse to one message each and the rest of it to one
-        # more; an insert between those splits the turn (the API merges adjacent turns).
-        pending = sorted(inserts, key=lambda insert: insert[0])
-        taken = 0
-
-        def take(position: int) -> list[dict]:
-            nonlocal taken
-            natives = []
-            while taken < len(pending) and pending[taken][0] <= position:
-                natives.append(
-                    {
-                        "role": "user",
-                        "content": content_to_wire(pending[taken][1].content),
-                    }
-                )
-                taken += 1
-            return natives
-
-        out: list[dict] = []
-        position = 1 if body.get("system") else 0
-        for native in body.get("messages", []):
-            content = native.get("content")
-            if native.get("role") == "assistant" or isinstance(content, str):
-                out += take(position)
-                out.append(native)
-                position += 1
-                continue
-            blocks = content or []
-            rest = [block for block in blocks if block.get("type") != "tool_result"]
-            groups = [
-                [block] for block in blocks if block.get("type") == "tool_result"
-            ] + ([rest] if rest else [])
-            inside = any(
-                position < index < position + len(groups)
-                for index, _ in pending[taken:]
-            )
-            if not inside:
-                out += take(position)
-                out.append(native)
-                position += len(groups)
-                continue
-            part: list[dict] = []
-            for group in groups:
-                cut = take(position)
-                if cut and part:
-                    out.append({**native, "content": part})
-                    part = []
-                out += cut
-                part += group
-                position += 1
-            out.append({**native, "content": part})
-        if position != len(request.messages):
-            raise ValueError("native messages do not match the parsed request")
-        out += take(position)
-        body["messages"] = out
-
     def rewrite_response(self, raw: dict, text: str) -> None:
         raw["content"] = [{"type": "text", "text": text}]
         raw["stop_reason"] = "end_turn"

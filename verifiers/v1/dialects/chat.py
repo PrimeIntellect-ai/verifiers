@@ -24,7 +24,6 @@ from verifiers.v1.dialects.base import (
     RequestFilter,
     StreamParser,
     append_user_notice,
-    interleave,
     parse_sse_event,
 )
 from verifiers.v1.types import (
@@ -549,19 +548,6 @@ class ChatDialect(Dialect[ChatCompletion]):
                         native.pop("name", None)
                     else:
                         native["name"] = rewritten.name
-
-    def insert_user_messages(
-        self,
-        body: dict,
-        request: Request,
-        inserts: list[tuple[int, UserMessage]],
-    ) -> None:
-        natives = body.get("messages", [])
-        if len(natives) != len(request.messages):
-            raise ValueError("native messages do not match the parsed request")
-        body["messages"] = interleave(
-            natives, [(index, message_to_wire(message)) for index, message in inserts]
-        )
 
     def rewrite_response(self, raw: dict, text: str) -> None:
         for choice in raw.get("choices") or []:

@@ -2,9 +2,9 @@
 
 Every rollout registers by its trace id while it is open. `steer()` finds the rollout
 and delivers a user message to it: through the harness's native mid-turn steering where
-it has one (ACP), else through the interception, which adds the message to the
-rollout's next model request (`RolloutSession.queue_steer`). Each steer is recorded on
-the trace (`Trace.steers`). An episode agent's `message_agent` tool resolves a sibling
+it has one (ACP), else into the rollout's inbox at the interception, which the harness's
+own program reads before its next model call (`Harness.SUPPORTS_INBOX`). A harness with
+neither cannot be steered. Each steer is recorded on the trace (`Trace.steers`). An episode agent's `message_agent` tool resolves a sibling
 seat to its live trace id and steers it here too.
 
 The registry is per process: an env server's `steer` request (`serve.types.SteerRequest`)
@@ -33,7 +33,7 @@ class SteerReceipt(BaseModel):
     """Why it was not accepted."""
     trace_id: str | None = None
     """The rollout it went to."""
-    delivery: Literal["native", "interception"] | None = None
+    delivery: Literal["native", "inbox"] | None = None
 
 
 def register(rollout: "Rollout") -> None:

@@ -27,7 +27,7 @@ from verifiers.v1.configs.runtime import (
     intersect_network_hosts,
     parse_network_rule,
 )
-from verifiers.v1.types import Request, Response, Sampling, SamplingConfig, UserMessage
+from verifiers.v1.types import Request, Response, Sampling, SamplingConfig
 
 RespT = TypeVar("RespT", bound=BaseModel)
 RawRequest = dict[str, Any]
@@ -257,21 +257,6 @@ class StreamParser(ABC):
         """Finalize and return the assembled response after the stream ends."""
 
 
-def interleave(items: list, inserts: list[tuple[int, Any]]) -> list:
-    """`items` with each `(index, value)` of `inserts` placed before `items[index]` (at
-    the end for `index >= len(items)`), keeping the order of inserts at equal indexes."""
-    pending = sorted(inserts, key=lambda insert: insert[0])
-    out: list = []
-    taken = 0
-    for index, item in enumerate(items):
-        while taken < len(pending) and pending[taken][0] <= index:
-            out.append(pending[taken][1])
-            taken += 1
-        out.append(item)
-    out.extend(value for _, value in pending[taken:])
-    return out
-
-
 class Dialect(ABC, Generic[RespT]):
     """One native API's wire format, typed over its validated response (`RespT`). Requests stay
     as mutable native JSON because the gateway preserves provider extensions while mediating and
@@ -374,17 +359,6 @@ class Dialect(ABC, Generic[RespT]):
         self, body: RawRequest, before: Request, after: Request
     ) -> None:
         """Patch rewritten user/tool messages into the native conversation."""
-
-    def insert_user_messages(
-        self,
-        body: RawRequest,
-        request: Request,
-        inserts: list[tuple[int, UserMessage]],
-    ) -> None:
-        """Add user messages to the native conversation (steering through the
-        interception): each `(index, message)` goes before `request.messages[index]`
-        (`request` is `body` parsed), at the end for `index == len(request.messages)`."""
-        raise NotImplementedError(f"{type(self).__name__} cannot insert messages")
 
     @abstractmethod
     def rewrite_response(self, raw: dict, text: str) -> None:

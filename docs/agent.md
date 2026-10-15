@@ -22,6 +22,15 @@ trace = interaction.trace
 See [Runtime](runtime.md) for execution handles, resource ownership, and deployment
 of the harness, task workspace, and supporting services.
 
+## Steering
+
+`vf.steer(text, trace_id=...)` sends a user message to a running rollout (also
+`interaction.steer`, `EnvClient.steer`, and the `message_agent` tool). A harness with
+native mid-turn steering (ACP) takes it itself. A harness with an inbox
+(`SUPPORTS_INBOX`: `bash`, `null`) asks the interception's `GET {endpoint}/inbox` before
+each model call and adds the messages to its own conversation. Any other harness
+refuses a steer. `trace.steers` records each steer and the model call it landed on.
+
 ## Verification placement
 
 `agent.scoring.mode` selects `shared` or `isolated` scoring. Tasks declare defaults

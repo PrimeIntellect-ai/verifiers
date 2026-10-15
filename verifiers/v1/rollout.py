@@ -719,9 +719,9 @@ class Rollout:
         queue_when_idle: bool = False,
     ) -> dict:
         """Deliver a user message to the running agent: through the harness's native
-        mid-turn steering when it has it, else through the interception, which adds it
-        to the rollout's next model request (and keeps adding it to later requests
-        until the harness's own conversation carries it). A rollout with a user (an
+        mid-turn steering when it has it, else into the rollout's inbox, which the
+        harness's program reads before its next model call (`Harness.SUPPORTS_INBOX`).
+        A harness with neither raises: it cannot be steered. A rollout with a user (an
         interaction) between turns answers `promptRequired` so its owner can wake it,
         unless `queue_when_idle` holds the message for the next turn's first model
         call. Every accepted message is recorded on `trace.steers`; a `message_id`
@@ -748,6 +748,7 @@ class Rollout:
             if receipt is not None and (
                 receipt.get("outcome") != "promptRequired"
                 or (self._has_user and not queue_when_idle)
+                or not self.harness.SUPPORTS_INBOX
             ):
                 if receipt.get("outcome") == "injected" and not (
                     message_id is not None
@@ -769,6 +770,11 @@ class Rollout:
                 return receipt
         if self._has_user and not self._in_step and not queue_when_idle:
             return {"outcome": "promptRequired", "reason": "noRunningTurn"}
+        if not self.harness.SUPPORTS_INBOX:
+            raise RuntimeError(
+                f"harness {self.harness.config.id!r} cannot be steered: it has "
+                "no native mid-turn steering and no inbox"
+            )
         return self._session.queue_steer(message, message_id=message_id, sender=sender)
 
     async def step(

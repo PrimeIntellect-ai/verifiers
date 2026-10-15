@@ -9,7 +9,14 @@ from collections.abc import Callable, Iterable, Iterator, Mapping
 from typing import TYPE_CHECKING, Any, Generic, Literal
 
 import numpy as np
-from pydantic import BaseModel, Field, PrivateAttr, computed_field, field_serializer
+from pydantic import (
+    BaseModel,
+    Field,
+    PrivateAttr,
+    computed_field,
+    field_serializer,
+    field_validator,
+)
 from typing_extensions import TypeVar
 
 if TYPE_CHECKING:
@@ -212,16 +219,23 @@ class SteerRecord(BaseModel):
     """Who steered: a person, a monitor, or the seat name of a sibling agent."""
     time: float
     """Wall-clock epoch seconds when the rollout accepted the message."""
-    delivery: Literal["native", "interception"]
-    """`native`: the harness took it mid-turn itself (ACP steering). `interception`: the
-    interception server adds it as a user message to the rollout's model requests."""
+    delivery: Literal["native", "inbox"]
+    """`native`: the harness took it mid-turn itself (ACP steering). `inbox`: the
+    harness's program fetched it from the interception before its next model call and
+    added it to its own conversation (`Harness.SUPPORTS_INBOX`)."""
     call: int | None = None
     """Index into `Trace.calls` of the model call the message landed before. For
-    `interception`, the first committed call whose request carried it (None while it is
-    still waiting for a model call). For `native`, the number of calls recorded when the
-    harness accepted it, i.e. the index the next call gets."""
+    `inbox`, the first committed call whose conversation holds it (None until then).
+    For `native`, the number of calls recorded when the harness accepted it, i.e. the
+    index the next call gets."""
     node: int | None = None
-    """The user node holding the message (`interception` only, once it landed)."""
+    """The user node holding the message (`inbox` only, once it landed)."""
+
+    @field_validator("delivery", mode="before")
+    @classmethod
+    def _stored_delivery(cls, value: object) -> object:
+        # Traces stored before the inbox name the same framework delivery `interception`.
+        return "inbox" if value == "interception" else value
 
 
 class Checkpoint(BaseModel):

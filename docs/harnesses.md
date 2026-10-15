@@ -28,6 +28,8 @@ class MyHarness(Harness[MyHarnessConfig]):
     SUPPORTS_MCP = True
     # Allow user simulation, mostly implemented by supporting the ACP protocol.
     SUPPORTS_RESUME = True
+    # The program reads steered user messages from `GET {endpoint}/inbox` before each model call.
+    SUPPORTS_INBOX = False
 
     async def setup(self, runtime: Runtime) -> None:
         # Install the harness in its rollout runtime

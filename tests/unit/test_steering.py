@@ -1,16 +1,18 @@
-"""Steering a running agent: `Rollout.steer` through the interception for a harness
+"""Steering a running agent: `Rollout.steer` through the harness's inbox for a harness
 with no native mid-turn steering, the per-process registry (`vf.steer`), the env
 server's `steer` request, the `message_agent` tool between two agents of an episode,
 and the record each steer leaves on its trace.
 
 Deterministic, no API key: a scripted OpenAI-compatible endpoint answers from the
-conversation alone (and can hold a request until the test releases it), an in-process
-harness drives it through the real interception server on the subprocess runtime.
+conversation alone (and can hold a request until the test releases it). An in-process
+harness that reads its inbox like the bundled chat program drives it through the real
+interception server on the subprocess runtime; the bash harness tests run that program.
 """
 
 import asyncio
 import contextlib
 import json
+import sys
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
@@ -25,26 +27,16 @@ import verifiers.v1 as vf
 from verifiers.v1 import steering
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.client import EvalClientConfig
-from verifiers.v1.dialects.anthropic import AnthropicDialect
 from verifiers.v1.dialects.chat import ChatDialect, message_to_wire
-from verifiers.v1.dialects.responses import ResponsesDialect
 from verifiers.v1.harnesses.null.harness import NullHarness
 from verifiers.v1.harnesses.utils.mcp import mcp_client
-from verifiers.v1.runtimes import ProgramResult
+from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.serve.client import EnvClient
 from verifiers.v1.serve.delta import SCALAR_FIELDS, dump
 from verifiers.v1.serve.pool import EnvServerPool
 from verifiers.v1.serve.server import EnvServer
 from verifiers.v1.serve.types import SteerResponse
-from verifiers.v1.session import RolloutSession
-from verifiers.v1.trace import TraceTask
-from verifiers.v1.types import (
-    AssistantMessage,
-    Request,
-    ToolCall,
-    ToolMessage,
-    UserMessage,
-)
+from verifiers.v1.types import UserMessage
 
 TOOLS = [
     {
@@ -97,14 +89,22 @@ def reply(messages: list[dict]) -> dict:
 
 
 class ScriptHarness(NullHarness):
-    """An in-process tool loop with no native steering: model calls go through the
-    interception endpoint, the `write` tool writes into the runtime."""
+    """An in-process tool loop with no native steering: before each model call it
+    reads its inbox into its conversation, as the bundled chat program does; model
+    calls go through the interception endpoint, the `write` tool writes into the
+    runtime."""
 
     SUPPORTS_MCP = False
     SUPPORTS_TOOL_INTERCEPTION = False
 
     async def setup(self, runtime: vf.Runtime) -> None:
         return None
+
+    async def read_inbox(self, client: AsyncOpenAI, messages: list[dict]) -> None:
+        messages += (await client.get("/inbox", cast_to=object))["messages"]
+
+    async def side_calls(self, client: AsyncOpenAI, model: str) -> None:
+        """Model calls on a conversation of their own before each main call."""
 
     async def launch(
         self, ctx, trace, runtime, endpoint, secret, mcp_urls, data, **kwargs
@@ -118,6 +118,8 @@ class ScriptHarness(NullHarness):
         client = AsyncOpenAI(base_url=endpoint, api_key=secret, max_retries=0)
         try:
             while True:
+                await self.read_inbox(client, messages)
+                await self.side_calls(client, ctx.model)
                 completion = await client.chat.completions.create(
                     model=ctx.model, messages=messages, tools=TOOLS
                 )
@@ -147,6 +149,8 @@ class Endpoint:
     url: str
     requests: list[dict] = field(default_factory=list)
     holds: list[Hold] = field(default_factory=list)
+    script: Callable[[dict], dict] | None = None
+    """Answers a request body; `reply` on its messages when unset."""
 
     def hold(self, matches: Callable[[dict], bool]) -> Hold:
         """Hold the first request `matches` accepts until `release` is set."""
@@ -174,7 +178,15 @@ async def model(monkeypatch):
                 hold.arrived.set()
                 await hold.release.wait()
                 break
-        return web.json_response(reply(body["messages"]))
+        completion = (
+            endpoint.script(body) if endpoint.script else reply(body["messages"])
+        )
+        if not body.get("stream"):
+            return web.json_response(completion)
+        return web.Response(
+            body=b"".join(ChatDialect().stream_events(completion)),
+            content_type="text/event-stream",
+        )
 
     app = web.Application()
     app.router.add_post("/v1/chat/completions", handle)
@@ -250,21 +262,19 @@ async def test_default_run_records_no_steers(model):
     assert trace.id not in steering._by_trace
 
 
-# -- interception delivery ----------------------------------------------------------
+# -- inbox delivery -----------------------------------------------------------------
 
 
-async def test_run_is_steerable_through_the_interception(model):
+async def test_run_is_steerable_through_the_inbox(model):
     trace, receipt = await steered_run(model, make(model), NOTE)
-    assert receipt == vf.SteerReceipt(
-        queued=True, trace_id=trace.id, delivery="interception"
-    )
+    assert receipt == vf.SteerReceipt(queued=True, trace_id=trace.id, delivery="inbox")
     assert trace.ok, trace.errors
     first, second, third = model.requests
     assert NOTE not in contents(first["messages"])
-    # It lands after the tool result the harness sent next, as a user message...
+    # The harness read it before its next call: a user message after the tool result...
     assert roles(second["messages"]) == ["user", "assistant", "tool", "user"]
     assert second["messages"][3]["content"] == NOTE
-    # ...and stays in place on later requests, which the harness sends without it.
+    # ...that stays where the harness keeps it in its own history.
     assert roles(third["messages"]) == [
         "user",
         "assistant",
@@ -274,20 +284,114 @@ async def test_run_is_steerable_through_the_interception(model):
         "tool",
     ]
     assert contents(third["messages"]).count(NOTE) == 1
-    assert third["messages"][3]["content"] == NOTE
     assert trace.last_reply == f"done: {NOTE}"
-    # One linear conversation: the re-inserted message matched its node every time.
     assert trace.num_branches == 1
+    assert [m.content for m in trace.messages].count(NOTE) == 1
     # The record: who, when, how, and the call it landed before.
     (record,) = trace.steers
     assert record.text == NOTE and record.sender is None
-    assert record.delivery == "interception"
+    assert record.delivery == "inbox"
     assert record.call == 1
     node = trace.nodes[record.node]
     assert node.message == UserMessage(content=NOTE)
     assert not node.sampled and not any(node.mask)
     assert trace.nodes[trace.calls[1].node].parent == record.node
     assert trace.to_record()["steers"][0]["call"] == 1
+
+
+async def test_queued_steers_arrive_in_order(model):
+    agent = make(model)
+    hold = model.hold(first_request)
+    traces: list[vf.Trace] = []
+    run = asyncio.create_task(agent.run(task(), on_trace=traces.append))
+    await hold.arrived.wait()
+    for text in ("one", "two", "three"):
+        assert (await vf.steer(text, trace_id=traces[0].id)).queued
+    hold.release.set()
+    trace = await run
+    assert trace.ok, trace.errors
+    second = model.requests[1]["messages"]
+    assert roles(second) == ["user", "assistant", "tool", "user", "user", "user"]
+    assert contents(second)[3:] == ["one", "two", "three"]
+    assert [(s.text, s.call) for s in trace.steers] == [
+        ("one", 1),
+        ("two", 1),
+        ("three", 1),
+    ]
+    nodes = [s.node for s in trace.steers]
+    assert nodes == sorted(nodes) and len(set(nodes)) == 3
+    assert trace.last_reply == "done: three"
+
+
+class IgnoresInbox(ScriptHarness):
+    """Reads its inbox and drops what it gets."""
+
+    async def read_inbox(self, client: AsyncOpenAI, messages: list[dict]) -> None:
+        await client.get("/inbox", cast_to=object)
+
+
+async def test_the_interception_never_adds_a_steer_to_a_request(model):
+    trace, receipt = await steered_run(model, make(model, IgnoresInbox), NOTE)
+    assert receipt.queued and trace.ok, trace.errors
+    assert len(model.requests) == 3
+    assert all(NOTE not in contents(r["messages"]) for r in model.requests)
+    (record,) = trace.steers
+    assert (record.call, record.node) == (None, None)
+    assert NOTE not in [m.content for m in trace.messages]
+
+
+class SideBranch(ScriptHarness):
+    """Before each main call, one call on a separate conversation (a subagent's)."""
+
+    async def side_calls(self, client: AsyncOpenAI, model: str) -> None:
+        await client.chat.completions.create(
+            model=model, messages=[{"role": "user", "content": "sub"}]
+        )
+
+
+async def test_a_steer_lands_on_the_conversation_that_carries_it(model):
+    agent = make(model, SideBranch)
+    hold = model.hold(lambda body: body["messages"][0]["content"] == "start")
+    traces: list[vf.Trace] = []
+    run = asyncio.create_task(agent.run(task(), on_trace=traces.append))
+    await hold.arrived.wait()
+    assert (await vf.steer(NOTE, trace_id=traces[0].id)).queued
+    hold.release.set()
+    trace = await run
+    assert trace.ok, trace.errors
+    side = [r for r in model.requests if r["messages"][0]["content"] == "sub"]
+    assert side and all(roles(r["messages"]) == ["user"] for r in side)
+    (record,) = trace.steers
+    # The side call right after the read does not hold it; the main call after it does.
+    assert record.call == 3
+    assert trace.nodes[trace.calls[3].node].parent == record.node
+    side_node = trace.calls[2].node
+    assert trace.nodes[side_node].parent is not None
+    assert trace.nodes[trace.nodes[side_node].parent].message == UserMessage(
+        content="sub"
+    )
+
+
+class NoInbox(ScriptHarness):
+    SUPPORTS_INBOX = False
+
+
+async def test_a_harness_without_steering_refuses_it(model):
+    agent = make(model, NoInbox)
+    trace, receipt = await steered_run(model, agent, NOTE)
+    assert receipt.queued is False and receipt.reason
+    assert trace.ok, trace.errors
+    assert trace.steers == []
+    assert all(NOTE not in contents(r["messages"]) for r in model.requests)
+    hold = model.hold(first_request)
+    async with agent.interaction(task()) as interaction:
+        turn = asyncio.create_task(interaction.turn())
+        await hold.arrived.wait()
+        with pytest.raises(RuntimeError):
+            await interaction.steer(NOTE)
+        hold.release.set()
+        await turn
+    assert interaction.trace.steers == []
 
 
 async def test_a_closed_run_is_no_longer_steerable(model):
@@ -316,121 +420,6 @@ async def test_steer_message_ids_deduplicate(model):
     assert contents(model.requests[1]["messages"]).count(NOTE) == 1
 
 
-def test_steer_is_reinserted_until_the_harness_carries_it():
-    trace = vf.Trace(
-        task=TraceTask(type="Task", data=vf.TaskData(idx=0, prompt="go")),
-        agent=vf.AgentInfo(config=vf.AgentConfig(model="m")),
-    )
-    session = RolloutSession(
-        ctx=ModelContext(model="m", client=EvalClientConfig()), trace=trace
-    )
-    session.queue_steer("stop", sender="me")
-    steer = UserMessage(content="stop")
-    user = UserMessage(content="go")
-    call = AssistantMessage(
-        content=None, tool_calls=[ToolCall(id="1", name="write", arguments="{}")]
-    )
-    result = ToolMessage(tool_call_id="1", content="ok")
-    later = AssistantMessage(content="next")
-    inserts, placed = session.place_steers(Request(messages=[user, call, result]))
-    assert inserts == [(3, steer)] and len(placed) == 1
-    # The harness's next request extends its own conversation: back in the same place.
-    request = Request(messages=[user, call, result, later, UserMessage(content="u2")])
-    assert session.place_steers(request)[0] == [(3, steer)]
-    # Another branch (a subagent's conversation) gets nothing; the steer stays live.
-    assert session.place_steers(Request(messages=[UserMessage(content="sub")]))[0] == []
-    assert session.place_steers(request)[0] == [(3, steer)]
-    # Once the harness's own conversation carries it, it is never inserted again.
-    echoed = Request(messages=[user, call, result, steer, later])
-    assert session.place_steers(echoed)[0] == []
-    assert session.place_steers(request)[0] == []
-    assert [record.sender for record in trace.steers] == ["me"]
-
-
-def test_dialects_insert_user_messages():
-    steer = UserMessage(content="stop")
-    chat = {
-        "messages": [
-            {"role": "system", "content": "s"},
-            {"role": "user", "content": "go"},
-        ]
-    }
-    dialect = ChatDialect()
-    before = dialect.parse_request(chat)
-    dialect.insert_user_messages(chat, before, [(1, steer), (2, steer)])
-    assert [m.content for m in dialect.parse_request(chat).messages] == [
-        "s",
-        "stop",
-        "go",
-        "stop",
-    ]
-
-    anthropic = {
-        "system": "s",
-        "messages": [
-            {"role": "user", "content": "go"},
-            {
-                "role": "assistant",
-                "content": [{"type": "tool_use", "id": "1", "name": "w", "input": {}}],
-            },
-            {
-                "role": "user",
-                "content": [
-                    {"type": "tool_result", "tool_use_id": "1", "content": "ok"},
-                    {"type": "text", "text": "reminder"},
-                ],
-            },
-        ],
-    }
-    dialect = AnthropicDialect()
-    before = dialect.parse_request(anthropic)
-    assert [m.role for m in before.messages] == [
-        "system",
-        "user",
-        "assistant",
-        "tool",
-        "user",
-    ]
-    # Between a turn's tool result and its text: the turn is split around it.
-    dialect.insert_user_messages(anthropic, before, [(4, steer), (5, steer)])
-    after = dialect.parse_request(anthropic)
-    assert [m.role for m in after.messages] == [
-        "system",
-        "user",
-        "assistant",
-        "tool",
-        "user",
-        "user",
-        "user",
-    ]
-    assert [m.content for m in after.messages[4:]] == ["stop", "reminder", "stop"]
-
-    responses = {
-        "instructions": "s",
-        "input": [
-            {"role": "user", "content": "go"},
-            {"type": "reasoning", "summary": []},
-            {
-                "type": "function_call",
-                "call_id": "1",
-                "name": "w",
-                "arguments": "{}",
-            },
-            {"type": "function_call_output", "call_id": "1", "output": "ok"},
-        ],
-    }
-    dialect = ResponsesDialect()
-    before = dialect.parse_request(responses)
-    assert [m.role for m in before.messages] == ["system", "user", "assistant", "tool"]
-    dialect.insert_user_messages(responses, before, [(4, steer)])
-    after = dialect.parse_request(responses)
-    assert [m.role for m in after.messages][-1] == "user"
-    assert after.messages[-1].content == "stop"
-    with pytest.raises(ValueError):
-        # A request that is not this body parsed is refused, not guessed at.
-        dialect.insert_user_messages(responses, Request(messages=[]), [(0, steer)])
-
-
 # -- interactions --------------------------------------------------------------------
 
 
@@ -446,7 +435,7 @@ async def test_interaction_steers_a_harness_without_native_steering(model):
         turn = asyncio.create_task(interaction.turn())
         await hold.arrived.wait()
         receipt = await interaction.steer(NOTE, message_id="m1")
-        assert receipt == {"outcome": "injected", "delivery": "interception"}
+        assert receipt == {"outcome": "injected", "delivery": "inbox"}
         assert await interaction.steer(NOTE, message_id="m1") == receipt
         hold.release.set()
         segment = await turn
@@ -462,11 +451,133 @@ async def test_registry_steers_an_idle_interaction_on_its_next_turn(model):
     agent = make(model)
     async with agent.interaction(task(None)) as interaction:
         receipt = await vf.steer(NOTE, trace_id=interaction.trace.id, sender="monitor")
-        assert receipt.queued and receipt.delivery == "interception"
+        assert receipt.queued and receipt.delivery == "inbox"
         segment = await interaction.turn("start")
     assert segment.last_reply == f"done: {NOTE}"
     assert roles(model.requests[0]["messages"]) == ["user", "user"]
     assert interaction.trace.steers[0].call == 0
+
+
+# -- the bash harness's chat program -------------------------------------------------
+
+
+def bash_reply(body: dict) -> dict:
+    """The scripted model for the bash program: run one command, then answer the last
+    user message; a compaction checkpoint (no tools allowed) gets a summary. Its first
+    reply reports a large prompt, which a low compaction threshold acts on."""
+    messages = body["messages"]
+    users = [m["content"] for m in messages if m["role"] == "user"]
+    usage = {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+    if body.get("tool_choice") == "none":
+        message, finish = {"role": "assistant", "content": "summary"}, "stop"
+    elif len(users) == 1 and not any(m["role"] == "tool" for m in messages):
+        message = {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "call_0",
+                    "type": "function",
+                    "function": {
+                        "name": "bash",
+                        "arguments": json.dumps({"command": "true"}),
+                    },
+                }
+            ],
+        }
+        finish = "tool_calls"
+        usage = {"prompt_tokens": 5000, "completion_tokens": 1, "total_tokens": 5001}
+    else:
+        message, finish = {"role": "assistant", "content": f"done: {users[-1]}"}, "stop"
+    return {
+        "id": "scripted",
+        "object": "chat.completion",
+        "created": 0,
+        "model": "scripted",
+        "choices": [{"index": 0, "message": message, "finish_reason": finish}],
+        "usage": usage,
+    }
+
+
+@pytest.fixture
+def bash_program(model, tmp_path, monkeypatch):
+    """Run the bundled chat program with this interpreter (its dependencies are the
+    test environment's) instead of a uv-provisioned one."""
+    model.script = bash_reply
+
+    async def prepare(self, script, env=None, *, activate=True):
+        path = tmp_path / "chat_program.py"
+        path.write_bytes(script.encode() if isinstance(script, str) else script)
+        return [sys.executable, str(path)]
+
+    monkeypatch.setattr(Runtime, "prepare_uv_script", prepare)
+    return model
+
+
+def bash_agent(model: Endpoint, **harness) -> vf.Agent:
+    return vf.Agent(
+        vf.AgentConfig(
+            model="scripted",
+            client=client_config(model),
+            runtime={"type": "subprocess"},
+            harness={"id": "bash", "edit": False, "compaction": None, **harness},
+        )
+    )
+
+
+def opened(body: dict) -> bool:
+    return not any(message["role"] == "tool" for message in body["messages"])
+
+
+async def bash_steered_run(model: Endpoint, agent: vf.Agent, *texts: str) -> vf.Trace:
+    hold = model.hold(opened)
+    traces: list[vf.Trace] = []
+    run = asyncio.create_task(agent.run(task(), on_trace=traces.append))
+    await hold.arrived.wait()
+    for text in texts:
+        receipt = await vf.steer(text, trace_id=traces[0].id, sender="operator")
+        assert receipt.queued and receipt.delivery == "inbox"
+    hold.release.set()
+    return await run
+
+
+async def test_bash_program_takes_steers_into_its_history(bash_program):
+    model = bash_program
+    trace = await bash_steered_run(model, bash_agent(model), "one", "two")
+    assert trace.ok, trace.errors
+    first, second = model.requests
+    assert "one" not in contents(first["messages"])
+    # Both arrive, in order, at the next model call, after the command's result.
+    assert roles(second["messages"])[-3:] == ["tool", "user", "user"]
+    assert contents(second["messages"])[-2:] == ["one", "two"]
+    assert trace.last_reply == "done: two"
+    conversation = [m.content for m in trace.messages]
+    assert conversation.count("one") == 1 and conversation.count("two") == 1
+    assert [(s.text, s.call, s.sender) for s in trace.steers] == [
+        ("one", 1, "operator"),
+        ("two", 1, "operator"),
+    ]
+    assert all(
+        trace.nodes[s.node].message == UserMessage(content=s.text) for s in trace.steers
+    )
+
+
+async def test_bash_program_compacts_without_the_steer_reinserted(bash_program):
+    model = bash_program
+    agent = bash_agent(model, compaction={"summarize_at_tokens": 1000})
+    trace = await bash_steered_run(model, agent, NOTE)
+    assert trace.ok, trace.errors
+    _, checkpoint, after = model.requests
+    # The checkpoint summarizes the conversation as it stood: the steer was not read yet.
+    assert checkpoint.get("tool_choice") == "none"
+    assert NOTE not in contents(checkpoint["messages"])
+    # The rebuilt conversation takes it at the next model call, once.
+    assert roles(after["messages"]) == ["system", "user", "user"]
+    assert contents(after["messages"])[-1] == NOTE
+    assert trace.last_reply == f"done: {NOTE}"
+    (record,) = trace.steers
+    assert record.call == 2
+    assert trace.nodes[trace.calls[2].node].parent == record.node
 
 
 # -- env server ----------------------------------------------------------------------
@@ -500,7 +611,7 @@ async def test_env_server_steer_request(model):
         run = asyncio.create_task(agent.run(task(), on_trace=traces.append))
         await hold.arrived.wait()
         response = await client.steer(NOTE, trace_id=traces[0].id, sender="operator")
-        assert response.queued and response.delivery == "interception"
+        assert response.queued and response.delivery == "inbox"
         assert response.trace_id == traces[0].id
         missing = await client.steer(NOTE, trace_id="nope")
         assert not missing.queued and "no running agent" in missing.reason
@@ -620,11 +731,7 @@ async def test_message_agent_steers_a_sibling_seat(model):
     worker = next(t for t in episode.traces if t.agent.name == "worker")
     lead = next(t for t in episode.traces if t.agent.name == "lead")
     (record,) = worker.steers
-    assert (record.sender, record.text, record.delivery) == (
-        "lead",
-        NOTE,
-        "interception",
-    )
+    assert (record.sender, record.text, record.delivery) == ("lead", NOTE, "inbox")
     assert record.call == 1
     assert worker.last_reply == f"done: {NOTE}"
     assert lead.steers == []
@@ -633,8 +740,8 @@ async def test_message_agent_steers_a_sibling_seat(model):
 
 
 async def test_native_steering_stays_the_fast_path(model, monkeypatch):
-    """A harness that takes steering itself (ACP) gets the message natively; the
-    interception adds nothing, and the record says so."""
+    """A harness that takes steering itself (ACP) gets the message natively; its
+    inbox stays empty, and the record says so."""
     accepted: list[str] = []
 
     async def native(self, message, *, message_id=None):

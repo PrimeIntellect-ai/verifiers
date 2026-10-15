@@ -233,22 +233,6 @@ class ResponsesRequestFilter(RequestFilter):
         return None if kind in _SAFE_INPUT_TYPES else f"{path}.type"
 
 
-def _user_item(message: UserMessage) -> dict:
-    """A user message as a native input item."""
-    content = message.content
-    return {
-        "role": "user",
-        "content": content
-        if isinstance(content, str)
-        else [
-            {"type": "input_text", "text": part.text}
-            if isinstance(part, TextContentPart)
-            else {"type": "input_image", "image_url": part.image_url.url}
-            for part in content
-        ],
-    }
-
-
 def fold_assistant(items: list[dict] | None) -> AssistantMessage:
     """Assistant-side Responses items -> one typed assistant message."""
     content = ""
@@ -669,50 +653,6 @@ class ResponsesDialect(Dialect[OpenAIResponse]):
                 ]
             )
             item["output" if isinstance(new, ToolMessage) else "content"] = content
-
-    def insert_user_messages(
-        self,
-        body: dict,
-        request: Request,
-        inserts: list[tuple[int, UserMessage]],
-    ) -> None:
-        raw = body.get("input")
-        items = (
-            [{"role": "user", "content": raw}] if isinstance(raw, str) else raw or []
-        )
-        # Each item's parsed position; a run of assistant-side items folds into one
-        # message, so nothing can go between them.
-        starts: list[int | None] = []
-        position = 1 if body.get("instructions") else 0
-        in_run = False
-        for item in items:
-            role = item.get("role")
-            assistant = role == "assistant" or (
-                role is None
-                and not (item.get("type") or "").endswith(("_output", "_response"))
-            )
-            if assistant and in_run:
-                starts.append(None)
-                continue
-            starts.append(position)
-            position += 1
-            in_run = assistant
-        if position != len(request.messages):
-            raise ValueError("native messages do not match the parsed request")
-        pending = sorted(inserts, key=lambda insert: insert[0])
-        if any(index not in (*starts, position) for index, _ in pending):
-            raise ValueError("cannot insert a message inside an assistant turn")
-        out: list[dict] = []
-        taken = 0
-        for start, item in zip(starts, items, strict=True):
-            while start is not None and taken < len(pending):
-                if pending[taken][0] > start:
-                    break
-                out.append(_user_item(pending[taken][1]))
-                taken += 1
-            out.append(item)
-        out += [_user_item(message) for _, message in pending[taken:]]
-        body["input"] = out
 
     def rewrite_response(self, raw: dict, text: str) -> None:
         original = next(

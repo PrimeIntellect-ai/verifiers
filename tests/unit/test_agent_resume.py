@@ -87,8 +87,9 @@ def reply(messages: list[dict]) -> dict:
 
 
 class ScriptHarness(NullHarness):
-    """An in-process tool loop: model calls go through the interception endpoint,
-    the `write` tool writes into the runtime."""
+    """An in-process tool loop: before each model call it reads its inbox (steers)
+    into its conversation, as the bundled chat program does; model calls go through
+    the interception endpoint, the `write` tool writes into the runtime."""
 
     SUPPORTS_MCP = False
     SUPPORTS_TOOL_INTERCEPTION = False
@@ -108,6 +109,7 @@ class ScriptHarness(NullHarness):
         client = AsyncOpenAI(base_url=endpoint, api_key=secret, max_retries=0)
         try:
             while True:
+                messages += (await client.get("/inbox", cast_to=object))["messages"]
                 completion = await client.chat.completions.create(
                     model=ctx.model, messages=messages, tools=TOOLS
                 )

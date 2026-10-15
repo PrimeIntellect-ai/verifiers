@@ -408,6 +408,18 @@ async def gate_tool_call(
     return decision
 
 
+async def read_inbox(client: AsyncOpenAI) -> list[dict]:
+    """The user messages steered into this rollout since the last read, oldest first,
+    from the interception's inbox for this session (the model bearer keys it). Reading
+    acknowledges them: each arrives once, and the program keeps it in its history."""
+    try:
+        inbox = await client.get("/inbox", cast_to=object)
+    except APIConnectionError as error:
+        traceback.print_exc()
+        raise SystemExit(MODEL_TRANSPORT_ERROR_EXIT_CODE) from error
+    return inbox["messages"]
+
+
 async def run_chat_loop(
     args: argparse.Namespace,
     compactor: "Compactor",
@@ -416,8 +428,10 @@ async def run_chat_loop(
     servers: dict,
     tool_client: httpx.AsyncClient | None,
 ) -> None:
-    """Run the tool-calling conversation until a text-only reply or context exhaustion."""
+    """Run the tool-calling conversation until a text-only reply or context exhaustion.
+    Steered user messages join the conversation before each model call."""
     while True:
+        messages.extend(await read_inbox(compactor.client))
         try:
             completion, messages = await compactor.complete(messages)
         except APIStatusError as error:

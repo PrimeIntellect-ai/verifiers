@@ -49,6 +49,11 @@ class Harness(ABC, Generic[ConfigT]):
     SUPPORTS_RESUME: ClassVar[bool] = False
     """Whether the default `resume()` can relaunch this harness from the
     accumulated Messages transcript."""
+    SUPPORTS_INBOX: ClassVar[bool] = False
+    """Whether the program asks the interception's `GET {endpoint}/inbox` (the model
+    bearer authenticates) before each model call and adds the steered user messages it
+    returns to its own conversation. A harness with neither this nor native steering
+    (`HarnessSession.steer`) cannot be steered (`Rollout.steer`)."""
     EXECUTES_CODE: ClassVar[bool] = True
     """Whether the program hands the model local execution in the runtime — true for
     every real harness; the tool-less chat loops (`null`) override to False. Read

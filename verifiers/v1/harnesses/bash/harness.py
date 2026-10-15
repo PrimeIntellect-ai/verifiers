@@ -107,6 +107,7 @@ class BashHarness(Harness[BashHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
     SUPPORTS_RESUME = True
+    SUPPORTS_INBOX = True
     SUPPORTS_TOOL_INTERCEPTION = True
     NEEDS_CONTAINER = False
     SUPPORTS_SKILLS = True

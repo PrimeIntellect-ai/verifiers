@@ -71,12 +71,11 @@ from verifiers.v1.interception.tunnel import (
 from verifiers.v1.semantic import ACPInfo, extract_acp_info
 from verifiers.v1.session import (
     IdempotentRequest,
-    PendingSteer,
     ReplayResponse,
     RolloutSession,
 )
 from verifiers.v1.trace import Error, ModelCall, PolicyEvent, TimeSpan
-from verifiers.v1.types import FinishReason, Request, Response, Usage
+from verifiers.v1.types import FinishReason, Response, Usage
 
 logger = logging.getLogger(__name__)
 
@@ -469,6 +468,7 @@ class InterceptionServer(Interception):
             for aux in dialect.aux_routes:
                 app.router.add_post(aux, self._aux_handler_for(dialect, aux))
         app.router.add_get("/v1/models", self.handle_models)
+        app.router.add_get("/v1/inbox", self.handle_inbox)
         # Tool servers use a state-only capability; the model bearer cannot reach these.
         app.router.add_get("/state", self.handle_state_get)
         app.router.add_put("/state", self.handle_state_put)
@@ -532,6 +532,28 @@ class InterceptionServer(Interception):
                 ",".join(capabilities),
             )
         return mediated, capabilities
+
+    async def handle_inbox(self, request: web.Request) -> web.Response:
+        """`GET /v1/inbox`: the user messages steered into this rollout since its harness
+        last asked, oldest first (`RolloutSession.take_inbox`). A harness with an inbox
+        (`Harness.SUPPORTS_INBOX`) asks once before each model call and adds them to its
+        own conversation; asking acknowledges them. The model bearer keys it."""
+        session = self.sessions.get(
+            request.headers.get("Authorization", "").removeprefix("Bearer ")
+        )
+        if session is None:
+            return web.json_response({"error": "unauthorized"}, status=401)
+        session.adopt(asyncio.current_task())
+        if session.released:
+            return web.json_response({"error": "rollout concluded"}, status=409)
+        return web.json_response(
+            {
+                "messages": [
+                    {"role": "user", "content": record.text}
+                    for record in session.take_inbox()
+                ]
+            }
+        )
 
     async def handle_tool(self, request: web.Request) -> web.Response:
         """`POST /tool`: the harness's gate asks whether to run a tool call — its
@@ -622,42 +644,6 @@ class InterceptionServer(Interception):
             )
         )
         session.trace.notify()
-
-    def insert_steers(
-        self,
-        session: RolloutSession,
-        dialect: Dialect,
-        body: dict,
-        request: Request,
-    ) -> tuple[Request, list[PendingSteer]]:
-        """Add the rollout's pending steer messages to this request (native `body` and
-        parsed request alike); returns the request as it now stands and the steers it
-        carries. A body the dialect cannot place them in goes out unsteered."""
-        inserts, placed = session.place_steers(request)
-        if not inserts:
-            return request, []
-        key = "input" if "input" in body else "messages"
-        before = body.get(key)
-        try:
-            dialect.insert_user_messages(body, request, inserts)
-            steered = dialect.parse_request(body)
-            # The native insert must parse back to exactly the planned conversation.
-            planned = [*request.messages]
-            for offset, (index, message) in enumerate(inserts):
-                planned.insert(index + offset, message)
-            if [graph.message_hash(m) for m in steered.messages] != [
-                graph.message_hash(m) for m in planned
-            ]:
-                raise ValueError("steered request does not parse back as planned")
-        except (NotImplementedError, ValueError) as error:
-            body[key] = before
-            logger.warning(
-                "steer not added to this request: id=%s %s",
-                session.trace.id,
-                error,
-            )
-            return request, []
-        return steered, placed
 
     async def handle_request(
         self, request: web.Request, dialect: Dialect
@@ -800,11 +786,6 @@ class InterceptionServer(Interception):
             if refused is not None:
                 return web.json_response(
                     dialect.error_body(f"rollout stopped: {refused}"), status=400
-                )
-            steered: list[PendingSteer] = []
-            if session.steers:
-                model_request, steered = self.insert_steers(
-                    session, dialect, body, model_request
                 )
             original_request = model_request
             model_request, request_rewrites, stopped = await session.rewrite_request(
@@ -1047,8 +1028,10 @@ class InterceptionServer(Interception):
                     policy_paths=policy_paths,
                     acp=acp,
                 )
-                if node is not None and steered and not session.released:
-                    session.land_steers(steered, node, len(session.trace.calls) - 1)
+                if node is not None and session.fetched and not session.released:
+                    session.land_steers(
+                        node, len(session.trace.calls) - 1, len(turn.tail)
+                    )
             return serve(call_response, events)
 
         if streaming:

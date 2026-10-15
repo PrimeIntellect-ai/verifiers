@@ -367,8 +367,9 @@ class Interaction:
         keep its context open
         while more messages may arrive. A prompted task must start its opening
         turn first. Stable IDs deduplicate successful deliveries.
-        A harness without native steering takes a steered message through the
-        interception, before its next model call (`Rollout.steer`).
+        A harness without native steering takes a steered message from its inbox
+        before its next model call; one with neither cannot be steered
+        (`Rollout.steer`).
         """
         if mode not in ("steer", "queue"):
             raise ValueError("message mode must be 'steer' or 'queue'")
@@ -784,10 +785,10 @@ class Interaction:
         self.failed_attempts.append(failed)
         self._run = await self._reopen(task, start, failed, failed_run)
         # A steer the replacement's conversation does not hold (never delivered, or
-        # delivered after the checkpoint) is queued again so the retry still hears it.
+        # delivered after the checkpoint) goes to its inbox so the retry still hears it.
         prompt = task.data.prompt if isinstance(task.data.prompt, list) else []
         held_texts = {m.content for m in prompt if m.role == "user"}
-        for record in steers:
+        for record in steers if self._run.harness.SUPPORTS_INBOX else []:
             if record.text not in held_texts:
                 self._run.session.queue_steer(
                     record.text, message_id=record.id, sender=record.sender
