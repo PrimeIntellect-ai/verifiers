@@ -216,7 +216,14 @@ class RuntimeBackend(ABC):
         to completion, then re-raises the cancellation. Framework method — override
         `teardown`, not this."""
         self.stopped = True  # before the await: no new borrows once teardown begins
-        await run_shielded(self.teardown())
+        await run_shielded(self._freed())
+
+    async def _freed(self) -> None:
+        """`teardown`, then the atexit backstop forgets the runtime: its resource is
+        freed, and a second, synchronous free at exit would only repeat it (one blocking
+        provider call per runtime, holding the process's exit)."""
+        await self.teardown()
+        _LIVE.discard(self)
 
     async def teardown(self) -> None:
         """Free the provisioned resource, off the event loop. Override only for teardown
