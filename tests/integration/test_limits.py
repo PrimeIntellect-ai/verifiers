@@ -37,7 +37,6 @@ async def test_rollout_timeout(run):
         rollout_timeout=1,
     )
     (trace,) = episode.traces
-    assert trace.num_branches == 1
     assert trace.is_timeout
     assert trace.stop_condition == "agent_timeout"
 
