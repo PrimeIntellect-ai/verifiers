@@ -26,12 +26,14 @@ import sys
 import tarfile
 import tempfile
 import time
+import tomllib
 from collections.abc import Iterator
 from functools import lru_cache
 from pathlib import Path, PurePosixPath
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
+from verifiers.v1 import toolbundles
 from verifiers.v1.configs.scoring import ScoringConfig
 from verifiers.v1.configs.task import TaskConfig
 from verifiers.v1.configs.taskset import TasksetConfig
@@ -41,6 +43,7 @@ from verifiers.v1.runtimes.deployment import Deployment
 from verifiers.v1.state import State
 from verifiers.v1.task import Task, TaskData, TaskResources, TaskTimeout
 from verifiers.v1.taskset import Taskset
+from verifiers.v1.toolbundles import ToolMount
 from verifiers.v1.trace import Trace
 from verifiers.v1.utils.artifacts import MAX_ARTIFACT_BYTES, Artifact, collect
 from verifiers.v1.utils.decorators import reward
@@ -176,7 +179,11 @@ class HarborData(TaskData):
     """Raw `[environment.env]` templates, resolved only when the runtime starts."""
     healthcheck: dict | None = None
     mcp_servers: list[dict] = Field(default_factory=list)
-    """Task-declared MCP servers, preserved for served-task reconstruction."""
+    """Task-declared MCP servers, preserved for served-task reconstruction. Includes
+    one entry per tool bundle in `tools`."""
+    tools: list[ToolMount] = Field(default_factory=list)
+    """`[[tools]]` bundles (`verifiers.v1.toolbundles`): setup installs, seeds and
+    starts their servers, and a collect hook dumps each one's end state."""
     compose_host_image: str | None = None
     """Provider VM image hosting a Compose task's Docker daemon. Docker is installed
     when the image lacks it, and `docker save` archives it ships in
@@ -297,8 +304,18 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
                     f"environment setup failed (exit {result.exit_code}): "
                     f"{(result.stderr or result.stdout).strip()[-500:]}"
                 )
+        if self.data.tools:
+            await toolbundles.mount(
+                runtime, self.data.tools, agent_user=self.data.agent_user
+            )
         if self.data.healthcheck is not None:
             await self.wait_for_health(runtime, self.data.healthcheck)
+
+    async def restore(self, runtime: Runtime) -> None:
+        """A box from a checkpoint keeps its files but no process: start the tool
+        servers again over the state they left on disk."""
+        if self.data.tools:
+            await toolbundles.start(runtime, self.data.tools)
 
     async def wait_for_health(self, runtime: Runtime, healthcheck: dict) -> None:
         from harbor.environments.base import HealthcheckError
@@ -594,6 +611,7 @@ def verifier_box_data(data: HarborData) -> HarborData:
             "healthcheck": verifier.healthcheck,
             "skills": [],
             "mcp_servers": [],
+            "tools": [],
             "network_allow": list(verifier.network_allow),
             "network_block": [],
         }
@@ -783,6 +801,18 @@ def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborD
         )
     artifacts, hooks, verifier = parse_verifier_extras(task_dir, parsed, harbor_config)
     environment = parsed.environment
+    # Harbor ignores the `[[tools]]` table; each bundle compiles to an MCP server
+    # entry and a collect hook that dumps its end state before the authored hooks.
+    tools = toolbundles.parse_mounts(
+        task_dir, tomllib.loads((task_dir / "task.toml").read_text()).get("tools")
+    )
+    mcp_servers = [server.model_dump(mode="json") for server in environment.mcp_servers]
+    if clash := {m.bundle for m in tools} & {server["name"] for server in mcp_servers}:
+        raise ValueError(
+            f"{task_dir.name}: tool bundles and mcp_servers share names {sorted(clash)}"
+        )
+    mcp_servers += [m.mcp_server() for m in tools]
+    hooks = [CollectHook(command=m.dump_command()) for m in tools] + hooks
     image = resolve_image(
         task_dir,
         environment.docker_image,
@@ -862,9 +892,9 @@ def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborD
         task_dir=str(task_dir),
         upload_environment=upload_environment,
         skills=[{"runtime": environment.skills_dir}] if environment.skills_dir else [],
-        **environment.model_dump(
-            include={"env", "healthcheck", "mcp_servers"}, mode="json"
-        ),
+        **environment.model_dump(include={"env", "healthcheck"}, mode="json"),
+        mcp_servers=mcp_servers,
+        tools=tools,
         verifier_image=verifier_image,
         verifier_env=parsed.verifier.env,
         artifacts=artifacts,
