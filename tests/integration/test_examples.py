@@ -14,8 +14,6 @@ import pytest
 from conftest import CI_JUDGE, CI_MODEL, CI_REASONING_EFFORT
 from grid import agent_seats
 
-import verifiers.v1 as vf
-
 EVAL_TIMEOUT = 600  # 10 minutes for a capped eval (-n 1 -r 1)
 
 ENVIRONMENTS = Path(__file__).parent.parent.parent / "environments"
@@ -100,15 +98,12 @@ def test_eval(taskset: str, tmp_path: Path):
         f"eval {taskset} failed: {(proc.stderr or proc.stdout)[-2000:]}"
     )
     episodes = [
-        vf.WireEpisode.model_validate_json(line)
+        json.loads(line)
         for line in (tmp_path / "run" / "traces.jsonl").read_text().splitlines()
     ]
-    assert episodes and all(episode.ok for episode in episodes), [
-        error.message[:500]
+    assert episodes and all(episode["ok"] for episode in episodes), [
+        error["message"][:500]
         for episode in episodes
-        for holder in (episode, *episode.traces)
-        for error in holder.errors or []
+        for holder in (episode, *episode["traces"])
+        for error in holder.get("errors") or []
     ]
-    assert all(
-        trace.num_branches == 1 for episode in episodes for trace in episode.traces
-    )

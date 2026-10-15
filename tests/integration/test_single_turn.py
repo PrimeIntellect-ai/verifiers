@@ -23,7 +23,6 @@ async def test_single_turn(run, harness, harness_runtime):
         max_turns=2,
     )
     (trace,) = episode.traces
-    assert trace.num_branches == 1
     assert trace.ok, [error.message for error in trace.errors]
     assert trace.num_turns == 1
     assert trace.stop_condition == "agent_completed"

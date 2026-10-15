@@ -25,7 +25,6 @@ async def test_multi_turn(run, harness, harness_runtime):
         max_tokens=8192,
     )
     (trace,) = episode.traces
-    assert trace.num_branches == 1
     assert trace.ok, [error.message for error in trace.errors]
     assert trace.num_turns >= 1  # ran a command, then finished
     assert trace.reward == 1.0

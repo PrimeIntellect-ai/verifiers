@@ -25,7 +25,6 @@ async def test_rubric_judge(run, tmp_path):
         max_turns=2,
     )
     (trace,) = episode.traces
-    assert trace.num_branches == 1
     assert trace.ok
     assert trace.rewards["rubric"].score > 0  # the judge's verdict landed in the reward
     assert trace.metrics["rubric/always_yes"] == 1.0

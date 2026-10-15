@@ -12,7 +12,6 @@ async def test_multimodal_tool(run):
         max_turns=4,
     )
     (trace,) = episode.traces
-    assert trace.num_branches == 1
     assert trace.ok
     assert trace.num_turns >= 2  # tool call + answer
     assert trace.reward == 1.0

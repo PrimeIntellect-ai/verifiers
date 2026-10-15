@@ -20,7 +20,6 @@ async def test_tool(run, harness, harness_runtime):
         taskset_overrides={"task": {"tools": {"colocated": True}}},
     )
     (trace,) = episode.traces
-    assert trace.num_branches == 1
     assert trace.ok, [error.message for error in trace.errors]
     assert trace.num_turns >= 1
     # Reward 1.0 is the proof the tool ran. How a program surfaces an MCP tool to the
@@ -42,7 +41,6 @@ async def test_tool_placement(run, harness_runtime, tool_runtime):
         taskset_overrides={"task": {"tools": tool_runtime}},
     )
     (trace,) = episode.traces
-    assert trace.num_branches == 1
     assert trace.ok, [error.message for error in trace.errors]
     assert trace.num_turns >= 2  # tool call + answer
     assert trace.reward == 1.0

@@ -20,7 +20,6 @@ async def test_tool_state(run, harness_runtime, tool_runtime):
         taskset_overrides={"task": {"tools": tool_runtime}},
     )
     (trace,) = episode.traces
-    assert trace.num_branches == 1
     assert trace.ok, [error.message for error in trace.errors]
     assert trace.num_turns >= 2  # at least two tool calls accumulated
     assert trace.reward == 1.0

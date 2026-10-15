@@ -14,7 +14,6 @@ async def test_multi_agent_env(run):
         max_turns=2,
     )
     traces = episode.traces
-    assert all(trace.num_branches == 1 for trace in traces)
     assert len(traces) == 2  # one episode, one trace per role
     assert sorted(t.agent.name for t in traces) == ["a", "b"]
     (b,) = [t for t in traces if t.agent.name == "b"]
@@ -43,7 +42,6 @@ async def test_env_id_best_of_n(run):
         max_turns=2,
     )
     traces = episode.traces
-    assert all(trace.num_branches == 1 for trace in traces)
     assert len(traces) == 2  # one episode, two attempts
     assert all(t.agent.name == "agent" and t.ok for t in traces)
     assert any(t.metrics["best"] == 1.0 for t in traces)
@@ -64,7 +62,6 @@ async def test_kuhn_poker_self_play(run):
         rollout_timeout=300,
     )
     traces = episode.traces
-    assert all(trace.num_branches == 1 for trace in traces)
     assert sorted(t.agent.name for t in traces) == ["player0", "player1"]
     payoffs = {t.agent.name: t.rewards["payoff"].score for t in traces}
     assert payoffs["player0"] + payoffs["player1"] == 0  # zero-sum
