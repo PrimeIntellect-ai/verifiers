@@ -187,7 +187,7 @@ tool and provider-held resource remains disabled.
 
 Prime VM bounded reads stream binary data. Collected archives remain in host memory for grading and are excluded from persisted traces.
 
-`artifacts = [...]` and `[[verifier.collect]]` are read from `task.toml` ([Harbor Docs](https://www.harborframework.com/docs/run-jobs/results-and-artifacts)). Each entry's `service` selects the source runtime, defaulting to `main`; additional services come from the deployment's Compose project. Main's hooks and artifacts are collected during `finalize`. For separate grading, the rollout stops main through the deployment and collects sidecar evidence; a shared verifier grades in main and skips sidecar entries. Declared paths and main's `/logs/artifacts/` convention directory are restored at their original paths in the grader.
+`artifacts = [...]` and `[[verifier.collect]]` are read from `task.toml` ([Harbor Docs](https://www.harborframework.com/docs/run-jobs/results-and-artifacts)). Each entry's `service` selects the source runtime, defaulting to `main`; additional services come from the deployment's Compose project. Main's hooks and artifacts are collected during `finalize`, while the agent's harness session is still open, so they see any service the agent left running (see [Finishing a rollout](architecture.md#finishing-a-rollout)). For separate grading, the rollout stops main through the deployment and collects sidecar evidence; a shared verifier grades in main and skips sidecar entries. Declared paths and main's `/logs/artifacts/` convention directory are restored at their original paths in the grader.
 
 Artifact roots from different services must not overlap, since they share the grader's filesystem.
 

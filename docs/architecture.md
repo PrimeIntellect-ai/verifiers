@@ -25,3 +25,18 @@ The interception server, however, allows several things beyond just replaying th
 - Traces are built live, thus allowing the collection of the trajectories as they happen
 - Setting sampling parameters in harnesses that don't necessarily expose those settings
 - Intercepting and rewriting tool responses or server-side web search results to block reward hacks
+
+## Finishing a rollout
+
+When the agent ends its turn, the rollout collects and grades the agent's environment before it closes the harness session:
+
+1. `task.finalize` runs and the artifacts are collected, including the main service's `[[verifier.collect]]` commands.
+2. When grading runs in the agent's own runtime, the task scores it: `task.score`, then `on_score`.
+3. The harness session closes, then the tool servers and the interception server.
+4. Harness metrics (`harness.score`) run.
+
+With isolated grading, the session closes right after step 1. The harness metrics run next, then the workspace stops, sidecar evidence is collected (`finalize_services`), and the task is graded in a fresh runtime.
+
+Harnesses stop the processes their commands started when their session closes. For example, nano-rlm kills each job's process group, and codex and prime-agent terminate their shells. Anything the agent leaves running, such as a server or daemon a task asks it to keep up, therefore exists only while the session is open. Grading in the agent's runtime and collect commands read that live state, so they run first. Harness metrics run after the close because the close hands over the session's final state.
+
+A rollout stopped mid-turn, by an agent timeout or a stop condition, closes the session first, so an agent that may still be acting cannot change the runtime while it is graded. A failed rollout is not scored.
