@@ -10,7 +10,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import PurePosixPath
 from types import MappingProxyType
-from typing import Self
+from typing import TYPE_CHECKING, Self
 
 from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes.base import (
@@ -20,6 +20,9 @@ from verifiers.v1.runtimes.base import (
     RuntimeBackend,
     RuntimeProcess,
 )
+
+if TYPE_CHECKING:
+    from verifiers.v1.trace import Checkpoint, Trace
 
 
 @dataclass(frozen=True, eq=False)
@@ -92,6 +95,25 @@ class Runtime:
 
     async def expose(self, port: int) -> str:
         return await self.backend.expose(port)
+
+    @property
+    def supports_checkpoint(self) -> bool:
+        """Whether this box's filesystem can be checkpointed (and restored)."""
+        return self.backend.supports_checkpoint
+
+    async def checkpoint(self, trace: Trace, turns: int | None = None) -> Checkpoint:
+        """Checkpoint this box's filesystem and record it on `trace` at `turns` (default:
+        the turns completed): through its owner when it is a provisioned box someone
+        lent (`box.Box`), so the owner can restore it, else directly."""
+        from verifiers.v1.box import box_of
+
+        box = box_of(self)
+        checkpoint_id = (
+            (await box.checkpoint()).id
+            if box is not None
+            else await self.backend.checkpoint()
+        )
+        return trace.record_checkpoint(checkpoint_id, turns)
 
     async def run(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
         return await self.backend._run(self, argv, env)

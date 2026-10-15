@@ -24,7 +24,7 @@ from collections import Counter
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from functools import cached_property
-from typing import get_origin, get_type_hints
+from typing import TYPE_CHECKING, get_origin, get_type_hints
 
 from pydantic import TypeAdapter
 
@@ -44,6 +44,9 @@ from verifiers.v1.types import (
     UserMessage,
 )
 from verifiers.v1.utils.decorators import invoke
+
+if TYPE_CHECKING:
+    from verifiers.v1.runtimes import Runtime
 
 logger = logging.getLogger(__name__)
 
@@ -169,6 +172,9 @@ class RolloutSession:
     each model turn, so a successful retry clears it."""
     idempotent_requests: dict[str, IdempotentRequest] = field(default_factory=dict)
     """Explicit keys or marked SDK retries mapped to their replay state."""
+    runtime: "Runtime | None" = None
+    """The box the rollout's program runs in, once it is placed: a hook that declares a
+    `Runtime` parameter gets it, to inspect or checkpoint the box at its boundary."""
     released: bool = False
     """Set when the rollout unregisters the session: the trace is sealed (its conclusion is
     what scored and persisted), so a handler still in flight must not commit turns, record
@@ -301,6 +307,20 @@ class RolloutSession:
             changed = True
         return request.model_copy(update={"messages": messages}) if changed else request
 
+    def hook_values(
+        self, boundary: type | None = None, value: object = None
+    ) -> dict[type, object]:
+        """What a hook may declare: its boundary (`Request` or `Response`), the trace, and
+        the rollout's runtime once it is placed."""
+        available: dict[type, object] = {Trace: self.trace}
+        if boundary is not None:
+            available[boundary] = value
+        if self.runtime is not None:
+            from verifiers.v1.runtimes import Runtime
+
+            available[Runtime] = self.runtime
+        return available
+
     async def rewrite_request(
         self, request: Request, *, run_stops: bool = True
     ) -> tuple[Request, list[InterceptRecord], str | None]:
@@ -351,7 +371,7 @@ class RolloutSession:
                 for handler in self.request_interceptors if active else []:
                     candidate = current.model_copy(deep=True)
                     result = await call_hook(
-                        handler, {Request: candidate, Trace: self.trace}
+                        handler, self.hook_values(Request, candidate)
                     )
                     if result is None:
                         continue
@@ -398,9 +418,7 @@ class RolloutSession:
                 stops = self.request_stops if run_stops else []
                 for stop in stops:
                     candidate = current.model_copy(deep=True)
-                    result = await call_hook(
-                        stop, {Request: candidate, Trace: self.trace}
-                    )
+                    result = await call_hook(stop, self.hook_values(Request, candidate))
                     if not isinstance(result, bool):
                         raise TypeError(
                             f"@stop must return bool, got {type(result).__name__}"
@@ -462,9 +480,7 @@ class RolloutSession:
         try:
             for handler in self.response_interceptors:
                 candidate = response.model_copy(deep=True)
-                result = await call_hook(
-                    handler, {Response: candidate, Trace: self.trace}
-                )
+                result = await call_hook(handler, self.hook_values(Response, candidate))
                 if result is None:
                     continue
                 if not isinstance(result, Response):
@@ -494,7 +510,7 @@ class RolloutSession:
 
             for stop in self.response_stops:
                 candidate = response.model_copy(deep=True)
-                result = await call_hook(stop, {Response: candidate, Trace: self.trace})
+                result = await call_hook(stop, self.hook_values(Response, candidate))
                 if not isinstance(result, bool):
                     raise TypeError(
                         f"@stop must return bool, got {type(result).__name__}"
@@ -667,7 +683,7 @@ class RolloutSession:
             logger.debug("limit %r reached: id=%s", limit, self.trace.id)
             return limit
         for stop in self.trace_stops:
-            result = await call_hook(stop, {Trace: self.trace})
+            result = await call_hook(stop, self.hook_values())
             if not isinstance(result, bool):
                 raise TaskError(f"@stop must return bool, got {type(result).__name__}")
             if result:

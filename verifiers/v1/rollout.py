@@ -406,6 +406,8 @@ class Rollout:
                     await self.deployment.start()
                     self._deployment_started = True
                     runtime = self.runtime = self.deployment.workspace
+                    # the box the task's own hooks see (as its setup does)
+                    self._session.runtime = runtime
                 finally:
                     # Providers may assign an ID before startup fails; retain it for diagnostics.
                     self.trace.agent.runtime = runtime.info.model_copy()
