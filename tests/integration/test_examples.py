@@ -1,7 +1,7 @@
 """Smoke-eval every example taskset in `environments/` through the `eval` CLI.
 
-Each taskset runs with its required harness for one short, capped rollout, so a broken
-example taskset fails CI. `compact` is excluded (it's a harness, not a taskset);
+Each taskset runs with its required harness for capped rollouts, so a broken
+example taskset fails CI. Interception exercises all four of its behaviors. `compact` is excluded (it's a harness, not a taskset);
 SWE/container tasksets need a docker/prime runtime and are covered by the agentic tests.
 """
 
@@ -11,7 +11,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
-from conftest import CI_JUDGE, CI_MODEL, CI_REASONING_EFFORT
+from conftest import CI_DECISION_JUDGE, CI_MODEL, CI_REASONING_EFFORT
 from grid import agent_seats
 
 EVAL_TIMEOUT = 600  # 10 minutes for a capped eval (-n 1 -r 1)
@@ -24,18 +24,27 @@ SKIP_EVAL = {
     "proposer_solver": "the CI model's proposer reasons past the token cap",
 }
 
-# Point each bundled judge at the CI model and effort.
+# CI explicitly selects the existing decision judge for grading and interception.
 JUDGE_OVERRIDES = {
     "interception": [
+        "--env.taskset.task.judge.id",
+        "decision",
         "--env.taskset.task.judge.model",
-        CI_MODEL,
-        "--env.taskset.task.judge.sampling.reasoning-effort",
-        CI_REASONING_EFFORT,
+        CI_DECISION_JUDGE["model"],
     ],
     "wiki_search": [
         "--env.taskset.task.judges",
-        # The list replaces the default entry, so restate its `question_field`.
-        json.dumps([{"id": "wiki-search", "question_field": "question", **CI_JUDGE}]),
+        # Replace the reference judge with the existing decision judge in CI.
+        json.dumps(
+            [
+                {
+                    "id": "decision",
+                    "question_field": "question",
+                    "answer_field": "answer",
+                    **CI_DECISION_JUDGE,
+                }
+            ]
+        ),
     ],
 }
 
@@ -52,8 +61,7 @@ def v1_tasksets() -> list[str]:
 
 @pytest.mark.parametrize("taskset", v1_tasksets())
 def test_eval(taskset: str, tmp_path: Path):
-    """Run one capped rollout of `taskset` and require every episode to finish ok; a
-    taskset that bundles a harness uses it by default."""
+    """Smoke-eval each example, including all four interception behaviors."""
     if reason := SKIP_EVAL.get(taskset):
         pytest.skip(reason)
     if os.getenv("PRIME_API_KEY"):
@@ -78,10 +86,11 @@ def test_eval(taskset: str, tmp_path: Path):
         for seat in agent_seats(taskset)
         for flag in (f"--env.{seat}.max-turns", "16")
     ]
+    num_tasks = "4" if taskset == "interception" else "1"
     cmd = [
         "uv", "run", "--no-sync", "vf-eval", taskset,
         *model,
-        "-n", "1", "-r", "1", *caps,
+        "-n", num_tasks, "-r", "1", *caps,
         "--sampling.max-tokens", "4096", "--no-rich", "--no-push",
         "--output-dir", str(tmp_path), "--run.dir", "run",
         # Recipe envs run their seats one at a time by default; in parallel, a
@@ -107,3 +116,17 @@ def test_eval(taskset: str, tmp_path: Path):
         for holder in (episode, *episode["traces"])
         for error in holder.get("errors") or []
     ]
+    if taskset == "interception" and os.getenv("PRIME_API_KEY"):
+        assert len(episodes) == 4
+        judged = [
+            trace
+            for episode in episodes
+            for trace in episode["traces"]
+            if trace["info"].get("judge_calls")
+        ]
+        assert len(judged) == 1
+        assert (
+            judged[0]["info"]["judge_calls"][0]["request"]["model"]
+            == CI_DECISION_JUDGE["model"]
+        )
+        assert judged[0]["response_rewrites"]

@@ -27,6 +27,7 @@ CI_MODEL = "internal/deepseek-v4.1-flash"
 CI_REASONING_EFFORT = "low"
 # Judge config fields that keep config-plugged judges on the CI model and effort.
 CI_JUDGE = {"model": CI_MODEL, "sampling": {"reasoning_effort": CI_REASONING_EFFORT}}
+CI_DECISION_JUDGE = {"model": "cloudflare/clef"}
 
 # Fixture tasksets (echo-v1, echo-agentic-v1, ...) live in tests/integration/fixtures,
 # added to the path via `pythonpath` in pyproject so the loader resolves them by id.
