@@ -30,6 +30,7 @@ from tenacity import (
     wait_exponential_jitter,
 )
 
+from verifiers.v1.configs.client import ProviderRetryConfig
 from verifiers.v1.configs.retries import RetryConfig, RetryRule
 from verifiers.v1.errors import (
     HarnessError,
@@ -37,6 +38,7 @@ from verifiers.v1.errors import (
     ProviderError,
     SandboxError,
     TaskError,
+    transient,
 )
 
 if TYPE_CHECKING:
@@ -49,6 +51,30 @@ logger = logging.getLogger(__name__)
 def backoff(attempt: int) -> float:
     """Exponential backoff with full jitter (same curve as `retrying()`'s)."""
     return min(0.5 * 2**attempt, 30.0) * (0.5 + random.random())
+
+
+def provider_retry_wait(
+    error: ProviderError,
+    failures: int,
+    failing_for: float,
+    retry: ProviderRetryConfig,
+    *,
+    base: float,
+) -> float | None:
+    """How long to wait before sending a model call the provider failed again, or None
+    when the failure is final: it is not `transient`, or the wait would end past
+    `retry.budget`, counted from the call's first failure (`failing_for` seconds ago).
+    Exponential backoff from `base` seconds with jitter, or the provider's
+    `Retry-After` when longer, each capped at `retry.max_backoff`."""
+    if not transient(error):
+        return None
+    wait = min(base * 2**failures, retry.max_backoff)
+    wait *= random.uniform(0.5, 1.0)
+    if error.retry_after is not None:
+        wait = max(wait, min(error.retry_after, retry.max_backoff))
+    if failing_for + wait > retry.budget:
+        return None
+    return wait
 
 
 def retrying(

@@ -24,7 +24,6 @@ import contextlib
 import hashlib
 import json
 import logging
-import random
 import secrets
 import time
 import traceback
@@ -59,7 +58,6 @@ from verifiers.v1.errors import (
     ProviderError,
     RolloutError,
     TaskError,
-    transient,
 )
 from verifiers.v1.interception.base import BaseInterceptionConfig, Interception, Slot
 from verifiers.v1.interception.tunnel import (
@@ -76,6 +74,7 @@ from verifiers.v1.session import (
 )
 from verifiers.v1.trace import Error, ModelCall, PolicyEvent, TimeSpan
 from verifiers.v1.types import FinishReason, Response, Usage
+from verifiers.v1.utils.retries import provider_retry_wait
 
 logger = logging.getLogger(__name__)
 
@@ -113,19 +112,13 @@ def _retry_wait(
     gated: bool,
 ) -> float | None:
     """How long to wait before sending a failed model call again, or None when the
-    failure is final: it is not `transient`, it is a rejection (429/529) the request gate
-    already retried (`RequestGateConfig.max_rejections`), or the wait would end past the
-    retry budget, counted from the call's first failure (`failing_for` seconds ago).
-    Exponential backoff with jitter, or the provider's `Retry-After` when longer."""
-    if not transient(error) or (gated and error.status_code in REJECTION_STATUSES):
+    failure is final (`provider_retry_wait`), or a rejection (429/529) the request gate
+    already retried (`RequestGateConfig.max_rejections`)."""
+    if gated and error.status_code in REJECTION_STATUSES:
         return None
-    wait = min(RETRY_BACKOFF_SECONDS * 2**failures, retry.max_backoff)
-    wait *= random.uniform(0.5, 1.0)
-    if error.retry_after is not None:
-        wait = max(wait, min(error.retry_after, retry.max_backoff))
-    if failing_for + wait > retry.budget:
-        return None
-    return wait
+    return provider_retry_wait(
+        error, failures, failing_for, retry, base=RETRY_BACKOFF_SECONDS
+    )
 
 
 IDEMPOTENCY_KEY_HEADER = "Idempotency-Key"
