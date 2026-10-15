@@ -39,6 +39,12 @@ so judge behaviour and spend are no longer invisible. The record lands even if t
 empty structured output comes back, or `parse` raises (the request was already billed). Omit `trace`
 for a pure call (e.g. in tests).
 
+A judge call the provider fails transiently (a 5xx, 408 or 429, a dropped connection or a
+timeout) is sent again under the config's `retry` budget (`ProviderRetryConfig`); the failure
+it gives up on raises, so a judge error never becomes a score. With `max_input_tokens` set, a
+request whose conservative token count (`input_token_bound`) exceeds it raises
+`JudgeInputTooLarge` before any call: some judge endpoints truncate longer input silently.
+
 A judge can also be *plugged* rather than called from task code: a judge with an `id` and a
 `score` implementation is a plugin (like a taskset or harness — see `verifiers.v1.judges` for the
 built-ins and `verifiers.v1.utils.loaders` for resolution). Its config lives on `TaskConfig.judges`
@@ -49,10 +55,14 @@ pre-plug them as class defaults) — and `Task.score` builds and runs it after t
 
 from __future__ import annotations
 
+import asyncio
+import json
+import logging
 import re
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import TYPE_CHECKING, Any, Generic, Literal, cast
 
+from openai import APIConnectionError, APIStatusError
 from openai.types.chat.completion_create_params import (
     CompletionCreateParamsNonStreaming,
 )
@@ -65,15 +75,54 @@ from verifiers.v1.configs.judge import (
     judge_key,
 )
 from verifiers.v1.dialects.chat import message_to_wire
+from verifiers.v1.errors import model_error
 from verifiers.v1.types import Messages, SamplingConfig, Usage
 from verifiers.v1.utils.generic import concrete_type, merge_defaults
+from verifiers.v1.utils.retries import provider_retry_wait
 from verifiers.v1.utils.score import parse_judge_choice
 
 if TYPE_CHECKING:
     from verifiers.v1.task import TaskData
     from verifiers.v1.trace import Trace
 
+logger = logging.getLogger(__name__)
+
 ParsedT = TypeVar("ParsedT")
+T = TypeVar("T")
+
+RETRY_BACKOFF_SECONDS = 1.0
+"""First wait before a judge call the provider failed transiently is sent again; it
+doubles per failure up to `ProviderRetryConfig.max_backoff`."""
+
+
+class JudgeInputTooLarge(ValueError):
+    """A judge request exceeds the judge's `max_input_tokens`. Raised before the call:
+    the input is the task's to bound, and an endpoint that truncates it would grade
+    part of it."""
+
+    def __init__(self, tokens: int, limit: int) -> None:
+        super().__init__(
+            f"judge input may need {tokens} tokens, over the judge's max_input_tokens "
+            f"of {limit}"
+        )
+        self.tokens = tokens
+        self.limit = limit
+
+
+def input_token_bound(payload: object) -> int:
+    """An upper bound on the tokens `payload` (JSON-serializable request content) takes:
+    its UTF-8 size as JSON. A byte-level tokenizer emits at most one token per byte, and
+    the JSON keys and quoting stand in for the chat template's tokens."""
+    return len(json.dumps(payload, ensure_ascii=False).encode())
+
+
+def _retry_after(error: APIStatusError) -> float | None:
+    """The wait in seconds a provider's `Retry-After` header asks for, if any."""
+    value = error.response.headers.get("retry-after")
+    try:
+        return float(value) if value is not None else None
+    except ValueError:
+        return None
 
 
 class JudgeResponse(BaseModel, Generic[ParsedT]):
@@ -158,6 +207,49 @@ class Judge(Generic[ParsedT, ConfigT]):
             "call it from a task `@reward` instead."
         )
 
+    def check_input(self, payload: object) -> None:
+        """Raise `JudgeInputTooLarge` when `payload`, the request content the model
+        reads, may exceed the config's `max_input_tokens`."""
+        limit = self.config.max_input_tokens
+        if limit is not None and (tokens := input_token_bound(payload)) > limit:
+            raise JudgeInputTooLarge(tokens, limit)
+
+    async def send(self, call: Callable[[], Awaitable[T]]) -> T:
+        """Run one provider call, sending it again while it fails transiently and the
+        config's `retry` budget lasts (`provider_retry_wait`). The failure it gives up
+        on raises unchanged."""
+        loop = asyncio.get_running_loop()
+        failures = 0
+        first_failure = 0.0
+        while True:
+            try:
+                return await call()
+            except (APIStatusError, APIConnectionError) as error:
+                now = loop.time()
+                if not failures:
+                    first_failure = now
+                retry_after = (
+                    _retry_after(error) if isinstance(error, APIStatusError) else None
+                )
+                wait = provider_retry_wait(
+                    model_error(error, retry_after=retry_after),
+                    failures,
+                    now - first_failure,
+                    self.config.retry,
+                    base=RETRY_BACKOFF_SECONDS,
+                )
+                if wait is None:
+                    raise
+                failures += 1
+                logger.warning(
+                    "judge %s call failed (%s), retry %d in %.1fs",
+                    self.reward_name,
+                    type(error).__name__,
+                    failures,
+                    wait,
+                )
+                await asyncio.sleep(wait)
+
     def parse(self, response: JudgeResponse[ParsedT]) -> ParsedT:
         if self.schema is not None:
             return cast(ParsedT, response.parsed)
@@ -197,13 +289,16 @@ class Judge(Generic[ParsedT, ConfigT]):
             key: value for key, value in params.items() if key not in sdk_fields
         }
         kwargs.update(request_options)
+        self.check_input(kwargs["messages"])
 
         response: JudgeResponse[Any] | None = None
         try:
             async with build_async_openai(self.config) as client:
                 if schema is not None:
-                    completion = await client.beta.chat.completions.parse(
-                        response_format=schema, **kwargs
+                    completion = await self.send(
+                        lambda: client.beta.chat.completions.parse(
+                            response_format=schema, **kwargs
+                        )
                     )
                     choice = completion.choices[0]
                     response = JudgeResponse(
@@ -220,7 +315,9 @@ class Judge(Generic[ParsedT, ConfigT]):
                             f"judge returned no parseable structured output (finish_reason={choice.finish_reason})"
                         )
                 else:
-                    completion = await client.chat.completions.create(**kwargs)
+                    completion = await self.send(
+                        lambda: client.chat.completions.create(**kwargs)
+                    )
                     response = JudgeResponse(
                         text=completion.choices[0].message.content or "",
                         usage=Usage.from_openai(completion.usage),

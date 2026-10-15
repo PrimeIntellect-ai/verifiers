@@ -85,7 +85,7 @@ from verifiers.v1.errors import (
 from verifiers.v1.grading import grade_submission
 from verifiers.v1.graph import MessageNode
 from verifiers.v1.harness import Harness, HarnessSession
-from verifiers.v1.judge import Judge, JudgeResponse, JudgeView
+from verifiers.v1.judge import Judge, JudgeInputTooLarge, JudgeResponse, JudgeView
 from verifiers.v1.judges import (
     Criterion,
     DecisionJudge,
@@ -400,6 +400,7 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "Judge",
     "JudgeConfig",
     "Judges",
+    "JudgeInputTooLarge",
     "JudgeResponse",
     "JudgeView",
     "DecisionJudge",

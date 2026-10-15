@@ -56,9 +56,12 @@ class DecisionJudge(Judge[float, DecisionJudgeConfig]):
                 }
             },
         }
+        self.check_input({"state": fields, "questions": request["questions"]})
         async with build_async_openai(self.config) as client:
-            raw = await client.post(
-                self.config.base_url, cast_to=dict[str, Any], body=request
+            raw = await self.send(
+                lambda: client.post(
+                    self.config.base_url, cast_to=dict[str, Any], body=request
+                )
             )
         result = raw.get("result", raw)  # Workers AI wraps its response in `result`.
         response = JudgeResponse[float](text=json.dumps(raw))
