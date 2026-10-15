@@ -263,20 +263,12 @@ class TurnTokens(BaseModel):
     completion_ids: list[int] = Field(default_factory=list)
     completion_logprobs: list[float] = Field(default_factory=list)
 
-    # Transient graph-construction metadata, consumed by the turn's commit and excluded
-    # from serialized responses.
-    renderer_prompt_ids: list[int] | None = Field(default=None, exclude=True)
-    """Logical renderer IDs before multimodal expansion, retained for bridge extension."""
-    bridged: bool = Field(default=False, exclude=True)
-    """Whether the renderer constructed this prompt by extending a stored prefix."""
     # Transient carrier (excluded): per-message token spans into `prompt_ids` from the renderer,
     # consumed by the turn's `commit` to attribute tokens per message, then dropped.
     message_spans: list[tuple[int, int] | None] | None = Field(
         default=None, exclude=True
     )
     is_content: list[bool] | None = Field(default=None, exclude=True)
-    # Authoritative effective-prompt ranges returned by vLLM, flattened across modalities.
-    mm_placeholders: list[tuple[int, int]] | None = Field(default=None, exclude=True)
     # Transient carrier (excluded): the renderer's special-token id -> modality marker map,
     # stamped onto `Trace.mm_token_type_id_map` by the turn's `commit`. None unless the
     # rendering renderer is multimodal.

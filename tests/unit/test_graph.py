@@ -539,20 +539,13 @@ def test_renderer_level_break_forks_by_token_id():
     ]
 
 
-def test_expanded_prompt_is_attributed_while_bridge_uses_logical_tokens():
+def test_expanded_prompt_tokens_and_attribution_are_reused():
     trace = vf.Trace(
         agent=vf.AgentInfo(config=vf.AgentConfig()),
         task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt="x")),
     )
     user = vf.UserMessage(content="image")
     assistant = vf.AssistantMessage(content="looked")
-    assert graph.MessageNode(message=user, token_ids=[9]).logical_ids == [9]
-    assert (
-        graph.MessageNode(
-            message=user, token_ids=[9], renderer_token_ids=[]
-        ).logical_ids
-        == []
-    )
     graph.prepare_turn(trace, [user]).commit(
         vf.Response(
             id="a",
@@ -562,11 +555,9 @@ def test_expanded_prompt_is_attributed_while_bridge_uses_logical_tokens():
             finish_reason="stop",
             tokens=TurnTokens(
                 prompt_ids=[1, 9, 9, 3],
-                renderer_prompt_ids=[1, 9, 3],
                 completion_ids=[4],
-                message_spans=[(0, 2)],
-                is_content=[False, True, False],
-                mm_placeholders=[(1, 2)],
+                message_spans=[(0, 3)],
+                is_content=[False, True, True, False],
                 mm_token_type_id_map={9: 1},
             ),
         )
@@ -577,28 +568,10 @@ def test_expanded_prompt_is_attributed_while_bridge_uses_logical_tokens():
     assert trace.nodes[0].token_ids == [1, 9, 9]
     assert trace.nodes[0].is_content == [False, True, True]
     turn = graph.prepare_turn(trace, [user, assistant, vf.UserMessage(content="next")])
-    assert [trace.nodes[nid].logical_ids for nid in turn.prefix_node_ids] == [
-        [1, 9],
+    assert [trace.nodes[nid].token_ids for nid in turn.prefix_node_ids] == [
+        [1, 9, 9],
         [3, 4],
     ]
-
-    with pytest.raises(ValueError, match="exactly extend"):
-        turn.commit(
-            vf.Response(
-                id="b",
-                created=0,
-                model="t",
-                message=vf.AssistantMessage(content="bad"),
-                finish_reason="stop",
-                tokens=TurnTokens(
-                    prompt_ids=[1, 9, 8, 3, 4, 5],
-                    renderer_prompt_ids=[1, 9, 3, 4, 5],
-                    bridged=True,
-                    completion_ids=[6],
-                    message_spans=[None, None, (4, 5)],
-                ),
-            )
-        )
 
     tool = vf.ToolMessage(content="result", tool_call_id="call_0")
     graph.prepare_turn(trace, [user, assistant, tool]).commit(
@@ -610,12 +583,9 @@ def test_expanded_prompt_is_attributed_while_bridge_uses_logical_tokens():
             finish_reason="stop",
             tokens=TurnTokens(
                 prompt_ids=[1, 9, 9, 3, 4, 5, 6, 7],
-                renderer_prompt_ids=[1, 9, 3, 4, 5, 6, 7],
-                bridged=True,
                 completion_ids=[8],
-                message_spans=[None, None, (4, 6)],
-                is_content=[False, True, False, True, False, True, False],
-                mm_placeholders=[(1, 2)],
+                message_spans=[None, None, (5, 7)],
+                is_content=[False, True, True, False, True, False, True, False],
                 mm_token_type_id_map={9: 1},
             ),
         )
@@ -624,7 +594,6 @@ def test_expanded_prompt_is_attributed_while_bridge_uses_logical_tokens():
     tool_node = trace.nodes[-2]
     assert tool_node.message == tool
     assert tool_node.token_ids == [5, 6]
-    assert tool_node.renderer_token_ids == [5, 6]
     assert tool_node.is_content == [False, True]
 
 

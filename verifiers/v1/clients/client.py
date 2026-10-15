@@ -184,7 +184,12 @@ class Client:
         if body.get("return_training_metadata"):
             raw.pop("prompt_token_ids", None)
             for choice in raw.get("choices", []):
-                for field in ("token_ids", "sampling_mask", "routed_experts"):
+                for field in (
+                    "token_ids",
+                    "completion_logprobs",
+                    "sampling_mask",
+                    "routed_experts",
+                ):
                     choice.pop(field, None)
         response.raw = raw
         return response, events

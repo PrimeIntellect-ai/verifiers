@@ -116,10 +116,6 @@ class MessageNode(BaseModel):
     template scaffold + its own tokens — for an assistant, the generation-prompt scaffold
     followed by the sampled completion. Concatenated along a path, these reproduce the exact
     `prompt_ids + completion_ids` the model saw."""
-    renderer_token_ids: list[int] | None = Field(default=None, exclude=True)
-    """Logical renderer tokens retained only while extending a live rollout.
-    None means they are identical to `token_ids`; an empty list is a real empty slice."""
-
     mask: list[bool] = Field(default_factory=list)
     """Per-token, parallel to `token_ids`: True for trainable, model-sampled tokens (only an
     assistant node's completion span); False for template scaffold and every input-message
@@ -166,14 +162,6 @@ class MessageNode(BaseModel):
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
-
-    @property
-    def logical_ids(self) -> list[int]:
-        return (
-            self.token_ids
-            if self.renderer_token_ids is None
-            else self.renderer_token_ids
-        )
 
     @field_serializer(
         "logprobs",
@@ -371,7 +359,6 @@ def _matching_node(
     parent: int | None,
     message: Message,
     token_ids: list[int] | None = None,
-    renderer_token_ids: list[int] | None = None,
     tools: list[Tool] | None = None,
 ) -> int | None:
     """Find an existing child, optionally requiring its exact token spans.
@@ -382,24 +369,18 @@ def _matching_node(
     """
     key = _node_key(parent, message, tools)
     indexed = _head_index(trace).get(key)
-    if (
-        indexed is not None
-        and (token_ids is None or trace.nodes[indexed].token_ids == token_ids)
-        and (
-            renderer_token_ids is None
-            or trace.nodes[indexed].logical_ids == renderer_token_ids
-        )
+    if indexed is not None and (
+        token_ids is None or trace.nodes[indexed].token_ids == token_ids
     ):
         return indexed
-    if token_ids is None and renderer_token_ids is None:
+    if token_ids is None:
         return indexed
     for node_id in range(len(trace.nodes) - 1, -1, -1):
         if node_id == indexed:
             continue
         node = trace.nodes[node_id]
         if (
-            (token_ids is None or node.token_ids == token_ids)
-            and (renderer_token_ids is None or node.logical_ids == renderer_token_ids)
+            node.token_ids == token_ids
             and _node_key(node.parent, node.message, node.tools) == key
         ):
             return node_id
@@ -413,9 +394,6 @@ def _matching_prefix_node(
     prompt_ids: list[int],
     start: int,
     stop: int,
-    renderer_prompt_ids: list[int],
-    renderer_start: int,
-    renderer_stop: int,
     tools: list[Tool] | None = None,
 ) -> int | None:
     """Find the longest content-equivalent child matching inside `[start, stop]`.
@@ -447,11 +425,6 @@ def _matching_prefix_node(
         if start + len(trace.nodes[node_id].token_ids) <= stop
         and prompt_ids[start : start + len(trace.nodes[node_id].token_ids)]
         == trace.nodes[node_id].token_ids
-        and renderer_start + len(trace.nodes[node_id].logical_ids) <= renderer_stop
-        and renderer_prompt_ids[
-            renderer_start : renderer_start + len(trace.nodes[node_id].logical_ids)
-        ]
-        == trace.nodes[node_id].logical_ids
     ]
     return max(
         matches, key=lambda node_id: len(trace.nodes[node_id].token_ids), default=None
@@ -480,12 +453,6 @@ class PendingTurn:
     @property
     def tail(self) -> list[Message]:
         return self.prompt[self.tail_start :]
-
-    @property
-    def renderer_path_len(self) -> int:
-        return sum(
-            len(self.trace.nodes[nid].logical_ids) for nid in self.prefix_node_ids
-        )
 
     def commit(self, response: Response) -> int:
         """Add this turn to the graph; returns the committed assistant node's id."""
@@ -673,75 +640,6 @@ def _attribute_sampling_mask(
     node.sampling_mask = payload
 
 
-def _project_prompt_attribution(
-    renderer_prompt_ids: list[int],
-    prompt_ids: list[int],
-    mm_token_type_id_map: dict[int, int],
-    mm_placeholders: list[tuple[int, int]] | None,
-    message_spans: list[tuple[int, int] | None] | None,
-    is_content: list[bool] | None,
-) -> tuple[list[tuple[int, int] | None] | None, list[bool] | None]:
-    """Project logical attribution using vLLM's multimodal placeholder ranges."""
-    if renderer_prompt_ids == prompt_ids:
-        return message_spans, is_content
-    if not mm_token_type_id_map or mm_placeholders is None:
-        raise ValueError(
-            "cannot align renderer and vLLM prompt tokens without multimodal placeholders"
-        )
-
-    offsets = [0]
-    prompt_offset = 0
-    placeholder_index = 0
-    for token_id in renderer_prompt_ids:
-        if token_id in mm_token_type_id_map:
-            if placeholder_index >= len(mm_placeholders):
-                raise ValueError(
-                    "vLLM multimodal placeholders do not align with renderer prompt"
-                )
-            offset, length = mm_placeholders[placeholder_index]
-            if offset != prompt_offset or length < 1:
-                raise ValueError(
-                    "vLLM multimodal placeholders do not align with renderer prompt"
-                )
-            prompt_offset += length
-            placeholder_index += 1
-        else:
-            if (
-                prompt_offset >= len(prompt_ids)
-                or prompt_ids[prompt_offset] != token_id
-            ):
-                raise ValueError(
-                    "renderer prompt does not align with vLLM prompt tokens"
-                )
-            prompt_offset += 1
-        offsets.append(prompt_offset)
-    if prompt_offset != len(prompt_ids) or placeholder_index != len(mm_placeholders):
-        raise ValueError("renderer prompt does not align with vLLM prompt tokens")
-
-    projected_spans = None
-    if message_spans is not None:
-        projected_spans = []
-        for span in message_spans:
-            if span is None:
-                projected_spans.append(None)
-                continue
-            start, end = span
-            if not 0 <= start <= end <= len(renderer_prompt_ids):
-                raise ValueError("message span exceeds renderer prompt tokens")
-            projected_spans.append((offsets[start], offsets[end]))
-
-    projected_is_content = is_content
-    if is_content:
-        if len(is_content) != len(renderer_prompt_ids):
-            raise ValueError(
-                "content attribution does not match renderer prompt tokens"
-            )
-        projected_is_content = []
-        for index, value in enumerate(is_content):
-            projected_is_content.extend([value] * (offsets[index + 1] - offsets[index]))
-    return projected_spans, projected_is_content
-
-
 def _commit_turn(turn: PendingTurn, response: Response) -> int:
     trace = turn.trace
     prompt = turn.prompt
@@ -750,13 +648,8 @@ def _commit_turn(turn: PendingTurn, response: Response) -> int:
     if tokens is not None and tokens.mm_token_type_id_map:
         trace.mm_token_type_id_map = tokens.mm_token_type_id_map
     prompt_ids = tokens.prompt_ids if tokens else []
-    renderer_prompt_ids = (
-        tokens.renderer_prompt_ids
-        if tokens and tokens.renderer_prompt_ids is not None
-        else prompt_ids
-    )
-    renderer_spans = tokens.message_spans if tokens else None
-    renderer_is_content = tokens.is_content if tokens else None
+    spans = tokens.message_spans if tokens else None
+    is_content = tokens.is_content if tokens else None
     idx = _head_index(trace)
 
     # Token-based prefix reuse. `prepare_turn` matched the prefix by message hash (content); when
@@ -771,40 +664,17 @@ def _commit_turn(turn: PendingTurn, response: Response) -> int:
     # without token ids keep the message-hash prefix.
     prefix = turn.prefix_node_ids
     path_len = turn.path_len
-    renderer_path_len = turn.renderer_path_len
     if tokens is not None and prefix:
         keep = 0
         off = 0
-        renderer_off = 0
         for nid in prefix:
             node = trace.nodes[nid]
-            node_renderer_ids = node.logical_ids
-            if (
-                prompt_ids[off : off + len(node.token_ids)] != node.token_ids
-                or renderer_prompt_ids[
-                    renderer_off : renderer_off + len(node_renderer_ids)
-                ]
-                != node_renderer_ids
-            ):
+            if prompt_ids[off : off + len(node.token_ids)] != node.token_ids:
                 break
             off += len(node.token_ids)
-            renderer_off += len(node_renderer_ids)
             keep += 1
-        if tokens.bridged and keep != len(prefix):
-            raise ValueError(
-                "vLLM prompt tokens do not exactly extend the stored rollout prefix"
-            )
         prefix = prefix[:keep]
         path_len = off
-        renderer_path_len = renderer_off
-    spans, is_content = _project_prompt_attribution(
-        renderer_prompt_ids,
-        prompt_ids,
-        trace.mm_token_type_id_map,
-        tokens.mm_placeholders if tokens else None,
-        renderer_spans,
-        renderer_is_content,
-    )
     has_is_content = is_content is not None and len(is_content) == len(prompt_ids)
 
     # A parallel request may have committed more of this prompt after `prepare_turn` resolved
@@ -817,10 +687,6 @@ def _commit_turn(turn: PendingTurn, response: Response) -> int:
         i = len(prefix)
         span = spans[i] if spans and i < len(spans) else None
         end = span[1] if span else path_len
-        renderer_span = (
-            renderer_spans[i] if renderer_spans and i < len(renderer_spans) else None
-        )
-        renderer_end = renderer_span[1] if renderer_span else renderer_path_len
         parent = prefix[-1] if prefix else None
         if tokens is not None and span is None:
             next_start = next(
@@ -831,16 +697,6 @@ def _commit_turn(turn: PendingTurn, response: Response) -> int:
                 ),
                 len(prompt_ids),
             )
-            next_renderer_start = next(
-                (
-                    later_span[0]
-                    for later_span in (
-                        renderer_spans[i + 1 :] if renderer_spans else []
-                    )
-                    if later_span is not None
-                ),
-                len(renderer_prompt_ids),
-            )
             existing = _matching_prefix_node(
                 trace,
                 parent,
@@ -848,35 +704,27 @@ def _commit_turn(turn: PendingTurn, response: Response) -> int:
                 prompt_ids,
                 path_len,
                 next_start,
-                renderer_prompt_ids,
-                renderer_path_len,
-                next_renderer_start,
                 tools=turn.tools,
             )
             if existing is not None:
                 end += len(trace.nodes[existing].token_ids)
-                renderer_end += len(trace.nodes[existing].logical_ids)
         else:
             node_tokens = prompt_ids[path_len:end]
-            renderer_node_tokens = renderer_prompt_ids[renderer_path_len:renderer_end]
             existing = _matching_node(
                 trace,
                 parent,
                 prompt[i],
                 node_tokens if tokens is not None else None,
-                renderer_node_tokens if tokens is not None else None,
                 tools=turn.tools,
             )
         if existing is None:
             break
         prefix.append(existing)
         path_len = end
-        renderer_path_len = renderer_end
 
     num_reused = len(prefix)
     parent = prefix[-1] if prefix else None
     cursor: int | None = None
-    renderer_cursor: int | None = None
     # Track new nodes separately so routed-expert attribution needs only node ids, not this path.
     new_node_ids: list[int] = []
     for i, msg in enumerate(prompt[num_reused:], start=num_reused):
@@ -885,20 +733,12 @@ def _commit_turn(turn: PendingTurn, response: Response) -> int:
         span = spans[i] if spans and i < len(spans) else None
         end = span[1] if span else start
         node_tokens = prompt_ids[start:end]
-        renderer_start = (
-            renderer_path_len if renderer_cursor is None else renderer_cursor
-        )
-        renderer_span = (
-            renderer_spans[i] if renderer_spans and i < len(renderer_spans) else None
-        )
-        renderer_end = renderer_span[1] if renderer_span else renderer_start
         trace.nodes.append(
             MessageNode.model_construct(
                 parent=parent,
                 tools=turn.tools if parent is None else [],
                 message=msg,
                 token_ids=node_tokens,
-                renderer_token_ids=renderer_prompt_ids[renderer_start:renderer_end],
                 mask=[False] * len(node_tokens),
                 is_content=is_content[start:end] if has_is_content else [],
             )
@@ -907,15 +747,10 @@ def _commit_turn(turn: PendingTurn, response: Response) -> int:
         idx[key] = parent
         new_node_ids.append(parent)
         cursor = end
-        renderer_cursor = renderer_end
 
     comp_ids = tokens.completion_ids if tokens else []
     gen_start = path_len if cursor is None else cursor
     gen_prompt = prompt_ids[gen_start:]
-    renderer_gen_start = (
-        renderer_path_len if renderer_cursor is None else renderer_cursor
-    )
-    renderer_gen_prompt = renderer_prompt_ids[renderer_gen_start:]
     trace.nodes.append(
         MessageNode.model_construct(
             parent=parent,
@@ -923,7 +758,6 @@ def _commit_turn(turn: PendingTurn, response: Response) -> int:
             message=response.message,
             sampled=True,
             token_ids=[*gen_prompt, *comp_ids],
-            renderer_token_ids=[*renderer_gen_prompt, *comp_ids],
             mask=[False] * len(gen_prompt) + [True] * len(comp_ids),
             is_content=([False] * len(gen_prompt) + [True] * len(comp_ids))
             if has_is_content
