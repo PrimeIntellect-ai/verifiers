@@ -20,6 +20,13 @@ restored from that save. The user's replies must be durable the same way: a
 its replies through the caller's durable host calls. A reply that differs on a run
 again would continue a turn against a box that moved past it.
 
+The conversation is bounded as a whole: its agent time budget (`budget`, default the
+agent's rollout timeout for the task) is shared by its turns. Each turn runs with what
+the turns before it left (`AgentConfig.timeout.rollout` set to the rest), and the
+conversation ends when nothing is left. The time spent is read off the turns' traces
+(`timing.agent`), so a conversation run again after a crash finds the same budget left:
+only the part of a cut-off turn before its last save is not counted again.
+
 A message for a running turn (a steer) is not a turn: it reaches the running harness
 through its inbox (`vf.steer`, `Harness.SUPPORTS_INBOX`: bash and null).
 
@@ -30,6 +37,7 @@ grader reads it. The conversation ends when:
 
 - the user is done (`UserReply.done`);
 - the user's reply cap is reached (`max_turns`);
+- the conversation's agent time is spent (`time_cap`, see below). It is still graded;
 - a turn stopped on a limit or a timeout (`solver_stopped`): the agent never reads a
   reply. It is still graded;
 - a turn failed (`solver_failed`): the final trace is that failed trace, not graded.
@@ -38,12 +46,13 @@ grader reads it. The conversation ends when:
 from __future__ import annotations
 
 import asyncio
+import copy
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import Any, Literal, Protocol
 
 from pydantic import BaseModel, Field
 
-from verifiers.v1.agent import Agent
+from verifiers.v1.agent import Agent, resolve_rollout_timeouts
 from verifiers.v1.configs.scoring import resolve_scoring
 from verifiers.v1.grading import bind_scoring_env, grade_submission
 from verifiers.v1.rollout import OnSave
@@ -69,7 +78,9 @@ __all__ = [
 CONVERSATION_KEY = "conversation"
 """`trace.info` key of the conversation record (`Conversation`)."""
 
-StopReason = Literal["open", "user_done", "turn_cap", "solver_stopped", "solver_failed"]
+StopReason = Literal[
+    "open", "user_done", "turn_cap", "time_cap", "solver_stopped", "solver_failed"
+]
 """Why a conversation ended (`converse`); `open` while it runs."""
 
 
@@ -238,13 +249,16 @@ async def converse(
     on_turn: Callable[[Trace], None] | None = None,
     on_score: Callable[[Trace, Runtime], Awaitable[None]] | None = None,
     grade: bool = True,
+    budget: float | None = None,
 ) -> Trace:
     """Run `agent` on `task` with `user` answering it, one resumed run per turn on one
     box, and grade the end state once (see the module docs). Returns the final turn's
     trace: graded, with the conversation at `trace.info["conversation"]`; a failed
     turn's trace, ungraded. `max_turns` caps the user's replies. `on_turn` sees each
     turn's trace when it lands (a stage that saves or annotates them); `on_score` runs
-    after task scoring, as `Agent.run`'s does."""
+    after task scoring, as `Agent.run`'s does. `budget` is the agent seconds of the whole
+    conversation (default: the agent's rollout timeout for the task; None there too:
+    unbounded but for each turn's own timeout)."""
     if max_turns < 0:
         raise ValueError("max_turns must be at least 0")
     opening = task.data.prompt_text
@@ -252,12 +266,31 @@ async def converse(
         raise ValueError("a conversation opens on the task's prompt: it has none")
     conversation = Conversation(turns=[ConversationTurn(role="user", text=opening)])
     turns = task.defer_scoring()
+    if budget is None:
+        budget = resolve_rollout_timeouts(agent.config.timeout, task).agent
+    spent = 0.0
+
+    def seat(left: float | None) -> Agent:
+        """`agent` with its turn's time: what the conversation has left."""
+        if left is None:
+            return agent
+        own = agent.config.timeout.rollout
+        rollout = left if own is None else min(own, left)
+        bounded = copy.copy(agent)
+        bounded.config = agent.config.model_copy(
+            update={
+                "timeout": agent.config.timeout.model_copy(update={"rollout": rollout})
+            }
+        )
+        return bounded
+
     async with agent.provision(task, key=f"{key}/box") as box:
-        trace = await agent.run(
+        trace = await seat(budget).run(
             turns, runtime=box, tools=tools, on_save=on_save, key=f"{key}/turn-0"
         )
         number = 0
         while True:
+            spent += trace.timing.agent.duration
             if on_turn is not None:
                 on_turn(trace)
             if not trace.ok:
@@ -266,10 +299,16 @@ async def converse(
             conversation.turns.append(
                 ConversationTurn(role="assistant", text=trace.last_reply)
             )
+            left = None if budget is None else budget - spent
             if trace.stop_condition not in (None, "agent_completed"):
                 # A limit, a stop or a timeout ended the turn: the agent would never
                 # read a reply.
-                conversation.stop = "solver_stopped"
+                conversation.stop = (
+                    "time_cap" if left is not None and left <= 0 else "solver_stopped"
+                )
+                break
+            if left is not None and left <= 0:
+                conversation.stop = "time_cap"
                 break
             if conversation.replies >= max_turns:
                 conversation.stop = "turn_cap"
@@ -292,7 +331,7 @@ async def converse(
             # The next turn's trace carries this record from its origin (`info`).
             _record(trace, conversation)
             number += 1
-            trace = await agent.run(
+            trace = await seat(left).run(
                 turns,
                 runtime=box,
                 tools=tools,

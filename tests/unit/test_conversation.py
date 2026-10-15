@@ -6,8 +6,6 @@ Deterministic, no API key: the fakes of `test_agent_resume`, with a scripted mod
 that writes one file per user message, then answers it.
 """
 
-
-
 import json
 
 import pytest
@@ -241,3 +239,43 @@ async def test_a_modeled_user_answers_with_the_roles_swapped(model):
     assert first[0]["role"] == "system" and "a file per request" in first[0]["content"]
     assert [m["role"] for m in first[1:]] == ["user", "assistant", "user"]
     assert first[-1]["content"] == "done: start"
+
+
+async def test_the_conversation_is_bounded_as_a_whole():
+    import asyncio
+
+    async def slow(messages):
+        await asyncio.sleep(0.4)
+        return answer(messages)
+
+    requests: list[dict] = []
+
+    async def handle(request: web.Request) -> web.Response:
+        body = await request.json()
+        requests.append(body)
+        return web.json_response(await slow(body["messages"]))
+
+    app = web.Application()
+    app.router.add_post("/v1/chat/completions", handle)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "127.0.0.1", 0)
+    await site.start()
+    port = site._server.sockets[0].getsockname()[1]
+    try:
+        endpoint = Endpoint(f"http://127.0.0.1:{port}/v1", requests)
+        # Each turn takes two model calls (about 0.8 s): the budget covers the first
+        # turn and part of the second, never the third.
+        trace = await vf.converse(
+            make(endpoint),
+            task(),
+            vf.ScriptedUser(["first", "second", "third"]),
+            budget=1.4,
+        )
+    finally:
+        await runner.cleanup()
+    conversation = vf.Conversation.of(trace)
+    assert conversation.stop == "time_cap"
+    assert conversation.replies <= 1
+    # Graded on the end state all the same.
+    assert "wrote_every_request" in trace.rewards
