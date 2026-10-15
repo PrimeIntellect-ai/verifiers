@@ -8,9 +8,15 @@ base.pathname += "/messages";
 
 function normalize(line) {
   if (!line.startsWith("data:")) return line;
-  const data = JSON.parse(line.slice(5));
+  let data;
+  try {
+    data = JSON.parse(line.slice(5));
+  } catch {
+    // Preserve SSE sentinels and non-JSON data for the upstream parser.
+    return line;
+  }
   let changed = false;
-  for (const usage of [data.usage, data.message?.usage]) {
+  for (const usage of [data?.usage, data?.message?.usage]) {
     if (!usage) continue;
     for (const key of ["cache_read_input_tokens", "cache_creation_input_tokens"]) {
       if (usage[key] === null) {
