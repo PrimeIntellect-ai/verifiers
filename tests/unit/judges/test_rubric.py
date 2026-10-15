@@ -113,7 +113,7 @@ async def test_rubric_verdict_mismatch_raises(tmp_path, monkeypatch, make_trace)
         return JudgeResponse(text=json.dumps(verdicts), parsed=None)
 
     monkeypatch.setattr(Judge, "complete", wrong_names)
-    judge = rubric_judge(tmp_path, model="openai/gpt-6-luna")
+    judge = rubric_judge(tmp_path)
     trace = make_trace()
     with pytest.raises(ValueError, match="expected the batch"):
         await judge.score(trace.task.data, trace)
@@ -126,9 +126,7 @@ async def test_rubric_choices_normalize(tmp_path, monkeypatch, make_trace):
         return JudgeResponse(text=json.dumps(v), parsed=None)
 
     monkeypatch.setattr(Judge, "complete", graded)
-    judge = rubric_judge(
-        tmp_path, body=CHOICES_TOML, name="q", model="openai/gpt-6-luna"
-    )
+    judge = rubric_judge(tmp_path, body=CHOICES_TOML, name="q")
     trace = make_trace()
     assert await judge.score(trace.task.data, trace) == 0.5
     assert trace.metrics == {"q/depth": 0.5}
@@ -141,7 +139,7 @@ async def test_rubric_off_menu_answer_raises(tmp_path, monkeypatch, make_trace):
         return JudgeResponse(text=json.dumps(v), parsed=None)
 
     monkeypatch.setattr(Judge, "complete", off_menu)
-    judge = rubric_judge(tmp_path, body=CHOICES_TOML, model="openai/gpt-6-luna")
+    judge = rubric_judge(tmp_path, body=CHOICES_TOML)
     trace = make_trace()
     with pytest.raises(ValueError, match="expected one of"):
         await judge.score(trace.task.data, trace)

@@ -149,9 +149,7 @@ async def test_reference_list_answer(fake_judge_model, make_trace):
 async def test_reference_choices(fake_judge_model, make_trace):
     # Verdict labels are configurable; the positive (first) label scores 1.0 and the
     # default prompt asks for the configured labels (not a hardcoded yes/no).
-    judge = vf.ReferenceJudge(
-        vf.ReferenceJudgeConfig(model="openai/gpt-6-luna", choices=("A", "B"))
-    )
+    judge = vf.ReferenceJudge(vf.ReferenceJudgeConfig(choices=("A", "B")))
     assert judge.parse(JudgeResponse(text="A")) == 1.0
     assert judge.parse(JudgeResponse(text="Final verdict: B")) == 0.0
     with pytest.raises(ValueError, match="no A/B verdict"):

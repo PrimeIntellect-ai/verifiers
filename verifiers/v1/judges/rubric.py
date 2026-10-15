@@ -113,7 +113,6 @@ def load_criteria(
 class RubricJudgeConfig(JudgeConfig):
     id: ID = "rubric"
     """Pinned to the built-in, so a code-level default entry needs no explicit id."""
-    model: str = "cloudflare/clef"
     path: Path
     """A `.toml` or `.json` file containing a `criteria` list. Relative paths resolve
     against the evaluation's working directory."""

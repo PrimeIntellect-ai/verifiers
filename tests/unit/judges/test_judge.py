@@ -1,5 +1,5 @@
 """Pluggable judges: plugin resolution, config narrowing, views, and how `Task.score` runs them.
-Judge model responses are faked; no network."""
+Judge model calls are faked at `Judge.complete`; no network."""
 
 import pytest
 from pydantic import Field
@@ -189,9 +189,7 @@ async def test_error_attribution(monkeypatch, tmp_path, make_trace):
 
     monkeypatch.setattr(Judge, "complete", gibberish_judge)
     taskset = JudgedTaskset(
-        JudgedConfig.model_validate(
-            {"task": {"judges": [{"id": "reference", "model": "openai/gpt-6-luna"}]}}
-        )
+        JudgedConfig.model_validate({"task": {"judges": [{"id": "reference"}]}})
     )
     # model failure: empty reply -> judge skipped, reward 0.0, NO error
     trace = make_trace(reply="")

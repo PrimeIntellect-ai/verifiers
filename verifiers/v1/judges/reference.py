@@ -31,7 +31,6 @@ class ReferenceJudgeConfig(JudgeConfig):
     id: ID = "reference"
     """Pinned to the built-in, so a code-level default entry needs no explicit id (a TOML
     entry's `id` selects the config type before this default is ever seen)."""
-    model: str = "cloudflare/clef"
     answer_field: str = "answer"
     """The task field holding the reference answer (works for extra/wire fields too). A
     list-valued field is rendered as one acceptable answer per line — the response must

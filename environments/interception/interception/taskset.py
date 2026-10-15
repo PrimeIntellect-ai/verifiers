@@ -2,7 +2,7 @@ import verifiers.v1 as vf
 
 
 class InterceptionTaskConfig(vf.TaskConfig):
-    judge: vf.JudgeConfig = vf.JudgeConfig(model="cloudflare/clef")
+    judge: vf.JudgeConfig = vf.JudgeConfig()
 
 
 class InterceptionTask(vf.Task[vf.TaskData, vf.State, InterceptionTaskConfig]):
