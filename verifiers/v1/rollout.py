@@ -648,19 +648,28 @@ class Rollout:
             logger.warning("harness scoring failed", exc_info=True)
 
     async def _close_harness(self) -> None:
-        """Close the harness session, then the tool servers and interception. Idempotent."""
+        """Close the harness session, then the tool servers and interception. Idempotent.
+
+        Generation has already completed, so a teardown failure is logged rather than
+        raised: it must not discard an otherwise scoreable (or already scored)
+        trajectory."""
         if self._harness_session is not None:
             try:
                 await self._harness_session.close()
             except Exception:
-                # Generation already completed. A transport teardown failure
-                # must not discard its otherwise scoreable trajectory.
                 logger.warning(
                     "harness session close failed (rollout %s)",
                     self.trace.id,
                     exc_info=True,
                 )
-        await self._stack.aclose()
+        try:
+            await self._stack.aclose()
+        except Exception:
+            logger.warning(
+                "tool server or interception teardown failed (rollout %s)",
+                self.trace.id,
+                exc_info=True,
+            )
 
     def _agent_finished(self) -> bool:
         """Whether the agent ended its last segment on its own, or waits between the
@@ -745,14 +754,16 @@ class Rollout:
                     if grader is not None:
                         # The submission is collected: close the solver's session, then
                         # capture its metrics before the workspace stops and the verifier
-                        # starts. Their time does not count against finalization.
+                        # starts. Neither counts against finalization; the metrics count
+                        # against scoring, as they did when they ran first.
+                        interlude_started = loop.time()
                         await self._close_harness()
                         metrics_started = loop.time()
                         await self._score_harness(runtime, self._metrics_deadline())
                         metrics_done = True
                         scoring_elapsed = loop.time() - metrics_started
                         if finalize_deadline is not None:
-                            finalize_deadline += scoring_elapsed
+                            finalize_deadline += loop.time() - interlude_started
                         finalize_phase = "service finalization"
                         async with (
                             asyncio.timeout_at(finalize_deadline),
