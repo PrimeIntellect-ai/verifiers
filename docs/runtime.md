@@ -90,7 +90,6 @@ bindings, `run_background`, and the uv-script helpers on top of it:
 | `exec(runtime, argv, env)` | yes | Start a process and return a handle that streams its stdio. |
 | `write(runtime, path, data)` | yes | Write a file, creating parent directories. |
 | `run(runtime, argv, env)` | no | Run to completion. The default drains an `exec`. |
-| `run_background(runtime, argv, env, log)` | no | Start a process that runs until teardown. The default keeps an `exec`; override it with a server-owned job if the provider has one. |
 | `read(runtime, path, max_bytes)` | no | Read a file. The default reads through `run`. |
 | `expose(port)` | with `SUPPORTS_PORT_EXPOSURE` | Publish a port to a URL outside the runtime. |
 | `prepare_execution(routes)` | with `NetworkPolicyConfig` | Apply the network policy before the agent starts. |

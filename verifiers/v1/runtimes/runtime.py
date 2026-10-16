@@ -102,7 +102,12 @@ class Runtime:
     ) -> None:
         """Start `argv` with its combined output in `log`, a path in the working
         directory, and return. The process runs until the runtime stops."""
-        await self.backend.run_background(self, argv, env, log)
+        script = f'exec "$@" > {shlex.quote(log)} 2>&1 < /dev/null'
+        process = await self.exec(["sh", "-c", script, "sh", *argv], env)
+        # Keep live handles until teardown ends the runtime and its processes.
+        backend = self.backend
+        backend._background = [p for p in backend._background if await p.poll() is None]
+        backend._background.append(process)
 
     async def write(self, path: str, data: bytes) -> None:
         await self.backend.write(self, path, data)

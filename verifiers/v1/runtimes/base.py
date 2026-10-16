@@ -7,7 +7,6 @@ import atexit
 import base64
 import contextlib
 import logging
-import shlex
 import uuid
 import weakref
 from abc import ABC, abstractmethod
@@ -156,8 +155,7 @@ class RuntimeBackend(ABC):
     """Provider implementation for one container, VM, or local execution environment.
 
     A backend implements `start`, `exec`, `write`, and `cleanup` or `teardown`, and
-    may override `run`, `run_background`, `read`, `expose`, `prepare_execution`, and
-    `host_url`. Its
+    may override `run`, `read`, `expose`, `prepare_execution`, and `host_url`. Its
     `SUPPORTS_*` flags declare optional features. Tasks and harnesses use it through
     `Runtime` views (`bind`), which add user and environment bindings.
     """
@@ -268,17 +266,6 @@ class RuntimeBackend(ABC):
         return ProgramResult(
             exit_code, stdout.decode(errors="replace"), stderr.decode(errors="replace")
         )
-
-    async def run_background(
-        self, runtime: Runtime, argv: list[str], env: dict[str, str], log: str
-    ) -> None:
-        """Start `argv` with its combined output in `log`, a path in the working
-        directory, and return; it runs until teardown ends the runtime. Override when
-        the provider has server-owned background jobs; the default keeps an `exec`."""
-        script = f'exec "$@" > {shlex.quote(log)} 2>&1 < /dev/null'
-        process = await self.exec(runtime, ["sh", "-c", script, "sh", *argv], env)
-        self._background = [p for p in self._background if await p.poll() is None]
-        self._background.append(process)
 
     async def read(
         self, runtime: Runtime, path: str, max_bytes: int | None = None
