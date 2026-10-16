@@ -29,8 +29,17 @@ function normalize(line) {
 }
 
 globalThis.fetch = async (input, init) => {
-  const response = await fetch(input, init);
   const url = new URL(input instanceof Request ? input.url : input);
+  if (url.href === base.href && typeof init?.body === "string") {
+    const body = JSON.parse(init.body);
+    // DSH enables thinking without a budget; Messages gateways require either
+    // a budget or adaptive thinking. Eval sampling overrides apply downstream.
+    if (body.thinking?.type === "enabled" && body.thinking.budget_tokens === undefined) {
+      body.thinking = {type: "adaptive"};
+      init = {...init, body: JSON.stringify(body)};
+    }
+  }
+  const response = await fetch(input, init);
   if (url.href === base.href && !response.ok) {
     const detail = (await response.clone().text()).slice(0, 1000);
     console.error(`DeepSeek Messages HTTP ${response.status}: ${detail}`);
