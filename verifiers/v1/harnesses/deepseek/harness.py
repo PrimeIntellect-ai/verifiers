@@ -14,6 +14,7 @@ from verifiers.v1.trace import Trace
 
 DEEPSEEK_DIR = "/var/tmp/vf-deepseek-{version}"
 USAGE_COMPAT = (Path(__file__).parent / "usage.mjs").read_bytes()
+GATE = (Path(__file__).parent / "gate.mjs").read_bytes()
 INSTALL = r"""
 set -e
 export PATH="/var/tmp/vf-node/bin:$PATH"
@@ -31,6 +32,7 @@ class DeepSeekHarnessConfig(HarnessConfig):
 class DeepSeekHarness(ACPHarness[DeepSeekHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
+    SUPPORTS_TOOL_INTERCEPTION = True
 
     async def setup(self, runtime: Runtime) -> None:
         await ensure_node(runtime)
@@ -123,6 +125,24 @@ class DeepSeekHarness(ACPHarness[DeepSeekHarnessConfig]):
             },
             prompt=prompt,
         )
+
+    async def gate_tools(
+        self, config: ACPConfig, runtime: Runtime, url: str, secret: str
+    ) -> None:
+        home = config.env["DSH_HOME"]
+        gate_path = f"{home}/gate.mjs"
+        await runtime.write(gate_path, GATE)
+        patch_path = f"{home}/acp.patch.json"
+        patches = json.loads(await runtime.read(patch_path))
+        patches.append(
+            {
+                "insert": [
+                    {"id": "vf-approval", "name": "@deepseek-ai/dsh-user-approval"},
+                    {"id": "vf-tool-gate", "name": gate_path},
+                ]
+            }
+        )
+        await runtime.write(patch_path, json.dumps(patches).encode())
 
     async def cleanup(self, trace: Trace, runtime: Runtime) -> None:
         await remove_dir(runtime, f"/tmp/vf-deepseek/{trace.id}", "DeepSeek state")
