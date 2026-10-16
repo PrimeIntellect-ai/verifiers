@@ -225,6 +225,16 @@ class ContainerBackend(RuntimeBackend):
             *self._exec(runtime.process_env(env), user=runtime.user), *argv
         )
 
+    async def _run_program(
+        self, runtime: Runtime, argv: list[str], env: dict[str, str]
+    ) -> ProgramResult:
+        if self._host_backend is None:
+            return await runtime.run(argv, env)
+        # Keep the host's non-replaying program path for the rollout itself.
+        return await self._host_backend.bind().run_program(
+            [*self._exec(runtime.process_env(env), user=runtime.user), *argv], {}
+        )
+
     async def _open_process(
         self, runtime: Runtime, argv: list[str], env: dict[str, str]
     ) -> RuntimeProcess:
