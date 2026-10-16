@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes import PrimeConfig, lan
 from verifiers.v1.runtimes.compose import ComposeSpec
 from verifiers.v1.runtimes.lan import (
@@ -39,6 +40,16 @@ def test_interpolation_follows_compose():
     assert interpolate("${EMPTY:-fallback} ${MISSING-x} $MISSING.", environment) == (
         "fallback x ."
     )
+    assert interpolate("[${EMPTY-x}] ${SET:+on} [${EMPTY:+on}]", environment) == (
+        "[] on []"
+    )
+    assert interpolate("${MISSING:-${ALSO:-${SET}}}!", environment) == "value!"
+    assert interpolate("${SET:-${ALSO:-x}}!", environment) == "value!"
+    assert interpolate("${MISSING:-$${SET}}", environment) == "${SET}"
+    with pytest.raises(ValueError, match="MISSING is required: set it"):
+        interpolate("${MISSING:?set it}", environment)
+    with pytest.raises(ValueError, match="unterminated"):
+        interpolate("${MISSING:-${SET}", environment)
 
 
 def test_durations():
@@ -81,6 +92,22 @@ def test_service_program_forms():
     assert program.environment == {"A": "1", "B": "x=y"}
     assert program.healthcheck is None
     assert program.memory == 0.5
+
+
+def test_service_program_interpolates_before_reading():
+    program = service_program(
+        "api",
+        {
+            "image": "x",
+            "command": "y",
+            "cpus": "${CPUS:-2}",
+            "mem_limit": "${MEMORY:-4g}",
+            "environment": ["${PREFIX}_TOKEN=secret"],
+        },
+        {"PREFIX": "API"},
+    )
+    assert (program.cpu, program.memory) == (2.0, 4.0)
+    assert program.environment == {"API_TOKEN": "secret"}
 
 
 def test_valueless_variables_pass_through_from_the_project_environment():
@@ -209,3 +236,25 @@ def test_service_vms_take_no_gpu_from_the_workspace(monkeypatch):
         asyncio.run(enter())
     (vm,) = provisioned
     assert (vm.gpu, vm.image, vm.allow) == (None, "x", ["*"])
+
+
+@pytest.mark.parametrize(("status", "exited"), [(1, False), (0, True)])
+def test_a_service_without_a_health_check_must_still_be_running(
+    monkeypatch, status, exited
+):
+    monkeypatch.setattr(lan, "STARTED_SECONDS", 0)
+    program = service_program("api", {"image": "x", "command": "serve"}, {})
+
+    async def run_background(argv, env, log):
+        pass
+
+    async def run(argv, env):
+        # `cat` of the exit-status file succeeds only once the service has exited.
+        return SimpleNamespace(exit_code=status, stdout="3")
+
+    runtime = SimpleNamespace(run_background=run_background, run=run)
+    if exited:
+        with pytest.raises(SandboxError, match="'api' exited with 3"):
+            asyncio.run(_start(runtime, "api", program))
+    else:
+        asyncio.run(_start(runtime, "api", program))

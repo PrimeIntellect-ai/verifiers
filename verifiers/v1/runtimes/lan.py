@@ -38,15 +38,16 @@ SUPPORTED = {
     "mem_limit",
     "deploy",
 }
+# Without a health check, a service need only still be running this long after it starts.
+STARTED_SECONDS = 1.0
 # The workspace image may lack getent; Python is the fallback.
 RESOLVE = (
     'address=$(getent hosts "$1" 2>/dev/null | cut -d" " -f1); '
     '[ -n "$address" ] || address=$(python3 -c "import socket, sys; '
     'print(socket.gethostbyname(sys.argv[1]))" "$1" 2>/dev/null); echo "$address"'
 )
-_VARIABLE = re.compile(
-    r"\$(?:(\$)|\{([A-Za-z_][A-Za-z0-9_]*)(?::?-([^}]*))?\}|([A-Za-z_][A-Za-z0-9_]*))"
-)
+_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+_EXPRESSION = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)(?:(:?[-?+])(.*))?", re.DOTALL)
 _DURATION = re.compile(r"(\d+(?:\.\d+)?)(ns|us|ms|s|m|h)")
 _SECONDS = {"ns": 1e-9, "us": 1e-6, "ms": 1e-3, "s": 1, "m": 60, "h": 3600}
 
@@ -68,16 +69,75 @@ class ServiceProgram:
 
 
 def interpolate(value: str, environment: Mapping[str, str]) -> str:
-    """Compose's `$$`, `$VAR`, `${VAR}` and `${VAR:-default}` substitution."""
+    """Compose's substitution: `$$`, `$VAR`, `${VAR}`, and `${VAR<op>word}` with the
+    `-` (default), `?` (required) and `+` (alternative) operators, where a leading `:`
+    also treats an empty value as unset and `word` may itself hold substitutions."""
+    parts, i = [], 0
+    while i < len(value):
+        if value.startswith("$$", i):
+            parts.append("$")
+            i += 2
+        elif value.startswith("${", i):
+            end = _closing(value, i + 2)
+            parts.append(_expand(value[i + 2 : end], environment))
+            i = end + 1
+        elif value[i] == "$" and (name := _NAME.match(value, i + 1)):
+            parts.append(environment.get(name.group(), ""))
+            i = name.end()
+        else:
+            parts.append(value[i])
+            i += 1
+    return "".join(parts)
 
-    def substitute(match: re.Match) -> str:
-        if match.group(1):
-            return "$"
-        name = match.group(2) or match.group(4)
-        found = environment.get(name)
-        return found if found else (match.group(3) or "")
 
-    return _VARIABLE.sub(substitute, value)
+def _closing(value: str, start: int) -> int:
+    """The index of the `}` that closes the expression starting at `start`."""
+    depth, i = 1, start
+    while i < len(value):
+        if value.startswith("$$", i):
+            i += 2
+            continue
+        if value.startswith("${", i):
+            depth += 1
+            i += 2
+            continue
+        if value[i] == "}":
+            depth -= 1
+            if depth == 0:
+                return i
+        i += 1
+    raise ValueError(f"unterminated Compose variable in {value!r}")
+
+
+def _expand(expression: str, environment: Mapping[str, str]) -> str:
+    match = _EXPRESSION.fullmatch(expression)
+    if match is None:
+        raise ValueError(f"invalid Compose variable ${{{expression}}}")
+    name, operator, word = match.groups()
+    found = environment.get(name)
+    if operator is None:
+        return found or ""
+    unset = found is None or (found == "" and operator.startswith(":"))
+    if operator.endswith("-"):
+        return interpolate(word, environment) if unset else found or ""
+    if operator.endswith("+"):
+        return "" if unset else interpolate(word, environment)
+    if unset:
+        raise ValueError(
+            f"Compose variable {name} is required: {interpolate(word, environment)}"
+        )
+    return found or ""
+
+
+def _interpolated(value, environment: Mapping[str, str]):
+    """`value` with every string in it interpolated; as in Compose, keys stay literal."""
+    if isinstance(value, str):
+        return interpolate(value, environment)
+    if isinstance(value, dict):
+        return {key: _interpolated(item, environment) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_interpolated(item, environment) for item in value]
+    return value
 
 
 def seconds(value, default: float) -> float:
@@ -103,12 +163,14 @@ def service_program(
         )
     if not definition.get("image"):
         raise ValueError(f"Compose service {name!r} needs an image for its own VM")
+    # Compose interpolates the whole file before reading any of it.
+    definition = _interpolated(definition, environment)
 
     def words(value) -> list[str]:
         if value is None:
             return []
         items = shlex.split(value) if isinstance(value, str) else list(value)
-        return [interpolate(str(item), environment) for item in items]
+        return [str(item) for item in items]
 
     # A VM does not run the image's entrypoint, so the service spells out its program.
     argv = words(definition.get("entrypoint")) + words(definition.get("command"))
@@ -127,9 +189,9 @@ def service_program(
     if check.get("disable") or test in (None, "NONE", ["NONE"]):
         healthcheck = None
     elif isinstance(test, str):
-        healthcheck = ["sh", "-c", interpolate(test, environment)]
+        healthcheck = ["sh", "-c", test]
     elif test[0] == "CMD-SHELL":
-        healthcheck = ["sh", "-c", interpolate(" ".join(test[1:]), environment)]
+        healthcheck = ["sh", "-c", " ".join(test[1:])]
     else:
         healthcheck = words(test[1:] if test[0] == "CMD" else test)
     interval = seconds(check.get("interval"), 30)
@@ -146,21 +208,15 @@ def service_program(
     cpus = definition.get("cpus", limits.get("cpus"))
     memory = definition.get("mem_limit", limits.get("memory"))
     return ServiceProgram(
-        image=interpolate(definition["image"], environment),
+        image=definition["image"],
         argv=argv,
         # A variable without a value passes through from the project environment.
         environment={
-            key: environment[key]
-            if value is None
-            else interpolate(str(value), environment)
+            key: environment[key] if value is None else str(value)
             for key, value in variables.items()
             if value is not None or key in environment
         },
-        workdir=(
-            interpolate(definition["working_dir"], environment)
-            if definition.get("working_dir")
-            else None
-        ),
+        workdir=definition.get("working_dir") or None,
         healthcheck=healthcheck,
         interval=interval,
         timeout=seconds(check.get("timeout"), 30),
@@ -229,7 +285,20 @@ async def _start(runtime, name: str, program: ServiceProgram) -> None:
     service = shlex.join(in_workdir(program.argv, program.workdir))
     script = f"{service}; echo $? > {shlex.quote(status)}"
     await runtime.run_background(["sh", "-c", script], program.environment, log)
+
+    async def exited() -> str | None:
+        result = await runtime.run(["cat", status], {})
+        return None if result.exit_code else f"exited with {result.stdout.strip()}"
+
+    async def failure(state: str) -> SandboxError:
+        tail = await runtime.run(["tail", "-c", "2000", log], {})
+        return SandboxError(f"Compose service {name!r} {state}: {tail.stdout}")
+
     if program.healthcheck is None:
+        # Like `compose up --wait`, a service without a health check need only be running.
+        await asyncio.sleep(STARTED_SECONDS)
+        if state := await exited():
+            raise await failure(state)
         return
     # Like Compose, the check sees the service's environment and working directory.
     check = in_workdir(program.healthcheck, program.workdir)
@@ -238,15 +307,10 @@ async def _start(runtime, name: str, program: ServiceProgram) -> None:
             async with asyncio.timeout(program.timeout + 10):
                 if (await runtime.run(check, program.environment)).exit_code == 0:
                     return
-        exited = await runtime.run(["cat", status], {})
-        if exited.exit_code == 0 or attempt == program.attempts:
-            tail = await runtime.run(["tail", "-c", "2000", log], {})
-            state = (
-                f"exited with {exited.stdout.strip()}"
-                if exited.exit_code == 0
-                else "never became healthy"
-            )
-            raise SandboxError(f"Compose service {name!r} {state}: {tail.stdout}")
+        if state := await exited():
+            raise await failure(state)
+        if attempt == program.attempts:
+            raise await failure("never became healthy")
         await asyncio.sleep(program.interval)
 
 
