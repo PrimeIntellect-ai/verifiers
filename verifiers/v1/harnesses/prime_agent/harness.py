@@ -23,6 +23,19 @@ PRIME_AGENT_COMMIT: Literal["a7d791bc1be09793ed5f3ec05bf4cccbc60679ea"] = (
     "a7d791bc1be09793ed5f3ec05bf4cccbc60679ea"
 )
 PRIME_AGENT_VERSION = "0.9.5"
+# Pinned to PRIME_AGENT_VERSION; re-derive when bumping: the python skills
+# (dist/skills/<name>) that a fresh offline session of the release requests.
+PRIME_AGENT_PYTHON_SKILLS = (
+    "agent-message",
+    "agent-observe",
+    "attach-image",
+    "compact",
+    "edit",
+    "goal",
+    "refine",
+    "rlm-heartbeat",
+    "websearch",
+)
 PRIME_AGENT_DIR = "/var/tmp/vf-prime-agent"
 STATE_ROOT = "/tmp/vf-prime-agent-runs"
 PROVIDER = "intercept"
@@ -35,7 +48,7 @@ INSTALL = r"""
 set -e
 export PATH="/var/tmp/vf-node/bin:$PATH"
 prefix="$VF_PRIME_AGENT_DIR/$PRIME_AGENT_COMMIT"
-[ -x "$prefix/bin/prime-agent" ] && [ -f "$PRIME_AGENT_KERNEL_VENV/.bootstrap-version" ] && exit 0
+[ -x "$prefix/bin/prime-agent" ] && [ -f "$PRIME_AGENT_KERNEL_VENV/.vf-python-skills" ] && exit 0
 export NPM_CONFIG_PREFIX="$prefix"
 release_url="$VF_PRIME_AGENT_GITHUB_RELEASE_URL/v$PRIME_AGENT_RELEASE_VERSION"
 agent_tarball="prime-agent-$PRIME_AGENT_RELEASE_VERSION.tgz"
@@ -83,22 +96,23 @@ PRIME_AGENT_BOOTSTRAP_TOOLS_ON_INSTALL=1 npm install -g \
     "$download_dir/repacked/$repacked"
 # Bootstrap the venv with the python skills a fresh session requests; sessions
 # cannot write it to sync them. A skill that fails to install fails the install.
-agent_dir="$(mktemp -d "$download_dir/agent.XXXXXX")"
 PRIME_AGENT_INSTALL_UV=1 node --input-type=module - \
-    "$prefix/lib/node_modules/prime-agent/dist" "$agent_dir" <<'NODE'
-const [dist, agentDir] = process.argv.slice(2);
-const { createAgentSessionServices } = await import(`${dist}/core/agent-session-services.js`);
-const { getPythonSkillRuntimeInfo } = await import(`${dist}/core/skills.js`);
+    "$prefix/lib/node_modules/prime-agent/dist" <<'NODE'
+const dist = process.argv[2];
 const { ensureKernelPython } = await import(`${dist}/core/kernel/bootstrap.js`);
-const { resourceLoader } = await createAgentSessionServices({ cwd: agentDir, agentDir, telemetryDisabled: true });
 await ensureKernelPython({
-    pythonSkills: getPythonSkillRuntimeInfo(resourceLoader.getSkills().skills),
+    pythonSkills: process.env.PRIME_AGENT_PYTHON_SKILLS.split(" ").map((name) => ({
+        importName: name.replaceAll("-", "_"),
+        packagePath: `${dist}/skills/${name}`,
+        pyprojectPath: `${dist}/skills/${name}/pyproject.toml`,
+    })),
     onProgress: (message) => {
         if (message.startsWith("Warning:")) throw new Error(message);
         console.error(message);
     },
 });
 NODE
+touch "$PRIME_AGENT_KERNEL_VENV/.vf-python-skills"
 """
 
 
@@ -182,6 +196,7 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
                 "VF_PRIME_AGENT_GITHUB_RELEASE_URL": GITHUB_RELEASE_URL,
                 "PRIME_AGENT_COMMIT": self.config.commit,
                 "PRIME_AGENT_RELEASE_VERSION": PRIME_AGENT_VERSION,
+                "PRIME_AGENT_PYTHON_SKILLS": " ".join(PRIME_AGENT_PYTHON_SKILLS),
                 "PRIME_AGENT_KERNEL_VENV": self._kernel_venv(),
             },
             label="prime-agent",
