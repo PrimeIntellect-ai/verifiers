@@ -156,14 +156,33 @@ def test_rubric_choices_validation(tmp_path):
         ).criteria
 
 
-async def test_rubric_reference_answer_optional(tmp_path, fake_judge_model, make_trace):
+@pytest.mark.parametrize("structured_output", [False, True])
+@pytest.mark.parametrize(
+    ("answer", "reference"),
+    [
+        ("ZEBRA-GOLD", "```\nZEBRA-GOLD\n```"),
+        (42, "```\n42\n```"),
+        (0, "```\n0\n```"),
+        (3.5, "```\n3.5\n```"),
+        (False, "```\nFalse\n```"),
+        ([42, 0], "```\n42\n0\n```"),
+        (("alpha", "beta"), "```\nalpha\nbeta\n```"),
+        ("```code```", "````\n```code```\n````"),
+    ],
+)
+async def test_rubric_reference_answer_optional(
+    tmp_path, fake_judge_model, make_trace, answer, reference, structured_output
+):
     # off by default: no reference block in the prompt.
     t = make_trace()
     await rubric_judge(tmp_path).score(t.task.data, t)
     assert "Reference solution" not in fake_judge_model[-1]
 
-    # answer_field set: the task's gold answer is shown to the judge.
-    t = make_trace(answer="ZEBRA-GOLD")
-    await rubric_judge(tmp_path, answer_field="answer").score(t.task.data, t)
+    # Task fields keep their native types, including on saved traces.
+    t.task.data = vf.WireTaskData(**{**t.task.data.model_dump(), "answer": answer})
+    judge = rubric_judge(
+        tmp_path, answer_field="answer", structured_output=structured_output
+    )
+    assert await judge.score(t.task.data, t) == 0.75
     assert "Reference solution" in fake_judge_model[-1]
-    assert "ZEBRA-GOLD" in fake_judge_model[-1]
+    assert reference in fake_judge_model[-1]

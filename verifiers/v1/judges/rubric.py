@@ -123,9 +123,9 @@ class RubricJudgeConfig(JudgeConfig):
     text (`TaskData.prompt_text`)."""
     answer_field: str = ""
     """Optional task field holding a reference answer (e.g. a gold patch) to show the judge, like
-    the reference judge. Empty (default) shows none — `{reference}` renders blank. A list-valued
-    field is joined one item per line. Needs `{reference}` in the prompt (the built-in `rubric.txt`
-    has it)."""
+    the reference judge. Empty (default) shows none — `{reference}` renders blank. Scalar
+    values are rendered as text; a list-valued field is joined one item per line. Needs
+    `{reference}` in the prompt (the built-in `rubric.txt` has it)."""
     view: JudgeView = "full_trace"
     """How much of the rollout fills `{response}` (see `JudgeView`). Defaults to the whole
     transcript — rubric criteria typically grade the process (tool use, citations,
@@ -207,6 +207,8 @@ class RubricJudge(Judge[RubricVerdicts, RubricJudgeConfig]):
                 )
             if isinstance(answer, (list, tuple)):
                 answer = "\n".join(str(item) for item in answer)
+            else:
+                answer = str(answer)
             # A clearly-announced section (leading blank separates it from the Task block; the
             # template's newline before Response closes it). Absent when `answer_field` is unset.
             # Fence longer than any backtick run in the answer, so a patch/markdown containing ```
