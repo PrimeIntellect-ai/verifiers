@@ -238,6 +238,27 @@ MODEL_RETRY_NOTE = (
 """The user message an interaction retry continues with on the same box, after a
 model-side failure that left part of the turn committed."""
 
+HOST_NOTES = frozenset({RETRY_NOTE, KILLED_NOTE, MODEL_RETRY_NOTE})
+"""The notes the host continues a run with: a continuation that opens on one no reply
+answered drops it, so a run cut off again before the model replied gains no stack of
+identical notes."""
+
+
+def without_unanswered_notes(messages: list) -> list:
+    """`messages` without the host notes at its end that no reply answered (a
+    continuation cut off again before the model replied): the next continuation adds
+    its own note, so the model sees one."""
+    end = len(messages)
+    while (
+        end
+        and messages[end - 1].role == "user"
+        and isinstance(messages[end - 1].content, str)
+        and messages[end - 1].content in HOST_NOTES
+    ):
+        end -= 1
+    return messages[:end]
+
+
 RETRYABLE_SANDBOX_KINDS = frozenset({"box_lost", "io"})
 """`SandboxError.kind`s an interaction retry recovers from on a fresh box."""
 

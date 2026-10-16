@@ -677,6 +677,21 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
             messages = messages[: checkpoint.position]
         return messages
 
+    def without_cut_off_reply(self, messages: Messages) -> Messages:
+        """`messages` without a last reply cut off at the token limit with no action
+        (its call stopped at `length`, no tool call): continuing from it would feed
+        partial reasoning or leaked tool-call markup back to the model, and it changed
+        nothing on the box."""
+        if not messages or messages[-1].role != "assistant" or messages[-1].tool_calls:
+            return messages
+        last = messages[-1]
+        node = next((i for i, n in enumerate(self.nodes) if n.message is last), None)
+        if node is None:
+            return messages
+        if any(c.node == node and c.finish_reason == "length" for c in self.calls):
+            return messages[:-1]
+        return messages
+
     def carried(self, at: str) -> list[Checkpoint]:
         """The checkpoints a continuation of this trace from its checkpoint `at` carries
         (`Checkpoint.position`): those recorded before it whose conversation is a

@@ -98,6 +98,7 @@ from verifiers.v1.utils.retries import (
     backoff,
     retry_note,
     retryable_error,
+    without_unanswered_notes,
 )
 
 __all__ = [
@@ -1613,11 +1614,11 @@ class Agent:
                     f"{e}"
                 ) from e
         task = task if task is not None else resume.task.rebuild()
-        messages = resume.conversation_for(start)
+        messages = resume.without_cut_off_reply(resume.conversation_for(start))
         prefix: Messages | None = None
         prompt: Messages | None
         if note is not None:
-            prompt = [*messages, UserMessage(content=note)]
+            prompt = [*without_unanswered_notes(messages), UserMessage(content=note)]
         elif messages and messages[-1].role != "assistant":
             prompt = messages
         elif interactive:
