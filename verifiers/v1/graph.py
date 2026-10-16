@@ -573,6 +573,29 @@ class PendingTurn:
         self.trace.clear_preview(self)
 
 
+def _held_messages(
+    trace: Trace, prompt: list[Message], prefix_node_ids: list[int]
+) -> list[Message]:
+    """`prompt` with each message the trace already holds swapped for the held object
+    (an equal one: the prefix's node messages; on the first turn, the task prompt's), so
+    a turn's prompt and the nodes it commits share one copy of the conversation instead
+    of each request's freshly parsed one. A resumed trace's task prompt is its source
+    trace's conversation, so the continuation shares that too."""
+    held: list[Message] = []
+    for node_id, message in zip(prefix_node_ids, prompt):
+        node_message = trace.nodes[node_id].message
+        held.append(node_message if node_message == message else message)
+    tail = prompt[len(held) :]
+    opening = getattr(trace.task.data, "prompt", None)
+    if not trace.nodes and isinstance(opening, list) and opening:
+        by_hash = {message_hash(message): message for message in opening}
+        for message in tail:
+            known = by_hash.get(message_hash(message))
+            held.append(known if known is not None and known == message else message)
+        return held
+    return held + tail
+
+
 def prepare_turn(
     trace: Trace,
     prompt: list[Message],
@@ -614,7 +637,7 @@ def prepare_turn(
         path_len += len(trace.nodes[existing].token_ids)
     return PendingTurn(
         trace=trace,
-        prompt=prompt,
+        prompt=_held_messages(trace, prompt, prefix_node_ids),
         tools=tools,
         prefix_node_ids=prefix_node_ids,
         path_len=path_len,

@@ -649,3 +649,79 @@ def test_prompt_supplied_assistant_messages_are_not_sampled_turns():
     assert [n.sampled for n in trace.nodes] == [False, False, False, True]
     assert trace.num_turns == 1
     assert trace.assistant_messages == [response]
+
+
+def test_a_turn_holds_the_conversation_the_trace_already_has():
+    """Each request re-sends the whole conversation, parsed afresh. The turn's prompt
+    and the nodes it commits use the trace's own messages instead (the task prompt's on
+    the first turn, the nodes' after), so a running trace holds its conversation once."""
+    opening = [
+        vf.UserMessage(content="resume the work"),
+        vf.AssistantMessage(content="looking", tool_calls=None),
+        vf.UserMessage(content="go on"),
+    ]
+    trace = vf.Trace(
+        agent=vf.AgentInfo(config=vf.AgentConfig()),
+        task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt=opening)),
+    )
+
+    def resent(messages):
+        return [type(m).model_validate(m.model_dump()) for m in messages]
+
+    system = vf.SystemMessage(content="be brief")
+    first = graph.prepare_turn(trace, [system, *resent(opening)])
+    assert all(held is sent for held, sent in zip(first.prompt[1:], opening))
+    first.commit(_response(vf.AssistantMessage(content="step 1")))
+    assert all(node.message is sent for node, sent in zip(trace.nodes[1:], opening))
+
+    conversation = [node.message for node in trace.nodes]
+    tool_turn = vf.UserMessage(content="next")
+    second = graph.prepare_turn(trace, [*resent(conversation), tool_turn])
+    assert all(held is node for held, node in zip(second.prompt, conversation))
+    assert second.tail == [tool_turn]
+    second.commit(_response(vf.AssistantMessage(content="step 2")))
+    assert len(trace.nodes) == len(conversation) + 2
+
+
+def test_a_resent_message_that_differs_outside_its_hash_is_kept_as_sent():
+    """Only an equal message is swapped for the held one: a field the prefix hash
+    ignores (a tool result's name) still reaches the provider as the harness sent it."""
+    trace = vf.Trace(
+        agent=vf.AgentInfo(config=vf.AgentConfig()),
+        task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt="q")),
+    )
+    user = vf.UserMessage(content="q")
+    call = vf.ToolCall(id="c0", name="lookup", arguments="{}")
+    asked = vf.AssistantMessage(content=None, tool_calls=[call])
+    result = vf.ToolMessage(content="r", tool_call_id="c0", name="lookup")
+    graph.prepare_turn(trace, [user]).commit(_response(asked))
+    graph.prepare_turn(trace, [user, asked, result]).commit(
+        _response(vf.AssistantMessage(content="done"))
+    )
+    renamed = result.model_copy(update={"name": "other"})
+    assert graph.message_hash(renamed) == graph.message_hash(result)
+    turn = graph.prepare_turn(trace, [user, asked, renamed])
+    assert turn.prompt[2] is renamed
+
+
+def test_a_read_trace_holds_its_opening_once():
+    """A trace read back from its record shares its task prompt with the nodes that
+    hold the same messages, so continuing it does not carry the conversation twice."""
+    opening = [
+        vf.UserMessage(content="resume the work"),
+        vf.AssistantMessage(content="looking"),
+        vf.UserMessage(content="go on"),
+    ]
+    trace = vf.Trace(
+        agent=vf.AgentInfo(config=vf.AgentConfig()),
+        task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt=list(opening))),
+    )
+    graph.prepare_turn(trace, [vf.SystemMessage(content="be brief"), *opening]).commit(
+        _response(vf.AssistantMessage(content="step 1"))
+    )
+
+    read = vf.WireTrace.model_validate_json(trace.model_dump_json())
+
+    prompt = read.task.data.prompt
+    assert prompt == opening
+    assert all(held is node.message for held, node in zip(prompt, read.nodes[1:]))

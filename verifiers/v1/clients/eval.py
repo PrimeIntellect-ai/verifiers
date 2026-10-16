@@ -8,7 +8,12 @@ from pydantic import ValidationError
 from pydantic_core import from_json, to_json
 
 from verifiers.v1.clients.base import build_async_httpx, join_url
-from verifiers.v1.clients.client import SESSION_ID_HEADER, Client, RelayReply
+from verifiers.v1.clients.client import (
+    SESSION_ID_HEADER,
+    Client,
+    EncodedBody,
+    RelayReply,
+)
 from verifiers.v1.clients.gate import MODEL_EXTENSION, retry_after
 from verifiers.v1.configs.client import (
     BaseClientConfig,
@@ -75,10 +80,17 @@ class EvalClient(Client):
         self.headers = resolve_headers(config)
         self.client = build_async_httpx(config)
 
+    def hold(self, body: dict) -> EncodedBody:
+        model = body.get("model")
+        return EncodedBody(
+            to_json(body, inf_nan_mode="null"),
+            model if isinstance(model, str) else None,
+        )
+
     async def get_response(
         self,
         dialect: Dialect,
-        body: dict,
+        body: dict | EncodedBody,
         sampling: SamplingConfig,
         session_id: str | None = None,
         turn: PendingTurn | None = None,
@@ -129,17 +141,19 @@ class EvalClient(Client):
     async def _request(
         self,
         url: str,
-        body: dict,
+        body: dict | EncodedBody,
         headers: httpx.Headers,
         *,
         stream: bool = False,
     ) -> httpx.Response:
         headers.setdefault("content-type", "application/json")
-        model = body.get("model")
+        if not isinstance(body, EncodedBody):
+            body = self.hold(body)
+        model = body.model
         request = self.client.build_request(
             "POST",
             url,
-            content=to_json(body, inf_nan_mode="null"),
+            content=body.data,
             headers=headers,
             # Names the model for the request gate, which then need not parse the body.
             extensions={MODEL_EXTENSION: model} if isinstance(model, str) else None,
@@ -178,7 +192,7 @@ class EvalClient(Client):
     async def relay(
         self,
         dialect: Dialect,
-        body: dict,
+        body: dict | EncodedBody,
         session_id: str | None = None,
         headers: Mapping[str, str] | None = None,
     ) -> RelayReply:

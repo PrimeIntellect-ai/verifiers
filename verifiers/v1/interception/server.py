@@ -848,6 +848,17 @@ class InterceptionServer(Interception):
             return web.json_response(dialect.error_body(str(error)), status=400)
         except RolloutError as error:
             return self._fail(session, dialect, error)
+        # What the exchanges need of the request from here on: the body as the client
+        # sends (and resends) it, and its settings for the call records. The parsed body
+        # and request go now: held through inference they were the conversation twice
+        # over, and the turn's prompt shares the trace's own messages.
+        upstream = session.client.hold(body)
+        settings = {
+            key: value
+            for key, value in body.items()
+            if key == "model" or key in dialect.sampling_fields
+        }
+        del body, model_request, original_request
         # The tail is what the harness added since the last turn (tool results, user
         # turns): live watchers see it now rather than with the model's reply.
         session.trace.preview(turn, turn.tail)
@@ -878,7 +889,7 @@ class InterceptionServer(Interception):
             if relay:
                 reply = await session.client.relay(
                     dialect,
-                    body,
+                    upstream,
                     headers=upstream_headers,
                     session_id=session.trace.id,
                 )
@@ -886,7 +897,7 @@ class InterceptionServer(Interception):
             else:
                 response = await session.client.get_response(
                     dialect,
-                    body,
+                    upstream,
                     session.ctx.sampling,
                     headers=upstream_headers,
                     session_id=session.trace.id,
@@ -931,7 +942,7 @@ class InterceptionServer(Interception):
                             self.record_call(
                                 session,
                                 dialect,
-                                body,
+                                settings,
                                 started,
                                 error=e,
                                 policy_paths=policy_paths,
@@ -1038,7 +1049,7 @@ class InterceptionServer(Interception):
                 self.record_call(
                     session,
                     dialect,
-                    body,
+                    settings,
                     started,
                     node=node,
                     finish_reason=call_response.finish_reason

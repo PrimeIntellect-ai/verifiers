@@ -18,6 +18,15 @@ SESSION_ID_HEADER = "X-Session-ID"
 router pins a rollout's turns to one engine and its growing prefix stays KV-cached."""
 
 
+@dataclass(frozen=True)
+class EncodedBody:
+    """A native request body encoded for the wire once: what a relaying client sends,
+    and resends on a retry, without holding the parsed request through inference."""
+
+    data: bytes
+    model: str | None
+
+
 @dataclass
 class RelayReply:
     """A relayed upstream response: content type, complete SSE events, and connection cleanup."""
@@ -28,11 +37,16 @@ class RelayReply:
 
 
 class Client(ABC):
+    def hold(self, body: dict) -> dict | EncodedBody:
+        """What this client keeps of a request's final native `body` for its exchanges
+        (`get_response`, `relay`): the body itself unless the client only forwards it."""
+        return body
+
     @abstractmethod
     async def get_response(
         self,
         dialect: Dialect,
-        body: dict,
+        body: dict | EncodedBody,
         sampling: SamplingConfig,
         session_id: str | None = None,
         turn: PendingTurn | None = None,
@@ -47,7 +61,7 @@ class Client(ABC):
     async def relay(
         self,
         dialect: Dialect,
-        body: dict,
+        body: dict | EncodedBody,
         session_id: str | None = None,
         headers: Mapping[str, str] | None = None,
     ) -> RelayReply:

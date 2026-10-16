@@ -16,6 +16,7 @@ from pydantic import (
     computed_field,
     field_serializer,
     field_validator,
+    model_validator,
 )
 from typing_extensions import TypeVar
 
@@ -608,6 +609,26 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     _pending: dict[int, list[Message]] = PrivateAttr(default_factory=dict)
     """The messages of the request in flight that no node holds yet (the harness's tool
     results and user turns): a preview for live watchers until the turn commits."""
+
+    @model_validator(mode="after")
+    def _share_opening(self) -> Self:
+        """A read trace's task prompt is the conversation its first nodes hold, parsed
+        twice from the record: point the prompt at the node messages, so the trace (and
+        a run continuing it) holds that conversation once. Equal messages only, in order
+        along the opening nodes."""
+        prompt = getattr(self.task.data, "prompt", None)
+        if not isinstance(prompt, list) or not prompt or not self.nodes:
+            return self
+        nodes = iter(self.nodes[: len(prompt) + 1])
+        node = next(nodes, None)
+        for index, message in enumerate(prompt):
+            while node is not None and node.message != message:
+                node = next(nodes, None)
+            if node is None:
+                break
+            prompt[index] = node.message
+            node = next(nodes, None)
+        return self
 
     @property
     def kept(self) -> bool:
