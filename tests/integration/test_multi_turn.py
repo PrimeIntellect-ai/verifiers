@@ -2,11 +2,11 @@
 to a file, checked in the runtime) across the harness x runtime grid."""
 
 import pytest
-from grid import grid
+from grid import RUNTIMES, grid
 
 
 @pytest.mark.parametrize(
-    "harness,harness_runtime", grid(needs=("shell",)), indirect=True
+    "harness,harness_runtime", grid(runtimes=RUNTIMES, needs=("shell",)), indirect=True
 )
 async def test_multi_turn(run, harness, harness_runtime):
     (episode,) = await run(

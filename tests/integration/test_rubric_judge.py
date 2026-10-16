@@ -26,7 +26,7 @@ async def test_rubric_judge(run, tmp_path, judge_id):
     (episode,) = await run(
         "echo-v1",
         harness="null",
-        runtime={"type": "subprocess"},
+        runtime={"type": "prime"},
         taskset_overrides={"task": {"judges": [judge]}},
         max_turns=2,
     )

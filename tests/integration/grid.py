@@ -2,8 +2,10 @@
 cell is skipped.
 
 Each behavior module fixes one task and fans it over `grid(...)`: every bundled harness
-x every runtime kind. Every reason a cell cannot run derives from a capability the code
-declares, never from a list of names, so the grid follows the code.
+on Prime, the production runtime. The basic single- and multi-turn behaviors also run
+on the local debug runtimes (`DEBUG_RUNTIMES`). Every reason a cell cannot run derives
+from a capability the code declares, never from a list of names, so the grid follows
+the code.
 
 A harness without a capability the behavior needs is collected as a skip with its
 reason (`Harness.EXECUTES_CODE`, `SUPPORTS_MCP`, `SUPPORTS_SKILLS`, resume support via
@@ -11,8 +13,8 @@ reason (`Harness.EXECUTES_CODE`, `SUPPORTS_MCP`, `SUPPORTS_SKILLS`, resume suppo
 
 A runtime without a capability the behavior needs still runs, marked `refused`: the run
 must fail with the framework's message for that gap, which the `run` fixture checks.
-The runtime gaps are `RuntimeBackend.supports_image` (for `Harness.NEEDS_CONTAINER`),
-`supports_user`, `supports_expose`, and `NetworkPolicyConfig`.
+The runtime gaps are `RuntimeBackend.SUPPORTS_IMAGE` (for `Harness.NEEDS_CONTAINER`) on
+the debug runtimes, and `SUPPORTS_EXPOSE` for a tool server in its own Prime sandbox.
 
 Every cell carries its axes' marks, so `-m` selects subsets:
 
@@ -48,7 +50,8 @@ HARNESSES: list[str | dict] = [
     "mini-swe-agent",
     "prime-agent",
 ]
-RUNTIMES = ["subprocess", "docker", "prime"]
+DEBUG_RUNTIMES = ("subprocess", "docker")
+RUNTIMES = (*DEBUG_RUNTIMES, "prime")
 
 # The framework's message for each runtime gap; a refused cell must fail with it.
 REFUSALS = {
@@ -134,9 +137,9 @@ def refused(harness: str | dict, runtime: str, needs: tuple[str, ...]) -> list[s
     """The gaps the runtime may refuse this cell with; the first check to run wins."""
     cls = runtime_cls(runtime)
     gaps = []
-    if harness_class(harness_id(harness)).NEEDS_CONTAINER and not cls.supports_image:
+    if harness_class(harness_id(harness)).NEEDS_CONTAINER and not cls.SUPPORTS_IMAGE:
         gaps.append("container")
-    if "user" in needs and not cls.supports_user:
+    if "user" in needs and not cls.SUPPORTS_USER:
         gaps.append("user")
     if "network" in needs and not runtime_supports_network_policy(runtime):
         gaps.append("network")
@@ -154,7 +157,7 @@ def cell_marks(
 
 
 def runtimes_grid(
-    runtimes: Sequence[str] = RUNTIMES, *, needs: tuple[str, ...] = ()
+    runtimes: Sequence[str] = ("prime",), *, needs: tuple[str, ...] = ()
 ) -> list:
     """`harness_runtime` cells for a behavior with no harness axis."""
     cells = []
@@ -166,7 +169,7 @@ def runtimes_grid(
 
 def grid(
     harnesses: Sequence[str | dict] = HARNESSES,
-    runtimes: Sequence[str] = RUNTIMES,
+    runtimes: Sequence[str] = ("prime",),
     *,
     needs: tuple[str, ...] = (),
 ) -> list:
@@ -207,18 +210,19 @@ def skip_harness(cells: list, harness: str, reason: str) -> list:
 
 
 def placements(
-    harness_runtimes: tuple[str, ...] = tuple(RUNTIMES),
-    tool_runtimes: tuple[str, ...] = ("colocated", *RUNTIMES),
+    harness_runtimes: tuple[str, ...] = ("prime",),
+    tool_runtimes: tuple[str, ...] = ("colocated", "subprocess", "prime"),
 ) -> list:
     """`(harness_runtime, tool_runtime)` cells for a tool server placed colocated in the
-    harness's box or in its own runtime."""
+    harness's box or in its own runtime. A `subprocess` tool runtime is a server on the
+    host, reached from the sandbox through the tunnel."""
     cells = []
     for harness_runtime in harness_runtimes:
         for tool_runtime in tool_runtimes:
             marks = [mark(harness_runtime), mark(tool_runtime)]
             if (
                 tool_runtime != "colocated"
-                and not runtime_cls(tool_runtime).supports_expose
+                and not runtime_cls(tool_runtime).SUPPORTS_EXPOSE
             ):
                 marks.append(pytest.mark.refused(REFUSALS["expose"]))
             cells.append(

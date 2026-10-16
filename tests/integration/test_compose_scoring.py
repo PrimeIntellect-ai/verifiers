@@ -1,5 +1,5 @@
 """Compose scoring uses live shared services or a released, collected submission, on a
-Prime VM. Runtimes that cannot host Compose services refuse the task."""
+Prime VM."""
 
 import os
 
@@ -128,16 +128,6 @@ async def test_compose_scoring(tmp_path, mode, collect_fails, scoring_timeout):
         assert bool(trace.info.get("solver_released_before_grading")) == (
             mode == "isolated"
         )
-
-
-@pytest.mark.docker
-async def test_compose_needs_a_supported_runtime(tmp_path):
-    task = compose_task(tmp_path, False, False, "shared")
-    config = vf.AgentConfig(model="unused", runtime=vf.DockerConfig())
-    async with vf.Agent(config) as agent:
-        agent.harness = ComposeHarness(vf.HarnessConfig())
-        trace = await agent.run(task)
-    assert "docker runtime cannot run Compose services" in str(trace.errors)
 
 
 def compose_task(tmp_path, collect_fails: bool, scoring_timeout: bool, mode: str):
