@@ -325,6 +325,8 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
             KEY_VAR: secret,
             ENV_AGENT_DIR: f"{root}/agent",
             "TMPDIR": f"{root}/tmp",
-            "PRIME_AGENT_KERNEL_VENV": self._kernel_venv(),
+            # Subagents request fewer skills; use the installed interpreter so
+            # their skill set cannot trigger a write to the shared venv.
+            "PRIME_AGENT_KERNEL_PYTHON": f"{self._kernel_venv()}/bin/python",
             "PRIME_AGENT_TELEMETRY": "0",
         }
