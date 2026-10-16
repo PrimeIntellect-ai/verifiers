@@ -78,6 +78,9 @@ _MISSING_CWD = re.compile(r"cwd '([^']+)' does not exist")
 """The platform's refusal of a command whose working directory is not on the box."""
 
 _CHECKPOINT_DEADLINE_SECONDS = 900
+_EGRESS_DEADLINE_SECONDS = 300
+"""How long a sandbox's egress policy may take to apply before the box is refused. Under
+load the SDK's calls queue in the process for tens of seconds before they are sent."""
 """Wait for a checkpoint to become restorable. An incremental checkpoint takes seconds;
 the first of a box holding several GB can take minutes."""
 
@@ -580,7 +583,7 @@ class PrimeBackend(RuntimeBackend):
                     policy = {"allow": entries} if entries else {"deny": ["*"]}
             status = await self._client.set_network(self.info.id, **policy)
             try:
-                async with asyncio.timeout(60):
+                async with asyncio.timeout(_EGRESS_DEADLINE_SECONDS):
                     delay = 0.1
                     while not status.applied:
                         await asyncio.sleep(delay)
@@ -588,7 +591,8 @@ class PrimeBackend(RuntimeBackend):
                         status = await self._client.get_network(self.info.id)
             except TimeoutError as e:
                 raise SandboxError(
-                    "prime egress policy was not applied within 60s on sandbox "
+                    f"prime egress policy was not applied within {_EGRESS_DEADLINE_SECONDS}s "
+                    "on sandbox "
                     f"{self.info.id}; refusing to start the agent unrestricted",
                     kind=sandbox_error_kind(e),
                 ) from e
@@ -933,7 +937,9 @@ class PrimeBackend(RuntimeBackend):
         result = await self._held(
             "size",
             lambda: self._client.execute_command(
-                self.info.id, f"wc -c < {shlex.quote(target)}", timeout=60
+                self.info.id,
+                f"wc -c < {shlex.quote(target)}",
+                timeout=_OUTPUT_DEADLINE_SECONDS,
             ),
             **_TRANSFER_RETRIES,
         )
