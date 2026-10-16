@@ -232,6 +232,10 @@ class RuntimeBackend(ABC):
     ) -> ProgramResult:
         pass
 
+    async def commit_volumes(self) -> None:
+        """Publish writes from snapshot-based mounts before another runtime reads
+        them. Directly shared mounts need no separate commit operation."""
+
     async def _run_program(
         self, runtime: Runtime, argv: list[str], env: dict[str, str]
     ) -> ProgramResult:
