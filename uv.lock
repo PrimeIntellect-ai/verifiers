@@ -1,5 +1,5 @@
 version = 1
-revision = 5
+revision = 4
 requires-python = ">=3.11, <3.15"
 resolution-markers = [
     "python_full_version >= '3.14' and sys_platform == 'win32'",
@@ -21,14 +21,14 @@ exclude-newer = "0001-01-01T00:00:00Z" # This has no effect and is included for 
 exclude-newer-span = "P7D"
 
 [options.exclude-newer-package]
-harbor = "2026-10-08T00:00:00Z"
 prime-pydantic-config = false
-prime-runs = false
-prime-sandboxes = false
-prime-tunnel = false
-renderers = false
-ruff = "2026-07-28T00:00:00Z"
+harbor = "2026-10-08T00:00:00Z"
 ty = "2026-07-28T00:00:00Z"
+ruff = "2026-07-28T00:00:00Z"
+prime-runs = false
+prime-tunnel = false
+prime-sandboxes = false
+renderers = false
 
 [[package]]
 name = "aiofile"
@@ -3437,7 +3437,7 @@ wheels = [
 
 [[package]]
 name = "prime-sandboxes"
-version = "0.4.2"
+version = "0.4.5"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiofiles" },
@@ -3449,9 +3449,9 @@ dependencies = [
     { name = "pyqwest" },
     { name = "tenacity" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/3f/4d/a379cdf82d6f06c970bd4f0333c2360c08aba65c809d7492f49aece84c66/prime_sandboxes-0.4.2.tar.gz", hash = "sha256:4990a724cac0a662fde6e12e7eccfee092a78679cc568653b8ef52008dfa28e4", size = 139837, upload-time = "2026-10-02T22:38:31.345Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/53/74/98614cc0ba7ae7225f8dd05510704b46663384dd3bc9829e8888a19f1e76/prime_sandboxes-0.4.5.tar.gz", hash = "sha256:4f7b7e50d3d60d3b459fb3ace5713e7d9eb136ac0aa79cf0e7ee7c75c63b0d82", size = 144053, upload-time = "2026-10-14T20:50:29.146Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/da/b5/6a9fe6ae1342872c1c0cc45072cc0c58a5fa2783c4c45770e585f2535c8f/prime_sandboxes-0.4.2-py3-none-any.whl", hash = "sha256:ed59f001c7575339d6c903166c5468f783eda0997586ec6476fd8b35f65746f9", size = 74970, upload-time = "2026-10-02T22:38:29.565Z" },
+    { url = "https://files.pythonhosted.org/packages/44/79/49bc3d052c9cd5bb1f0927e245089ab304d86a40fe7cba39e24702f008a8/prime_sandboxes-0.4.5-py3-none-any.whl", hash = "sha256:3f24ed4830d2d823169fdb2df75de3b8355224bf867c0208d47eab0d3b33bb33", size = 77727, upload-time = "2026-10-14T20:50:27.689Z" },
 ]
 
 [[package]]
@@ -5327,7 +5327,6 @@ wheels = [
 [[package]]
 name = "verifiers"
 source = { editable = "." }
-default-groups = ["dev", "examples"]
 dependencies = [
     { name = "aiohttp" },
     { name = "anthropic" },

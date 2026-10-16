@@ -41,6 +41,16 @@ setup and select its workspace service. For example, in a task with `app` and
 `postgres` services, `app` can be the workspace while `postgres` runs alongside it.
 Without a Compose specification, the deployment manages a single runtime.
 
+On a Prime VM the task's network policy covers the whole VM, services included. A
+service that needs other egress, e.g. one whose tools call public APIs while the
+workspace stays offline, runs on a Prime VM of its own: list it in
+`ComposeSpec.own_host`. The rollout's LAN lets the workspace's VM reach it by its
+service name, and nothing reach the workspace; the service keeps unrestricted egress.
+Such a service needs an `image` and a `command` (a VM does not run the image's
+entrypoint), with optional `environment`, `working_dir`, `healthcheck` and resource
+limits. The other services must run on their own VMs too, and the workspace is the
+agent's own VM.
+
 Task hooks can receive `deployment` and use `deployment.target(name)` to access a
 named service through a runtime view. A task tool server can run in a named service
 (`ToolsetConfig.service`, Compose on a Prime or Modal VM); the harness reaches it over
