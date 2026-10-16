@@ -11,9 +11,11 @@ from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig, PinnedVersion, skill_destination
 from verifiers.v1.harnesses.node import NODE_BIN_DIR, ensure_node
 from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
+from verifiers.v1.harnesses.utils.replay import drop_blank_text
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
+from verifiers.v1.types import Message
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +66,11 @@ class PiHarness(ACPHarness[PiHarnessConfig]):
     # Pi's project skill discovery is trust-gated (a prompt print mode can't answer),
     # so the installed skills are passed explicitly via `--skill` at launch.
     SUPPORTS_SKILLS = True
+
+    # pi-ai drops whitespace-only assistant text on replay. Recheck on version bumps:
+    # https://github.com/earendil-works/pi/blob/v0.86.1/packages/ai/src/api/openai-completions.ts#L1290
+    def replay_view(self, message: Message) -> Message:
+        return drop_blank_text(message)
 
     async def setup(self, runtime: Runtime) -> None:
         await ensure_node(runtime)

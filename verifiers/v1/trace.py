@@ -604,6 +604,9 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
 
     _head_index: dict = PrivateAttr(default_factory=dict)
     """Physical node key -> node id for the graph builder."""
+    _replay_view: Any = PrivateAttr(default=None)
+    """The harness's `replay_view`, applied to both sides when the graph builder matches
+    a replayed message against a stored node."""
     _on_change: Any = PrivateAttr(default=None)
     _kept: bool = PrivateAttr(default=False)
     _pending: dict[int, list[Message]] = PrivateAttr(default_factory=dict)

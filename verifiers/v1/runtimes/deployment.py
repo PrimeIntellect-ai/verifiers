@@ -55,9 +55,6 @@ class _DeploymentStrategy:
     async def prepare_verifier(self, deployment: Deployment) -> None:
         return
 
-    def verifier_config(self, deployment: Deployment) -> RuntimeConfig:
-        return deployment.backend.config
-
     @asynccontextmanager
     async def verifier(
         self, deployment: Deployment, config: RuntimeConfig, env: dict[str, str]
@@ -177,9 +174,6 @@ class Deployment:
         Finish cleanup even if the caller is cancelled, then propagate cancellation.
         """
         await run_shielded(self._strategy.prepare_verifier(self))
-
-    def verifier_config(self) -> RuntimeConfig:
-        return self._strategy.verifier_config(self)
 
     async def stop_execution(self) -> None:
         await self._strategy.stop_execution(self)

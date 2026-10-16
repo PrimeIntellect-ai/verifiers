@@ -21,7 +21,7 @@ from verifiers.v1.types import ID, Usage
 
 class DecisionJudgeConfig(JudgeConfig):
     id: ID = "decision"
-    model: str = "typesafe-ai/jev"
+    model: str = "cloudflare/clef"
     base_url: str = "https://api.pinference.ai/api/v1/evaluations"
     """Full URL to POST evaluation requests to."""
     levels: list[str] = Field(

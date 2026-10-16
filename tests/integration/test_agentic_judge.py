@@ -30,6 +30,7 @@ async def test_agentic_judge_shared_verifier(run, tmp_path):
         rollout_timeout=600,
     )
     traces = episode.traces
+    assert all(trace.num_branches == 1 for trace in traces)
     assert sorted(t.agent.name for t in traces) == ["judge", "solver"]
     (solver,) = [t for t in traces if t.agent.name == "solver"]
     (judge,) = [t for t in traces if t.agent.name == "judge"]
@@ -75,6 +76,7 @@ async def test_env_id_agentic_judge(run, tmp_path):
         rollout_timeout=600,
     )
     traces = episode.traces
+    assert all(trace.num_branches == 1 for trace in traces)
     assert sorted(t.agent.name for t in traces) == ["judge", "solver"]
     (solver,) = [t for t in traces if t.agent.name == "solver"]
     (judge,) = [t for t in traces if t.agent.name == "judge"]

@@ -49,15 +49,26 @@ HARNESSES: list[str | dict] = [
     "codex",
     "claude-code",
     "hermes-agent",
+    "deepseek",
     "kimi-code",
     "pi",
     "openclaw",
+    "opencode",
     "mini-swe-agent",
     "prime-agent",
 ]
 RUNTIMES = ["subprocess", "docker", "podman", "apptainer", "prime", "modal", "e2b"]
 ENGINES = ("podman", "apptainer")
 HARNESS_RUNTIMES = [runtime for runtime in RUNTIMES if runtime not in ENGINES]
+# Runtimes whose VMs run a task's Compose services.
+COMPOSE_VMS = ("prime", "modal")
+
+# Harnesses that cannot run against the CI model yet.
+# TODO: drop each entry once its fix lands.
+CI_MODEL_GAPS = {
+    "kimi-code": "Prime chat completions rejects kimi-code's prompt_cache_key",
+    "openclaw": "openclaw cannot load the custom `internal/` model provider",
+}
 
 
 def agent_seats(taskset: str, env_id: str = "") -> list[str]:
@@ -164,7 +175,10 @@ def grid(
     for harness in harnesses:
         for runtime in runtimes:
             marks = [mark(harness_id(harness)), mark(runtime)]
-            if reason := unsupported(harness, runtime, needs):
+            reason = unsupported(harness, runtime, needs) or CI_MODEL_GAPS.get(
+                harness_id(harness)
+            )
+            if reason:
                 marks.append(pytest.mark.skip(reason=reason))
             cells.append(
                 pytest.param(
@@ -197,7 +211,7 @@ def placements(
     tool_runtimes: tuple[str, ...] = ("colocated", *RUNTIMES),
 ) -> list:
     """`(harness_runtime, tool_runtime)` cells for a tool server placed colocated in the
-    harness's box or in its own runtime."""
+    harness's box, in a Compose service beside it (`service`), or in its own runtime."""
     cells = []
     for harness_runtime in harness_runtimes:
         for tool_runtime in tool_runtimes:
@@ -209,8 +223,15 @@ def placements(
             ]
             if missing:
                 marks.append(pytest.mark.skip(reason=f"needs {missing[0]} on the host"))
+            elif tool_runtime == "service" and harness_runtime not in COMPOSE_VMS:
+                marks.append(
+                    pytest.mark.skip(
+                        reason="a tool server in a Compose service needs Compose on a "
+                        "Prime or Modal VM"
+                    )
+                )
             elif (
-                tool_runtime != "colocated"
+                tool_runtime not in ("colocated", "service")
                 and not runtime_cls(tool_runtime).supports_expose
             ):
                 marks.append(

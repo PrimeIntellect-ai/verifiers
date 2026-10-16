@@ -158,9 +158,22 @@ class BashHarness(Harness[BashHarnessConfig]):
         if self.config.search:
             fragments.append(SEARCH_PROMPT)
         skills = await self.skills_listing(runtime)
+        harness_prompt = "\n\n".join(p for p in (" ".join(fragments), skills) if p)
         system_prompt = "\n\n".join(
             p for p in (" ".join(fragments), system_prompt, skills) if p
         )
+        # Default resume replays the transcript. If there was no task system
+        # prompt, that transcript already contains this harness prompt.
+        if (
+            data.system_prompt is None
+            and prompt is not None
+            and not isinstance(prompt, str)
+            and any(
+                message.role == "system" and message.content == harness_prompt
+                for message in prompt
+            )
+        ):
+            system_prompt = None
         env = {**self.config.resolved_env}
         credentials: dict[str, str] = {}
         args = [

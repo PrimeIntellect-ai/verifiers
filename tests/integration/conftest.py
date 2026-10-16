@@ -23,7 +23,11 @@ from verifiers.v1.episode import Episode
 from verifiers.v1.types import SamplingConfig
 from verifiers.v1.utils.loaders import harness_config_type, load_environment
 
-CI_MODEL = "openai/gpt-5.6-luna"
+CI_MODEL = "internal/deepseek-v4.1-flash"
+CI_REASONING_EFFORT = "low"
+# Judge config fields that keep config-plugged judges on the CI model and effort.
+CI_JUDGE = {"model": CI_MODEL, "sampling": {"reasoning_effort": CI_REASONING_EFFORT}}
+CI_DECISION_JUDGE = {"model": "cloudflare/clef"}
 
 # Fixture tasksets (echo-v1, echo-agentic-v1, ...) live in tests/integration/fixtures,
 # added to the path via `pythonpath` in pyproject so the loader resolves them by id.
@@ -42,9 +46,11 @@ def harness_runtime(request) -> dict:
 @pytest.fixture
 def tool_runtime(request) -> dict:
     """A `taskset.task.tools` override placing the tool server: `colocated` (inside the harness's
-    runtime) or its own runtime, by type."""
+    runtime), `service` (in the task's `tools` Compose service) or its own runtime, by type."""
     if request.param == "colocated":
         return {"colocated": True}
+    if request.param == "service":
+        return {"service": "tools"}
     return {"runtime": {"type": request.param}}
 
 
@@ -63,6 +69,9 @@ def pytest_configure(config) -> None:
     inherits `PYTHONPATH` but not pytest's in-process `pythonpath`. Put the fixture dir on
     `PYTHONPATH` so a fixture server module (e.g. `tool_response_image_v1`)
     resolves there too — an installed example package (e.g. `glossary`) already would."""
+    config.addinivalue_line(
+        "markers", "opencode: integration cells on the OpenCode harness"
+    )
     fixtures = str(Path(__file__).parent / "fixtures")
     existing = os.environ.get("PYTHONPATH", "")
     if fixtures not in existing.split(os.pathsep):
@@ -104,7 +113,8 @@ def _eval_config(
     taskset_overrides: dict | None = None,
     runtime: dict | None = None,
     env: dict | None = None,
-    reasoning_effort: str | None = None,
+    reasoning_effort: str | None = CI_REASONING_EFFORT,
+    model: str = CI_MODEL,
     client: dict | None = None,
 ) -> EvalConfig:
     """Build the smallest `EvalConfig` that still exercises the path, used by the `run`
@@ -156,7 +166,7 @@ def _eval_config(
             "max_tokens": max_tokens,
             "reasoning_effort": reasoning_effort,
         },
-        model=CI_MODEL,
+        model=model,
         **({"client": client} if client else {}),
     )
 
@@ -196,7 +206,7 @@ async def live_ctx():
     yield ModelContext(
         model=CI_MODEL,
         client=EvalClientConfig(),
-        sampling=SamplingConfig(max_tokens=2048),
+        sampling=SamplingConfig(max_tokens=2048, reasoning_effort=CI_REASONING_EFFORT),
     )
 
 
