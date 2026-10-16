@@ -124,7 +124,10 @@ def _retry_wait(
 
 IDEMPOTENCY_KEY_HEADER = "Idempotency-Key"
 IDEMPOTENCY_CACHE_TTL_SECONDS = 600
-IDEMPOTENCY_CACHE_MAX_COMPLETED = 64
+IDEMPOTENCY_CACHE_MAX_COMPLETED = 4
+"""Completed replays a session keeps. A harness retries one of its latest requests, and
+each replay holds the whole served response (a relayed stream's events, about 250
+bytes per generated token), so a long-running seat must not keep dozens of them."""
 
 
 def is_retried_request(headers: Mapping[str, str]) -> bool:
