@@ -220,6 +220,7 @@ markers = [
     "prime: integration cells touching the prime runtime (real sandbox + tunnel)",
     "refused: integration cells whose runtime must refuse the behavior with this message",
     "colocated: integration cells with a tool server colocated in the harness runtime",
+    "service: integration cells with a tool server in a Compose service beside the harness",
     "null: integration cells on the null harness",
     "bash: integration cells on the bash harness",
     "claude_code: integration cells on the claude-code harness",

@@ -59,6 +59,7 @@ REFUSALS = {
     "user": "cannot run as another user",
     "network": "does not enforce network policies",
     "expose": "cannot expose a port",
+    "nested": "cannot run nested containers",
 }
 
 # Harnesses that cannot run against the CI model yet.
@@ -217,13 +218,17 @@ def placements(
     tool_runtimes: tuple[str, ...] = ("colocated", "subprocess", "prime"),
 ) -> list:
     """`(harness_runtime, tool_runtime)` cells for a tool server placed colocated in the
-    harness's box or in its own runtime. A `subprocess` tool runtime is a server on the
-    host, reached from the sandbox through the tunnel."""
+    harness's box, in a Compose service beside it (`service`), or in its own runtime. A
+    `subprocess` tool runtime is a server on the host, reached from the sandbox through
+    the tunnel."""
     cells = []
     for harness_runtime in harness_runtimes:
         for tool_runtime in tool_runtimes:
             marks = [mark(harness_runtime), mark(tool_runtime)]
-            if (
+            if tool_runtime == "service":
+                if not runtime_cls(harness_runtime).SUPPORTS_NESTED_CONTAINERS:
+                    marks.append(pytest.mark.refused(REFUSALS["nested"]))
+            elif (
                 tool_runtime != "colocated"
                 and not runtime_cls(tool_runtime).SUPPORTS_PORT_EXPOSURE
             ):
