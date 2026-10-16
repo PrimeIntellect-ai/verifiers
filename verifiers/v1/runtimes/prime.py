@@ -13,6 +13,7 @@ import shlex
 import tempfile
 import time
 import uuid
+from collections import defaultdict
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -190,6 +191,60 @@ def placement_lost(error: BaseException) -> bool:
 class _SharedClient:
     client: Any
     leases: int = 0
+
+
+_STATS_INTERVAL_SECONDS = 60.0
+"""How often the host-side Prime call timings are summarized (`_CallStats`)."""
+stats_logger = logging.getLogger(__name__ + ".stats")
+stats_logger.setLevel(logging.INFO)
+
+
+class _CallStats:
+    """How long this process's Prime calls take, by phase, summarized in one log line a
+    minute: an exec's start request, its status polls, the poll that brings its output
+    (which waits in the SDK's output pool), the exec as a whole, and a read's size check
+    and download. The line also counts the live boxes and the output pool's queue."""
+
+    def __init__(self) -> None:
+        self.samples: dict[str, list[float]] = defaultdict(list)
+        self.since = time.monotonic()
+
+    def record(self, phase: str, seconds: float) -> None:
+        self.samples[phase].append(seconds)
+        now = time.monotonic()
+        if now - self.since >= _STATS_INTERVAL_SECONDS:
+            self.flush(now)
+
+    def flush(self, now: float) -> None:
+        parts = []
+        for phase, values in sorted(self.samples.items()):
+            values.sort()
+            p50 = values[len(values) // 2]
+            p95 = values[min(len(values) - 1, int(0.95 * len(values)))]
+            parts.append(
+                f"{phase} n={len(values)} p50={p50:.2f}s p95={p95:.2f}s max={values[-1]:.2f}s"
+            )
+        boxes = sum(shared.leases for shared in _shared_clients.values())
+        pending = inflight = 0
+        for shared in _shared_clients.values():
+            pool = getattr(shared.client, "_background_job_output_coordinator", None)
+            pending += getattr(pool, "_pending_count", 0)
+            inflight += len(getattr(pool, "_inflight", ()))
+        stats_logger.info(
+            "prime calls over %.0fs: %s; live boxes %d, output pool %d queued %d reading "
+            "(%d workers)",
+            now - self.since,
+            "; ".join(parts) or "none",
+            boxes,
+            pending,
+            inflight,
+            _OUTPUT_READS,
+        )
+        self.samples.clear()
+        self.since = now
+
+
+_call_stats = _CallStats()
 
 
 # One `AsyncSandboxClient` per event loop, leased by every live runtime on it. The SDK
@@ -614,6 +669,7 @@ class PrimeBackend(RuntimeBackend):
     ) -> ProgramResult:
         try:
             # Poll directly so rollout cancellation owns the execution timeout.
+            began = time.monotonic()
             job = await self._client.start_background_job(
                 self.info.id,
                 shlex.join(argv),
@@ -621,6 +677,7 @@ class PrimeBackend(RuntimeBackend):
                 env=runtime.process_env(env),
                 user=runtime.user,
             )
+            _call_stats.record("exec.start", time.monotonic() - began)
             delay = 0.1
             output_retries = 0
             missing = None
@@ -628,11 +685,16 @@ class PrimeBackend(RuntimeBackend):
             next_check = loop.time() + _LIVENESS_INTERVAL_SECONDS
             misses = 0
             while True:
+                polled = time.monotonic()
                 result = await self._held(
                     "job poll",
                     lambda: self._client.get_background_job(
                         self.info.id, job, timeout=_OUTPUT_DEADLINE_SECONDS
                     ),
+                )
+                _call_stats.record(
+                    "exec.output" if result.completed else "exec.poll",
+                    time.monotonic() - polled,
                 )
                 # Under load the SDK can see a job finish yet miss its output (its bounded
                 # output reads expire while queued) and reports that as `*_error`. The job
@@ -665,6 +727,7 @@ class PrimeBackend(RuntimeBackend):
                 f"prime exec failed: {e}",
                 kind=self._kind(e, "exec"),
             ) from e
+        _call_stats.record("exec", time.monotonic() - began)
         if missing is not None:
             raise SandboxError(f"prime exec output unavailable: {missing}", kind="io")
         if result.exit_code is None:
@@ -934,6 +997,7 @@ class PrimeBackend(RuntimeBackend):
     async def _file_size(self, target: str) -> int:
         """`target`'s size in bytes, which picks one download or several. A missing
         file fails here, before any transfer."""
+        began = time.monotonic()
         result = await self._held(
             "size",
             lambda: self._client.execute_command(
@@ -943,6 +1007,7 @@ class PrimeBackend(RuntimeBackend):
             ),
             **_TRANSFER_RETRIES,
         )
+        _call_stats.record("read.size", time.monotonic() - began)
         if result.exit_code:
             detail = (result.stderr or "").strip()[-500:]
             raise SandboxError(detail, kind=missing_file_kind(detail, "io"))
@@ -965,6 +1030,7 @@ class PrimeBackend(RuntimeBackend):
         # The temporary file is removed on every exit, and its byte read stays off the event loop.
         with tempfile.TemporaryDirectory() as directory:
             download = Path(directory) / "download"
+            began = time.monotonic()
             await self._held(
                 "download",
                 lambda: self._client.download_file(
@@ -975,6 +1041,7 @@ class PrimeBackend(RuntimeBackend):
                 ),
                 **_TRANSFER_RETRIES,
             )
+            _call_stats.record("read.download", time.monotonic() - began)
             return await asyncio.to_thread(download.read_bytes)
 
     async def _write_parts(self, target: str, data: bytes) -> None:
