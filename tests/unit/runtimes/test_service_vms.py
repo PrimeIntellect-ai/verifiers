@@ -7,7 +7,13 @@ import pytest
 import verifiers.v1 as vf
 from verifiers.v1.errors import SandboxError
 from verifiers.v1.mcp import launch
-from verifiers.v1.runtimes import DockerConfig, PrimeConfig, service_vms
+from verifiers.v1.runtimes import (
+    DockerConfig,
+    PrimeBackend,
+    PrimeConfig,
+    prime,
+    service_vms,
+)
 from verifiers.v1.runtimes.service_vms import _start, in_workdir
 from verifiers.v1.runtimes.strategies import _deployment_strategy
 
@@ -106,41 +112,66 @@ def test_a_service_without_a_probe_need_only_keep_running(monkeypatch):
     asyncio.run(_start(fake_runtime([]), "api", service))
 
 
+class FakeLanClient:
+    def __init__(self, events):
+        self.events = events
+
+    async def create_lan_network(self, name):
+        self.events.append("network")
+        return SimpleNamespace(id="net1")
+
+    async def set_lan_rules(self, network_id, rules):
+        self.events.append(("rules", [(rule.from_, rule.to) for rule in rules]))
+        return SimpleNamespace(synced=False)  # not yet enforced
+
+    async def get_lan_network(self, network_id):
+        self.events.append("rules applied")
+        return SimpleNamespace(synced=True)
+
+    async def delete_lan_network(self, network_id):
+        self.events.append("network deleted")
+
+
+def boot_service_vms(monkeypatch, services, *, allow=()):
+    """Enter `service_vms` with a fake LAN client and Prime VMs that record their boot
+    and stop there."""
+    events = []
+
+    @asynccontextmanager
+    async def leased_client():
+        yield FakeLanClient(events)
+
+    async def start(self):
+        events.append(("boot", self.name, self.config, self.lan))
+        raise RuntimeError("booted")
+
+    monkeypatch.setattr(service_vms, "leased_client", leased_client)
+    monkeypatch.setattr(service_vms, "SYNC_POLL_SECONDS", 0)
+    monkeypatch.setattr(prime, "ensure_prime_auth", lambda: None)
+    monkeypatch.setattr(PrimeBackend, "start", start)
+    workspace = PrimeBackend(
+        PrimeConfig(gpu="A100", cpu=2, memory=4, allow=list(allow)), name="ws"
+    )
+
+    async def enter():
+        async with service_vms.service_vms(workspace, services, workspace.start):
+            pass
+
+    with pytest.raises(RuntimeError, match="booted"):
+        asyncio.run(enter())
+    return events
+
+
 @pytest.mark.parametrize(
     ("allow", "egress"), [(None, ["*"]), ([], []), (["pypi.org"], ["pypi.org"])]
 )
 def test_service_vms_take_their_own_image_resources_and_egress(
     monkeypatch, allow, egress
 ):
-    provisioned = []
-
-    @asynccontextmanager
-    async def provision_backend(config, name):
-        provisioned.append((name, config))
-        raise RuntimeError("provisioned")
-        yield
-
-    monkeypatch.setattr(service_vms, "provision_backend", provision_backend)
-    workspace = SimpleNamespace(
-        config=PrimeConfig(gpu="A100", cpu=2, memory=4, allow=[]), name="ws"
-    )
     options = {} if allow is None else {"allow": allow}
     service = vf.ServiceVM(image="tools:1", command=["serve"], cpu=8, **options)
-    started = []
-
-    async def start_workspace():
-        started.append(True)
-
-    async def enter():
-        async with service_vms.service_vms(
-            workspace, {"api": service}, start_workspace
-        ):
-            pass
-
-    with pytest.raises(RuntimeError, match="provisioned"):
-        asyncio.run(enter())
-    ((name, vm),) = provisioned
-    assert name == "ws-api"
+    events = boot_service_vms(monkeypatch, {"api": service})
+    ((_, _, vm, _),) = [e for e in events if e[0] == "boot" and e[1] == "ws-api"]
     assert (vm.image, vm.gpu, vm.cpu, vm.memory, vm.allow) == (
         "tools:1",
         None,
@@ -148,7 +179,29 @@ def test_service_vms_take_their_own_image_resources_and_egress(
         4,
         egress,
     )
-    assert started == [True]  # the workspace boots alongside the services
+
+
+def test_every_vm_joins_the_lan_as_it_boots_once_its_rules_are_enforced(monkeypatch):
+    service = vf.ServiceVM(image="x", command=["serve"])
+    events = boot_service_vms(monkeypatch, {"api": service, "db": service})
+    assert events[:3] == [
+        "network",
+        (
+            "rules",
+            [
+                ("tag:vf-workspace", "tag:vf-service-api"),
+                ("tag:vf-workspace", "tag:vf-service-db"),
+            ],
+        ),
+        "rules applied",
+    ]
+    boots = {name: lan for kind, name, _, lan in events[3:-1] if kind == "boot"}
+    assert boots == {
+        "ws": ("net1", ["vf-workspace"]),
+        "ws-api": ("net1", ["vf-service-api"]),
+        "ws-db": ("net1", ["vf-service-db"]),
+    }
+    assert events[-1] == "network deleted"
 
 
 def test_each_vm_enforces_its_own_policy_with_the_framework_routes():

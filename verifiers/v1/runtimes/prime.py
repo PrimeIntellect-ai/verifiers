@@ -11,6 +11,7 @@ import shlex
 import tempfile
 import uuid
 from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, ClassVar, Literal
@@ -66,6 +67,40 @@ class _SharedClient:
 # calls. Keyed by loop (not plain process-global) so a client's tasks stay on the loop
 # that created it.
 _shared_clients: dict[asyncio.AbstractEventLoop, _SharedClient] = {}
+
+
+def _lease_client() -> Any:
+    from prime_sandboxes import AsyncSandboxClient
+
+    loop = asyncio.get_running_loop()
+    shared = _shared_clients.get(loop)
+    if shared is None:
+        shared = _shared_clients[loop] = _SharedClient(
+            AsyncSandboxClient(background_job_output_concurrency=_OUTPUT_READS)
+        )
+    shared.leases += 1
+    return shared.client
+
+
+async def _release_client(client: Any) -> None:
+    loop = asyncio.get_running_loop()
+    shared = _shared_clients[loop]
+    shared.leases -= 1
+    if not shared.leases:  # the last lease on this loop closes the client
+        del _shared_clients[loop]
+        with contextlib.suppress(Exception):
+            await client.aclose()
+
+
+@asynccontextmanager
+async def leased_client() -> AsyncIterator[Any]:
+    """This event loop's shared client, for calls that belong to no one sandbox, such as
+    LAN networks."""
+    client = _lease_client()
+    try:
+        yield client
+    finally:
+        await _release_client(client)
 
 
 def set_base_sandbox_labels(labels: list[str]) -> None:
@@ -161,22 +196,18 @@ class PrimeBackend(RuntimeBackend):
         self.config = config.model_copy(update={"workdir": config.workdir or "/app"})
         self.info = PrimeRuntimeInfo(**self.config.model_dump())
         self._client = None
+        # A LAN network (id, tags) to join as the sandbox boots: prime-sandboxes joins it
+        # once it is running, within `wait_for_creation` on the creating client.
+        self.lan: tuple[str, list[str]] | None = None
 
     @property
     def supports_live_processes(self) -> bool:
         return True
 
     async def start(self) -> None:
-        from prime_sandboxes import AsyncSandboxClient, CreateSandboxRequest
+        from prime_sandboxes import CreateSandboxRequest
 
-        loop = asyncio.get_running_loop()
-        shared = _shared_clients.get(loop)
-        if shared is None:
-            shared = _shared_clients[loop] = _SharedClient(
-                AsyncSandboxClient(background_job_output_concurrency=_OUTPUT_READS)
-            )
-        shared.leases += 1
-        self._client = shared.client
+        self._client = _lease_client()
         # Map the resources onto prime's API (minutes, split GPU; memory/disk are already
         # GB). gpu_type/region are only sent when set (else provider-chosen).
         gpu_type, gpu_count = parse_gpu(self.config.gpu)
@@ -203,6 +234,8 @@ class PrimeBackend(RuntimeBackend):
                 "docker_image": self.config.image,
                 "disk_size_gb": self.config.disk,
             }
+        if self.lan is not None:
+            options["lan_network_id"], options["lan_tags"] = self.lan
         scope = run_scope()
         labels = [*BASE_LABELS, *self.config.labels, scope]
         try:
@@ -482,10 +515,4 @@ class PrimeBackend(RuntimeBackend):
         except Exception as e:  # noqa: BLE001 - provider teardown is best-effort
             logger.warning("prime: failed to delete sandbox %s: %s", self.info.id, e)
         finally:
-            loop = asyncio.get_running_loop()
-            shared = _shared_clients[loop]
-            shared.leases -= 1
-            if not shared.leases:  # last runtime on this loop closes the client
-                del _shared_clients[loop]
-                with contextlib.suppress(Exception):
-                    await client.aclose()
+            await _release_client(client)

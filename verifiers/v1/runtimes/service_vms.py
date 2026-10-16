@@ -19,7 +19,8 @@ from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass, field
 
 from verifiers.v1.errors import SandboxError
-from verifiers.v1.runtimes import PrimeConfig, RuntimeBackend, provision_backend
+from verifiers.v1.runtimes import PrimeBackend, RuntimeBackend, make_backend
+from verifiers.v1.runtimes.prime import leased_client
 from verifiers.v1.utils.aio import run_shielded
 
 logger = logging.getLogger(__name__)
@@ -31,6 +32,7 @@ _NAME = re.compile(r"[a-z0-9][a-z0-9_.-]{0,50}")
 # Without a readiness probe, a service need only still be running this long after it starts.
 STARTED_SECONDS = 1.0
 SYNC_SECONDS = 120
+SYNC_POLL_SECONDS = 1.0
 
 
 @dataclass(frozen=True)
@@ -162,14 +164,47 @@ async def service_vms(
     services: Mapping[str, ServiceVM],
     start_workspace: Callable[[], Awaitable[object]],
 ) -> AsyncIterator[dict[str, RuntimeBackend]]:
-    """Boot the workspace's VM and one VM per service together, start the services, then
-    let the workspace reach them over a LAN network of their own."""
-    config = workspace.config
-    if not isinstance(config, PrimeConfig):
-        raise TypeError(f"service VMs run on Prime VMs, not {config.type}")
+    """Boot the workspace's VM and one VM per service together, each joining a LAN
+    network of their own as it boots, and start the services."""
+    if not isinstance(workspace, PrimeBackend):
+        raise TypeError(f"service VMs run on Prime VMs, not {workspace.config.type}")
     from prime_sandboxes import LanRule
 
+    config = workspace.config
     async with AsyncExitStack() as stack:
+        client = await stack.enter_async_context(leased_client())
+        network = await client.create_lan_network(f"vf-{uuid.uuid4().hex[:16]}")
+
+        async def delete_network() -> None:
+            try:
+                await client.delete_lan_network(network.id)
+            except Exception:
+                logger.warning(
+                    "LAN network %s deletion failed", network.id, exc_info=True
+                )
+
+        stack.push_async_callback(lambda: run_shielded(delete_network()))
+        # A new network lets every member reach every other: narrow it before anyone
+        # joins, and wait until the platform enforces that, since a member's join can
+        # sync before the network's rules do.
+        state = await client.set_lan_rules(
+            network.id,
+            [
+                LanRule(from_=f"tag:{WORKSPACE_TAG}", to=f"tag:{_tag(name)}")
+                for name in services
+            ],
+        )
+        try:
+            async with asyncio.timeout(SYNC_SECONDS):
+                while not state.synced:
+                    await asyncio.sleep(SYNC_POLL_SECONDS)
+                    state = await client.get_lan_network(network.id)
+        except TimeoutError as e:
+            raise SandboxError(
+                f"LAN network {network.id}'s rules were not applied within "
+                f"{SYNC_SECONDS}s"
+            ) from e
+
         backends: dict[str, RuntimeBackend] = {}
 
         async def stop(task: asyncio.Task) -> None:
@@ -189,9 +224,12 @@ async def service_vms(
                     "memory": service.memory or config.memory,
                 }
             )
-            backend = await stack.enter_async_context(
-                provision_backend(vm, name=f"{workspace.name}-{name}")
-            )
+            backend = make_backend(vm, f"{workspace.name}-{name}")
+            assert isinstance(backend, PrimeBackend)
+            backend.lan = (network.id, [_tag(name)])
+            # Pushed before `start()`: a failed start may already hold a paid sandbox.
+            stack.push_async_callback(backend.stop)
+            await backend.start()  # running, and joined to the network
             backends[name] = backend
             # LAN traffic is not activity to the platform, and a ready service sees no
             # commands: keep it inside its idle timeout until the rollout releases it.
@@ -202,6 +240,7 @@ async def service_vms(
                 )
             await _start(backend.bind(), name, service)
 
+        workspace.lan = (network.id, [WORKSPACE_TAG])
         try:
             async with asyncio.TaskGroup() as group:
                 group.create_task(start_workspace())
@@ -209,41 +248,6 @@ async def service_vms(
                     group.create_task(provision(name, service))
         except ExceptionGroup as failed:
             raise failed.exceptions[0]  # one VM's failure, typed for retries
-
-        client = workspace._client  # the workspace's leased Prime client
-        network = await client.create_lan_network(f"vf-{uuid.uuid4().hex[:16]}")
-
-        async def delete_network() -> None:
-            try:
-                await client.delete_lan_network(network.id)
-            except Exception:
-                logger.warning(
-                    "LAN network %s deletion failed", network.id, exc_info=True
-                )
-
-        stack.push_async_callback(lambda: run_shielded(delete_network()))
-        # A new network lets every member reach every other: narrow it before anyone joins.
-        await client.set_lan_rules(
-            network.id,
-            [
-                LanRule(from_=f"tag:{WORKSPACE_TAG}", to=f"tag:{_tag(name)}")
-                for name in services
-            ],
-        )
-        await client.add_lan_member(network.id, workspace.info.id, tags=[WORKSPACE_TAG])
-        for name, backend in backends.items():
-            await client.add_lan_member(network.id, backend.info.id, tags=[_tag(name)])
-        try:
-            async with asyncio.timeout(SYNC_SECONDS):
-                while True:
-                    state = await client.get_lan_network(network.id)
-                    if state.synced and all(m.synced for m in state.members or []):
-                        break
-                    await asyncio.sleep(1)
-        except TimeoutError as e:
-            raise SandboxError(
-                f"LAN network {network.id} did not sync within {SYNC_SECONDS}s"
-            ) from e
         logger.info(
             "LAN network %s joins %s to services %s",
             network.id,
