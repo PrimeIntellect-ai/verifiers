@@ -2,7 +2,6 @@
 
 import logging
 import tomllib
-from typing import Literal
 
 import tomli_w
 
@@ -15,7 +14,7 @@ from verifiers.v1.harnesses.utils.replay import drop_blank_text
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
-from verifiers.v1.types import Message
+from verifiers.v1.types import DialectName, Message
 
 logger = logging.getLogger(__name__)
 
@@ -41,9 +40,7 @@ fi
 class KimiCodeHarnessConfig(HarnessConfig):
     version: PinnedVersion = "2.0.2"
     """Kimi Code release to install, pinned for reproducibility."""
-    transport: Literal["chat_completions", "responses", "anthropic_messages"] = (
-        "chat_completions"
-    )
+    transport: DialectName = "chat_completions"
     """Model API transport."""
 
 
@@ -56,7 +53,7 @@ class KimiCodeHarness(ACPHarness[KimiCodeHarnessConfig]):
     # Kimi Code drops whitespace-only assistant text when it stores a step, so every
     # transport replays it without. Recheck on version bumps:
     # https://github.com/MoonshotAI/kimi-code/blob/@moonshot-ai/kimi-code@2.0.2/packages/agent-core-v2/src/agent/loop/loopService.ts#L1723
-    def replay_view(self, message: Message, dialect: str | None) -> Message:
+    def replay_view(self, message: Message, dialect: DialectName | None) -> Message:
         return drop_blank_text(message)
 
     async def setup(self, runtime: Runtime) -> None:

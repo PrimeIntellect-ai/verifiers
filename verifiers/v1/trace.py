@@ -24,6 +24,7 @@ from verifiers.v1.state import State, StateT
 from verifiers.v1.task import DataT, WireTaskData
 from verifiers.v1.types import (
     AssistantMessage,
+    DialectName,
     FinishReason,
     Message,
     Messages,
@@ -436,7 +437,7 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     _replay_view: Any = PrivateAttr(default=None)
     """The harness's `replay_view`, applied to both sides when the graph builder matches
     a replayed message against a stored node."""
-    _dialect: str | None = PrivateAttr(default=None)
+    _dialect: DialectName | None = PrivateAttr(default=None)
     """The name of the wire format the harness speaks, passed to `_replay_view`."""
     _on_change: Any = PrivateAttr(default=None)
     _pending: dict[int, list[Message]] = PrivateAttr(default_factory=dict)

@@ -18,7 +18,7 @@ from verifiers.v1.errors import (
 )
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.task import TaskData
-from verifiers.v1.types import Message, Messages
+from verifiers.v1.types import DialectName, Message, Messages
 from verifiers.v1.utils.decorators import (
     discover_decorated,
     invoke_all,
@@ -67,9 +67,9 @@ class Harness(ABC, Generic[ConfigT]):
     def __init__(self, config: ConfigT) -> None:
         self.config = config
 
-    def replay_view(self, message: Message, dialect: str | None) -> Message:
-        """`message` as this harness re-sends it on later requests over `dialect` (a
-        `Dialect.name`, or None before the first intercepted request). Override only for
+    def replay_view(self, message: Message, dialect: DialectName | None) -> Message:
+        """`message` as this harness re-sends it on later requests over `dialect` (None
+        before the first intercepted request). Override only for
         deterministic cosmetic rewrites (e.g. dropped whitespace-only text), never for
         content changes, so a replayed turn matches the turn it came from in the trace
         graph instead of forking it."""

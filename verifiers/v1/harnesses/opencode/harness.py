@@ -2,7 +2,6 @@
 
 import json
 from pathlib import Path
-from typing import Literal
 
 from verifiers.v1.acp import ACPConfig, ACPHarness
 from verifiers.v1.clients import ModelContext
@@ -13,7 +12,7 @@ from verifiers.v1.harnesses.utils.replay import drop_blank_text
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
-from verifiers.v1.types import Message
+from verifiers.v1.types import DialectName, Message
 
 OPENCODE_DIR = "/var/tmp/vf-opencode"
 STATE_ROOT = "/tmp/vf-opencode-runs"
@@ -31,9 +30,7 @@ npm install --prefix "$VF_OPENCODE_DIR" --no-audit --no-fund --omit=dev \
 class OpenCodeHarnessConfig(HarnessConfig):
     version: PinnedVersion = "2.0.26"
     """OpenCode 2 release to install, pinned for reproducibility."""
-    transport: Literal["chat_completions", "responses", "anthropic_messages"] = (
-        "chat_completions"
-    )
+    transport: DialectName = "chat_completions"
     """Model API transport."""
     disabled_tools: list[str] | None = None
     """OpenCode permission actions to deny, such as shell, read, or edit."""
@@ -47,7 +44,7 @@ class OpenCodeHarness(ACPHarness[OpenCodeHarnessConfig]):
     # OpenCode drops whitespace-only assistant text on replay over Anthropic messages.
     # Recheck on version bumps:
     # https://github.com/anomalyco/opencode/blob/v2.0.26/packages/ai/src/protocols/anthropic-messages.ts#L929
-    def replay_view(self, message: Message, dialect: str | None) -> Message:
+    def replay_view(self, message: Message, dialect: DialectName | None) -> Message:
         if dialect == "anthropic_messages":
             return drop_blank_text(message)
         return message
