@@ -101,19 +101,18 @@ validation imports the backend. The capability flags and `is_local` default to o
 
 ### Checking a runtime
 
-`scripts/check_runtime.py` provisions a runtime and checks the backend contract and
-every feature the runtime declares. Run it against your plugin before you use it, and
-after you change it:
+`tests/unit/test_runtimes.py` tests the backend contract and every runtime feature. A
+feature the runtime declares must work, and a feature it does not declare must be
+refused before anything is provisioned. Pass your plugin's config with `--runtime` to
+run the tests against it. Run them before you use the plugin, and after you change it:
 
 ```bash
-uv run scripts/check_runtime.py custom \
-    --set import_path=my_package.runtime.MyBackend --set region=us-east-1
+uv run pytest tests/unit/test_runtimes.py --runtime \
+    '{"type": "custom", "import_path": "my_package.runtime.MyBackend", "region": "us-east-1"}'
 ```
 
-It prints `PASS`, `FAIL`, or `SKIP` (feature not declared) per check, and exits
-non-zero on any failure. It also checks the built-in runtimes, for example
-`uv run scripts/check_runtime.py docker`. The checks expect `sh` and Python 3 in the
-runtime's default image.
+`--runtime` also takes a built-in type, for example `--runtime docker`. The tests
+expect `sh` and Python 3 in the runtime's default image.
 
 ## Deployment and services
 

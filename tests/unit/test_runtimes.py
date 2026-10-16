@@ -1,28 +1,39 @@
-"""Runtimes: every supported runtime passes the conformance checks in
-`scripts/check_runtime.py` for the backend contract and each feature it declares, and
-is refused, before anything is provisioned, each feature it does not declare. A custom runtime plugin loads from its
-import path and passes the same checks.
+"""Runtimes: the backend contract and every runtime feature, against each runtime. A
+runtime that declares a feature must run it. A runtime that does not must refuse it
+before anything is provisioned, with a message that names the runtime. A custom runtime
+plugin loads from its import path and passes the same tests.
 
-Conformance provisions real runtimes: Docker needs a reachable daemon and Prime needs
-`PRIME_API_KEY`; otherwise those cells skip."""
+To check a custom runtime plugin, or any other runtime config, pass it with `--runtime`:
+
+    uv run pytest tests/unit/test_runtimes.py \\
+        --runtime '{"type": "custom", "import_path": "my_package.runtime.MyBackend"}'
+
+The tests provision real runtimes and expect `sh` and Python 3 in the default image.
+Docker needs a reachable daemon and Prime needs `PRIME_API_KEY`; otherwise those cells
+skip."""
 
 import asyncio
+import contextlib
+import json
 import os
+import re
 import shutil
+import socket
 import subprocess
 import tempfile
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from functools import cache
 from pathlib import Path
 from types import SimpleNamespace
 from typing import ClassVar
 
+import aiohttp
 import pytest
-from check_runtime import CORE, IMAGE, check_runtime
 from pydantic import TypeAdapter, ValidationError
 
 import verifiers.v1 as vf
-from verifiers.v1.errors import ToolsetError
+from verifiers.v1.configs.runtime import NetworkPolicyConfig
+from verifiers.v1.errors import SandboxError, ToolsetError
 from verifiers.v1.mcp import launch
 from verifiers.v1.mcp.toolset import ToolsetConfig
 from verifiers.v1.runtimes import (
@@ -35,11 +46,11 @@ from verifiers.v1.runtimes import (
     backend_cls,
     provision_runtime,
 )
-from verifiers.v1.runtimes.compose import ComposeSpec
+from verifiers.v1.runtimes.compose import INSTALL_DOCKER, ComposeSpec
 from verifiers.v1.runtimes.strategies import _deployment_strategy
 from verifiers.v1.utils.compile import resolve_runtime_config
 
-RUNTIMES = ["subprocess", "docker", "prime"]
+RUNTIMES = ["subprocess", "docker", "prime", "plugin"]
 SUPPORTED = {
     "task_images": {"docker", "prime"},
     "user_switching": {"docker", "prime"},
@@ -47,6 +58,32 @@ SUPPORTED = {
     "nested_containers": {"prime"},
     "network_policies": {"prime"},
 }
+PYTHON = ["sh", "-c", 'exec "$(command -v python3 || command -v python)" "$@"', "py"]
+IMAGE = "python:3.12-alpine"
+TIMEOUT = 600
+
+
+def pytest_generate_tests(metafunc: pytest.Metafunc) -> None:
+    if "runtime" in metafunc.fixturenames:
+        option = metafunc.config.getoption("runtime")
+        metafunc.parametrize(
+            "runtime",
+            [option] if option else RUNTIMES,
+            ids=["option"] if option else RUNTIMES,
+            indirect=True,
+        )
+
+
+@pytest.fixture
+def runtime(request) -> RuntimeConfig:
+    spec = request.param
+    if spec == "plugin":
+        data = {"type": "custom", "import_path": f"{__name__}.HostBackend"}
+    elif spec.lstrip().startswith("{"):
+        data = json.loads(spec)
+    else:
+        data = {"type": spec, **({"labels": ["vf-ci"]} if spec == "prime" else {})}
+    return TypeAdapter(RuntimeConfig).validate_python(data)
 
 
 @cache
@@ -59,99 +96,209 @@ def docker_available() -> bool:
     )
 
 
-def config(runtime: str) -> RuntimeConfig:
-    fields = {"labels": ["vf-ci"]} if runtime == "prime" else {}
-    return TypeAdapter(RuntimeConfig).validate_python({"type": runtime, **fields})
+@contextlib.asynccontextmanager
+async def provisioned(config: RuntimeConfig, **updates) -> AsyncIterator[Runtime]:
+    if config.type == "docker" and not docker_available():
+        pytest.skip("needs a reachable Docker daemon")
+    if config.type == "prime" and not os.environ.get("PRIME_API_KEY"):
+        pytest.skip("needs PRIME_API_KEY")
+    if updates:
+        config = type(config).model_validate({**config.model_dump(), **updates})
+    async with asyncio.timeout(TIMEOUT), provision_runtime(config) as view:
+        yield view
+
+
+@contextlib.contextmanager
+def refused(config: RuntimeConfig, error: type[Exception], message: str) -> Iterator:
+    with pytest.raises(error, match=f"the {config.type} runtime {message}"):
+        yield
+
+
+async def wait_for(
+    predicate: Callable[[], Awaitable[bool]], timeout: float = 120
+) -> None:
+    async with asyncio.timeout(timeout):
+        while not await predicate():
+            await asyncio.sleep(0.5)
 
 
 def task(**data) -> vf.Task:
     return vf.Task(data=vf.TaskData(idx=0, prompt=None, **data))
 
 
-@pytest.mark.parametrize("runtime", RUNTIMES)
-async def test_runtime_conformance(runtime) -> None:
-    if runtime == "docker" and not docker_available():
-        pytest.skip("needs a reachable Docker daemon")
-    if runtime == "prime" and not os.environ.get("PRIME_API_KEY"):
-        pytest.skip("needs PRIME_API_KEY")
+@pytest.mark.parametrize("name", ["subprocess", "docker", "prime"])
+def test_built_in_runtime_declares_its_features(name) -> None:
+    cls = backend_cls(TypeAdapter(RuntimeConfig).validate_python({"type": name}))
+    declared = {
+        "task_images": cls.SUPPORTS_TASK_IMAGES,
+        "user_switching": cls.SUPPORTS_USER_SWITCHING,
+        "port_exposure": cls.SUPPORTS_PORT_EXPOSURE,
+        "nested_containers": cls.SUPPORTS_NESTED_CONTAINERS,
+        "network_policies": name == "prime",
+    }
+    assert declared == {f: name in runtimes for f, runtimes in SUPPORTED.items()}
+
+
+async def test_run(runtime) -> None:
+    async with provisioned(runtime) as view:
+        result = await view.run(
+            ["sh", "-c", 'echo "$GREETING"; exit 3'], {"GREETING": "hi"}
+        )
+        assert result.exit_code == 3, result
+        assert result.stdout.strip() == "hi", result
+        stdin = await view.run(["cat"], {})
+        assert stdin.exit_code == 0 and stdin.stdout == "", "run must close stdin"
+
+
+async def test_exec(runtime) -> None:
+    async with provisioned(runtime) as view:
+        process = await view.exec(
+            ["sh", "-c", 'read line; echo "got $line"; echo oops >&2; exit 4'], {}
+        )
+        await process.write(b"ping\n")
+        stdout = b"".join([chunk async for chunk in process.stdout])
+        stderr = b"".join([chunk async for chunk in process.stderr])
+        assert await process.wait() == 4
+        assert stdout.strip() == b"got ping", stdout
+        assert stderr.strip() == b"oops", stderr
+        assert await process.poll() == 4
+        sleeper = await view.exec(["sleep", "600"], {})
+        assert await sleeper.poll() is None
+        await sleeper.kill()
+        async with asyncio.timeout(30):
+            assert await sleeper.wait() != 0
+
+
+async def test_run_background(runtime) -> None:
+    async with provisioned(runtime) as view:
+        await view.run_background(["sh", "-c", "echo up; sleep 600"], {}, "bg.log")
+
+        async def started() -> bool:
+            with contextlib.suppress(SandboxError, OSError):
+                return (await view.read("bg.log")).strip() == b"up"
+            return False
+
+        await wait_for(started)
+
+
+async def test_files(runtime) -> None:
+    async with provisioned(runtime) as view:
+        data = bytes(range(256)) * 64
+        await view.write("vf-check/nested/data.bin", data)
+        assert await view.read("vf-check/nested/data.bin") == data
+        assert await view.read("vf-check/nested/data.bin", max_bytes=len(data)) == data
+        with pytest.raises(SandboxError):
+            await view.read("vf-check/nested/data.bin", max_bytes=10)
+        listed = await view.run(["sh", "-c", "wc -c < vf-check/nested/data.bin"], {})
+        assert listed.stdout.strip() == str(len(data)), "write must land in the workdir"
+
+
+async def test_task_images(runtime) -> None:
+    if not backend_cls(runtime).SUPPORTS_TASK_IMAGES:
+        with refused(runtime, ValueError, "cannot run images"):
+            resolve_runtime_config(runtime, task(image=IMAGE))
+        return
     # Prime builds a VM image on an image's first use; use one it has cached.
-    image = "python:3.11-slim" if runtime == "prime" else IMAGE
-    results = await check_runtime(config(runtime), image=image)
-    assert not [result for result in results if result.passed is False], results
-    expected = {*CORE, *(c for c, runtimes in SUPPORTED.items() if runtime in runtimes)}
-    assert {result.name for result in results if result.passed} == expected
+    image = "python:3.11-slim" if runtime.type == "prime" else IMAGE
+    async with provisioned(runtime, image=image) as view:
+        result = await view.run([*PYTHON, "--version"], {})
+        version = re.match(r"python:(\d+\.\d+)", image)
+        assert version is not None and version.group(1) in result.stdout, result
 
 
-async def refuse_task_images(runtime: str, monkeypatch) -> None:
-    resolve_runtime_config(config(runtime), task(image=IMAGE))
+async def test_user_switching(runtime) -> None:
+    if not backend_cls(runtime).SUPPORTS_USER_SWITCHING:
+        with refused(runtime, ValueError, "cannot run as another user"):
+            resolve_runtime_config(runtime, task(agent_user="nobody"))
+        return
+    async with provisioned(runtime) as view:
+        result = await view.with_user("nobody").run(["id", "-un"], {})
+        assert result.stdout.strip() == "nobody", result
 
 
-async def refuse_user_switching(runtime: str, monkeypatch) -> None:
-    resolve_runtime_config(config(runtime), task(agent_user="nobody"))
+async def test_port_exposure(runtime, monkeypatch) -> None:
+    if not backend_cls(runtime).SUPPORTS_PORT_EXPOSURE:
+
+        def provision(*args, **kwargs):
+            raise AssertionError("an undeclared feature must be refused first")
+
+        monkeypatch.setattr(launch, "provision_backend", provision)
+        server = SimpleNamespace(
+            config=ToolsetConfig(runtime=runtime), server_name="tools"
+        )
+        with refused(runtime, ToolsetError, "cannot expose a port"):
+            async with launch.serve(server):
+                pass
+        return
+    async with provisioned(runtime) as view:
+        port = view.published_port
+        if port is None:
+            with socket.socket() as probe:
+                probe.bind(("127.0.0.1", 0))
+                port = probe.getsockname()[1]
+        await view.write("vf-www/index.html", b"exposed")
+        await view.run_background(
+            [*PYTHON, "-m", "http.server", str(port), "-d", "vf-www"], {}, "http.log"
+        )
+        url = await view.expose(port)
+
+        async def serving() -> bool:
+            with contextlib.suppress(aiohttp.ClientError):
+                async with (
+                    aiohttp.ClientSession() as session,
+                    session.get(url) as response,
+                ):
+                    return await response.text() == "exposed"
+            return False
+
+        await wait_for(serving)
 
 
-async def refuse_network_policies(runtime: str, monkeypatch) -> None:
-    resolve_runtime_config(config(runtime), task(network_allow=["pypi.org"]))
-
-
-async def refuse_nested_containers(runtime: str, monkeypatch) -> None:
-    cls = backend_cls(config(runtime))
-    backend = SimpleNamespace(
-        type=runtime, SUPPORTS_NESTED_CONTAINERS=cls.SUPPORTS_NESTED_CONTAINERS
-    )
-    _deployment_strategy(None, backend, ComposeSpec(directory="."))
-
-
-async def refuse_port_exposure(runtime: str, monkeypatch) -> None:
-    def provision(*args, **kwargs):
-        raise AssertionError(
-            "an undeclared feature must be refused before provisioning"
+async def test_nested_containers(runtime) -> None:
+    if not backend_cls(runtime).SUPPORTS_NESTED_CONTAINERS:
+        backend = SimpleNamespace(type=runtime.type, SUPPORTS_NESTED_CONTAINERS=False)
+        with refused(runtime, ValueError, "cannot run nested containers"):
+            _deployment_strategy(None, backend, ComposeSpec(directory="."))
+        return
+    async with provisioned(runtime) as view:
+        installed = await view.run(["sh", "-c", INSTALL_DOCKER], {})
+        assert installed.exit_code == 0, installed.stdout + installed.stderr
+        await view.run_background(
+            ["dockerd", "--host=unix:///var/run/docker.sock"], {}, "/tmp/dockerd.log"
         )
 
-    monkeypatch.setattr(launch, "provision_backend", provision)
-    server = SimpleNamespace(
-        config=ToolsetConfig(runtime=config(runtime)), server_name="tools"
+        async def daemon_up() -> bool:
+            return (await view.run(["docker", "info"], {})).exit_code == 0
+
+        await wait_for(daemon_up)
+        result = await view.run(
+            ["docker", "run", "--rm", "alpine:3.20", "echo", "nested"], {}
+        )
+        assert result.stdout.strip() == "nested", result
+
+
+async def test_network_policies(runtime) -> None:
+    if not isinstance(runtime, NetworkPolicyConfig):
+        with refused(runtime, ValueError, "does not enforce network policies"):
+            resolve_runtime_config(runtime, task(network_allow=["pypi.org"]))
+        return
+    probe = (
+        "import sys, urllib.request\n"
+        "try:\n"
+        "    urllib.request.urlopen(sys.argv[1], timeout=10)\n"
+        "    print('ok')\n"
+        "except Exception:\n"
+        "    print('denied')\n"
     )
-    async with launch.serve(server):
-        pass
 
+    async def reach(view: Runtime, url: str) -> str:
+        return (await view.run([*PYTHON, "-c", probe, url], {})).stdout.strip()
 
-REFUSALS = {
-    "task_images": (refuse_task_images, ValueError, "cannot run images"),
-    "user_switching": (
-        refuse_user_switching,
-        ValueError,
-        "cannot run as another user",
-    ),
-    "port_exposure": (refuse_port_exposure, ToolsetError, "cannot expose a port"),
-    "nested_containers": (
-        refuse_nested_containers,
-        ValueError,
-        "cannot run nested containers",
-    ),
-    "network_policies": (
-        refuse_network_policies,
-        ValueError,
-        "does not enforce network policies",
-    ),
-}
-
-
-@pytest.mark.parametrize(
-    "capability,runtime",
-    [
-        (c, r)
-        for c, runtimes in SUPPORTED.items()
-        for r in RUNTIMES
-        if r not in runtimes
-    ],
-)
-async def test_runtime_refuses_undeclared_features(
-    capability, runtime, monkeypatch
-) -> None:
-    refuse, error, message = REFUSALS[capability]
-    with pytest.raises(error, match=f"the {runtime} runtime {message}"):
-        await refuse(runtime, monkeypatch)
+    async with provisioned(runtime, allow=["pypi.org"], block=[]) as view:
+        assert await reach(view, "https://example.com") == "ok", "setup must be open"
+        await view.backend.prepare_execution([])
+        assert await reach(view, "https://pypi.org/simple/") == "ok"
+        assert await reach(view, "https://example.com") == "denied"
 
 
 class HostProcess(RuntimeProcess):
@@ -262,12 +409,6 @@ async def test_custom_runtime_runs_the_plugin() -> None:
         assert view.info.greeting == "hi"
         root = Path(view.info.id)
     assert not root.exists()
-
-
-async def test_custom_runtime_conformance() -> None:
-    results = await check_runtime(plugin())
-    assert not [result for result in results if result.passed is False], results
-    assert {result.name for result in results if result.passed} == set(CORE)
 
 
 def test_custom_runtime_validates_its_typed_config() -> None:
