@@ -151,11 +151,11 @@ class PrimeProcess(RuntimeProcess):
 
 
 class PrimeBackend(RuntimeBackend):
-    SUPPORTS_IMAGE: ClassVar[bool] = True
-    SUPPORTS_COMPOSE: ClassVar[bool] = True
-    SUPPORTS_USER: ClassVar[bool] = True
+    SUPPORTS_TASK_IMAGES: ClassVar[bool] = True
+    SUPPORTS_NESTED_CONTAINERS: ClassVar[bool] = True
+    SUPPORTS_USER_SWITCHING: ClassVar[bool] = True
     SUPPORTS_LIVE_PROCESSES: ClassVar[bool] = True
-    SUPPORTS_EXPOSE: ClassVar[bool] = False
+    SUPPORTS_PORT_EXPOSURE: ClassVar[bool] = False
     is_local: ClassVar[bool] = False
 
     def __init__(self, config: PrimeConfig, name: str | None = None) -> None:

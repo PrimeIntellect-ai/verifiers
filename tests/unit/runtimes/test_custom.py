@@ -80,7 +80,7 @@ class ImageHostConfig(CustomRuntimeConfig):
 
 class ImageHostBackend(HostBackend):
     config_class = ImageHostConfig
-    SUPPORTS_IMAGE: ClassVar[bool] = True
+    SUPPORTS_TASK_IMAGES: ClassVar[bool] = True
 
 
 class UntypedBackend(HostBackend):

@@ -215,8 +215,8 @@ async def _abort_process_startup(
 class DockerBackend(RuntimeBackend):
     """A container reached through the docker CLI: every operation is an `exec`."""
 
-    SUPPORTS_IMAGE: ClassVar[bool] = True
-    SUPPORTS_USER: ClassVar[bool] = True
+    SUPPORTS_TASK_IMAGES: ClassVar[bool] = True
+    SUPPORTS_USER_SWITCHING: ClassVar[bool] = True
     SUPPORTS_LIVE_PROCESSES: ClassVar[bool] = True
 
     def __init__(

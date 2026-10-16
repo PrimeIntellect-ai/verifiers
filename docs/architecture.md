@@ -13,7 +13,7 @@ The **rollout** is the executable combination of one loaded task, the harness, a
 - The `prime` runtime runs the rollouts in remote Prime sandboxes. It is meant for production, especially for training or higher concurrency evaluation.
 - A `custom` runtime loads another provider from your own package, without upstreaming it. See [Runtime plugins](runtime.md#runtime-plugins).
 
-The `subprocess` and `docker` runtimes are for quick local testing without billing, and support fewer features. They refuse tasks that declare a network policy or Compose services.
+The `subprocess` and `docker` runtimes are for quick local testing without billing, and support fewer features. They refuse tasks that declare a network policy or need nested containers, such as Compose services.
 
 On Linux, Docker containers share the host network. On other platforms, they reach host services through `host.docker.internal`.
 

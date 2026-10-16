@@ -37,7 +37,7 @@ class Runtime:
     home: str | None = None
 
     def __post_init__(self) -> None:
-        if self.user is not None and not self.backend.SUPPORTS_USER:
+        if self.user is not None and not self.backend.SUPPORTS_USER_SWITCHING:
             raise ValueError(
                 f"the {self.backend.type} runtime cannot run as another user"
             )

@@ -151,19 +151,20 @@ class RuntimeBackend(ABC):
     subprocess and docker; remote runtimes override to False and use a host `Tunnel`
     inward plus `expose` outward."""
 
-    SUPPORTS_IMAGE: ClassVar[bool] = False
+    SUPPORTS_TASK_IMAGES: ClassVar[bool] = False
     """Whether the runtime boots a task image in its own filesystem. Tasks with an image,
     container-only harnesses, and isolated grading require it."""
 
-    SUPPORTS_USER: ClassVar[bool] = False
+    SUPPORTS_USER_SWITCHING: ClassVar[bool] = False
     """Whether handles can bind another existing user."""
 
-    SUPPORTS_EXPOSE: ClassVar[bool] = True
+    SUPPORTS_PORT_EXPOSURE: ClassVar[bool] = True
     """Whether `expose` can publish a port inside this runtime to the outside, so a
     server here is reachable from another runtime."""
 
-    SUPPORTS_COMPOSE: ClassVar[bool] = False
-    """Whether the runtime can host a task's Docker Compose services."""
+    SUPPORTS_NESTED_CONTAINERS: ClassVar[bool] = False
+    """Whether the runtime can run nested containers, as a task's Docker Compose
+    services need."""
 
     SUPPORTS_LIVE_PROCESSES: ClassVar[bool] = False
     """Whether `open_process` starts a live process with streamed stdio, as ACP

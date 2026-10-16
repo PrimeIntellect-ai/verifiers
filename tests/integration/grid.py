@@ -13,8 +13,8 @@ reason (`Harness.EXECUTES_CODE`, `SUPPORTS_MCP`, `SUPPORTS_SKILLS`, resume suppo
 
 A runtime without a capability the behavior needs still runs, marked `refused`: the run
 must fail with the framework's message for that gap, which the `run` fixture checks.
-The runtime gaps are `RuntimeBackend.SUPPORTS_IMAGE` (for `Harness.NEEDS_CONTAINER`) on
-the debug runtimes, and `SUPPORTS_EXPOSE` for a tool server in its own Prime sandbox.
+The runtime gaps are `RuntimeBackend.SUPPORTS_TASK_IMAGES` (for `Harness.NEEDS_CONTAINER`) on
+the debug runtimes, and `SUPPORTS_PORT_EXPOSURE` for a tool server in its own Prime sandbox.
 
 Every cell carries its axes' marks, so `-m` selects subsets:
 
@@ -137,9 +137,12 @@ def refused(harness: str | dict, runtime: str, needs: tuple[str, ...]) -> list[s
     """The gaps the runtime may refuse this cell with; the first check to run wins."""
     cls = runtime_cls(runtime)
     gaps = []
-    if harness_class(harness_id(harness)).NEEDS_CONTAINER and not cls.SUPPORTS_IMAGE:
+    if (
+        harness_class(harness_id(harness)).NEEDS_CONTAINER
+        and not cls.SUPPORTS_TASK_IMAGES
+    ):
         gaps.append("container")
-    if "user" in needs and not cls.SUPPORTS_USER:
+    if "user" in needs and not cls.SUPPORTS_USER_SWITCHING:
         gaps.append("user")
     if "network" in needs and not runtime_supports_network_policy(runtime):
         gaps.append("network")
@@ -222,7 +225,7 @@ def placements(
             marks = [mark(harness_runtime), mark(tool_runtime)]
             if (
                 tool_runtime != "colocated"
-                and not runtime_cls(tool_runtime).SUPPORTS_EXPOSE
+                and not runtime_cls(tool_runtime).SUPPORTS_PORT_EXPOSURE
             ):
                 marks.append(pytest.mark.refused(REFUSALS["expose"]))
             cells.append(

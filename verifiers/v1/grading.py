@@ -57,7 +57,7 @@ def verifier_runtime(
     config = resolve_runtime_config(source, task)
     if policy.runtime is not None and "image" in policy.runtime.model_fields_set:
         config = config.model_copy(update={"image": policy.runtime.image})
-    if not backend_cls(config).SUPPORTS_IMAGE:
+    if not backend_cls(config).SUPPORTS_TASK_IMAGES:
         raise TaskError(
             f"isolated verification requires an isolated filesystem; the "
             f"{config.type} runtime cannot run images"
