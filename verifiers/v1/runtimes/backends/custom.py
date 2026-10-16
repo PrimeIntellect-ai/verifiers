@@ -69,7 +69,14 @@ def import_backend(import_path: str) -> type[RuntimeBackend]:
             f"custom runtime {import_path!r} must be a RuntimeBackend subclass, "
             f"not {backend!r}"
         )
-    plugin_config_class(backend)
+    config_class = plugin_config_class(backend)
+    if backend.SUPPORTS_TASK_IMAGES or backend.SUPPORTS_NESTED_CONTAINERS:
+        missing = {"image", "workdir"} - config_class.model_fields.keys()
+        if missing:
+            raise TypeError(
+                f"custom runtime {import_path!r} runs task images, so its config_class "
+                f"must declare {sorted(missing)}"
+            )
     return backend
 
 

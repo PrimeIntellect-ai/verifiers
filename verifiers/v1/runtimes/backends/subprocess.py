@@ -89,6 +89,8 @@ _UV_LOCKS: dict[str, asyncio.Lock] = {}
 
 
 class SubprocessBackend(RuntimeBackend):
+    is_local: ClassVar[bool] = True
+    SUPPORTS_PORT_EXPOSURE: ClassVar[bool] = True
     # Share prepared script environments across the worker's per-rollout runtimes.
     scripts_dir: ClassVar[str] = str(CACHE_DIR / "runtimes" / "scripts")
 
@@ -115,6 +117,7 @@ class SubprocessBackend(RuntimeBackend):
             *argv,
             env=full_env,
             cwd=self.workdir,
+            stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             start_new_session=True,  # own process group, so we can reap the whole tree
@@ -150,6 +153,7 @@ class SubprocessBackend(RuntimeBackend):
             stderr=asyncio.subprocess.PIPE,
             start_new_session=True,
         )
+        self._children = [p for p in self._children if p.returncode is None]
         self._children.append(proc)
         return SubprocessProcess(proc)
 

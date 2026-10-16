@@ -244,7 +244,9 @@ async def _install_in_sandbox(server: ServerBase, agent_runtime: Runtime) -> str
     # the VM's root disk. Keep source, build scratch space, and uv's cache on the
     # durable runtime filesystem so ordinary dependency installs cannot exhaust
     # the tmpfs.
-    workdir = str(PurePosixPath(getattr(runtime.config, "workdir", None) or "/tmp"))
+    workdir = getattr(runtime.config, "workdir", None)
+    if workdir is None:
+        workdir = (await runtime.run(["pwd"], {})).stdout.strip()
     root = str(PurePosixPath(workdir) / ".vf-src")
     temp = str(PurePosixPath(workdir) / ".vf-tmp")
     cache = str(PurePosixPath(workdir) / ".vf-uv-cache")

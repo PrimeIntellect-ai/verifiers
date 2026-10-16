@@ -217,6 +217,8 @@ class DockerBackend(RuntimeBackend):
 
     SUPPORTS_TASK_IMAGES: ClassVar[bool] = True
     SUPPORTS_USER_SWITCHING: ClassVar[bool] = True
+    SUPPORTS_PORT_EXPOSURE: ClassVar[bool] = True
+    is_local = True
 
     def __init__(
         self,
@@ -457,6 +459,19 @@ class DockerBackend(RuntimeBackend):
             self.config.workdir,
             self._container,
         ]
+
+    async def run_background(
+        self, runtime: Runtime, argv: list[str], env: dict[str, str], log: str
+    ) -> None:
+        # The engine owns the background server as a detached exec process.
+        command = self._exec_argv(runtime.process_env(env), user=runtime.user)
+        command.insert(2, "--detach")
+        script = f"exec {shlex.join(argv)} > {shlex.quote(log)} 2>&1 < /dev/null"
+        result = await self._run_host(*command, "sh", "-c", script)
+        if result.exit_code != 0:
+            raise SandboxError(
+                f"docker background process failed: {result.stderr.strip()}"
+            )
 
     def cleanup(self) -> None:
         if self.info.borrowed or self._container is None or self._stopped:

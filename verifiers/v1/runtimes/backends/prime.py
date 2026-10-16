@@ -154,8 +154,6 @@ class PrimeBackend(RuntimeBackend):
     SUPPORTS_TASK_IMAGES: ClassVar[bool] = True
     SUPPORTS_NESTED_CONTAINERS: ClassVar[bool] = True
     SUPPORTS_USER_SWITCHING: ClassVar[bool] = True
-    SUPPORTS_PORT_EXPOSURE: ClassVar[bool] = False
-    is_local: ClassVar[bool] = False
 
     def __init__(self, config: PrimeConfig, name: str | None = None) -> None:
         ensure_prime_auth()
@@ -362,6 +360,22 @@ class PrimeBackend(RuntimeBackend):
             "the prime runtime cannot expose a port; colocate the service with its "
             "consumer"
         )
+
+    async def run_background(
+        self, runtime: Runtime, argv: list[str], env: dict[str, str], log: str
+    ) -> None:
+        # A server-owned job outlives client streams, unlike an `exec` session.
+        command = f"exec {shlex.join(argv)} > {shlex.quote(log)} 2>&1"
+        try:
+            await self._client.start_background_job(
+                self.info.id,
+                command,
+                working_dir=self.config.workdir,
+                env=runtime.process_env(env),
+                user=runtime.user,
+            )
+        except Exception as e:
+            raise SandboxError(f"prime background launch failed: {e}") from e
 
     async def read(
         self, runtime: Runtime, path: str, max_bytes: int | None = None

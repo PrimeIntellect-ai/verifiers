@@ -102,9 +102,7 @@ class Runtime:
     ) -> None:
         """Start `argv` with its combined output in `log`, a path in the working
         directory, and return. The process runs until the runtime stops."""
-        script = f'exec "$@" > {shlex.quote(log)} 2>&1 < /dev/null'
-        process = await self.exec(["sh", "-c", script, "sh", *argv], env)
-        self.backend._background.append(process)
+        await self.backend.run_background(self, argv, env, log)
 
     async def write(self, path: str, data: bytes) -> None:
         await self.backend.write(self, path, data)
@@ -208,7 +206,7 @@ class Runtime:
         """Read `path` into host memory. `max_bytes` caps the transfer, raising past
         the cap — for a file written by something we don't control, whose size we
         can't assume. The cap is enforced inside the box rather than after the
-        transfer. Framework method — override `_read`, not this."""
+        transfer. Backends implement `RuntimeBackend.read`."""
         if max_bytes is None:
             return await self.backend.read(self, path)
         if max_bytes < 0:

@@ -1,4 +1,4 @@
-"""Compose deployment on a Prime VM that hosts the Docker daemon."""
+"""Compose deployment on a VM runtime that hosts the Docker daemon."""
 
 import asyncio
 import io
@@ -18,7 +18,6 @@ from pathlib import Path
 from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes import (
     DockerBackend,
-    PrimeConfig,
     RuntimeBackend,
     RuntimeConfig,
     provision_backend,
@@ -28,7 +27,7 @@ from verifiers.v1.utils.aio import run_shielded
 
 logger = logging.getLogger(__name__)
 
-# One Prime VM hosts the Docker daemon and every service.
+# One VM hosts the Docker daemon and every service.
 VM_HOST = {"image": "python:3.11-slim-trixie", "workdir": "/"}
 INSTALL_DOCKER = (
     "command -v dockerd >/dev/null || { export DEBIAN_FRONTEND=noninteractive; "
@@ -71,8 +70,7 @@ async def compose_services(
     tuple[dict[str, DockerBackend], Callable[[], Awaitable[str]], RuntimeBackend]
 ]:
     """Own one Compose attempt and lend its services until the context exits."""
-    assert isinstance(config, PrimeConfig)
-    if config.gpu:
+    if getattr(config, "gpu", None):
         raise ValueError("Compose currently supports CPU tasks")
     project = ["docker", "compose", "--project-name", f"vf-{uuid.uuid4().hex}"]
     compose_argv = list(project)

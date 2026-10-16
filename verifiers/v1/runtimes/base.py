@@ -7,6 +7,7 @@ import atexit
 import base64
 import contextlib
 import logging
+import shlex
 import uuid
 import weakref
 from abc import ABC, abstractmethod
@@ -155,15 +156,16 @@ class RuntimeBackend(ABC):
     """Provider implementation for one container, VM, or local execution environment.
 
     A backend implements `start`, `exec`, `write`, and `cleanup` or `teardown`, and
-    may override `run`, `read`, `expose`, `prepare_execution`, and `host_url`. Its
+    may override `run`, `run_background`, `read`, `expose`, `prepare_execution`, and
+    `host_url`. Its
     `SUPPORTS_*` flags declare optional features. Tasks and harnesses use it through
     `Runtime` views (`bind`), which add user and environment bindings.
     """
 
-    is_local: bool = True
-    """Whether this runtime exchanges host-local URLs without a public tunnel. True for
-    subprocess and docker; remote runtimes override to False and use a host `Tunnel`
-    inward plus `expose` outward."""
+    is_local: bool = False
+    """Whether this runtime exchanges host-local URLs without a public tunnel, as
+    subprocess and docker do. Remote runtimes use a host `Tunnel` inward plus `expose`
+    outward."""
 
     SUPPORTS_TASK_IMAGES: ClassVar[bool] = False
     """Whether the runtime boots a task image in its own filesystem. Tasks with an image,
@@ -172,7 +174,7 @@ class RuntimeBackend(ABC):
     SUPPORTS_USER_SWITCHING: ClassVar[bool] = False
     """Whether handles can bind another existing user."""
 
-    SUPPORTS_PORT_EXPOSURE: ClassVar[bool] = True
+    SUPPORTS_PORT_EXPOSURE: ClassVar[bool] = False
     """Whether `expose` can publish a port inside this runtime to the outside, so a
     server here is reachable from another runtime."""
 
@@ -225,17 +227,7 @@ class RuntimeBackend(ABC):
         to completion, then re-raises the cancellation. Framework method — override
         `teardown`, not this."""
         self.stopped = True  # before the await: no new borrows once teardown begins
-        await run_shielded(self._stop())
-
-    async def _stop(self) -> None:
-        # End background processes first, so their streams close before the box goes.
-        background, self._background = self._background, []
-        with contextlib.suppress(TimeoutError):
-            async with asyncio.timeout(10):
-                await asyncio.gather(
-                    *(process.kill() for process in background), return_exceptions=True
-                )
-        await self.teardown()
+        await run_shielded(self.teardown())
 
     async def teardown(self) -> None:
         """Free the provisioned resource, off the event loop. Override only for teardown
@@ -276,6 +268,17 @@ class RuntimeBackend(ABC):
         return ProgramResult(
             exit_code, stdout.decode(errors="replace"), stderr.decode(errors="replace")
         )
+
+    async def run_background(
+        self, runtime: Runtime, argv: list[str], env: dict[str, str], log: str
+    ) -> None:
+        """Start `argv` with its combined output in `log`, a path in the working
+        directory, and return; it runs until teardown ends the runtime. Override when
+        the provider has server-owned background jobs; the default keeps an `exec`."""
+        script = f'exec "$@" > {shlex.quote(log)} 2>&1 < /dev/null'
+        process = await self.exec(runtime, ["sh", "-c", script, "sh", *argv], env)
+        self._background = [p for p in self._background if await p.poll() is None]
+        self._background.append(process)
 
     async def read(
         self, runtime: Runtime, path: str, max_bytes: int | None = None

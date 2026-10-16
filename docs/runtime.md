@@ -90,14 +90,31 @@ bindings, `run_background`, and the uv-script helpers on top of it:
 | `exec(runtime, argv, env)` | yes | Start a process and return a handle that streams its stdio. |
 | `write(runtime, path, data)` | yes | Write a file, creating parent directories. |
 | `run(runtime, argv, env)` | no | Run to completion. The default drains an `exec`. |
+| `run_background(runtime, argv, env, log)` | no | Start a process that runs until teardown. The default keeps an `exec`; override it with a server-owned job if the provider has one. |
 | `read(runtime, path, max_bytes)` | no | Read a file. The default reads through `run`. |
 | `expose(port)` | with `SUPPORTS_PORT_EXPOSURE` | Publish a port to a URL outside the runtime. |
 | `prepare_execution(routes)` | with `NetworkPolicyConfig` | Apply the network policy before the agent starts. |
 | `host_url(url)` | no | Rewrite a host URL for programs inside the runtime. |
 
 Install the plugin's package in every process that loads the config, because
-validation imports the backend. The capability flags default to off.
+validation imports the backend. The capability flags and `is_local` default to off.
 `tests/unit/test_runtimes.py` has a complete example.
+
+### Checking a runtime
+
+`scripts/check_runtime.py` provisions a runtime and checks the backend contract and
+every feature the runtime declares. Run it against your plugin before you use it, and
+after you change it:
+
+```bash
+uv run scripts/check_runtime.py custom \
+    --set import_path=my_package.runtime.MyBackend --set region=us-east-1
+```
+
+It prints `PASS`, `FAIL`, or `SKIP` (feature not declared) per check, and exits
+non-zero on any failure. It also checks the built-in runtimes, for example
+`uv run scripts/check_runtime.py docker`. The checks expect `sh` and Python 3 in the
+runtime's default image.
 
 ## Deployment and services
 
