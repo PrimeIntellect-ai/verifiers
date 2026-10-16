@@ -24,9 +24,9 @@ from verifiers.v1.utils.aio import run_shielded
 
 logger = logging.getLogger(__name__)
 
-# Ensure `uv` is available for our PEP 723 scripts: keep one already on PATH (an image that
-# pre-installs it, or an earlier rollout's install on the same box); otherwise prefer pip on
-# Python images, then fall back to the standalone installer (curl/wget), installing curl + CA
+# Ensure `uv` supports syncing PEP 723 scripts: keep a compatible version already on PATH;
+# otherwise prefer pip on Python images, then fall back to the standalone installer
+# (curl/wget), installing curl + CA
 # certs when a bare image has no downloader. Both install paths land in ~/.local/bin, which we
 # prepend to PATH first. (Installing needs network + one of pip / curl / wget / apt-get / apk.)
 _INSTALL_CURL = (  # only when the image has no downloader; needs a known package manager
@@ -40,7 +40,7 @@ _DOWNLOAD_UV = (
 )
 _ENSURE_UV = (
     'export PATH="$HOME/.local/bin:$PATH" UV_INSTALL_DIR="$HOME/.local/bin"; '
-    "command -v uv >/dev/null 2>&1 "
+    "uv sync --help 2>/dev/null | grep -q -- '--script' "
     "|| pip install -q -U --user uv 2>/dev/null "
     f"|| {{ {_INSTALL_CURL}; {_DOWNLOAD_UV}; }}"
 )
