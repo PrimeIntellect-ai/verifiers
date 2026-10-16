@@ -321,13 +321,23 @@ def _tools_hash(tools: list[Tool] | None) -> str:
     return hashlib.blake2b(data, digest_size=16).hexdigest()
 
 
+def _message_key(trace: Trace, message: Message) -> str:
+    """`message_hash` of the message as the trace's harness replays it, so a turn the
+    harness re-sends with cosmetic rewrites still matches the node it came from."""
+    view = trace._replay_view
+    return message_hash(view(message) if view is not None else message)
+
+
 def _node_key(
-    parent: int | None, message: Message, tools: list[Tool] | None = None
+    trace: Trace,
+    parent: int | None,
+    message: Message,
+    tools: list[Tool] | None = None,
 ) -> tuple[int | None, str | None, str]:
     return (
         parent,
         _tools_hash(tools) if parent is None else None,
-        message_hash(message),
+        _message_key(trace, message),
     )
 
 
@@ -335,7 +345,7 @@ def _head_index(trace: Trace) -> dict[tuple[int | None, str | None, str], int]:
     """Physical node key -> id, rebuilt lazily after deserialization."""
     if not trace._head_index and trace.nodes:
         trace._head_index = {
-            _node_key(node.parent, node.message, node.tools): nid
+            _node_key(trace, node.parent, node.message, node.tools): nid
             for nid, node in enumerate(trace.nodes)
         }
     return trace._head_index
@@ -350,12 +360,12 @@ def message_prefix_len(trace: Trace, prompt: list[Message]) -> int:
     parents: list[int | None] = [None]
     matched = 0
     for message in prompt:
-        key = message_hash(message)
+        key = _message_key(trace, message)
         parents = [
             node_id
             for parent in parents
             for node_id in children.get(parent, [])
-            if message_hash(trace.nodes[node_id].message) == key
+            if _message_key(trace, trace.nodes[node_id].message) == key
         ]
         if not parents:
             break
@@ -377,7 +387,7 @@ def _matching_node(
     prefix breaks can leave older physical variants under the same key, so a token mismatch falls
     back to a reverse scan rather than materializing a duplicate of an already-existing variant.
     """
-    key = _node_key(parent, message, tools)
+    key = _node_key(trace, parent, message, tools)
     indexed = _head_index(trace).get(key)
     if (
         indexed is not None
@@ -397,7 +407,7 @@ def _matching_node(
         if (
             (token_ids is None or node.token_ids == token_ids)
             and (renderer_token_ids is None or node.logical_ids == renderer_token_ids)
-            and _node_key(node.parent, node.message, node.tools) == key
+            and _node_key(trace, node.parent, node.message, node.tools) == key
         ):
             return node_id
     return None
@@ -422,7 +432,7 @@ def _matching_prefix_node(
     otherwise-missing message boundary. The next attributed message's start bounds the match:
     a sampled variant must never consume tokens that the renderer assigned to that message.
     """
-    key = _node_key(parent, message, tools)
+    key = _node_key(trace, parent, message, tools)
     indexed = _head_index(trace).get(key)
     candidates: list[int] = []
     if indexed is not None:
@@ -432,6 +442,7 @@ def _matching_prefix_node(
         for node_id in range(len(trace.nodes) - 1, -1, -1)
         if node_id != indexed
         and _node_key(
+            trace,
             trace.nodes[node_id].parent,
             trace.nodes[node_id].message,
             trace.nodes[node_id].tools,
@@ -562,7 +573,7 @@ class PendingTurn:
                 )
             )
             parent = len(self.trace.nodes) - 1
-            index[_node_key(previous, message, self.tools)] = parent
+            index[_node_key(self.trace, previous, message, self.tools)] = parent
         if self.tools:
             self.trace.tools = list(
                 {
@@ -603,7 +614,7 @@ def prepare_turn(
             if len(children) == 1 and trace.nodes[children[0]].message == msg:
                 existing = children[0]
         if existing is None:
-            message_key = message_hash(msg)
+            message_key = _message_key(trace, msg)
             existing = idx.get(
                 (parent, tools_hash if parent is None else None, message_key)
             )
@@ -903,7 +914,7 @@ def _commit_turn(turn: PendingTurn, response: Response) -> int:
     # Track new nodes separately so routed-expert attribution needs only node ids, not this path.
     new_node_ids: list[int] = []
     for i, msg in enumerate(prompt[num_reused:], start=num_reused):
-        key = _node_key(parent, msg, turn.tools)
+        key = _node_key(trace, parent, msg, turn.tools)
         start = path_len if cursor is None else cursor
         span = spans[i] if spans and i < len(spans) else None
         end = span[1] if span else start
@@ -956,7 +967,7 @@ def _commit_turn(turn: PendingTurn, response: Response) -> int:
         )
     )
     assistant_id = len(trace.nodes) - 1
-    idx[_node_key(parent, response.message, turn.tools)] = assistant_id
+    idx[_node_key(trace, parent, response.message, turn.tools)] = assistant_id
     new_node_ids.append(assistant_id)
 
     # Attribute this turn's expert-routing array onto the nodes created this turn (new input

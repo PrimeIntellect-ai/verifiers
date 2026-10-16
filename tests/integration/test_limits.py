@@ -23,6 +23,7 @@ async def test_cap(run, cap, stop_condition):
         env={"agent": cap},
     )
     (trace,) = episode.traces
+    assert trace.num_branches == 1
     assert trace.stop_condition == stop_condition
     assert trace.is_truncated
     assert trace.num_turns == 1
@@ -50,5 +51,6 @@ async def test_max_turns(run, harness, harness_runtime):
         max_tokens=8192,
     )
     (trace,) = episode.traces
+    assert trace.num_branches == 1
     assert trace.stop_condition == "max_turns", [e.message for e in trace.errors]
     assert trace.num_turns == 1

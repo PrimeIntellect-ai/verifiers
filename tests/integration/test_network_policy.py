@@ -54,6 +54,12 @@ async def test_network_policy(run, harness, harness_runtime, notice):
     assert set(by_name) == set(NOTICES)
     for name, episode in by_name.items():
         [trace] = episode.traces
+        # mini-swe-agent only acts through tool calls: it drops a tool-less reply
+        # (the probe output as a final answer) from its history, so the trace forks
+        # by design. Recheck on version bumps:
+        # https://github.com/SWE-agent/mini-swe-agent/blob/v2.4.6/src/minisweagent/agents/default.py#L114
+        if harness.id != "mini-swe-agent":
+            assert trace.num_branches == 1
         assert trace.ok, [error.message for error in trace.errors]
         prompt = prompt_text(trace)
         if notice and NOTICES[name]:
