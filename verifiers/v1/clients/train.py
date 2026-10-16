@@ -13,8 +13,8 @@ from openai import OpenAIError
 from renderers import OverlongPromptError, RenderedTokens, Renderer, RendererConfig
 from renderers.base import ToolCallParseStatus, is_multimodal
 
-from verifiers.v1.clients.base import build_async_openai
-from verifiers.v1.clients.client import SESSION_ID_HEADER, Client
+from verifiers.v1.clients.base import SESSION_ID_HEADER, build_async_openai
+from verifiers.v1.clients.client import Client
 from verifiers.v1.configs.client import TrainClientConfig
 from verifiers.v1.dialects import FINISH_REASONS, ChatDialect, Dialect
 from verifiers.v1.dialects.chat import message_to_wire
@@ -338,7 +338,7 @@ class TrainClient(Client):
                 multiplex=config.multiplex,
             ).warm()
 
-    async def get_response(
+    async def _complete(
         self,
         dialect: Dialect,
         body: dict,
@@ -346,7 +346,7 @@ class TrainClient(Client):
         session_id: str | None = None,
         turn: PendingTurn | None = None,
         headers: Mapping[str, str] | None = None,
-    ) -> Response:
+    ) -> tuple[Response, bytes | None]:
         # The renderer tokenizes the typed prompt for training (it needs per-token ids + logprobs
         # back), so it can't forward the raw request — it parses `body` via the dialect and renders
         # it with a chat template. It leaves `Response.raw` unset; the interception server serializes
@@ -364,7 +364,7 @@ class TrainClient(Client):
             prompt = turn.prompt
             tools = turn.tools
         else:
-            request = dialect.parse_request(body)
+            request, _ = dialect.parse_request(body)
             prompt = request.messages
             tools = request.tools
         from renderers.client import generate
@@ -467,7 +467,7 @@ class TrainClient(Client):
         # No provider response to relay (we generated), so serialize one for the program; the
         # interception server hands `Response.raw` back regardless of client.
         response.raw = serialize_completion(response, model)
-        return response
+        return response, None
 
     async def close(self) -> None:
         await self.client.close()
