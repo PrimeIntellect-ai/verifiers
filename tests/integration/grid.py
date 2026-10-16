@@ -17,12 +17,12 @@ capability the code declares, never from a list of names, so the grid follows th
   network policy
 - `podman` / `apptainer` need their engine on the host
 
-CI deselects `podman`, `apptainer`, `modal` and `e2b` by mark: local engines and external
-sandboxes.
+CI deselects `podman`, `apptainer`, `modal`, `e2b` and `vercel` by mark: local engines
+and external sandboxes.
 
 Every cell carries its axes' marks, so `-m` selects subsets:
 
-    uv run pytest tests/integration -n 8 -m "not podman and not apptainer and not modal and not e2b"  # CI
+    uv run pytest tests/integration -n 8 -m "not podman and not apptainer and not modal and not e2b and not vercel"  # CI
     uv run pytest tests/integration -n 8 -m "docker and codex"
     uv run pytest tests/integration -n 8 -m e2b                                                      # local
 
@@ -57,11 +57,20 @@ HARNESSES: list[str | dict] = [
     "mini-swe-agent",
     "prime-agent",
 ]
-RUNTIMES = ["subprocess", "docker", "podman", "apptainer", "prime", "modal", "e2b"]
+RUNTIMES = [
+    "subprocess",
+    "docker",
+    "podman",
+    "apptainer",
+    "prime",
+    "modal",
+    "e2b",
+    "vercel",
+]
 ENGINES = ("podman", "apptainer")
 HARNESS_RUNTIMES = [runtime for runtime in RUNTIMES if runtime not in ENGINES]
 # Runtimes whose VMs run a task's Compose services.
-COMPOSE_VMS = ("prime", "modal")
+COMPOSE_VMS = ("prime", "modal", "vercel")
 
 # Harnesses that cannot run against the CI model yet.
 # TODO: drop each entry once its fix lands.
@@ -227,7 +236,7 @@ def placements(
                 marks.append(
                     pytest.mark.skip(
                         reason="a tool server in a Compose service needs Compose on a "
-                        "Prime or Modal VM"
+                        "Prime, Modal, or Vercel Sandbox VM"
                     )
                 )
             elif (

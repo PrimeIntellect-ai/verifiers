@@ -43,7 +43,7 @@ Without a Compose specification, the deployment manages a single runtime.
 
 Task hooks can receive `deployment` and use `deployment.target(name)` to access a
 named service through a runtime view. A task tool server can run in a named service
-(`ToolsetConfig.service`, Compose on a Prime or Modal VM); the harness reaches it over
+(`ToolsetConfig.service`, Compose on a Prime, Modal, or Vercel Sandbox VM); the harness reaches it over
 the Compose network by the service's name, so the server can front services the
 workspace cannot reach. `finalize_services()` collects sidecar evidence
 before verification. See [Harbor's Compose support](harbor.md#docker-compose) for

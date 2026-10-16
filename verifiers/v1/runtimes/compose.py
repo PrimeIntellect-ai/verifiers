@@ -27,6 +27,7 @@ from verifiers.v1.runtimes import (
     PrimeConfig,
     RuntimeBackend,
     RuntimeConfig,
+    VercelSandboxConfig,
     provision_backend,
 )
 from verifiers.v1.runtimes.base import SERVICE_PORT, ProgramResult
@@ -50,6 +51,7 @@ DOCKER_ENV = (
 VM_HOST = {
     PrimeConfig: {"image": "python:3.11-slim-trixie", "workdir": "/"},
     ModalConfig: {"image": "docker:28.3.3-dind", "workdir": "/", "vm": True},
+    VercelSandboxConfig: {"image": "docker:28.3.3-dind", "workdir": "/"},
 }
 INSTALL_DOCKER = (
     "command -v dockerd >/dev/null || { export DEBIAN_FRONTEND=noninteractive; "
@@ -93,15 +95,17 @@ async def compose_services(
     tuple[dict[str, DockerBackend], Callable[[], Awaitable[str]], RuntimeBackend | None]
 ]:
     """Own one Compose attempt and lend its services until the context exits."""
-    if not isinstance(config, (DockerConfig, PrimeConfig, ModalConfig)):
-        raise TypeError("Compose requires Docker, Prime VM or Modal VM")
+    if not isinstance(
+        config, (DockerConfig, PrimeConfig, ModalConfig, VercelSandboxConfig)
+    ):
+        raise TypeError("Compose requires Docker, Prime VM, Modal VM or Vercel Sandbox")
     local = isinstance(config, DockerConfig)
     if local and not trust_compose:
         raise ValueError(
             "Local Compose tasks can access host files and Docker privileges; "
             "only run trusted tasks with --env.agent.deployment.trust-compose"
         )
-    if config.gpu:
+    if getattr(config, "gpu", None):
         raise ValueError("Compose currently supports CPU tasks")
     if local and config.network_restricted:
         raise ValueError("Compose on local Docker requires public networking")
@@ -321,7 +325,7 @@ async def compose_services(
                 publish["ports"] = [f"127.0.0.1::{SERVICE_PORT}"]
                 if sys.platform != "linux":
                     publish["extra_hosts"] = {"host.docker.internal": "host-gateway"}
-            elif isinstance(config, ModalConfig):
+            elif isinstance(config, (ModalConfig, VercelSandboxConfig)):
                 publish["ports"] = [f"{SERVICE_PORT}:{SERVICE_PORT}"]
             if host_backend is None:
                 (directory / "overlay.json").write_text(json.dumps(overlay))

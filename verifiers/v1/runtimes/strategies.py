@@ -3,7 +3,12 @@
 import logging
 from contextlib import AsyncExitStack
 
-from verifiers.v1.runtimes import DockerConfig, ModalConfig, PrimeConfig
+from verifiers.v1.runtimes import (
+    DockerConfig,
+    ModalConfig,
+    PrimeConfig,
+    VercelSandboxConfig,
+)
 from verifiers.v1.runtimes.compose import compose_services
 from verifiers.v1.runtimes.deployment import _DeploymentStrategy
 
@@ -58,7 +63,12 @@ class _ContainerDeployment(_DeploymentStrategy):
 
 def _deployment_strategy(config, runtime_config, spec):
     if spec is not None:
-        if not isinstance(runtime_config, (DockerConfig, PrimeConfig, ModalConfig)):
-            raise ValueError("Compose requires Docker, Prime, or Modal VM runtime")
+        if not isinstance(
+            runtime_config,
+            (DockerConfig, PrimeConfig, ModalConfig, VercelSandboxConfig),
+        ):
+            raise ValueError(
+                "Compose requires Docker, Prime, Modal VM, or Vercel Sandbox runtime"
+            )
         return _ContainerDeployment()
     return _ColocatedDeployment()

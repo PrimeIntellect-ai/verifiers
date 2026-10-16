@@ -230,6 +230,7 @@ markers = [
     "prime: integration cells touching the prime runtime (real sandbox + tunnel)",
     "modal: integration cells touching the modal runtime (external sandbox; local-only, excluded in CI)",
     "e2b: integration cells touching the e2b runtime (external sandbox; local-only, excluded in CI)",
+    "vercel: integration cells touching the vercel runtime (external sandbox; local-only, excluded in CI)",
     "colocated: integration cells with a tool server colocated in the harness runtime",
     "service: integration cells with a tool server in a Compose service beside the harness",
     "null: integration cells on the null harness",
