@@ -3,6 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import verifiers.v1 as vf
 from verifiers.v1.errors import ToolsetError
 from verifiers.v1.mcp.launch import _serve
 from verifiers.v1.mcp.toolset import ToolsetConfig
@@ -14,6 +15,19 @@ def test_service_placement_excludes_other_placements():
         ToolsetConfig(service="tools", colocated=True)
     with pytest.raises(ValueError):
         ToolsetConfig(service="tools", url="http://example.com/mcp")
+
+
+@pytest.mark.parametrize(
+    "runtime", [vf.PrimeConfig(allow=[]), vf.DockerConfig(), vf.PrimeConfig()]
+)
+def test_service_placement_takes_no_runtime_of_its_own(runtime):
+    with pytest.raises(ValueError, match="no runtime of its own"):
+        ToolsetConfig(service="tools", runtime=runtime)
+
+
+def test_service_placement_survives_a_config_round_trip():
+    config = ToolsetConfig(service="tools")
+    assert ToolsetConfig.model_validate(config.model_dump()).service == "tools"
 
 
 @pytest.mark.parametrize(

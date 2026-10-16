@@ -25,9 +25,17 @@ class ToolsetConfig(BaseConfig):
 
     @model_validator(mode="after")
     def _one_placement(self):
-        if self.service is not None and (self.colocated or self.url):
+        if self.service is None:
+            return self
+        if self.colocated or self.url:
             raise ValueError(
                 "a tool server placed in a Compose service is neither colocated nor remote"
+            )
+        # The service is the server's runtime; another one, or its policy, would go unused.
+        if not isinstance(self.runtime, SubprocessConfig):
+            raise ValueError(  # noqa: TRY004 - Pydantic validators must raise ValueError
+                "a tool server placed in a Compose service runs in that service and "
+                f"takes no runtime of its own (got {self.runtime.type})"
             )
         return self
 
