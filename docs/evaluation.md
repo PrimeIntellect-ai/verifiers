@@ -106,7 +106,7 @@ type = "SandboxError"
 max_retries = 2
 ```
 
-When an agent rollout fails, `rules` are checked in order and the first rule where all fields match sets the retry budget for that error; unmatched errors use the top-level `max_retries` budget. Each retry starts a fresh attempt from the beginning. To bound how long individual stages or rollouts can run, configure stage timeouts and token limits on the [runtime](runtimes.md); see [validation and trace inspection](debugging.md) for diagnosing failed episodes.
+When an agent rollout fails, `rules` are checked in order and the first rule where all fields match sets the retry budget for that error; unmatched errors use the top-level `max_retries` budget. Each retry starts a fresh attempt from the beginning. To bound how long individual stages or rollouts can run, configure stage timeouts and token limits on the [runtime](runtimes.md); see [debugging](debugging.md) for diagnosing failed episodes.
 
 ## Disabling tools
 

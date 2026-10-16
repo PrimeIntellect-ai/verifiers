@@ -41,7 +41,7 @@ A trace records the message graph, rewards, metrics, errors, and one per-call re
   - [Harbor Tasksets](harbor.md) — How to create Harbor-based tasksets
 - [Evaluation](evaluation.md) — How to evaluate tasksets
 - [Runtimes](runtimes.md) — Containers, files, resources, deployments, and network access
-- [Validation and trace inspection](debugging.md) — Check setup, diagnose failures, and re-score saved runs
+- [Debugging](debugging.md) — Check setup, diagnose failures, and re-score saved runs
 - [Harnesses](harnesses.md) — How to build custom harnesses
 - [Agent](agent.md) — How to run standalone agents
 - [Env](env.md) — How to build multi-agent environments

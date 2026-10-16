@@ -1,4 +1,4 @@
-# Validation and trace inspection
+# Debugging
 
 verifiers includes CLI tools to validate task setup and scoring before spending model tokens (`vf-validate`, `vf-debug`) and re-score finished runs offline (`vf-replay`).
 

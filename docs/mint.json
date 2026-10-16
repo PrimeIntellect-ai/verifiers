@@ -22,18 +22,6 @@
   ],
   "redirects": [
     {
-      "source": "/runtime",
-      "destination": "/runtimes"
-    },
-    {
-      "source": "/v1/runtime",
-      "destination": "/runtimes"
-    },
-    {
-      "source": "/v1/runtimes",
-      "destination": "/runtimes"
-    },
-    {
       "source": "/v1/overview",
       "destination": "/overview"
     },

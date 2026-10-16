@@ -122,7 +122,7 @@ Both decorators accept `trace`, `runtime`, or `task` by parameter name (where `t
 
 For software engineering tasks, call `await vf.capture_patch(trace, runtime, base_commit=...)` in `finalize` so the agent's git diff is saved to `trace.info["patch"]` before your grading script modifies the working tree or checks out test files. Pass a dataset base commit (or record `await vf.resolve_head(runtime)` during `setup`) so commits created by the agent are included in the diff. If the container image already has untracked files before the agent starts, snapshot them in `setup` with `verifiers.v1.utils.git.snapshot_untracked(runtime)` and pass that list as `ignore=...` so they aren't swept into the agent's patch.
 
-When a task has a known reference solution or gold check that can be verified without calling a model, implement `async def validate(self, runtime: vf.Runtime) -> bool | None` on the task; see [Debugging and Validation](debugging.md) for running validation checks from the CLI.
+When a task has a known reference solution or gold check that can be verified without calling a model, implement `async def validate(self, runtime: vf.Runtime) -> bool | None` on the task; see [Debugging](debugging.md) for running validation checks from the CLI.
 
 ### File answers and shared scoring inputs
 
