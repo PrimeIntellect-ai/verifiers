@@ -321,7 +321,7 @@ def _tools_hash(tools: list[Tool] | None) -> str:
     return hashlib.blake2b(data, digest_size=16).hexdigest()
 
 
-def _message_key(trace: Trace, message: Message) -> str:
+def message_key(trace: Trace, message: Message) -> str:
     """`message_hash` of the message as the trace's harness replays it, so a turn the
     harness re-sends with cosmetic rewrites still matches the node it came from."""
     view = trace._replay_view
@@ -337,7 +337,7 @@ def _node_key(
     return (
         parent,
         _tools_hash(tools) if parent is None else None,
-        _message_key(trace, message),
+        message_key(trace, message),
     )
 
 
@@ -360,12 +360,12 @@ def message_prefix_len(trace: Trace, prompt: list[Message]) -> int:
     parents: list[int | None] = [None]
     matched = 0
     for message in prompt:
-        key = _message_key(trace, message)
+        key = message_key(trace, message)
         parents = [
             node_id
             for parent in parents
             for node_id in children.get(parent, [])
-            if _message_key(trace, trace.nodes[node_id].message) == key
+            if message_key(trace, trace.nodes[node_id].message) == key
         ]
         if not parents:
             break
@@ -614,10 +614,8 @@ def prepare_turn(
             if len(children) == 1 and trace.nodes[children[0]].message == msg:
                 existing = children[0]
         if existing is None:
-            message_key = _message_key(trace, msg)
-            existing = idx.get(
-                (parent, tools_hash if parent is None else None, message_key)
-            )
+            key = message_key(trace, msg)
+            existing = idx.get((parent, tools_hash if parent is None else None, key))
         if existing is None:
             break
         prefix_node_ids.append(existing)

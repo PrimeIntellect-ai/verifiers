@@ -12,6 +12,7 @@ capability the code declares, never from a list of names, so the grid follows th
 - `Harness.EXECUTES_CODE`, `SUPPORTS_MCP`, `SUPPORTS_SKILLS`, resume support
   (`SUPPORTS_RESUME` or a native session): the behavior needs a shell, MCP tools,
   skills, or a resumable exchange
+- `Harness.SUPPORTS_TOOL_INTERCEPTION`: native tool calls ask the rollout before execution
 - `RuntimeBackend.supports_user`, `RuntimeBackend.supports_expose`, `NetworkPolicyConfig`: the
   behavior needs a user switch, a tool server reachable from another runtime, or a
   network policy
@@ -138,6 +139,8 @@ def unsupported(
         return f"{name} gives the model no shell"
     if "mcp" in needs and not cls.SUPPORTS_MCP:
         return f"{name} does not support MCP tools"
+    if "tool_interception" in needs and not cls.SUPPORTS_TOOL_INTERCEPTION:
+        return f"{name} has no native tool gate"
     if "skills" in needs and not cls.SUPPORTS_SKILLS:
         return f"{name} has no native skill support"
     if "resume" in needs and not resumes(cls):

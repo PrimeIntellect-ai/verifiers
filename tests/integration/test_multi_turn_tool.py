@@ -2,7 +2,8 @@
 never reveals (echo-tool-v1), so reward 1.0 proves the tool ran. Every MCP harness reaches
 it colocated across the harness x runtime grid; the chat loop reaches it across its
 placements (colocated in the harness's box, in a Compose service beside it, or its own
-runtime) on the runtime x runtime grid."""
+runtime) on the runtime x runtime grid. Native tool gates are also checked for allow,
+deny and stop, with native and MCP side effects verified in the runtime."""
 
 import pytest
 from grid import RUNTIMES, grid, placements
@@ -73,3 +74,42 @@ def test_service_placement_is_exclusive(placement):
     its own."""
     with pytest.raises(ValueError):
         vf.ToolsetConfig(service="tools", **placement)
+
+
+@pytest.mark.parametrize("target", ["native", "mcp"])
+@pytest.mark.parametrize("action", ["allow", "deny", "stop"])
+@pytest.mark.parametrize(
+    "harness,harness_runtime",
+    grid(needs=("shell", "mcp", "tool_interception")),
+    indirect=True,
+)
+async def test_tool_gate(run, harness, harness_runtime, action, target):
+    """A rejected tool never executes, while denial can continue the rollout."""
+    (episode,) = await run(
+        "tool-interception-v1",
+        harness=harness,
+        runtime=harness_runtime,
+        taskset_overrides={"action": action, "target": target},
+        max_turns=6,
+        max_tokens=8192,
+    )
+    (trace,) = episode.traces
+    assert trace.num_branches == 1
+    assert trace.ok, [error.message for error in trace.errors]
+    assert trace.reward == 1.0
+    calls = [
+        call
+        for message in trace.assistant_messages
+        for call in message.tool_calls or []
+    ]
+    assert calls
+    if target == "mcp":
+        assert any(call.name.endswith("touch") for call in calls)
+    assert trace.stop_condition == (
+        "stop_tool" if action == "stop" else "agent_completed"
+    )
+    if action == "deny":
+        assert trace.request_rewrites
+        assert any(
+            "GATE_BLOCKED" in str(result.content) for result in trace.tool_messages
+        ), [result.content for result in trace.tool_messages]
