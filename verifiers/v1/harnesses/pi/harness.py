@@ -67,10 +67,14 @@ class PiHarness(ACPHarness[PiHarnessConfig]):
     # so the installed skills are passed explicitly via `--skill` at launch.
     SUPPORTS_SKILLS = True
 
-    # pi-ai drops whitespace-only assistant text on replay. Recheck on version bumps:
+    # pi-ai drops whitespace-only assistant text on replay over chat completions and
+    # Anthropic messages, not over Responses. Recheck on version bumps:
     # https://github.com/earendil-works/pi/blob/v0.86.1/packages/ai/src/api/openai-completions.ts#L1290
-    def replay_view(self, message: Message) -> Message:
-        return drop_blank_text(message)
+    # https://github.com/earendil-works/pi/blob/v0.86.1/packages/ai/src/api/anthropic-messages.ts#L1315
+    def replay_view(self, message: Message, dialect: str | None) -> Message:
+        if dialect in ("chat_completions", "anthropic_messages"):
+            return drop_blank_text(message)
+        return message
 
     async def setup(self, runtime: Runtime) -> None:
         await ensure_node(runtime)

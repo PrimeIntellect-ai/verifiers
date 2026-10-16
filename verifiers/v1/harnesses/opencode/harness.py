@@ -9,9 +9,11 @@ from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig, PinnedVersion
 from verifiers.v1.harnesses.node import ensure_node
 from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
+from verifiers.v1.harnesses.utils.replay import drop_blank_text
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
+from verifiers.v1.types import Message
 
 OPENCODE_DIR = "/var/tmp/vf-opencode"
 STATE_ROOT = "/tmp/vf-opencode-runs"
@@ -41,6 +43,14 @@ class OpenCodeHarness(ACPHarness[OpenCodeHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
     SUPPORTS_SKILLS = True
+
+    # OpenCode drops whitespace-only assistant text on replay over Anthropic messages.
+    # Recheck on version bumps:
+    # https://github.com/anomalyco/opencode/blob/v2.0.26/packages/ai/src/protocols/anthropic-messages.ts#L929
+    def replay_view(self, message: Message, dialect: str | None) -> Message:
+        if dialect == "anthropic_messages":
+            return drop_blank_text(message)
+        return message
 
     async def setup(self, runtime: Runtime) -> None:
         await ensure_node(runtime)

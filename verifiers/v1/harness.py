@@ -67,8 +67,9 @@ class Harness(ABC, Generic[ConfigT]):
     def __init__(self, config: ConfigT) -> None:
         self.config = config
 
-    def replay_view(self, message: Message) -> Message:
-        """`message` as this harness re-sends it on later requests. Override only for
+    def replay_view(self, message: Message, dialect: str | None) -> Message:
+        """`message` as this harness re-sends it on later requests over `dialect` (a
+        `Dialect.name`, or None before the first intercepted request). Override only for
         deterministic cosmetic rewrites (e.g. dropped whitespace-only text), never for
         content changes, so a replayed turn matches the turn it came from in the trace
         graph instead of forking it."""

@@ -103,7 +103,7 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
 
     # Its pi-ai fork drops whitespace-only assistant text on replay. Recheck on bumps:
     # https://github.com/PrimeIntellect-ai/prime-agent/blob/v0.9.5/packages/ai/src/providers/openai-completions.ts#L895
-    def replay_view(self, message: Message) -> Message:
+    def replay_view(self, message: Message, dialect: str | None) -> Message:
         return drop_blank_text(message)
 
     def acp_turn_result(self, trace: Trace, result: ACPTurn) -> None:

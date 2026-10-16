@@ -44,7 +44,7 @@ class ClaudeCodeHarness(ACPHarness[ClaudeCodeHarnessConfig]):
 
     # Claude Code drops whitespace-only text blocks on replay. Closed source: observed
     # with 2.1.278, recheck on version bumps.
-    def replay_view(self, message: Message) -> Message:
+    def replay_view(self, message: Message, dialect: str | None) -> Message:
         return drop_blank_text(message)
 
     async def setup(self, runtime: Runtime) -> None:

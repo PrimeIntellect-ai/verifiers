@@ -11,9 +11,11 @@ from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig, PinnedVersion
 from verifiers.v1.harnesses.node import NODE_BIN_DIR, ensure_node
 from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
+from verifiers.v1.harnesses.utils.replay import drop_blank_text
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
+from verifiers.v1.types import Message
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +52,12 @@ class KimiCodeHarness(ACPHarness[KimiCodeHarnessConfig]):
     SUPPORTS_MCP = True
     SUPPORTS_SKILLS = True
     SUPPORTS_TOOL_INTERCEPTION = True
+
+    # Kimi Code drops whitespace-only assistant text when it stores a step, so every
+    # transport replays it without. Recheck on version bumps:
+    # https://github.com/MoonshotAI/kimi-code/blob/@moonshot-ai/kimi-code@2.0.2/packages/agent-core-v2/src/agent/loop/loopService.ts#L1723
+    def replay_view(self, message: Message, dialect: str | None) -> Message:
+        return drop_blank_text(message)
 
     async def setup(self, runtime: Runtime) -> None:
         await ensure_node(runtime)

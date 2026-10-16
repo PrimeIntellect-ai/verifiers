@@ -354,6 +354,7 @@ class ResponsesStreamParser(StreamParser):
 
 
 class ResponsesDialect(Dialect[OpenAIResponse]):
+    name = "responses"
     sampling_fields = frozenset(
         {
             "temperature",

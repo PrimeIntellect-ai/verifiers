@@ -325,7 +325,7 @@ def _message_key(trace: Trace, message: Message) -> str:
     """`message_hash` of the message as the trace's harness replays it, so a turn the
     harness re-sends with cosmetic rewrites still matches the node it came from."""
     view = trace._replay_view
-    return message_hash(view(message) if view is not None else message)
+    return message_hash(view(message, trace._dialect) if view is not None else message)
 
 
 def _node_key(

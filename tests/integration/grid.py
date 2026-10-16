@@ -32,6 +32,7 @@ prime cannot pull) stay outside the grid.
 
 import shutil
 from collections.abc import Sequence
+from typing import get_args
 
 import pytest
 from pydantic import TypeAdapter
@@ -40,7 +41,7 @@ import verifiers.v1 as vf
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.harness import Harness
 from verifiers.v1.runtimes import RuntimeConfig, _backend_cls
-from verifiers.v1.utils.loaders import harness_class
+from verifiers.v1.utils.loaders import harness_class, harness_config_type
 
 HARNESSES: list[str | dict] = [
     "null",
@@ -187,6 +188,34 @@ def grid(
                     id=f"{harness_id(harness)}-in-{runtime}",
                 )
             )
+    return cells
+
+
+def transports(harness: str) -> tuple[str, ...]:
+    """The wire formats the harness config can select (`transport`). Empty when the
+    program speaks one format or picks its own."""
+    field = harness_config_type(harness).model_fields.get("transport")
+    return get_args(field.annotation) if field is not None else ()
+
+
+def dialect_grid(
+    runtimes: Sequence[str] = ("prime",), *, needs: tuple[str, ...] = ()
+) -> list:
+    """`grid` cells for every `transport` each harness config can select."""
+    cells = []
+    for harness in HARNESSES:
+        name = harness_id(harness)
+        for transport in transports(name):
+            for cell in grid(
+                [{"id": name, "transport": transport}], runtimes, needs=needs
+            ):
+                cells.append(
+                    pytest.param(
+                        *cell.values,
+                        marks=cell.marks,
+                        id=cell.id.replace(f"{name}-in-", f"{name}-{transport}-in-"),
+                    )
+                )
     return cells
 
 

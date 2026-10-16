@@ -270,6 +270,30 @@ def test_reasoning_content_participates_in_graph_prefix_matching():
     assert len(tool_call_nodes) == 2
 
 
+def _replayed_trace(replay_view, sampled, replayed, dialect=None):
+    """One tool turn sampled as `sampled` and re-sent as `replayed` on the next turn."""
+    trace = vf.Trace(
+        agent=vf.AgentInfo(config=vf.AgentConfig()),
+        task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt="go")),
+    )
+    trace._replay_view = replay_view
+    trace._dialect = dialect
+    user = vf.UserMessage(content="go")
+    call = vf.ToolCall(id="call_0", name="lookup", arguments="{}")
+    graph.prepare_turn(trace, [user]).commit(
+        _response(vf.AssistantMessage(tool_calls=[call], **sampled))
+    )
+    graph.prepare_turn(
+        trace,
+        [
+            user,
+            vf.AssistantMessage(tool_calls=[call], **replayed),
+            vf.ToolMessage(content="result", tool_call_id="call_0"),
+        ],
+    ).commit(_response(vf.AssistantMessage(content="done")))
+    return trace
+
+
 @pytest.mark.parametrize(
     "view,sampled,replayed",
     [
@@ -284,29 +308,20 @@ def test_reasoning_content_participates_in_graph_prefix_matching():
     ],
 )
 def test_replay_view_matches_cosmetically_rewritten_turns(view, sampled, replayed):
-    def run(replay_view):
-        trace = vf.Trace(
-            agent=vf.AgentInfo(config=vf.AgentConfig()),
-            task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt="go")),
-        )
-        trace._replay_view = replay_view
-        user = vf.UserMessage(content="go")
-        call = vf.ToolCall(id="call_0", name="lookup", arguments="{}")
-        graph.prepare_turn(trace, [user]).commit(
-            _response(vf.AssistantMessage(tool_calls=[call], **sampled))
-        )
-        graph.prepare_turn(
-            trace,
-            [
-                user,
-                vf.AssistantMessage(tool_calls=[call], **replayed),
-                vf.ToolMessage(content="result", tool_call_id="call_0"),
-            ],
-        ).commit(_response(vf.AssistantMessage(content="done")))
-        return trace
+    assert _replayed_trace(None, sampled, replayed).num_branches == 2
+    trace = _replayed_trace(lambda message, _: view(message), sampled, replayed)
+    assert trace.num_branches == 1
 
-    assert run(None).num_branches == 2
-    assert run(view).num_branches == 1
+
+@pytest.mark.parametrize(
+    "dialect,branches", [("chat_completions", 1), ("responses", 2)]
+)
+def test_replay_view_receives_the_trace_dialect(dialect, branches):
+    def view(message, dialect):
+        return drop_blank_text(message) if dialect == "chat_completions" else message
+
+    trace = _replayed_trace(view, {"content": "\n\n"}, {"content": None}, dialect)
+    assert trace.num_branches == branches
 
 
 @pytest.mark.parametrize("same_tools", [False, True])

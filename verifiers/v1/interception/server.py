@@ -682,6 +682,10 @@ class InterceptionServer(Interception):
         if idempotent is None:
             idempotent = IdempotentRequest(binding=binding)
             session.idempotent_requests[replay_key] = idempotent
+        if session.trace._dialect != dialect.name:
+            # Node keys apply the replay view of the dialect, so rebuild them.
+            session.trace._dialect = dialect.name
+            session.trace._head_index = {}
 
         async def coalesced(
             inflight: "asyncio.Future[ReplayResponse | None]",

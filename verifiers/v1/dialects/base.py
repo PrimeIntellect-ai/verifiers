@@ -263,6 +263,10 @@ class Dialect(ABC, Generic[RespT]):
     rewriting them. Implement a `Dialect` + register it in `dialects.DIALECTS` and a harness
     speaking that format works end-to-end."""
 
+    name: ClassVar[str]
+    """The wire format's name, as harness `transport` settings spell it (e.g.
+    `chat_completions`). Passed to `Harness.replay_view`."""
+
     sampling_fields: ClassVar[frozenset[str]] = frozenset()
     """Request keys that are call settings — what shapes generation given the same
     conversation: decoding knobs, budgets/stops, reasoning effort, output contract.
