@@ -709,9 +709,8 @@ def _attribute_payload(
     history) are dropped. Rows are never rewritten, only appended."""
     if not segments:
         return
-    spans: list[
-        tuple[int, int, int, int]
-    ] = []  # node, request lo, request hi, node start
+    # (node, request lo, request hi, node start)
+    spans: list[tuple[int, int, int, int]] = []
     last = next(
         (nid for nid in reversed(prefix_node_ids) if trace.nodes[nid].token_ids), None
     )
