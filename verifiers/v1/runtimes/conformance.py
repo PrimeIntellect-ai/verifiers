@@ -177,7 +177,7 @@ async def check_network_policies(config: RuntimeConfig, image: str) -> None:
     async def reach(view: Runtime, url: str) -> str:
         return (await view.run([*PYTHON, "-c", probe, url], {})).stdout.strip()
 
-    async with provisioned(config, allow=["pypi.org"]) as view:
+    async with provisioned(config, allow=["pypi.org"], block=[]) as view:
         assert await reach(view, "https://example.com") == "ok", "setup must be open"
         await view.backend.prepare_execution([])
         assert await reach(view, "https://pypi.org/simple/") == "ok"
