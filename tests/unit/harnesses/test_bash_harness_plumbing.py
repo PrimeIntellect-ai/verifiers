@@ -9,6 +9,7 @@ import sys
 import tempfile
 import time
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 from openai.types.chat import ChatCompletion
@@ -34,23 +35,30 @@ class Launched:
 
     args: list[str]
     system_prompt: str | None
+    prompt: Any
     credentials: dict[str, str]
 
 
-async def launch(monkeypatch, runtime=None, **config) -> Launched:
+async def launch(monkeypatch, runtime=None, prompt: Any = "go", **config) -> Launched:
     launched = Launched()
 
     async def fake_launch(
         source, config, ctx, trace, runtime, endpoint, secret, *rest, **kwargs
     ):
-        launched.system_prompt = rest[1]
+        launched.system_prompt, launched.prompt = rest[1], rest[2]
         launched.args = list(kwargs["extra_args"])
         launched.credentials = dict(kwargs.get("credentials") or {})
 
     monkeypatch.setattr(bash, "launch_chat_program", fake_launch)
     harness = bash.BashHarness(bash.BashHarnessConfig(**config))
     await harness.launch(
-        None, None, runtime, "http://e", "s", {}, TaskData(prompt="go")
+        None,
+        None,
+        runtime,
+        "http://e",
+        "s",
+        {},
+        TaskData(prompt=prompt, system_prompt="rules"),
     )
     return launched
 
@@ -412,9 +420,7 @@ def write_skill(root, folder: str, card: str) -> None:
     (root / folder / "tool.sh").write_text("echo hi\n")
 
 
-async def test_bash_installs_its_skills_and_lists_them_in_the_system_prompt(
-    tmp_path, monkeypatch
-):
+async def test_bash_installs_its_skills_and_lists_them(tmp_path, monkeypatch):
     host = tmp_path / "host"
     write_skill(
         host,
@@ -453,6 +459,30 @@ async def test_bash_launch_appends_the_skill_listing(monkeypatch):
     monkeypatch.setattr(bash.BashHarness, "skills_listing", listing)
     launched = await launch(monkeypatch)
     assert launched.system_prompt.endswith("\n\nSKILLS")
+
+
+async def test_two_sessions_in_one_box_each_list_only_their_own_skills(
+    tmp_path, monkeypatch
+):
+    host = tmp_path / "host"
+    write_skill(host, "alpha", "---\nname: alpha\n---\n")
+    write_skill(host, "beta", "---\nname: beta\n---\n")
+    backend = SubprocessBackend(SubprocessConfig())
+    runtime = backend.bind()
+    await backend.start()
+    monkeypatch.setattr(Runtime, "prepare_uv_script", _no_program)
+    try:
+        listings = []
+        for name in ("alpha", "beta"):
+            harness = bash.BashHarness(bash.BashHarnessConfig(skills=[host / name]))
+            assert harness.skills_dir == bash.SKILLS_DIR
+            harness.skills_dir = str(tmp_path / "shared")
+            await harness.setup(runtime)
+            listings.append(await harness.skills_listing(runtime))
+    finally:
+        await backend.teardown()
+    assert "`alpha`" in listings[0] and "`beta`" not in listings[0]
+    assert "`beta`" in listings[1] and "`alpha`" not in listings[1]
 
 
 async def test_bash_without_skills_lists_none():
