@@ -7,10 +7,13 @@
         "overview",
         "getting_started",
         "architecture",
+        "building-environments",
         "tasksets",
         "evaluation",
+        "runtimes",
+        "debugging",
         "harnesses",
-        "runtime",
+        "agent",
         "env",
         "harbor",
         "gepa"
@@ -18,6 +21,18 @@
     }
   ],
   "redirects": [
+    {
+      "source": "/runtime",
+      "destination": "/runtimes"
+    },
+    {
+      "source": "/v1/runtime",
+      "destination": "/runtimes"
+    },
+    {
+      "source": "/v1/runtimes",
+      "destination": "/runtimes"
+    },
     {
       "source": "/v1/overview",
       "destination": "/overview"
