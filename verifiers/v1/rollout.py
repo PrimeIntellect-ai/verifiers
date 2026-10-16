@@ -640,11 +640,20 @@ class Rollout:
             # Only our expired setup budget owns the timeout; a provider can
             # raise its own TimeoutError before the overall deadline.
             if setup_timeout is not None and setup_timeout.expired():
+                # The box was not ready in the setup budget (a slow boot or restore, a
+                # setup hook stuck on the platform): the platform's failure, not the
+                # task's, so an `io` outage the caller retries; never an ok trace that
+                # stopped before the agent ran.
                 self.timeout("setup")
-                if not self._deployment_started:
-                    self.fail(
-                        SandboxError("deployment provisioning exceeded setup timeout")
+                what = (
+                    "setup" if self._deployment_started else "deployment provisioning"
+                )
+                self.fail(
+                    SandboxError(
+                        f"{what} exceeded the setup timeout ({self._timeouts.setup:.0f}s)",
+                        kind="io",
                     )
+                )
             else:
                 self.fail(e)
             return False
