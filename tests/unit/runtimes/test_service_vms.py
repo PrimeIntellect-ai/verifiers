@@ -93,7 +93,12 @@ def test_a_service_without_a_probe_need_only_keep_running(monkeypatch):
     asyncio.run(_start(fake_runtime([]), "api", service))
 
 
-def test_service_vms_take_their_own_image_resources_and_egress(monkeypatch):
+@pytest.mark.parametrize(
+    ("allow", "egress"), [(None, ["*"]), ([], []), (["pypi.org"], ["pypi.org"])]
+)
+def test_service_vms_take_their_own_image_resources_and_egress(
+    monkeypatch, allow, egress
+):
     provisioned = []
 
     @asynccontextmanager
@@ -106,7 +111,8 @@ def test_service_vms_take_their_own_image_resources_and_egress(monkeypatch):
     workspace = SimpleNamespace(
         config=PrimeConfig(gpu="A100", cpu=2, memory=4, allow=[]), name="ws"
     )
-    service = vf.ServiceVM(image="tools:1", command=["serve"], cpu=8)
+    options = {} if allow is None else {"allow": allow}
+    service = vf.ServiceVM(image="tools:1", command=["serve"], cpu=8, **options)
     started = []
 
     async def start_workspace():
@@ -127,9 +133,30 @@ def test_service_vms_take_their_own_image_resources_and_egress(monkeypatch):
         None,
         8,
         4,
-        ["*"],
+        egress,
     )
     assert started == [True]  # the workspace boots alongside the services
+
+
+def test_each_vm_enforces_its_own_policy_with_the_framework_routes():
+    from verifiers.v1.runtimes.strategies import _ServiceVMDeployment
+
+    applied = []
+
+    def backend(name):
+        async def prepare_execution(routes):
+            applied.append((name, routes))
+
+        return SimpleNamespace(prepare_execution=prepare_execution)
+
+    strategy = _ServiceVMDeployment()
+    strategy._service_backends = [backend("forth")]
+    deployment = SimpleNamespace(harness_backend=backend("main"))
+    asyncio.run(strategy.prepare_execution(deployment, ["https://tunnel.example"]))
+    assert sorted(applied) == [
+        ("forth", ["https://tunnel.example"]),
+        ("main", ["https://tunnel.example"]),
+    ]
 
 
 def test_a_tool_server_in_a_service_vm_is_reached_by_its_lan_name(monkeypatch):

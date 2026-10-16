@@ -1,5 +1,6 @@
 """Colocated execution, composed task services, and task services on VMs of their own."""
 
+import asyncio
 import logging
 from contextlib import AsyncExitStack
 from functools import partial
@@ -77,6 +78,15 @@ class _ServiceVMDeployment(_DeploymentStrategy):
         d.target_backends = {WORKSPACE: d.backend, **services}
         d.hosts = {name: lan_host(backend) for name, backend in services.items()}
         d.execution_backend = d.harness_backend = d.backend
+        self._service_backends = list(services.values())
+
+    async def prepare_execution(self, d, routes):
+        # Each VM enforces its own policy, keeping the framework's routes; LAN traffic
+        # is unaffected by either.
+        await asyncio.gather(
+            d.harness_backend.prepare_execution(routes),
+            *(backend.prepare_execution(routes) for backend in self._service_backends),
+        )
 
     async def prepare_verifier(self, deployment):
         # Evidence is collected; release the solver's VMs before the verifier clock starts.

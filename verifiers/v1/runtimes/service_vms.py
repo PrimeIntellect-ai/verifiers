@@ -1,10 +1,10 @@
 """Task services on Prime VMs of their own, reached from the workspace over a LAN.
 
-A Prime VM's egress policy covers the whole VM, so a service whose egress differs from
-the workspace's, such as a tool server that calls public APIs beside a workspace with
-none, runs on a VM of its own (`ServiceVMSpec`). Each rollout gets a LAN network on which
-the workspace's VM may open connections to the services and nothing may open one to the
-workspace. The workspace reaches a service at its LAN name,
+A Prime VM's egress policy covers the whole VM, so a service whose egress or isolation
+differs from the workspace's, such as a tool server that calls public APIs beside a
+workspace with none, or one that runs agent-submitted code with none, runs on a VM of its
+own (`ServiceVMSpec`). Each rollout gets a LAN network on which the workspace's VM may open
+connections to the services and nothing may open one to the workspace. The workspace reaches a service at its LAN name,
 `<sandbox-id>.sandbox.internal` (`Deployment.hosts`), which the LAN's DNS keeps current.
 """
 
@@ -46,7 +46,7 @@ class Probe:
 
 @dataclass(frozen=True)
 class ServiceVM:
-    """A long-running task service on a Prime VM of its own, with unrestricted egress."""
+    """A long-running task service on a Prime VM of its own."""
 
     image: str
     """Docker image of the service's VM."""
@@ -63,6 +63,10 @@ class ServiceVM:
     cpu: float | None = None
     memory: float | None = None
     """CPU cores and memory (GB) of the service's VM; None uses the workspace's."""
+    allow: list[str] = field(default_factory=lambda: ["*"])
+    """Destinations the service's VM may reach once setup is done, as in a runtime's
+    `allow`: `*` is unrestricted, and `[]` keeps only the framework's routes, such as
+    a tool server's state channel. Setup itself, readiness included, is unrestricted."""
 
 
 @dataclass(frozen=True)
@@ -171,7 +175,7 @@ async def service_vms(
                     "image": service.image,
                     "workdir": "/",
                     "checkpoint": None,
-                    "allow": ["*"],
+                    "allow": list(service.allow),
                     "block": [],
                     "gpu": None,
                     "cpu": service.cpu or config.cpu,

@@ -1,5 +1,6 @@
 """A service VM runs on a Prime VM of its own, reachable from the restricted workspace
-over the rollout's LAN, with unrestricted egress of its own."""
+over the rollout's LAN, under an egress policy of its own: unrestricted by default, or
+none at all."""
 
 import json
 import os
@@ -25,6 +26,9 @@ SIDECAR = vf.ServiceVM(
     environment={"PORT": "8000"},
     workdir="/srv/sidecar",
     readiness=vf.Probe(["sh", "-c", READY], interval=2, attempts=60),
+)
+OFFLINE = vf.ServiceVM(
+    image="python:3.11-slim", command=["sleep", "infinity"], allow=[]
 )
 
 FETCH = """
@@ -59,7 +63,7 @@ class ProbeHarness(vf.Harness):
 
 class ServiceVMTask(vf.Task[vf.TaskData, vf.State, vf.TaskConfig]):
     def deployment_spec(self) -> vf.ServiceVMSpec:
-        return vf.ServiceVMSpec({"sidecar": SIDECAR})
+        return vf.ServiceVMSpec({"sidecar": SIDECAR, "offline": OFFLINE})
 
     async def setup(self, trace, runtime, deployment):
         await runtime.write("/tmp/sidecar-host", deployment.hosts["sidecar"].encode())
@@ -70,9 +74,13 @@ class ServiceVMTask(vf.Task[vf.TaskData, vf.State, vf.TaskConfig]):
             ["python", "-c", FETCH, "https://example.com"], {}
         )
         trace.info["sidecar"] = sidecar.stdout.strip()
+        offline = await deployment.target("offline").run(
+            ["python", "-c", FETCH, "https://example.com"], {}
+        )
+        trace.info["offline"] = offline.stdout.strip()
 
 
-async def test_service_vm_keeps_its_egress_beside_a_restricted_workspace():
+async def test_service_vms_keep_their_own_egress_beside_a_restricted_workspace():
     task = ServiceVMTask(vf.TaskData(prompt="Probe the network", network_allow=[]))
     config = vf.AgentConfig(
         model="unused",
@@ -85,3 +93,4 @@ async def test_service_vm_keeps_its_egress_beside_a_restricted_workspace():
     assert trace.ok, trace.errors
     assert trace.info["workspace"] == {"sidecar": 200, "public": "URLError"}
     assert trace.info["sidecar"] == "200"
+    assert trace.info["offline"] == "URLError"
