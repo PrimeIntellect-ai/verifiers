@@ -84,6 +84,7 @@ class SubprocessProcess(RuntimeProcess):
 
 
 class SubprocessBackend(RuntimeBackend):
+    SUPPORTS_LIVE_PROCESSES: ClassVar[bool] = True
     # Share prepared script environments across the worker's per-rollout runtimes.
     scripts_dir: ClassVar[str] = str(CACHE_DIR / "runtimes" / "scripts")
     _interpreters: ClassVar[dict[str, str]] = {}

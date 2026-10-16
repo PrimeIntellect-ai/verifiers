@@ -116,7 +116,7 @@ class ACPHarness(Harness[ConfigT]):
         data: TaskData,
         tool_interception_url: str | None = None,
     ) -> HarnessSession:
-        if not runtime.supports_live_processes:
+        if not runtime.backend.SUPPORTS_LIVE_PROCESSES:
             raise HarnessError(
                 f"harness {self.config.id!r} requires a runtime with live process support"
             )

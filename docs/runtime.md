@@ -31,11 +31,12 @@ runtime and the gap.
 
 | Feature | Declared by | Built-in runtimes |
 | --- | --- | --- |
-| Task image, container-only harnesses, isolated scoring | `supports_image` | docker, prime |
+| Task image, container-only harnesses, isolated scoring | `SUPPORTS_IMAGE` | docker, prime |
 | Task network policy | config inherits `NetworkPolicyConfig` | prime |
-| Task `agent_user` | `supports_user` | docker, prime |
-| Tool server in its own runtime | `supports_expose` | subprocess, docker |
-| Docker Compose services | `supports_compose` | prime |
+| Task `agent_user` | `SUPPORTS_USER` | docker, prime |
+| Tool server in its own runtime | `SUPPORTS_EXPOSE` | subprocess, docker |
+| Docker Compose services | `SUPPORTS_COMPOSE` | prime |
+| Live processes, as ACP harnesses need | `SUPPORTS_LIVE_PROCESSES` | subprocess, docker, prime |
 
 ## Runtime plugins
 
@@ -53,7 +54,7 @@ region = "us-east-1"
 The backend sets `config_class` to its own `CustomRuntimeConfig` subclass. That class
 validates every field next to `import_path` when the config loads. The framework
 constructs the backend as `MyBackend(config, name)` with the validated config, like
-the built-in backends. A backend with `supports_image` declares `image` and `workdir`
+the built-in backends. A backend with `SUPPORTS_IMAGE` declares `image` and `workdir`
 fields, and a config that inherits `NetworkPolicyConfig` enforces task network
 policies:
 
@@ -72,7 +73,7 @@ class MyConfig(CustomRuntimeConfig):
 class MyBackend(RuntimeBackend):
     config_class = MyConfig
     is_local: ClassVar[bool] = False
-    supports_image: ClassVar[bool] = True
+    SUPPORTS_IMAGE: ClassVar[bool] = True
 
     def __init__(self, config: MyConfig, name: str | None = None) -> None:
         super().__init__(name)

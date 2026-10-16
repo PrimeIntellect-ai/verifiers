@@ -55,7 +55,7 @@ class _ContainerDeployment(_DeploymentStrategy):
 
 def _deployment_strategy(config, backend, spec):
     if spec is not None:
-        if not backend.supports_compose:
+        if not backend.SUPPORTS_COMPOSE:
             raise ValueError(
                 f"the task deploys Compose services, but the {backend.type} runtime "
                 "cannot run Compose services; use a supported runtime"

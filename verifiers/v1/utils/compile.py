@@ -27,7 +27,7 @@ def resolve_runtime_config(
     config = base
     updates: dict = {}
     if task.data.image is not None:
-        if not backend_cls(config).supports_image:
+        if not backend_cls(config).SUPPORTS_IMAGE:
             raise ValueError(
                 f"task {task.data.idx!r} requires image {task.data.image!r}, but the "
                 f"{config.type} runtime cannot run images; use a supported runtime"
@@ -40,7 +40,7 @@ def resolve_runtime_config(
         and config.workdir == workdir_spec.default
     ):
         updates["workdir"] = task.data.workdir
-    if task.data.agent_user is not None and not backend_cls(config).supports_user:
+    if task.data.agent_user is not None and not backend_cls(config).SUPPORTS_USER:
         raise ValueError(
             f"task {task.data.idx!r} runs its agent as {task.data.agent_user!r}, but "
             f"the {config.type} runtime cannot run as another user; use a supported "
@@ -103,7 +103,7 @@ def validate_pairing(
             "`skills` is set. Run them with a harness whose program discovers "
             "skills (e.g. --env.agent.harness.id claude-code)."
         )
-    container = backend_cls(runtime_config).supports_image
+    container = backend_cls(runtime_config).SUPPORTS_IMAGE
     if harness.NEEDS_CONTAINER and not container:
         raise ValueError(
             f"Harness {harness.config.id!r} needs a container runtime "

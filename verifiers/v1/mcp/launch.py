@@ -452,7 +452,7 @@ async def _serve(
             )
         if colocated and harness_runtime is not None:
             runtime = harness_runtime
-        elif not backend_cls(cfg.runtime).supports_expose:
+        elif not backend_cls(cfg.runtime).SUPPORTS_EXPOSE:
             raise ToolsetError(
                 f"server {server.server_name!r} cannot run in its own "
                 f"{cfg.runtime.type} runtime, which cannot expose a port; colocate it "

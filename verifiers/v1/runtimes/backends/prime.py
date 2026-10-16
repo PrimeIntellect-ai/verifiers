@@ -151,10 +151,11 @@ class PrimeProcess(RuntimeProcess):
 
 
 class PrimeBackend(RuntimeBackend):
-    supports_image: ClassVar[bool] = True
-    supports_compose: ClassVar[bool] = True
-    supports_user: ClassVar[bool] = True
-    supports_expose: ClassVar[bool] = False
+    SUPPORTS_IMAGE: ClassVar[bool] = True
+    SUPPORTS_COMPOSE: ClassVar[bool] = True
+    SUPPORTS_USER: ClassVar[bool] = True
+    SUPPORTS_LIVE_PROCESSES: ClassVar[bool] = True
+    SUPPORTS_EXPOSE: ClassVar[bool] = False
     is_local: ClassVar[bool] = False
 
     def __init__(self, config: PrimeConfig, name: str | None = None) -> None:
@@ -163,10 +164,6 @@ class PrimeBackend(RuntimeBackend):
         self.config = config.model_copy(update={"workdir": config.workdir or "/app"})
         self.info = PrimeRuntimeInfo(**self.config.model_dump())
         self._client = None
-
-    @property
-    def supports_live_processes(self) -> bool:
-        return True
 
     async def start(self) -> None:
         from prime_sandboxes import AsyncSandboxClient, CreateSandboxRequest

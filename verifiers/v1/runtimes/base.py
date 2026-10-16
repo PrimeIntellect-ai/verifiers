@@ -151,30 +151,29 @@ class RuntimeBackend(ABC):
     subprocess and docker; remote runtimes override to False and use a host `Tunnel`
     inward plus `expose` outward."""
 
-    supports_image: ClassVar[bool] = False
+    SUPPORTS_IMAGE: ClassVar[bool] = False
     """Whether the runtime boots a task image in its own filesystem. Tasks with an image,
     container-only harnesses, and isolated grading require it."""
 
-    supports_compose: ClassVar[bool] = False
-    """Whether the runtime can host a task's Docker Compose services."""
-
-    supports_user: ClassVar[bool] = False
+    SUPPORTS_USER: ClassVar[bool] = False
     """Whether handles can bind another existing user."""
 
-    supports_expose: ClassVar[bool] = True
+    SUPPORTS_EXPOSE: ClassVar[bool] = True
     """Whether `expose` can publish a port inside this runtime to the outside, so a
     server here is reachable from another runtime."""
+
+    SUPPORTS_COMPOSE: ClassVar[bool] = False
+    """Whether the runtime can host a task's Docker Compose services."""
+
+    SUPPORTS_LIVE_PROCESSES: ClassVar[bool] = False
+    """Whether `open_process` starts a live process with streamed stdio, as ACP
+    harnesses need."""
 
     scripts_dir: ClassVar[str] = "/tmp/vf-scripts"
     """Digest-keyed PEP 723 scripts inside the runtime. Sandboxes own their `/tmp`;
     the host subprocess runtime overrides this with its per-user cache."""
 
     info: BaseRuntimeInfo
-
-    @property
-    def supports_live_processes(self) -> bool:
-        """Whether `open_process()` is implemented for this runtime instance."""
-        return type(self)._open_process is not RuntimeBackend._open_process
 
     def __init__(self, name: str | None = None) -> None:
         self.name = name or f"vf-{uuid.uuid4().hex[:12]}"

@@ -7,9 +7,8 @@ provider can be used without upstreaming it.
     region = "us-east-1"
 
 The backend sets `config_class` to its own `CustomRuntimeConfig` subclass, which
-validates every field next to `import_path`. The backend's class attributes
-(`supports_image`, `supports_user`, `supports_expose`, `supports_compose`, `is_local`)
-declare its features, as for the built-in runtimes; a config that inherits
+validates every field next to `import_path`. The backend's `SUPPORTS_*` flags and
+`is_local` declare its features, as for the built-in runtimes; a config that inherits
 `NetworkPolicyConfig` enforces task network policies. The framework refuses features
 a runtime does not declare before provisioning."""
 

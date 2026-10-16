@@ -37,7 +37,7 @@ class Runtime:
     home: str | None = None
 
     def __post_init__(self) -> None:
-        if self.user is not None and not self.backend.supports_user:
+        if self.user is not None and not self.backend.SUPPORTS_USER:
             raise ValueError(
                 f"the {self.backend.type} runtime cannot run as another user"
             )
@@ -74,10 +74,6 @@ class Runtime:
     @property
     def is_local(self) -> bool:
         return self.backend.is_local
-
-    @property
-    def supports_live_processes(self) -> bool:
-        return self.backend.supports_live_processes
 
     @property
     def network_restricted(self) -> bool:

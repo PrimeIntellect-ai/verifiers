@@ -126,7 +126,7 @@ def _check_borrowed_placement(
             )
     if task.data.image is None:
         return
-    if not runtime.backend.supports_image:
+    if not runtime.backend.SUPPORTS_IMAGE:
         raise TypeError(
             f"task {task.data.idx!r} requires image {task.data.image!r}, but the "
             f"borrowed {runtime.type} runtime cannot run images; borrow a container "
@@ -723,7 +723,7 @@ class Agent:
         params = self._rollout_params(task, runtime, dict(shared_tools or {}))
         if (
             collect_artifacts
-            and not backend_cls(params["runtime_config"]).supports_image
+            and not backend_cls(params["runtime_config"]).SUPPORTS_IMAGE
         ):
             raise TypeError(
                 "artifact collection requires a runtime with its own filesystem; the "
