@@ -7,6 +7,7 @@ import time
 from collections.abc import Awaitable, Callable
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
+from urllib.parse import urlsplit
 
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.agent import AgentConfig
@@ -364,6 +365,14 @@ class Rollout:
                 )
                 self._endpoint = runtime.host_url(f"{base_url.rstrip('/')}/v1")
                 self._secret = model_secret
+                services = (
+                    {
+                        name: self.deployment.target(name)
+                        for name in self.deployment.target_backends
+                    }
+                    if self.deployment.spec is not None
+                    else {}
+                )
                 self._urls = await self._stack.enter_async_context(
                     serve_tools(
                         toolsets,
@@ -372,12 +381,18 @@ class Rollout:
                         state_secret=state_secret,
                         state_route=self.trace.id,
                         state_base=base_url,
+                        services=services,
                     )
                 )
                 # Setup and service provisioning are complete. Apply the runtime's
                 # execution policy while preserving the framework routes the agent uses.
+                # Compose service names resolve inside the deployment, not as egress.
                 await self.deployment.prepare_execution(
-                    [self._endpoint, *self._urls.values()]
+                    [
+                        url
+                        for url in [self._endpoint, *self._urls.values()]
+                        if urlsplit(url).hostname not in services
+                    ]
                 )
                 async with (
                     boundary(HarnessError, "opening harness session"),
