@@ -64,7 +64,6 @@ HARNESS_RUNTIMES = [runtime for runtime in RUNTIMES if runtime not in ENGINES]
 # TODO: drop each entry once its fix lands.
 CI_MODEL_GAPS = {
     "kimi-code": "Prime chat completions rejects kimi-code's prompt_cache_key",
-    "openclaw": "openclaw cannot load the custom `internal/` model provider",
 }
 
 

@@ -25,7 +25,11 @@ async def test_multi_turn(run, harness, harness_runtime):
         max_tokens=8192,
     )
     (trace,) = episode.traces
-    assert trace.num_branches == 1
+    # OpenClaw strips the runtime context it injects before each turn from the
+    # replayed history, so the trace forks by design. Recheck on version bumps:
+    # https://github.com/openclaw/openclaw/blob/v2026.9.5/src/agents/embedded-agent-runner/run/attempt-llm-boundary.ts#L145
+    if harness.id != "openclaw":
+        assert trace.num_branches == 1
     assert trace.ok, [error.message for error in trace.errors]
     assert trace.num_turns >= 1  # ran a command, then finished
     assert trace.reward == 1.0

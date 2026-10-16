@@ -60,6 +60,14 @@ if (patched !== source) {
 NODE
 """
 
+# OpenClaw rejects a model it cannot resolve as the primary model, which makes setting
+# it in a scratch config a check for whether its catalog knows the model.
+CATALOG_CHECK = r"""
+mkdir -p "$OPENCLAW_STATE_DIR"
+printf '{}' >"$OPENCLAW_CONFIG_PATH"
+exec "$VF_OPENCLAW_BIN" config set agents.defaults.model.primary "$VF_OPENCLAW_MODEL"
+"""
+
 OPENCLAW_COMMAND = [
     "sh",
     "-c",
@@ -127,6 +135,10 @@ class OpenClawHarness(ACPHarness[OpenClawHarnessConfig]):
     SUPPORTS_MCP = True
     SUPPORTS_SKILLS = True
 
+    def __init__(self, config: OpenClawHarnessConfig) -> None:
+        super().__init__(config)
+        self._cataloged: dict[str, bool] = {}
+
     async def setup(self, runtime: Runtime) -> None:
         directory = OPENCLAW_DIR.format(version=self.config.version)
         binary = OPENCLAW_BIN.format(version=self.config.version)
@@ -148,6 +160,23 @@ class OpenClawHarness(ACPHarness[OpenClawHarnessConfig]):
         )
         await super().setup(runtime)
 
+    async def _in_catalog(self, runtime: Runtime, model: str, state_dir: str) -> bool:
+        """Whether OpenClaw's model catalog knows `model`, checked once per model."""
+        if model not in self._cataloged:
+            check_dir = f"{state_dir}/catalog-check"
+            result = await runtime.run(
+                ["sh", "-c", CATALOG_CHECK],
+                {
+                    **self.config.resolved_env,
+                    "OPENCLAW_STATE_DIR": check_dir,
+                    "OPENCLAW_CONFIG_PATH": f"{check_dir}/openclaw.json",
+                    "VF_OPENCLAW_BIN": OPENCLAW_BIN.format(version=self.config.version),
+                    "VF_OPENCLAW_MODEL": json.dumps(model),
+                },
+            )
+            self._cataloged[model] = result.exit_code == 0
+        return self._cataloged[model]
+
     async def prepare_acp(
         self,
         ctx: ModelContext,
@@ -159,10 +188,20 @@ class OpenClawHarness(ACPHarness[OpenClawHarnessConfig]):
         data: TaskData,
     ) -> ACPConfig:
         system_prompt, prompt = self.resolve_prompt(data)
-        provider, _, _ = ctx.model.partition("/")
+        provider, _, model_id = ctx.model.partition("/")
         state_dir = f".vf-openclaw/{trace.id}"
         config_path = f"{state_dir}/openclaw.json"
         skills_dir = f"{state_dir}/skills"
+        provider_config = {
+            "baseUrl": endpoint,
+            "apiKey": "${OPENCLAW_INTERCEPT_KEY}",
+            "request": {"allowPrivateNetwork": True},
+        }
+        if not await self._in_catalog(runtime, ctx.model, state_dir):
+            # Catalog models keep OpenClaw's defaults. Others need a declared model, and
+            # OpenClaw's chat completions default for them rewrites replayed turns.
+            provider_config["api"] = "openai-responses"
+            provider_config["models"] = [{"id": model_id, "name": model_id}]
         config = {
             "gateway": {
                 "mode": "local",
@@ -190,13 +229,7 @@ class OpenClawHarness(ACPHarness[OpenClawHarnessConfig]):
                 "deny": self.config.disabled_tools or [],
             },
             "models": {
-                "providers": {
-                    provider: {
-                        "baseUrl": endpoint,
-                        "apiKey": "${OPENCLAW_INTERCEPT_KEY}",
-                        "request": {"allowPrivateNetwork": True},
-                    }
-                },
+                "providers": {provider: provider_config},
             },
             "mcp": {
                 "servers": {
