@@ -13,11 +13,17 @@ import asyncio
 import fcntl
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Self
 
 from verifiers.v1.utils.paths import CACHE_DIR
 
 LIMITER_DIR = CACHE_DIR / "limiter"
+
+_RESERVATIONS = ThreadPoolExecutor(max_workers=1, thread_name_prefix="limiter")
+"""The thread reservations run on: a reservation is a short lock-file update, and on the
+loop's default executor it waited behind whatever blocking work filled that pool (a
+burst of a pipeline's threaded work held a box create's slot for minutes)."""
 
 
 class CreationBacklogFull(TimeoutError):
@@ -69,7 +75,9 @@ class CreationLimiter:
         return slot - now
 
     async def __aenter__(self) -> Self:
-        wait = await asyncio.to_thread(self._reserve)
+        wait = await asyncio.get_running_loop().run_in_executor(
+            _RESERVATIONS, self._reserve
+        )
         if wait > 0:
             await asyncio.sleep(wait)
         return self
