@@ -1,6 +1,6 @@
 # Harnesses
 
-verifiers ships with a range of harnesses out of the box, including Claude Code, Codex, OpenCode (`opencode`), DeepSeek (`deepseek`), the tool-enabled `bash` harness, the CDP-driven `browser-use` harness, and the minimal `null` harness (which has no built-in shell tools of its own, though it can still call task MCP tools). You can inspect the settings for any harness with `uv run vf-eval my-task --env.agent.harness.id codex --help`. Most third-party CLI harnesses must run inside a container runtime, and individual harnesses vary in which optional features they support (such as MCP tools, follow-up messages, image input, and skills).
+verifiers ships with a range of harnesses out of the box, including Claude Code, Codex, Pi, Prime-Agent, the tool-enabled `bash` harness, the CDP-driven `browser-use` harness, and the minimal `null` harness (which has no built-in shell tools of its own, though it can still call task MCP tools). You can inspect the settings for any harness with `uv run vf-eval my-task --env.agent.harness.id codex --help`. Most third-party CLI harnesses must run inside a container runtime, and individual harnesses vary in which optional features they support (such as MCP tools, follow-up messages, image input, and skills).
 
 ## Bash harness
 

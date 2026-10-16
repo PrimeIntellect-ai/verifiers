@@ -1,6 +1,6 @@
 # Evaluation
 
-For new model evaluations, use [`uv run eval` in prime-rl](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/docs/eval.md). `vf-eval` remains available, though it prints a deprecation notice pointing to prime-rl's runner. This page covers `vf-eval`, its configuration, and its output layout.
+For new model evaluations, use [`uv run eval` in prime-rl](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/docs/eval.md).
 
 To evaluate an installed taskset, run `vf-eval`:
 
@@ -75,20 +75,6 @@ Unlike static `client.headers` (which are written into the saved resolved config
 Shared generation parameters go under `[sampling]`, with per-agent overrides under `[env.<agent>.sampling]`. Overrides merge field by field, so setting an agent's `temperature` preserves the shared token limit and provider options (pass `None` in Python or `null` in JSON to clear an inherited field).
 
 Alongside standard parameters like `temperature`, `top_p`, `reasoning_effort`, and `max_tokens` (or its alias `max_completion_tokens`), you can pass provider-specific options either directly in `[sampling]` or inside `extra_body`.
-
-## Common config values
-
-- `model` — the model id to evaluate, e.g. `nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B`
-- `sampling` — generation params passed to the model, e.g. `sampling.temperature`
-- `env.taskset.id` — pick the taskset (or the positional `eval <taskset-id>`)
-- `env.agent.harness.id` — pick the agent's harness (`[env.agent.harness]` in TOML)
-- `select` — which tasks to evaluate (see [Selecting tasks](tasksets.md#selecting-tasks)). `-n` sets `select.limit` and `-s` enables `select.shuffle`
-- `num_rollouts` — rollouts per task
-- `max_concurrent` / `-c` — max episodes in flight at once (default: `128`); lower this for quick checks or limited sandbox capacity
-- `verbose` — log at debug instead of info
-- `rich` — the live dashboard (default); `--no-rich` streams logs to the console and prints each trace as JSON at the end
-- `rich.show_logs` — replace the dashboard's per-rollout rows with a live tail of the attempt's logs (`logs/latest/eval.log`), including worker logs
-- `push` — upload the run to the Prime Intellect platform as it progresses (default; `--no-push` keeps it local). Hosted evaluations also pass `run.attach <evaluation-id>` to stream results into a run the platform already created rather than opening a new one; local runs do not need to set this
 
 ## Resuming evaluations
 

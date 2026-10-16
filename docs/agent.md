@@ -46,8 +46,6 @@ receipt = await interaction.send(
 
 For tasks that define an initial `prompt`, start the opening `turn()` before calling `send()`. Note that the returned receipt confirms whether the message was accepted for delivery, not that the agent has finished acting on it. Keep the `interaction` context open while the agent works, since exiting the block cancels outstanding deliveries and finishes the rollout.
 
-A receipt with `outcome="injected"` indicates that delivery succeeded, whereas `outcome="promptRequired"` means the message could not be delivered (check `receipt.reason`, such as `interactionStopped`). Passing a stable `message_id` deduplicates repeated deliveries of the same message within an interaction.
-
 ## Verification placement
 
 `agent.scoring.mode` selects whether task scoring runs in the agent's workspace (`shared`) or in a fresh container (`isolated`). Tasks can declare their own defaults on `TaskData.scoring` via `ScoringConfig`, and any fields explicitly set on `agent.scoring` override the task defaults (falling back to `shared` when neither sets a mode).

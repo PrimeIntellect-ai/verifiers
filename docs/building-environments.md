@@ -28,7 +28,7 @@ As covered in [tasksets](tasksets.md), dataset-level options belong on `TasksetC
 
 ## Load an existing benchmark
 
-When wrapping an existing benchmark, fetch the underlying dataset inside `Taskset.load()` on the evaluator (for example, by passing dataset name, split, and revision fields from `TasksetConfig` to Hugging Face's `load_dataset`). Filter out unsupported rows in `load()`, but leave subset sampling to the evaluation's `select` config so users can slice the benchmark from the CLI or TOML. Store reference answers and other ground-truth metadata on a `TaskData` subclass; extra `TaskData` fields stay on the evaluator for scoring and are never injected into the agent's prompt. Set `TaskData.id` to a stable upstream identifier (leaving `idx` for verifiers to assign from the loaded stream order) and pin dataset revisions and container images when you need reproducible runs; see [task identity](tasksets.md#task-identity) for how `id` and `idx` behave across reordered datasets.
+When wrapping an existing benchmark, fetch the underlying dataset inside `Taskset.load()` on the evaluator (for example, by passing dataset name, split, and revision fields from `TasksetConfig` to Hugging Face's `load_dataset`). Filter out unsupported rows in `load()`, but leave subset sampling to the evaluation's `select` config so users can slice the benchmark from the CLI or TOML. Store reference answers and other ground-truth metadata on a `TaskData` subclass; extra `TaskData` fields stay on the evaluator for scoring and are never injected into the agent's prompt. Set `TaskData.id` to a stable upstream identifier (leaving `idx` for verifiers to assign from the loaded stream order) and pin dataset revisions and container images when you need reproducible runs.
 
 Because dataset caches and package files live on the evaluator, they do not appear inside local containers or remote sandboxes automatically. Write small agent-visible inputs into the sandbox with `await runtime.write(...)` during `setup`, or bake large assets directly into the task image. Any private test scripts or reference files should be bundled inside your Python package, read via `importlib.resources` (rather than relative working-directory paths), and written into the sandbox only during `stage_verifier` so the agent cannot inspect them; see [packaged grader scripts](runtimes.md#packaged-grader-scripts) for managing dependencies across evaluator and sandbox environments. Similarly, if a task sets `TaskData.agent_user`, keep in mind that `setup` still runs as the runtime's default user, so any working directories or output paths created during `setup` must be made writable by `agent_user` before the harness starts (see [execution users](runtimes.md#execution-users)).
 
@@ -41,7 +41,7 @@ The [`prime-envs`](https://github.com/PrimeIntellect-ai/prime-envs) repository c
 | Packaged Python grader | [HumanEval](https://github.com/PrimeIntellect-ai/prime-envs/tree/main/environments/code/humaneval) | [Grader dependencies](runtimes.md#packaged-grader-scripts) |
 | Tool state used by task scoring | [Wikispeedia](https://github.com/PrimeIntellect-ai/prime-envs/tree/main/environments/reasoning/wikispeedia) | [Stateful tools](tasksets.md#stateful-tools) |
 | Harness defaults selected by task settings | [HLE-Diamond](https://github.com/PrimeIntellect-ai/prime-envs/tree/main/environments/knowledge/hle_diamond) | [Role defaults](env.md#role-defaults) |
-| Scripted user messages in one rollout | [BFCL v3](https://github.com/PrimeIntellect-ai/prime-envs/tree/main/environments/tool_use/bfcl_v3), [SciCode](https://github.com/PrimeIntellect-ai/prime-envs/tree/main/environments/code/scicode) | [Scripted conversations](env.md#scripted-conversations) |
+| Scripted user messages in one rollout | [BFCL v3](https://github.com/PrimeIntellect-ai/prime-envs/tree/main/environments/tool_use/bfcl_v3), [SciCode](https://github.com/PrimeIntellect-ai/prime-envs/tree/main/environments/code/scicode) | [Multi-turn interactions](agent.md) |
 | Private grading shared by several tasksets | [Lean common](https://github.com/PrimeIntellect-ai/prime-envs/tree/main/packages/lean_common) | [Private tests](#transfer-outputs-and-prepare-private-tests) |
 | A tool calling an external evaluation service | [PTX remote](https://github.com/PrimeIntellect-ai/prime-envs/tree/main/environments/code/ptx_remote) | [Stateful tools](tasksets.md#stateful-tools) |
 
@@ -121,7 +121,7 @@ from file_sum_v1.taskset import FileSumTaskset
 __all__ = ["FileSumTaskset"]
 ```
 
-Setting `scoring=vf.ScoringConfig(mode="isolated")` on `TaskData` makes isolated grading the default for this task, while still allowing users to override it at evaluation time with `--env.agent.scoring.mode shared|isolated` (see [verifier placement](env.md#verifier-placement)). For Harbor benchmarks, see Harbor's [separate-verifier settings](harbor.md#separate-verifier-environments).
+Setting `scoring=vf.ScoringConfig(mode="isolated")` on `TaskData` makes isolated grading the default for this task, while still allowing users to override it at evaluation time with `--env.agent.scoring.mode shared|isolated` (see [verification placement](agent.md#verification-placement)). For Harbor benchmarks, see Harbor's [separate-verifier settings](harbor.md#separate-verifier-environments).
 
 ### Choose a different grading runtime or image
 
@@ -183,7 +183,7 @@ When your benchmark needs more than a single solver and deterministic grading, y
 - **Task-specific MCP tools**: define a [`vf.Toolset`](tasksets.md#adding-tools) on the task, running either in its own runtime or inside the agent sandbox with `colocated = true`.
 - **Multi-attempt sampling or model judges**: run the built-in `best-of-n` or `agentic-judge` environments, or `user-sim` when a model needs to role-play the user across turns.
 - **Games and multi-turn scripted interactions**: write a custom [`Env.run()`](env.md#custom-control-flow) that drives `agents.<role>.interaction(task)` across turns or agents. Note that a custom environment's `finalize(task, episode)` hook runs after agent runtimes have been torn down, so read from saved trace data (`trace.info`) rather than live sandboxes.
-- **Multi-container service stacks** (such as an application server paired with a database): package the task as a [Harbor benchmark](harbor.md#docker-compose) using Docker Compose, or return a `ComposeSpec` from `Task.deployment_spec()` (see [deployment and services](runtimes.md#deployment-and-services)).
+- **Multi-container service stacks** (such as an application server paired with a database): package the task as a [Harbor benchmark](harbor.md) using Docker Compose, or return a `ComposeSpec` from `Task.deployment_spec()` (see [deployment and services](runtimes.md#deployment-and-services)).
 - **Custom agent loops or CLI harnesses**: pick another built-in [harness](harnesses.md) or subclass `vf.Harness` to install and launch a different agent binary.
 
 ## Check the environment

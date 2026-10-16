@@ -109,7 +109,7 @@ Each single-agent rollout runs through five stages:
 4. **Task `finalize`** captures any outputs or state needed for scoring and inspection before tests mutate the workspace.
 5. **Scoring** runs metrics, rewards, and judges, after which the runtime is torn down.
 
-Lifecycle hooks (`setup` and `finalize`) can accept `trace` and `runtime` by parameter name. See the [runtime guide](runtimes.md) for working with files, processes, and network rules, and [verifier placement](env.md#verifier-placement) when you want grading to run in a fresh container with selected paths transferred via `TaskData.artifacts`.
+Lifecycle hooks (`setup` and `finalize`) can accept `trace` and `runtime` by parameter name. See the [runtime guide](runtimes.md) for working with files, processes, and network rules, and [verification placement](agent.md#verification-placement) when you want grading to run in a fresh container with selected paths transferred via `TaskData.artifacts`.
 
 If you need mutable state during a rollout, such as tracking intermediate values across hooks or tool calls, define a `vf.State` subclass (`Task[YourData, YourState, YourConfig]`) and access it via `trace.state`. Because `trace.state` is ephemeral and not written to disk, anything you want preserved in the saved trace (such as extracted answers, patches, or parsed judge verdicts) should go into `trace.info` as JSON-serializable values.
 
@@ -118,16 +118,7 @@ Scoring methods are decorated with `@vf.metric` or `@vf.reward(weight=...)`:
 - `@vf.metric` records an observational measurement on the trace without affecting the reward.
 - `@vf.reward(weight=1.0)` contributes to `trace.reward`, which is the **sum** of each `score * weight`. A reward with `weight=0.0` is still computed and recorded on the trace, making it easy to log candidate signals without training on them.
 
-Both decorators accept `trace`, `runtime`, or `task` by parameter name (where `task` is the `TaskData` instance and `self` is the `Task`), and each method can return either a single `float` or a `dict[str, float]` of named scores. During `Task.score`, metrics run first, followed by rewards, followed by configured judges. All methods within the same phase run concurrently via `asyncio.gather`; setting a higher `priority` controls display and registration order rather than making one method wait for another, so compute any shared inputs once in `finalize`. If an external service or judge fails during scoring, let the exception propagate instead of returning `0.0`, which would record an infrastructure failure as a wrong answer by the model.
-
-`verifiers.v1` exports several helpers for common grading patterns:
-
-- `extract_boxed_answer(text, strict=False)` — extracts the final balanced `\boxed{...}` expression (or returns `""` in strict mode when none is present).
-- `verify_boxed_math_answer(response, answer)` — parses and compares a boxed math response against a reference answer using `math-verify`.
-- `read_answer_file_or_last_reply(runtime, path, trace)` — reads a stripped answer file from the sandbox if non-empty, falling back to `trace.last_reply`.
-- `parse_judge_choice(text, choices=("A", "B", "C"))` — extracts a discrete verdict token from a judge reply (stripping `<think>` blocks and handling boxed or labeled verdicts).
-- `compare_stdout_results(actual, expected, tolerance=1e-3)` — compares program stdout against expected output with whitespace normalization and numeric tolerance.
-- `parse_pytest_outcomes(output)` — parses a `pytest` short test summary into a `{node_id: outcome}` dictionary.
+Both decorators accept `trace`, `runtime`, or `task` by parameter name (where `task` is the `TaskData` instance and `self` is the `Task`), and each method can return either a single `float` or a `dict[str, float]` of named scores. During `Task.score`, metrics run first, followed by rewards, followed by configured judges. If an external service or judge fails during scoring, let the exception propagate instead of returning `0.0`, which would record an infrastructure failure as a wrong answer by the model.
 
 For software engineering tasks, call `await vf.capture_patch(trace, runtime, base_commit=...)` in `finalize` so the agent's git diff is saved to `trace.info["patch"]` before your grading script modifies the working tree or checks out test files. Pass a dataset base commit (or record `await vf.resolve_head(runtime)` during `setup`) so commits created by the agent are included in the diff. If the container image already has untracked files before the agent starts, snapshot them in `setup` with `verifiers.v1.utils.git.snapshot_untracked(runtime)` and pass that list as `ignore=...` so they aren't swept into the agent's patch.
 
@@ -165,7 +156,7 @@ class ContextTask(vf.Task[ContextData]):
 
 If you use `read_answer_file_or_last_reply`, make sure the prompt mentions that either writing `/workspace/answer.txt` or replying directly is accepted; if the benchmark strictly requires an output file, read it with `runtime.read` instead so missing files aren't masked by the final message.
 
-When using [isolated verification](env.md#verifier-placement), `finalize` still runs in the solver's sandbox before artifacts are collected, whereas `@vf.metric`, `@vf.reward`, and configured judge plugins receive the fresh verifier runtime. Use `finalize` to capture solver-side evidence into `trace.info`, and declare any files the grader needs in `TaskData.artifacts`.
+When using [isolated verification](agent.md#verification-placement), `finalize` still runs in the solver's sandbox before artifacts are collected, whereas `@vf.metric`, `@vf.reward`, and configured judge plugins receive the fresh verifier runtime. Use `finalize` to capture solver-side evidence into `trace.info`, and declare any files the grader needs in `TaskData.artifacts`.
 
 ## Multimodal prompts
 
@@ -189,15 +180,6 @@ data = vf.TaskData(
 ```
 
 Here `image` is a `PIL.Image` (converted to a `data:` URL by `image_data_url`), preserving the benchmark's exact interleaving of text and images. Note that `TaskData.prompt_text` concatenates only the text parts and drops images, so multimodal tasks must run with a vision-capable model and a harness that forwards typed messages (such as `null`) rather than one that flattens the prompt via `resolve_text_prompt`.
-
-## Task identity
-
-A task's `idx` is its position in the `load()` stream and is assigned automatically. You can also set `TaskData.id` to a durable identifier from the source dataset (such as an instance ID) and `TaskData.name` to a human-readable label; both are optional.
-
-Every task has two identity properties recorded on traces:
-
-- `task.hash` identifies the exact serialized `TaskData`. Evaluation `--resume` matches completed rollouts by `task.hash` (including repeated occurrences of the same hash), so changing a task's data intentionally invalidates prior cached results for that task.
-- `task.key` provides stable logical identity across runs and defaults to `task.hash`. Override `Task.key` with a durable source ID when `TaskData` includes run-local fields like `idx`; keys must be unique within a taskset.
 
 ## Selecting tasks
 
@@ -344,7 +326,7 @@ When a task's reward is semantic and cannot be checked deterministically, use an
 
   To make this the default in code, set `judges: vf.Judges = [vf.ReferenceJudgeConfig(name="correct")]` on your `TaskConfig`.
 - **`rubric`** loads a JSON or TOML rubric file from `path` containing a `criteria` list (each with `name`, `text`, optional `weight`, and `choices` ordered from worst to best). It evaluates the full trace by default, records each criterion as a `<judge_name>/<criterion>` metric, and returns their weighted average as the judge's reward.
-- **`decision`** queries a decision-model endpoint (defaulting to `typesafe-ai/jev` at Prime's evaluations endpoint) across two to ten ordered grading `levels` and returns the probability-weighted level normalized to `[0, 1]`:
+- **`decision`** queries a decision-model endpoint (defaulting to Clef) across two to ten ordered grading `levels` and returns the probability-weighted level normalized to `[0, 1]`:
 
   ```toml
   [[env.taskset.task.judges]]
@@ -413,8 +395,6 @@ class JudgeTraceTaskset(vf.Taskset[JudgedTask, SetConfig]):
             )
         ]
 ```
-
-Passing `trace=trace` to `judge.evaluate` (or `judge.complete`) records the judge's prompt, raw response, parsed verdict, and token usage under `trace.info["judge_calls"]` and `trace.extra_usage`. To override the judge model from the CLI or TOML, set `env.taskset.task.judge.model`.
 
 ## Plugging hooks via config
 
