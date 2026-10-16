@@ -272,3 +272,35 @@ def test_finish_refuses_a_gap():
     assembly.apply({"trace": "t", "open": {"id": "t"}, "nodes": [{}]})
     with pytest.raises(RuntimeError, match="assembled 1 nodes"):
         assembly.finish({}, [TraceSummary(id="t", nodes=2, calls=0)])
+
+
+def test_token_counts_follow_the_graph_and_are_not_redumped_while_it_stands_still() -> None:
+    trace = make_trace()
+    streamer = DeltaStreamer(lambda: [trace], None)
+    [(_, _, cursor)] = streamer.diff()
+    streamer.cursors[trace.id] = cursor
+
+    add_turn(trace, "a")
+    [(_, delta, cursor)] = streamer.diff()
+    streamer.cursors[trace.id] = cursor
+    assert delta["set"]["num_total_tokens"] == trace.num_total_tokens
+    assert streamer.diff() == []  # nothing changed: no delta at all
+
+    add_turn(trace, "b")
+    [(_, delta, _)] = streamer.diff()
+    assert delta["set"]["num_total_tokens"] == trace.num_total_tokens
+
+
+def test_a_replaced_preview_is_sent_and_an_unchanged_one_is_not() -> None:
+    trace = make_trace()
+    streamer = DeltaStreamer(lambda: [trace], None)
+    key = object()
+    trace.preview(key, [UserMessage(content="tool result")])
+    [(_, delta, cursor)] = streamer.diff()
+    streamer.cursors[trace.id] = cursor
+    assert [m["content"] for m in delta["pending"]] == ["tool result"]
+    assert streamer.diff() == []
+
+    trace.preview(key, [UserMessage(content="next result")])
+    [(_, delta, _)] = streamer.diff()
+    assert [m["content"] for m in delta["pending"]] == ["next result"]

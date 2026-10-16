@@ -23,7 +23,6 @@ when the run's reply lands.
 from __future__ import annotations
 
 import asyncio
-import copy
 import logging
 from collections.abc import Awaitable, Callable, Iterable
 from typing import TYPE_CHECKING, Any, Self
@@ -74,6 +73,10 @@ SCALAR_FIELDS = (
 )
 """Re-sent whole whenever their dumped value changes."""
 
+TOKEN_FIELDS = frozenset({"num_input_tokens", "num_output_tokens", "num_total_tokens"})
+"""Scalars computed by walking every branch of the graph: they change only with the
+nodes, the calls or the semantic links, so a diff skips them while those stand still."""
+
 
 def pack(payload: Any) -> bytes:
     return msgpack.packb(payload, default=msgpack_encoder, use_bin_type=True)
@@ -101,6 +104,24 @@ class TraceCursor:
         """Per node that carries routing, its final row as packed when last sent."""
         self.scalars: dict[str, bytes] = {}
         self.pending: bytes = pack([])
+        self.shape: tuple[int, int, int] | None = None
+        """(nodes, calls, semantic links) when the token counts were last dumped."""
+        self.previewed: tuple[Any, ...] = ()
+        """The pending messages last dumped, held so their identities stay theirs: a
+        preview is replaced whole, never edited in place, so the same messages need
+        no new dump."""
+
+    def copy(self) -> TraceCursor:
+        """An independent copy: every value it holds is an int, bytes or a tuple."""
+        cursor = TraceCursor.__new__(TraceCursor)
+        cursor.sent = dict(self.sent)
+        cursor.links = list(self.links)
+        cursor.final_rows = dict(self.final_rows)
+        cursor.scalars = dict(self.scalars)
+        cursor.pending = self.pending
+        cursor.shape = self.shape
+        cursor.previewed = self.previewed
+        return cursor
 
 
 class DeltaStreamer:
@@ -208,7 +229,7 @@ class DeltaStreamer:
         for trace in traces:
             delta: dict[str, Any] = {"trace": trace.id}
             sent = self.cursors.get(trace.id)
-            cursor = copy.deepcopy(sent) if sent is not None else TraceCursor()
+            cursor = sent.copy() if sent is not None else TraceCursor()
             if sent is None:
                 delta["open"] = dump(trace, include=set(HEADER_FIELDS))
             links: dict[int, list[dict]] = {}
@@ -233,15 +254,31 @@ class DeltaStreamer:
                             len(node.semantic_parents) for node in items[sent:]
                         )
             changed: dict[str, Any] = {}
-            for field, value in dump(trace, include=set(SCALAR_FIELDS)).items():
+            shape = (
+                len(trace.nodes),
+                len(trace.calls),
+                sum(len(node.semantic_parents) for node in trace.nodes),
+            )
+            fields = set(SCALAR_FIELDS)
+            if shape == cursor.shape:
+                fields -= TOKEN_FIELDS
+            cursor.shape = shape
+            for field, value in dump(trace, include=fields).items():
                 packed = pack(value)
                 if cursor.scalars.get(field) != packed:
                     cursor.scalars[field] = packed
                     changed[field] = value
             if changed:
                 delta["set"] = changed
-            pending = [dump(message) for message in trace.pending]
-            packed = pack(pending)
+            messages = tuple(trace.pending)
+            if len(messages) == len(cursor.previewed) and all(
+                a is b for a, b in zip(messages, cursor.previewed, strict=True)
+            ):
+                packed, pending = cursor.pending, None
+            else:
+                cursor.previewed = messages
+                pending = [dump(message) for message in messages]
+                packed = pack(pending)
             if packed != cursor.pending:
                 cursor.pending = packed
                 # nodes landing clear the preview on the client by themselves
