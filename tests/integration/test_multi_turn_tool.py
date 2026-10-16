@@ -104,7 +104,9 @@ async def test_tool_gate(run, harness, harness_runtime, action, target):
     ]
     assert calls
     if target == "mcp":
-        assert any(call.name.endswith("touch") for call in calls)
+        assert any(call.name.endswith("touch") for call in calls), [
+            call.name for call in calls
+        ]
     assert trace.stop_condition == (
         "stop_tool" if action == "stop" else "agent_completed"
     )

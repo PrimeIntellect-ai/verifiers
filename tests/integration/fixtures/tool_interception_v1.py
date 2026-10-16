@@ -20,6 +20,7 @@ class GateToolset(vf.Toolset[vf.ToolsetConfig]):
 
 class GateData(vf.TaskData):
     action: Literal["allow", "deny", "stop"]
+    target: Literal["native", "mcp"]
 
 
 class GateTaskConfig(vf.TaskConfig):
@@ -31,18 +32,31 @@ class GateTask(vf.Task[GateData, vf.State, GateTaskConfig]):
     def toolsets(cls, config: GateTaskConfig) -> list[vf.Toolset]:
         return [GateToolset(config.tools)]
 
+    def target_probe(self, request: vf.Request) -> bool:
+        if not request.messages:
+            return False
+        result = request.messages[-1]
+        if not isinstance(result, vf.ToolMessage) or result.content:
+            return False
+        return any(
+            call.id == result.tool_call_id
+            and (
+                call.name.endswith("touch")
+                if self.data.target == "mcp"
+                else MARKER in call.arguments
+            )
+            for message in request.messages
+            if isinstance(message, vf.AssistantMessage)
+            for call in message.tool_calls or []
+        )
+
     @vf.stop
     def stop_tool(self, request: vf.Request) -> bool:
-        return bool(
-            self.data.action == "stop"
-            and request.messages
-            and isinstance(request.messages[-1], vf.ToolMessage)
-            and not request.messages[-1].content
-        )
+        return self.data.action == "stop" and self.target_probe(request)
 
     @vf.intercept
     def deny_tool(self, request: vf.Request) -> vf.Request | None:
-        if self.data.action != "deny" or not request.messages:
+        if self.data.action != "deny" or not self.target_probe(request):
             return None
         result = request.messages[-1]
         if isinstance(result, vf.ToolMessage) and not result.content:
@@ -79,6 +93,7 @@ class ToolInterceptionTaskset(vf.Taskset[GateTask, GateConfig]):
                 GateData(
                     idx=0,
                     action=self.config.action,
+                    target=self.config.target,
                     prompt=(
                         f"{action} Whether the call succeeds or is blocked, do not retry or use another tool; reply DONE."
                     ),
