@@ -118,7 +118,10 @@ def service_program(
         )
     variables = definition.get("environment") or {}
     if isinstance(variables, list):
-        variables = dict(entry.partition("=")[::2] for entry in variables)
+        variables = {
+            key: value if assigned else None
+            for key, assigned, value in (entry.partition("=") for entry in variables)
+        }
     check = definition.get("healthcheck") or {}
     test = check.get("test")
     if check.get("disable") or test in (None, "NONE", ["NONE"]):
@@ -130,16 +133,28 @@ def service_program(
     else:
         healthcheck = words(test[1:] if test[0] == "CMD" else test)
     interval = seconds(check.get("interval"), 30)
-    limits = definition.get("deploy", {}).get("resources", {}).get("limits", {})
+    deploy = definition.get("deploy") or {}
+    resources = deploy.get("resources") or {}
+    if (resources.get("reservations") or {}).get("devices") or deploy.get(
+        "replicas", 1
+    ) != 1:
+        raise ValueError(
+            f"Compose service {name!r} runs on one CPU VM of its own, so it cannot "
+            "reserve devices or run replicas"
+        )
+    limits = resources.get("limits") or {}
     cpus = definition.get("cpus", limits.get("cpus"))
     memory = definition.get("mem_limit", limits.get("memory"))
     return ServiceProgram(
         image=interpolate(definition["image"], environment),
         argv=argv,
+        # A variable without a value passes through from the project environment.
         environment={
-            key: interpolate(str(value), environment)
+            key: environment[key]
+            if value is None
+            else interpolate(str(value), environment)
             for key, value in variables.items()
-            if value is not None
+            if value is not None or key in environment
         },
         workdir=(
             interpolate(definition["working_dir"], environment)
@@ -271,6 +286,7 @@ async def own_host_services(
                     "checkpoint": None,
                     "allow": ["*"],
                     "block": [],
+                    "gpu": None,
                     "cpu": program.cpu or config.cpu,
                     "memory": program.memory or config.memory,
                 }

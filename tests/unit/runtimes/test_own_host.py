@@ -1,15 +1,18 @@
 import asyncio
 import json
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
 import pytest
 
+from verifiers.v1.runtimes import PrimeConfig, lan
 from verifiers.v1.runtimes.compose import ComposeSpec
 from verifiers.v1.runtimes.lan import (
     _start,
     in_workdir,
     interpolate,
     own_host_programs,
+    own_host_services,
     seconds,
     service_program,
 )
@@ -80,6 +83,22 @@ def test_service_program_forms():
     assert program.memory == 0.5
 
 
+def test_valueless_variables_pass_through_from_the_project_environment():
+    for variables in (
+        ["KEPT=1", "PASSED", "UNSET"],
+        {"KEPT": 1, "PASSED": None, "UNSET": None},
+    ):
+        program = service_program(
+            "api",
+            {"image": "x", "command": "y", "environment": variables},
+            {"PASSED": "from-project"},
+        )
+        assert program.environment == {"KEPT": "1", "PASSED": "from-project"}
+
+
+GPU = {"reservations": {"devices": [{"capabilities": ["gpu"]}]}}
+
+
 @pytest.mark.parametrize(
     ("definition", "message"),
     [
@@ -87,6 +106,8 @@ def test_service_program_forms():
         ({"image": "x", "command": "y", "build": "."}, "build"),
         ({"command": "y"}, "needs an image"),
         ({"image": "x"}, "needs a command"),
+        ({"image": "x", "command": "y", "deploy": {"resources": GPU}}, "devices"),
+        ({"image": "x", "command": "y", "deploy": {"replicas": 2}}, "replicas"),
     ],
 )
 def test_service_program_refuses_what_a_vm_cannot_honor(definition, message):
@@ -165,3 +186,26 @@ def test_health_check_runs_like_the_service():
         "mkdir -p /srv && cd /srv && exec sh -c 'python check.py $PORT'",
     ]
     assert service_env == check_env == {"PORT": "8000"}
+
+
+def test_service_vms_take_no_gpu_from_the_workspace(monkeypatch):
+    provisioned = []
+
+    @asynccontextmanager
+    async def provision_backend(config, name):
+        provisioned.append(config)
+        raise RuntimeError("provisioned")
+        yield
+
+    monkeypatch.setattr(lan, "provision_backend", provision_backend)
+    workspace = SimpleNamespace(config=PrimeConfig(gpu="A100"), _client=None, name="ws")
+    program = service_program("api", {"image": "x", "command": "y"}, {})
+
+    async def enter():
+        async with own_host_services(workspace, {"api": program}):
+            pass
+
+    with pytest.raises(RuntimeError, match="provisioned"):
+        asyncio.run(enter())
+    (vm,) = provisioned
+    assert (vm.gpu, vm.image, vm.allow) == (None, "x", ["*"])
