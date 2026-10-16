@@ -63,7 +63,7 @@ class ProgramResult:
 
 
 class RuntimeProcess(ABC):
-    """A live process whose stdio crosses a runtime boundary."""
+    """A process whose stdio streams across a runtime boundary."""
 
     stdout: AsyncIterator[bytes]
     stderr: AsyncIterator[bytes]
@@ -166,8 +166,8 @@ class RuntimeBackend(ABC):
     """Whether the runtime can run nested containers, as a task's Docker Compose
     services need."""
 
-    SUPPORTS_LIVE_PROCESSES: ClassVar[bool] = False
-    """Whether `open_process` starts a live process with streamed stdio, as ACP
+    SUPPORTS_STREAMING_PROCESSES: ClassVar[bool] = False
+    """Whether `open_process` starts a process with streamed stdio, as ACP
     harnesses need."""
 
     scripts_dir: ClassVar[str] = "/tmp/vf-scripts"
@@ -252,9 +252,9 @@ class RuntimeBackend(ABC):
     async def _open_process(
         self, runtime: Runtime, argv: list[str], env: dict[str, str]
     ) -> RuntimeProcess:
-        """Start a live process for a rollout-scoped harness session."""
+        """Start a streaming process for a rollout-scoped harness session."""
         raise NotImplementedError(
-            f"{type(self).__name__} does not support live processes"
+            f"{type(self).__name__} does not support streaming processes"
         )
 
     async def _run_background(

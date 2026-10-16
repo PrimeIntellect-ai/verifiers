@@ -116,9 +116,10 @@ class ACPHarness(Harness[ConfigT]):
         data: TaskData,
         tool_interception_url: str | None = None,
     ) -> HarnessSession:
-        if not runtime.backend.SUPPORTS_LIVE_PROCESSES:
+        if not runtime.backend.SUPPORTS_STREAMING_PROCESSES:
             raise HarnessError(
-                f"harness {self.config.id!r} requires a runtime with live process support"
+                f"harness {self.config.id!r} needs streaming processes, but the "
+                f"{runtime.type} runtime cannot stream processes; use a supported runtime"
             )
         config = await self.prepare_acp(
             ctx, trace, runtime, endpoint, secret, mcp_urls, data

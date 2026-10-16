@@ -454,9 +454,9 @@ async def _serve(
             runtime = harness_runtime
         elif not backend_cls(cfg.runtime).SUPPORTS_PORT_EXPOSURE:
             raise ToolsetError(
-                f"server {server.server_name!r} cannot run in its own "
-                f"{cfg.runtime.type} runtime, which cannot expose a port; colocate it "
-                "with the harness or use another runtime"
+                f"server {server.server_name!r} runs in its own runtime, but the "
+                f"{cfg.runtime.type} runtime cannot expose a port; colocate it with the "
+                "harness or use a supported runtime"
             )
         else:
             backend = await stack.enter_async_context(provision_backend(cfg.runtime))

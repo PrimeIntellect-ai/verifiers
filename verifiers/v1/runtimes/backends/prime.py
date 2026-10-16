@@ -154,7 +154,7 @@ class PrimeBackend(RuntimeBackend):
     SUPPORTS_TASK_IMAGES: ClassVar[bool] = True
     SUPPORTS_NESTED_CONTAINERS: ClassVar[bool] = True
     SUPPORTS_USER_SWITCHING: ClassVar[bool] = True
-    SUPPORTS_LIVE_PROCESSES: ClassVar[bool] = True
+    SUPPORTS_STREAMING_PROCESSES: ClassVar[bool] = True
     SUPPORTS_PORT_EXPOSURE: ClassVar[bool] = False
     is_local: ClassVar[bool] = False
 
@@ -355,7 +355,7 @@ class PrimeBackend(RuntimeBackend):
                 user=runtime.user,
             )
         except Exception as e:
-            raise SandboxError(f"prime live process failed to start: {e}") from e
+            raise SandboxError(f"prime streaming process failed to start: {e}") from e
         return PrimeProcess(process)
 
     async def expose(self, port: int) -> str:

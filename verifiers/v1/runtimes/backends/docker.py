@@ -217,7 +217,7 @@ class DockerBackend(RuntimeBackend):
 
     SUPPORTS_TASK_IMAGES: ClassVar[bool] = True
     SUPPORTS_USER_SWITCHING: ClassVar[bool] = True
-    SUPPORTS_LIVE_PROCESSES: ClassVar[bool] = True
+    SUPPORTS_STREAMING_PROCESSES: ClassVar[bool] = True
 
     def __init__(
         self,
@@ -580,7 +580,7 @@ class DockerBackend(RuntimeBackend):
         except TimeoutError as error:
             stderr = await run_shielded(_abort_process_startup(proc, runtime, pidfile))
             raise SandboxError(
-                f"container live process failed to start: {stderr or 'PID unavailable'}"
+                f"container streaming process failed to start: {stderr or 'PID unavailable'}"
             ) from error
         except BaseException:
             await run_shielded(_abort_process_startup(proc, runtime, pidfile))

@@ -36,7 +36,7 @@ runtime and the gap.
 | Task `agent_user` | `SUPPORTS_USER_SWITCHING` | docker, prime |
 | Tool server in its own runtime | `SUPPORTS_PORT_EXPOSURE` | subprocess, docker |
 | Nested containers, as Compose services need | `SUPPORTS_NESTED_CONTAINERS` | prime |
-| Live processes, as ACP harnesses need | `SUPPORTS_LIVE_PROCESSES` | subprocess, docker, prime |
+| Streaming processes, as ACP harnesses need | `SUPPORTS_STREAMING_PROCESSES` | subprocess, docker, prime |
 
 ## Runtime plugins
 
