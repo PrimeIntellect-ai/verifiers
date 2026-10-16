@@ -48,15 +48,18 @@ returns a `ServiceVMSpec` instead:
 
 ```python
 def deployment_spec(self):
-    return vf.ServiceVMSpec({
-        "tools": vf.ServiceVM(
-            image="example/tools:1",
-            command=["serve", "--port", "8000"],
-            environment={"API_KEY": self.config.api_key},
-            readiness=vf.Probe(["curl", "-sf", "localhost:8000/health"]),
-            cpu=4, memory=8,
-        ),
-    })
+    return vf.ServiceVMSpec(
+        {
+            "tools": vf.ServiceVM(
+                image="example/tools:1",
+                command=["serve", "--port", "8000"],
+                environment={"API_KEY": self.config.api_key},
+                readiness=vf.Probe(["curl", "-sf", "localhost:8000/health"]),
+                cpu=4,
+                memory=8,
+            ),
+        }
+    )
 ```
 
 Each service keeps unrestricted egress. The workspace (`main`) is the agent's own VM,
