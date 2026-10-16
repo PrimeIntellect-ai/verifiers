@@ -1,4 +1,4 @@
-"""Local Apptainer runtime: an unprivileged instance sharing the host network."""
+"""Local Apptainer runtime: an unprivileged instance with optional proxy-only networking."""
 
 import asyncio
 import contextlib
@@ -14,9 +14,16 @@ from weakref import WeakValueDictionary
 
 from pydantic import model_validator
 
+from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes.base import BaseRuntimeInfo, parse_gpu
-from verifiers.v1.runtimes.container import ContainerBackend, ContainerConfig, cli
+from verifiers.v1.runtimes.container import (
+    ContainerBackend,
+    ContainerConfig,
+    cli,
+    container_listener,
+)
+from verifiers.v1.runtimes.egress import EgressProxy, NetworkPolicy
 from verifiers.v1.utils.paths import CACHE_DIR
 
 logger = logging.getLogger(__name__)
@@ -24,11 +31,11 @@ logger = logging.getLogger(__name__)
 _ROOT = CACHE_DIR / "runtimes" / "apptainer"
 
 
-class ApptainerConfig(ContainerConfig):
+class ApptainerConfig(ContainerConfig, NetworkPolicyConfig):
     type: Literal["apptainer"] = "apptainer"
-    """Apptainer has no egress policy: instances run unprivileged on the host network,
-    as on HPC clusters without Docker. `image` is a Docker reference (pulled to a SIF
-    once per reference), any `scheme://` URI Apptainer can pull, or a local SIF path."""
+    """Unrestricted instances share the host network. Restricted instances require
+    network namespaces and Python 3.9+ in the image; setup and execution use an
+    HTTP(S) proxy. `image` is a Docker reference, pullable URI, or local SIF path."""
 
     @model_validator(mode="after")
     def validate_workdir(self) -> Self:
@@ -65,6 +72,8 @@ class ApptainerBackend(ContainerBackend):
     def _exec(
         self, env: dict[str, str], *, stdin: bool = False, user: str | None = None
     ) -> list[str]:
+        if self._proxy is not None:
+            env = {**env, **self._proxy.environment()}
         # `--env` is a comma-separated map flag, so values pass through `env` inside.
         return [
             "apptainer",
@@ -141,13 +150,25 @@ class ApptainerBackend(ContainerBackend):
             raise SandboxError(
                 f"apptainer workdir copy failed: {copied.stderr.strip()}"
             )
-        limits: list[str] = []
+        options: list[str] = []
+        if self.network_restricted:
+            directory = self._dir / "proxy"
+            directory.mkdir()
+            options += [
+                "--net",
+                "--network=none",
+                "--drop-caps=ALL",
+                # An explicit resolver avoids binding host resolver sockets from /run.
+                "--dns=127.0.0.1",
+                "--bind",
+                f"{directory}:/run/vf",
+            ]
         if self.config.cpu is not None:
-            limits += ["--cpus", str(self.config.cpu)]
+            options += ["--cpus", str(self.config.cpu)]
         if self.config.memory is not None:
-            limits += ["--memory", f"{self.config.memory}g"]
+            options += ["--memory", f"{self.config.memory}g"]
         if parse_gpu(self.config.gpu)[1]:
-            limits += ["--nv"]
+            options += ["--nv"]
         started = await cli(
             "apptainer",
             "instance",
@@ -159,7 +180,7 @@ class ApptainerBackend(ContainerBackend):
             "--writable-tmpfs",
             "--bind",
             f"{self._dir / 'workspace'}:{self.config.workdir}",
-            *limits,
+            *options,
             image,
             self._instance,
         )
@@ -168,9 +189,29 @@ class ApptainerBackend(ContainerBackend):
                 f"apptainer instance start failed: {started.stderr.strip()}"
             )
         self.info.id = self._instance
+        if self.network_restricted:
+            listener = await container_listener(
+                [*self._exec({}), "python3"], str(directory)
+            )
+            self._proxy = EgressProxy(
+                NetworkPolicy(NetworkPolicyConfig(), [], allow_non_global=True)
+            )
+            await self._proxy.start(listener=listener)
         logger.info(
             "apptainer: started instance %s (image=%s)", self.name, self.config.image
         )
+
+    async def prepare_execution(self, routes: list[str] | None) -> None:
+        if self.network_restricted:
+            assert self._proxy is not None
+            await self._proxy.prepare_execution(self.config, routes)
+
+    async def expose(self, port: int) -> str:
+        if self.network_restricted:
+            raise SandboxError(
+                "restricted Apptainer instances cannot expose ports; colocate tool servers"
+            )
+        return await super().expose(port)
 
     async def _image(self) -> str:
         """The SIF to run: a local file as is, else the reference pulled once into the

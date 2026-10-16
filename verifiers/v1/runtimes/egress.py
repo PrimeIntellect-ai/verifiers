@@ -1,4 +1,4 @@
-"""In-process HTTP(S) proxy for Docker policy and host callbacks."""
+"""In-process HTTP(S) proxy for container policy and host callbacks."""
 
 import asyncio
 import base64
@@ -120,42 +120,73 @@ class _Callback:
     host: str
     port: int
     authority: str
-    host_alias: str
 
 
 class EgressProxy:
-    def __init__(self, policy: NetworkPolicy) -> None:
+    def __init__(self, policy: NetworkPolicy, host: str = "127.0.0.1") -> None:
         self.policy = policy
+        self.host = host  # Address used by clients inside the container.
         self.token = secrets.token_urlsafe(32)
         self._authorization = b"Basic " + base64.b64encode(
             f"verifiers:{self.token}".encode()
         )
         self._callbacks: dict[str, _Callback] = {}
         self._callback_tokens: dict[_Callback, str] = {}
-        self._handlers: set[asyncio.Task] = set()
+        self._handlers: dict[asyncio.Task, bool | None] = {}
         self.server: asyncio.Server | None = None
         self.port = 0
 
-    def callback_url(self, url: str, host_alias: str = HOST_ALIAS) -> str:
-        """Route one framework-owned host-loopback HTTP(S)/WebSocket origin."""
+    def host_url(self, url: str) -> str:
+        """Route host-loopback HTTP(S)/WebSocket origins through this proxy."""
         parsed = urlsplit(url)
+        if not is_loopback_host(parsed.hostname or ""):
+            return url
         scheme = {"ws": "http", "wss": "https"}.get(parsed.scheme, parsed.scheme)
         host = (parsed.hostname or "").lower().rstrip(".")
-        if scheme not in ("http", "https") or not is_loopback_host(host):
-            raise ValueError(f"unsupported Docker host callback URL: {url}")
+        if scheme not in ("http", "https"):
+            raise ValueError(f"unsupported host callback URL: {url}")
         port = parsed.port or (443 if scheme == "https" else 80)
         authority = parsed.netloc.rpartition("@")[2]
-        callback = _Callback(scheme, host, port, authority, host_alias)
+        callback = _Callback(scheme, host, port, authority)
         token = self._callback_tokens.get(callback)
         if token is None:
             token = secrets.token_urlsafe(32)
             self._callback_tokens[callback] = token
             self._callbacks[token] = callback
         userinfo, separator, _ = parsed.netloc.rpartition("@")
-        netloc = f"{userinfo}{separator}{host_alias}:{self.port}"
+        netloc = f"{userinfo}{separator}{self.host}:{self.port}"
         path = f"{_CALLBACK_PREFIX}{token}{parsed.path or '/'}"
         visible_scheme = "ws" if parsed.scheme in ("ws", "wss") else "http"
         return urlunsplit((visible_scheme, netloc, path, parsed.query, parsed.fragment))
+
+    def environment(self) -> dict[str, str]:
+        """Proxy all external HTTP(S), leaving instance-local services reachable."""
+        proxy = f"http://verifiers:{self.token}@{self.host}:{self.port}"
+        exclusions = ",".join(
+            dict.fromkeys(("localhost", "127.0.0.1", "::1", self.host))
+        )
+        env = {"http_proxy": proxy, "https_proxy": proxy, "no_proxy": exclusions}
+        return env | {key.upper(): value for key, value in env.items()}
+
+    async def prepare_execution(
+        self, config: NetworkPolicyConfig, routes: list[str] | None
+    ) -> None:
+        """Change policy and revoke existing egress streams before execution starts."""
+        self.policy = NetworkPolicy(
+            NetworkPolicyConfig() if routes is None else config,
+            list(routes or []),
+            allow_non_global=routes is None,
+        )
+        if routes is not None:
+            # Tunnels retain their upstream connection; replacing policy alone cannot
+            # revoke setup access. Preserve callbacks and requests still reading headers;
+            # those requests will be checked against the new policy once classified.
+            handlers = [
+                task for task, callback in self._handlers.items() if callback is False
+            ]
+            for handler in handlers:
+                handler.cancel()
+            await asyncio.gather(*handlers, return_exceptions=True)
 
     async def start(
         self, bind_host: str | None = None, *, listener: socket.socket | None = None
@@ -163,7 +194,11 @@ class EgressProxy:
         if listener is None:
             self.server = await asyncio.start_server(self._runtime, bind_host, 0)
         else:
-            self.server = await asyncio.start_server(self._runtime, sock=listener)
+            try:
+                self.server = await asyncio.start_server(self._runtime, sock=listener)
+            except BaseException:
+                listener.close()
+                raise
         self.port = self.server.sockets[0].getsockname()[1]
 
     async def stop(self) -> None:
@@ -186,7 +221,7 @@ class EgressProxy:
             return
         handler = asyncio.current_task()
         assert handler is not None
-        self._handlers.add(handler)
+        self._handlers[handler] = None
         upstream_reader: asyncio.StreamReader | None = None
         upstream_writer: asyncio.StreamWriter | None = None
         response_started = False
@@ -210,6 +245,7 @@ class EgressProxy:
                 callback = self._callbacks.get(token)
                 if callback is not None:
                     parsed = parsed._replace(path=f"/{path}" if separator else "/")
+            self._handlers[handler] = callback is not None
             authorization = next(
                 (
                     value
@@ -365,7 +401,7 @@ class EgressProxy:
                     excluded.discard(b"upgrade")
                 origin_rewrites = (
                     {
-                        f"http://{callback.host_alias}:{self.port}".lower().encode(): f"{scheme}://{callback.authority}".encode()
+                        f"http://{self.host}:{self.port}".lower().encode(): f"{scheme}://{callback.authority}".encode()
                     }
                     if callback is not None
                     else {}
@@ -490,11 +526,10 @@ class EgressProxy:
                                     or (443 if redirected.scheme == "https" else 80),
                                 ) == (scheme, host, port):
                                     # Redirects cannot grant access to another host service.
-                                    value = self.callback_url(
+                                    value = self.host_url(
                                         redirected._replace(
                                             netloc=callback.authority
-                                        ).geturl(),
-                                        callback.host_alias,
+                                        ).geturl()
                                     ).encode("latin-1")
                             headers.append((name, value))
                         response = replace(
@@ -537,7 +572,7 @@ class EgressProxy:
             if upstream_writer is not None:
                 upstream_writer.close()
             writer.close()
-            self._handlers.discard(handler)
+            self._handlers.pop(handler, None)
 
 
 async def _relay(

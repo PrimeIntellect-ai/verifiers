@@ -7,6 +7,7 @@ import contextlib
 import os
 import shlex
 import signal
+import socket
 import uuid
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING
@@ -15,6 +16,7 @@ from pydantic_config import BaseConfig
 
 from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes.base import ProgramResult, RuntimeBackend, RuntimeProcess
+from verifiers.v1.runtimes.egress import EgressProxy
 from verifiers.v1.runtimes.runtime import Runtime
 from verifiers.v1.runtimes.subprocess import SubprocessProcess
 from verifiers.v1.utils.aio import run_shielded
@@ -75,6 +77,37 @@ async def cli(
     return ProgramResult(
         code, stdout.decode(errors="replace"), stderr.decode(errors="replace")
     )
+
+
+async def container_listener(argv: list[str], directory: str) -> socket.socket:
+    """Run a Python helper in a guest netns and receive its loopback listener.
+
+    The caller makes `directory` available to the helper at /run/vf.
+    Only the listener crosses namespaces; upstream sockets are created by the host.
+    """
+    script = """
+import socket
+control = socket.socket(socket.AF_UNIX)
+control.connect("/run/vf/control.sock")
+listener = socket.create_server(("127.0.0.1", 0))
+socket.send_fds(control, [b"listener"], [listener.fileno()])
+"""
+    with socket.socket(socket.AF_UNIX) as control:
+        control.bind(f"{directory}/control.sock")
+        control.listen(1)
+        control.settimeout(5)
+        helper = await cli(*argv, "-I", "-S", "-c", script)
+        if helper.exit_code != 0:
+            raise SandboxError(
+                f"container proxy listener requires Python 3.9+ in the helper image: "
+                f"{helper.stderr.strip()}"
+            )
+        with control.accept()[0] as connection:
+            connection.settimeout(5)
+            _, descriptors, *_ = socket.recv_fds(connection, 64, 1)
+    if not descriptors:
+        raise SandboxError("container proxy helper did not return a listener")
+    return socket.socket(fileno=descriptors[0])
 
 
 class ContainerProcess(RuntimeProcess):
@@ -183,6 +216,17 @@ class ContainerBackend(RuntimeBackend):
 
     config: ContainerConfig | PrimeConfig | ModalConfig
     _host_backend: RuntimeBackend | None = None
+    _proxy: EgressProxy | None = None
+
+    def host_url(self, url: str) -> str:
+        if self._host_backend is not None:
+            return self._host_backend.host_url(url)
+        return self._proxy.host_url(url) if self._proxy is not None else url
+
+    async def teardown(self) -> None:
+        if self._proxy is not None:
+            await self._proxy.stop()
+        await super().teardown()
 
     async def _run_host(self, *argv: str) -> ProgramResult:
         if self._host_backend is None:
