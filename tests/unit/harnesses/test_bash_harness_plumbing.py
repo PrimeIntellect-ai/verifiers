@@ -8,7 +8,6 @@ import signal
 import sys
 import tempfile
 import time
-from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -462,13 +461,28 @@ async def test_bash_launch_appends_the_skill_listing(monkeypatch):
     assert launched.system_prompt.endswith("\n\nSKILLS")
 
 
-def test_bash_lists_one_skill_set_at_one_path():
-    same = [
-        bash.BashHarness(bash.BashHarnessConfig(skills=[Path("/a"), Path("/b")]))
-        for _ in "xy"
-    ]
-    other = bash.BashHarness(bash.BashHarnessConfig(skills=[Path("/a")]))
-    assert same[0].skills_dir == same[1].skills_dir != other.skills_dir
+async def test_two_sessions_in_one_box_each_list_only_their_own_skills(
+    tmp_path, monkeypatch
+):
+    host = tmp_path / "host"
+    write_skill(host, "alpha", "---\nname: alpha\n---\n")
+    write_skill(host, "beta", "---\nname: beta\n---\n")
+    backend = SubprocessBackend(SubprocessConfig())
+    runtime = backend.bind()
+    await backend.start()
+    monkeypatch.setattr(Runtime, "prepare_uv_script", _no_program)
+    try:
+        listings = []
+        for name in ("alpha", "beta"):
+            harness = bash.BashHarness(bash.BashHarnessConfig(skills=[host / name]))
+            assert harness.skills_dir == bash.SKILLS_DIR
+            harness.skills_dir = str(tmp_path / "shared")
+            await harness.setup(runtime)
+            listings.append(await harness.skills_listing(runtime))
+    finally:
+        await backend.teardown()
+    assert "`alpha`" in listings[0] and "`beta`" not in listings[0]
+    assert "`beta`" in listings[1] and "`alpha`" not in listings[1]
 
 
 async def test_bash_without_skills_lists_none():

@@ -1,5 +1,3 @@
-import hashlib
-import json
 import os
 import shlex
 
@@ -7,7 +5,7 @@ from pydantic import Field, NonNegativeInt, PositiveInt, field_validator
 from pydantic_config import BaseConfig
 
 from verifiers.v1.clients import ModelContext
-from verifiers.v1.configs.harness import HarnessConfig
+from verifiers.v1.configs.harness import HarnessConfig, skill_destination
 from verifiers.v1.harness import Harness
 from verifiers.v1.harnesses.utils.launch import (
     CHAT_PROGRAM_SOURCE,
@@ -31,6 +29,9 @@ SEARCH_PROMPT = (
     "use it to research, and use bash (e.g. curl) to read result pages in full when needed."
 )
 
+# Where the skills are installed: one fixed path, so the system prompt that lists them is
+# the same on every call with the same skills.
+SKILLS_DIR = "/tmp/vf-skills"
 # Appended when the harness has skills; the program has no skill discovery of its own.
 SKILLS_PROMPT = (
     "Skills are folders under {root}. Each holds a SKILL.md card and the resources the "
@@ -115,13 +116,7 @@ class BashHarness(Harness[BashHarnessConfig]):
 
     def __init__(self, config: BashHarnessConfig) -> None:
         super().__init__(config)
-        # Per skill set: two sessions sharing one box never mix their skill sets, and the
-        # same set always lists at the same path, so the prompt that names it stays the same.
-        sources = json.dumps(
-            [s if isinstance(s, dict) else str(s) for s in config.skills]
-        )
-        digest = hashlib.sha256(sources.encode()).hexdigest()[:16]
-        self.skills_dir = f"/tmp/vf-bash-skills-{digest}"
+        self.skills_dir = SKILLS_DIR
 
     async def setup(self, runtime: Runtime) -> None:
         await runtime.prepare_uv_script(CHAT_PROGRAM_SOURCE, self.config.resolved_env)
@@ -133,12 +128,22 @@ class BashHarness(Harness[BashHarnessConfig]):
         path and description."""
         if not self.config.skills:
             return None
-        root = shlex.quote(self.skills_dir)
-        found = await runtime.run(
-            ["sh", "-c", f"find {root} -name SKILL.md 2>/dev/null | sort"], {}
-        )
+        # Only this session's own skills: another session in the same box installs its
+        # skills in the same folder.
+        cards = {
+            f"{skill_destination(skill, self.skills_dir)}/SKILL.md"
+            for skill in self.config.skills
+            if not isinstance(skill, dict) and (skill / "SKILL.md").is_file()
+        }
+        if any(isinstance(skill, dict) for skill in self.config.skills):
+            # A runtime root merges its skill folders into the folder: find them there.
+            root = shlex.quote(self.skills_dir)
+            found = await runtime.run(
+                ["sh", "-c", f"find {root} -name SKILL.md 2>/dev/null"], {}
+            )
+            cards.update(filter(None, found.stdout.splitlines()))
         lines = [SKILLS_PROMPT.format(root=self.skills_dir)]
-        for path in filter(None, found.stdout.splitlines()):
+        for path in sorted(cards):
             card = (await runtime.read(path)).decode(errors="replace")
             name, description = skill_card_fields(card, path.split("/")[-2])
             lines.append(
