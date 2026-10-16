@@ -260,37 +260,50 @@ async def chat(
     *,
     tool_choice: str | None = None,
 ):
+    try:
+        return await complete_chat(
+            client, model, messages, tools, tool_choice=tool_choice
+        )
+    except (APIConnectionError, httpx.TransportError) as error:
+        # Preserve the original transport error in stderr for the host's diagnostic.
+        traceback.print_exc()
+        raise SystemExit(MODEL_TRANSPORT_ERROR_EXIT_CODE) from error
+
+
+async def complete_chat(
+    client: AsyncOpenAI,
+    model: str,
+    messages: list[dict],
+    tools: list[dict],
+    *,
+    tool_choice: str | None = None,
+):
+    """One streamed chat completion, with an interrupted stream retried. A transport
+    error that outlasts the retries raises; `chat` turns it into the exit code."""
     kwargs = {"model": model, "messages": messages}
     if tools:
         kwargs["tools"] = tools
     if tools and tool_choice is not None:
         kwargs["tool_choice"] = tool_choice
-    try:
-        async for attempt in AsyncRetrying(
-            retry=retry_if_exception_type((APIConnectionError, httpx.TransportError)),
-            stop=stop_after_attempt(client.max_retries + 1),
-            wait=wait_random_exponential(multiplier=0.5, max=8.0),
-            before_sleep=before_sleep_log(logging.getLogger(__name__), logging.WARNING),
-            reraise=True,
-        ):
-            # Reuse the interception server's body-digest replay guard on stream retries.
-            retry_count = attempt.retry_state.attempt_number - 1
-            headers = (
-                {"x-stainless-retry-count": str(retry_count)} if retry_count else omit
-            )
-            raw_stream = await client.chat.completions.create(
-                **kwargs,
-                stream=True,
-                stream_options={"include_usage": True},
-                extra_headers=headers,
-            )
-            # The SDK retries request setup; only stream consumption is retried here.
-            with attempt:
-                return await _read_chat_completion(raw_stream)
-    except (APIConnectionError, httpx.TransportError) as error:
-        # Preserve the original transport error in stderr for the host's diagnostic.
-        traceback.print_exc()
-        raise SystemExit(MODEL_TRANSPORT_ERROR_EXIT_CODE) from error
+    async for attempt in AsyncRetrying(
+        retry=retry_if_exception_type((APIConnectionError, httpx.TransportError)),
+        stop=stop_after_attempt(client.max_retries + 1),
+        wait=wait_random_exponential(multiplier=0.5, max=8.0),
+        before_sleep=before_sleep_log(logging.getLogger(__name__), logging.WARNING),
+        reraise=True,
+    ):
+        # Reuse the interception server's body-digest replay guard on stream retries.
+        retry_count = attempt.retry_state.attempt_number - 1
+        headers = {"x-stainless-retry-count": str(retry_count)} if retry_count else omit
+        raw_stream = await client.chat.completions.create(
+            **kwargs,
+            stream=True,
+            stream_options={"include_usage": True},
+            extra_headers=headers,
+        )
+        # The SDK retries request setup; only stream consumption is retried here.
+        with attempt:
+            return await _read_chat_completion(raw_stream)
 
 
 async def _read_chat_completion(raw_stream):

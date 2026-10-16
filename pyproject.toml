@@ -232,6 +232,7 @@ markers = [
     "e2b: integration cells touching the e2b runtime (external sandbox; local-only, excluded in CI)",
     "colocated: integration cells with a tool server colocated in the harness runtime",
     "null: integration cells on the null harness",
+    "inline_chat: integration cells on the inline-chat harness",
     "bash: integration cells on the bash harness",
     "claude_code: integration cells on the claude-code harness",
     "openclaw: integration cells on the OpenClaw harness",

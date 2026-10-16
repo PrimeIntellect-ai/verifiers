@@ -63,6 +63,11 @@ class Harness(ABC, Generic[ConfigT]):
     that installs and drives a third-party program — on the host (subprocess) it
     leaks host state (auth, config, processes) both ways. Only the minimal
     in-house loops (`bash`, `null`) override to False."""
+    RUNS_IN_PROCESS: ClassVar[bool] = False
+    """Whether `launch()` runs its loop in the env server instead of a program in the
+    runtime (`inline-chat`). Such a harness reaches the interception from the host,
+    while `endpoint` is the URL a program inside the runtime uses: only the subprocess
+    runtime, where the two are the same, can host it."""
 
     def __init__(self, config: ConfigT) -> None:
         self.config = config

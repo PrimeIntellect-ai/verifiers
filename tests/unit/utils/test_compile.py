@@ -23,6 +23,12 @@ def test_in_house_loops_run_on_the_host() -> None:
         validate_pairing(harness(harness_id), vf.Task, SubprocessConfig())
 
 
+def test_an_in_process_harness_needs_the_host() -> None:
+    validate_pairing(harness("inline-chat"), vf.Task, SubprocessConfig())
+    with pytest.raises(ValueError, match="runs in the env server"):
+        validate_pairing(harness("inline-chat"), vf.Task, DockerConfig())
+
+
 def test_agent_programs_need_a_container() -> None:
     with pytest.raises(ValueError, match="needs a container runtime"):
         validate_pairing(harness("codex"), vf.Task, SubprocessConfig())

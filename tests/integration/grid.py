@@ -9,6 +9,7 @@ the stack cannot run is collected as a skip with its reason. Every reason derive
 capability the code declares, never from a list of names, so the grid follows the code:
 
 - `Harness.NEEDS_CONTAINER`: the harness never runs on the host (`subprocess`)
+- `Harness.RUNS_IN_PROCESS`: the harness runs only on the host (`subprocess`)
 - `Harness.EXECUTES_CODE`, `SUPPORTS_MCP`, `SUPPORTS_SKILLS`, resume support
   (`SUPPORTS_RESUME` or a native session): the behavior needs a shell, MCP tools,
   skills, or a resumable exchange
@@ -133,6 +134,8 @@ def unsupported(
         return f"needs {runtime} on the host"
     if runtime == "subprocess" and cls.NEEDS_CONTAINER:
         return f"{name} needs a container runtime"
+    if runtime != "subprocess" and cls.RUNS_IN_PROCESS:
+        return f"{name} runs in the env server, not in a runtime"
     if "shell" in needs and not cls.EXECUTES_CODE:
         return f"{name} gives the model no shell"
     if "mcp" in needs and not cls.SUPPORTS_MCP:
