@@ -52,6 +52,7 @@ HARNESSES: list[str | dict] = [
     "kimi-code",
     "pi",
     "openclaw",
+    "opencode",
     "mini-swe-agent",
     "prime-agent",
 ]
