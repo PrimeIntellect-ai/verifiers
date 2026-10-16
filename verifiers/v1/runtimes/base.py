@@ -11,7 +11,7 @@ import uuid
 import weakref
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, ClassVar
 
 from pydantic_config import BaseConfig
@@ -139,11 +139,25 @@ class BaseRuntimeInfo(BaseConfig):
     (`Agent.run(runtime=...)`) rather than provisioning its own."""
 
 
+@dataclass
+class RuntimeCache:
+    """Framework state for one provisioned resource, kept off the backend contract:
+    prepared uv scripts and the tool-server sources installed into it."""
+
+    uv_interpreters: dict[str, str] = field(default_factory=dict)
+    uv_locks: dict[str, asyncio.Lock] = field(default_factory=dict)
+    curl_ready: bool = False
+    mcp_sources: set[str] = field(default_factory=set)
+    mcp_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+
+
 class RuntimeBackend(ABC):
     """Provider implementation for one container, VM, or local execution environment.
 
-    Holds shared resource state and implements lifecycle, networking, commands, and
-    file access. Handles bind user/env defaults without duplicating that resource.
+    A backend implements `start`, `exec`, `write`, and `cleanup` or `teardown`, and
+    may override `run`, `read`, `expose`, `prepare_execution`, and `host_url`. Its
+    `SUPPORTS_*` flags declare optional features. Tasks and harnesses use it through
+    `Runtime` views (`bind`), which add user and environment bindings.
     """
 
     is_local: bool = True
@@ -166,10 +180,6 @@ class RuntimeBackend(ABC):
     """Whether the runtime can run nested containers, as a task's Docker Compose
     services need."""
 
-    SUPPORTS_STREAMING_PROCESSES: ClassVar[bool] = False
-    """Whether `open_process` starts a process with streamed stdio, as ACP
-    harnesses need."""
-
     scripts_dir: ClassVar[str] = "/tmp/vf-scripts"
     """Digest-keyed PEP 723 scripts inside the runtime. Sandboxes own their `/tmp`;
     the host subprocess runtime overrides this with its per-user cache."""
@@ -181,12 +191,9 @@ class RuntimeBackend(ABC):
         # Per-run task values live on the runtime rather than its serializable config/info.
         # Explicit process values (model credentials, proxy settings, etc.) override these.
         self.env: dict[str, str] = {}
-        self._uv_interpreters: dict[str, str] = {}
-        self._uv_script_locks: dict[str, asyncio.Lock] = {}
-        self._mcp_sources: set[str] = set()
-        self._mcp_install_lock = asyncio.Lock()
+        self.cache = RuntimeCache()
         self._setup_claimed = False
-        self._curl_ready = False
+        self._background: list[RuntimeProcess] = []
         self.stopped = False
         """Whether teardown has begun (set by `stop`). A stopped runtime is dead: a rollout
         refuses to borrow one — the owner tore it down, so any use is a lifetime bug in the
@@ -218,7 +225,17 @@ class RuntimeBackend(ABC):
         to completion, then re-raises the cancellation. Framework method — override
         `teardown`, not this."""
         self.stopped = True  # before the await: no new borrows once teardown begins
-        await run_shielded(self.teardown())
+        await run_shielded(self._stop())
+
+    async def _stop(self) -> None:
+        # End background processes first, so their streams close before the box goes.
+        background, self._background = self._background, []
+        with contextlib.suppress(TimeoutError):
+            async with asyncio.timeout(10):
+                await asyncio.gather(
+                    *(process.kill() for process in background), return_exceptions=True
+                )
+        await self.teardown()
 
     async def teardown(self) -> None:
         """Free the provisioned resource, off the event loop. Override only for teardown
@@ -234,51 +251,41 @@ class RuntimeBackend(ABC):
         is dead, and run off the event loop by `stop` on the normal path. Default no-op."""
 
     @abstractmethod
-    async def _run(
-        self, runtime: Runtime, argv: list[str], env: dict[str, str]
-    ) -> ProgramResult:
-        pass
-
-    async def _run_program(
-        self, runtime: Runtime, argv: list[str], env: dict[str, str]
-    ) -> ProgramResult:
-        """Run the harness's MAIN program — the rollout itself (a possibly long-lived, stateful,
-        agentic run) — as opposed to the short idempotent infra ops (write / mv / install /
-        provisioning) that go through `run`. No framework layer may replay this argv: doing so
-        against the rollout's persistent trace would fork a duplicate branch. Provider SDKs may
-        still retry individual safe transport operations underneath `run`."""
-        return await runtime.run(argv, env)
-
-    async def _open_process(
+    async def exec(
         self, runtime: Runtime, argv: list[str], env: dict[str, str]
     ) -> RuntimeProcess:
-        """Start a streaming process for a rollout-scoped harness session."""
-        raise NotImplementedError(
-            f"{type(self).__name__} does not support streaming processes"
+        """Start `argv` as `runtime.user` in the working directory, with
+        `runtime.process_env(env)`, and return a handle that streams its stdio."""
+
+    async def run(
+        self, runtime: Runtime, argv: list[str], env: dict[str, str]
+    ) -> ProgramResult:
+        """Run `argv` to completion. Override when the provider has a cheaper or sturdier
+        blocking call; the default drains an `exec`, with stdin closed."""
+        process = await self.exec(
+            runtime, ["sh", "-c", 'exec "$@" < /dev/null', "sh", *argv], env
+        )
+        try:
+            stdout, stderr, exit_code = await asyncio.gather(
+                _drain(process.stdout), _drain(process.stderr), process.wait()
+            )
+        except BaseException:
+            with contextlib.suppress(Exception):
+                await run_shielded(process.kill())
+            raise
+        return ProgramResult(
+            exit_code, stdout.decode(errors="replace"), stderr.decode(errors="replace")
         )
 
-    async def _run_background(
-        self, runtime: Runtime, argv: list[str], env: dict[str, str], log: str
-    ) -> None:
-        """Start `argv` as a background process in the runtime (combined output to
-        `log`, a path in the workspace) and return immediately. It runs until `stop()`
-        tears the runtime down. Used to host a tool server colocated with the harness."""
-        raise NotImplementedError(
-            f"{type(self).__name__} does not support run_background"
-        )
-
-    @abstractmethod
-    async def _read(
+    async def read(
         self, runtime: Runtime, path: str, max_bytes: int | None = None
     ) -> bytes:
         """Read at most `max_bytes` bytes at the source, or the whole file if None.
 
         Overrides must accept `max_bytes` and enforce it before transferring data.
-        The public `read` method checks for overflow using one extra byte.
-        Runtimes without bounded binary reads delegate capped reads here, using
-        base64 because `run` returns decoded text.
+        `Runtime.read` checks for overflow using one extra byte. The default reads
+        through `run`, base64-encoded because `run` returns decoded text.
         """
-        assert max_bytes is not None
         # Through a temp file, not a pipe: `head | base64` exits with base64's 0
         # even when the path is missing, and a missing file must raise here just
         # as it does from a native binary read.
@@ -288,11 +295,12 @@ class RuntimeBackend(ABC):
                 "-c",
                 (
                     "t=$(mktemp) || exit 1; "
-                    'head -c "$1" -- "$2" > "$t" || { rm -f "$t"; exit 1; }; '
+                    'if [ -n "$1" ]; then head -c "$1" -- "$2"; else cat -- "$2"; fi '
+                    '> "$t" || { rm -f "$t"; exit 1; }; '
                     'base64 < "$t"; rc=$?; rm -f "$t"; exit $rc'
                 ),
                 "sh",
-                str(max_bytes),
+                "" if max_bytes is None else str(max_bytes),
                 path,
             ],
             {},
@@ -302,8 +310,8 @@ class RuntimeBackend(ABC):
         return base64.b64decode(result.stdout)
 
     @abstractmethod
-    async def _write(self, runtime: Runtime, path: str, data: bytes) -> None:
-        pass
+    async def write(self, runtime: Runtime, path: str, data: bytes) -> None:
+        """Write `data` to `path`, creating parent directories."""
 
     def host_url(self, url: str) -> str:
         """The URL a program inside this runtime uses to reach a host-bound `url`."""
@@ -346,3 +354,7 @@ class RuntimeBackend(ABC):
         down with the sandbox in `stop()`. The reverse of a
         host `Tunnel` (interception.tunnel, which reaches a host port from inside a runtime)."""
         return f"http://127.0.0.1:{port}"
+
+
+async def _drain(stream: AsyncIterator[bytes]) -> bytes:
+    return b"".join([chunk async for chunk in stream])

@@ -90,23 +90,24 @@ class Runtime:
         return await self.backend.expose(port)
 
     async def run(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
-        return await self.backend._run(self, argv, env)
+        """Run `argv` to completion and collect its output."""
+        return await self.backend.run(self, argv, env)
 
-    async def run_program(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
-        return await self.backend._run_program(self, argv, env)
-
-    async def open_process(
-        self, argv: list[str], env: dict[str, str]
-    ) -> RuntimeProcess:
-        return await self.backend._open_process(self, argv, env)
+    async def exec(self, argv: list[str], env: dict[str, str]) -> RuntimeProcess:
+        """Start `argv` and return a handle that streams its stdio."""
+        return await self.backend.exec(self, argv, env)
 
     async def run_background(
         self, argv: list[str], env: dict[str, str], log: str
     ) -> None:
-        await self.backend._run_background(self, argv, env, log)
+        """Start `argv` with its combined output in `log`, a path in the working
+        directory, and return. The process runs until the runtime stops."""
+        script = f'exec "$@" > {shlex.quote(log)} 2>&1 < /dev/null'
+        process = await self.exec(["sh", "-c", script, "sh", *argv], env)
+        self.backend._background.append(process)
 
     async def write(self, path: str, data: bytes) -> None:
-        await self.backend._write(self, path, data)
+        await self.backend.write(self, path, data)
 
     async def alive(self) -> bool:
         """Whether the box still executes anything. Not every runtime raises when
@@ -139,15 +140,15 @@ class Runtime:
             else f"{self.backend.scripts_dir}-{self.user}"
         )
         path = f"{directory}/{digest}.py"
-        if path not in self.backend._uv_interpreters:
-            async with self.backend._uv_script_locks.setdefault(path, asyncio.Lock()):
-                if self.user is not None and not self.backend._curl_ready:
+        if path not in self.backend.cache.uv_interpreters:
+            async with self.backend.cache.uv_locks.setdefault(path, asyncio.Lock()):
+                if self.user is not None and not self.backend.cache.curl_ready:
                     # Only root can install a downloader for the user's uv bootstrap.
                     curl = await self.with_user(None).run(
                         ["sh", "-c", _INSTALL_CURL], {}
                     )
-                    self.backend._curl_ready = curl.exit_code == 0
-                if path not in self.backend._uv_interpreters:
+                    self.backend.cache.curl_ready = curl.exit_code == 0
+                if path not in self.backend.cache.uv_interpreters:
                     tmp = f"{path}.{uuid.uuid4().hex}.tmp"
                     await self.write(tmp, data)
                     command = (
@@ -166,10 +167,10 @@ class Runtime:
                             "failed to prepare uv script: "
                             f"{result.stderr.strip()[-2000:]}"
                         )
-                    self.backend._uv_interpreters[path] = (
+                    self.backend.cache.uv_interpreters[path] = (
                         result.stdout.strip().splitlines()[-1]
                     )
-        interpreter = self.backend._uv_interpreters[path]
+        interpreter = self.backend.cache.uv_interpreters[path]
         if not activate:
             return [interpreter, path]
         venv = str(PurePosixPath(interpreter).parent.parent)
@@ -209,11 +210,11 @@ class Runtime:
         can't assume. The cap is enforced inside the box rather than after the
         transfer. Framework method — override `_read`, not this."""
         if max_bytes is None:
-            return await self.backend._read(self, path)
+            return await self.backend.read(self, path)
         if max_bytes < 0:
             raise ValueError("max_bytes must be non-negative")
         # One extra byte distinguishes an exact fit from a truncated file.
-        data = await self.backend._read(self, path, max_bytes=max_bytes + 1)
+        data = await self.backend.read(self, path, max_bytes=max_bytes + 1)
         if len(data) > max_bytes:
             raise SandboxError(f"read {path!r}: over the {max_bytes} byte limit")
         return data

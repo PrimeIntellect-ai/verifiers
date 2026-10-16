@@ -217,7 +217,6 @@ class DockerBackend(RuntimeBackend):
 
     SUPPORTS_TASK_IMAGES: ClassVar[bool] = True
     SUPPORTS_USER_SWITCHING: ClassVar[bool] = True
-    SUPPORTS_STREAMING_PROCESSES: ClassVar[bool] = True
 
     def __init__(
         self,
@@ -430,7 +429,7 @@ class DockerBackend(RuntimeBackend):
         if self._host_backend is not None:
             await self._host_backend.prepare_execution(routes)
 
-    def _exec(
+    def _exec_argv(
         self, env: dict[str, str], *, stdin: bool = False, user: str | None = None
     ) -> list[str]:
         assert self._container is not None
@@ -458,19 +457,6 @@ class DockerBackend(RuntimeBackend):
             self.config.workdir,
             self._container,
         ]
-
-    async def _run_background(
-        self, runtime: Runtime, argv: list[str], env: dict[str, str], log: str
-    ) -> None:
-        # The engine owns the background server as a detached exec process.
-        command = self._exec(runtime.process_env(env), user=runtime.user)
-        command.insert(2, "--detach")
-        script = f"exec {shlex.join(argv)} > {shlex.quote(log)} 2>&1 < /dev/null"
-        result = await self._run_host(*command, "sh", "-c", script)
-        if result.exit_code != 0:
-            raise SandboxError(
-                f"docker background process failed: {result.stderr.strip()}"
-            )
 
     def cleanup(self) -> None:
         if self.info.borrowed or self._container is None or self._stopped:
@@ -515,14 +501,14 @@ class DockerBackend(RuntimeBackend):
                     self._run_host("rm", "-f", f"{temporary}.in", f"{temporary}.out")
                 )
 
-    async def _run(
+    async def run(
         self, runtime: Runtime, argv: list[str], env: dict[str, str]
     ) -> ProgramResult:
         return await self._run_host(
-            *self._exec(runtime.process_env(env), user=runtime.user), *argv
+            *self._exec_argv(runtime.process_env(env), user=runtime.user), *argv
         )
 
-    async def _open_process(
+    async def exec(
         self, runtime: Runtime, argv: list[str], env: dict[str, str]
     ) -> RuntimeProcess:
         pidfile = f"/tmp/vf-process-{uuid.uuid4().hex}.pid"
@@ -537,7 +523,7 @@ class DockerBackend(RuntimeBackend):
             'fi; echo $$ > "$1"; shift; exec "$@"'
         )
         command = [
-            *self._exec(runtime.process_env(env), user=runtime.user, stdin=True),
+            *self._exec_argv(runtime.process_env(env), user=runtime.user, stdin=True),
             "sh",
             "-c",
             wrapper,
@@ -556,7 +542,7 @@ class DockerBackend(RuntimeBackend):
                 )
             )
         else:
-            proc = await self._host_backend.bind().open_process(command, {})
+            proc = await self._host_backend.bind().exec(command, {})
         loop = asyncio.get_running_loop()
         deadline = loop.time() + (30 if self._host_backend is not None else 5)
         try:
@@ -566,7 +552,7 @@ class DockerBackend(RuntimeBackend):
                     # have written their PID and finished before the first poll.
                     returncode = await proc.poll()
                     ready = await self._run_host(
-                        *self._exec({}, user=runtime.user),
+                        *self._exec_argv({}, user=runtime.user),
                         "cat",
                         pidfile,
                     )
@@ -591,12 +577,12 @@ class DockerBackend(RuntimeBackend):
             f"{stderr or ready.stderr.strip()}"
         )
 
-    async def _read(
+    async def read(
         self, runtime: Runtime, path: str, max_bytes: int | None = None
     ) -> bytes:
         argv = ["cat"] if max_bytes is None else ["head", "-c", str(max_bytes)]
         code, data, stderr = await self._communicate_host(
-            *self._exec({}, user=runtime.user), *argv, "--", path
+            *self._exec_argv({}, user=runtime.user), *argv, "--", path
         )
         if code != 0:
             raise SandboxError(
@@ -604,10 +590,10 @@ class DockerBackend(RuntimeBackend):
             )
         return data
 
-    async def _write(self, runtime: Runtime, path: str, data: bytes) -> None:
+    async def write(self, runtime: Runtime, path: str, data: bytes) -> None:
         parent = shlex.quote(str(PurePosixPath(path).parent))
         code, _, stderr = await self._communicate_host(
-            *self._exec({}, user=runtime.user, stdin=True),
+            *self._exec_argv({}, user=runtime.user, stdin=True),
             "sh",
             "-c",
             f"mkdir -p {parent} && cat > {shlex.quote(path)}",

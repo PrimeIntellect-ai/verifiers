@@ -58,5 +58,5 @@ class MyHarness(Harness[MyHarnessConfig]):
             "HARNESS_BASE_MODEL": ctx.model,
         }
         # Run the harness to completion inside the selected runtime.
-        return await runtime.run_program(["<HARNESS_BINARY>", str(prompt or "")], env)
+        return await runtime.run(["<HARNESS_BINARY>", str(prompt or "")], env)
 ```

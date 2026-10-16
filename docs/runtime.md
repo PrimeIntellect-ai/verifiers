@@ -36,7 +36,6 @@ runtime and the gap.
 | Task `agent_user` | `SUPPORTS_USER_SWITCHING` | docker, prime |
 | Tool server in its own runtime | `SUPPORTS_PORT_EXPOSURE` | subprocess, docker |
 | Nested containers, as Compose services need | `SUPPORTS_NESTED_CONTAINERS` | prime |
-| Streaming processes, as ACP harnesses need | `SUPPORTS_STREAMING_PROCESSES` | subprocess, docker, prime |
 
 ## Runtime plugins
 
@@ -81,11 +80,24 @@ class MyBackend(RuntimeBackend):
         self.info = CustomRuntimeInfo(**config.model_dump())
 ```
 
-A plugin implements `start`, `_run`, `_read`, `_write`, and `cleanup` (or `teardown`),
-and optionally `_open_process` and `_run_background`. Install its package in every
-process that loads the config, because validation imports the backend. The capability
-attributes default to off. `tests/unit/runtimes/test_custom.py` has a complete
-example.
+A backend implements this contract; `Runtime` views add user and environment
+bindings, `run_background`, and the uv-script helpers on top of it:
+
+| Method | Required | Purpose |
+| --- | --- | --- |
+| `start()` | yes | Provision the resource. |
+| `cleanup()` or `teardown()` | yes | Free it. `cleanup` is synchronous and also runs at interpreter exit. |
+| `exec(runtime, argv, env)` | yes | Start a process and return a handle that streams its stdio. |
+| `write(runtime, path, data)` | yes | Write a file, creating parent directories. |
+| `run(runtime, argv, env)` | no | Run to completion. The default drains an `exec`. |
+| `read(runtime, path, max_bytes)` | no | Read a file. The default reads through `run`. |
+| `expose(port)` | with `SUPPORTS_PORT_EXPOSURE` | Publish a port to a URL outside the runtime. |
+| `prepare_execution(routes)` | with `NetworkPolicyConfig` | Apply the network policy before the agent starts. |
+| `host_url(url)` | no | Rewrite a host URL for programs inside the runtime. |
+
+Install the plugin's package in every process that loads the config, because
+validation imports the backend. The capability flags default to off.
+`tests/unit/test_runtimes.py` has a complete example.
 
 ## Deployment and services
 

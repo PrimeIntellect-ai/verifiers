@@ -116,11 +116,6 @@ class ACPHarness(Harness[ConfigT]):
         data: TaskData,
         tool_interception_url: str | None = None,
     ) -> HarnessSession:
-        if not runtime.backend.SUPPORTS_STREAMING_PROCESSES:
-            raise HarnessError(
-                f"harness {self.config.id!r} needs streaming processes, but the "
-                f"{runtime.type} runtime cannot stream processes; use a supported runtime"
-            )
         config = await self.prepare_acp(
             ctx, trace, runtime, endpoint, secret, mcp_urls, data
         )
@@ -244,7 +239,7 @@ class ACPHarnessSession(HarnessSession):
             {**self.config.env, "UV_FROZEN": "false"},
             activate=False,
         )
-        process = await self.runtime.open_process(program, self.config.env)
+        process = await self.runtime.exec(program, self.config.env)
         self._process = process
         self._reader = _PacketReader(process.stdout)
         self._response_task = asyncio.create_task(self._read_responses(self._reader))

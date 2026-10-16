@@ -50,7 +50,7 @@ def signal_process(
 ) -> None:
     if process.returncode is not None:
         return
-    # open_process() creates a new session, so pgid == pid and signalling the
+    # exec() creates a new session, so pgid == pid and signalling the
     # group reaps the complete process tree.
     with contextlib.suppress(ProcessLookupError, PermissionError):
         os.killpg(os.getpgid(process.pid), signal_)
@@ -83,28 +83,30 @@ class SubprocessProcess(RuntimeProcess):
         signal_process(self._process, signal.SIGKILL)
 
 
+# Shared across the worker's per-rollout runtimes, which use one host script cache.
+_UV_INTERPRETERS: dict[str, str] = {}
+_UV_LOCKS: dict[str, asyncio.Lock] = {}
+
+
 class SubprocessBackend(RuntimeBackend):
-    SUPPORTS_STREAMING_PROCESSES: ClassVar[bool] = True
     # Share prepared script environments across the worker's per-rollout runtimes.
     scripts_dir: ClassVar[str] = str(CACHE_DIR / "runtimes" / "scripts")
-    _interpreters: ClassVar[dict[str, str]] = {}
-    _locks: ClassVar[dict[str, asyncio.Lock]] = {}
 
     def __init__(self, config: SubprocessConfig, name: str | None = None) -> None:
         super().__init__(name)
-        self._uv_interpreters = self._interpreters
-        self._uv_script_locks = self._locks
+        self.cache.uv_interpreters = _UV_INTERPRETERS
+        self.cache.uv_locks = _UV_LOCKS
         self.config = config
         self.info = SubprocessRuntimeInfo(**config.model_dump())
         self.workdir: Path | None = None
-        self._background: list[asyncio.subprocess.Process] = []
+        self._children: list[asyncio.subprocess.Process] = []
 
     async def start(self) -> None:
         self.workdir = CACHE_DIR / "runtimes" / "subprocess" / self.name
         self.workdir.mkdir(parents=True)
         self.info.id = str(self.workdir)
 
-    async def _run(
+    async def run(
         self, runtime: Runtime, argv: list[str], env: dict[str, str]
     ) -> ProgramResult:
         full_env = {k: v for k, v in os.environ.items() if "API_KEY" not in k.upper()}
@@ -134,7 +136,7 @@ class SubprocessBackend(RuntimeBackend):
             stderr=stderr.decode(errors="replace"),
         )
 
-    async def _open_process(
+    async def exec(
         self, runtime: Runtime, argv: list[str], env: dict[str, str]
     ) -> RuntimeProcess:
         full_env = {k: v for k, v in os.environ.items() if "API_KEY" not in k.upper()}
@@ -148,31 +150,10 @@ class SubprocessBackend(RuntimeBackend):
             stderr=asyncio.subprocess.PIPE,
             start_new_session=True,
         )
-        self._background.append(proc)
+        self._children.append(proc)
         return SubprocessProcess(proc)
 
-    async def _run_background(
-        self, runtime: Runtime, argv: list[str], env: dict[str, str], log: str
-    ) -> None:
-        full_env = {k: v for k, v in os.environ.items() if "API_KEY" not in k.upper()}
-        full_env.update(runtime.process_env(env))
-        logfile = self.workdir / log
-        with logfile.open(
-            "wb"
-        ) as f:  # child dups the fd; safe to close ours after spawn
-            proc = await asyncio.create_subprocess_exec(
-                *argv,
-                env=full_env,
-                cwd=self.workdir,
-                stdout=f,
-                stderr=asyncio.subprocess.STDOUT,
-                start_new_session=True,  # own process group, so cleanup() reaps the whole tree
-            )
-        self._background.append(
-            proc
-        )  # killed in stop() — a host process won't die on its own
-
-    async def _read(
+    async def read(
         self, runtime: Runtime, path: str, max_bytes: int | None = None
     ) -> bytes:
         if max_bytes is None:
@@ -196,17 +177,17 @@ class SubprocessBackend(RuntimeBackend):
         except OSError as exc:
             raise SandboxError(f"read {path!r}: {exc}") from exc
         return (
-            data if data is not None else await super()._read(runtime, path, max_bytes)
+            data if data is not None else await super().read(runtime, path, max_bytes)
         )
 
-    async def _write(self, runtime: Runtime, path: str, data: bytes) -> None:
+    async def write(self, runtime: Runtime, path: str, data: bytes) -> None:
         target = self.workdir / path
         target.parent.mkdir(parents=True, exist_ok=True)
         await asyncio.to_thread(target.write_bytes, data)
 
     async def teardown(self) -> None:
         """Stop and reap background servers before their event loop closes."""
-        background = list(self._background)
+        background = list(self._children)
         for proc in background:
             signal_process(proc, signal.SIGTERM)
         if background:
@@ -228,13 +209,13 @@ class SubprocessBackend(RuntimeBackend):
                         ),
                         timeout=_BACKGROUND_STOP_TIMEOUT,
                     )
-        self._background = []
+        self._children = []
         if self.workdir is not None:
             await asyncio.to_thread(shutil.rmtree, self.workdir, True)
 
     def cleanup(self) -> None:
-        for proc in self._background:
+        for proc in self._children:
             signal_process(proc, signal.SIGTERM)
-        self._background = []
+        self._children = []
         if self.workdir is not None:
             shutil.rmtree(self.workdir, ignore_errors=True)

@@ -42,7 +42,7 @@ services:
 
 class ComposeHarness(vf.Harness):
     async def launch(self, ctx, trace, runtime, endpoint, secret, mcp_urls, data):
-        return await runtime.run_program(
+        return await runtime.run(
             [
                 "python",
                 "-c",
