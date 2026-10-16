@@ -1,5 +1,6 @@
+import hashlib
+import json
 import os
-import secrets
 import shlex
 
 from pydantic import Field, NonNegativeInt, PositiveInt, field_validator
@@ -114,8 +115,13 @@ class BashHarness(Harness[BashHarnessConfig]):
 
     def __init__(self, config: BashHarnessConfig) -> None:
         super().__init__(config)
-        # Per instance: two sessions sharing one box never mix their skill sets.
-        self.skills_dir = f"/tmp/vf-bash-skills-{secrets.token_hex(8)}"
+        # Per skill set: two sessions sharing one box never mix their skill sets, and the
+        # same set always lists at the same path, so the prompt that names it stays the same.
+        sources = json.dumps(
+            [s if isinstance(s, dict) else str(s) for s in config.skills]
+        )
+        digest = hashlib.sha256(sources.encode()).hexdigest()[:16]
+        self.skills_dir = f"/tmp/vf-bash-skills-{digest}"
 
     async def setup(self, runtime: Runtime) -> None:
         await runtime.prepare_uv_script(CHAT_PROGRAM_SOURCE, self.config.resolved_env)

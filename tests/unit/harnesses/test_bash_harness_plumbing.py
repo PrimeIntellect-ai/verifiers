@@ -8,7 +8,9 @@ import signal
 import sys
 import tempfile
 import time
+from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 from openai.types.chat import ChatCompletion
@@ -34,23 +36,30 @@ class Launched:
 
     args: list[str]
     system_prompt: str | None
+    prompt: Any
     credentials: dict[str, str]
 
 
-async def launch(monkeypatch, runtime=None, **config) -> Launched:
+async def launch(monkeypatch, runtime=None, prompt: Any = "go", **config) -> Launched:
     launched = Launched()
 
     async def fake_launch(
         source, config, ctx, trace, runtime, endpoint, secret, *rest, **kwargs
     ):
-        launched.system_prompt = rest[1]
+        launched.system_prompt, launched.prompt = rest[1], rest[2]
         launched.args = list(kwargs["extra_args"])
         launched.credentials = dict(kwargs.get("credentials") or {})
 
     monkeypatch.setattr(bash, "launch_chat_program", fake_launch)
     harness = bash.BashHarness(bash.BashHarnessConfig(**config))
     await harness.launch(
-        None, None, runtime, "http://e", "s", {}, TaskData(prompt="go")
+        None,
+        None,
+        runtime,
+        "http://e",
+        "s",
+        {},
+        TaskData(prompt=prompt, system_prompt="rules"),
     )
     return launched
 
@@ -412,9 +421,7 @@ def write_skill(root, folder: str, card: str) -> None:
     (root / folder / "tool.sh").write_text("echo hi\n")
 
 
-async def test_bash_installs_its_skills_and_lists_them_in_the_system_prompt(
-    tmp_path, monkeypatch
-):
+async def test_bash_installs_its_skills_and_lists_them(tmp_path, monkeypatch):
     host = tmp_path / "host"
     write_skill(
         host,
@@ -453,6 +460,15 @@ async def test_bash_launch_appends_the_skill_listing(monkeypatch):
     monkeypatch.setattr(bash.BashHarness, "skills_listing", listing)
     launched = await launch(monkeypatch)
     assert launched.system_prompt.endswith("\n\nSKILLS")
+
+
+def test_bash_lists_one_skill_set_at_one_path():
+    same = [
+        bash.BashHarness(bash.BashHarnessConfig(skills=[Path("/a"), Path("/b")]))
+        for _ in "xy"
+    ]
+    other = bash.BashHarness(bash.BashHarnessConfig(skills=[Path("/a")]))
+    assert same[0].skills_dir == same[1].skills_dir != other.skills_dir
 
 
 async def test_bash_without_skills_lists_none():
