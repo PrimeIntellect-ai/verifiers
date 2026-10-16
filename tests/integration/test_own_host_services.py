@@ -13,17 +13,29 @@ pytestmark = pytest.mark.skipif(
     not os.environ.get("PRIME_API_KEY"), reason="needs PRIME_API_KEY"
 )
 
-COMPOSE = """
-services:
-  sidecar:
-    image: python:3.11-slim
-    command: [python, -m, http.server, "8000"]
-    working_dir: /srv
-    healthcheck:
-      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://localhost:8000')"]
-      interval: 2s
-      retries: 60
-"""
+# The working directory does not exist in the image, and the health check passes only
+# with the service's environment and working directory, as under Compose.
+HEALTHCHECK = (
+    'test "$$(pwd)" = /srv/sidecar && python -c "import os, urllib.request; '
+    "urllib.request.urlopen('http://localhost:' + os.environ['PORT'])\""
+)
+COMPOSE = json.dumps(
+    {
+        "services": {
+            "sidecar": {
+                "image": "python:3.11-slim",
+                "command": ["python", "-m", "http.server", "8000"],
+                "working_dir": "/srv/sidecar",
+                "environment": {"PORT": "8000"},
+                "healthcheck": {
+                    "test": ["CMD-SHELL", HEALTHCHECK],
+                    "interval": "2s",
+                    "retries": 60,
+                },
+            }
+        }
+    }
+)
 
 FETCH = """
 import sys, urllib.request

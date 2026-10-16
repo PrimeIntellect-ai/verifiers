@@ -1,9 +1,13 @@
+import asyncio
 import json
+from types import SimpleNamespace
 
 import pytest
 
 from verifiers.v1.runtimes.compose import ComposeSpec
 from verifiers.v1.runtimes.lan import (
+    _start,
+    in_workdir,
     interpolate,
     own_host_programs,
     seconds,
@@ -69,7 +73,8 @@ def test_service_program_forms():
         },
         {},
     )
-    assert program.argv == ["sh", "-c", "cd /srv && exec python -m http.server 8000"]
+    assert program.argv == ["python", "-m", "http.server", "8000"]
+    assert program.workdir == "/srv"
     assert program.environment == {"A": "1", "B": "x=y"}
     assert program.healthcheck is None
     assert program.memory == 0.5
@@ -117,3 +122,46 @@ def test_own_host_programs_need_the_agent_vm_as_workspace(
     spec = ComposeSpec(write(tmp_path, services), own_host=own_host)
     with pytest.raises(ValueError, match=message):
         own_host_programs(spec, {})
+
+
+def test_in_workdir_creates_and_enters_the_directory():
+    assert in_workdir(["true"], None) == ["true"]
+    assert in_workdir(["python", "x y.py"], "/srv/app") == [
+        "sh",
+        "-c",
+        "mkdir -p /srv/app && cd /srv/app && exec python 'x y.py'",
+    ]
+
+
+def test_health_check_runs_like_the_service():
+    program = service_program(
+        "api",
+        {
+            "image": "python:3.11-slim",
+            "command": "python serve.py",
+            "working_dir": "/srv",
+            "environment": {"PORT": "8000"},
+            "healthcheck": {"test": "python check.py $$PORT"},
+        },
+        {},
+    )
+    calls = []
+
+    async def run_background(argv, env, log):
+        calls.append(("service", argv, env))
+
+    async def run(argv, env):
+        calls.append(("check", argv, env))
+        return SimpleNamespace(exit_code=0, stdout="")
+
+    asyncio.run(
+        _start(SimpleNamespace(run_background=run_background, run=run), "api", program)
+    )
+    (_, service, service_env), (_, check, check_env) = calls
+    assert "mkdir -p /srv && cd /srv && exec python serve.py" in service[2]
+    assert check == [
+        "sh",
+        "-c",
+        "mkdir -p /srv && cd /srv && exec sh -c 'python check.py $PORT'",
+    ]
+    assert service_env == check_env == {"PORT": "8000"}

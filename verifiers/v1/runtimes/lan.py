@@ -44,8 +44,6 @@ RESOLVE = (
     '[ -n "$address" ] || address=$(python3 -c "import socket, sys; '
     'print(socket.gethostbyname(sys.argv[1]))" "$1" 2>/dev/null); echo "$address"'
 )
-# Activity that keeps a service VM from reaching its idle timeout mid-rollout.
-KEEPALIVE_SECONDS = 600
 _VARIABLE = re.compile(
     r"\$(?:(\$)|\{([A-Za-z_][A-Za-z0-9_]*)(?::?-([^}]*))?\}|([A-Za-z_][A-Za-z0-9_]*))"
 )
@@ -60,6 +58,7 @@ class ServiceProgram:
     image: str
     argv: list[str]
     environment: dict[str, str]
+    workdir: str | None
     healthcheck: list[str] | None
     interval: float
     timeout: float
@@ -117,12 +116,6 @@ def service_program(
         raise ValueError(
             f"Compose service {name!r} needs a command (or entrypoint) for its own VM"
         )
-    if workdir := definition.get("working_dir"):
-        argv = [
-            "sh",
-            "-c",
-            f"cd {shlex.quote(interpolate(workdir, environment))} && exec {shlex.join(argv)}",
-        ]
     variables = definition.get("environment") or {}
     if isinstance(variables, list):
         variables = dict(entry.partition("=")[::2] for entry in variables)
@@ -148,6 +141,11 @@ def service_program(
             for key, value in variables.items()
             if value is not None
         },
+        workdir=(
+            interpolate(definition["working_dir"], environment)
+            if definition.get("working_dir")
+            else None
+        ),
         healthcheck=healthcheck,
         interval=interval,
         timeout=seconds(check.get("timeout"), 30),
@@ -196,18 +194,34 @@ def _tag(name: str) -> str:
     return "vf-service-" + re.sub(r"[^a-z0-9-]", "-", name.lower())
 
 
+def in_workdir(argv: list[str], workdir: str | None) -> list[str]:
+    """Run `argv` the way Compose runs a service's processes: in its working directory,
+    created if missing."""
+    if workdir is None:
+        return argv
+    directory = shlex.quote(workdir)
+    return [
+        "sh",
+        "-c",
+        f"mkdir -p {directory} && cd {directory} && exec {shlex.join(argv)}",
+    ]
+
+
 async def _start(runtime, name: str, program: ServiceProgram) -> None:
     log = f"/tmp/vf-service-{name}.log"
     status = f"/tmp/vf-service-{name}.exit"
     # Record the exit status, so a crashed service fails setup instead of its health wait.
-    script = f"{shlex.join(program.argv)}; echo $? > {shlex.quote(status)}"
+    service = shlex.join(in_workdir(program.argv, program.workdir))
+    script = f"{service}; echo $? > {shlex.quote(status)}"
     await runtime.run_background(["sh", "-c", script], program.environment, log)
     if program.healthcheck is None:
         return
+    # Like Compose, the check sees the service's environment and working directory.
+    check = in_workdir(program.healthcheck, program.workdir)
     for attempt in range(program.attempts + 1):
         with contextlib.suppress(TimeoutError):
             async with asyncio.timeout(program.timeout + 10):
-                if (await runtime.run(program.healthcheck, {})).exit_code == 0:
+                if (await runtime.run(check, program.environment)).exit_code == 0:
                     return
         exited = await runtime.run(["cat", status], {})
         if exited.exit_code == 0 or attempt == program.attempts:
@@ -221,9 +235,9 @@ async def _start(runtime, name: str, program: ServiceProgram) -> None:
         await asyncio.sleep(program.interval)
 
 
-async def _keepalive(runtime) -> None:
+async def _keepalive(runtime, every: float) -> None:
     while True:
-        await asyncio.sleep(KEEPALIVE_SECONDS)
+        await asyncio.sleep(every)
         with contextlib.suppress(Exception):
             await runtime.run(["true"], {})
 
@@ -245,6 +259,10 @@ async def own_host_services(
     async with AsyncExitStack() as stack:
         backends: dict[str, RuntimeBackend] = {}
 
+        async def stop(task: asyncio.Task) -> None:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
         async def provision(name: str, program: ServiceProgram) -> None:
             vm = config.model_copy(
                 update={
@@ -261,6 +279,13 @@ async def own_host_services(
                 provision_backend(vm, name=f"{workspace.name}-{name}")
             )
             backends[name] = backend
+            # A service VM sees no commands once healthy; activity keeps it inside its
+            # idle timeout, from boot on, while other services are still starting.
+            if config.idle_timeout is not None:
+                every = max(10.0, config.idle_timeout / 3)
+                stack.push_async_callback(
+                    stop, asyncio.create_task(_keepalive(backend.bind(), every))
+                )
             await _start(backend.bind(), name, program)
 
         try:
@@ -269,15 +294,6 @@ async def own_host_services(
                     group.create_task(provision(name, program))
         except ExceptionGroup as failed:
             raise failed.exceptions[0]  # one service's failure, typed for retries
-
-        async def stop(task: asyncio.Task) -> None:
-            task.cancel()
-            await asyncio.gather(task, return_exceptions=True)
-
-        for backend in backends.values():
-            stack.push_async_callback(
-                stop, asyncio.create_task(_keepalive(backend.bind()))
-            )
 
         network = await client.create_lan_network(f"vf-{uuid.uuid4().hex[:16]}")
 
