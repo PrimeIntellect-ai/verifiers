@@ -51,7 +51,7 @@ dependencies = [
     "tomli-w>=1.0.0",
     "renderers[multimodal]>=0.1.12",
     "typing_extensions>=4.12.2",
-    "mcp==2.0.0",
+    "mcp==2.2.0",
 ]
 
 [dependency-groups]
