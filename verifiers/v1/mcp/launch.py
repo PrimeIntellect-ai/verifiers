@@ -434,15 +434,17 @@ async def _serve(
     state_secret: str = "",
     state_base: str | None = None,
     services: Mapping[str, Runtime] | None = None,
+    hosts: Mapping[str, str] | None = None,
 ):
     cfg = server.config
     colocated = getattr(cfg, "colocated", False)
     if (service := getattr(cfg, "service", None)) is not None:
-        # The harness reaches the server over the deployment's Compose network.
+        # The harness reaches the server over the deployment's network: a Compose
+        # service by its name, a service VM by its LAN name.
         if services is None or service not in services:
             raise ToolsetError(
-                f"server {server.server_name!r} runs in Compose service {service!r}, "
-                "which needs a task whose Compose services define it"
+                f"server {server.server_name!r} runs in service {service!r}, "
+                "which needs a task whose Compose services or service VMs define it"
             )
         runtime = services[service]
         if runtime.is_local:
@@ -463,7 +465,8 @@ async def _serve(
             ),
             state_secret=state_secret,
         )
-        yield _ServedServer(f"http://{service}:{port}/mcp", runtime)
+        host = (hosts or {}).get(service, service)
+        yield _ServedServer(f"http://{host}:{port}/mcp", runtime)
         return
     async with contextlib.AsyncExitStack() as stack:
         # Colocated servers inherit the harness cut. A separately provisioned filtered
@@ -532,6 +535,7 @@ async def serve(
     state_secret: str = "",
     state_base: str | None = None,
     services: Mapping[str, Runtime] | None = None,
+    hosts: Mapping[str, str] | None = None,
 ):
     """Serve one MCP server and yield the URL visible to its consumer."""
     async with _serve(
@@ -541,6 +545,7 @@ async def serve(
         state_secret=state_secret,
         state_base=state_base,
         services=services,
+        hosts=hosts,
     ) as served:
         yield served.url
 
@@ -649,6 +654,7 @@ async def serve_tools(
     state_route: str = "",
     state_base: str | None = None,
     services: Mapping[str, Runtime] | None = None,
+    hosts: Mapping[str, str] | None = None,
 ):
     """Bring up a rollout's tool servers and yield `{name: url}` the harness reaches: the
     task-scoped `toolsets` are launched by `serve` (placement off each one's `config`; the
@@ -690,6 +696,7 @@ async def serve_tools(
                         state_secret=state_secret,
                         state_base=state_base,
                         services=services,
+                        hosts=hosts,
                     )
                 )
                 logger.info("tool server '%s': %s", name, urls[name])

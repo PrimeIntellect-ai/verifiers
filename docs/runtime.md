@@ -41,21 +41,36 @@ setup and select its workspace service. For example, in a task with `app` and
 `postgres` services, `app` can be the workspace while `postgres` runs alongside it.
 Without a Compose specification, the deployment manages a single runtime.
 
-On a Prime VM the task's network policy covers the whole VM, services included. A
-service that needs other egress, e.g. one whose tools call public APIs while the
-workspace stays offline, runs on a Prime VM of its own: list it in
-`ComposeSpec.own_host`. The rollout's LAN lets the workspace's VM reach it by its
-service name, and nothing reach the workspace; the service keeps unrestricted egress.
-Such a service needs an `image` and a `command` (a VM does not run the image's
-entrypoint), with optional `environment`, `working_dir`, `healthcheck` and resource
-limits. The other services must run on their own VMs too, and the workspace is the
-agent's own VM.
+**Service VMs** are task services on Prime VMs of their own. A Prime VM's network
+policy covers the whole VM, Compose services included, so a service that needs other
+egress, e.g. a tool server that calls public APIs while the workspace stays offline,
+returns a `ServiceVMSpec` instead:
+
+```python
+def deployment_spec(self):
+    return vf.ServiceVMSpec({
+        "tools": vf.ServiceVM(
+            image="example/tools:1",
+            command=["serve", "--port", "8000"],
+            environment={"API_KEY": self.config.api_key},
+            readiness=vf.Probe(["curl", "-sf", "localhost:8000/health"]),
+            cpu=4, memory=8,
+        ),
+    })
+```
+
+Each service keeps unrestricted egress. The workspace (`main`) is the agent's own VM,
+under the task's policy. The VMs boot together, and a LAN network per rollout lets the
+workspace's VM open connections to the services while nothing can open one to the
+workspace. The workspace reaches a service at its LAN name,
+`deployment.hosts[name]` (`<sandbox-id>.sandbox.internal`). A service's environment
+reaches its VM only.
 
 Task hooks can receive `deployment` and use `deployment.target(name)` to access a
 named service through a runtime view. A task tool server can run in a named service
-(`ToolsetConfig.service`, Compose on a Prime or Modal VM); the harness reaches it over
-the Compose network by the service's name, so the server can front services the
-workspace cannot reach. `finalize_services()` collects sidecar evidence
+(`ToolsetConfig.service`: a Compose service on a Prime or Modal VM, or a service VM);
+the harness reaches it over the Compose network by the service's name, or over the LAN,
+so the server can front services the workspace cannot reach. `finalize_services()` collects sidecar evidence
 before verification. See [Harbor's Compose support](harbor.md#docker-compose) for
 provider details. Local Docker Compose requires
 `agent.deployment.trust_compose = true` because task-authored Compose can access

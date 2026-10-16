@@ -41,6 +41,7 @@ if TYPE_CHECKING:
     from verifiers.v1.runtimes import Runtime
     from verifiers.v1.runtimes.compose import ComposeSpec
     from verifiers.v1.runtimes.deployment import Deployment
+    from verifiers.v1.runtimes.service_vms import ServiceVMSpec
     from verifiers.v1.trace import Trace
 
 logger = logging.getLogger(__name__)
@@ -188,8 +189,9 @@ class Task(Generic[DataT, StateT, ConfigT]):
         """Live-only process environment; unlike TaskData, it is not traced."""
         return {}
 
-    def deployment_spec(self) -> ComposeSpec | None:
-        """Optional service composition for each independent attempt."""
+    def deployment_spec(self) -> ComposeSpec | ServiceVMSpec | None:
+        """Optional services for each independent attempt: Compose services beside the
+        workspace, or services on VMs of their own."""
         return
 
     @property

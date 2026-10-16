@@ -79,12 +79,6 @@ class ComposeSpec:
     workspace: str = "main"
     host_image: str | None = None
     image_override: bool = False
-    own_host: tuple[str, ...] = ()
-    """Services that run on a Prime VM of their own instead of beside the workspace,
-    e.g. a service that needs egress the task's policy denies the workspace. The
-    rollout's LAN lets the workspace reach them by name; each keeps unrestricted
-    egress. Each needs an `image` and a `command`, and the workspace must not be
-    authored: it is the agent's own VM."""
 
 
 @asynccontextmanager

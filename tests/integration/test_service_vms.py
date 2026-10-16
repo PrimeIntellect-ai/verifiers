@@ -1,5 +1,5 @@
-"""An own-host Compose service runs on its own Prime VM, reachable from the restricted
-workspace over the rollout's LAN, with unrestricted egress of its own."""
+"""A service VM runs on a Prime VM of its own, reachable from the restricted workspace
+over the rollout's LAN, with unrestricted egress of its own."""
 
 import json
 import os
@@ -13,28 +13,18 @@ pytestmark = pytest.mark.skipif(
     not os.environ.get("PRIME_API_KEY"), reason="needs PRIME_API_KEY"
 )
 
-# The working directory does not exist in the image, and the health check passes only
-# with the service's environment and working directory, as under Compose.
-HEALTHCHECK = (
-    'test "$$(pwd)" = /srv/sidecar && python -c "import os, urllib.request; '
+# The working directory does not exist in the image, and the probe passes only with the
+# service's environment and working directory.
+READY = (
+    'test "$(pwd)" = /srv/sidecar && python -c "import os, urllib.request; '
     "urllib.request.urlopen('http://localhost:' + os.environ['PORT'])\""
 )
-COMPOSE = json.dumps(
-    {
-        "services": {
-            "sidecar": {
-                "image": "python:3.11-slim",
-                "command": ["python", "-m", "http.server", "8000"],
-                "working_dir": "/srv/sidecar",
-                "environment": {"PORT": "8000"},
-                "healthcheck": {
-                    "test": ["CMD-SHELL", HEALTHCHECK],
-                    "interval": "2s",
-                    "retries": 60,
-                },
-            }
-        }
-    }
+SIDECAR = vf.ServiceVM(
+    image="python:3.11-slim",
+    command=["python", "-m", "http.server", "8000"],
+    environment={"PORT": "8000"},
+    workdir="/srv/sidecar",
+    readiness=vf.Probe(["sh", "-c", READY], interval=2, attempts=60),
 )
 
 FETCH = """
@@ -54,8 +44,9 @@ def fetch(url):
     except Exception as error:
         return type(error).__name__
 
+host = open("/tmp/sidecar-host").read()
 json.dump(
-    {"sidecar": fetch("http://sidecar:8000"), "public": fetch("https://example.com")},
+    {"sidecar": fetch(f"http://{host}:8000"), "public": fetch("https://example.com")},
     open("/tmp/probe.json", "w"),
 )
 """
@@ -66,13 +57,12 @@ class ProbeHarness(vf.Harness):
         return await runtime.run_program(["python", "-c", PROBE], {})
 
 
-class OwnHostData(vf.TaskData):
-    compose_dir: str
+class ServiceVMTask(vf.Task[vf.TaskData, vf.State, vf.TaskConfig]):
+    def deployment_spec(self) -> vf.ServiceVMSpec:
+        return vf.ServiceVMSpec({"sidecar": SIDECAR})
 
-
-class OwnHostTask(vf.Task[OwnHostData, vf.State, vf.TaskConfig]):
-    def deployment_spec(self) -> vf.ComposeSpec:
-        return vf.ComposeSpec(directory=self.data.compose_dir, own_host=("sidecar",))
+    async def setup(self, trace, runtime, deployment):
+        await runtime.write("/tmp/sidecar-host", deployment.hosts["sidecar"].encode())
 
     async def finalize(self, trace, runtime, deployment):
         trace.info["workspace"] = json.loads(await runtime.read("/tmp/probe.json"))
@@ -82,18 +72,8 @@ class OwnHostTask(vf.Task[OwnHostData, vf.State, vf.TaskConfig]):
         trace.info["sidecar"] = sidecar.stdout.strip()
 
 
-async def test_own_host_service_keeps_its_egress_beside_a_restricted_workspace(
-    tmp_path,
-):
-    (tmp_path / "environment").mkdir()
-    (tmp_path / "environment" / "docker-compose.yaml").write_text(COMPOSE)
-    task = OwnHostTask(
-        OwnHostData(
-            prompt="Probe the network",
-            compose_dir=str(tmp_path),
-            network_allow=[],
-        )
-    )
+async def test_service_vm_keeps_its_egress_beside_a_restricted_workspace():
+    task = ServiceVMTask(vf.TaskData(prompt="Probe the network", network_allow=[]))
     config = vf.AgentConfig(
         model="unused",
         runtime=vf.PrimeConfig(labels=["vf-integration"]),

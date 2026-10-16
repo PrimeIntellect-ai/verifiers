@@ -20,6 +20,7 @@ from verifiers.v1.runtimes.base import (
     register,
 )
 from verifiers.v1.runtimes.compose import ComposeSpec
+from verifiers.v1.runtimes.service_vms import ServiceVMSpec
 from verifiers.v1.utils.aio import run_shielded
 
 logger = logging.getLogger(__name__)
@@ -75,7 +76,7 @@ class Deployment:
         self,
         backend: RuntimeBackend,
         *,
-        spec: ComposeSpec | None = None,
+        spec: ComposeSpec | ServiceVMSpec | None = None,
         env: dict[str, str] | None = None,
         config: DeploymentConfig | None = None,
         borrowed_runtime: Runtime | None = None,
@@ -89,6 +90,9 @@ class Deployment:
 
         self._strategy = _deployment_strategy(self.config, backend.config, spec)
         self.target_backends: dict[str, RuntimeBackend] = {}
+        self.hosts: dict[str, str] = {}
+        """The hostname the workspace reaches a named target by, where it is not the
+        target's name (a service VM's LAN name)."""
         self.harness_backend: RuntimeBackend | None = None
         self.execution_backend: RuntimeBackend | None = None
         self._stack = AsyncExitStack()

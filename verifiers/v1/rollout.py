@@ -382,16 +382,19 @@ class Rollout:
                         state_route=self.trace.id,
                         state_base=base_url,
                         services=services,
+                        hosts=self.deployment.hosts,
                     )
                 )
                 # Setup and service provisioning are complete. Apply the runtime's
                 # execution policy while preserving the framework routes the agent uses.
-                # Compose service names resolve inside the deployment, not as egress.
+                # Service hosts resolve inside the deployment (Compose names, LAN
+                # names), not as egress.
+                internal = {*services, *self.deployment.hosts.values()}
                 await self.deployment.prepare_execution(
                     [
                         url
                         for url in [self._endpoint, *self._urls.values()]
-                        if urlsplit(url).hostname not in services
+                        if urlsplit(url).hostname not in internal
                     ]
                 )
                 async with (
