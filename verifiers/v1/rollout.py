@@ -30,7 +30,6 @@ from verifiers.v1.harness import Harness, HarnessSession
 from verifiers.v1.interception import Interception, serve_interception
 from verifiers.v1.mcp import SharedToolServer, serve_tools
 from verifiers.v1.runtimes import (
-    ModalConfig,
     Runtime,
     RuntimeConfig,
     make_backend,
@@ -158,10 +157,7 @@ class Rollout:
             ctx=ctx,
             trace=self.trace,
             network_policy=(
-                NetworkPolicyConfig(allow=[])
-                if isinstance(execution_policy, ModalConfig)
-                and not execution_policy.network_access
-                else execution_policy
+                execution_policy
                 if isinstance(execution_policy, NetworkPolicyConfig)
                 else NetworkPolicyConfig()
             ),

@@ -68,12 +68,9 @@ class ComposeTask(HarborTask):
             trace.info["solver_released_before_grading"] = True
 
     async def finalize_services(self, trace, targets):
-        result = await targets["main"]._run_host(
-            "docker",
-            "inspect",
-            "--format",
-            "{{.State.Running}}",
-            targets["main"].info.id,
+        main = targets["main"].backend
+        result = await main._run_host(
+            "docker", "inspect", "--format", "{{.State.Running}}", main._container
         )
         assert result.stdout.strip() == "false", (
             "workspace must stop before sidecar collection"

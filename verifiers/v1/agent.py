@@ -12,7 +12,7 @@ import logging
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager, nullcontext
 from contextvars import ContextVar
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from typing import Generic, Literal, Self, cast
 from weakref import WeakValueDictionary
 
@@ -52,7 +52,6 @@ from verifiers.v1.types import (
 )
 from verifiers.v1.utils.aio import run_shielded
 from verifiers.v1.utils.compile import (
-    cap_remote_agent_timeout,
     resolve_runtime_config,
     validate_pairing,
 )
@@ -850,10 +849,7 @@ class Agent:
             "harness": harness,
             "ctx": self.ctx,
             "runtime_config": runtime_config,
-            "timeouts": replace(
-                timeouts,
-                agent=cap_remote_agent_timeout(timeouts.agent, runtime_config, task),
-            ),
+            "timeouts": timeouts,
             "limits": self.limits,
             "shared_tools": shared_tools,
             "interception": self._interception_for(run_is_local, task, shared_tools),

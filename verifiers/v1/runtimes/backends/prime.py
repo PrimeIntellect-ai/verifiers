@@ -364,7 +364,7 @@ class PrimeBackend(RuntimeBackend):
     async def expose(self, port: int) -> str:
         raise SandboxError(
             "Prime VM sandboxes do not support port exposure; colocate the service "
-            "with its consumer, or use a docker or modal service runtime"
+            "with its consumer, or use a docker service runtime"
         )
 
     async def _run_background(

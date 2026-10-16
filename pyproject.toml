@@ -96,14 +96,6 @@ harbor = [
     # Harbor currently publishes Python 3.12+ packages; keep core verifiers installable on 3.11.
     "harbor==0.24.0 ; python_full_version >= '3.12'",
 ]
-modal = [
-    "modal>=1.5.4",
-]
-e2b = [
-    # <3: the runtime swaps the SDK command handle's private stream decoders for
-    # byte-accurate live output (see runtimes/e2b.py _byte_handle).
-    "e2b>=2.35.0,<3",
-]
 openenv = [
     "openenv>=0.4.1",
 ]
@@ -226,8 +218,6 @@ markers = [
     "subprocess: integration cells touching the subprocess (host) runtime",
     "docker: integration cells touching the docker runtime",
     "prime: integration cells touching the prime runtime (real sandbox + tunnel)",
-    "modal: integration cells touching the modal runtime (external sandbox; local-only, excluded in CI)",
-    "e2b: integration cells touching the e2b runtime (external sandbox; local-only, excluded in CI)",
     "refused: integration cells whose runtime must refuse the behavior with this message",
     "colocated: integration cells with a tool server colocated in the harness runtime",
     "null: integration cells on the null harness",

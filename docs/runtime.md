@@ -31,15 +31,17 @@ runtime and the gap.
 
 | Feature | Declared by | Built-in runtimes |
 | --- | --- | --- |
-| Task image, container-only harnesses, isolated scoring | `supports_image` | docker, prime, modal, e2b |
-| Task network policy | config inherits `NetworkPolicyConfig` | prime, modal, e2b |
+| Task image, container-only harnesses, isolated scoring | `supports_image` | docker, prime |
+| Task network policy | config inherits `NetworkPolicyConfig` | prime |
 | Task `agent_user` | `supports_user` | docker, prime |
-| Tool server in its own runtime | `supports_expose` | subprocess, docker, modal, e2b |
-| Docker Compose services | `supports_compose` | prime, modal |
+| Tool server in its own runtime | `supports_expose` | subprocess, docker |
+| Docker Compose services | `supports_compose` | prime |
 
 ## Runtime plugins
 
-Select `type = "custom"` to use a `RuntimeBackend` subclass from your own package:
+verifiers ships only the `prime` sandbox runtime. Run other providers, such as Modal or
+E2B, as plugins: select `type = "custom"` to use a `RuntimeBackend` subclass from your
+own package:
 
 ```toml
 [env.agent.runtime]
@@ -106,7 +108,7 @@ Without a Compose specification, the deployment manages a single runtime.
 Task hooks can receive `deployment` and use `deployment.target(name)` to access a
 named service through a runtime view. `finalize_services()` collects sidecar evidence
 before verification. See [Harbor's Compose support](harbor.md#docker-compose) for
-provider details. Compose runs on Prime and Modal VMs.
+provider details. Compose runs on Prime VMs.
 
 For model-free validation of an isolated task, finalize the submission and collect
 its artifacts, then call `vf.grade_submission(task, trace, runtime)`. This uses the

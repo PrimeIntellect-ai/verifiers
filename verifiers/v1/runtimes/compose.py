@@ -1,4 +1,4 @@
-"""Compose deployment on a provider VM that hosts the Docker daemon."""
+"""Compose deployment on a Prime VM that hosts the Docker daemon."""
 
 import asyncio
 import io
@@ -18,22 +18,18 @@ from pathlib import Path
 from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes import (
     DockerBackend,
-    ModalConfig,
     PrimeConfig,
     RuntimeBackend,
     RuntimeConfig,
     provision_backend,
 )
-from verifiers.v1.runtimes.base import SERVICE_PORT, ProgramResult
+from verifiers.v1.runtimes.base import ProgramResult
 from verifiers.v1.utils.aio import run_shielded
 
 logger = logging.getLogger(__name__)
 
-# One provider VM hosts the Docker daemon and every service.
-VM_HOST = {
-    PrimeConfig: {"image": "python:3.11-slim-trixie", "workdir": "/"},
-    ModalConfig: {"image": "docker:28.3.3-dind", "workdir": "/", "vm": True},
-}
+# One Prime VM hosts the Docker daemon and every service.
+VM_HOST = {"image": "python:3.11-slim-trixie", "workdir": "/"}
 INSTALL_DOCKER = (
     "command -v dockerd >/dev/null || { export DEBIAN_FRONTEND=noninteractive; "
     "apt-get update -qq && apt-get install -y -qq --no-install-recommends docker.io "
@@ -75,11 +71,9 @@ async def compose_services(
     tuple[dict[str, DockerBackend], Callable[[], Awaitable[str]], RuntimeBackend]
 ]:
     """Own one Compose attempt and lend its services until the context exits."""
-    assert isinstance(config, (PrimeConfig, ModalConfig))
+    assert isinstance(config, PrimeConfig)
     if config.gpu:
         raise ValueError("Compose currently supports CPU tasks")
-    if isinstance(config, ModalConfig) and not config.network_access:
-        raise ValueError("Compose on Modal requires network_access=True")
     project = ["docker", "compose", "--project-name", f"vf-{uuid.uuid4().hex}"]
     compose_argv = list(project)
     compose_env: dict[str, str] = {}
@@ -148,20 +142,17 @@ async def compose_services(
                 json.dumps({"services": {spec.workspace: {"environment": environment}}})
             )
 
-            host_config = VM_HOST[type(config)]
+            host_config = VM_HOST
             if spec.host_image is not None:
                 host_config = {**host_config, "image": spec.host_image}
             host_backend = await stack.enter_async_context(
                 provision_backend(config.model_copy(update=host_config))
             )
-            if isinstance(config, PrimeConfig):
-                install = await host_backend.bind().run(
-                    ["sh", "-c", INSTALL_DOCKER], {}
+            install = await host_backend.bind().run(["sh", "-c", INSTALL_DOCKER], {})
+            if install.exit_code:
+                raise SandboxError(
+                    f"Docker bootstrap failed: {install.stderr} {install.stdout}"
                 )
-                if install.exit_code:
-                    raise SandboxError(
-                        f"Docker bootstrap failed: {install.stderr} {install.stdout}"
-                    )
             await host_backend.bind().run_background(
                 ["dockerd", "--host=unix:///var/run/docker.sock"],
                 {},
@@ -242,13 +233,6 @@ async def compose_services(
                     raise SandboxError(
                         "Compose ports must use dynamically assigned host ports"
                     )
-            # Compose rejects cycles, so this ends at the owner of main's network.
-            owner = spec.workspace
-            while (mode := services[owner].get("network_mode", "")).startswith(
-                "service:"
-            ):
-                owner = mode.removeprefix("service:")
-
             main = config.model_dump(
                 include={"image", "workdir"}, exclude_defaults=True, exclude_none=True
             )
@@ -257,10 +241,6 @@ async def compose_services(
             if "workdir" in main:
                 main["working_dir"] = main.pop("workdir")
             overlay = {"services": {spec.workspace: main}}
-            # Port publication belongs to the service that owns main's network.
-            publish = overlay["services"].setdefault(owner, {})
-            if isinstance(config, ModalConfig):
-                publish["ports"] = [f"{SERVICE_PORT}:{SERVICE_PORT}"]
             await host_backend.bind().write(
                 f"{root}/overlay.json", json.dumps(overlay).encode()
             )

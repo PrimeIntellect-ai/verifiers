@@ -49,8 +49,8 @@ _ENSURE_UV = (
     f"|| {{ {{ {_INSTALL_CURL}; {_DOWNLOAD_UV}; }} && hash -r && uv_supports_scripts; }}"
 )
 
-# The single port a sandbox runtime forwards out for a server hosted in it: a public URL on
-# modal/prime, a host loopback port on the local container engines. A server placed in such
+# The single port a sandbox runtime forwards out for a server hosted in it, e.g. a host
+# loopback port on Docker. A server placed in such
 # a runtime binds this (on 0.0.0.0) and is reached at the URL `expose` returns.
 SERVICE_PORT = 8000
 
@@ -90,7 +90,7 @@ class RuntimeProcess(ABC):
 
 
 def parse_gpu(gpu: str | None) -> tuple[str | None, int]:
-    """A Modal-style GPU spec -> (type, count) for providers that want them split:
+    """A GPU spec -> (type, count) for providers that want them split:
     "A100" -> ("A100", 1), "A100:2" -> ("A100", 2), "2" -> (None, 2) (count only,
     provider-chosen type), None/"" -> (None, 0)."""
     if not gpu:
@@ -333,7 +333,7 @@ class RuntimeBackend(ABC):
     @property
     def published_port(self) -> int | None:
         """A fixed port this runtime exposes to the outside at startup, declared up front to the
-        provider (Modal forwards only ports named at `Sandbox.create`). When set, a server placed
+        provider (some forward only ports named at creation). When set, a server placed
         here binds it instead of a host-chosen free port, and `expose` returns its public URL.
         `None` for runtimes whose services already sit on host loopback (subprocess),
         which pick a free port."""
@@ -342,7 +342,7 @@ class RuntimeBackend(ABC):
     async def expose(self, port: int) -> str:
         """Publish a port running *inside this runtime* to a URL reachable from the host/outside.
         A runtime on the host network is reached at host loopback as is; a sandbox overrides
-        this with its port exposure (modal `tunnels()`, prime `client.expose`, a container
-        engine's published port), torn down with the sandbox in `stop()`. The reverse of a
+        this with its port exposure (e.g. a container engine's published port), torn
+        down with the sandbox in `stop()`. The reverse of a
         host `Tunnel` (interception.tunnel, which reaches a host port from inside a runtime)."""
         return f"http://127.0.0.1:{port}"

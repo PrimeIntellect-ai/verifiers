@@ -42,7 +42,6 @@ from verifiers.v1.utils.scope import run_scope
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
-    from verifiers.v1.runtimes.backends.modal import ModalConfig
     from verifiers.v1.runtimes.backends.prime import PrimeConfig
 
 _HOST_NETWORK = sys.platform == "linux"
@@ -221,7 +220,7 @@ class DockerBackend(RuntimeBackend):
 
     def __init__(
         self,
-        config: DockerConfig | PrimeConfig | ModalConfig,
+        config: DockerConfig | PrimeConfig,
         name: str | None = None,
         *,
         host_backend: RuntimeBackend | None = None,
@@ -246,7 +245,7 @@ class DockerBackend(RuntimeBackend):
     @contextlib.asynccontextmanager
     async def attach(
         cls,
-        config: DockerConfig | PrimeConfig | ModalConfig,
+        config: DockerConfig | PrimeConfig,
         container: str,
         *,
         host_backend: RuntimeBackend,

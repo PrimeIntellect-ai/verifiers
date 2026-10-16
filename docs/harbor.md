@@ -107,8 +107,8 @@ shared and separate verifiers.
 ## Docker Compose
 
 Tasks containing `environment/docker-compose.yaml` declare a composition that the
-deployment provisions on Prime VMs or Modal's VM runtime. Other runtimes, including
-local Docker, refuse Compose tasks. Harbor is a task-format adapter and works under
+deployment provisions on a Prime VM. Other runtimes, including local Docker, refuse
+Compose tasks. Harbor is a task-format adapter and works under
 the ordinary single-agent and best-of-N Envs. Docker Compose v2 (`docker compose`) is
 required on the VM host. Custom host images must provide the v2 plugin; standalone
 `docker-compose` v1 is unsupported. Task-local `.env` files and declared task env
@@ -119,19 +119,14 @@ networking, and volumes; the agent executes in a single `main` container.
 Host networking is unsupported. Runtime defaults preserve the authored image and
 working directory; task settings and non-default runtime overrides take precedence.
 
-For Prime, set `runtime.type = "prime"`. One VM hosts Docker and all
-services, and its network policy applies to every service after trusted setup.
-For Modal, set `runtime.type = "modal"`; Compose uses the SDK's experimental VM
-backend with Docker support and requires `network_access = true` and access to that
-backend. GPU Compose tasks are unsupported.
+Set `runtime.type = "prime"`. One VM hosts Docker and all services, and its network
+policy applies to every service after trusted setup. GPU Compose tasks are
+unsupported.
 
-The runtime's CPU and memory settings size the entire remote sandbox, so allow room
-for sidecars. Prime also applies the disk request; Modal has no disk-size setting.
-Prebuilt service images must be Docker-pullable inside the sandbox; services with a
-`build` stanza are built there. Prime-only VM image references cannot serve as inner
-container images. Prime VM ports cannot be published externally. Modal publishes
-main's runtime service port through its encrypted tunnel, including when main shares
-another service's network namespace.
+The runtime's CPU, memory, and disk settings size the entire VM, so allow room for
+sidecars. Prebuilt service images must be Docker-pullable inside the VM; services with
+a `build` stanza are built there. Prime-only VM image references cannot serve as inner
+container images. Prime VM ports cannot be published externally.
 
 A taskset can set a task's `compose_host_image` to a VM image that hosts the Docker
 daemon instead of the stock one. Docker is installed only when the image lacks it, and

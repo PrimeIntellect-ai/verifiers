@@ -15,12 +15,6 @@ from verifiers.v1.runtimes.backends.docker import (
     DockerConfig,
     DockerRuntimeInfo,
 )
-from verifiers.v1.runtimes.backends.e2b import E2BBackend, E2BConfig, E2BRuntimeInfo
-from verifiers.v1.runtimes.backends.modal import (
-    ModalBackend,
-    ModalConfig,
-    ModalRuntimeInfo,
-)
 from verifiers.v1.runtimes.backends.prime import (
     PrimeBackend,
     PrimeConfig,
@@ -44,23 +38,13 @@ from verifiers.v1.runtimes.runtime import Runtime
 # Serialized by the runtime type, so a custom runtime's typed config keeps its fields.
 RuntimeConfig = SerializeAsAny[
     Annotated[
-        SubprocessConfig
-        | DockerConfig
-        | PrimeConfig
-        | ModalConfig
-        | E2BConfig
-        | CustomRuntimeConfig,
+        SubprocessConfig | DockerConfig | PrimeConfig | CustomRuntimeConfig,
         Field(discriminator="type"),
     ]
 ]
 
 RuntimeInfo = Annotated[
-    SubprocessRuntimeInfo
-    | DockerRuntimeInfo
-    | PrimeRuntimeInfo
-    | ModalRuntimeInfo
-    | E2BRuntimeInfo
-    | CustomRuntimeInfo,
+    SubprocessRuntimeInfo | DockerRuntimeInfo | PrimeRuntimeInfo | CustomRuntimeInfo,
     Field(discriminator="type"),
 ]
 
@@ -73,8 +57,6 @@ def backend_cls(config: RuntimeConfig) -> type[RuntimeBackend]:
         "subprocess": SubprocessBackend,
         "docker": DockerBackend,
         "prime": PrimeBackend,
-        "modal": ModalBackend,
-        "e2b": E2BBackend,
     }[config.type]
 
 
@@ -127,12 +109,6 @@ __all__ = [
     "DockerBackend",
     "DockerConfig",
     "DockerRuntimeInfo",
-    "E2BBackend",
-    "E2BConfig",
-    "E2BRuntimeInfo",
-    "ModalBackend",
-    "ModalConfig",
-    "ModalRuntimeInfo",
     "NetworkPolicyConfig",
     "PrimeBackend",
     "PrimeConfig",

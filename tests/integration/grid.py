@@ -14,13 +14,10 @@ must fail with the framework's message for that gap, which the `run` fixture che
 The runtime gaps are `RuntimeBackend.supports_image` (for `Harness.NEEDS_CONTAINER`),
 `supports_user`, `supports_expose`, and `NetworkPolicyConfig`.
 
-CI deselects `modal` and `e2b` by mark: external sandboxes.
-
 Every cell carries its axes' marks, so `-m` selects subsets:
 
-    uv run pytest tests/integration -n 8 -m "not modal and not e2b"  # CI
     uv run pytest tests/integration -n 8 -m "docker and codex"
-    uv run pytest tests/integration -n 8 -m e2b                      # local
+    uv run pytest tests/integration -n 8 -m prime
 
 `terminus-2` (drives the host tmux) and `browser-use` (needs its Playwright image, which
 prime cannot pull) stay outside the grid.
@@ -51,7 +48,7 @@ HARNESSES: list[str | dict] = [
     "mini-swe-agent",
     "prime-agent",
 ]
-RUNTIMES = ["subprocess", "docker", "prime", "modal", "e2b"]
+RUNTIMES = ["subprocess", "docker", "prime"]
 
 # The framework's message for each runtime gap; a refused cell must fail with it.
 REFUSALS = {
@@ -91,10 +88,7 @@ def mark(name: str) -> pytest.MarkDecorator:
 def runtime_config(runtime: str, harness: str | dict | None = None) -> dict:
     config: dict = {"type": runtime}
     program = harness is not None and harness_class(harness_id(harness)).NEEDS_CONTAINER
-    # The default sandboxes are too small to install and run an agent CLI: e2b's box
-    # starves rlm's ACP startup, and prime's 1 CPU / 2 GB gets openclaw terminated.
-    if runtime == "e2b":
-        config["memory"] = 2.0
+    # Prime's default 1 CPU / 2 GB is too small to install and run an agent CLI.
     if runtime == "prime" and program:
         config.update(cpu=2.0, memory=4.0)
     return config
