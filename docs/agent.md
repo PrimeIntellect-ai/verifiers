@@ -34,3 +34,7 @@ restores collected artifacts into a fresh runtime before task scoring.
 `agent.scoring.retries` uses `RetryConfig` for isolated scoring, with a default
 `max_retries = 2`. Its rules select retryable errors; retries reuse the completed
 submission in a fresh scoring environment. Shared scoring is not retried.
+
+Failed isolated-scoring attempts are recorded in `trace.errors`,
+with their attempt number and added or changed diagnostic info and metrics in `Error.details`.
+This history survives successful retries; failed rewards and submission state are discarded.

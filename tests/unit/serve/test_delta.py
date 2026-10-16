@@ -201,6 +201,17 @@ async def test_deltas_stream_once_and_reassemble_the_episode(routing_dtype):
         trace.nodes[0].semantic_parents.append(ParentLink(node=1, type="reply"))
         await settle()
         trace.record_reward("match", 1.0)
+        trace.errors.append(
+            vf.Error(
+                type="TaskError",
+                message="grader failed",
+                details={
+                    "attempt": 1,
+                    "info": {"evidence": {"missing": ["result"]}},
+                    "metrics": {"failed_checks": 1},
+                },
+            )
+        )
         trace.stop("agent_completed")
         trace.ok = True
         episode = Episode(
@@ -236,6 +247,7 @@ async def test_deltas_stream_once_and_reassemble_the_episode(routing_dtype):
         rebuilt.traces[0].nodes[0].semantic_parents == trace.nodes[0].semantic_parents
     )
     assert rebuilt.traces[0].rewards["match"].value == 1.0
+    assert rebuilt.traces[0].errors == trace.errors
     assert rebuilt.traces[0].stop_condition == "agent_completed"
     assert len(rebuilt.traces[0].calls) == 2
 

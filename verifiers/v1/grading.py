@@ -111,6 +111,9 @@ async def grade_task(
         if attempt:
             async with asyncio.timeout_at(deadline):
                 await asyncio.sleep(backoff(attempt - 1))
+        result = None
+        previous_info = copy.deepcopy(trace.info)
+        previous_metrics = dict(trace.metrics)
         try:
             if deadline is not None and asyncio.get_running_loop().time() >= deadline:
                 raise TimeoutError("scoring budget exhausted")
@@ -158,11 +161,30 @@ async def grade_task(
                     logger.warning("verifier teardown failed", exc_info=True)
                 return
         except Exception as error:
-            recorded = Error(
-                type=type(error).__name__,
-                message=str(error),
-                status_code=getattr(error, "status_code", None),
+            recorded = Error.from_exception(
+                error,
+                details={
+                    "attempt": attempt + 1,
+                    "info": copy.deepcopy(
+                        {
+                            key: value
+                            for key, value in (
+                                result.info.items() if result is not None else ()
+                            )
+                            if key not in previous_info or value != previous_info[key]
+                        }
+                    ),
+                    "metrics": {
+                        key: value
+                        for key, value in (
+                            result.metrics.items() if result is not None else ()
+                        )
+                        if key not in previous_metrics or value != previous_metrics[key]
+                    },
+                },
             )
+            trace.errors.append(recorded)
+            trace.notify()
             if attempt == retry.max_retries or retry.next_error([recorded]) is None:
                 raise
             logger.warning(
