@@ -11,8 +11,10 @@ import uuid
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING
 
+from pydantic import Field, field_validator
 from pydantic_config import BaseConfig
 
+from verifiers.v1.configs.runtime import BindMount, validate_mounts
 from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes.base import ProgramResult, RuntimeBackend, RuntimeProcess
 from verifiers.v1.runtimes.runtime import Runtime
@@ -42,6 +44,17 @@ class ContainerConfig(BaseConfig):
     """Advisory disk request in GB. Local containers have no portable per-container size
     limit, so this is accepted (so a task can declare it without a warning) but not
     enforced."""
+    mounts: dict[str, BindMount] = Field(default_factory=dict)
+    """Container paths mapped to host bind mounts, attached before task setup.
+    Artifacts must not overlap read-only mounts. Artifacts entirely inside a writable
+    mount are not copied: the grader reads them through its own identical mount.
+    Docker read-only mounts include read-only submounts and require Docker Engine/CLI
+    >=25.0 (API >=1.44) with Linux kernel >=5.12, including Docker Desktop's Linux VM.
+    Mount targets and artifact paths must not traverse symlinks inside the container.
+    Mount targets and their parent directories must not be moved.
+    Runtime mounts are unsupported for Compose deployments."""
+
+    _validate_mounts = field_validator("mounts")(validate_mounts)
 
 
 async def _communicate(

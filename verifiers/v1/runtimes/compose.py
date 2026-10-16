@@ -103,6 +103,8 @@ async def compose_services(
         )
     if config.gpu:
         raise ValueError("Compose currently supports CPU tasks")
+    if getattr(config, "mounts", {}):
+        raise ValueError("Runtime mounts are not supported for Compose tasks")
     if local and config.network_restricted:
         raise ValueError("Compose on local Docker requires public networking")
     if isinstance(config, ModalConfig) and not config.network_access:

@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import array
 import contextlib
+import csv
+import io
 import json
 import logging
 import re
@@ -33,6 +35,7 @@ from verifiers.v1.runtimes.docker.egress import (
     is_loopback_host,
 )
 from verifiers.v1.runtimes.runtime import Runtime
+from verifiers.v1.utils.artifacts import MOUNT_ARCHIVE_SCRIPT, validate_runtime_mounts
 from verifiers.v1.utils.scope import run_scope
 
 logger = logging.getLogger(__name__)
@@ -116,6 +119,8 @@ class DockerBackend(ContainerBackend):
         host_backend: RuntimeBackend | None = None,
     ) -> AsyncIterator[DockerBackend]:
         """Borrow an existing container; its caller owns creation and removal."""
+        if getattr(config, "mounts", {}):
+            raise ValueError("Mounts cannot be added to an existing container")
         backend = cls(config, host_backend=host_backend)
         backend._container = container
         backend.info.borrowed = True  # cleanup never removes a borrowed container
@@ -237,6 +242,19 @@ class DockerBackend(ContainerBackend):
             for key, value in self.env.items()
             for arg in ("--env", f"{key}={value}")
         ]
+        for target, mount in getattr(self.config, "mounts", {}).items():
+            bind_options = ["type=bind", f"source={mount.source}", f"target={target}"]
+            if self.engine == "podman" and mount.selinux_relabel:
+                # Rollout and grading containers can share the same host source.
+                bind_options.append("relabel=shared")
+            if mount.read_only:
+                bind_options += ["readonly", "bind-propagation=rprivate"]
+                if self.engine == "docker":
+                    # Refuse kernels that would leave nested mounts writable.
+                    bind_options.append("bind-recursive=readonly")
+            value = io.StringIO()
+            csv.writer(value).writerow(bind_options)
+            options += ["--mount", value.getvalue().removesuffix("\r\n")]
         run = await cli(
             self.engine,
             "run",
@@ -305,6 +323,8 @@ class DockerBackend(ContainerBackend):
             raise SandboxError(
                 f"{self.engine} workdir setup failed: {made.stderr.strip()}"
             )
+        if await validate_runtime_mounts(self.bind(), []):
+            await self.bind().prepare_uv_script(MOUNT_ARCHIVE_SCRIPT)
         published = await cli(
             self.engine, "port", self._container, f"{SERVICE_PORT}/tcp"
         )
