@@ -10,7 +10,7 @@ import prime_sandboxes
 import pytest
 
 from verifiers.v1.configs.harness import HarnessConfig
-from verifiers.v1.errors import SandboxError
+from verifiers.v1.errors import SandboxError, outage_kind
 from verifiers.v1.harnesses.bash import BashHarness, BashHarnessConfig
 from verifiers.v1.harnesses.browser_use import (
     BrowserUseHarness,
@@ -225,9 +225,22 @@ async def test_a_job_whose_wrapper_died_is_reported_not_polled_forever(
     runtime._client = client = JobClient([RUNNING], ["dead"])
     with pytest.raises(SandboxError) as caught:
         await runtime.bind().run(["true"], {})
-    assert caught.value.kind == "exec"
-    assert "died without an exit status" in str(caught.value)
+    # The platform lost the job, not the command failing: an outage the caller retries.
+    assert caught.value.kind == "io" and outage_kind(caught.value) == "io"
     assert client.probes == prime._LIVENESS_MISSES
+
+
+async def test_a_job_the_sdk_reports_lost_is_an_outage_not_a_failed_command(
+    runtime, no_sleep
+):
+    from prime_sandboxes import APIError
+
+    runtime.info.id = "sb1"
+    lost = APIError("Background job e965ed47 exited without recording an exit code")
+    runtime._client = JobClient([lost], ["alive"])
+    with pytest.raises(SandboxError) as caught:
+        await runtime.bind().run(["true"], {})
+    assert caught.value.kind == "io" and outage_kind(caught.value) == "io"
 
 
 async def test_a_live_or_unknown_job_is_waited_for(runtime, no_sleep, check_every_poll):

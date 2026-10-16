@@ -20,6 +20,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, ClassVar, Literal, TypeVar
 from urllib.parse import urlsplit
 
+from prime_sandboxes import APIError
 from prime_sandboxes.models import validate_egress_lists
 from pydantic import Field, model_validator
 
@@ -114,6 +115,18 @@ BASE_LABELS: list[str] = []
 
 class _JobDied(Exception):
     """A background job's wrapper died before it wrote the job's exit status."""
+
+
+_WRAPPER_LOST = "exited without recording an exit code"
+"""The SDK's report (an untyped `APIError`) of a background job whose status reads
+`lost`: its wrapper is gone and no exit file was written."""
+
+
+def _wrapper_lost(error: BaseException) -> bool:
+    """Whether the SDK reported the job's wrapper lost. Like `_JobDied`, the platform's
+    failure, not the command's: an `io` outage, so the caller retries the stage and its
+    calls continue from their latest saves on the outage budget instead of failing it."""
+    return isinstance(error, APIError) and str(error).endswith(_WRAPPER_LOST)
 
 
 _API_ATTEMPTS = 4
@@ -719,13 +732,13 @@ class PrimeBackend(RuntimeBackend):
                 await asyncio.sleep(delay)
                 delay = min(delay * 2, 3)
         except _JobDied as e:
-            raise SandboxError(f"prime exec failed: {e}", kind="exec") from None
+            raise SandboxError(f"prime exec failed: {e}", kind="io") from None
         except (
             Exception
         ) as e:  # a sandbox/API failure is one rollout's problem, not the eval's
             raise SandboxError(
                 f"prime exec failed: {e}",
-                kind=self._kind(e, "exec"),
+                kind="io" if _wrapper_lost(e) else self._kind(e, "exec"),
             ) from e
         _call_stats.record("exec", time.monotonic() - began)
         if missing is not None:
