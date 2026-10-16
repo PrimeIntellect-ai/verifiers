@@ -87,6 +87,19 @@ def test_a_service_that_exits_fails_setup(monkeypatch, readiness):
         asyncio.run(_start(runtime, "api", service))
 
 
+def test_a_probe_that_passes_after_the_service_exited_fails_setup():
+    service = vf.ServiceVM(image="x", command=["serve"], readiness=vf.Probe(["check"]))
+    runtime = fake_runtime([], ready=True, exit_status="0")
+    with pytest.raises(SandboxError, match="'api' exited with 0: boom"):
+        asyncio.run(_start(runtime, "api", service))
+
+
+@pytest.mark.parametrize("attempts", [0, -1])
+def test_a_probe_needs_an_attempt(attempts):
+    with pytest.raises(ValueError, match="at least one attempt"):
+        vf.Probe(["check"], attempts=attempts)
+
+
 def test_a_service_without_a_probe_need_only_keep_running(monkeypatch):
     monkeypatch.setattr(service_vms, "STARTED_SECONDS", 0)
     service = vf.ServiceVM(image="x", command=["serve"])

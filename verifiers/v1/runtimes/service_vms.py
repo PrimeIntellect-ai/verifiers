@@ -43,6 +43,10 @@ class Probe:
     timeout: float = 10.0
     attempts: int = 60
 
+    def __post_init__(self):
+        if self.attempts < 1:
+            raise ValueError("a readiness probe needs at least one attempt")
+
 
 @dataclass(frozen=True)
 class ServiceVM:
@@ -51,7 +55,8 @@ class ServiceVM:
     image: str
     """Docker image of the service's VM."""
     command: list[str]
-    """The service's process; a VM does not run the image's entrypoint."""
+    """The service's process; a VM does not run the image's entrypoint. Like a
+    container's main process, it must keep running: setup fails if it exits."""
     environment: Mapping[str, str] = field(default_factory=dict)
     """The process's environment. It reaches the service's VM only, never the
     workspace."""
@@ -134,6 +139,8 @@ async def _start(runtime, name: str, service: ServiceVM) -> None:
         with contextlib.suppress(TimeoutError):
             async with asyncio.timeout(probe.timeout + 10):
                 if (await runtime.run(check, environment)).exit_code == 0:
+                    if state := await exited():
+                        raise await failure(state)
                     return
         if state := await exited():
             raise await failure(state)
