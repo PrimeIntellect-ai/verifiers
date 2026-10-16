@@ -1,7 +1,6 @@
-"""Runtimes: every supported runtime passes the conformance checks
-(`verifiers.v1.runtimes.conformance`, also run by `scripts/check_runtime.py`) for the
-backend contract and each feature it declares, and is refused, before anything is
-provisioned, each feature it does not declare. A custom runtime plugin loads from its
+"""Runtimes: every supported runtime passes the conformance checks in
+`scripts/check_runtime.py` for the backend contract and each feature it declares, and
+is refused, before anything is provisioned, each feature it does not declare. A custom runtime plugin loads from its
 import path and passes the same checks.
 
 Conformance provisions real runtimes: Docker needs a reachable daemon and Prime needs
@@ -19,6 +18,7 @@ from types import SimpleNamespace
 from typing import ClassVar
 
 import pytest
+from check_runtime import CORE, IMAGE, check_runtime
 from pydantic import TypeAdapter, ValidationError
 
 import verifiers.v1 as vf
@@ -36,7 +36,6 @@ from verifiers.v1.runtimes import (
     provision_runtime,
 )
 from verifiers.v1.runtimes.compose import ComposeSpec
-from verifiers.v1.runtimes.conformance import CORE, IMAGE, check_runtime
 from verifiers.v1.runtimes.strategies import _deployment_strategy
 from verifiers.v1.utils.compile import resolve_runtime_config
 
