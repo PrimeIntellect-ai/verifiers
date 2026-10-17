@@ -687,7 +687,7 @@ class ResponsesDialect(Dialect[OpenAIResponse]):
         payload = {"type": kind, "sequence_number": 0, "response": _KEEPALIVE_RESPONSE}
         return f"event: {kind}\ndata: {json.dumps(payload)}\n\n".encode()
 
-    def stream_error(self, error: dict) -> bytes:
+    def stream_error(self, error: dict, *, status_code: int | None = None) -> bytes:
         # `response.failed` is what Responses clients (codex) act on; the `error` key is what
         # the OpenAI SDK raises on.
         message = error["error"]["message"]

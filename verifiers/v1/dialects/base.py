@@ -318,7 +318,7 @@ class Dialect(ABC, Generic[RespT]):
         # Don't terminate an empty event; some SSE clients try to JSON-decode it.
         return b": keepalive\n"
 
-    def stream_error(self, error: dict) -> bytes:
+    def stream_error(self, error: dict, *, status_code: int | None = None) -> bytes:
         """An `error_body` as an SSE event, for a failure after the stream is committed.
         OpenAI SDKs raise on any event carrying `error`."""
         return b"data: " + json.dumps(error).encode() + b"\n\n"
