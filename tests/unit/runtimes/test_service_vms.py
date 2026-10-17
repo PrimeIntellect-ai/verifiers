@@ -225,6 +225,32 @@ def test_each_vm_enforces_its_own_policy_with_the_framework_routes():
     ]
 
 
+def test_the_workspace_stops_before_service_evidence_and_is_released_regardless():
+    from verifiers.v1.runtimes.strategies import _ServiceVMDeployment
+
+    events = []
+
+    async def stop():
+        events.append("workspace stopped")
+
+    async def aclose():
+        events.append("services released")
+        raise RuntimeError("network deletion failed")
+
+    strategy = _ServiceVMDeployment()
+    strategy._services = SimpleNamespace(aclose=aclose)
+    deployment = SimpleNamespace(execution_backend=SimpleNamespace(stop=stop))
+
+    # As Compose stops its workspace, before finalize_services reads the services.
+    asyncio.run(strategy.stop_execution(deployment))
+    assert events == ["workspace stopped"]
+
+    # A failed service or network release neither skips the workspace's nor raises.
+    events.clear()
+    asyncio.run(strategy.prepare_verifier(deployment))
+    assert events == ["workspace stopped", "services released"]
+
+
 def test_a_tool_server_in_a_service_vm_is_reached_by_its_lan_name(monkeypatch):
     async def serve_in_runtime(server, runtime, **kwargs):
         assert kwargs["listen_all"]

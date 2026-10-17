@@ -88,13 +88,22 @@ class _ServiceVMDeployment(_DeploymentStrategy):
             *(backend.prepare_execution(routes) for backend in self._service_backends),
         )
 
+    async def stop_execution(self, d):
+        # As Compose stops its workspace: nothing the agent left running may reach the
+        # services while their evidence is collected.
+        await d.execution_backend.stop()
+
     async def prepare_verifier(self, deployment):
-        # Evidence is collected; release the solver's VMs before the verifier clock starts.
-        try:
-            await self._services.aclose()
-            await deployment.execution_backend.stop()
-        except Exception:
-            logger.warning("service VMs teardown failed before grading", exc_info=True)
+        # Evidence is collected; release the solver's VMs before the verifier clock
+        # starts, the workspace's even if the services' or the network's release fails.
+        for release, what in (
+            (deployment.execution_backend.stop, "workspace VM"),
+            (self._services.aclose, "service VMs"),
+        ):
+            try:
+                await release()
+            except Exception:
+                logger.warning("%s teardown failed before grading", what, exc_info=True)
 
 
 def _deployment_strategy(config, runtime_config, spec):
