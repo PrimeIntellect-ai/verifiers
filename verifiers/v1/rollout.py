@@ -379,7 +379,7 @@ class Rollout:
                         name: self.deployment.target(name)
                         for name in self.deployment.target_backends
                     }
-                    if self.deployment.spec is not None or self.deployment.tool_vms
+                    if self.deployment.spec is not None
                     else {}
                 )
                 self._urls = await self._stack.enter_async_context(
@@ -392,7 +392,12 @@ class Rollout:
                         state_base=base_url,
                         services=services,
                         hosts=self.deployment.hosts,
-                        placements={name: name for name in self.deployment.tool_vms},
+                        # Tool servers on VMs of their own, by server name; an explicit
+                        # `service` names only a Compose service.
+                        placements={
+                            name: self.deployment.target(name)
+                            for name in self.deployment.tool_vms
+                        },
                     )
                 )
                 # Setup and service provisioning are complete. Apply the runtime's

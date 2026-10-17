@@ -435,22 +435,26 @@ async def _serve(
     state_base: str | None = None,
     services: Mapping[str, Runtime] | None = None,
     hosts: Mapping[str, str] | None = None,
-    placements: Mapping[str, str] | None = None,
+    placements: Mapping[str, Runtime] | None = None,
 ):
     cfg = server.config
     colocated = getattr(cfg, "colocated", False)
-    service = getattr(cfg, "service", None) or (placements or {}).get(
-        server.server_name
-    )
-    if service is not None:
+    service = getattr(cfg, "service", None)
+    own_vm = (placements or {}).get(server.server_name)
+    if service is not None or own_vm is not None:
         # The harness reaches the server over the deployment's network: a Compose
         # service by its name, a VM of its own by its LAN name.
-        if services is None or service not in services:
+        if own_vm is not None:
+            runtime = own_vm
+            host = (hosts or {})[server.server_name]
+        elif services is None or service not in services:
             raise ToolsetError(
                 f"server {server.server_name!r} runs in service {service!r}, "
                 "which needs a task whose Compose services define it"
             )
-        runtime = services[service]
+        else:
+            runtime = services[service]
+            host = (hosts or {}).get(service, service)
         if runtime.is_local:
             # A local service cannot reach the host-loopback state channel.
             raise ToolsetError(
@@ -469,7 +473,6 @@ async def _serve(
             ),
             state_secret=state_secret,
         )
-        host = (hosts or {}).get(service, service)
         yield _ServedServer(f"http://{host}:{port}/mcp", runtime)
         return
     async with contextlib.AsyncExitStack() as stack:
@@ -541,7 +544,7 @@ async def serve(
     state_base: str | None = None,
     services: Mapping[str, Runtime] | None = None,
     hosts: Mapping[str, str] | None = None,
-    placements: Mapping[str, str] | None = None,
+    placements: Mapping[str, Runtime] | None = None,
 ):
     """Serve one MCP server and yield the URL visible to its consumer."""
     async with _serve(
@@ -662,7 +665,7 @@ async def serve_tools(
     state_base: str | None = None,
     services: Mapping[str, Runtime] | None = None,
     hosts: Mapping[str, str] | None = None,
-    placements: Mapping[str, str] | None = None,
+    placements: Mapping[str, Runtime] | None = None,
 ):
     """Bring up a rollout's tool servers and yield `{name: url}` the harness reaches: the
     task-scoped `toolsets` are launched by `serve` (placement off each one's `config`; the

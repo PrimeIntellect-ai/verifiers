@@ -230,9 +230,8 @@ def test_a_tool_server_on_its_own_vm_is_reached_by_its_lan_name(monkeypatch):
         served_url(
             monkeypatch,
             server,
-            services={"forth": runtime},
             hosts={"forth": "sb1.sandbox.internal"},
-            placements={"forth": "forth"},
+            placements={"forth": runtime},
         )
         == "http://sb1.sandbox.internal:1234/mcp"
     )
@@ -241,6 +240,20 @@ def test_a_tool_server_on_its_own_vm_is_reached_by_its_lan_name(monkeypatch):
     assert served_url(monkeypatch, compose, services={"tools": runtime}) == (
         "http://tools:1234/mcp"
     )
+
+
+@pytest.mark.parametrize("service", ["main", "forth"])
+def test_an_explicit_service_names_only_a_compose_service(monkeypatch, service):
+    # The workspace and another server's VM are deployment targets, not services.
+    runtime = SimpleNamespace(is_local=False, host_url=lambda url: url)
+    with pytest.raises(ToolsetError, match="Compose services define it"):
+        served_url(
+            monkeypatch,
+            toolset("echo", service=service),
+            services={},
+            hosts={"forth": "sb1.sandbox.internal"},
+            placements={"forth": runtime},
+        )
 
 
 def test_a_restricted_runtime_without_a_private_network_is_refused(monkeypatch):
