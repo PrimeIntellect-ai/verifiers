@@ -23,10 +23,19 @@ next admission, a lower sheds nothing and admits no one until fewer than the new
 in flight. Admission scans the slots up to the cap and any held above it (`slots`), so
 requests admitted under a higher cap count until they finish.
 
-The limit is AIMD: a 429/529 multiplies it by `decrease_factor` (at most once per
-`decrease_cooldown`), each success adds `1/limit`, bounded by `[min_concurrent, cap]`.
-A raise of the cap restarts the limit at the new cap (additive growth would take
-thousands of requests to get there); a lower keeps a learned limit already below it.
+The cap is never exceeded. Under it, with `adaptive`, a 429/529 lowers the limit by
+`decrease_factor` (at most once per `decrease_cooldown`), and the limit climbs back to the
+cap in a straight line over `recover_seconds` from that decrease, whatever the traffic: a
+burst of rejections slows the gate for a minute, never for hours. A raise of the cap
+restarts the limit at the new cap; a lower keeps a lowered limit already below it.
+
+Admission is first come, first served across every process of the host: a request that
+cannot take a slot at once takes a ticket in the shared state, and a free slot goes to
+the oldest live ticket, whichever process holds it. A process's waiters take their
+tickets in arrival order and only the oldest polls; a release in the process wakes it at
+once, a release elsewhere at its next poll. The tickets of a process that died are
+dropped at the next admission. The state keeps the queue's length and an average of the
+time an admitted request waited (`wait_seconds`).
 
 A rejected request returns its permit, waits for
 `Retry-After` (else exponential backoff) and queues again, up to `max_rejections` times;
@@ -71,6 +80,10 @@ POLL_SECONDS = (0.05, 0.2)
 """Jittered interval at which a blocked admission rechecks the shared slots: only the
 first waiter of the process polls (a release in the process wakes it at once); the rest
 wait their turn in arrival order."""
+STATE_BYTES = 1 << 22
+"""Most bytes of a gate's state file read back (its ticket queue included)."""
+WAIT_SMOOTHING = 0.05
+"""Weight of each admitted request's wait in the state's moving average."""
 MODEL_EXTENSION = "verifiers.model"
 """`httpx.Request.extensions` key a caller sets to name the request's model, so the gate
 need not parse the body (the eval client sets it; SDK requests fall back to parsing)."""
@@ -109,7 +122,7 @@ def _locked_state(fd: int) -> Iterator[dict[str, Any]]:
     changed."""
     fcntl.flock(fd, fcntl.LOCK_EX)
     try:
-        raw = os.pread(fd, 1 << 16, 0)
+        raw = os.pread(fd, STATE_BYTES, 0)
         try:
             state = json.loads(raw) if raw else {}
         except ValueError:
@@ -130,9 +143,11 @@ class _Waiter:
     """One blocked admission: woken (from any thread) when it reaches the head of the
     process's queue, and while there by each release in the process."""
 
-    def __init__(self, loop: asyncio.AbstractEventLoop) -> None:
+    def __init__(self, loop: asyncio.AbstractEventLoop, ticket: int | None = None) -> None:
         self.loop = loop
         self.event = asyncio.Event()
+        self.ticket = ticket
+        """Its place in the host-wide queue (`ModelGate.take_ticket`)."""
 
     def wake(self) -> bool:
         """False when its loop is gone (it will never run again)."""
@@ -174,6 +189,8 @@ class ModelGate:
         fcntl.flock(self._users_fd, fcntl.LOCK_SH)
         self._queue: deque[_Waiter] = deque()
         """The process's blocked admissions, oldest first; the head polls."""
+        self._stale: set[int] = set()
+        """Tickets of waiters whose loop closed, dropped at the next admission."""
         self._queue_lock = threading.RLock()
         """Guards `_queue`; reentrant, as a finalizer's release may run inside it."""
 
@@ -203,17 +220,82 @@ class ModelGate:
 
     @staticmethod
     def _limit(state: dict[str, Any], config: RequestGateConfig, cap: int) -> float:
-        limit = state.get("limit")
-        if not isinstance(limit, int | float) or not config.adaptive:
-            limit = cap
-        return _clamp(limit, config, cap)
+        """The limit now: the cap, or after a rejection the lowered limit climbing back
+        to the cap over `recover_seconds` from the decrease."""
+        lowered = state.get("lowered")
+        if not config.adaptive or not isinstance(lowered, int | float):
+            return float(cap)
+        since = time.time() - float(state.get("decreased_at", 0.0))
+        if since >= config.recover_seconds:
+            state.pop("lowered", None)
+            return float(cap)
+        return _clamp(
+            lowered + (cap - lowered) * since / config.recover_seconds, config, cap
+        )
 
-    def try_admit(self, config: RequestGateConfig) -> int | None:
-        """Take a free slot if fewer than the limit are held host-wide, else None."""
+    @staticmethod
+    def _live_tickets(state: dict[str, Any]) -> list[list[Any]]:
+        """The queue's tickets `[number, pid, since]`, oldest first, without those of
+        processes that are gone."""
+        tickets = state.get("tickets")
+        if not isinstance(tickets, list):
+            return []
+        alive: dict[int, bool] = {}
+        live = []
+        for ticket in tickets:
+            if not (isinstance(ticket, list) and len(ticket) == 3):
+                continue
+            pid = ticket[1]
+            if pid not in alive:
+                try:
+                    os.kill(pid, 0)
+                    alive[pid] = True
+                except ProcessLookupError:
+                    alive[pid] = False
+                except (PermissionError, TypeError, OverflowError):
+                    alive[pid] = isinstance(pid, int)
+            if alive[pid]:
+                live.append(ticket)
+        live.sort(key=lambda ticket: ticket[0])
+        return live
+
+    def take_ticket(self) -> int:
+        """Join the host-wide queue: a ticket behind every waiting request."""
+        with self._mutex, self._state() as state:
+            number = _count(state.get("next_ticket")) or 1
+            state["next_ticket"] = number + 1
+            state["tickets"] = [
+                *self._live_tickets(state),
+                [number, os.getpid(), time.time()],
+            ]
+            state["waiting"] = len(state["tickets"])
+            return number
+
+    def drop_ticket(self, number: int) -> None:
+        """Leave the queue without a slot (the request was cancelled)."""
+        with self._mutex, self._state() as state:
+            state["tickets"] = [t for t in self._live_tickets(state) if t[0] != number]
+            state["waiting"] = len(state["tickets"])
+
+    def try_admit(
+        self, config: RequestGateConfig, ticket: int | None = None
+    ) -> int | None:
+        """Take a free slot if fewer than the limit are held host-wide and no older
+        ticket waits for it, else None. Without a `ticket` the request is behind every
+        waiting one; an admitted ticket leaves the queue."""
         try:
             with self._mutex, self._state() as state:
                 cap = self._cap(state, config)
                 limit = self._limit(state, config, cap)
+                tickets = self._live_tickets(state)
+                if self._stale:
+                    stale, self._stale = self._stale, set()
+                    tickets = [t for t in tickets if t[0] not in stale]
+                ahead = (
+                    len(tickets)
+                    if ticket is None
+                    else sum(1 for t in tickets if t[0] < ticket)
+                )
                 held, free, top = 0, None, 0
                 for slot in range(max(cap, _count(state.get("slots")))):
                     if slot in self._held:
@@ -229,13 +311,29 @@ class ModelGate:
                         free = slot
                     else:
                         fcntl.flock(fd, fcntl.LOCK_UN)
-                if free is not None and held >= int(limit):
+                # Room for this request: fewer than the limit held, counting the older
+                # tickets as ahead of it.
+                if free is not None and held + ahead >= int(limit):
                     fcntl.flock(self._fds[free], fcntl.LOCK_UN)
                     free = None
                 if free is not None:
                     self._held.add(free)
                     state["admitted"] = state.get("admitted", 0) + 1
                     top = max(top, free + 1)
+                    if ticket is not None:
+                        mine = next((t for t in tickets if t[0] == ticket), None)
+                        tickets = [t for t in tickets if t[0] != ticket]
+                        if mine is not None:
+                            waited = max(0.0, time.time() - float(mine[2]))
+                            average = float(state.get("wait_seconds", 0.0))
+                            state["wait_seconds"] = round(
+                                average + WAIT_SMOOTHING * (waited - average), 3
+                            )
+                    elif "wait_seconds" in state:
+                        average = float(state["wait_seconds"])
+                        state["wait_seconds"] = round(average * (1 - WAIT_SMOOTHING), 3)
+                state["tickets"] = tickets
+                state["waiting"] = len(tickets)
                 # slots above the cap stay scanned while a request admitted under a
                 # higher cap holds one; admission only takes the lowest free slot
                 state.update(model=self.model, slots=max(cap, top), limit=limit)
@@ -258,7 +356,14 @@ class ModelGate:
         """Wake the first waiter: a slot of this process just freed."""
         with self._queue_lock:
             while self._queue and not self._queue[0].wake():
-                self._queue.popleft()  # its loop closed
+                self._forget(self._queue.popleft())  # its loop closed
+
+    def _forget(self, waiter: _Waiter) -> None:
+        """A waiter whose loop closed never runs its cleanup: its ticket is dropped at the
+        process's next admission, or it would hold a place in the host-wide queue for as
+        long as the process lives. Not here: a release may run inside `_mutex`."""
+        if waiter.ticket is not None:
+            self._stale.add(waiter.ticket)
 
     def _apply_releases(self) -> None:
         # Recheck after each pass: a release queued while the mutex was held, by
@@ -283,7 +388,6 @@ class ModelGate:
             limit = self._limit(state, config, cap)
             now = time.time()
             if outcome == "ok":
-                state["limit"] = _clamp(limit + 1 / limit, config, cap)
                 return
             state["rejections"] = state.get("rejections", 0) + 1
             if (
@@ -291,7 +395,7 @@ class ModelGate:
                 and now - state.get("decreased_at", 0.0) >= config.decrease_cooldown
             ):
                 lowered = _clamp(limit * config.decrease_factor, config, cap)
-                state.update(limit=lowered, decreased_at=now)
+                state.update(lowered=lowered, limit=lowered, decreased_at=now)
                 logger.warning(
                     "request gate %s: provider rejected a request, limit %d -> %d",
                     self.model,
@@ -300,39 +404,45 @@ class ModelGate:
                 )
 
     async def acquire(self, config: RequestGateConfig) -> int:
-        """Wait for a slot: at once when no one of the process waits and one is free,
-        else in arrival order behind the process's other waiters. Only the first polls
-        the shared slots (other processes' releases), every `POLL_SECONDS`, and a
-        release in this process wakes it at once."""
+        """Wait for a slot: at once when no request of the host waits and one is free,
+        else first come, first served across the host (module doc). The process's
+        waiters queue in arrival order and only the first polls the shared slots, every
+        `POLL_SECONDS`; a release in this process wakes it at once."""
         with self._queue_lock:
             idle = not self._queue
         if idle:
             slot = self.try_admit(config)
             if slot is not None:
                 return slot
-        waiter = _Waiter(asyncio.get_running_loop())
+        ticket = self.take_ticket()
+        waiter = _Waiter(asyncio.get_running_loop(), ticket)
         with self._queue_lock:
             self._queue.append(waiter)
             first = self._queue[0] is waiter
+        admitted = False
         try:
             if not first:
                 await waiter.event.wait()  # set once it is first
             while True:
                 waiter.event.clear()
-                slot = self.try_admit(config)
+                slot = self.try_admit(config, ticket)
                 if slot is not None:
+                    admitted = True
                     return slot
                 with contextlib.suppress(TimeoutError):
                     async with asyncio.timeout(random.uniform(*POLL_SECONDS)):
                         await waiter.event.wait()
         finally:
+            if not admitted:
+                with contextlib.suppress(OSError):
+                    self.drop_ticket(ticket)
             with self._queue_lock:
                 was_first = bool(self._queue) and self._queue[0] is waiter
                 with contextlib.suppress(ValueError):
                     self._queue.remove(waiter)
                 if was_first:
                     while self._queue and not self._queue[0].wake():
-                        self._queue.popleft()
+                        self._forget(self._queue.popleft())
 
     def close_inherited(self) -> None:
         """Drop the descriptors a forked child inherited: their locks are the parent's."""
@@ -344,6 +454,7 @@ class ModelGate:
         self._held.clear()
         self._releases.clear()
         self._queue.clear()
+        self._stale.clear()
         self._queue_lock = threading.RLock()
         self._state_fd = self._users_fd = None
         self._mutex = threading.Lock()
@@ -368,6 +479,8 @@ def _summary(state: dict[str, Any], updated: float) -> dict[str, Any]:
         "in_flight": state.get("in_flight"),
         "admitted": state.get("admitted", 0),
         "rejections": state.get("rejections", 0),
+        "waiting": state.get("waiting", 0),
+        "wait_seconds": state.get("wait_seconds", 0.0),
         "updated": updated,
     }
 
@@ -385,7 +498,7 @@ def gate_states(directory: Path) -> list[dict[str, Any]]:
             continue
         try:
             fcntl.flock(fd, fcntl.LOCK_SH)
-            raw = os.pread(fd, 1 << 16, 0)
+            raw = os.pread(fd, STATE_BYTES, 0)
             updated = os.fstat(fd).st_mtime
         finally:
             os.close(fd)
@@ -421,6 +534,7 @@ def resize(
                 old = _count(state.get("max_concurrent"))
                 if max_concurrent > old:
                     state.pop("limit", None)
+                    state.pop("lowered", None)
                 state["max_concurrent"] = max_concurrent
                 state["slots"] = max(max_concurrent, old, _count(state.get("slots")))
                 states.append(_summary(state, time.time()))

@@ -61,9 +61,8 @@ class ProviderRetryConfig(BaseConfig):
 class RequestGateConfig(BaseConfig):
     """A per-model cap on concurrent requests to this endpoint, shared by every process on
     the host that uses the same endpoint, API key and model (see `clients.gate`). With
-    `adaptive`, the limit shrinks on provider rejections (429/529) and grows back on
-    successes (AIMD), so the load settles under a provider limit that is lower than
-    `max_concurrent` or shared with other users of the key."""
+    `adaptive`, the limit drops on provider rejections (429/529) and climbs back to
+    `max_concurrent` over `recover_seconds`; `max_concurrent` is never exceeded."""
 
     max_concurrent: int = Field(ge=1)
     """Most requests in flight at once, per model: the cap a gate starts with. The first
@@ -79,6 +78,9 @@ class RequestGateConfig(BaseConfig):
     decrease_cooldown: float = Field(2.0, ge=0)
     """Seconds after a decrease in which further rejections do not decrease again: one
     burst of rejections is one signal."""
+    recover_seconds: float = Field(60.0, gt=0)
+    """Seconds in which a lowered limit climbs back to `max_concurrent`, in a straight
+    line from the decrease."""
     max_rejections: int = Field(10, ge=0)
     """Rejections absorbed per request (each waits, then queues again). The next one is
     final: the interception server does not retry it (`ProviderRetryConfig`). 0 absorbs
