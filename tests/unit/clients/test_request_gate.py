@@ -572,11 +572,11 @@ def test_a_forked_child_drops_the_parents_permits_but_keeps_the_learned_limit(tm
         ok = False
         try:
             child = gate_module.model_gate(tmp_path, "fork", "m")
-            limit = json.loads(child.state_path.read_text())["limit"]
+            lowered = json.loads(child.state_path.read_text())["lowered"]
             ok = (
                 child is not parent
                 and not child._held
-                and limit == 1.5  # not started afresh: the parent still uses the gate
+                and lowered == 1.5  # not started afresh: the parent still uses the gate
                 and child.try_admit(config) is None  # the parent's permit still counts
             )
         finally:
