@@ -185,16 +185,17 @@ tool and provider-held resource remains disabled.
 
 `--env.taskset.artifact-max-bytes` sets the total artifact archive budget per solver across all services (default: 32 MiB), including the `/logs/artifacts/` convention directory. Increase it for tasks that transfer trained checkpoints or VM disk files. The budget also applies when scoring is deferred to a separate verifier.
 
-Prime VM bounded reads stream binary data. Collected archives remain in host memory for grading and are excluded from persisted traces.
+Prime VM bounded reads stream binary data. Collected archives remain in host memory for grading; their bytes are excluded from persisted trace JSON.
 
 `artifacts = [...]` and `[[verifier.collect]]` are read from `task.toml` ([Harbor Docs](https://www.harborframework.com/docs/run-jobs/results-and-artifacts)). Each entry's `service` selects the source runtime, defaulting to `main`; additional services come from the deployment's Compose project. Main's hooks and artifacts are collected during `finalize`, while the agent's harness session is still open, so they see any service the agent left running (see [Finishing a rollout](architecture.md#finishing-a-rollout)). For separate grading, the rollout stops main through the deployment and collects sidecar evidence; a shared verifier grades in main and skips sidecar entries. Declared paths and main's `/logs/artifacts/` convention directory are restored at their original paths in the grader.
 
 Artifact roots from different services must not overlap, since they share the grader's filesystem.
 
-Two deliberate differences from `harbor run`:
+Saving a trace writes its collected files alongside `traces.jsonl`, under `artifacts/<trace-id>/`; artifact bytes are excluded from the JSON. `destination` sets the saved path relative to that directory. Without it, files mirror their source paths with the leading `/` removed. For example, `{ source = "/app/report.json", destination = "report.json" }` saves `artifacts/<trace-id>/report.json` and restores `/app/report.json` for grading.
 
-- **A failing collect hook fails the rollout.** Harbor logs it and carries on, because there the output is observability; here it is a grading input, and a silently absent file makes the verifier score a stale state.
-- **`destination` has no effect.** It positions a file in Harbor's host trial directory; verifiers has no trial directory (the trace is the record), and Harbor never lets `destination` affect verifier-side placement.
+Each trace's artifact directory contains a `manifest.json` recording the source, service, destination, and status (`ok`, `empty`, `skipped`, or `failed`). Conflicting destinations keep the first saved artifact and skip the later one; source-mirrored directories may merge without overwriting files. Artifact roots from different services must not overlap, since they share the grader's filesystem.
+
+One behavioral difference from `harbor run` is worth noting: **A failing collect hook fails the rollout.** Harbor logs a collection failure and continues because it treats collected files as observability artifacts; in verifiers, collected files are inputs to the grader, and ignoring a failed hook would let the verifier score stale or incomplete state.
 
 ## Separate verifier environments
 
