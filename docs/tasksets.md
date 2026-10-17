@@ -1,18 +1,18 @@
 # Building Tasksets
 
-A taskset defines the work to be done, which will be solved by the agent in a _harness_ running in a _runtime_.
+A taskset defines the work to be done: the tasks an agent receives, the setup and tools they require, and how each attempt is scored, which the agent solves inside a _harness_ running in a _runtime_.
 
-> For a production-scale catalog of tasksets, see the companion [`research-environments`](https://github.com/PrimeIntellect-ai/research-environments) repository.
+> For a production catalog of tasksets (math, judge-graded QA, multimodal benchmarks, and containerized coding tasks), see [`prime-envs`](https://github.com/PrimeIntellect-ai/prime-envs). For an end-to-end walkthrough of packaging an environment with separate solver and grader sandboxes, see [Building Environments](building-environments.md).
 
 ## An example taskset
 
-Tasksets are made of the following components:
+Tasksets are built from three core components:
 
-- The **Taskset** loads the actual **Tasks** from a dataset using the `load()` function. It can be configured with the **TasksetConfig**, to e.g. load a certain split. Configs are exposed to the user and thus should only contain configurable values.
-- A **Task** defines the scoring, stop conditions, setup, judging etc. of the task to solve. It also gets the tools or user config. It gets configured by a **TaskConfig**, e.g., to set a specific judge model.
-- The **TaskData** is the immutable object that holds the actual data, i.e., the prompts, images, expected outputs etc., as well as other information such as timeouts (if set).
+- The **Taskset** loads the actual **Tasks** from a dataset or generator in `load()`. It is configured through **TasksetConfig** (for example, to pick a split or dataset size). Config classes are exposed on the CLI and in TOML, so they should only hold user-configurable settings.
+- A **Task** defines the lifecycle hooks (`setup`, `finalize`), tools, stop conditions, metrics, and rewards for solving and grading a single problem. It is configured through **TaskConfig** (for example, to set a judge model or numeric tolerance).
+- **TaskData** is the immutable record holding a single task's inputs and metadata, including its prompt, reference answer, artifacts, and any per-task timeout or resource requirements.
 
-The following taskset generates addition questions and checks whether the model returned the exact answer.
+The following taskset generates addition questions and checks whether the model returned the exact answer:
 
 ```python
 import verifiers.v1 as vf
@@ -24,9 +24,9 @@ class AdditionData(vf.TaskData):
 
 
 class AdditionTask(vf.Task[AdditionData]):
-    # @vf.reward denotes the scoring function for the task.
-    # It needs the trace, which contains the whole message graph, including function calls, user messages etc.
-    # It returns the reward for the single task based on this function.
+    # @vf.reward marks a scoring function for the task.
+    # It receives the trace (the full message graph, tool calls, and replies)
+    # and returns this reward's score for the rollout.
     @vf.reward
     async def exact_match(self, trace: vf.Trace) -> float:
         return float(trace.last_reply == str(self.data.answer))
@@ -37,9 +37,7 @@ class AdditionConfig(vf.TasksetConfig):
     num_tasks: int = 100
 
 
-# The Taskset itself
 class AdditionTaskset(vf.Taskset[AdditionTask, AdditionConfig]):
-    # The loading function for the actual tasks
     def load(self) -> list[AdditionTask]:
         return [
             AdditionTask(
@@ -50,9 +48,17 @@ class AdditionTaskset(vf.Taskset[AdditionTask, AdditionConfig]):
         ]
 ```
 
-If a config class is not explicitly created, it means that no configurable, custom values are exposed to the user. In this example, there is no `vf.TaskConfig`, so no task values (like judge models) are configurable.
+If you don't need custom user-facing settings, you can omit the config subclass. Here `AdditionTask` uses the default `vf.TaskConfig`, while `AdditionConfig` exposes `num_tasks` on the taskset.
 
-The scaffold also exports the taskset from `addition_v1/__init__.py`:
+Following the standard [package setup](building-environments.md#create-a-package), a taskset package needs just two files:
+
+```text
+environments/addition_v1/src/addition_v1/
+├── __init__.py  # exports the taskset entry point
+└── taskset.py   # defines the data, tasks, and taskset
+```
+
+Re-export the taskset class in `src/addition_v1/__init__.py` so verifiers can discover and load it:
 
 ```python
 from addition_v1.taskset import AdditionTaskset
@@ -60,14 +66,19 @@ from addition_v1.taskset import AdditionTaskset
 __all__ = ["AdditionTaskset"]
 ```
 
-The exported `AdditionTaskset` is what verifiers loads and makes discoverable for evaluation.
+Then install the package into the Python environment running the CLI and verify that it loads:
+
+```bash
+uv pip install -e environments/addition_v1
+uv run vf-eval addition-v1 --dry-run
+```
 
 ## Data and configuration
 
-Keep values on the narrowest object that needs them:
+Keep settings on the narrowest config object that needs them:
 
 - Put load-time values shared across the dataset, such as its split, name, seed, or size, on `TasksetConfig`.
-- Put values used by every task during execution or scoring under `TasksetConfig.task`.
+- Put values used by each task during execution or scoring under `TasksetConfig.task`.
 
 ```python
 class AdditionTaskConfig(vf.TaskConfig):
@@ -86,30 +97,106 @@ class AdditionConfig(vf.TasksetConfig):
     task: AdditionTaskConfig = AdditionTaskConfig()
 ```
 
-These values can be overridden with `--env.taskset.num-tasks` and `--env.taskset.task.tolerance`, or with the equivalent TOML fields (`[env.taskset]`).
+These values can be overridden on the CLI with `--env.taskset.num-tasks` and `--env.taskset.task.tolerance`, or in TOML under `[env.taskset]`.
 
-## Task identity
+## Lifecycle and scoring
 
-A task's `idx` is its index in the `load()` stream; it is set automatically. Set `TaskData.id` to a durable ID from the source (e.g. a dataset's instance ID) and `TaskData.name` to a readable name; both are optional.
+Each single-agent rollout runs through five stages:
 
-A task's `hash` identifies its exact serialized data. Its `key` provides stable identity across runs and defaults to the hash. Override `Task.key` with a durable source ID when task data contains run-local fields such as `idx`; keys must be unique within a taskset. Both values are recorded on traces.
+1. **Task `setup`** prepares files, repositories, or background services in the sandbox.
+2. **Harness setup** prepares the agent program inside the runtime.
+3. **Agent execution** runs the model and its tools until completion or a stop condition.
+4. **Task `finalize`** captures any outputs or state needed for scoring and inspection before tests mutate the workspace.
+5. **Scoring** runs metrics, rewards, and judges, after which the runtime is torn down.
+
+Lifecycle hooks (`setup` and `finalize`) can accept `trace` and `runtime` by parameter name. See the [runtime guide](runtimes.md) for working with files, processes, and network rules, and [verification placement](agent.md#verification-placement) when you want grading to run in a fresh container with selected paths transferred via `TaskData.artifacts`.
+
+If you need mutable state during a rollout, such as tracking intermediate values across hooks or tool calls, define a `vf.State` subclass (`Task[YourData, YourState, YourConfig]`) and access it via `trace.state`. Because `trace.state` is ephemeral and not written to disk, anything you want preserved in the saved trace (such as extracted answers, patches, or parsed judge verdicts) should go into `trace.info` as JSON-serializable values.
+
+Scoring methods are decorated with `@vf.metric` or `@vf.reward(weight=...)`:
+
+- `@vf.metric` records an observational measurement on the trace without affecting the reward.
+- `@vf.reward(weight=1.0)` contributes to `trace.reward`, which is the **sum** of each `score * weight`. A reward with `weight=0.0` is still computed and recorded on the trace, making it easy to log candidate signals without training on them.
+
+Both decorators accept `trace`, `runtime`, or `task` by parameter name (where `task` is the `TaskData` instance and `self` is the `Task`), and each method can return either a single `float` or a `dict[str, float]` of named scores. During `Task.score`, metrics run first, followed by rewards, followed by configured judges. If an external service or judge fails during scoring, let the exception propagate instead of returning `0.0`, which would record an infrastructure failure as a wrong answer by the model.
+
+For software engineering tasks, call `await vf.capture_patch(trace, runtime, base_commit=...)` in `finalize` so the agent's git diff is saved to `trace.info["patch"]` before your grading script modifies the working tree or checks out test files. Pass a dataset base commit (or record `await vf.resolve_head(runtime)` during `setup`) so commits created by the agent are included in the diff. If the container image already has untracked files before the agent starts, snapshot them in `setup` with `verifiers.v1.utils.git.snapshot_untracked(runtime)` and pass that list as `ignore=...` so they aren't swept into the agent's patch.
+
+When a task has a known reference solution or gold check that can be verified without calling a model, implement `async def validate(self, runtime: vf.Runtime) -> bool | None` on the task; see [Debugging](debugging.md) for running validation checks from the CLI.
+
+### File answers and shared scoring inputs
+
+When a task has a large input context or multiple scoring functions that inspect the same output, write the context into the sandbox during `setup` and read the agent's output once in `finalize`:
+
+```python
+class ContextData(vf.TaskData):
+    context: str
+    answer: str
+
+
+class ContextTask(vf.Task[ContextData]):
+    NEEDS_CONTAINER = True
+
+    async def setup(self, runtime: vf.Runtime) -> None:
+        await runtime.write("/workspace/context.txt", self.data.context.encode())
+
+    async def finalize(self, trace: vf.Trace, runtime: vf.Runtime) -> None:
+        trace.info["answer"] = await vf.read_answer_file_or_last_reply(
+            runtime, "/workspace/answer.txt", trace
+        )
+
+    @vf.metric
+    async def answered(self, trace: vf.Trace) -> float:
+        return float(bool(trace.info["answer"]))
+
+    @vf.reward
+    async def correct(self, trace: vf.Trace) -> float:
+        return float(trace.info["answer"] == self.data.answer)
+```
+
+If you use `read_answer_file_or_last_reply`, make sure the prompt mentions that either writing `/workspace/answer.txt` or replying directly is accepted; if the benchmark strictly requires an output file, read it with `runtime.read` instead so missing files aren't masked by the final message.
+
+When using [isolated verification](agent.md#verification-placement), `finalize` still runs in the solver's sandbox before artifacts are collected, whereas `@vf.metric`, `@vf.reward`, and configured judge plugins receive the fresh verifier runtime. Use `finalize` to capture solver-side evidence into `trace.info`, and declare any files the grader needs in `TaskData.artifacts`.
+
+## Multimodal prompts
+
+`TaskData.prompt` accepts a plain string, a list of typed messages (`vf.Messages`), or `None` when an external caller opens the conversation. To include images in a prompt, pass content parts on a `vf.UserMessage`:
+
+```python
+from verifiers.v1.utils.image import image_data_url
+
+data = vf.TaskData(
+    prompt=[
+        vf.UserMessage(
+            content=[
+                vf.TextContentPart(text="What is shown in this image?"),
+                vf.ImageUrlContentPart(
+                    image_url=vf.ImageUrlSource(url=image_data_url(image)),
+                ),
+            ]
+        )
+    ]
+)
+```
+
+Here `image` is a `PIL.Image` (converted to a `data:` URL by `image_data_url`), preserving the benchmark's exact interleaving of text and images. Note that `TaskData.prompt_text` concatenates only the text parts and drops images, so multimodal tasks must run with a vision-capable model and a harness that forwards typed messages (such as `null`) rather than one that flattens the prompt via `resolve_text_prompt`.
 
 ## Selecting tasks
 
-Views on a taskset pick which tasks an iteration yields. They are lazy and chain in any order:
+Views on a taskset pick which tasks an iteration yields. In Python, they are lazy and can be chained in any order:
 
 ```python
 taskset.include(idx=["0:100"]).exclude(names=["broken"]).shuffle(seed=0).take(5)
 ```
 
-`include` keeps and `exclude` drops the tasks named by `idx` (ints and Python slices `start:stop:step`, e.g. `"100:"`, `":50"`, `"::2"`; no negative positions), `ids`, `keys` or `names`; a task matches when any list names it. An entry that matches no task logs a warning once the stream was read.
+`include` keeps and `exclude` drops tasks matching any of `idx` (integers or non-negative Python slice strings like `"0:100"`, `"100:"`, or `"::2"`), `ids`, `keys`, or `names`; a task matches when any provided list names it. Any filter entry that matches nothing logs a warning once the stream has been consumed.
 
-The eval, debug, validate and GEPA entrypoints take a `select` block and apply it with `taskset.select(config.select)`, which chains the views in a fixed order: `include`, `exclude`, `shuffle`, `skip`, `limit`:
+The eval, debug, validate, and GEPA entrypoints all accept a `select` config and apply it via `taskset.select(config.select)`, which chains the views in a fixed order: `include`, `exclude`, `shuffle`, `skip`, `limit`:
 
 ```bash
-uv run vf-eval gsm8k --select.limit 50 --select.shuffle         # 50 random tasks (short: -n 50 -s)
 uv run vf-eval gsm8k --select.include.idx 0:100                 # the first 100 tasks
-uv run vf-eval gsm8k --select.shuffle --select.skip 100 --select.limit 100   # a random split disjoint from the first
+uv run vf-eval gsm8k -s -n 50                                   # 50 random tasks (--select.shuffle --select.limit 50)
+uv run vf-eval gsm8k -s --select.skip 50 -n 50                  # the next 50 tasks from the same shuffled order
 ```
 
 ```toml
@@ -120,13 +207,13 @@ shuffle = true
 limit = 100
 ```
 
-Because the shuffle comes before `skip` and `limit`, a larger `limit` extends the same selection instead of drawing a new one.
+Because `shuffle` (seeded by `select.seed`, which defaults to `0`) runs before `skip` and `limit`, increasing `limit` with the same seed extends the existing sample rather than drawing a different subset, and pairing `skip` with `limit` carves out disjoint splits.
 
 ## Lazy and infinite tasksets
 
-`load()` may be a generator instead of returning a list: yield each task as it's built. Consumers iterate the taskset lazily (`eval -n 5` builds 5 tasks, not the whole set, unless `shuffle` needs all of them) — so a generator pays off whenever building a task is expensive.
+`load()` can be a generator that yields tasks one at a time instead of returning a list. Because consumers iterate the taskset lazily, `vf-eval -n 5` only builds five tasks (unless filtering skips items or `shuffle` needs to materialize the candidate pool), which pays off whenever constructing a task is expensive.
 
-A procedural taskset can keep yielding forever. Declare `INFINITE = True` so consumers know the stream never ends — infinity is inherent to the taskset, not a config knob; how many tasks a run takes is the run's choice (`-n`), not the taskset's:
+A procedural taskset can also yield tasks forever. Declare `INFINITE = True` on the class so consumers know the stream has no end — infinity is a property of the taskset, while how many tasks a run takes (`-n`) is up to the caller:
 
 ```python
 import itertools
@@ -144,13 +231,16 @@ class AdditionTaskset(vf.Taskset[AdditionTask, vf.TasksetConfig]):
             )
 ```
 
-Two rules follow from infinity: a run over an infinite taskset must be bounded with `take` (`-n` on the CLI) or an `include` of only closed `idx` ranges — omitting both is an error — and `shuffle` needs a bound before it: there is no whole set to sample from otherwise. `select` applies `limit` after the shuffle, so on the CLI only closed `include.idx` ranges can bound it (`--select.include.idx 0:1000 -s -n 50`); in Python, `take(n).shuffle()` works too. The generator runs once, client-side (the eval entrypoint or the prime-rl orchestrator pulls tasks off it and ships each task's data to the env server), so nothing needs to re-produce the same sequence across processes; keep `load()` deterministic only if you want `--resume` to regenerate the same first `n` tasks (see `alphabet_sort`, `color_codeword`, or the built-in `textarena` taskset).
+Two rules follow from an infinite stream:
+
+1. Every run must bound the taskset with `take` (`-n` / `--select.limit` on the CLI) or an `include` consisting only of closed `idx` ranges; omitting both raises an error.
+2. `shuffle` needs a finite bound _before_ it runs, since you cannot shuffle an infinite stream. Because `select` applies `limit` after `shuffle`, shuffling an infinite taskset from the CLI requires a closed `include.idx` range first (for example, `--select.include.idx 0:1000 -s -n 50`); in Python, `taskset.take(1000).shuffle()` works as well.
+
+The generator runs once on the client (the eval entrypoint or prime-rl orchestrator pulls tasks from `load()` and sends each task's `TaskData` to the environment worker), so workers never need to reproduce the generator sequence. Keep `load()` deterministic if you want `--resume` to regenerate the same first `n` tasks across runs (see `alphabet_sort`, `color_codeword`, or the built-in `textarena` taskset).
 
 ## Adding Tools
 
-Some tasksets require custom tools, which are bundled as a `vf.Toolset` (similar to how a `vf.Taskset` bundles `vf.Task`). Tools are exposed as MCP servers to the given harness and thus need a harness which exposes MCP support (via `SUPPORTS_MCP`).
-
-You can create them like this:
+When a task requires custom tools beyond what the harness provides natively, bundle them in a `vf.Toolset`. Toolsets are exposed to the harness as MCP servers, so they require a harness that declares `SUPPORTS_MCP = True`.
 
 ```python
 DATABASE = None
@@ -165,7 +255,6 @@ class SearchToolset(vf.Toolset[vf.SharedToolsetConfig]):
         return DATABASE.search(text)
 
 
-# User-configurable knobs
 class SearchConfig(vf.TasksetConfig):
     tools: vf.SharedToolsetConfig = vf.SharedToolsetConfig()
 
@@ -176,31 +265,98 @@ class SearchTaskset(vf.Taskset[vf.Task, SearchConfig]):
         return [SearchToolset(config.tools)]
 ```
 
-Taskset tools are shared by a worker's rollouts. Tools can also be set per task.
+Tools defined on `Taskset.toolsets(config)` run in a server shared across a worker's rollouts and take a `vf.SharedToolsetConfig`. When each rollout needs its own isolated tool server, define `Task.toolsets(config)` on the task class instead and store a `vf.ToolsetConfig` on your `TaskConfig`.
+
+A toolset's config controls where the MCP server runs:
+
+- **Host subprocess (default)** — launches the server as a local subprocess with its own filesystem.
+- **`colocated = true`** (per-task toolsets only) — runs the tool server inside the agent's own runtime container so tools share the agent's filesystem directly.
+- **`service = "<name>"`** (per-task toolsets on Prime or Modal VM Compose) — runs the tool server inside a named service from the task's Compose stack. The harness reaches it over the Compose network by service name, so the tool server can front internal services that the workspace cannot reach directly.
+- **`runtime = { type = "docker", ... }`** — runs the tool server in its own dedicated container.
+- **`url = "https://.../mcp"`** — connects to an already-running streamable-HTTP MCP server instead of launching one.
+
+For local or containerized servers, put the `Toolset` subclass in a server module that calls `SearchToolset.run()` under `if __name__ == "__main__":`. On startup, the server runs `await self.setup()`, then `await self.setup_task(task)` (for per-task servers, receiving the rollout's `TaskData`), and finally `self.register(mcp)`. Shared servers skip `setup_task`, so keep shared indexes or clients on `self` during `setup()` and store per-rollout state in `self.state`.
+
+### Stateful tools
+
+To share mutable per-rollout state between a toolset and task scoring, parameterize both `Task` and `Toolset` with the same `vf.State` subclass. Each `@vf.tool` call automatically synchronizes `self.state` with the rollout, and scoring methods read the updated state from `trace.state`:
+
+```python
+class CounterState(vf.State):
+    calls: int = 0
+
+
+class CounterToolset(vf.Toolset[vf.ToolsetConfig, CounterState]):
+    @vf.tool
+    def count(self) -> int:
+        """Count this tool call and return the total."""
+        self.state.calls += 1
+        return self.state.calls
+
+
+class CounterTaskConfig(vf.TaskConfig):
+    tools: vf.ToolsetConfig = vf.ToolsetConfig()
+
+
+class CounterTask(vf.Task[vf.TaskData, CounterState, CounterTaskConfig]):
+    @classmethod
+    def toolsets(cls, config: CounterTaskConfig) -> list[vf.Toolset]:
+        return [CounterToolset(config.tools)]
+
+    @vf.metric
+    async def tool_calls(self, trace: vf.Trace) -> float:
+        return float(trace.state.calls)
+```
+
+Initialize any per-rollout starting state in the task's `setup(trace, runtime)` via `trace.state` rather than in the tool server's `setup_task(task)`: state synchronization wraps individual `@vf.tool` calls, so mutations to `self.state` during server startup are not persisted back to the rollout. Because each tool call replaces the serialized state as a whole, avoid concurrent uncoordinated writes to `self.state` across parallel tool calls.
 
 ## Using Judges
 
-If your reward is semantic, use an LLM judge.
+When a task's reward is semantic and cannot be checked deterministically, use an LLM judge. For common grading patterns, you can plug in one of the built-in judges directly from config or `TaskConfig.judges` without writing a custom class:
+
+- **`reference`** compares the model's response against a reference field on `TaskData` (if that field holds a list, matching any item in the list counts as correct):
+
+  ```toml
+  [[env.taskset.task.judges]]
+  id = "reference"
+  name = "correct"
+  answer_field = "answer"
+  view = "last_reply"
+  ```
+
+  To make this the default in code, set `judges: vf.Judges = [vf.ReferenceJudgeConfig(name="correct")]` on your `TaskConfig`.
+- **`rubric`** loads a JSON or TOML rubric file from `path` containing a `criteria` list (each with `name`, `text`, optional `weight`, and `choices` ordered from worst to best). It evaluates the full trace by default, records each criterion as a `<judge_name>/<criterion>` metric, and returns their weighted average as the judge's reward.
+- **`decision`** queries a decision-model endpoint (defaulting to Clef) across two to ten ordered grading `levels` and returns the probability-weighted level normalized to `[0, 1]`:
+
+  ```toml
+  [[env.taskset.task.judges]]
+  id = "decision"
+  name = "correct"
+  answer_field = "answer"
+  levels = ["Incorrect", "Correct"]
+  ```
+
+Every judge carries its own independent `model`, `base_url`, `api_key_var`, and `sampling` config; changing the evaluated agent's model or client does not alter the judge. When you configure multiple judges on a task, give each one a distinct reward `name`.
+
+For custom prompts, structured outputs, or parsing logic, subclass `vf.Judge` and call it from a `@vf.reward` method:
 
 ```python
 import verifiers.v1 as vf
-from functools import cached_property
-
-
-class Task(vf.Task):
-    answer: str
 
 
 class CorrectnessJudge(vf.Judge[bool]):
-    # The rubric for the judge
+    # The prompt template rendered by build_messages(**fields)
     prompt = """Question: {question}
     Answer: {answer}
     Response: {response}
     Correct? Reply yes or no."""
 
-    # Parse the response from the judge
+    # Parse the judge's reply into the typed result
     def parse(self, response: vf.JudgeResponse[bool]) -> bool:
-        return "yes" in response.text
+        verdict = vf.parse_judge_choice(response.text, choices=("yes", "no"))
+        if verdict is None:
+            raise ValueError("Judge returned no yes/no verdict")
+        return verdict == "yes"
 
 
 class JudgedData(vf.TaskData):
@@ -208,8 +364,8 @@ class JudgedData(vf.TaskData):
 
 
 class JudgedTaskConfig(vf.TaskConfig):
-    # The judge inherits base_url and api keys from the client config
-    judge: vf.JudgeConfig = vf.JudgeConfig(model="openai/gpt-5-mini")
+    # Judge endpoint settings are independent of the evaluated agent's client.
+    judge: vf.JudgeConfig = vf.JudgeConfig()
 
 
 class JudgedTask(vf.Task[JudgedData, vf.State, JudgedTaskConfig]):
@@ -221,7 +377,6 @@ class JudgedTask(vf.Task[JudgedData, vf.State, JudgedTaskConfig]):
             trace=trace,
             question=self.data.prompt_text,
             answer=self.data.answer,
-            # give the last assistant message to the judge
             response=trace.last_reply,
         )
         return float(result.parsed)
@@ -241,11 +396,9 @@ class JudgeTraceTaskset(vf.Taskset[JudgedTask, SetConfig]):
         ]
 ```
 
-To override the judge model, set `env.taskset.task.judge.model` in your config (it is a string).
-
 ## Plugging hooks via config
 
-Stop conditions, metrics, and rewards can also be plugged into any task from config, without touching the taskset's code. Each entry names an async function by import path (`pkg.module.function`, `pkg.module:function`, or `path/to/file.py:function`); like decorated hooks, functions declare what they need by parameter name (`task`, `trace`, `runtime` — stops receive the trace only):
+Stop conditions, metrics, and rewards can also be plugged into any task from config without touching the taskset's code. Each entry names a function by import path (`pkg.module.function`, `pkg.module:function`, or `path/to/file.py:function`). Like decorated methods, scoring functions declare what they need by parameter name (`task`, `trace`, `runtime`), while a stop function's type annotation determines when it runs (see [stops and interception](#stops-and-interception)):
 
 ```toml
 [env.taskset.task.stops]
@@ -258,15 +411,30 @@ reply_length = { fn = "my_hooks.py:reply_length", priority = 10 }
 exact_match = { fn = "my_hooks.py:exact_match", weight = 0.5 }
 ```
 
-Plugged hooks merge with the task's decorated `@vf.stop` / `@vf.metric` / `@vf.reward` methods; a plugged hook replaces a decorated one with the same name, so an existing signal can be swapped out (like `single_turn` above). Rewards take a `weight`, and every entry takes a `priority` (higher runs first); unset fields keep the replaced method's values.
+Plugged hooks merge with the task's decorated `@vf.stop`, `@vf.metric`, and `@vf.reward` methods; a plugged hook replaces a decorated method with the same name, making it easy to swap out an existing signal (such as `single_turn` above). Rewards accept a `weight` and every hook accepts a `priority`, while any omitted fields preserve the replaced method's existing settings.
 
-Leaving `fn` out keeps the task's own decorated method and only overrides its metadata — for example, turning an existing zero-weight reward into a training signal:
+Leaving `fn` out keeps the task's own decorated method and overrides only its metadata — for example, turning an existing zero-weight reward into an active training signal:
 
 ```toml
 [env.taskset.task.rewards]
 exact_match = { weight = 1.0 }
 ```
 
+## Stops and interception
+
+Decorate a task method with `@vf.stop` (synchronous or async) and return `True` to end the agent run early and record the method's name as `trace.stop_condition`. The parameter's type annotation controls where in the model-call lifecycle the check runs:
+
+- `vf.Request` — before the outgoing request is sent to the model provider.
+- `vf.Response` — while the model's response is buffered, before it is returned to the harness.
+- `vf.Trace` — before each model call, inspecting the trace accumulated so far.
+
+When you want to inspect or rewrite traffic in flight without ending the rollout, use `@vf.intercept` on a method taking `vf.Request` or `vf.Response` (plus optional `trace`). Return a modified copy of the same type to replace the payload, or `None` to leave it untouched:
+
+- **Request interception** can rewrite new user or tool messages before the model sees them (without adding or removing messages, altering tool definitions, or changing tool-call names and IDs).
+- **Response interception** can replace the assistant's text reply before it reaches the harness (replacement responses cannot carry tool calls).
+
+For ordinary network isolation, configure `TaskData.network_allow` and `TaskData.network_block`. If you want to block a specific tool call before it executes and return a synthetic tool result so the agent can keep going, the harness must declare `SUPPORTS_TOOL_INTERCEPTION = True` and check tool calls before running them; otherwise, use a `vf.Response` stop hook to halt the rollout before the harness executes the tool. See the bundled [`interception`](../environments/interception/interception/taskset.py) and [`bash_interception`](../environments/bash_interception/bash_interception/taskset.py) environments for complete working examples.
+
 ## Beyond one agent
 
-One episode doesn't have to be one agent run: agents, the control flow between agents, and cross-agent rewards are the environment's job — see [The Env](env.md).
+One episode doesn't have to be a single agent run: multi-agent topologies, the control flow between agents, and cross-agent rewards are the environment's job — see [The Env](env.md).

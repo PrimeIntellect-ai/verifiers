@@ -288,7 +288,9 @@ async def _buffered_stream(
                 await stream.write(
                     replay.body
                     if response.status < 400
-                    else dialect.stream_error(from_json(replay.body))
+                    else dialect.stream_error(
+                        from_json(replay.body), status_code=response.status
+                    )
                 )
                 await stream.write_eof()
             except ConnectionResetError:
