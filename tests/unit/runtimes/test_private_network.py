@@ -87,17 +87,9 @@ class FakeLanClient:
     def __init__(self, events):
         self.events = events
 
-    async def create_lan_network(self, name):
-        self.events.append("network")
+    async def create_lan_network(self, name, rules):
+        self.events.append(("network", [(rule.from_, rule.to) for rule in rules]))
         return SimpleNamespace(id="net1")
-
-    async def set_lan_rules(self, network_id, rules):
-        self.events.append(("rules", [(rule.from_, rule.to) for rule in rules]))
-        return SimpleNamespace(synced=False)  # not yet enforced
-
-    async def get_lan_network(self, network_id):
-        self.events.append("rules applied")
-        return SimpleNamespace(synced=True)
 
     async def delete_lan_network(self, network_id):
         self.events.append("network deleted")
@@ -117,7 +109,6 @@ def boot(monkeypatch, members):
         raise RuntimeError("booted")
 
     monkeypatch.setattr(private_network, "leased_client", leased_client)
-    monkeypatch.setattr(private_network, "SYNC_POLL_SECONDS", 0)
     monkeypatch.setattr(prime, "ensure_prime_auth", lambda: None)
     monkeypatch.setattr(PrimeBackend, "start", start)
     workspace = PrimeBackend(PrimeConfig(allow=[]), name="ws")
@@ -143,20 +134,13 @@ def test_each_vm_boots_its_server_runtime_as_given(monkeypatch):
     assert vms["ws"].allow == []  # the workspace keeps its own policy
 
 
-def test_every_vm_joins_the_lan_as_it_boots_once_its_rules_are_enforced(monkeypatch):
+def test_the_network_starts_with_its_rules_and_every_vm_joins_as_it_boots(monkeypatch):
     events = boot(monkeypatch, {"atlas": ATLAS, "forth": FORTH})
-    assert events[:3] == [
+    assert events[0] == (
         "network",
-        (
-            "rules",
-            [
-                ("tag:vf-workspace", "tag:vf-tool-0"),
-                ("tag:vf-workspace", "tag:vf-tool-1"),
-            ],
-        ),
-        "rules applied",
-    ]
-    boots = {name: lan for kind, name, _, lan in events[3:-1] if kind == "boot"}
+        [("tag:vf-workspace", "tag:vf-tool-0"), ("tag:vf-workspace", "tag:vf-tool-1")],
+    )
+    boots = {name: lan for kind, name, _, lan in events[1:-1] if kind == "boot"}
     assert boots == {
         "ws": ("net1", ["vf-workspace"]),
         "ws-vf-tool-0": ("net1", ["vf-tool-0"]),

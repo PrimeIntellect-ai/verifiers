@@ -16,7 +16,6 @@ import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import AsyncExitStack, asynccontextmanager
 
-from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes import (
     PrimeBackend,
     PrimeConfig,
@@ -29,8 +28,6 @@ from verifiers.v1.utils.aio import run_shielded
 logger = logging.getLogger(__name__)
 
 WORKSPACE_TAG = "vf-workspace"
-SYNC_SECONDS = 120
-SYNC_POLL_SECONDS = 1.0
 
 
 def tool_vms(
@@ -91,7 +88,16 @@ async def private_network(
     tags = {name: _tag(index) for index, name in enumerate(members)}
     async with AsyncExitStack() as stack:
         client = await stack.enter_async_context(leased_client())
-        network = await client.create_lan_network(f"vf-{uuid.uuid4().hex[:16]}")
+        # The network starts with its rules: only the workspace may open connections,
+        # to the servers' VMs. A member's join completes only once the network exists
+        # on the platform, so its first members already join under these rules.
+        network = await client.create_lan_network(
+            f"vf-{uuid.uuid4().hex[:16]}",
+            rules=[
+                LanRule(from_=f"tag:{WORKSPACE_TAG}", to=f"tag:{tag}")
+                for tag in tags.values()
+            ],
+        )
 
         async def delete_network() -> None:
             try:
@@ -102,26 +108,6 @@ async def private_network(
                 )
 
         stack.push_async_callback(lambda: run_shielded(delete_network()))
-        # A new network lets every member reach every other: narrow it before anyone
-        # joins, and wait until the platform enforces that, since a member's join can
-        # sync before the network's rules do.
-        state = await client.set_lan_rules(
-            network.id,
-            [
-                LanRule(from_=f"tag:{WORKSPACE_TAG}", to=f"tag:{tag}")
-                for tag in tags.values()
-            ],
-        )
-        try:
-            async with asyncio.timeout(SYNC_SECONDS):
-                while not state.synced:
-                    await asyncio.sleep(SYNC_POLL_SECONDS)
-                    state = await client.get_lan_network(network.id)
-        except TimeoutError as e:
-            raise SandboxError(
-                f"LAN network {network.id}'s rules were not applied within "
-                f"{SYNC_SECONDS}s"
-            ) from e
 
         backends: dict[str, RuntimeBackend] = {}
 
