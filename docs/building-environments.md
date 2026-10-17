@@ -75,10 +75,7 @@ class FileSumTask(vf.Task[vf.TaskData]):
     NEEDS_CONTAINER = True
 
     async def setup(self, runtime: vf.Runtime) -> None:
-        await runtime.write("/app/input.txt", b"1
-2
-3
-")
+        await runtime.write("/app/input.txt", b"1\n2\n3\n")
         await runtime.write("/app/output/answer.txt", b"")
 
     @vf.reward
@@ -87,8 +84,7 @@ class FileSumTask(vf.Task[vf.TaskData]):
         return float(answer.strip() == b"6")
 
     async def validate(self, runtime: vf.Runtime) -> bool:
-        await runtime.write("/app/output/answer.txt", b"6
-")
+        await runtime.write("/app/output/answer.txt", b"6\n")
         return bool(await self.correct(runtime))
 
 

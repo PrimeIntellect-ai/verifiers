@@ -60,8 +60,7 @@ Task lifecycle hooks (`setup`, `finalize`, `stage_verifier`) and `@vf.reward` / 
 
 ```python
 async def setup(self, trace: vf.Trace, runtime: vf.Runtime) -> None:
-    await runtime.write("input.txt", b"task input
-")
+    await runtime.write("input.txt", b"task input\n")
     result = await runtime.run(["sh", "-c", "mkdir -p results"], {})
     if result.exit_code:
         raise RuntimeError(result.stderr)
