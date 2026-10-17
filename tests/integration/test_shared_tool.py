@@ -8,7 +8,7 @@ from grid import HARNESS_RUNTIMES, placements
 
 @pytest.mark.parametrize(
     "harness_runtime,tool_runtime",
-    placements(tool_runtimes=tuple(HARNESS_RUNTIMES)),
+    placements(tool_runtimes=tuple(HARNESS_RUNTIMES), shared=True),
     indirect=True,
 )
 async def test_shared_tool(run, harness_runtime, tool_runtime):
