@@ -200,7 +200,7 @@ def dialects(harness: str) -> tuple[str, ...]:
         value
         for arg in get_args(field.annotation)
         for value in get_args(arg) or (arg,)
-        if isinstance(value, str) and value != field.default
+        if value != field.default
     )
 
 

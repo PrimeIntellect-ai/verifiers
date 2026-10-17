@@ -52,8 +52,8 @@ class HarnessConfig(BaseConfig):
     tool_timeout: FiniteFloat = Field(600.0, gt=0)
     """Seconds a single MCP tool call may take; raise it for tools that boot a VM."""
     disabled_tools: list[str] | None = None
-    dialect: DialectName | None = None
-    """Model API wire format the program speaks. `None` lets the program pick, e.g. from
+    dialect: DialectName | Literal["auto"] = "auto"
+    """Model API wire format the program speaks. `auto` lets the program pick, e.g. from
     the model. Each harness narrows this to the formats it can select."""
     skills: list[SkillSource] = Field(default_factory=list)
     """Host skill folders or `{runtime: path}` roots of skills inside the runtime.

@@ -34,8 +34,8 @@ class HermesAgentHarnessConfig(HarnessConfig):
     use_bundled_skill: bool = False
     """Enable Hermes Agent's bundled skill catalog in addition to uploaded skills."""
     # Over Responses it replays an earlier turn without its reasoning.
-    dialect: Literal["chat_completions", "anthropic_messages"] | None = None
-    """`None` lets Hermes pick the transport from the model name on eval clients, and
+    dialect: Literal["chat_completions", "anthropic_messages", "auto"] = "auto"
+    """`auto` lets Hermes pick the transport from the model name on eval clients, and
     chat completions on others."""
 
 
@@ -99,7 +99,7 @@ class HermesAgentHarness(ACPHarness[HermesAgentHarnessConfig]):
             "api_key": secret,
             "discover_models": False,
         }
-        if self.config.dialect is not None:
+        if self.config.dialect != "auto":
             provider["transport"] = self.config.dialect
         elif ctx.client.type == "eval":
             provider["transport"] = "${HERMES_INTERCEPT_TRANSPORT}"
