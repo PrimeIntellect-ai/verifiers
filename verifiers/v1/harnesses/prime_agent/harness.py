@@ -14,7 +14,7 @@ from verifiers.v1.runtimes import Runtime
 from verifiers.v1.runtimes.base import _ENSURE_UV
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
-from verifiers.v1.types import Message
+from verifiers.v1.types import DialectName, Message
 
 logger = logging.getLogger(__name__)
 
@@ -91,7 +91,7 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
 
     # Its chat-completions provider drops whitespace-only assistant text on replay. Recheck on bumps:
     # https://github.com/PrimeIntellect-ai/prime-agent/blob/v0.10.0/crates/pa-ai/src/providers/openai_completions/convert.rs#L106
-    def replay_view(self, message: Message) -> Message:
+    def replay_view(self, message: Message, dialect: DialectName | None) -> Message:
         return drop_blank_text(message)
 
     def acp_turn_result(self, trace: Trace, result: ACPTurn) -> None:

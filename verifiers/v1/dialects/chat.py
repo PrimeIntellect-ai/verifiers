@@ -397,6 +397,7 @@ class ChatStreamParser(StreamParser):
 
 
 class ChatDialect(Dialect[ChatCompletion]):
+    name = "chat_completions"
     sampling_fields = frozenset(
         {
             "temperature",

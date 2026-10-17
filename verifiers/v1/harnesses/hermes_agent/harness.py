@@ -12,7 +12,7 @@ from verifiers.v1.runtimes import Runtime
 from verifiers.v1.runtimes.base import _ENSURE_UV
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
-from verifiers.v1.types import Message
+from verifiers.v1.types import DialectName, Message
 
 PROGRAM_SOURCE = (Path(__file__).resolve().parent / "program.py").read_text()
 HERMES_DIR = "/var/tmp/vf-hermes-agent-{version}"
@@ -43,7 +43,7 @@ class HermesAgentHarness(ACPHarness[HermesAgentHarnessConfig]):
     # replay. Recheck on version bumps:
     # https://github.com/NousResearch/hermes-agent/blob/v2026.9.14/agent/chat_completion_helpers.py#L1444
     # https://github.com/NousResearch/hermes-agent/blob/v2026.9.14/agent/message_sanitization.py#L545
-    def replay_view(self, message: Message) -> Message:
+    def replay_view(self, message: Message, dialect: DialectName | None) -> Message:
         return strip_text(message)
 
     async def setup(self, runtime: Runtime) -> None:

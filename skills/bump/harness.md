@@ -18,9 +18,11 @@ Update each pin to a released upstream version. Bump one harness per PR.
 
 Some harnesses override `Harness.replay_view`. The override declares the
 cosmetic rewrite that the upstream client applies when it replays an earlier
-assistant turn, such as dropping whitespace-only text. The trace graph applies
-the view when it matches a replayed turn to its sampled node. If the view is
-wrong, the trace forks.
+assistant turn, such as dropping whitespace-only text. The view receives the
+dialect the harness speaks (`chat_completions`, `responses` or
+`anthropic_messages`), because a client can rewrite differently per wire
+format. The trace graph applies the view when it matches a replayed turn to its
+sampled node. If the view is wrong, the trace forks.
 
 Each override has a comment with a link to the upstream source line at the
 pinned tag. For each link:
@@ -51,7 +53,8 @@ uv run pytest tests/integration -n 8 -m "<harness_mark> and prime"
 # e.g. -m "claude_code and prime"
 ```
 
-The tests assert `trace.num_branches == 1`. If a cell forks, dump its trace and
+The tests assert `trace.num_branches == 1`. For a harness whose config selects
+a `transport`, `test_multi_turn.py` also runs every other transport. If a cell forks, dump its trace and
 compare the sampled node with its unsampled sibling under the same parent. The
 difference is the new replay rewrite. Fix it as in step 2.
 
