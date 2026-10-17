@@ -249,6 +249,18 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
             args += ["--skill", skill_destination(skill, skills_dir)]
         if system_prompt:
             args += ["--append-system-prompt", system_prompt]
+        if mcp_urls:
+            # ACP servers need discovery guidance; importing the SDK shadows the REPL helper.
+            args += [
+                "--append-system-prompt",
+                (
+                    f"Connected MCP servers: {json.dumps(list(mcp_urls))}. "
+                    "Use the pre-imported `mcp` helper in `ipython`, or `from rlm import mcp`. "
+                    "Do not `import mcp`: that loads the unrelated SDK and overwrites the helper. "
+                    "Discover tools with `print(await mcp.list_tools(server))`, then call them "
+                    "with `print(await mcp.call_tool(server, tool, arguments))`."
+                ),
+            ]
 
         return ACPConfig(
             env=self._env(trace, secret),
