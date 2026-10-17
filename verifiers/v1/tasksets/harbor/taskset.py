@@ -830,12 +830,10 @@ def parse_verifier_extras(
 
     artifacts: list[HarborArtifact] = []
     for entry in normalize_artifact_entries(parsed.artifacts):
-        # `destination` positions a file in Harbor's host trial directory. Verifiers has
-        # no such directory (the trace is the record) and Harbor never lets destination
-        # affect verifier-side placement, so it cannot change any grading outcome.
         artifacts.append(
             HarborArtifact(
                 source=entry.source,
+                destination=entry.destination,
                 service=effective_artifact_service(entry),
                 exclude=list(entry.exclude or []),
                 required=False,

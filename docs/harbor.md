@@ -123,6 +123,10 @@ The bridge supports `stdio`, `sse`, and `streamable-http` servers, forwarding th
 
 `artifacts = [...]` and `[[verifier.collect]]` are read from `task.toml` ([Harbor artifact docs](https://www.harborframework.com/docs/run-jobs/results-and-artifacts)). Each entry's `service` selects the source runtime, defaulting to `main`, with additional services resolved from the deployment's Compose project. Missing Harbor artifacts are treated as optional during collection, so your test suite should fail if a required output file is absent (by contrast, native `vf.Artifact` declarations default to required).
 
+Saving a trace writes its collected files alongside `traces.jsonl`, under `artifacts/<trace-id>/`; artifact bytes are excluded from the JSON. `destination` sets the saved path relative to that directory. Without it, files mirror their source paths with the leading `/` removed. For example, `{ source = "/app/report.json", destination = "report.json" }` saves `artifacts/<trace-id>/report.json` and restores `/app/report.json` for grading.
+
+Each trace's artifact directory contains a `manifest.json` recording the source, service, destination, and status (`ok`, `empty`, `skipped`, or `failed`). Conflicting destinations keep the first saved artifact and skip the later one; source-mirrored directories may merge without overwriting files. Artifact roots from different services must not overlap, since they share the grader's filesystem.
+
 One behavioral difference from `harbor run` is worth noting: **A failing collect hook fails the rollout.** Harbor logs a collection failure and continues because it treats collected files as observability artifacts; in verifiers, collected files are inputs to the grader, and ignoring a failed hook would let the verifier score stale or incomplete state.
 
 ## Separate verifier environments
