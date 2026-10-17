@@ -51,6 +51,7 @@ CACHE = Path.home() / ".cache" / "harbor"
 HARBOR_INSTALL_HINT = "uv sync --python 3.12 --extra harbor"
 REWARD_JSON = "/logs/verifier/reward.json"
 MAX_REWARD_BYTES = 1024 * 1024
+MAX_VERIFIER_OUTPUT_CHARS = 16 * 1024
 REWARD_JSON_ADAPTER = TypeAdapter(
     dict[str, float],
     config=ConfigDict(strict=True, allow_inf_nan=False),
@@ -447,6 +448,13 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
         result = await runtime.run(
             ["bash", "/tests/test.sh"], resolve_env(self.scoring.env or {})
         )
+        trace.info.setdefault("scoring_diagnostics", {})["harbor"] = {
+            "exit_code": result.exit_code,
+            "stdout": result.stdout[-MAX_VERIFIER_OUTPUT_CHARS:],
+            "stderr": result.stderr[-MAX_VERIFIER_OUTPUT_CHARS:],
+            "stdout_truncated": len(result.stdout) > MAX_VERIFIER_OUTPUT_CHARS,
+            "stderr_truncated": len(result.stderr) > MAX_VERIFIER_OUTPUT_CHARS,
+        }
         scores = await self.read_reward_json(runtime)
         if scores is None:
             try:
