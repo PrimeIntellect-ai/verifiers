@@ -7,7 +7,14 @@ from verifiers.v1.graph import MessageNode
 from verifiers.v1.types import AssistantMessage, UserMessage
 
 PLUGGED_FNS_PY = """
+from dataclasses import dataclass
+
 from verifiers.v1 import Trace
+
+
+@dataclass
+class Grade:
+    value: float
 
 
 async def reply_length(trace) -> float:
@@ -19,7 +26,7 @@ async def exact_match(task, trace) -> float:
 
 
 async def marker(trace) -> float:
-    return 0.125
+    return Grade(0.125).value
 
 
 async def two_turns(trace: Trace) -> bool:
@@ -45,9 +52,15 @@ class HookTask(vf.Task[HookData]):
         return 1.0
 
 
-async def test_config_plugged_fns_merge_and_override(tmp_path) -> None:
+@pytest.mark.parametrize("postponed_annotations", [False, True])
+async def test_config_plugged_fns_merge_and_override(
+    tmp_path, postponed_annotations
+) -> None:
     fns = tmp_path / "fns.py"
-    fns.write_text(PLUGGED_FNS_PY)
+    source = PLUGGED_FNS_PY
+    if postponed_annotations:
+        source = "from __future__ import annotations\n" + source
+    fns.write_text(source)
     config = vf.TaskConfig(
         stops={"single_turn": vf.DecoratedFunctionConfig(fn=f"{fns}:two_turns")},
         metrics={"reply_length": vf.DecoratedFunctionConfig(fn=f"{fns}:reply_length")},

@@ -1,9 +1,11 @@
 """Resolve taskset, harness, judge, hook, and environment plugins."""
 
 import functools
+import hashlib
 import importlib
 import importlib.util
 import pkgutil
+import sys
 from collections.abc import Callable
 from pathlib import Path
 from types import ModuleType
@@ -209,16 +211,23 @@ def load_judge(config: JudgeConfig) -> Judge:
     return judge_class(config.id)(config)
 
 
-@functools.cache
 def file_module(path: str) -> ModuleType:
-    """Import a standalone `.py` file, cached by path so repeated plugged-fn loads
-    share one module object."""
+    """Import a standalone `.py` file, cached by resolved path. Register it before
+    execution so dataclasses and type introspection can resolve its namespace."""
     resolved = Path(path).resolve()
-    spec = importlib.util.spec_from_file_location(resolved.stem, resolved)
+    name = f"_verifiers_hook_{hashlib.sha256(str(resolved).encode()).hexdigest()}"
+    if name in sys.modules:
+        return sys.modules[name]
+    spec = importlib.util.spec_from_file_location(name, resolved)
     if spec is None or spec.loader is None:
         raise ImportError(f"cannot import module from {path!r}")
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    sys.modules[name] = module
+    try:
+        spec.loader.exec_module(module)
+    except BaseException:
+        del sys.modules[name]
+        raise
     return module
 
 
