@@ -64,6 +64,7 @@ ERROR_TYPES = {
 }
 ERROR_STATUSES = {kind: status for status, kind in ERROR_TYPES.items()}
 
+
 # Claude may reorder mixed thinking block types between a response and its replay.
 # Native tool events share the final rank, preserving their relative order.
 THINKING_ORDER = {"redacted_thinking": 0, "thinking": 1}
@@ -116,6 +117,12 @@ _SAFE_CONTENT_TYPES = (
     "advisor_redacted_result",
     "advisor_tool_result_error",
 )
+
+
+def _error_type(status_code: int) -> str:
+    return ERROR_TYPES.get(
+        status_code, "api_error" if status_code >= 500 else "invalid_request_error"
+    )
 
 
 def parse_content(content) -> str | list[ContentPart]:
@@ -524,10 +531,10 @@ class AnthropicDialect(Dialect[AnthropicMessage]):
         # The SDK sends the key as `x-api-key`; an ANTHROPIC_AUTH_TOKEN arrives as Bearer.
         return headers.get("x-api-key") or super().secret(headers)
 
-    def error_body(self, message: str) -> dict:
+    def error_body(self, message: str, *, status_code: int = 400) -> dict:
         return {
             "type": "error",
-            "error": {"type": "invalid_request_error", "message": message},
+            "error": {"type": _error_type(status_code), "message": message},
         }
 
     def stream_keepalive(self, first: bool) -> bytes:
@@ -537,10 +544,7 @@ class AnthropicDialect(Dialect[AnthropicMessage]):
     def stream_error(self, error: dict, *, status_code: int | None = None) -> bytes:
         # Once HTTP 200 is committed, clients classify retries from the SSE error type.
         if status_code is not None:
-            kind = ERROR_TYPES.get(
-                status_code,
-                "api_error" if status_code >= 500 else "invalid_request_error",
-            )
+            kind = _error_type(status_code)
             error = {**error, "error": {**error.get("error", {}), "type": kind}}
         # The Anthropic SDKs raise only on a named `error` event.
         return b"event: error\ndata: " + json.dumps(error).encode() + b"\n\n"
