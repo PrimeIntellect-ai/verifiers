@@ -40,8 +40,7 @@ fi
 class KimiCodeHarnessConfig(HarnessConfig):
     version: PinnedVersion = "2.0.2"
     """Kimi Code release to install, pinned for reproducibility."""
-    transport: DialectName = "chat_completions"
-    """Model API transport."""
+    dialect: DialectName = "chat_completions"
 
 
 class KimiCodeHarness(ACPHarness[KimiCodeHarnessConfig]):
@@ -87,10 +86,10 @@ class KimiCodeHarness(ACPHarness[KimiCodeHarnessConfig]):
             "chat_completions": "openai",
             "responses": "openai_responses",
             "anthropic_messages": "anthropic",
-        }[self.config.transport]
+        }[self.config.dialect]
         base_url = (
             endpoint.removesuffix("/v1")
-            if self.config.transport == "anthropic_messages"
+            if self.config.dialect == "anthropic_messages"
             else endpoint
         )
         config = {
