@@ -54,7 +54,7 @@ uv run pytest tests/integration -n 8 -m "<harness_mark> and prime"
 ```
 
 The tests assert `trace.num_branches == 1`. For a harness whose config selects
-a `transport`, `test_dialects.py` runs every transport. If a cell forks, dump its trace and
+a `transport`, `test_multi_turn.py` also runs every other transport. If a cell forks, dump its trace and
 compare the sampled node with its unsampled sibling under the same parent. The
 difference is the new replay rewrite. Fix it as in step 2.
 

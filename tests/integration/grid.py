@@ -193,16 +193,18 @@ def grid(
 
 
 def transports(harness: str) -> tuple[str, ...]:
-    """The wire formats the harness config can select (`transport`). Empty when the
-    program speaks one format or picks its own."""
+    """The wire formats the harness config can select (`transport`) besides its
+    default. Empty when the program speaks one format or picks its own."""
     field = harness_config_type(harness).model_fields.get("transport")
-    return get_args(field.annotation) if field is not None else ()
+    if field is None:
+        return ()
+    return tuple(t for t in get_args(field.annotation) if t != field.default)
 
 
-def dialect_grid(
+def transport_grid(
     runtimes: Sequence[str] = ("prime",), *, needs: tuple[str, ...] = ()
 ) -> list:
-    """`grid` cells for every `transport` each harness config can select."""
+    """`grid` cells for every non-default `transport` each harness config can select."""
     cells = []
     for harness in HARNESSES:
         name = harness_id(harness)
