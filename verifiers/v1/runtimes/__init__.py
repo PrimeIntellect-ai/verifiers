@@ -32,6 +32,7 @@ from verifiers.v1.runtimes.prime import (
     PrimeConfig,
     PrimeRuntimeInfo,
     set_base_sandbox_labels,
+    set_default_sandbox_lifetime,
 )
 from verifiers.v1.runtimes.runtime import Runtime
 from verifiers.v1.runtimes.subprocess import (
@@ -152,4 +153,5 @@ __all__ = [
     "provision_runtime",
     "runtime_is_local",
     "set_base_sandbox_labels",
+    "set_default_sandbox_lifetime",
 ]
