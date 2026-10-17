@@ -410,7 +410,8 @@ class Rollout:
                         url
                         for url in [self._endpoint, *self._urls.values()]
                         if urlsplit(url).hostname not in internal
-                    ]
+                    ],
+                    state_route=f"{base_url.rstrip('/')}/state",
                 )
                 async with (
                     boundary(HarnessError, "opening harness session"),

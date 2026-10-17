@@ -40,7 +40,7 @@ class _DeploymentStrategy:
         raise NotImplementedError
 
     async def prepare_execution(
-        self, deployment: Deployment, routes: list[str]
+        self, deployment: Deployment, routes: list[str], state_route: str | None = None
     ) -> None:
         await deployment.harness_backend.prepare_execution(routes)
 
@@ -188,8 +188,12 @@ class Deployment:
     async def stop_execution(self) -> None:
         await self._strategy.stop_execution(self)
 
-    async def prepare_execution(self, routes: list[str]) -> None:
-        await self._strategy.prepare_execution(self, routes)
+    async def prepare_execution(
+        self, routes: list[str], *, state_route: str | None = None
+    ) -> None:
+        """Apply each target's execution policy: the harness's keeps `routes`, and a tool
+        server's own VM keeps only `state_route`, its state channel."""
+        await self._strategy.prepare_execution(self, routes, state_route)
 
     async def prepare_grading(self) -> None:
         await self._strategy.prepare_grading(self)

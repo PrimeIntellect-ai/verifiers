@@ -76,12 +76,18 @@ class _PrivateNetworkDeployment(_DeploymentStrategy):
         d.execution_backend = d.harness_backend = d.backend
         self._service_backends = list(vms.values())
 
-    async def prepare_execution(self, d, routes):
-        # Each VM enforces its own policy, keeping the framework's routes; LAN traffic
-        # is unaffected by either.
+    async def prepare_execution(self, d, routes, state_route=None):
+        # Each VM enforces its own policy. A tool server's VM keeps only its state
+        # channel, reached as the server reaches it; LAN traffic is unaffected by either.
+        def own(backend):
+            return [backend.host_url(state_route)] if state_route else []
+
         await asyncio.gather(
             d.harness_backend.prepare_execution(routes),
-            *(backend.prepare_execution(routes) for backend in self._service_backends),
+            *(
+                backend.prepare_execution(own(backend))
+                for backend in self._service_backends
+            ),
         )
 
     async def stop_execution(self, d):

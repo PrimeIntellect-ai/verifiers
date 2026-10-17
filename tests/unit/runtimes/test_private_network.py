@@ -165,22 +165,31 @@ def test_every_vm_joins_the_lan_as_it_boots_once_its_rules_are_enforced(monkeypa
     assert events[-1] == "network deleted"
 
 
-def test_each_vm_enforces_its_own_policy_with_the_framework_routes():
+def test_a_tool_vm_keeps_only_its_state_channel_and_the_harness_its_routes():
     applied = []
 
     def backend(name):
         async def prepare_execution(routes):
             applied.append((name, routes))
 
-        return SimpleNamespace(prepare_execution=prepare_execution)
+        def host_url(url):
+            return url.replace("http://127.0.0.1:9000", "https://tunnel.example")
+
+        return SimpleNamespace(prepare_execution=prepare_execution, host_url=host_url)
 
     strategy = _PrivateNetworkDeployment()
     strategy._service_backends = [backend("forth")]
     deployment = SimpleNamespace(harness_backend=backend("main"))
-    asyncio.run(strategy.prepare_execution(deployment, ["https://tunnel.example"]))
+    # The harness reaches the model and a remote tool server; the tool VM needs neither.
+    routes = ["https://tunnel.example/v1", "https://tools.example/mcp"]
+    asyncio.run(
+        strategy.prepare_execution(
+            deployment, routes, state_route="http://127.0.0.1:9000/state"
+        )
+    )
     assert sorted(applied) == [
-        ("forth", ["https://tunnel.example"]),
-        ("main", ["https://tunnel.example"]),
+        ("forth", ["https://tunnel.example/state"]),
+        ("main", routes),
     ]
 
 
