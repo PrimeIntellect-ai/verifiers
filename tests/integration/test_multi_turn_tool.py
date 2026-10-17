@@ -22,7 +22,11 @@ async def test_tool(run, harness, harness_runtime):
         taskset_overrides={"task": {"tools": {"colocated": True}}},
     )
     (trace,) = episode.traces
-    assert trace.num_branches == 1
+    # OpenClaw strips the runtime context it injects before each turn from the
+    # replayed history, so the trace forks by design. Recheck on version bumps:
+    # https://github.com/openclaw/openclaw/blob/v2026.9.5/src/agents/embedded-agent-runner/run/attempt-llm-boundary.ts#L145
+    if harness.id != "openclaw":
+        assert trace.num_branches == 1
     assert trace.ok, [error.message for error in trace.errors]
     assert trace.num_turns >= 1
     # Reward 1.0 is the proof the tool ran. How a program surfaces an MCP tool to the
