@@ -28,7 +28,11 @@ async def test_tool(run, harness, harness_runtime):
     # Reward 1.0 is the proof the tool ran. How a program surfaces an MCP tool to the
     # model is its own business (rlm calls it from code; chat loops advertise it), so
     # the advertised schema is checked on the chat loop in `test_tool_placement`.
-    assert trace.reward == 1.0
+    assert trace.reward == 1.0, "\n".join(
+        message.model_dump_json(exclude_none=True)
+        for message in trace.messages
+        if message.role in {"assistant", "tool"}
+    )
 
 
 @pytest.mark.parametrize(
