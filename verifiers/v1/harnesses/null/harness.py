@@ -1,3 +1,5 @@
+from typing import Literal
+
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.harness import Harness
@@ -11,7 +13,7 @@ from verifiers.v1.trace import Trace
 
 
 class NullHarnessConfig(HarnessConfig):
-    pass
+    dialect: Literal["chat_completions"] = "chat_completions"
 
 
 class NullHarness(Harness[NullHarnessConfig]):

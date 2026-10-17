@@ -2,6 +2,7 @@
 
 import json
 from pathlib import Path
+from typing import Literal
 
 from verifiers.v1.acp import ACPConfig, ACPHarness
 from verifiers.v1.clients import ModelContext
@@ -32,6 +33,10 @@ class HermesAgentHarnessConfig(HarnessConfig):
     """Hermes Agent Git release tag to install, pinned for reproducibility."""
     use_bundled_skill: bool = False
     """Enable Hermes Agent's bundled skill catalog in addition to uploaded skills."""
+    # Over Responses it replays an earlier turn without its reasoning.
+    dialect: Literal["chat_completions", "anthropic_messages"] | None = None
+    """`None` lets Hermes pick the transport from the model name on eval clients, and
+    chat completions on others."""
 
 
 class HermesAgentHarness(ACPHarness[HermesAgentHarnessConfig]):
@@ -94,7 +99,9 @@ class HermesAgentHarness(ACPHarness[HermesAgentHarnessConfig]):
             "api_key": secret,
             "discover_models": False,
         }
-        if ctx.client.type == "eval":
+        if self.config.dialect is not None:
+            provider["transport"] = self.config.dialect
+        elif ctx.client.type == "eval":
             provider["transport"] = "${HERMES_INTERCEPT_TRANSPORT}"
         config = {
             "model": model,

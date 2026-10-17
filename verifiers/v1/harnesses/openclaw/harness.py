@@ -118,6 +118,8 @@ wait "$acp_pid"
 class OpenClawHarnessConfig(HarnessConfig):
     version: PinnedVersion = "2026.9.5"
     """OpenClaw release to install, pinned for reproducibility."""
+    dialect: None = None
+    """OpenClaw takes the transport from its model catalog."""
     use_bundled_skill: bool = True
     """Enable OpenClaw's bundled skill catalog in addition to uploaded harness skills."""
 

@@ -1,6 +1,7 @@
 """Run Claude Code through the Claude Agent SDK ACP adapter."""
 
 import json
+from typing import Literal
 
 from verifiers.v1.acp import ACPConfig, ACPHarness
 from verifiers.v1.clients import ModelContext
@@ -32,6 +33,7 @@ touch {ready}
 
 
 class ClaudeCodeHarnessConfig(HarnessConfig):
+    dialect: Literal["anthropic_messages"] = "anthropic_messages"
     version: PinnedVersion = "2.1.278"
     """Claude Code release to install, pinned for reproducibility."""
 
