@@ -723,7 +723,7 @@ class InterceptionServer(Interception):
                 )
             original_request = model_request
             model_request, request_rewrites, stopped = await session.rewrite_request(
-                model_request
+                model_request, dialect=dialect.name
             )
             session.trace.request_rewrites.extend(request_rewrites)
             # A pinned tool result changes the request without a fresh record.
@@ -743,7 +743,7 @@ class InterceptionServer(Interception):
             raise
         if stopped is not None:
             turn = graph.prepare_turn(
-                session.trace, model_request.messages, model_request.tools
+                session.trace, model_request.messages, model_request.tools, dialect.name
             )
             turn.commit_prompt()
             session.trace.stop(stopped)
@@ -758,7 +758,7 @@ class InterceptionServer(Interception):
             if request_rewrites or session.network_policy.network_restricted:
                 model_request = dialect.parse_request(body)
             turn = graph.prepare_turn(
-                session.trace, model_request.messages, model_request.tools
+                session.trace, model_request.messages, model_request.tools, dialect.name
             )
         except ValueError as error:
             return web.json_response(dialect.error_body(str(error)), status=400)

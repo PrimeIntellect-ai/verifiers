@@ -437,6 +437,7 @@ class ModdedAnthropicMessage(AnthropicMessage):
 
 
 class AnthropicDialect(Dialect[AnthropicMessage]):
+    name = "anthropic_messages"
     sampling_fields = frozenset(
         {
             "temperature",
