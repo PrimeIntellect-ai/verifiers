@@ -19,7 +19,7 @@ Compose becomes an input format and one way of realizing nodes. It is no longer 
 The model replaces five things:
 
 - `deployment.mode`;
-- the choice between `ComposeSpec` and a service-VM spec (#2876);
+- `Task.deployment_spec()` returning a `ComposeSpec`;
 - `ToolsetConfig`'s `colocated`, `runtime` and `service`;
 - split execution's `mode = "split"` (#2803);
 - how each deployment strategy wires connections.
@@ -34,7 +34,7 @@ An env that declares nothing keeps today's rollout.
 | --- | --- | --- |
 | `agent.runtime`, `agent.deployment.mode` | Where the workspace and the harness run | Config |
 | `ToolsetConfig.colocated` / `runtime` / `service` / `url` | Where a tool server runs | Config, on the toolset |
-| `Task.deployment_spec()` returns a `ComposeSpec` (or a service-VM spec, #2876) | What else runs, and on which machine | Code |
+| `Task.deployment_spec()` returns a `ComposeSpec` | What else runs, and on which machine | Code |
 
 Who may reach whom is declared nowhere. Each strategy derives it separately: Compose networks, LAN rules (#2876), loopback, the tunnel, `expose`.
 
@@ -42,12 +42,12 @@ Who may reach whom is declared nowhere. Each strategy derives it separately: Com
 
 | Need | Example | Mechanism today |
 | --- | --- | --- |
-| A tool backend needs egress the workspace must not have | MCP Atlas: its MCP servers call Wikipedia and OpenStreetMap, while the workspace stays offline | A service VM on a LAN (#2876) |
-| Agent-submitted code needs less than the workspace has | forth-lang: no egress, a separate kernel | A service VM with `allow=[]` (#2876) |
+| A tool backend needs egress the workspace must not have | MCP Atlas: its MCP servers call Wikipedia and OpenStreetMap, while the workspace stays offline | The tool server on a Prime runtime of its own, a VM on the rollout's LAN (#2876) |
+| Agent-submitted code needs less than the workspace has | forth-lang: no egress, a separate kernel | The tool server on a Prime runtime of its own with `allow=[]` (#2876) |
 | Backends must be reachable only through the tool server | EnterpriseOpsGym: the gyms sit on an internal network behind `tools` | A Compose service (#2872) |
 | The agent loop and its credentials must stay out of the workspace | Split execution | A nested container (#2803) |
 
-A fifth mechanism, `ToolsetConfig.runtime`, can no longer reach anything on Prime: #2862 makes Prime refuse `expose`. The private network is the only path between Prime machines.
+Prime refuses `expose`, on main and in #2862. So before #2876, a tool server on a Prime runtime of its own could be reached only colocated, and its runtime could take no network policy. #2876 makes that runtime a VM on the rollout's private network, under its own policy, as Mika suggested: it keeps `runtime` and adds no class. The private network is the only path between Prime machines.
 
 ## Principles
 
@@ -93,6 +93,8 @@ isolated = false            # the default
 | Isolated grading | A fresh verifier node, after `main` stops | Unchanged |
 
 The agent config may add nodes for its own parts, such as the harness's node in split execution. They are merged with the task's, and a name used by both is an error.
+
+A tool server that only needs a node of its own keeps writing `runtime` on its toolset config, as Mika asked. `tools.runtime = PrimeConfig(...)` is shorthand for an implicit node named after the server, with that runtime, plus `on` that node. That is what #2876 implements today.
 
 ### What verifiers derives
 
@@ -149,7 +151,7 @@ PR #2862 is the layer below: what a runtime is and what it can do. Nodes sit on 
       rule may open connections and nothing else may; return each member's hostname."""
   ```
 
-  #2876's LAN code (create the network, set the rules and wait until they apply, then create each member with its tags) becomes Prime's implementation. A plugin can implement the method too. #2862's conformance kit gets the matching test: a declared private network runs, and an undeclared one is refused.
+  #2876's LAN code (`runtimes/private_network.py`: create the network, set the rules and wait until they apply, then create each member with its tags) becomes Prime's implementation. A plugin can implement the method too. #2862's conformance kit gets the matching test: a declared private network runs, and an undeclared one is refused.
 - **Processes:** `exec`, #2862's one process primitive, carries a stdio transport between nodes on one machine.
 - **What #2862 removed:** local Compose and Docker network policies. That leaves packing and private networks to Prime. The local debugging runtimes run one-node topologies, and refuse multi-node ones with a message.
 
@@ -203,16 +205,16 @@ pi already has an ASP extension, and Harbor plans terminus-slim on ASP. This wou
 | --- | --- |
 | `agent.deployment.mode` (`colocated`, and `split` in #2803) | `agent.deployment.harness_on` / `execution_on` |
 | `Task.deployment_spec()` returning a `ComposeSpec` | Nodes in task config or row data. A Compose file is an input format: `nodes_from_compose`. |
-| A service-VM spec (#2876) | A node with a different policy, or `isolated` |
+| `ToolsetConfig.runtime` on Prime (#2876) | The server on a node of its own, with that runtime's policy |
 | `ToolsetConfig.colocated` / `runtime` / `service` | `task.tools.on` (`topology_from` shows the mapping) |
 | `ToolsetConfig.url` | An MCP server whose source is a URL |
 | Harbor's MCP proxy toolset (`tasksets/harbor/toolset.py`) | `mcp_servers` entries with a command or URL source |
-| `_ColocatedDeployment`, `_ContainerDeployment`, the service-VM strategy | One deployment that realizes a plan |
+| `_ColocatedDeployment`, `_ContainerDeployment`, `_PrivateNetworkDeployment` | One deployment that realizes a plan |
 
 ## Compatibility
 
 - **Envs that declare nothing:** a plan with one `main` node, the harness inside it and tool servers on the evaluator. That's today. In prime-envs, about 100 of the 108 envs define no toolset.
-- **Python toolsets** (wikispeedia, browsecomp_plus, bfcl_v3, general_agent, ptx_remote): the class is unchanged. `colocated`, `runtime` and `service` stay as deprecated aliases of `on` for a release.
+- **Python toolsets** (wikispeedia, browsecomp_plus, bfcl_v3, general_agent, ptx_remote): the class is unchanged. `colocated` and `service` stay as deprecated aliases of `on` for a release. `runtime` keeps its #2876 meaning: a node of the server's own.
 - **Harbor (22 envs) stays a task adapter.**
   - An image becomes `main`'s image.
   - `environment/docker-compose.yaml` becomes nodes through `nodes_from_compose`, all under the task's policy, so they pack onto one machine as today.
@@ -224,7 +226,7 @@ pi already has an ASP extension, and Harbor plans terminus-slim on ASP. This wou
 ## Order of work
 
 1. **#2862:** the runtime layer.
-2. **#2876:** the private network, which every multi-machine plan needs. Whether its public service-VM class survives is open (Mika); this model doesn't need it.
+2. **#2876:** the private network, which every multi-machine plan needs, and the model's first slice. A tool server on a Prime runtime of its own runs on a node of its own: `ToolsetConfig.runtime` is that node's runtime, with no new class. Atlas (prime-envs#999) and forth-lang (prime-envs#989) use it.
 3. **`SUPPORTS_PRIVATE_NETWORK` and `private_network()` on `PrimeBackend`,** with the conformance test.
 4. **Wire the planner into `Deployment`,** replacing the strategies. Add `on` and nodes to config, and turn the toolset fields into aliases.
 5. **Rebase the split stack (#2803 → #2831 → #2850)** as `harness_on` / `execution_on`, with nano-rlm #218's transports as the `execution` bindings.
