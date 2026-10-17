@@ -204,7 +204,7 @@ class RolloutSession:
                 key = calls[message.tool_call_id]
                 keys[position] = key
                 message = self.pinned_tool_results.get(key, message)
-            prefix.update(graph.message_hash(message).encode())
+            prefix.update(graph.message_key(self.trace, message).encode())
             if isinstance(message, AssistantMessage):
                 calls.update(
                     (call.id, (prefix.hexdigest(), call.id))
