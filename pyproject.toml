@@ -226,6 +226,7 @@ markers = [
     "claude_code: integration cells on the claude-code harness",
     "openclaw: integration cells on the OpenClaw harness",
     "hermes_agent: integration cells on the hermes-agent harness",
+    "deepseek: integration cells on the DeepSeek minimal harness",
     "rlm: integration cells on the rlm harness",
     "kimi_code: integration cells on the kimi-code harness",
     "pi: integration cells on the pi harness",
