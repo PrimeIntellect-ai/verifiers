@@ -1,3 +1,4 @@
+import base64
 from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Annotated, Any, Literal
@@ -208,7 +209,16 @@ class SamplingMask:
     counts: Any
 
     @classmethod
-    def from_sampling_mask(cls, sampling_mask: list[list[int]]) -> "SamplingMask":
+    def from_sampling_mask(
+        cls, sampling_mask: list[list[int]] | dict[str, Any]
+    ) -> "SamplingMask":
+        """Build from vLLM's one-list-per-token masks, or from prime-rl's packed CSR
+        form: `{"ids", "counts"}`, each a base64 `{data, shape, dtype}` int32 array."""
+        if isinstance(sampling_mask, dict):
+            return cls(
+                ids=_decode_packed(sampling_mask["ids"], np.int32),
+                counts=_decode_packed(sampling_mask["counts"], np.int32),
+            )
         counts = np.fromiter(
             (len(row) for row in sampling_mask),
             dtype=np.int32,
@@ -260,6 +270,11 @@ class TopLogprobs:
             else np.empty(0, dtype=np.float32)
         )
         return cls(ids=ids_flat, logprobs=logprobs_flat, counts=counts)
+
+
+def _decode_packed(packed: dict[str, Any], dtype: type) -> np.ndarray:
+    array = np.frombuffer(base64.b64decode(packed["data"]), dtype=packed["dtype"])
+    return array.astype(dtype, copy=False)
 
 
 class TurnTokens(BaseModel):

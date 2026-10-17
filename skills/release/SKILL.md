@@ -39,7 +39,7 @@ Confirm that the remote tag points to the current `main` commit.
 Manually dispatch the stable release workflow:
 
 ```bash
-gh workflow run publish-verifiers.yml \
+gh workflow run publish.yml \
   --repo PrimeIntellect-ai/verifiers \
   --ref main \
   -f tag="$VERSION"
