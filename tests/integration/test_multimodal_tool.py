@@ -7,7 +7,7 @@ async def test_multimodal_tool(run):
     (episode,) = await run(
         "tool-response-image-v1",
         harness="null",
-        runtime={"type": "subprocess"},
+        runtime={"type": "prime"},
         reasoning_effort="none",
         max_turns=4,
     )

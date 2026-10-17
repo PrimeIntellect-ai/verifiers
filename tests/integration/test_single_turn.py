@@ -2,12 +2,12 @@
 runtime grid."""
 
 import pytest
-from grid import grid, skip_harness
+from grid import RUNTIMES, grid, skip_harness
 
 # mini-swe-agent's loop requires a bash tool call in every response and ends only on
 # `echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT`, so it cannot answer a chat-only task.
 SINGLE_TURN = skip_harness(
-    grid(),
+    grid(runtimes=RUNTIMES),
     "mini-swe-agent",
     "mini-swe-agent requires a bash call every turn; it cannot answer in text",
 )

@@ -1,12 +1,12 @@
-"""Compose scoring uses live shared services or a released, collected submission."""
+"""Compose scoring uses live shared services or a released, collected submission, on a
+Prime VM."""
 
-import shutil
+import os
 
 import pytest
 
 import verifiers.v1 as vf
 from verifiers.v1.configs.agent import TimeoutConfig
-from verifiers.v1.runtimes.container import cli
 from verifiers.v1.tasksets.harbor.taskset import (
     CollectHook,
     HarborArtifact,
@@ -14,10 +14,8 @@ from verifiers.v1.tasksets.harbor.taskset import (
     HarborTask,
 )
 
-pytestmark = [
-    pytest.mark.docker,
-    pytest.mark.skipif(not shutil.which("docker"), reason="needs Docker"),
-]
+# Solver service backends by trace id, to check their VM is gone before grading.
+SOLVERS: dict[str, list] = {}
 
 IMAGE = "python:3.11-slim"
 COMPOSE = f"""
@@ -44,7 +42,7 @@ services:
 
 class ComposeHarness(vf.Harness):
     async def launch(self, ctx, trace, runtime, endpoint, secret, mcp_urls, data):
-        return await runtime.run_program(
+        return await runtime.run(
             [
                 "python",
                 "-c",
@@ -61,23 +59,18 @@ class ComposeTask(HarborTask):
     async def setup(self, trace, runtime, deployment=None):
         await super().setup(runtime)
         if deployment is not None:
-            trace.info["solver_containers"] = [
-                runtime.info.id for runtime in deployment.target_backends.values()
-            ]
+            SOLVERS[trace.id] = list(deployment.target_backends.values())
         else:
-            # Fresh verifier setup happens only after the solver project is removed.
-            for container in trace.info["solver_containers"]:
-                result = await cli("docker", "inspect", container)
-                assert result.exit_code != 0, "solver service survived into grading"
+            # Fresh verifier setup happens only after the solver VM is removed.
+            assert all(
+                backend._host_backend.stopped for backend in SOLVERS[trace.id]
+            ), "solver services survived into grading"
             trace.info["solver_released_before_grading"] = True
 
     async def finalize_services(self, trace, targets):
-        result = await cli(
-            "docker",
-            "inspect",
-            "--format",
-            "{{.State.Running}}",
-            targets["main"].info.id,
+        main = targets["main"].backend
+        result = await main._run_host(
+            "docker", "inspect", "--format", "{{.State.Running}}", main._container
         )
         assert result.stdout.strip() == "false", (
             "workspace must stop before sidecar collection"
@@ -101,7 +94,43 @@ class ComposeTask(HarborTask):
         "isolated-scoring-timeout",
     ],
 )
+@pytest.mark.prime
+@pytest.mark.skipif(not os.environ.get("PRIME_API_KEY"), reason="needs PRIME_API_KEY")
 async def test_compose_scoring(tmp_path, mode, collect_fails, scoring_timeout):
+    task = compose_task(tmp_path, collect_fails, scoring_timeout, mode)
+    config = vf.AgentConfig(
+        model="unused",
+        runtime=vf.PrimeConfig(labels=["vf-ci"]),
+        scoring=vf.ScoringConfig(
+            mode=mode,
+            env={"EXPECT_SIDECAR": "1" if mode == "isolated" else "0"},
+            retries=vf.RetryConfig(max_retries=0),
+        ),
+        timeout=TimeoutConfig(
+            setup=600, finalize=60, scoring=1 if scoring_timeout else 120
+        ),
+    )
+    async with vf.Agent(config) as agent:
+        agent.harness = ComposeHarness(vf.HarnessConfig())
+        trace = await agent.run(task)
+    assert all(backend._host_backend.stopped for backend in SOLVERS.pop(trace.id, []))
+    if mode == "isolated" and collect_fails:
+        assert not trace.ok
+        assert "collect hook failed" in str(trace.errors)
+        assert "solver_released_before_grading" not in trace.info
+    elif scoring_timeout:
+        assert trace.ok and trace.is_timeout and not trace.errors
+        assert trace.stop_condition == "scoring_timeout"
+        assert all(reward is None for reward in trace.rewards.values())
+    else:
+        assert trace.ok and trace.reward == 1, trace.errors
+        assert bool(trace.info.get("collected_sidecars")) == (mode == "isolated")
+        assert bool(trace.info.get("solver_released_before_grading")) == (
+            mode == "isolated"
+        )
+
+
+def compose_task(tmp_path, collect_fails: bool, scoring_timeout: bool, mode: str):
     environment = tmp_path / "environment"
     environment.mkdir()
     (environment / "docker-compose.yaml").write_text(COMPOSE)
@@ -114,7 +143,7 @@ async def test_compose_scoring(tmp_path, mode, collect_fails, scoring_timeout):
         + ("sleep 30\n" if scoring_timeout else "")
         + "echo 1 > /logs/verifier/reward.txt\n"
     )
-    task = ComposeTask(
+    return ComposeTask(
         HarborData(
             prompt="Copy the sidecar answer",
             task_dir=str(tmp_path),
@@ -135,35 +164,3 @@ async def test_compose_scoring(tmp_path, mode, collect_fails, scoring_timeout):
             ],
         )
     )
-    config = vf.AgentConfig(
-        model="unused",
-        runtime=vf.DockerConfig(),
-        deployment=vf.DeploymentConfig(trust_compose=True),
-        scoring=vf.ScoringConfig(
-            mode=mode,
-            env={"EXPECT_SIDECAR": "1" if mode == "isolated" else "0"},
-            retries=vf.RetryConfig(max_retries=0),
-        ),
-        timeout=TimeoutConfig(
-            setup=180, finalize=30, scoring=1 if scoring_timeout else 30
-        ),
-    )
-    async with vf.Agent(config) as agent:
-        agent.harness = ComposeHarness(vf.HarnessConfig())
-        trace = await agent.run(task)
-    for container in trace.info.get("solver_containers", []):
-        assert (await cli("docker", "inspect", container)).exit_code != 0
-    if mode == "isolated" and collect_fails:
-        assert not trace.ok
-        assert "collect hook failed" in str(trace.errors)
-        assert "solver_released_before_grading" not in trace.info
-    elif scoring_timeout:
-        assert trace.ok and trace.is_timeout and not trace.errors
-        assert trace.stop_condition == "scoring_timeout"
-        assert all(reward is None for reward in trace.rewards.values())
-    else:
-        assert trace.ok and trace.reward == 1, trace.errors
-        assert bool(trace.info.get("collected_sidecars")) == (mode == "isolated")
-        assert bool(trace.info.get("solver_released_before_grading")) == (
-            mode == "isolated"
-        )

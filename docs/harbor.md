@@ -99,7 +99,7 @@ resource_multiplier = 2.0
 
 ## Network policies
 
-Harbor's effective agent network policy is applied on Docker and Prime VM runtimes. An `[agent].network_mode` setting overrides the baseline policy in `[environment]`, and legacy `[environment].allow_internet` flags are normalized through Harbor's schema:
+Harbor's effective agent network policy is applied on Prime VM runtimes. Docker enforces no network policy, so it refuses tasks that restrict the network. An `[agent].network_mode` setting overrides the baseline policy in `[environment]`, and legacy `[environment].allow_internet` flags are normalized through Harbor's schema:
 
 | Harbor mode | Task network setting |
 | --- | --- |

@@ -10,9 +10,10 @@ A model in its harness solving a task produces a **rollout**. Each rollout has a
 
 - The `subprocess` runtime runs rollouts in local Python subprocesses. It is meant for debugging, since processes share your machine and can have side effects on one another (such as altering a harness's config files).
 - The `docker` runtime runs rollouts in Docker containers on your local machine.
-- The `podman` runtime uses the same container implementation through the Podman CLI for hosts without Docker.
-- The `apptainer` runtime runs rollouts in unprivileged Apptainer instances on the host network, as on HPC clusters, without network egress filtering.
-- Sandbox runtimes, such as `prime`, `modal`, or `e2b`, run remotely and are meant for production workloads like training or high-concurrency evaluation.
+- The `prime` runtime runs rollouts in remote Prime sandboxes. It is meant for production workloads like training or high-concurrency evaluation.
+- A `custom` runtime loads another provider from your own package, without upstreaming it. See [runtime plugins](runtimes.md#runtime-plugins).
+
+The `subprocess` and `docker` runtimes are for quick local testing without billing, and support fewer features. They refuse tasks that declare a network policy or need nested containers, such as Compose services. On Linux, Docker containers share the host network. On other platforms, they reach host services through `host.docker.internal`.
 
 The harness runs inside the rollout runtime to interact with the task. Rather than calling the model provider directly, the harness sends model traffic through verifiers' **interception server** over a local connection or [Prime Tunnel](https://docs.primeintellect.ai/sandboxes/tunnel).
 

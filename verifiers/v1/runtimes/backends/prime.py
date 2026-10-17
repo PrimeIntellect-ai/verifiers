@@ -151,9 +151,9 @@ class PrimeProcess(RuntimeProcess):
 
 
 class PrimeBackend(RuntimeBackend):
-    supports_user: ClassVar[bool] = True
-    supports_expose: ClassVar[bool] = False
-    is_local: ClassVar[bool] = False
+    SUPPORTS_TASK_IMAGES: ClassVar[bool] = True
+    SUPPORTS_NESTED_CONTAINERS: ClassVar[bool] = True
+    SUPPORTS_USER_SWITCHING: ClassVar[bool] = True
 
     def __init__(self, config: PrimeConfig, name: str | None = None) -> None:
         ensure_prime_auth()
@@ -161,10 +161,6 @@ class PrimeBackend(RuntimeBackend):
         self.config = config.model_copy(update={"workdir": config.workdir or "/app"})
         self.info = PrimeRuntimeInfo(**self.config.model_dump())
         self._client = None
-
-    @property
-    def supports_live_processes(self) -> bool:
-        return True
 
     async def start(self) -> None:
         from prime_sandboxes import AsyncSandboxClient, CreateSandboxRequest
@@ -299,7 +295,7 @@ class PrimeBackend(RuntimeBackend):
             policy.get("deny"),
         )
 
-    async def _run(
+    async def run(
         self, runtime: Runtime, argv: list[str], env: dict[str, str]
     ) -> ProgramResult:
         try:
@@ -344,7 +340,7 @@ class PrimeBackend(RuntimeBackend):
             stderr=result.stderr or "",
         )
 
-    async def _open_process(
+    async def exec(
         self, runtime: Runtime, argv: list[str], env: dict[str, str]
     ) -> RuntimeProcess:
         try:
@@ -356,31 +352,16 @@ class PrimeBackend(RuntimeBackend):
                 user=runtime.user,
             )
         except Exception as e:
-            raise SandboxError(f"prime live process failed to start: {e}") from e
+            raise SandboxError(f"prime streaming process failed to start: {e}") from e
         return PrimeProcess(process)
 
     async def expose(self, port: int) -> str:
         raise SandboxError(
-            "Prime VM sandboxes do not support port exposure; colocate the service "
-            "with its consumer, or use a docker or modal service runtime"
+            "the prime runtime cannot expose a port; colocate the service with its "
+            "consumer"
         )
 
-    async def _run_background(
-        self, runtime: Runtime, argv: list[str], env: dict[str, str], log: str
-    ) -> None:
-        command = f"exec {shlex.join(argv)} > {shlex.quote(log)} 2>&1"
-        try:
-            await self._client.start_background_job(
-                self.info.id,
-                command,
-                working_dir=self.config.workdir,
-                env=runtime.process_env(env),
-                user=runtime.user,
-            )
-        except Exception as e:
-            raise SandboxError(f"prime background launch failed: {e}") from e
-
-    async def _read(
+    async def read(
         self, runtime: Runtime, path: str, max_bytes: int | None = None
     ) -> bytes:
         # The file API acts as the default user; a user view reads through exec.
@@ -430,7 +411,7 @@ class PrimeBackend(RuntimeBackend):
         except Exception as e:
             raise SandboxError(f"read {path!r}: {e}") from e
 
-    async def _write(self, runtime: Runtime, path: str, data: bytes) -> None:
+    async def write(self, runtime: Runtime, path: str, data: bytes) -> None:
         # The gateway creates missing parents and uploads binary data without command-line
         # limits. Resolve relative paths here because uploads do not use this runtime's workdir.
         target = (

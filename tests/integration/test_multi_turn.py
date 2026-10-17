@@ -2,20 +2,12 @@
 to a file, checked in the runtime) across the harness x runtime grid."""
 
 import pytest
-from grid import grid, mark
-
-MULTI_TURN = [
-    *grid(needs=("shell",)),
-    pytest.param(
-        "bash",
-        {"type": "modal", "allow": []},
-        marks=[mark("bash"), mark("modal")],
-        id="bash-in-modal-framework-only",
-    ),
-]
+from grid import RUNTIMES, grid
 
 
-@pytest.mark.parametrize("harness,harness_runtime", MULTI_TURN, indirect=True)
+@pytest.mark.parametrize(
+    "harness,harness_runtime", grid(runtimes=RUNTIMES, needs=("shell",)), indirect=True
+)
 async def test_multi_turn(run, harness, harness_runtime):
     (episode,) = await run(
         "echo-agentic-v1",
