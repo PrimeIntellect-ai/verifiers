@@ -68,7 +68,9 @@ REJECTION_STATUSES = frozenset({429, 529})
 """Provider statuses that mean "too much load from you": 429 (rate or concurrency limit)
 and 529 (Anthropic's overloaded)."""
 POLL_SECONDS = (0.05, 0.2)
-"""Jittered interval at which a blocked admission rechecks the shared slots."""
+"""Jittered interval at which a blocked admission rechecks the shared slots: only the
+first waiter of the process polls (a release in the process wakes it at once); the rest
+wait their turn in arrival order."""
 MODEL_EXTENSION = "verifiers.model"
 """`httpx.Request.extensions` key a caller sets to name the request's model, so the gate
 need not parse the body (the eval client sets it; SDK requests fall back to parsing)."""
@@ -124,9 +126,27 @@ def _locked_state(fd: int) -> Iterator[dict[str, Any]]:
         fcntl.flock(fd, fcntl.LOCK_UN)
 
 
+class _Waiter:
+    """One blocked admission: woken (from any thread) when it reaches the head of the
+    process's queue, and while there by each release in the process."""
+
+    def __init__(self, loop: asyncio.AbstractEventLoop) -> None:
+        self.loop = loop
+        self.event = asyncio.Event()
+
+    def wake(self) -> bool:
+        """False when its loop is gone (it will never run again)."""
+        try:
+            self.loop.call_soon_threadsafe(self.event.set)
+        except RuntimeError:
+            return False
+        return True
+
+
 class ModelGate:
     """One (endpoint, key, model) budget: process-local view of the shared slot files.
-    Thread-safe; admission is FIFO among the waiters of one event loop."""
+    Thread-safe; admission is FIFO among the process's waiters, of every event loop:
+    only the first polls the shared slots."""
 
     def __init__(self, directory: Path, key: str, model: str) -> None:
         directory.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -152,9 +172,10 @@ class ModelGate:
             with self._state() as state:
                 state.clear()
         fcntl.flock(self._users_fd, fcntl.LOCK_SH)
-        self._loop_locks: weakref.WeakKeyDictionary[
-            asyncio.AbstractEventLoop, asyncio.Lock
-        ] = weakref.WeakKeyDictionary()
+        self._queue: deque[_Waiter] = deque()
+        """The process's blocked admissions, oldest first; the head polls."""
+        self._queue_lock = threading.RLock()
+        """Guards `_queue`; reentrant, as a finalizer's release may run inside it."""
 
     def _slot_fd(self, slot: int) -> int:
         fd = self._fds.get(slot)
@@ -231,6 +252,13 @@ class ModelGate:
         when it leaves."""
         self._releases.append((slot, config, outcome))
         self._apply_releases()
+        self._wake_head()
+
+    def _wake_head(self) -> None:
+        """Wake the first waiter: a slot of this process just freed."""
+        with self._queue_lock:
+            while self._queue and not self._queue[0].wake():
+                self._queue.popleft()  # its loop closed
 
     def _apply_releases(self) -> None:
         # Recheck after each pass: a release queued while the mutex was held, by
@@ -272,17 +300,39 @@ class ModelGate:
                 )
 
     async def acquire(self, config: RequestGateConfig) -> int:
-        """Wait for a slot."""
-        loop = asyncio.get_running_loop()
-        lock = self._loop_locks.get(loop)
-        if lock is None:
-            lock = self._loop_locks[loop] = asyncio.Lock()
-        async with lock:
+        """Wait for a slot: at once when no one of the process waits and one is free,
+        else in arrival order behind the process's other waiters. Only the first polls
+        the shared slots (other processes' releases), every `POLL_SECONDS`, and a
+        release in this process wakes it at once."""
+        with self._queue_lock:
+            idle = not self._queue
+        if idle:
+            slot = self.try_admit(config)
+            if slot is not None:
+                return slot
+        waiter = _Waiter(asyncio.get_running_loop())
+        with self._queue_lock:
+            self._queue.append(waiter)
+            first = self._queue[0] is waiter
+        try:
+            if not first:
+                await waiter.event.wait()  # set once it is first
             while True:
+                waiter.event.clear()
                 slot = self.try_admit(config)
                 if slot is not None:
                     return slot
-                await asyncio.sleep(random.uniform(*POLL_SECONDS))
+                with contextlib.suppress(TimeoutError):
+                    async with asyncio.timeout(random.uniform(*POLL_SECONDS)):
+                        await waiter.event.wait()
+        finally:
+            with self._queue_lock:
+                was_first = bool(self._queue) and self._queue[0] is waiter
+                with contextlib.suppress(ValueError):
+                    self._queue.remove(waiter)
+                if was_first:
+                    while self._queue and not self._queue[0].wake():
+                        self._queue.popleft()
 
     def close_inherited(self) -> None:
         """Drop the descriptors a forked child inherited: their locks are the parent's."""
@@ -293,6 +343,8 @@ class ModelGate:
         self._fds.clear()
         self._held.clear()
         self._releases.clear()
+        self._queue.clear()
+        self._queue_lock = threading.RLock()
         self._state_fd = self._users_fd = None
         self._mutex = threading.Lock()
 
