@@ -216,7 +216,9 @@ async def grade_submission(
                 trace,
                 {name: deployment.target(name) for name in deployment.target_backends},
             )
-        config = verifier_runtime(grader, runtime, deployment.verifier_config(), policy)
+        # The deployment's own runtime config (main's #2869 dropped `verifier_config()`,
+        # which returned exactly this).
+        config = verifier_runtime(grader, runtime, deployment.backend.config, policy)
         await grade_task(
             grader,
             trace,
