@@ -10,7 +10,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import PurePosixPath
 from types import MappingProxyType
-from typing import Self
+from typing import TYPE_CHECKING, Self
 
 from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes.base import (
@@ -20,6 +20,9 @@ from verifiers.v1.runtimes.base import (
     RuntimeBackend,
     RuntimeProcess,
 )
+
+if TYPE_CHECKING:
+    from verifiers.v1.trace import Trace
 
 
 @dataclass(frozen=True, eq=False)
@@ -92,6 +95,17 @@ class Runtime:
 
     async def expose(self, port: int) -> str:
         return await self.backend.expose(port)
+
+    @property
+    def restored(self) -> bool:
+        return self.backend.restored
+
+    @property
+    def supports_checkpoint(self) -> bool:
+        return self.backend.supports_checkpoint
+
+    async def checkpoint(self, trace: Trace | None = None) -> str:
+        return await self.backend.checkpoint(trace)
 
     async def run(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
         return await self.backend._run(self, argv, env)

@@ -326,11 +326,14 @@ class Rollout:
                 self.trace.timing.boot.end = now
                 self.trace.timing.setup.start = now
                 self.trace.notify()
+                # A box started from a checkpoint already holds setup's files.
+                restored = runtime.restored
+                setup = self.task.restore if restored else self.task.setup
                 async with (
-                    boundary(TaskError, "task setup"),
+                    boundary(TaskError, "task restore" if restored else "task setup"),
                 ):
                     await invoke(
-                        self.task.setup,
+                        setup,
                         {
                             "trace": self.trace,
                             "runtime": runtime,
