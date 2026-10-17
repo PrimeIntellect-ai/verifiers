@@ -168,24 +168,26 @@ Split execution *is* placement. A harness has two halves, and nodes say where ea
 
 **Three mechanisms become one:** the loop driving its tools, the harness calling MCP servers, and tool servers calling services are all a connection between nodes. One planner and one set of realizations replace `deployment.mode`, the `ToolsetConfig` placement fields and the deployment spec.
 
-## How it fits Harbor's Agent Sandbox Protocol (harbor#3023)
+## Prior art: Harbor's Agent Sandbox Protocol (harbor#3023)
 
-ASP standardizes one edge: harness to sandbox. Provisioning is explicitly out of its scope ("the orchestrator's job"). In this model that edge is the `execution` connection between `harness_on` and `execution_on`, so verifiers is the orchestrator ASP assumes.
+ASP standardizes one edge, from an agent loop to the sandbox its tools run in. It leaves provisioning to the orchestrator. In this model that edge is the `execution` connection between `harness_on` and `execution_on`.
 
-| ASP and its review thread | In this model |
+**We don't adopt ASP.** verifiers controls both sides of that edge: it provisions the machines, and it launches the harness. Our split harnesses already speak a tool-call protocol over stdio and TCP (nano-rlm #218, and Codex in #2850).
+
+ASP and its review thread still record what the `execution` connection will need as it matures:
+
+| From ASP and its review | What it means for the `execution` connection |
 | --- | --- |
-| "Decouple the brain from the hands": brain = loop and credentials; hands = shell and files | `harness_on` and `execution_on` |
-| Agent placement independent of task placement (jjbuck) | `harness_on` is chosen independently of `main`'s runtime |
-| Provisioning stays with the orchestrator; the agent never provisions | Only the planner provisions; the harness receives a connection |
-| `.asp.json`: a connection descriptor the harness discovers | The `execution` connection's descriptor (endpoint, workspace, a credential reference), delivered through the harness's launch config rather than discovered from the working directory, as jjbuck asks |
-| SSH as the first transport | One binding among several. Prime has no sandbox-to-sandbox SSH but does have TCP between sandboxes (Damian). Bindings follow the realization: stdio over `exec` within a machine, TCP over the private network across machines, an exposed port from the evaluator. SSH fits wherever a runtime exposes one, as ASP's Docker example does. |
-| Proxy tool calls rather than POSIX I/O (Damian) vs typed operations (jjbuck) vs raw I/O over SSH (ASP v0) | The model takes no side. The harness declares its level and transports: nano-rlm proxies its tool calls and advertises `ai.prime.rlm/execution-v1` in ACP; an ASP-native harness moves raw I/O over SSH. The planner refuses a placement the harness can't serve. |
-| Revoke access before the verifier (jjbuck, cauebraz) | The lifecycle's order: stop the harness's execution and `main`'s processes, revoke the connection's credential, collect evidence, then grade in a fresh verifier node that never shares the agent's credential. Shared-environment grading must confirm the drain first. |
-| MCP is placement-sensitive (jjbuck §5.1, stbenjam) | `mcp_servers.<name>.on`: next to the agent loop (its node or `host`) or next to the hands (`main`). Reachability is a derived connection, checked before boot. |
-| An untrusted harness (kajogo777) | `harness_on = "main"` remains, with one policy over brain and hands. Each run picks its threat model. |
-| Simulated users outside the sandbox (xt-yin) | `user.on` |
+| The agent loop is placed independently of the task's environment (jjbuck) | `harness_on` is chosen independently of `main`'s runtime |
+| The orchestrator provisions; the agent never does | Only the planner provisions; the harness receives a connection |
+| Connection details reach the harness through a trusted path, not by discovering a file (jjbuck) | The connection's endpoint and credential go in the harness's launch config |
+| Proxy tool calls rather than POSIX I/O; Prime has TCP between sandboxes but no SSH (Damian) | What nano-rlm #218 does: stdio within a machine, TCP across machines |
+| Define how operations behave, not only how to connect: cancellation kills the remote process group, stdout and stderr stay separate, files are binary-safe (jjbuck, cauebraz) | Requirements for our worker protocol, worth a shared conformance test across harnesses |
+| Revoke access before the verifier runs (jjbuck, cauebraz) | The lifecycle's order: stop execution and `main`'s processes, revoke the connection's credential, collect evidence, then grade in a fresh node |
+| MCP servers are placement-sensitive (jjbuck, stbenjam) | `mcp_servers.<name>.on`, with reachability derived and checked before boot |
+| An untrusted harness may belong inside the sandbox (kajogo777) | `harness_on = "main"` stays the default. Each run picks its threat model. |
 
-verifiers would support ASP as one binding of the `execution` connection, for harnesses that only speak ASP. The model is a superset: it also places MCP servers and services, which ASP leaves open. Harbor tasks keep coming through the Harbor adapter (below).
+If ASP or a successor settles operation semantics across harnesses, it can become another transport for the `execution` connection later. Nothing in this model depends on it.
 
 ## What it replaces
 
@@ -218,7 +220,7 @@ verifiers would support ASP as one binding of the `execution` connection, for ha
 3. **`SUPPORTS_PRIVATE_NETWORK` and `private_network()` on `PrimeBackend`,** with the conformance test.
 4. **Wire the planner into `Deployment`,** replacing the strategies. Add `on` and nodes to config, and turn the toolset fields into aliases.
 5. **Rebase the split stack (#2803 → #2831 → #2850)** as `harness_on` / `execution_on`, with nano-rlm #218's transports as the `execution` bindings.
-6. **Optional:** an ASP binding, and capability-based packing beyond policy equality.
+6. **Optional:** capability-based packing beyond policy equality.
 
 ## Open questions
 
