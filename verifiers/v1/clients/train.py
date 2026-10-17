@@ -178,7 +178,9 @@ def response_from_generate(
             mm_placeholders=mm_placeholders,
             mm_token_type_id_map=mm_token_type_id_map,
             routed_experts=result.get("routed_experts"),
-            sampling_mask=SamplingMask.from_sampling_mask(mask)
+            sampling_mask=SamplingMask.from_sampling_mask(
+                mask, result.get("sampling_mask_logprobs")
+            )
             if (mask := result.get("sampling_mask"))
             else None,
         ),

@@ -333,19 +333,29 @@ class Branch(BaseModel):
             return None
         # Attribution validates each mask against the node's sampled positions.
         ids_parts: list[np.ndarray] = []
+        logprobs_parts: list[np.ndarray | None] = []
         counts_parts: list[np.ndarray] = []
         for node in self.nodes:
             counts = np.zeros(len(node.mask), dtype=np.int32)
             if node.sampling_mask is not None and len(node.sampling_mask.counts):
                 counts[np.nonzero(node.mask)[0]] = node.sampling_mask.counts
                 ids_parts.append(node.sampling_mask.ids)
+                logprobs_parts.append(node.sampling_mask.logprobs)
             counts_parts.append(counts)
         ids = (
             np.concatenate(ids_parts).astype(np.int32, copy=False)
             if ids_parts
             else np.zeros(0, dtype=np.int32)
         )
-        return SamplingMask(ids=ids, counts=np.concatenate(counts_parts))
+        # Logprobs only when every mask on the path carries them.
+        logprobs = (
+            np.concatenate([np.zeros(0, np.float32), *logprobs_parts])
+            if all(part is not None for part in logprobs_parts)
+            else None
+        )
+        return SamplingMask(
+            ids=ids, counts=np.concatenate(counts_parts), logprobs=logprobs
+        )
 
     @property
     def usage(self) -> Usage | None:

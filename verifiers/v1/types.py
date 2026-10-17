@@ -202,22 +202,30 @@ class SamplingMask:
     """Sampling masks stored as flat int32 `ids` and `counts` arrays.
 
     Each row contains the token ids that survived sampling filters for one completion
-    token. Row boundaries are recovered from `counts`.
+    token. Row boundaries are recovered from `counts`. The optional float32 `logprobs`,
+    parallel to `ids`, are the sampler's renormalized logprobs of those ids.
     """
 
     ids: Any
     counts: Any
+    logprobs: Any = None
 
     @classmethod
     def from_sampling_mask(
-        cls, sampling_mask: list[list[int]] | dict[str, Any]
+        cls,
+        sampling_mask: list[list[int]] | dict[str, Any],
+        logprobs: dict[str, Any] | None = None,
     ) -> "SamplingMask":
         """Build from vLLM's one-list-per-token masks, or from prime-rl's packed CSR
-        form: `{"ids", "counts"}`, each a base64 `{data, shape, dtype}` int32 array."""
+        form: `{"ids", "counts"}`, each a base64 `{data, shape, dtype}` int32 array.
+        `logprobs` is packed float32 parallel to the ids (only prime-rl sends it)."""
+        if logprobs is not None:
+            logprobs = _decode_packed(logprobs, np.float32)
         if isinstance(sampling_mask, dict):
             return cls(
                 ids=_decode_packed(sampling_mask["ids"], np.int32),
                 counts=_decode_packed(sampling_mask["counts"], np.int32),
+                logprobs=logprobs,
             )
         counts = np.fromiter(
             (len(row) for row in sampling_mask),
@@ -229,7 +237,7 @@ class SamplingMask:
             if int(counts.sum())
             else np.empty(0, dtype=np.int32)
         )
-        return cls(ids=ids, counts=counts)
+        return cls(ids=ids, counts=counts, logprobs=logprobs)
 
 
 def _decode_packed(packed: dict[str, Any], dtype: type) -> np.ndarray:
