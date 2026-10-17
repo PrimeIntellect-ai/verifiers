@@ -187,7 +187,13 @@ ASP and its review thread still record what the `execution` connection will need
 | MCP servers are placement-sensitive (jjbuck, stbenjam) | `mcp_servers.<name>.on`, with reachability derived and checked before boot |
 | An untrusted harness may belong inside the sandbox (kajogo777) | `harness_on = "main"` stays the default. Each run picks its threat model. |
 
-If ASP or a successor settles operation semantics across harnesses, it can become another transport for the `execution` connection later. Nothing in this model depends on it.
+**Where ASP could help later: harnesses we don't control.** Split execution needs the harness to cooperate, by sending its tool I/O elsewhere. nano-rlm and Codex do that through their own protocols. If a third-party harness adds ASP, verifiers could serve the sandbox side for it, with no per-harness work:
+
+- **Provide an SSH server in `main`,** for example a static binary such as dropbear, so it doesn't depend on the task image.
+- **Let the harness's node reach it** on the private network. Prime has TCP between sandboxes, which SSH runs over, though not an SSH gateway of its own.
+- **Pass a generated `.asp.json`** in the harness's launch config.
+
+pi already has an ASP extension, and Harbor plans terminus-slim on ASP. This would be one more transport for the `execution` connection, chosen when a harness declares ASP support, and the model needs no change for it. The cost is an SSH server in the workspace, which the agent can see (alexgshaw's contamination point). That's acceptable only for harnesses we can't split any other way. Untested.
 
 ## What it replaces
 
@@ -220,7 +226,9 @@ If ASP or a successor settles operation semantics across harnesses, it can becom
 3. **`SUPPORTS_PRIVATE_NETWORK` and `private_network()` on `PrimeBackend`,** with the conformance test.
 4. **Wire the planner into `Deployment`,** replacing the strategies. Add `on` and nodes to config, and turn the toolset fields into aliases.
 5. **Rebase the split stack (#2803 → #2831 → #2850)** as `harness_on` / `execution_on`, with nano-rlm #218's transports as the `execution` bindings.
-6. **Optional:** capability-based packing beyond policy equality.
+6. **Optional:**
+   - an ASP transport, once a harness we want supports ASP;
+   - capability-based packing beyond policy equality.
 
 ## Open questions
 
