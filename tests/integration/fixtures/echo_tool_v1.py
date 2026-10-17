@@ -4,8 +4,8 @@ The v1 tool fixture for the integration grid. The task constructs an `EchoToolse
 (`vf.Toolset`) in `Task.toolsets`, with one `@vf.tool` method whose placement is
 CLI-tunable (`--taskset.task.tools.colocated`, `--taskset.task.tools.service`,
 `--taskset.task.tools.runtime.type`): it runs colocated in the harness's runtime, in the
-task's `tools` Compose service (echo_tool_compose), in its `tools-vm` service VM, or in its
-own runtime, and the harness must reach it wherever it lives. The tool stamps its output with a token the prompt
+task's `tools` Compose service (echo_tool_compose), or in its own runtime, and the
+harness must reach it wherever it lives. The tool stamps its output with a token the prompt
 never reveals, so the reward is 1.0 only if the model actually called the tool —
 trivial when the infra works, impossible when it doesn't. The tool is task-agnostic,
 so it would also serve taskset-scoped (`Taskset.toolsets`).
@@ -39,12 +39,9 @@ class EchoToolTask(vf.Task[vf.TaskData, vf.State, EchoToolTaskConfig]):
     def toolsets(cls, config: EchoToolTaskConfig) -> list[vf.Toolset]:
         return [EchoToolset(config.tools)]
 
-    def deployment_spec(self) -> vf.ComposeSpec | vf.ServiceVMSpec | None:
+    def deployment_spec(self) -> vf.ComposeSpec | None:
         if self.config.tools.service is None:
             return None
-        if self.config.tools.service == "tools-vm":
-            idle = vf.ServiceVM(image="python:3.11-slim", command=["sleep", "infinity"])
-            return vf.ServiceVMSpec({"tools-vm": idle})
         return vf.ComposeSpec(directory=str(COMPOSE), file="docker-compose.yaml")
 
     @vf.reward(weight=1.0)

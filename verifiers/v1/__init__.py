@@ -404,15 +404,11 @@ from verifiers.v1.runtimes.deployment import (
     Deployment,
     DeploymentConfig,
 )
-from verifiers.v1.runtimes.service_vms import Probe, ServiceVM, ServiceVMSpec
 
 __all__ += [
     "ComposeSpec",
     "Deployment",
     "DeploymentConfig",
-    "Probe",
-    "ServiceVM",
-    "ServiceVMSpec",
 ]
 
 from verifiers.v1.configs.scoring import ScoringConfig

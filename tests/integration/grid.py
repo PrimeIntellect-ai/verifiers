@@ -242,8 +242,8 @@ def placements(
     tool_runtimes: tuple[str, ...] = ("colocated", *RUNTIMES),
 ) -> list:
     """`(harness_runtime, tool_runtime)` cells for a tool server placed colocated in the
-    harness's box, in a Compose service beside it (`service`), in a service VM reached over
-    the LAN (`service-vm`), or in its own runtime."""
+    harness's box, in a Compose service beside it (`service`), or in its own runtime
+    (on Prime beside a Prime harness, a VM on the rollout's private network)."""
     cells = []
     for harness_runtime in harness_runtimes:
         for tool_runtime in tool_runtimes:
@@ -262,15 +262,11 @@ def placements(
                         "Prime or Modal VM"
                     )
                 )
-            elif tool_runtime == "service-vm" and harness_runtime != "prime":
-                marks.append(
-                    pytest.mark.skip(
-                        reason="a tool server in a service VM needs the Prime runtime"
-                    )
-                )
             elif (
-                tool_runtime not in ("colocated", "service", "service-vm")
+                tool_runtime not in ("colocated", "service")
                 and not runtime_cls(tool_runtime).supports_expose
+                # Beside a Prime harness, a Prime server joins its private network.
+                and not (tool_runtime == harness_runtime == "prime")
             ):
                 marks.append(
                     pytest.mark.skip(

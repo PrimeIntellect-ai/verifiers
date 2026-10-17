@@ -1,4 +1,4 @@
-"""Colocated execution, composed task services, and task services on VMs of their own."""
+"""Colocated execution, composed task services, and tool servers on VMs of their own."""
 
 import asyncio
 import logging
@@ -8,12 +8,7 @@ from functools import partial
 from verifiers.v1.runtimes import DockerConfig, ModalConfig, PrimeConfig
 from verifiers.v1.runtimes.compose import compose_services
 from verifiers.v1.runtimes.deployment import _DeploymentStrategy
-from verifiers.v1.runtimes.service_vms import (
-    WORKSPACE,
-    ServiceVMSpec,
-    lan_host,
-    service_vms,
-)
+from verifiers.v1.runtimes.private_network import lan_host, private_network
 
 logger = logging.getLogger(__name__)
 
@@ -64,21 +59,22 @@ class _ContainerDeployment(_DeploymentStrategy):
             )
 
 
-class _ServiceVMDeployment(_DeploymentStrategy):
+class _PrivateNetworkDeployment(_DeploymentStrategy):
     async def start(self, d):
         if d.borrowed_runtime is not None:
             raise ValueError(
-                "a deployment with service VMs cannot borrow a single target"
+                "a deployment with tool servers on VMs of their own cannot borrow a "
+                "single target"
             )
         d.backend.env = d.env
         self._services = await d.enter(AsyncExitStack())
-        services = await self._services.enter_async_context(
-            service_vms(d.backend, d.spec.services, partial(d.own, d.backend))
+        vms = await self._services.enter_async_context(
+            private_network(d.backend, d.tool_vms, partial(d.own, d.backend))
         )
-        d.target_backends = {WORKSPACE: d.backend, **services}
-        d.hosts = {name: lan_host(backend) for name, backend in services.items()}
+        d.target_backends = {"main": d.backend, **vms}
+        d.hosts = {name: lan_host(backend) for name, backend in vms.items()}
         d.execution_backend = d.harness_backend = d.backend
-        self._service_backends = list(services.values())
+        self._service_backends = list(vms.values())
 
     async def prepare_execution(self, d, routes):
         # Each VM enforces its own policy, keeping the framework's routes; LAN traffic
@@ -90,15 +86,16 @@ class _ServiceVMDeployment(_DeploymentStrategy):
 
     async def stop_execution(self, d):
         # As Compose stops its workspace: nothing the agent left running may reach the
-        # services while their evidence is collected.
+        # tool servers' VMs while their evidence is collected.
         await d.execution_backend.stop()
 
     async def prepare_verifier(self, deployment):
         # Evidence is collected; release the solver's VMs before the verifier clock
-        # starts, the workspace's even if the services' or the network's release fails.
+        # starts, the workspace's even if the tool server VMs' or the network's release
+        # fails.
         for release, what in (
             (deployment.execution_backend.stop, "workspace VM"),
-            (self._services.aclose, "service VMs"),
+            (self._services.aclose, "tool server VMs"),
         ):
             try:
                 await release()
@@ -106,13 +103,11 @@ class _ServiceVMDeployment(_DeploymentStrategy):
                 logger.warning("%s teardown failed before grading", what, exc_info=True)
 
 
-def _deployment_strategy(config, runtime_config, spec):
-    if isinstance(spec, ServiceVMSpec):
-        if isinstance(runtime_config, PrimeConfig):
-            return _ServiceVMDeployment()
-        raise ValueError("service VMs require the Prime runtime")
+def _deployment_strategy(config, runtime_config, spec, tool_vms=None):
     if spec is not None:
         if not isinstance(runtime_config, (DockerConfig, PrimeConfig, ModalConfig)):
             raise ValueError("Compose requires Docker, Prime, or Modal VM runtime")
         return _ContainerDeployment()
+    if tool_vms:
+        return _PrivateNetworkDeployment()
     return _ColocatedDeployment()

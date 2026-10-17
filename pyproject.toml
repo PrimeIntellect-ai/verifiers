@@ -232,7 +232,6 @@ markers = [
     "e2b: integration cells touching the e2b runtime (external sandbox; local-only, excluded in CI)",
     "colocated: integration cells with a tool server colocated in the harness runtime",
     "service: integration cells with a tool server in a Compose service beside the harness",
-    "service_vm: integration cells with a tool server in a service VM, over the LAN",
     "null: integration cells on the null harness",
     "bash: integration cells on the bash harness",
     "claude_code: integration cells on the claude-code harness",

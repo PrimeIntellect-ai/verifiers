@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from contextlib import AsyncExitStack, asynccontextmanager
 from typing import Literal
 
 from pydantic_config import BaseConfig
 
 from verifiers.v1.runtimes import (
+    PrimeConfig,
     Runtime,
     RuntimeBackend,
     RuntimeConfig,
@@ -20,7 +21,6 @@ from verifiers.v1.runtimes.base import (
     register,
 )
 from verifiers.v1.runtimes.compose import ComposeSpec
-from verifiers.v1.runtimes.service_vms import ServiceVMSpec
 from verifiers.v1.utils.aio import run_shielded
 
 logger = logging.getLogger(__name__)
@@ -76,23 +76,29 @@ class Deployment:
         self,
         backend: RuntimeBackend,
         *,
-        spec: ComposeSpec | ServiceVMSpec | None = None,
+        spec: ComposeSpec | None = None,
+        tool_vms: Mapping[str, PrimeConfig] | None = None,
         env: dict[str, str] | None = None,
         config: DeploymentConfig | None = None,
         borrowed_runtime: Runtime | None = None,
     ):
         self.backend = backend
         self.spec = spec
+        self.tool_vms = dict(tool_vms or {})
+        """Tool servers on Prime runtimes of their own, by server name, which join the
+        workspace over the rollout's private network."""
         self.env = dict(env or {})
         self.config = config or DeploymentConfig()
         self.borrowed_runtime = borrowed_runtime
         from verifiers.v1.runtimes.strategies import _deployment_strategy
 
-        self._strategy = _deployment_strategy(self.config, backend.config, spec)
+        self._strategy = _deployment_strategy(
+            self.config, backend.config, spec, self.tool_vms
+        )
         self.target_backends: dict[str, RuntimeBackend] = {}
         self.hosts: dict[str, str] = {}
         """The hostname the workspace reaches a named target by, where it is not the
-        target's name (a service VM's LAN name)."""
+        target's name (a tool server VM's LAN name)."""
         self.harness_backend: RuntimeBackend | None = None
         self.execution_backend: RuntimeBackend | None = None
         self._stack = AsyncExitStack()
