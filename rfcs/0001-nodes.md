@@ -142,7 +142,9 @@ PR #2862 is the layer below: what a runtime is and what it can do. Nodes sit on 
 - **Capabilities:** the planner reads #2862's flags (`SUPPORTS_NESTED_CONTAINERS`, `SUPPORTS_PORT_EXPOSURE`, and network policy through `NetworkPolicyConfig`). It adds one: **`SUPPORTS_PRIVATE_NETWORK`**, with a backend method behind it:
 
   ```python
-  async def private_network(self, members: dict[str, RuntimeBackend], rules: list[tuple[str, str]]) -> dict[str, str]:
+  async def private_network(
+      self, members: dict[str, RuntimeBackend], rules: list[tuple[str, str]]
+  ) -> dict[str, str]:
       """Join `members` (this runtime's type) on a network on which each (source, target)
       rule may open connections and nothing else may; return each member's hostname."""
   ```
