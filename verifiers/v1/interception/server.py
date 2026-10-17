@@ -114,6 +114,13 @@ async def _request_digest(raw: bytes) -> bytes:
     return await asyncio.to_thread(_body_digest, raw)
 
 
+def _error_response(dialect: Dialect, message: str, *, status: int) -> web.Response:
+    """Keep the native error classification consistent with its HTTP status."""
+    return web.json_response(
+        dialect.error_body(message, status_code=status), status=status
+    )
+
+
 def _completion_response(completion: dict | None) -> web.Response:
     """Serialize a model's JSON-native response without an intermediate string."""
     try:
@@ -470,9 +477,8 @@ class InterceptionServer(Interception):
         logger.warning(
             "rollout %s failed: %s: %s", session.trace.id, type(error).__name__, error
         )
-        return web.json_response(
-            dialect.error_body(str(error)),
-            status=getattr(error, "status_code", 502),
+        return _error_response(
+            dialect, str(error), status=getattr(error, "status_code", 502)
         )
 
     def mediate_capabilities(
@@ -589,7 +595,7 @@ class InterceptionServer(Interception):
         session = self.sessions.get(dialect.secret(request.headers))
         if session is None:
             logger.warning("interception: unauthorized request")
-            return web.json_response(dialect.error_body("unauthorized"), status=401)
+            return _error_response(dialect, "unauthorized", status=401)
         session.adopt(asyncio.current_task())
         started = time.monotonic()
         try:
@@ -621,7 +627,7 @@ class InterceptionServer(Interception):
         try:
             acp, upstream_headers = extract_acp_info(request.headers)
         except ValueError as error:
-            return web.json_response(dialect.error_body(str(error)), status=400)
+            return _error_response(dialect, str(error), status=400)
         logger.debug(
             "intercept %s: id=%s stream=%s retry=%s",
             request.path,
@@ -655,10 +661,9 @@ class InterceptionServer(Interception):
         if idempotency_key or retried:
             idempotent = session.idempotent_requests.get(replay_key)
         if idempotent is not None and idempotent.binding != binding:
-            return web.json_response(
-                dialect.error_body(
-                    "Idempotency-Key was reused with a different request"
-                ),
+            return _error_response(
+                dialect,
+                "Idempotency-Key was reused with a different request",
                 status=400,
             )
         if idempotent is not None and idempotent.response is not None:
@@ -671,15 +676,12 @@ class InterceptionServer(Interception):
         try:
             model_request = dialect.parse_request(body)
         except ValueError as error:
-            return web.json_response(dialect.error_body(str(error)), status=400)
+            return _error_response(dialect, str(error), status=400)
         if session.released:
-            return web.json_response(
-                dialect.error_body("rollout concluded"), status=409
-            )
+            return _error_response(dialect, "rollout concluded", status=409)
         if session.stopped:
-            return web.json_response(
-                dialect.error_body(f"rollout stopped: {session.trace.stop_condition}"),
-                status=400,
+            return _error_response(
+                dialect, f"rollout stopped: {session.trace.stop_condition}", status=400
             )
         if idempotent is None:
             idempotent = IdempotentRequest(binding=binding)
@@ -693,9 +695,7 @@ class InterceptionServer(Interception):
             )
             response = await asyncio.shield(inflight)
             if response is None:
-                return web.json_response(
-                    dialect.error_body("upstream attempt failed"), status=503
-                )
+                return _error_response(dialect, "upstream attempt failed", status=503)
             return _replay_response(response)
 
         if idempotent.inflight is not None:
@@ -718,8 +718,8 @@ class InterceptionServer(Interception):
         try:
             refused = await session.refused()
             if refused is not None:
-                return web.json_response(
-                    dialect.error_body(f"rollout stopped: {refused}"), status=400
+                return _error_response(
+                    dialect, f"rollout stopped: {refused}", status=400
                 )
             original_request = model_request
             model_request, request_rewrites, stopped = await session.rewrite_request(
@@ -747,10 +747,7 @@ class InterceptionServer(Interception):
             )
             turn.commit_prompt()
             session.trace.stop(stopped)
-            return web.json_response(
-                dialect.error_body(f"rollout stopped: {stopped}"),
-                status=400,
-            )
+            return _error_response(dialect, f"rollout stopped: {stopped}", status=400)
 
         try:
             body, policy_paths = self.mediate_capabilities(session, dialect, body)
@@ -761,7 +758,7 @@ class InterceptionServer(Interception):
                 session.trace, model_request.messages, model_request.tools, dialect.name
             )
         except ValueError as error:
-            return web.json_response(dialect.error_body(str(error)), status=400)
+            return _error_response(dialect, str(error), status=400)
         except RolloutError as error:
             return self._fail(session, dialect, error)
         # The tail is what the harness added since the last turn (tool results, user
@@ -822,9 +819,7 @@ class InterceptionServer(Interception):
                         len(call_response.message.tool_calls or []),
                     )
                     if session.released:  # concluded while sampling — seal holds
-                        return web.json_response(
-                            dialect.error_body("rollout concluded"), status=409
-                        )
+                        return _error_response(dialect, "rollout concluded", status=409)
                     response_rewrites = []
                     stopped = None
                     if session.response_interceptors or session.response_stops:
@@ -845,10 +840,9 @@ class InterceptionServer(Interception):
                             )
                             call_response.raw = raw_response
                     if session.stopped:
-                        return web.json_response(
-                            dialect.error_body(
-                                f"rollout stopped: {session.trace.stop_condition}"
-                            ),
+                        return _error_response(
+                            dialect,
+                            f"rollout stopped: {session.trace.stop_condition}",
                             status=400,
                         )
                     node = turn.commit(call_response)
@@ -858,9 +852,8 @@ class InterceptionServer(Interception):
                         stopped = await session.gate_tool_calls(node)
                     if stopped is not None:
                         session.trace.stop(stopped)
-                        return web.json_response(
-                            dialect.error_body(f"rollout stopped: {stopped}"),
-                            status=400,
+                        return _error_response(
+                            dialect, f"rollout stopped: {stopped}", status=400
                         )
                 except RolloutError as e:
                     # Stash the real cause; the rollout re-raises it after the harness returns.
@@ -873,9 +866,8 @@ class InterceptionServer(Interception):
                         type(e).__name__,
                         e,
                     )
-                    return web.json_response(
-                        dialect.error_body(str(e)),
-                        status=getattr(e, "status_code", 502),
+                    return _error_response(
+                        dialect, str(e), status=getattr(e, "status_code", 502)
                     )
                 except Exception as e:  # noqa: BLE001 - surface as an API error
                     error = e
@@ -885,7 +877,7 @@ class InterceptionServer(Interception):
                         type(e).__name__,
                         e,
                     )
-                    return web.json_response(dialect.error_body(str(e)), status=502)
+                    return _error_response(dialect, str(e), status=502)
                 except BaseException as e:
                     # A cancelled exchange (harness disconnect, shutdown) is still
                     # recorded, coupled to its cancellation.
@@ -923,7 +915,7 @@ class InterceptionServer(Interception):
         relayed as native JSON, never recorded on the trace."""
         session = self.sessions.get(dialect.secret(request.headers))
         if session is None:
-            return web.json_response(dialect.error_body("unauthorized"), status=401)
+            return _error_response(dialect, "unauthorized", status=401)
         session.adopt(asyncio.current_task())
         logger.debug("intercept aux %s: id=%s", route, session.trace.id)
         try:
@@ -942,12 +934,12 @@ class InterceptionServer(Interception):
                 type(e).__name__,
                 e,
             )
-            return web.json_response(
-                dialect.error_body(str(e)), status=getattr(e, "status_code", 502)
+            return _error_response(
+                dialect, str(e), status=getattr(e, "status_code", 502)
             )
         except Exception as e:  # noqa: BLE001 - surface auxiliary relay failures
             logger.warning("aux call failed: id=%s %s", session.trace.id, e)
-            return web.json_response(dialect.error_body(str(e)), status=502)
+            return _error_response(dialect, str(e), status=502)
         return web.json_response(result)
 
     async def handle_models(self, request: web.Request) -> web.Response:
@@ -978,7 +970,7 @@ class InterceptionServer(Interception):
                 )
         except httpx.HTTPError as e:
             logger.warning("models call failed: id=%s %s", session.trace.id, e)
-            return web.json_response(dialect.error_body(str(e)), status=502)
+            return _error_response(dialect, str(e), status=502)
         return web.Response(
             body=upstream.content,
             status=upstream.status_code,

@@ -316,7 +316,7 @@ class Dialect(ABC, Generic[RespT]):
         client ends on an earlier event (e.g. Responses' `response.completed`) overrides this."""
         return is_sse_done_event(chunk)
 
-    def error_body(self, message: str) -> dict:
+    def error_body(self, message: str, *, status_code: int = 400) -> dict:
         """An error payload in this format's error shape (OpenAI by default)."""
         return {"error": {"message": message, "type": "invalid_request_error"}}
 
