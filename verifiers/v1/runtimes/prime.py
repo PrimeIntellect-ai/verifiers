@@ -200,6 +200,52 @@ def placement_lost(error: BaseException) -> bool:
     return False
 
 
+_TERMINAL_CHECKPOINT = re.compile(
+    r"\bcheckpoint(?:\s+[\w-]+)?\s+(?:(?:is|was)\s+|has\s+been\s+)?(?:deleting|deleted|expired)\b",
+    re.IGNORECASE,
+)
+
+
+def checkpoint_missing(error: BaseException) -> bool:
+    """A restore create refused a gone checkpoint, including its terminal 409 state.
+    Other conflicts (in use, not ready yet), quota and account errors stand as-is.
+    The caller must distinguish a refused create from an already-created box."""
+    status = http_status(error)
+    if status in (404, 410):
+        return True
+    if status not in (None, 409) or sandbox_error_kind(error) != "unknown":
+        return False
+    current: BaseException | None = error
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if http_status(current) != 409:
+            current = current.__cause__ or current.__context__
+            continue
+        messages = [str(current)]
+        response = getattr(current, "response", None)
+        try:
+            body = response.json() if response is not None else None
+        except ValueError:
+            body = None
+        if isinstance(body, dict):
+            detail = body.get("detail")
+            for value in (body, detail):
+                if isinstance(value, dict) and str(
+                    value.get("checkpoint_status", "")
+                ).lower() in {"deleting", "deleted", "expired"}:
+                    return True
+            messages.extend(
+                body[key]
+                for key in ("detail", "message", "error")
+                if isinstance(body.get(key), str)
+            )
+        if any(_TERMINAL_CHECKPOINT.search(message) for message in messages):
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
 @dataclass
 class _SharedClient:
     client: Any
@@ -583,10 +629,10 @@ class PrimeBackend(RuntimeBackend):
                 self.config.checkpoint
                 and self.info.id is None
                 and not isinstance(e, SandboxError)
-                and http_status(e) in (404, 410)
+                and checkpoint_missing(e)
             ):
                 # The create itself, which named the checkpoint, was refused as not
-                # found: the platform no longer has the checkpoint. A 404 once the
+                # found, deleted or deleting: it cannot restore this checkpoint. A 404 once the
                 # box exists (a box reaped while booting) is about the box.
                 kind = "checkpoint_missing"
             raise SandboxError(

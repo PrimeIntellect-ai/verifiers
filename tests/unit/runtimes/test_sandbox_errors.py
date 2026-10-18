@@ -246,27 +246,44 @@ async def test_prime_provisioning_refused_for_billing_is_an_account_error(
     )
 
 
-@pytest.mark.parametrize("status", [404, 410])
+@pytest.mark.parametrize(
+    ("status", "message", "missing"),
+    [
+        (404, "not found", True),
+        (410, "not found", True),
+        (409, "Checkpoint is deleting, not durable", True),
+        (409, "Checkpoint has been deleted", True),
+        (409, "Checkpoint is expired", True),
+        (409, "Checkpoint is not durable", False),
+        (409, "Checkpoint is not durable yet", False),
+        (409, "Checkpoint is creating, not durable", False),
+        (409, "Checkpoint is in use", False),
+        (409, "conflicting sandbox name", False),
+        (429, "Checkpoint is deleting, not durable", False),
+    ],
+)
 async def test_prime_restore_of_a_gone_checkpoint_is_checkpoint_missing(
-    monkeypatch, status
+    monkeypatch, status, message, missing
 ):
     monkeypatch.setattr(prime, "ensure_prime_auth", lambda: None)
     monkeypatch.setattr(
         prime_sandboxes,
         "AsyncSandboxClient",
-        lambda **_: FakeSandboxClient(create=APIError(f"HTTP {status}: not found")),
+        lambda **_: FakeSandboxClient(create=APIError(f"HTTP {status}: {message}")),
     )
     restoring = PrimeBackend(PrimeConfig(checkpoint="ck-gone"))
     with pytest.raises(SandboxError) as caught:
         await restoring.start()
     await restoring.teardown()
-    assert caught.value.kind == "checkpoint_missing"
+    assert (caught.value.kind == "checkpoint_missing") is missing
 
     fresh = PrimeBackend(PrimeConfig())
     with pytest.raises(SandboxError) as caught:
         await fresh.start()
     await fresh.teardown()
-    assert caught.value.kind == ("missing" if status == 404 else "box_lost")
+    assert caught.value.kind != "checkpoint_missing"
+    if status in (404, 410):
+        assert caught.value.kind == ("missing" if status == 404 else "box_lost")
 
 
 async def test_prime_a_restored_box_lost_while_booting_is_not_checkpoint_missing(
