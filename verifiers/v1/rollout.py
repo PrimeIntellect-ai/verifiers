@@ -200,8 +200,7 @@ class Rollout:
                 )
             )
         self.trace._replay_view = harness.replay_view
-        if on_trace is not None:
-            on_trace(self.trace)
+        self._on_trace = on_trace
         interceptors = [
             (hook_boundary(fn, allow_trace=False), fn)
             for fn in discover_decorated(task, "intercept")
@@ -356,6 +355,13 @@ class Rollout:
         proceed; a setup failure is captured onto the trace."""
         self._opened = True
         steering.register(self)
+        observer, self._on_trace = self._on_trace, None
+        if observer is not None:
+            try:
+                observer(self.trace)
+            except BaseException:
+                steering.unregister(self)
+                raise
         self.trace.timing.boot.start = time.time()
         self.trace.notify()
         if self._borrowed_runtime is None:
