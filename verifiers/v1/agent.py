@@ -1435,7 +1435,9 @@ class Agent:
 
         if config.model is None and config.model_pool is not None:
             first = config.model_pool.deployments[0]
-            config = config.model_copy(update={"model": first.model, "client": first.client})
+            config = config.model_copy(
+                update={"model": first.model, "client": first.client}
+            )
         if config.model is None:
             raise ValueError(
                 "AgentConfig.model is unset; an Agent needs a pinned model "

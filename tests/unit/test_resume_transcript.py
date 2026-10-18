@@ -20,7 +20,9 @@ def _trace(*messages, cut_off_last: bool = False) -> vf.Trace:
     for index, message in enumerate(messages):
         sampled = message.role == "assistant"
         trace.nodes.append(
-            MessageNode(parent=index - 1 if index else None, message=message, sampled=sampled)
+            MessageNode(
+                parent=index - 1 if index else None, message=message, sampled=sampled
+            )
         )
         if sampled:
             last = index == len(messages) - 1
@@ -44,7 +46,9 @@ def _work() -> list:
 
 
 def test_a_reply_cut_off_at_the_token_limit_is_not_continued_from() -> None:
-    cut = AssistantMessage(content="<tool_call>bash<arg_key>command</arg_key><arg_value>mk")
+    cut = AssistantMessage(
+        content="<tool_call>bash<arg_key>command</arg_key><arg_value>mk"
+    )
     trace = _trace(*_work(), cut, cut_off_last=True)
     assert trace.without_cut_off_reply(trace.conversation_at()) == _work()
 
@@ -56,7 +60,15 @@ def test_a_finished_reply_stays() -> None:
 
 
 def test_host_notes_no_reply_answered_give_way_to_the_next() -> None:
-    stacked = [*_work(), UserMessage(content=RETRY_NOTE), UserMessage(content=KILLED_NOTE)]
+    stacked = [
+        *_work(),
+        UserMessage(content=RETRY_NOTE),
+        UserMessage(content=KILLED_NOTE),
+    ]
     assert without_unanswered_notes(stacked) == _work()
-    answered = [*_work(), UserMessage(content=RETRY_NOTE), AssistantMessage(content="ok")]
+    answered = [
+        *_work(),
+        UserMessage(content=RETRY_NOTE),
+        AssistantMessage(content="ok"),
+    ]
     assert without_unanswered_notes(answered) == answered

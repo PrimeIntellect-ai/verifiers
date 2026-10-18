@@ -4,7 +4,11 @@ so a caller retries it as an outage instead of keeping a stopped trace as its re
 
 import asyncio
 
-from test_agent_resume import NotesTask, ScriptHarness, fake_boxes  # noqa: F401 - fixtures
+from test_agent_resume import (  # noqa: F401 - fixtures
+    NotesTask,
+    ScriptHarness,
+    fake_boxes,
+)
 from test_provider_retry import Provider
 
 import verifiers.v1 as vf

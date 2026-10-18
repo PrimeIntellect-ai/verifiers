@@ -5,7 +5,9 @@ import logging
 from verifiers.v1.runtimes import prime
 
 
-def test_call_stats_summarize_once_an_interval_and_start_over(caplog, monkeypatch) -> None:
+def test_call_stats_summarize_once_an_interval_and_start_over(
+    caplog, monkeypatch
+) -> None:
     clock = iter([0.0, 10.0, 70.0])
     monkeypatch.setattr(prime.time, "monotonic", lambda: next(clock))
     stats = prime._CallStats()  # since = 0.0

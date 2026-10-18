@@ -274,7 +274,9 @@ def test_finish_refuses_a_gap():
         assembly.finish({}, [TraceSummary(id="t", nodes=2, calls=0)])
 
 
-def test_token_counts_follow_the_graph_and_are_not_redumped_while_it_stands_still() -> None:
+def test_token_counts_follow_the_graph_and_are_not_redumped_while_it_stands_still() -> (
+    None
+):
     trace = make_trace()
     streamer = DeltaStreamer(lambda: [trace], None)
     [(_, _, cursor)] = streamer.diff()
