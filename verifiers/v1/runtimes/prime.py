@@ -340,7 +340,7 @@ class PrimeConfig(NetworkPolicyConfig):
     and caches the result, so later sandboxes on the same ref start in
     seconds."""
     workdir: str | None = None
-    """Working directory override; None uses the task's workdir, or /app."""
+    """Working directory override; None preserves the image's working directory."""
     region: str | None = None
     """Region to provision in (None = provider-chosen)."""
     labels: list[str] = Field(default_factory=list)
@@ -435,7 +435,7 @@ class PrimeBackend(RuntimeBackend):
     def __init__(self, config: PrimeConfig, name: str | None = None) -> None:
         ensure_prime_auth()
         super().__init__(name)
-        self.config = config.model_copy(update={"workdir": config.workdir or "/app"})
+        self.config = config
         self.info = PrimeRuntimeInfo(**self.config.model_dump())
         self._client = None
         self.placed = False
@@ -601,6 +601,19 @@ class PrimeBackend(RuntimeBackend):
                 logger.info(
                     "prime: sandbox %s up (image=%s)", self.info.id, self.config.image
                 )
+                if self.config.workdir is None:
+                    cwd = await self._held(
+                        "image workdir",
+                        lambda: self._client.execute_command(self.info.id, "pwd"),
+                    )
+                    workdir = cwd.stdout.strip()
+                    if cwd.exit_code != 0 or not workdir.startswith("/"):
+                        raise SandboxError(
+                            f"Cannot resolve image working directory: {cwd.stderr}",
+                            kind="exec",
+                        )
+                    self.config = self.config.model_copy(update={"workdir": workdir})
+                self.info.workdir = self.config.workdir
                 await self._held(
                     "workdir",
                     lambda: self._client.execute_command(

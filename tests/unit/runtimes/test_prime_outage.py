@@ -140,7 +140,9 @@ class Client:
             await self._boot()
 
     async def execute_command(self, sandbox_id, command, **_):
-        return SimpleNamespace(exit_code=0, stdout="", stderr="")
+        return SimpleNamespace(
+            exit_code=0, stdout="/app\n" if command == "pwd" else "", stderr=""
+        )
 
     async def delete(self, sandbox_id):
         if self._delete is not None:
@@ -316,7 +318,9 @@ async def test_a_box_restored_without_its_image_workdir_gets_it_back(
     class Restoring(Client):
         async def execute_command(self, sandbox_id, command, working_dir=None, **_):
             commands.append((command, working_dir))
-            return SimpleNamespace(exit_code=0, stdout="", stderr="")
+            return SimpleNamespace(
+                exit_code=0, stdout="/app\n" if command == "pwd" else "", stderr=""
+            )
 
     boot = Flaky(refused)
     client = Restoring(boot=boot)
@@ -325,7 +329,10 @@ async def test_a_box_restored_without_its_image_workdir_gets_it_back(
     await runtime.start()
     assert boot.calls == 2 and runtime.placed
     assert commands[0] == ("mkdir -p /app", "/")
-    assert all(working_dir == "/" for _, working_dir in commands)
+    assert ("pwd", None) in commands
+    assert all(
+        working_dir == "/" for command, working_dir in commands if command != "pwd"
+    )
     await runtime.teardown()
 
     client = Restoring(boot=Flaky(refused))
@@ -334,3 +341,28 @@ async def test_a_box_restored_without_its_image_workdir_gets_it_back(
     with pytest.raises(SandboxError, match="does not exist"):
         await runtime.start()
     await runtime.stop()
+
+
+@pytest.mark.parametrize("override", [None, "/explicit"])
+async def test_image_workdir_is_inherited_unless_overridden(monkeypatch, override):
+    commands = []
+
+    class ImageClient(Client):
+        async def execute_command(self, sandbox_id, command, working_dir=None, **_):
+            commands.append((command, working_dir))
+            return SimpleNamespace(
+                exit_code=0,
+                stdout="/app/personal-site\n" if command == "pwd" else "",
+                stderr="",
+            )
+
+    install(monkeypatch, ImageClient())
+    runtime = make(monkeypatch, workdir=override)
+    await runtime.start()
+    try:
+        expected = override or "/app/personal-site"
+        assert runtime.config.workdir == runtime.info.workdir == expected
+        assert (("pwd", None) in commands) == (override is None)
+        assert (f"mkdir -p {expected}", "/") in commands
+    finally:
+        await runtime.teardown()

@@ -212,7 +212,8 @@ class FakeSandboxClient:
 @pytest.fixture
 def runtime(monkeypatch) -> PrimeBackend:
     monkeypatch.setattr(prime, "ensure_prime_auth", lambda: None)
-    return PrimeBackend(PrimeConfig())
+    # Tests attach fake existing VMs without start(), which normally resolves this.
+    return PrimeBackend(PrimeConfig(workdir="/app"))
 
 
 @pytest.fixture

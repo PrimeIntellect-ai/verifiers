@@ -180,11 +180,6 @@ class DockerBackend(ContainerBackend):
         return SERVICE_PORT
 
     async def start(self) -> None:
-        # Compose keeps its authored workdir; only standalone containers default to /app.
-        self.config = self.config.model_copy(
-            update={"workdir": self.config.workdir or "/app"}
-        )
-        self.info.workdir = self.config.workdir
         try:
             version = await cli(self.engine, "version")
         except FileNotFoundError as e:
@@ -310,6 +305,10 @@ class DockerBackend(ContainerBackend):
                 f"{self.engine} environment inspection failed: {inspected.stderr.strip()}"
             )
         container = json.loads(inspected.stdout)
+        self.config = self.config.model_copy(
+            update={"workdir": self.config.workdir or container["WorkingDir"] or "/"}
+        )
+        self.info.workdir = self.config.workdir
         self._image_env = dict(entry.split("=", 1) for entry in container["Env"] or [])
         # Create missing workdirs for either engine, owned by the image's execution user.
         made = await cli(

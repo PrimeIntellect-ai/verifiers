@@ -27,7 +27,7 @@ if TYPE_CHECKING:
 class ContainerConfig(BaseConfig):
     image: str = "python:3.11-slim"
     workdir: str | None = None
-    """Working directory override; None uses the task's workdir, or /app."""
+    """Working directory override; None preserves the image's working directory."""
     # TaskData.resources uses these units; non-default runtime config values take precedence.
     cpu: float | None = None
     """Pin the container to this many CPU cores. None = unlimited."""

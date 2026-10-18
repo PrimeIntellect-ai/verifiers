@@ -82,7 +82,7 @@ class ModalConfig(NetworkPolicyConfig):
     """Use a VM sandbox for workloads requiring a Docker daemon."""
     image: str = "python:3.11-slim"
     workdir: str | None = None
-    """Working directory override; None uses the task's workdir, or /app."""
+    """Working directory override; None preserves the image's working directory."""
     network_access: bool = True
     """Allow network access at creation. False blocks all egress, including setup;
     it cannot be combined with execution-time allow/block policies."""
@@ -179,7 +179,7 @@ class ModalBackend(RuntimeBackend):
 
     def __init__(self, config: ModalConfig, name: str | None = None) -> None:
         super().__init__(name)
-        self.config = config.model_copy(update={"workdir": config.workdir or "/app"})
+        self.config = config
         self.info = ModalRuntimeInfo(**self.config.model_dump())
         self._sandbox = None
 
@@ -208,6 +208,15 @@ class ModalBackend(RuntimeBackend):
             logger.info(
                 "modal: sandbox %s up (image=%s)", self.info.id, self.config.image
             )
+            if self.config.workdir is None:
+                process = await self._sandbox.exec.aio("pwd")
+                workdir = (await process.stdout.read.aio()).strip()
+                if await process.wait.aio() != 0 or not workdir.startswith("/"):
+                    raise SandboxError(
+                        "Cannot resolve image working directory", kind="exec"
+                    )
+                self.config = self.config.model_copy(update={"workdir": workdir})
+            self.info.workdir = self.config.workdir
             await self._sandbox.filesystem.make_directory.aio(self.config.workdir)
         except (
             Exception

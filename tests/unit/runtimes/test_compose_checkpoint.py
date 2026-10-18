@@ -1,9 +1,45 @@
 """A Compose service on a host VM checkpoints and restores through its host."""
 
+from contextlib import asynccontextmanager
+
 import pytest
 
 from verifiers.v1.runtimes import DockerBackend, DockerConfig
+from verifiers.v1.runtimes.modal import ModalBackend, ModalConfig
 from verifiers.v1.runtimes.prime import PrimeBackend, PrimeConfig
+
+
+@pytest.mark.parametrize("workdir", [None, "/explicit"])
+@pytest.mark.parametrize(
+    "backend_type,config_type",
+    [
+        (PrimeBackend, PrimeConfig),
+        (ModalBackend, ModalConfig),
+        (DockerBackend, DockerConfig),
+    ],
+)
+async def test_composition_preserves_the_declared_workspace(
+    monkeypatch, tmp_path, workdir, backend_type, config_type
+):
+    from verifiers.v1.runtimes import prime, strategies
+    from verifiers.v1.runtimes.compose import ComposeSpec
+
+    monkeypatch.setattr(prime, "ensure_prime_auth", lambda: None)
+    seen = []
+
+    @asynccontextmanager
+    async def services(config, spec, environment, **kwargs):
+        seen.append(config.workdir)
+        yield {"main": object()}, None, None
+
+    monkeypatch.setattr(strategies, "compose_services", services)
+    backend = backend_type(config_type(workdir=workdir))
+    deployment = backend.deploy(spec=ComposeSpec(directory=str(tmp_path)))
+    try:
+        await deployment.start()
+        assert seen == [workdir]
+    finally:
+        await deployment.close()
 
 
 def test_a_local_container_has_no_checkpoints():
