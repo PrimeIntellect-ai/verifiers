@@ -83,7 +83,12 @@ def _import_plugin(plugin_id: str, kind: str, group: str) -> ModuleType:
     name = plugin_id.rsplit("/", 1)[-1].split("@", 1)[0]
     module = name.replace("-", "_").lower()
     namespaced = f"{group}.{module}"
-    target = namespaced if importlib.util.find_spec(namespaced) else module
+    # A dotted id already names an installed module. Looking beneath the built-in
+    # namespace first can fail on an absent intermediate package before fallback.
+    if "." in module:
+        target = module
+    else:
+        target = namespaced if importlib.util.find_spec(namespaced) else module
     try:
         return importlib.import_module(target)
     except ModuleNotFoundError as e:
