@@ -12,7 +12,7 @@ from pydantic_core import from_json
 from verifiers.v1.episode import WireEpisode
 from verifiers.v1.task import TaskT
 from verifiers.v1.utils.eval import plan_rollouts
-from verifiers.v1.utils.trace_store import TRACES_FILE
+from verifiers.v1.utils.trace_store import episode_lines, replace_episodes
 
 
 def load(
@@ -26,33 +26,22 @@ def load(
     ``complete`` is the keep-verdict (default ``episode.ok``). Torn or malformed
     rows are discarded; retained rows preserve their original serialized fields.
     """
-    path = resume_dir / TRACES_FILE
     verdict = complete if complete is not None else (lambda episode: episode.ok)
     episodes: list[WireEpisode] = []
     lines: dict[str, bytes] = {}
-    if path.exists():
-        with path.open("rb") as results:
-            for line in results:
-                if not line.strip():
-                    continue
-                try:
-                    row = from_json(line)
-                    if "traces" not in row:
-                        continue
-                    episode = WireEpisode.model_validate(row)
-                    if not verdict(episode):
-                        continue
-                # A malformed row from any task/episode plugin is owed again.
-                except Exception:  # noqa: BLE001, S112
-                    continue
-                episodes.append(episode)
-                lines.setdefault(
-                    episode.id, line if line.endswith(b"\n") else line + b"\n"
-                )
+    # Resolve episode revisions before applying completion: an earlier success
+    # must never hide the latest failed revision. Preserve the exact wire row.
+    for line in episode_lines(resume_dir):
+        try:
+            episode = WireEpisode.model_validate(from_json(line))
+            if not verdict(episode):
+                continue
+        except Exception:  # noqa: BLE001, S112 - malformed plugin rows are owed again
+            continue
+        episodes.append(episode)
+        lines[episode.id] = line
     plan = plan_rollouts(tasks, num_rollouts, episodes)
-    tmp = path.with_suffix(".jsonl.tmp")
-    tmp.write_bytes(
-        b"".join(lines[episode.id] for _, kept, _ in plan for episode in kept)
+    replace_episodes(
+        resume_dir, (lines[episode.id] for _, kept, _ in plan for episode in kept)
     )
-    tmp.replace(path)
     return plan

@@ -7,7 +7,7 @@ from pathlib import Path
 from pydantic import BaseModel
 
 from verifiers.v1.configs.cli.eval import EvalConfig
-from verifiers.v1.utils.trace_store import TRACES_FILE
+from verifiers.v1.utils.trace_store import replace_episodes
 
 CONFIG_DIR = "configs"
 """Directory inside a run dir holding its configs: the launch TOML copied verbatim to
@@ -117,6 +117,4 @@ def save_config(
     landing."""
     write_config(config, results_dir, filename)
     write_launch_toml(results_dir, Path(filename).stem)
-    (results_dir / TRACES_FILE).write_text(
-        ""
-    )  # fresh; appended to as rollouts complete
+    replace_episodes(results_dir, ())
