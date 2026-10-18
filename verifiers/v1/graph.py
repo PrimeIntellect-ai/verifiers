@@ -49,6 +49,7 @@ from verifiers.v1.types import (
     TextContentPart,
     Tool,
     ToolMessage,
+    WeightVersionSpan,
 )
 
 if TYPE_CHECKING:
@@ -164,6 +165,10 @@ class MessageNode(BaseModel):
     `ids` stores the flat token ids and `counts` stores each token's row size. Assistant
     nodes only. The arrays serialize as raw-byte `__nd__` dictionaries.
     """
+    weight_versions: list[WeightVersionSpan] | None = None
+    """Engine weight-version spans over this node's sampled tokens (indexes into the
+    completion, as vLLM returns them). Assistant nodes only; None when the engine labels
+    none."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
@@ -997,6 +1002,7 @@ def _commit_turn(turn: PendingTurn, response: Response) -> int:
             else [],
             # TurnTokens is discarded after commit, so transfer its logprobs without copying.
             logprobs=tokens.completion_logprobs if tokens else [],
+            weight_versions=tokens.weight_versions if tokens else None,
         )
     )
     assistant_id = len(trace.nodes) - 1
