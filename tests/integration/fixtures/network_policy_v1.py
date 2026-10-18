@@ -6,7 +6,7 @@ stages a probe script while egress is still open; the prompt asks the model to r
 The probe fetches both hosts and records which ones it reached, so the reward is 1 only
 if the policy held: each host answered exactly when the policy permits it. A harness
 without a shell writes no report and scores 0. Needs a runtime with network policy
-support; the integration test runs it on prime.
+support; the integration test runs it on docker and prime.
 """
 
 import json
