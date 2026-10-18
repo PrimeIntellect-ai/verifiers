@@ -235,6 +235,9 @@ class Rollout:
         if self._messaging:
             self._session.peers = peers
         self._on_save = on_save
+        self._save_interval = agent_config.save_interval
+        self._saved_at = time.monotonic()
+        """When the box was last checkpointed by a per-call save, or the run began."""
         if runtime is None:
             saves = agent_config.save == "per_call"
         else:
@@ -722,6 +725,12 @@ class Rollout:
         checkpoint failing every try is logged and skipped, so the previous one
         stands."""
         trace = self.trace
+        if (
+            response.message.tool_calls
+            and self._save_interval
+            and time.monotonic() - self._saved_at < self._save_interval
+        ):
+            return  # a final reply always saves: the next round continues from it
         # The response is not committed yet: a final reply leaves the box as it is,
         # so the checkpoint matches the conversation with it.
         turns = trace.num_turns + (0 if response.message.tool_calls else 1)
@@ -742,6 +751,7 @@ class Rollout:
                     error,
                 )
                 return
+        self._saved_at = time.monotonic()
         if self._on_save is None:
             return
         on_save = self._on_save

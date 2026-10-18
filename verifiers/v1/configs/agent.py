@@ -76,6 +76,12 @@ class AgentConfig(BaseConfig):
     `on_save(trace, checkpoint)` sees it). An owned box needs a runtime with
     checkpoints; a checkpoint failing three tries is logged and skipped (the previous
     one stands). A borrowed box is never checkpointed."""
+    save_interval: float = Field(0.0, ge=0)
+    """Seconds a `per_call` save waits for since the run's last checkpoint, or since it
+    started: a response with tool calls that comes sooner is not saved (0 = every
+    response); a final reply always is, so a continuation of a finished run starts at
+    its end. A cut-off run continues at most this far back, and a host with many runs
+    makes that many fewer checkpoint requests."""
     interaction_retries: int = Field(0, ge=0)
     """Times an interaction turn that fails on infrastructure (a lost box or failed
     transfer, a provider, harness or interception error; never a task error) runs
