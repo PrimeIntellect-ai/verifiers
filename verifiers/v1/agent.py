@@ -849,7 +849,9 @@ class Agent:
             "runtime_config": runtime_config,
             "timeouts": replace(
                 timeouts,
-                agent=cap_remote_agent_timeout(timeouts.agent, runtime_config, task),
+                agent=cap_remote_agent_timeout(
+                    timeouts.agent, runtime_config, run_is_local, task
+                ),
             ),
             "limits": self.limits,
             "shared_tools": shared_tools,
