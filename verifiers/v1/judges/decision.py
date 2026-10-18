@@ -43,7 +43,11 @@ class DecisionJudge(Judge[float, DecisionJudgeConfig]):
     )
 
     async def evaluate(
-        self, *, trace: Trace | None = None, **fields: Any
+        self,
+        *,
+        trace: Trace | None = None,
+        images: list[str | dict[str, str]] | None = None,
+        **fields: Any,
     ) -> JudgeResponse[float]:
         request = {
             "model": self.config.model,
@@ -57,6 +61,10 @@ class DecisionJudge(Judge[float, DecisionJudgeConfig]):
             },
         }
         self.check_input({"state": fields, "questions": request["questions"]})
+        if images:
+            # Providers such as Clef take image attachments beside state, rather
+            # than serialized base64 inside its textual fields.
+            request["images"] = images
         async with build_async_openai(self.config) as client:
             raw = await self.send(
                 lambda: client.post(
