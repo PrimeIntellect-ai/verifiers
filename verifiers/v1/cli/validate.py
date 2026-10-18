@@ -265,6 +265,10 @@ CHECKS = {"setup": _setup_only, "gold": _gold, "noop": _score_untouched}
 
 
 async def _run_check(task: Task, config: ValidateConfig, mode: str) -> ResultRow:
+    from verifiers.v1.tasksets.harbor.taskset import HarborTask
+
+    if isinstance(task, HarborTask) and mode != "setup":
+        return await _run_harbor_check(task, config, mode)
     start = time.time()
     backend = make_backend(
         resolve_runtime_config(config.runtime, task),
@@ -319,8 +323,64 @@ async def _run_check(task: Task, config: ValidateConfig, mode: str) -> ResultRow
     return row
 
 
+async def _run_harbor_check(task: Task, config: ValidateConfig, mode: str) -> ResultRow:
+    """Harbor owns its validation deployments, including isolated grading."""
+    from verifiers.v1.configs.agent import TimeoutConfig
+
+    start = time.time()
+    try:
+        timeout = TimeoutConfig(setup=config.timeout.setup)
+        validation = await asyncio.wait_for(
+            task.validate(
+                config.runtime,
+                baseline=mode != "gold",
+                gold=mode != "noop",
+                timeout=timeout,
+            ),
+            config.timeout.total,
+        )
+        rows = []
+        for name, attempt in (("gold", validation.gold), ("noop", validation.baseline)):
+            if not attempt.enabled:
+                continue
+            row = _row(task, name, attempt.valid, None, start)
+            row.update(attempt.model_dump(exclude={"valid"}))
+            if attempt.infrastructure:
+                timed_out = "timeout" in (attempt.trace or {}).get("stop_condition", "")
+                row.update(
+                    reason="timeout" if timed_out else "error",
+                    valid=False,
+                    error_type="TimeoutError" if timed_out else "ValidationError",
+                )
+            rows.append(row)
+        if mode != "all":
+            return rows[0]
+        reason = _all_reason(rows)
+        error, error_type = _all_error(rows)
+        return {
+            **_row(
+                task,
+                mode,
+                None if reason == "unchecked" else reason == "valid",
+                None,
+                start,
+            ),
+            "reason": reason,
+            "error": error,
+            "error_type": error_type,
+            "gold": rows[0],
+            "noop": rows[1],
+        }
+    except Exception as error:  # noqa: BLE001 - validation reports plugin failures
+        return _row(task, mode, False, error, start)
+
+
 def _describe(row: ResultRow) -> str | None:
-    if row["mode"] == "noop" and row["reason"] == "invalid":
+    if (
+        row["mode"] == "noop"
+        and row["reason"] == "invalid"
+        and row["reward"] is not None
+    ):
         return f"passes untouched (reward={row['reward']:g})"
     return row["error"]
 
@@ -346,6 +406,10 @@ def _all_error(rows: list[ResultRow]) -> tuple[str | None, str | None]:
 
 
 async def _run_all(task: Task, config: ValidateConfig) -> ResultRow:
+    from verifiers.v1.tasksets.harbor.taskset import HarborTask
+
+    if isinstance(task, HarborTask):
+        return await _run_harbor_check(task, config, "all")
     start = time.time()
     gold = await _run_check(task, config, "gold")
     noop = await _run_check(task, config, "noop")

@@ -38,10 +38,11 @@ from verifiers.v1.utils.generic import concrete_type
 if TYPE_CHECKING:
     from verifiers.v1.judge import Judge
     from verifiers.v1.mcp import Toolset
-    from verifiers.v1.runtimes import Runtime
+    from verifiers.v1.runtimes import Runtime, RuntimeConfig
     from verifiers.v1.runtimes.compose import ComposeSpec
     from verifiers.v1.runtimes.deployment import Deployment
     from verifiers.v1.trace import Trace
+    from verifiers.v1.validation import ValidationResult
 
 logger = logging.getLogger(__name__)
 
@@ -246,9 +247,21 @@ class Task(Generic[DataT, StateT, ConfigT]):
         """Prepare trusted verifier-only inputs after artifacts are restored."""
         return
 
-    async def validate(self, runtime: Runtime) -> bool | None:
+    async def validate(
+        self, runtime: Runtime | RuntimeConfig
+    ) -> bool | ValidationResult | None:
         """Check the ground truth, or return None when no model-free check exists."""
         return None
+
+    async def validation_before(
+        self, trace: Trace, runtime: Runtime, kind: str
+    ) -> None:
+        """Prepare task-specific reference interactions before a validation attempt."""
+        return
+
+    async def validation_after(self, trace: Trace, runtime: Runtime, kind: str) -> None:
+        """Inspect reference behavior before normal finalization and grading."""
+        return
 
     def defer_scoring(self) -> Self:
         """An independent copy whose task signals are deferred.

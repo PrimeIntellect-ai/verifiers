@@ -27,18 +27,20 @@ import tarfile
 import tempfile
 import time
 import tomllib
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from functools import lru_cache
 from pathlib import Path, PurePosixPath
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
 from verifiers.v1 import toolbundles
+from verifiers.v1.configs.agent import TimeoutConfig
+from verifiers.v1.configs.retries import RetryConfig
 from verifiers.v1.configs.scoring import ScoringConfig
 from verifiers.v1.configs.task import TaskConfig
 from verifiers.v1.configs.taskset import TasksetConfig
 from verifiers.v1.errors import SandboxError, TaskError
-from verifiers.v1.runtimes import ProgramResult, Runtime
+from verifiers.v1.runtimes import ProgramResult, Runtime, RuntimeConfig
 from verifiers.v1.runtimes.deployment import Deployment
 from verifiers.v1.state import State
 from verifiers.v1.task import Task, TaskData, TaskResources, TaskTimeout
@@ -48,6 +50,11 @@ from verifiers.v1.trace import Trace
 from verifiers.v1.utils.artifacts import MAX_ARTIFACT_BYTES, Artifact, collect
 from verifiers.v1.utils.decorators import reward
 from verifiers.v1.utils.env import resolve_env
+from verifiers.v1.validation import (
+    ValidationAttempt,
+    ValidationResult,
+    validate_attempt,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -210,6 +217,73 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
 
     RESTORE_PROTECTED = GRADER_PATHS
     verifier_staged: bool = False
+
+    async def validate(
+        self,
+        runtime: Runtime | RuntimeConfig,
+        *,
+        baseline: bool = True,
+        gold: bool = True,
+        baseline_max: float = 0.0,
+        gold_min: float = 1.0,
+        gold_rewards: dict[str, float] | None = None,
+        baseline_rewards: list[str] | None = None,
+        gold_source: Path | None = None,
+        gold_target_dir: str = "/solution",
+        gold_command: list[str] | None = None,
+        timeout: TimeoutConfig | None = None,
+        retries: RetryConfig | None = None,
+        on_trace: Callable[[Trace], None] | None = None,
+    ) -> ValidationResult:
+        """Grade untouched and gold work in independent native deployments.
+
+        Each reward must meet its inclusive bound. Callers may repeat this check
+        concurrently; neither attempt reuses the caller's live workspace.
+        """
+        source = gold_source or Path(self.data.task_dir) / "solution"
+        runs = {}
+        results = {
+            "baseline": ValidationAttempt(enabled=False),
+            "gold": ValidationAttempt(enabled=False),
+        }
+        if baseline:
+            runs["baseline"] = validate_attempt(
+                self,
+                runtime,
+                maximum=None if baseline_rewards else baseline_max,
+                maximum_rewards={name: baseline_max for name in baseline_rewards}
+                if baseline_rewards
+                else None,
+                timeout=timeout,
+                retries=retries,
+                on_trace=on_trace,
+            )
+        if gold and (
+            not source.is_dir()
+            or (gold_command is None and not (source / "solve.sh").is_file())
+        ):
+            results["gold"] = ValidationAttempt(
+                error=f"gold solution unavailable: {source}"
+            )
+        elif gold:
+            runs["gold"] = validate_attempt(
+                self,
+                runtime,
+                source=source,
+                target_dir=gold_target_dir,
+                command=(
+                    gold_command
+                    if gold_command is not None
+                    else ["bash", f"{gold_target_dir.rstrip('/')}/solve.sh"]
+                ),
+                minimum=None if gold_rewards else gold_min,
+                minimum_rewards=gold_rewards,
+                timeout=timeout,
+                retries=retries,
+                on_trace=on_trace,
+            )
+        results.update(zip(runs, await asyncio.gather(*runs.values())))
+        return ValidationResult(**results)
 
     def __init__(self, data: HarborData, config: HarborTaskConfig | None = None):
         super().__init__(data, config)

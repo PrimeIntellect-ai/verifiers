@@ -252,6 +252,7 @@ from verifiers.v1.utils.score import (
 from verifiers.v1.utils.score import (
     verify_boxed_math_answer as verify_boxed_math_answer,
 )
+from verifiers.v1.validation import ValidationAttempt, ValidationResult
 
 __all__ = [  # noqa: RUF022 - grouped by public API area
     # types
@@ -280,6 +281,8 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "WireTaskData",
     "TaskResources",
     "TaskTimeout",
+    "ValidationAttempt",
+    "ValidationResult",
     "Trace",
     "TraceTask",
     "WireTrace",
