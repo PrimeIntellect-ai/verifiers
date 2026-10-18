@@ -226,6 +226,9 @@ class TraceStore:
                 if saved == (stat.st_dev, stat.st_ino, stat.st_size):
                     yield db, file
                     return
+            # A stale SQLite snapshot must not block an index commit while we
+            # inspect a potentially large canonical stream.
+            stack.close()
             generation = (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns)
             cached = getattr(self._reader, "index", None)
             if cached is None or cached.generation != generation:
