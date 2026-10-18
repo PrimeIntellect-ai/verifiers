@@ -1,6 +1,7 @@
 """Bound host memory while uploading files through whole-file runtime writes."""
 
 import asyncio
+import hashlib
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -39,8 +40,9 @@ class _StagingBudget:
 _budget = _StagingBudget()
 
 
-async def stage_file(runtime: Runtime, target: str, source: Path) -> None:
-    """Read off the event loop and retain the staging budget through upload completion."""
+async def stage_file(runtime: Runtime, target: str, source: Path) -> str:
+    """Upload off-loop-read bytes within the shared budget; return their SHA256."""
     async with _budget.hold(source.stat().st_size):
         data = await asyncio.to_thread(source.read_bytes)
         await runtime.write(target, data)
+        return hashlib.sha256(data).hexdigest()
