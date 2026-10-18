@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import copy
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from pathlib import Path, PurePosixPath
+from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, Field
 
@@ -17,7 +18,13 @@ from verifiers.v1.runtimes import PrimeConfig, ProgramResult, Runtime, RuntimeCo
 from verifiers.v1.task import Task
 from verifiers.v1.trace import Trace
 
+if TYPE_CHECKING:
+    from verifiers.v1.agent import Agent
+
 __all__ = ["ValidationAttempt", "ValidationHarness", "ValidationResult"]
+
+ValidationRunner = Callable[["Agent", Task, Callable[[Trace], None]], Awaitable[Trace]]
+"""Optional per-attempt execution policy, returning the native graded trace."""
 
 
 class ValidationAttempt(BaseModel):
@@ -111,6 +118,7 @@ async def validate_attempt(
     timeout: TimeoutConfig | None = None,
     retries: RetryConfig | None = None,
     on_trace: Callable[[Trace], None] | None = None,
+    run_attempt: ValidationRunner | None = None,
 ) -> ValidationAttempt:
     """Execute one reference or untouched attempt in its own native deployment."""
     from verifiers.v1.agent import Agent
@@ -142,12 +150,15 @@ async def validate_attempt(
             on_trace(trace)
 
     try:
-        trace = await agent.run(
-            task,
-            on_score=getattr(task, "judge_on_score", None),
-            on_trace=started,
-            durable=False,
-        )
+        if run_attempt is not None:
+            trace = await run_attempt(agent, task, started)
+        else:
+            trace = await agent.run(
+                task,
+                on_score=getattr(task, "judge_on_score", None),
+                on_trace=started,
+                durable=False,
+            )
     except Exception as error:  # noqa: BLE001 - report preflight failures as evidence
         infrastructure = not isinstance(error, TaskError)
         return ValidationAttempt(

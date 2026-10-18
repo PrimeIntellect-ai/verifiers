@@ -53,6 +53,7 @@ from verifiers.v1.utils.env import resolve_env
 from verifiers.v1.validation import (
     ValidationAttempt,
     ValidationResult,
+    ValidationRunner,
     validate_attempt,
 )
 
@@ -234,6 +235,7 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
         timeout: TimeoutConfig | None = None,
         retries: RetryConfig | None = None,
         on_trace: Callable[[Trace], None] | None = None,
+        run_attempt: ValidationRunner | None = None,
     ) -> ValidationResult:
         """Grade untouched and gold work in independent native deployments.
 
@@ -257,6 +259,7 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
                 timeout=timeout,
                 retries=retries,
                 on_trace=on_trace,
+                run_attempt=run_attempt,
             )
         if gold and (
             not source.is_dir()
@@ -281,6 +284,7 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
                 timeout=timeout,
                 retries=retries,
                 on_trace=on_trace,
+                run_attempt=run_attempt,
             )
         results.update(zip(runs, await asyncio.gather(*runs.values())))
         return ValidationResult(**results)
