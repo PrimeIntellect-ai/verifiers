@@ -40,10 +40,16 @@ _SCHEMA = """
             """
 
 
+def _trace_record(trace: Trace) -> dict:
+    # Validation can retain unknown fields on a wire trace whose base serializer
+    # ignores extras. Keep those fields; typed fields and computed counts win.
+    return {**(trace.model_extra or {}), **trace.to_record()}
+
+
 def _episode_record(episode: Episode) -> dict:
     # Dump nested traces through their concrete types, including user subclass fields.
     row = episode.to_record()
-    row["traces"] = [trace.to_record() for trace in episode.traces]
+    row["traces"] = [_trace_record(trace) for trace in episode.traces]
     return row
 
 
@@ -266,7 +272,7 @@ class TraceStore:
 
     def write(self, trace: Trace) -> None:
         """Save or annotate one trace. Existing multi-agent episode metadata survives."""
-        record = trace.to_record()
+        record = _trace_record(trace)
         episode_id = uuid.uuid5(uuid.NAMESPACE_URL, f"verifiers:trace:{trace.id}").hex
         with self._indexed() as (db, file):
             _save_artifacts(self.root, trace)
@@ -292,11 +298,7 @@ class TraceStore:
                 ):
                     row[key] = sum(t.get(key, 0) for t in row["traces"])
                 # The environment owns arbitrary multi-agent episode verdicts.
-                if (
-                    row["id"]
-                    == uuid.uuid5(uuid.NAMESPACE_URL, f"verifiers:trace:{trace.id}").hex
-                    and len(row["traces"]) == 1
-                ):
+                if row["id"] == episode_id and len(row["traces"]) == 1:
                     row["ok"] = trace.ok
             self._append(db, file, row)
 
@@ -410,7 +412,8 @@ def read_episodes(results_dir: Path, trace_type: type) -> list[WireEpisode]:
         row = json.loads(line)
         record = WireEpisode.model_validate({**row, "traces": []})
         record.traces = [
-            trace_adapter.validate_python(trace) for trace in row["traces"]
+            trace_adapter.validate_python(trace, extra="allow")
+            for trace in row["traces"]
         ]
         episodes.append(record)
     return episodes
