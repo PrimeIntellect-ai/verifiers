@@ -140,6 +140,9 @@ class ReplayResponse:
 
 @dataclass
 class RolloutSession:
+    model_lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False)
+    model_bound: bool = field(default=False, init=False)
+    model_change: dict | None = field(default=None, init=False)
     ctx: ModelContext
     trace: Trace
     network_policy: NetworkPolicyConfig = field(default_factory=NetworkPolicyConfig)

@@ -47,6 +47,58 @@ def unregister(rollout: "Rollout") -> None:
         del _by_trace[rollout.trace.id]
 
 
+async def switch_model(
+    *, trace_id: str, model: str | None = None, client=None, pool=None
+) -> dict:
+    """Queue a model policy for the next request; never interrupt an in-flight call."""
+    from pydantic import TypeAdapter
+
+    from verifiers.v1.configs.client import ClientConfig, TrainClientConfig
+    from verifiers.v1.configs.model_pool import ModelPoolConfig
+
+    rollout = _by_trace.get(trace_id)
+    if rollout is None or rollout.closed or not rollout.ok:
+        return {"accepted": False, "reason": "no running agent", "trace_id": trace_id}
+    if not rollout.harness.SUPPORTS_MODEL_SWITCH:
+        return {
+            "accepted": False,
+            "reason": "harness does not support live model changes",
+            "trace_id": trace_id,
+        }
+    if (model is None) == (pool is None):
+        raise ValueError("supply either model or pool")
+    if client is not None:
+        client = TypeAdapter(ClientConfig).validate_python(client)
+    if pool is not None:
+        pool = ModelPoolConfig.model_validate(pool)
+    session = rollout.session
+    current = session.ctx.client
+    candidates = (
+        [(item.model, item.client) for item in pool.deployments]
+        if pool is not None
+        else [(model, client or current)]
+    )
+    if isinstance(current, TrainClientConfig) or any(
+        isinstance(candidate, TrainClientConfig) for _, candidate in candidates
+    ):
+        compatible = all(
+            isinstance(current, TrainClientConfig)
+            and isinstance(candidate, TrainClientConfig)
+            and requested == session.ctx.model
+            and candidate.renderer == current.renderer
+            and candidate.renderer_model_name == current.renderer_model_name
+            for requested, candidate in candidates
+        )
+        if not compatible:
+            return {
+                "accepted": False,
+                "reason": "cannot change a training session's policy model or renderer",
+                "trace_id": trace_id,
+            }
+    session.model_change = {"model": model, "client": client, "pool": pool}
+    return {"accepted": True, "effective": "next_request", "trace_id": trace_id}
+
+
 async def steer(
     text: str,
     *,

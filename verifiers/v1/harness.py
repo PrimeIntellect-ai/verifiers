@@ -52,6 +52,8 @@ class Harness(ABC, Generic[ConfigT]):
     """Whether the default `resume()` can relaunch this harness from the
     accumulated Messages transcript."""
     SUPPORTS_INBOX: ClassVar[bool] = False
+    SUPPORTS_MODEL_SWITCH: ClassVar[bool] = False
+    """Interception may change model/endpoint between requests in a live session."""
     """Whether the program asks the interception's `GET {endpoint}/inbox` (the model
     bearer authenticates) before each model call and adds the steered user messages it
     returns to its own conversation. A harness with neither this nor native steering

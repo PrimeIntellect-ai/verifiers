@@ -63,6 +63,7 @@ import time
 import weakref
 from collections import deque
 from collections.abc import AsyncIterator, Callable, Iterator
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any, Literal
 
@@ -100,11 +101,40 @@ def gate_dir(config: RequestGateConfig) -> Path:
     return Path(config.dir) if config.dir else default_gate_dir()
 
 
-def gate_key(url: httpx.URL, credential: str, model: str) -> str:
+def gate_key(
+    url: httpx.URL, credential: str, model: str, scope: str | None = None
+) -> str:
     """The gate a request belongs to: one per endpoint origin, credential and model, since
     providers limit per key and model. The credential is only hashed."""
     origin = f"{url.scheme}://{url.host}:{url.port or ''}"
-    return hashlib.sha256(f"{origin}\n{credential}\n{model}".encode()).hexdigest()[:16]
+    identity = f"{origin}\n{credential}\n{model}"
+    if scope is not None:
+        identity += f"\n{scope}"
+    return hashlib.sha256(identity.encode()).hexdigest()[:16]
+
+
+class RequestPermit:
+    """An atomic pool admission transferred to the first upstream request."""
+
+    def __init__(self, gate, config, slot):
+        self.gate, self.config, self.slot = gate, config, slot
+        self.used = False
+
+    def take(self, gate):
+        if not self.used and gate is self.gate:
+            self.used = True
+            return self.slot
+        return None
+
+    def close(self):
+        if not self.used:
+            self.used = True
+            self.gate.release(self.slot, self.config, "other")
+
+
+reserved_permit: ContextVar[RequestPermit | None] = ContextVar(
+    "model_pool_permit", default=None
+)
 
 
 def _slug(model: str) -> str:
@@ -143,7 +173,9 @@ class _Waiter:
     """One blocked admission: woken (from any thread) when it reaches the head of the
     process's queue, and while there by each release in the process."""
 
-    def __init__(self, loop: asyncio.AbstractEventLoop, ticket: int | None = None) -> None:
+    def __init__(
+        self, loop: asyncio.AbstractEventLoop, ticket: int | None = None
+    ) -> None:
         self.loop = loop
         self.event = asyncio.Event()
         self.ticket = ticket
@@ -640,11 +672,16 @@ class GatedAsyncClient(httpx.AsyncClient):
             return await super().send(request, stream=stream, **kwargs)
         config = self.gate_config
         gate = model_gate(
-            self.gate_dir, gate_key(request.url, _credential(request), model), model
+            self.gate_dir,
+            gate_key(request.url, _credential(request), model, config.scope),
+            model,
         )
         rejections = 0
         while True:
-            slot = await gate.acquire(config)
+            permit = reserved_permit.get()
+            slot = permit.take(gate) if permit is not None else None
+            if slot is None:
+                slot = await gate.acquire(config)
             try:
                 response = await super().send(request, stream=stream, **kwargs)
             except BaseException:

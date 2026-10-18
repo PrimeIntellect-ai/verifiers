@@ -19,6 +19,7 @@ class NullHarness(Harness[NullHarnessConfig]):
     SUPPORTS_MCP = True
     SUPPORTS_RESUME = True
     SUPPORTS_INBOX = True
+    SUPPORTS_MODEL_SWITCH = True
     SUPPORTS_TOOL_INTERCEPTION = True
     EXECUTES_CODE = False
     NEEDS_CONTAINER = False

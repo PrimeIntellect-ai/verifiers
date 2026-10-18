@@ -14,6 +14,7 @@ from pydantic_config import BaseConfig
 
 from verifiers.v1.clients import ClientConfig
 from verifiers.v1.configs.harness import HarnessConfig, WireHarnessConfig
+from verifiers.v1.configs.model_pool import ModelPoolConfig
 from verifiers.v1.configs.retries import RetryConfig
 from verifiers.v1.configs.scoring import ScoringConfig
 from verifiers.v1.runtimes import PrimeConfig, RuntimeConfig
@@ -39,6 +40,10 @@ class TimeoutConfig(BaseConfig):
 
 
 class AgentConfig(BaseConfig):
+    model_pool: ModelPoolConfig | None = None
+    """Eligible deployments, chosen atomically at the session's first model request."""
+    session_id: str | None = None
+    """Stable upstream affinity identity across continued rounds; defaults to trace id."""
     harness: SerializeAsAny[HarnessConfig] | None = None
     """The agent's program (None = the taskset's default harness)."""
     runtime: RuntimeConfig = PrimeConfig()

@@ -460,7 +460,15 @@ class InterceptionServer(Interception):
 
         async def handler(request: web.Request) -> web.StreamResponse:
             try:
-                response = await self.handle_request(request, dialect)
+                from verifiers.v1.model_routing import request_binding
+
+                session = self.sessions.get(dialect.secret(request.headers))
+                if session is None:
+                    response = await self.handle_request(request, dialect)
+                else:
+                    session.adopt(asyncio.current_task())
+                    async with request_binding(session, dialect, self._client):
+                        response = await self.handle_request(request, dialect)
             except BaseException:
                 _finish_idempotent_attempt(request, None)
                 raise
@@ -673,6 +681,7 @@ class InterceptionServer(Interception):
             logger.warning("interception: unauthorized request")
             return web.json_response(dialect.error_body("unauthorized"), status=401)
         session.adopt(asyncio.current_task())
+        ctx, client = session.ctx, session.client
         started = time.monotonic()
         try:
             raw = await request.read()
@@ -690,15 +699,15 @@ class InterceptionServer(Interception):
             body = from_json(raw)
         except ValueError:
             body = json.loads(raw)
-        body = dialect.apply_overrides(body, session.ctx.model, session.ctx.sampling)
+        body = dialect.apply_overrides(body, ctx.model, ctx.sampling)
         streaming = dialect.streaming(body)
-        retry = session.ctx.client.retry
+        retry = ctx.client.retry
         # The gate is the one retry layer for 429/529 only if it absorbs some.
-        gate = session.ctx.client.request_gate
+        gate = ctx.client.request_gate
         gated = gate is not None and gate.max_rejections > 0
         # A streamed request is served whole once its turn commits: the eval client's
         # provider stream is read to the end, and the train client generates the response.
-        relay = streaming and not isinstance(session.ctx.client, TrainClientConfig)
+        relay = streaming and not isinstance(ctx.client, TrainClientConfig)
         req_hash = await _request_digest(raw)
         # Keep `read()` for aiohttp's size guard, then release its cache and our local
         # alias after parsing so the wire body does not survive model inference.
@@ -854,7 +863,7 @@ class InterceptionServer(Interception):
         # sends (and resends) it, and its settings for the call records. The parsed body
         # and request go now: held through inference they were the conversation twice
         # over, and the turn's prompt shares the trace's own messages.
-        upstream = session.client.hold(body)
+        upstream = client.hold(body)
         settings = {
             key: value
             for key, value in body.items()
@@ -889,20 +898,20 @@ class InterceptionServer(Interception):
             """One provider exchange. What actually goes upstream: the native body with
             the rollout's model + sampling imposed — recorded raw on the trace, per call."""
             if relay:
-                reply = await session.client.relay(
+                reply = await client.relay(
                     dialect,
                     upstream,
                     headers=upstream_headers,
-                    session_id=session.trace.id,
+                    session_id=ctx.session_id or session.trace.id,
                 )
                 response, events = await _collect_stream(dialect, reply)
             else:
-                response = await session.client.get_response(
+                response = await client.get_response(
                     dialect,
                     upstream,
-                    session.ctx.sampling,
+                    ctx.sampling,
                     headers=upstream_headers,
-                    session_id=session.trace.id,
+                    session_id=ctx.session_id or session.trace.id,
                     turn=turn,
                 )
                 events = None

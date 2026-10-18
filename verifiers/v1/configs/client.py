@@ -68,6 +68,8 @@ class RequestGateConfig(BaseConfig):
     """Most requests in flight at once, per model: the cap a gate starts with. The first
     process to use a gate sets its cap; processes joining a live gate share that cap, and
     an operator can move it (`clients.gate.resize`)."""
+    scope: str | None = None
+    """Optional deployment/quota identity within an endpoint origin and credential."""
     min_concurrent: int = Field(1, ge=1)
     """Lowest limit the adaptive gate shrinks to."""
     adaptive: bool = True
