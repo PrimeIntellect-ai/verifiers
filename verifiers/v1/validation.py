@@ -17,6 +17,7 @@ from verifiers.v1.harness import Harness
 from verifiers.v1.runtimes import PrimeConfig, ProgramResult, Runtime, RuntimeConfig
 from verifiers.v1.task import Task
 from verifiers.v1.trace import Trace
+from verifiers.v1.utils.staging import stage_file
 
 if TYPE_CHECKING:
     from verifiers.v1.agent import Agent
@@ -84,9 +85,10 @@ class ValidationHarness(Harness[ValidationHarnessConfig]):
             for source in sorted(self.config.source.rglob("*")):
                 if source.is_file():
                     relative = source.relative_to(self.config.source).as_posix()
-                    await runtime.write(
+                    await stage_file(
+                        runtime,
                         str(PurePosixPath(self.config.target_dir, relative)),
-                        source.read_bytes(),
+                        source,
                     )
         hooks = {"trace": trace, "runtime": runtime, "kind": self.kind}
         await invoke(self.task.validation_before, hooks)
@@ -123,6 +125,13 @@ async def validate_attempt(
     """Execute one reference or untouched attempt in its own native deployment."""
     from verifiers.v1.agent import Agent
 
+    class ValidationAgent(Agent):
+        async def _run_once(self, task, *args, **kwargs):
+            # Routing may replace the task. Hooks must see the same controller
+            # whose setup/finalize/scoring are run by the native rollout.
+            self.harness.task = task
+            return await super()._run_once(task, *args, **kwargs)
+
     task = copy.deepcopy(task)
     config = runtime.config if isinstance(runtime, Runtime) else runtime
     if isinstance(config, PrimeConfig) and config.checkpoint:
@@ -139,7 +148,7 @@ async def validate_attempt(
     harness = ValidationHarness(harness_config)
     harness.task = task
     harness.kind = "gold" if source is not None else "baseline"
-    agent = Agent(agent_config)
+    agent = ValidationAgent(agent_config)
     agent.harness = harness
     agent.trainable = False
 
@@ -166,8 +175,8 @@ async def validate_attempt(
             error=f"{type(error).__name__}: {error}",
             infrastructure=infrastructure,
         )
-    error = trace.last_error
     incomplete = not trace.ok or "timeout" in (trace.stop_condition or "")
+    error = trace.last_error if not trace.ok else None
     infrastructure = incomplete and (error is None or error.type != "TaskError")
     reward = trace.reward if not incomplete and trace.rewards else None
     valid = (
@@ -190,6 +199,14 @@ async def validate_attempt(
             and trace.rewards[name].score <= bound
             for name, bound in (maximum_rewards or {}).items()
         )
+    oracle = trace.info.get("oracle") or {}
+    command_error = (
+        f"Reference command exited with code {oracle['exit_code']}"
+        if not incomplete and oracle.get("exit_code", 0) != 0
+        else None
+    )
+    if command_error is not None:
+        valid = False
     return ValidationAttempt(
         reward=reward,
         valid=valid,
@@ -199,7 +216,7 @@ async def validate_attempt(
             if error is not None
             else trace.stop_condition
             if incomplete
-            else None
+            else command_error
         ),
         infrastructure=infrastructure,
     )
