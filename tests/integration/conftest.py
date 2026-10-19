@@ -175,7 +175,7 @@ def _eval_config(
 
 
 @pytest.fixture
-def run(request):
+def run():
     """Run a taskset's episodes in-process through the `Env` API: the calls `vf-eval`
     makes (`serving`, `slots`, `run_slot`, retries included), without its run
     directory, platform push, or dashboard. The Examples job covers that CLI layer."""
