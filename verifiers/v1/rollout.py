@@ -580,8 +580,9 @@ class Rollout:
             else segment_start + max(0.0, self._agent_time_remaining)
         )
         # Prefer an intercepted model/tool error to the harness exit it caused.
+        deadline = asyncio.timeout_at(self.deadline_at)
         try:
-            async with asyncio.timeout_at(self.deadline_at):
+            async with deadline:
                 assert self._harness_session is not None
                 if messages is not None and self._session.request_interceptors:
                     prepared, rewrites = await self._session.prepare_users(
@@ -605,6 +606,12 @@ class Rollout:
             return False
         except Exception as e:  # noqa: BLE001 - harness boundary records every rollout failure
             if self._session.stopped:
+                return False
+            # A runtime can report the cancellation the deadline caused as its own
+            # error (Prime's SDK raises one for a cancelled request); the expired
+            # deadline is still the outcome.
+            if deadline.expired():
+                self.timeout("agent")
                 return False
             real = self._session.error
             if real is not None and isinstance(e, RolloutError):
