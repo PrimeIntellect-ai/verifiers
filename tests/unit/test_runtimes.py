@@ -504,3 +504,28 @@ def test_custom_runtime_rejects_a_bad_import_path(import_path, error, match) -> 
         TypeAdapter(RuntimeConfig).validate_python(
             {"type": "custom", "import_path": import_path}
         )
+
+
+async def test_concurrent_background_starts_keep_every_handle() -> None:
+    """A start that lands while another prunes finished handles must not be dropped:
+    teardown needs every live handle."""
+
+    class LiveProcess:
+        async def poll(self) -> None:
+            await asyncio.sleep(0)
+
+    class StubBackend:
+        def __init__(self) -> None:
+            self.env: dict[str, str] = {}
+            self._background: list = []
+
+        async def exec(self, runtime, argv, env):
+            await asyncio.sleep(0)
+            return LiveProcess()
+
+    backend = StubBackend()
+    view = Runtime(backend)  # ty: ignore[invalid-argument-type]
+    await asyncio.gather(
+        *(view.run_background(["sleep", "600"], {}, f"{i}.log") for i in range(8))
+    )
+    assert len(backend._background) == 8
