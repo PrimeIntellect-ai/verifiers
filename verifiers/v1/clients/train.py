@@ -28,6 +28,7 @@ from verifiers.v1.types import (
     SamplingMask,
     Tool,
     ToolCall,
+    TopLogprobs,
     TurnTokens,
     Usage,
     WeightVersionSpan,
@@ -185,6 +186,13 @@ def response_from_generate(
             weight_versions=[WeightVersionSpan(**span) for span in spans]
             if (spans := result.get("weight_versions"))
             else None,
+            top_logprobs=(
+                TopLogprobs.from_top_logprobs(
+                    result["completion_top_ids"], result["completion_top_logprobs"]
+                )
+                if result.get("completion_top_ids") is not None
+                else None
+            ),
         ),
     )
 
