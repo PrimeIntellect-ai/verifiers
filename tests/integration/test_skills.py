@@ -2,7 +2,7 @@
 installs (skill-codeword), across the harness x runtime grid."""
 
 import pytest
-from grid import grid
+from grid import assert_one_branch, grid
 
 
 @pytest.mark.parametrize(
@@ -17,6 +17,6 @@ async def test_skills(run, harness, harness_runtime):
         max_tokens=8192,
     )
     (trace,) = episode.traces
-    assert trace.num_branches == 1
+    assert_one_branch(trace, harness, forks=("openclaw",))
     assert trace.ok, [error.message for error in trace.errors]
     assert trace.reward == 1.0, trace.last_reply
