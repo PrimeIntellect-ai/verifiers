@@ -64,7 +64,7 @@ class RolloutTimeouts:
 
 
 _HOME_PROBE = (
-    "home=$(awk -F: -v u=\"$1\" '$1 == u { print $6 }' /etc/passwd); "
+    "home=$(awk -F: -v u=\"$1\" '$(u ~ /^[0-9]+$/ ? 3 : 1) == u { print $6; exit }' /etc/passwd); "
     'echo "$home"; test -n "$home" && test -d "$home"'
 )
 
@@ -83,9 +83,17 @@ async def resolve_agent_runtime(runtime: Runtime, user: str | None) -> Runtime:
     if lookup.exit_code != 0:
         raise TaskError(f"agent_user {user!r} has no home directory ({home})")
     view = runtime.with_user(user, home=home)
-    probe = await view.run(["sh", "-c", 'id -un; test -w "$HOME" && echo writable'], {})
+    numeric = user.isdecimal()
+    probe = await view.run(
+        [
+            "sh",
+            "-c",
+            f'id {"-u" if numeric else "-un"}; test -w "$HOME" && echo writable',
+        ],
+        {},
+    )
     effective, *rest = probe.stdout.split() or [""]
-    if effective != user:
+    if effective != (str(int(user)) if numeric else user):
         raise SandboxError(
             f"{type(runtime.backend).__name__} ran as {effective!r} instead of agent_user "
             f"{user!r}; refusing to run the agent"
