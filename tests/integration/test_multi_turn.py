@@ -4,7 +4,7 @@ every other `dialect` a harness config can select. A turn the harness re-sends
 differently, beyond what its `replay_view` declares, forks the trace."""
 
 import pytest
-from grid import dialect_grid, grid, mark
+from grid import assert_one_branch, dialect_grid, grid, mark
 
 MULTI_TURN = [
     *grid(needs=("shell",)),
@@ -28,7 +28,7 @@ async def test_multi_turn(run, harness, harness_runtime):
         max_tokens=8192,
     )
     (trace,) = episode.traces
-    assert trace.num_branches == 1
+    assert_one_branch(trace, harness)
     assert trace.ok, [error.message for error in trace.errors]
     assert trace.num_turns >= 1  # ran a command, then finished
     assert trace.reward == 1.0

@@ -2,7 +2,7 @@
 exchange (echo-acp-resume), across the harness x runtime grid."""
 
 import pytest
-from grid import grid
+from grid import assert_one_branch, grid
 
 
 @pytest.mark.parametrize(
@@ -19,7 +19,7 @@ async def test_resume_tool(run, harness, harness_runtime):
         rollout_timeout=600,
     )
     (trace,) = episode.traces
-    assert trace.num_branches == 1
+    assert_one_branch(trace, harness)
     assert trace.ok, [error.message for error in trace.errors]
     assert trace.stop_condition == "user_closed"
     assert trace.rewards["resumed"].score == 1.0

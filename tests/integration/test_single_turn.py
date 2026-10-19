@@ -2,7 +2,7 @@
 runtime grid."""
 
 import pytest
-from grid import grid, skip_harness
+from grid import assert_one_branch, grid, skip_harness
 
 # mini-swe-agent's loop requires a bash tool call in every response and ends only on
 # `echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT`, so it cannot answer a chat-only task.
@@ -23,7 +23,7 @@ async def test_single_turn(run, harness, harness_runtime):
         max_turns=2,
     )
     (trace,) = episode.traces
-    assert trace.num_branches == 1
+    assert_one_branch(trace, harness)
     assert trace.ok, [error.message for error in trace.errors]
     assert trace.num_turns == 1
     assert trace.stop_condition == "agent_completed"

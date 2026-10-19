@@ -129,6 +129,10 @@ class OpenClawHarness(ACPHarness[OpenClawHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
     SUPPORTS_SKILLS = True
+    # OpenClaw moves its runtime-context message to the tail of every request and
+    # drops the earlier one, unless the provider's replay policy is append-only.
+    # https://github.com/openclaw/openclaw/blob/v2026.9.5/src/agents/internal-runtime-context.ts#L402-L408
+    REWRITES_HISTORY = True
 
     async def setup(self, runtime: Runtime) -> None:
         directory = OPENCLAW_DIR.format(version=self.config.version)

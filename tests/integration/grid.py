@@ -72,6 +72,13 @@ CI_MODEL_GAPS = {
 }
 
 
+def assert_one_branch(trace: vf.Trace, harness: vf.HarnessConfig) -> None:
+    """A rollout records one branch, unless its harness rewrites its history by design
+    (`Harness.REWRITES_HISTORY`)."""
+    if not harness_class(harness.id).REWRITES_HISTORY:
+        assert trace.num_branches == 1, f"{trace.num_branches} branches"
+
+
 def agent_seats(taskset: str, env_id: str = "") -> list[str]:
     """The agent seats the env declares for `taskset`: `agent` for a plain taskset, its
     own roles for a recipe env."""

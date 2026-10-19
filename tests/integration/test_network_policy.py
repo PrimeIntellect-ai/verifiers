@@ -4,7 +4,7 @@ agent runs an egress probe under each policy the task data declares
 on prime."""
 
 import pytest
-from grid import grid
+from grid import assert_one_branch, grid
 
 from verifiers.v1.utils.loaders import harness_class
 
@@ -54,12 +54,7 @@ async def test_network_policy(run, harness, harness_runtime, notice):
     assert set(by_name) == set(NOTICES)
     for name, episode in by_name.items():
         [trace] = episode.traces
-        # mini-swe-agent only acts through tool calls: it drops a tool-less reply
-        # (the probe output as a final answer) from its history, so the trace forks
-        # by design. Recheck on version bumps:
-        # https://github.com/SWE-agent/mini-swe-agent/blob/v2.4.6/src/minisweagent/agents/default.py#L114
-        if harness.id != "mini-swe-agent":
-            assert trace.num_branches == 1
+        assert_one_branch(trace, harness)
         assert trace.ok, [error.message for error in trace.errors]
         prompt = prompt_text(trace)
         if notice and NOTICES[name]:
