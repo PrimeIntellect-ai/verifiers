@@ -2,7 +2,7 @@
 installs (skill-codeword), across the harness x runtime grid."""
 
 import pytest
-from grid import grid
+from grid import assert_one_branch, grid
 
 
 @pytest.mark.parametrize(
@@ -17,10 +17,6 @@ async def test_skills(run, harness, harness_runtime):
         max_tokens=8192,
     )
     (trace,) = episode.traces
-    # OpenClaw strips the runtime context it injects before each turn from the
-    # replayed history, so the trace forks by design. Recheck on version bumps:
-    # https://github.com/openclaw/openclaw/blob/v2026.9.5/src/agents/embedded-agent-runner/run/attempt-llm-boundary.ts#L145
-    if harness.id != "openclaw":
-        assert trace.num_branches == 1
+    assert_one_branch(trace, harness, forks=("openclaw",))
     assert trace.ok, [error.message for error in trace.errors]
     assert trace.reward == 1.0, trace.last_reply

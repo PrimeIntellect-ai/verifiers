@@ -36,9 +36,9 @@ view in `verifiers/v1/harnesses/utils/replay.py`. A view may only normalize
 cosmetic differences. If the program now changes what the model sees, such as
 dropping a turn, do not hide it with a view. That is a real branch.
 
-The integration tests also exempt some harnesses from the branch check, with a
-link to the upstream reason (for example mini-swe-agent in
-`tests/integration/test_agent_user.py`). Recheck those links the same way.
+Some integration tests let a harness fork by design. `FORKS` in
+`tests/integration/grid.py` links the upstream reason for each one. Recheck those
+links the same way.
 
 Closed-source programs (claude-code) have no source link. Verify them with the
 tests in step 3.
