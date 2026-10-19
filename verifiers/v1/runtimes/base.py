@@ -164,8 +164,8 @@ class RuntimeBackend(ABC):
     server here is reachable from another runtime."""
 
     scripts_dir: ClassVar[str] = "/tmp/vf-scripts"
-    """Digest-keyed PEP 723 scripts inside the runtime. Sandboxes own their `/tmp`;
-    the host subprocess runtime overrides this with its per-user cache."""
+    """Digest-keyed PEP 723 scripts. The default follows the runtime's TMPDIR;
+    explicit backend paths, including the subprocess per-user cache, stay fixed."""
 
     info: BaseRuntimeInfo
 

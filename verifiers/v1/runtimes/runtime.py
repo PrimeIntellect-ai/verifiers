@@ -164,12 +164,19 @@ class Runtime:
         """
         data = script.encode() if isinstance(script, str) else script
         digest = hashlib.sha256(data).hexdigest()
+        directory = self.backend.scripts_dir
+        if directory == RuntimeBackend.scripts_dir:
+            temporary = await self.run(
+                ["sh", "-c", 'printf %s "${TMPDIR:-/tmp}"'], env or {}
+            )
+            if temporary.exit_code:
+                raise SandboxError(
+                    f"Cannot resolve runtime temporary directory: {temporary.stderr}",
+                    kind="exec",
+                )
+            directory = str(PurePosixPath(temporary.stdout) / "vf-scripts")
         # Each user needs its own writable script dir and uv environment.
-        directory = (
-            self.backend.scripts_dir
-            if self.user is None
-            else f"{self.backend.scripts_dir}-{self.user}"
-        )
+        directory = directory if self.user is None else f"{directory}-{self.user}"
         path = f"{directory}/{digest}.py"
         if path in self.backend._uv_interpreters:
             # A borrowed box's earlier runs may have deleted the script or its

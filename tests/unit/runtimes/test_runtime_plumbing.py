@@ -4,6 +4,7 @@ polled forever, Prime calls repeated through gateway errors, and the longer crea
 wait of a box restored from a checkpoint. No sandbox or model is used."""
 
 import json
+import sys
 from types import SimpleNamespace
 
 import prime_sandboxes
@@ -356,3 +357,42 @@ async def test_a_prepared_script_deleted_on_the_box_is_prepared_again(
     finally:
         await backend.teardown()
     assert (result.exit_code, result.stdout) == (0, "ran\n")
+
+
+@pytest.mark.parametrize("source", ["image", "binding", "call", "backend"])
+async def test_uv_scripts_respect_runtime_temporary_directory(
+    tmp_path, monkeypatch, source
+):
+    from verifiers.v1.runtimes.base import RuntimeBackend
+    from verifiers.v1.runtimes.subprocess import SubprocessBackend, SubprocessConfig
+
+    temporary = tmp_path / "agent's temporary directory"
+    temporary.mkdir()
+    monkeypatch.setattr(SubprocessBackend, "_interpreters", {})
+    explicit = tmp_path / "explicit-script-cache"
+    monkeypatch.setattr(
+        SubprocessBackend,
+        "scripts_dir",
+        str(explicit) if source == "backend" else RuntimeBackend.scripts_dir,
+    )
+    monkeypatch.setenv("TMPDIR", str(temporary) if source == "image" else "/unused")
+    binding = {"TMPDIR": str(temporary)} if source in ("binding", "backend") else {}
+    call = {"UV_PYTHON": sys.executable, "UV_CACHE_DIR": str(tmp_path / "uv-cache")}
+    if source == "call":
+        binding["TMPDIR"] = "/unused-binding"
+        call["TMPDIR"] = str(temporary)
+    backend = SubprocessBackend(SubprocessConfig())
+    runtime = backend.bind(env=binding)
+    await backend.start()
+    try:
+        argv = await runtime.prepare_uv_script(
+            '# /// script\n# dependencies = []\n# ///\nprint("ready")\n',
+            call,
+            activate=False,
+        )
+        expected = explicit if source == "backend" else temporary / "vf-scripts"
+        assert argv[-1].startswith(str(expected) + "/")
+        result = await runtime.run(argv, {})
+        assert (result.exit_code, result.stdout) == (0, "ready\n")
+    finally:
+        await backend.teardown()
