@@ -115,6 +115,52 @@ class _PrivateNetworkDeployment(_DeploymentStrategy):
                 logger.warning("%s teardown failed before grading", what, exc_info=True)
 
 
+class _NativeComposeDeployment(_PrivateNetworkDeployment):
+    _processes = None
+
+    async def start(self, d):
+        from verifiers.v1.runtimes.native_compose import NativeProcesses, prepare_native
+
+        if d.borrowed_runtime is not None:
+            raise ValueError("a composed deployment cannot borrow a single target")
+        services = await prepare_native(
+            d.backend.config.model_copy(
+                update={"workdir": d.backend._workdir_override}
+            ),
+            d.spec,
+            d.env,
+        )
+        main = services["main"]
+        d.backend.config = main.config
+        for field, value in main.config.model_dump().items():
+            setattr(d.backend.info, field, value)
+        d.env = main.env
+        d.spec = ServicesSpec(
+            {
+                name: service.config
+                for name, service in services.items()
+                if name != "main"
+            }
+        )
+        await super().start(d)
+        self._processes = NativeProcesses(services)
+        await self._processes.start(d)
+
+    async def stop_execution(self, d):
+        await self._processes.stop(d, ["main"])
+        await super().stop_execution(d)
+
+    async def prepare_verifier(self, deployment):
+        await self.close(deployment)
+        await super().prepare_verifier(deployment)
+
+    async def close(self, deployment):
+        if self._processes is not None:
+            await self._processes.stop(
+                deployment, reversed(list(self._processes.processes))
+            )
+
+
 def _deployment_strategy(config, backend, spec, tool_vms=None):
     if isinstance(spec, ServicesSpec):
         if not isinstance(backend, PrimeBackend):
@@ -129,6 +175,8 @@ def _deployment_strategy(config, backend, spec, tool_vms=None):
             raise ValueError("Native services require PrimeConfig runtimes")
         return _PrivateNetworkDeployment()
     if spec is not None:
+        if isinstance(backend, PrimeBackend):
+            return _NativeComposeDeployment()
         if not backend.SUPPORTS_COMPOSE:
             raise ValueError(
                 f"the task deploys Compose services, but the {backend.type} runtime "

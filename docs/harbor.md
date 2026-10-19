@@ -39,7 +39,7 @@ Harbor is a task-format adapter: its tasks work directly under `SingleAgentEnv`,
 
 ## Task images
 
-For standard single-container tasks, verifiers requires a pullable container image rather than building Dockerfiles on the fly. To prepare images for your tasks, build each Dockerfile, push it to a registry, and set the resulting image reference on the task data. Compose tasks run on local Docker, where they can build service images. On Prime, task subclasses can declare native VM services with `ServicesSpec` and start their processes during setup (see [Deployment and services](runtimes.md#deployment-and-services)); Harbor Compose files are not translated automatically.
+For standard single-container tasks, verifiers requires a pullable container image rather than building Dockerfiles on the fly. To prepare images for your tasks, build each Dockerfile, push it to a registry, and set the resulting image reference on the task data. Compose tasks can build service images on the evaluator's Docker host. Local Docker runs the containers; Prime imports their filesystems and starts native service processes for the supported Compose subset (see [Deployment and services](runtimes.md#deployment-and-services)). Task subclasses can also declare prepared native VM services with `ServicesSpec` and start their processes during setup.
 
 When a Compose task's `main` service has no `image` or `build`, verifiers builds `environment/Dockerfile`. Setting `ignore_dockerfile = true` uses the runtime image instead; an explicit task image also takes precedence over the implicit build.
 
