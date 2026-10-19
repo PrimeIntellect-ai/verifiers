@@ -3,14 +3,17 @@
 from __future__ import annotations
 
 import io
+import json
 import logging
 import shlex
+import shutil
 import tarfile
+import tempfile
 import uuid
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 if TYPE_CHECKING:
     from verifiers.v1.runtimes import Runtime
@@ -29,9 +32,30 @@ class Artifact(BaseModel):
     """One path to restore at the same location in another runtime."""
 
     source: str
+    destination: str | None = None
+    """Saved path relative to the trace's artifact directory; grading uses `source`."""
     exclude: list[str] = Field(default_factory=list)
     """`tar --exclude` patterns, applied when `source` is a directory."""
     required: bool = True
+
+    @field_validator("destination")
+    @classmethod
+    def validate_destination(cls, value: str | None) -> str | None:
+        if not value:
+            return None
+        path = PurePosixPath(value)
+        if (
+            path.is_absolute()
+            or not path.parts
+            or ".." in path.parts
+            or "\\" in value
+            or path.parts[0] == "manifest.json"
+        ):
+            raise ValueError(
+                "artifact destination must be a relative path without '..' or "
+                "backslashes, outside the reserved manifest.json path"
+            )
+        return str(path)
 
 
 async def collect(
@@ -136,6 +160,100 @@ async def collect(
     return collected
 
 
+def save_artifacts(
+    directory: Path,
+    collected: dict[str, bytes | None],
+    artifacts: list[Artifact],
+    *,
+    workdir: str = "/",
+) -> None:
+    """Save collected files at their declared destinations, with a manifest.
+
+    Unpack each validated archive in isolation before moving its files into the
+    saved tree. Failed or conflicting entries are recorded without losing the
+    completed trace. Source-mirrored directories may merge: collection splits
+    nested declarations out of the implicit convention sweep.
+    """
+    declared = {str(PurePosixPath(workdir) / a.source): a for a in artifacts}
+    manifest: list[dict] = []
+    claims: list[tuple[PurePosixPath, bool]] = []
+    directory.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=directory.parent) as temporary:
+        saved = Path(temporary) / "artifacts"
+        saved.mkdir()
+        (saved / "manifest.json").touch()
+        for source, archive in collected.items():
+            artifact = declared.get(source, Artifact(source=source))
+            destination = artifact.destination or artifact.source.lstrip("/")
+            entry = {
+                "source": source,
+                "service": getattr(artifact, "service", "main"),
+                "destination": destination,
+                "status": "empty",
+            }
+            manifest.append(entry)
+            try:
+                _validate_restore(source, archive)
+                Artifact.validate_destination(artifact.destination)
+                target = PurePosixPath(destination)
+                entry["destination"] = str(target)
+                if archive is None:
+                    continue
+                with tarfile.open(fileobj=io.BytesIO(archive), mode="r:") as tar:
+                    members = tar.getmembers()
+                    if not members:
+                        continue
+                    root = PurePosixPath(source).relative_to("/")
+                    paths = [
+                        saved / target / PurePosixPath(member.name).relative_to(root)
+                        for member in members
+                    ]
+                    # Explicit renames claim a whole subtree. Source-mirrored
+                    # entries may share directories, but never overwrite files.
+                    if any(
+                        (artifact.destination or renamed)
+                        and (
+                            target.is_relative_to(prior) or prior.is_relative_to(target)
+                        )
+                        for prior, renamed in claims
+                    ) or any(
+                        path.is_symlink()
+                        or (path.exists() and not (member.isdir() and path.is_dir()))
+                        or any(
+                            parent.is_symlink()
+                            or (parent.exists() and not parent.is_dir())
+                            for parent in path.parents
+                            if parent.is_relative_to(saved)
+                        )
+                        for member, path in zip(members, paths, strict=True)
+                    ):
+                        entry["status"] = "skipped"
+                        entry["error"] = (
+                            "destination overlaps a previously saved artifact"
+                        )
+                        logger.warning("artifact %r: %s", source, entry["error"])
+                        continue
+                    with tempfile.TemporaryDirectory(dir=temporary) as unpacked:
+                        tar.extractall(unpacked, filter="data")
+                        for member, path in zip(members, paths, strict=True):
+                            if member.isdir():
+                                path.mkdir(parents=True, exist_ok=True)
+                            else:
+                                path.parent.mkdir(parents=True, exist_ok=True)
+                                (Path(unpacked) / member.name).replace(path)
+                    claims.append((target, artifact.destination is not None))
+                    entry["status"] = "ok"
+            except (OSError, ValueError, RuntimeError, tarfile.TarError) as exc:
+                entry.update(status="failed", error=str(exc))
+                logger.warning("failed to save artifact %r: %s", source, exc)
+        (saved / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+        if directory.is_symlink():
+            raise ValueError(f"artifact directory must not be a symlink: {directory}")
+        if directory.exists():
+            shutil.rmtree(directory)
+        saved.replace(directory)
+
+
 async def restore(runtime: Runtime, collected: dict[str, bytes | None]) -> None:
     """Extract `collected` in `runtime` at the original absolute paths.
 
@@ -163,7 +281,9 @@ async def restore(runtime: Runtime, collected: dict[str, bytes | None]) -> None:
     # submission replaces the entire working directory (or one of its parents).
     workdir = shlex.quote(getattr(runtime.config, "workdir", None) or "/")
     await _run(
-        runtime, f"rm -rf -- {roots} && mkdir -p -- {workdir}", "clear artifact roots"
+        runtime,
+        f"rm -rf -- {roots} && mkdir -p -- {workdir}",
+        "clear artifact roots",
     )
     for root, archive in collected.items():
         if archive is None:
@@ -190,13 +310,51 @@ async def _tar_out(runtime: Runtime, artifact: Artifact, budget: int) -> bytes:
         )
         # The runtime enforces the remaining collection budget while transferring the
         # bytes, so replacing or growing the archive cannot race a separate size probe.
-        return await runtime.read(path, max_bytes=budget)
+        archive, dropped = _drop_special_files(
+            await runtime.read(path, max_bytes=budget)
+        )
+        if dropped:
+            logger.warning(
+                "artifact %r: dropped %d FIFO or device node(s), e.g. %s",
+                artifact.source,
+                len(dropped),
+                dropped[:3],
+            )
+        return archive
     finally:
         # Best-effort: the box is about to be destroyed and the name is unique per call.
         try:
             await runtime.run(["rm", "-f", path], {})
         except Exception:
             logger.debug("failed to remove %s", path, exc_info=True)
+
+
+def _drop_special_files(archive: bytes) -> tuple[bytes, list[str]]:
+    """Remove FIFOs and device nodes, plus hard links to them, from a collected archive.
+
+    They carry no content, and `restore` refuses them, so one an agent leaves in its
+    workspace (e.g. a named pipe it made to test streaming input) would otherwise fail
+    the whole restore. Returns the archive and the dropped member names."""
+    with tarfile.open(fileobj=io.BytesIO(archive), mode="r:") as source:
+        members = source.getmembers()
+        special = {m.name for m in members if m.isfifo() or m.ischr() or m.isblk()}
+        if not special:
+            return archive, []
+        if any(m.issparse() for m in members):
+            raise RuntimeError("cannot filter special files from sparse artifacts")
+        dropped = [
+            m.name
+            for m in members
+            if m.name in special or (m.islnk() and m.linkname in special)
+        ]
+        out = io.BytesIO()
+        with tarfile.open(fileobj=out, mode="w:", format=source.format) as target:
+            for member in members:
+                if member.name in dropped:
+                    continue
+                content = source.extractfile(member) if member.isfile() else None
+                target.addfile(member, content)
+    return out.getvalue(), dropped
 
 
 def _validate_restore(root: str, archive: bytes | None) -> None:

@@ -47,8 +47,9 @@ class BashHarnessConfig(HarnessConfig):
     eval environment; the key is handed to the program over argv (like the interception secret) so
     the agent's `bash` subprocesses don't inherit it."""
 
-    compaction: CompactionConfig | None = None
-    """Context compaction policy. Set an empty config to use automatic thresholds."""
+    compaction: CompactionConfig | None = CompactionConfig()
+    """Context compaction. Auto-compaction by default; set `summarize_at_tokens`
+    for a fixed threshold, and `null` (`"None"` in TOML) to disable it."""
 
 
 class BashHarness(Harness[BashHarnessConfig]):
@@ -78,9 +79,20 @@ class BashHarness(Harness[BashHarnessConfig]):
             fragments.append(EDIT_SYSTEM_PROMPT)
         if self.config.search:
             fragments.append(SEARCH_PROMPT)
-        system_prompt = "\n\n".join(
-            p for p in (" ".join(fragments), system_prompt) if p
-        )
+        harness_prompt = " ".join(fragments)
+        system_prompt = "\n\n".join(p for p in (harness_prompt, system_prompt) if p)
+        # Default resume replays the transcript. If there was no task system
+        # prompt, that transcript already contains this harness prompt.
+        if (
+            data.system_prompt is None
+            and prompt is not None
+            and not isinstance(prompt, str)
+            and any(
+                message.role == "system" and message.content == harness_prompt
+                for message in prompt
+            )
+        ):
+            system_prompt = None
         env = {**self.config.resolved_env}
         args = ["--bash"]
         if tool_interception_url:

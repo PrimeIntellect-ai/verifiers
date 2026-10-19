@@ -61,11 +61,14 @@ from verifiers.v1.errors import (
     ToolsetError,
     TunnelError,
 )
+from verifiers.v1.grading import grade_submission
 from verifiers.v1.graph import MessageNode
 from verifiers.v1.harness import Harness, HarnessSession
 from verifiers.v1.judge import Judge, JudgeResponse, JudgeView
 from verifiers.v1.judges import (
     Criterion,
+    DecisionJudge,
+    DecisionJudgeConfig,
     ReferenceJudge,
     ReferenceJudgeConfig,
     RubricJudge,
@@ -131,11 +134,11 @@ from verifiers.v1.types import (
     SamplingConfig,
     SamplingMask,
     SystemMessage,
-    TopLogprobs,
     TextContentPart,
     Tool,
     ToolCall,
     ToolMessage,
+    TopLogprobs,
     TurnTokens,
     Usage,
     UserMessage,
@@ -360,6 +363,8 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "Judges",
     "JudgeResponse",
     "JudgeView",
+    "DecisionJudge",
+    "DecisionJudgeConfig",
     "ReferenceJudge",
     "ReferenceJudgeConfig",
     "RubricJudge",
@@ -369,6 +374,7 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "PATCH_CAP_BYTES",
     "capture_patch",
     "resolve_head",
+    "grade_submission",
     # grading artifacts
     "ARTIFACTS_DIR",
     "Artifact",
@@ -394,3 +400,19 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
 # silent until an app opts in: a NullHandler on the package root absorbs records
 # so nothing is emitted (and no "no handler" warning) unless handlers are added.
 _logging.getLogger(__name__).addHandler(_logging.NullHandler())
+
+from verifiers.v1.runtimes.compose import ComposeSpec
+from verifiers.v1.runtimes.deployment import (
+    Deployment,
+    DeploymentConfig,
+)
+
+__all__ += [
+    "ComposeSpec",
+    "Deployment",
+    "DeploymentConfig",
+]
+
+from verifiers.v1.configs.scoring import ScoringConfig
+
+__all__ += ["ScoringConfig"]

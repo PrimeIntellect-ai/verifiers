@@ -4,6 +4,8 @@ from typing import TypeVar, get_args, get_origin
 
 from pydantic import BaseModel, ValidationError
 
+from verifiers.v1.types import SamplingConfig
+
 T = TypeVar("T")
 
 
@@ -52,15 +54,21 @@ def merge_defaults(defaults: BaseModel, raw: dict | None) -> dict:
     `{}` becomes `{type = "grpo", kl = 0.1}`, `{kl = 0.5}` becomes
     `{type = "grpo", kl = 0.5}`, and `{type = "max_rl"}` stays `{type = "max_rl"}`.
     """
-    # `deep_merge` detects an `id`/`type` switch only on nested blocks, so wrap the
-    # block once to detect a switch of the block itself too.
+    raw = dict(raw or {})
+    if isinstance(defaults, SamplingConfig):
+        raw = SamplingConfig.model_validate(raw).model_dump(exclude_unset=True)
     identity = {
         k: getattr(defaults, k)
         for k in ("id", "type")
         if k in type(defaults).model_fields
     }
+    if any(key in raw and raw[key] != value for key, value in identity.items()):
+        return raw
+    for name, value in defaults:
+        if isinstance(value, BaseModel) and isinstance(raw.get(name), dict):
+            raw[name] = merge_defaults(value, raw[name])
     block = {**identity, **_dump_set(defaults)}
-    return deep_merge({"block": block}, {"block": raw or {}})["block"]
+    return deep_merge(block, raw)
 
 
 def _dump_set(config: BaseModel) -> dict:
