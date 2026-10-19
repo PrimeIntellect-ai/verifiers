@@ -36,7 +36,7 @@ from pydantic import TypeAdapter
 import verifiers.v1 as vf
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.harness import Harness
-from verifiers.v1.runtimes import RuntimeConfig, backend_cls
+from verifiers.v1.runtimes import PrimeBackend, RuntimeConfig, backend_cls
 from verifiers.v1.utils.loaders import harness_class, harness_config_type
 
 HARNESSES: list[str | dict] = [
@@ -64,6 +64,7 @@ RUNTIME_FEATURES = {
     "network": "network policies",
     "expose": "port exposure",
     "compose": "Compose services",
+    "services": "native service VMs",
 }
 
 # Harnesses that cannot run against the CI model yet.
@@ -136,6 +137,8 @@ def supports(runtime: str, feature: str) -> bool:
     if feature == "network":
         config = TypeAdapter(RuntimeConfig).validate_python(runtime_config(runtime))
         return isinstance(config, NetworkPolicyConfig)
+    if feature == "services":
+        return issubclass(runtime_cls(runtime), PrimeBackend)
     flag = {
         "container": "SUPPORTS_TASK_IMAGES",
         "user": "SUPPORTS_USER_SWITCHING",
@@ -276,7 +279,7 @@ def placements(
     shared: bool = False,
 ) -> list:
     """`(harness_runtime, tool_runtime)` cells for a tool server placed colocated in the
-    harness's box, in a Compose service beside it (`service`), or in its own runtime
+    harness's box, in a native service VM beside it (`service`), or in its own runtime
     (on Prime beside a Prime harness, a VM on the rollout's private network). A
     `subprocess` tool runtime is a server on the host, reached from the sandbox through
     the tunnel. A `shared` server runs once per eval, so it joins no rollout's network."""
@@ -286,7 +289,7 @@ def placements(
             marks = [mark(harness_runtime), mark(tool_runtime)]
             reason = None
             if tool_runtime == "service":
-                reason = unsupported("null", harness_runtime, ("compose",))
+                reason = unsupported("null", harness_runtime, ("services",))
             # Beside a Prime harness, a rollout's Prime server joins its private network.
             elif tool_runtime != "colocated" and not (
                 not shared and tool_runtime == harness_runtime == "prime"

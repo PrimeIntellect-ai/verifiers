@@ -55,7 +55,7 @@ SUPPORTED = {
     "task_images": {"docker", "prime"},
     "user_switching": {"docker", "prime"},
     "port_exposure": {"subprocess", "docker"},
-    "compose": {"docker", "prime"},
+    "compose": {"docker"},
     "network_policies": {"docker", "prime"},
 }
 PYTHON = ["sh", "-c", 'exec "$(command -v python3 || command -v python)" "$@"', "py"]
@@ -300,7 +300,7 @@ async def test_compose(runtime, tmp_path) -> None:
     spec = ComposeSpec(directory=str(tmp_path), file="docker-compose.yaml")
     async with (
         asyncio.timeout(TIMEOUT),
-        compose_services(runtime, spec, {}, trust_compose=True) as (services, _, _, _),
+        compose_services(runtime, spec, {}, trust_compose=True) as (services, _),
     ):
         assert set(services) == {"main", "sidecar"}
         resolved = await services["main"].bind().run(["getent", "hosts", "sidecar"], {})
