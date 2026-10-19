@@ -627,14 +627,23 @@ class PrimeBackend(RuntimeBackend):
                         workdir = "/"
                     self.config = self.config.model_copy(update={"workdir": workdir})
                 self.info.workdir = self.config.workdir
-                await self._held(
+                prepared = await self._held(
                     "workdir",
                     lambda: self._client.execute_command(
                         self.info.id,
-                        f"mkdir -p {shlex.quote(self.config.workdir)}",
+                        f"mkdir -p {shlex.quote(self.config.workdir)} && mkdir -p -m 1777 /run/lock",
                         working_dir="/",
                     ),
                 )
+                # Prime boots /run as an empty tmpfs, including on checkpoint restore.
+                # Restore the standard lock directory before image service launchers run.
+                # Existing directories retain their permissions (mkdir -p -m only applies
+                # the mode when creating a directory).
+                if prepared.exit_code:
+                    raise SandboxError(
+                        f"Cannot prepare runtime directories: {prepared.stderr}",
+                        kind="exec",
+                    )
                 self.placed = True
         except CreationBacklogFull as e:
             raise SandboxError(
