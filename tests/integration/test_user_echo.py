@@ -1,5 +1,5 @@
 """One task, a scripted user: the user speaks first and the harness resumes onto the
-conversation each turn (echo-user-sim-v1), across the harness x runtime grid; and the
+conversation each turn (echo-user-sim), across the harness x runtime grid; and the
 caller drives an agent turn by turn through `agent.interaction`."""
 
 import pytest
@@ -18,7 +18,7 @@ async def test_user(run, harness, harness_runtime):
     onto the conversation, and leaving the loop ends the exchange (`user_closed`).
     The user runs in the eval process itself, so there is no placement axis."""
     (episode,) = await run(
-        "echo-user-sim-v1",
+        "echo-user-sim",
         harness=harness,
         runtime=harness_runtime,
         max_turns=6,

@@ -1,4 +1,4 @@
-"""network-policy-v1: the agent runs an egress probe under the task's network policy.
+"""network-policy: the agent runs an egress probe under the task's network policy.
 
 One task per policy the task data can declare: `open` (the default), `off` (an empty
 allowlist), `block` (blocks `example.com`) and `allow` (allows only `pypi.org`). Setup

@@ -29,10 +29,10 @@ def test_every_builtin_harness_loads() -> None:
 
 def test_harness_config_narrows_to_its_own_type() -> None:
     config = vf.AgentConfig.model_validate(
-        {"harness": {"id": "kimi-code", "transport": "responses"}}
+        {"harness": {"id": "kimi-code", "dialect": "responses"}}
     )
     assert type(config.harness) is harness_config_type("kimi-code")
-    assert config.harness.transport == "responses"
+    assert config.harness.dialect == "responses"
 
 
 def test_unknown_harness_names_the_builtins() -> None:

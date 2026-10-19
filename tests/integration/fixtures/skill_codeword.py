@@ -1,4 +1,4 @@
-"""skill-codeword-v1: the answer lives only in a skill the task installs.
+"""skill-codeword: the answer lives only in a skill the task installs.
 
 The task ships a `project-codeword` skill (fixtures/skills) whose SKILL.md holds a
 codeword the prompt never reveals, so reward 1.0 proves the harness installed the skill

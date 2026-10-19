@@ -7,6 +7,7 @@ import re
 import tomllib
 from collections import Counter
 from pathlib import Path
+from typing import Literal
 
 import tomli_w
 
@@ -48,6 +49,9 @@ GATE_HANDLER = {
 
 
 class CodexHarnessConfig(HarnessConfig):
+    # Codex accepts no other wire API:
+    # https://github.com/openai/codex/blob/rust-v0.155.1/codex-rs/model-provider-info/src/lib.rs#L61
+    dialect: Literal["responses"] = "responses"
     version: PinnedVersion = "0.155.1"
     """Codex release to install, pinned for reproducibility."""
     multi_agent: bool = False

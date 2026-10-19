@@ -53,15 +53,15 @@ If you don't need custom user-facing settings, you can omit the config subclass.
 Following the standard [package setup](building-environments.md#create-a-package), a taskset package needs just two files:
 
 ```text
-environments/addition_v1/src/addition_v1/
+environments/addition/src/addition/
 ├── __init__.py  # exports the taskset entry point
 └── taskset.py   # defines the data, tasks, and taskset
 ```
 
-Re-export the taskset class in `src/addition_v1/__init__.py` so verifiers can discover and load it:
+Re-export the taskset class in `src/addition/__init__.py` so verifiers can discover and load it:
 
 ```python
-from addition_v1.taskset import AdditionTaskset
+from addition.taskset import AdditionTaskset
 
 __all__ = ["AdditionTaskset"]
 ```
@@ -69,8 +69,8 @@ __all__ = ["AdditionTaskset"]
 Then install the package into the Python environment running the CLI and verify that it loads:
 
 ```bash
-uv pip install -e environments/addition_v1
-uv run vf-eval addition-v1 --dry-run
+uv pip install -e environments/addition
+uv run vf-eval addition --dry-run
 ```
 
 ## Data and configuration
