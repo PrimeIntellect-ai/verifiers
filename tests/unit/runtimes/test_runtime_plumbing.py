@@ -305,7 +305,7 @@ class CreatingClient:
         self.waits.append(max_attempts)
 
     async def execute_command(self, *args, **kwargs):
-        return SimpleNamespace(stdout="/app\n", stderr="", exit_code=0)
+        return SimpleNamespace(stdout="/app\n/root\n", stderr="", exit_code=0)
 
     async def delete(self, sandbox_id):
         pass
