@@ -9,6 +9,7 @@ from pathlib import PurePosixPath
 from verifiers.v1.configs.scoring import ScoringConfig
 from verifiers.v1.errors import TaskError, boundary
 from verifiers.v1.runtimes import (
+    NetworkPolicyConfig,
     PrimeConfig,
     Runtime,
     RuntimeConfig,
@@ -56,6 +57,8 @@ def verifier_runtime(
         image=task.data.image or getattr(solver_runtime.config, "image", None),
         workdir=task.data.workdir or getattr(solver_runtime.config, "workdir", None),
     )
+    if policy.network is not None:
+        task = task.with_data(network=policy.network)
     config = resolve_runtime_config(source, task)
     if policy.runtime is not None and "image" in policy.runtime.model_fields_set:
         config = config.model_copy(update={"image": policy.runtime.image})
@@ -73,6 +76,21 @@ def verifier_runtime(
             f"cannot restore relative artifacts {relative!r} from {solver_dir} into {grader_dir}; use matching workdirs or absolute paths"
         )
     return config
+
+
+def scoring_network(
+    base: RuntimeConfig, network: NetworkPolicyConfig
+) -> NetworkPolicyConfig:
+    """`network` as the task's policy while scoring, combined with the runtime's own
+    rules the way `TaskData.network` is."""
+    if isinstance(base, NetworkPolicyConfig):
+        return base.with_task_network_policy(network.allow, network.block)
+    if network.network_restricted:
+        raise TaskError(
+            f"scoring requires a network policy, but the {base.type} runtime does not "
+            "support one"
+        )
+    return network
 
 
 def bind_scoring_env(runtime: Runtime, policy: ScoringConfig) -> Runtime:
@@ -132,7 +150,7 @@ async def grade_task(
                     runtime = bind_scoring_env(runtime, policy)
                     await runtime.backend.prepare_setup()
                     await stage_verifier(grader, result, runtime)
-                    await runtime.set_egress(policy.egress or [])
+                    await runtime.backend.prepare_execution([])
                 try:
                     async with (
                         asyncio.timeout_at(deadline),

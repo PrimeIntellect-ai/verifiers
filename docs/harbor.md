@@ -103,9 +103,9 @@ Harbor's effective agent network policy is applied on Docker and Prime VM runtim
 
 | Harbor mode | Task network setting |
 | --- | --- |
-| `public` | `network_allow = ["*"]`, leaving the evaluator runtime policy intact |
-| `no-network` | `network_allow = []`, allowing only framework connections |
-| `allowlist` | `network_allow = allowed_hosts` |
+| `public` | `network.allow = ["*"]`, leaving the evaluator runtime policy intact |
+| `no-network` | `network.allow = []`, allowing only framework connections |
+| `allowlist` | `network.allow = allowed_hosts` |
 
 Task and harness setup runs online before network restrictions take effect. The policy is applied immediately before the agent launches and stays active through finalization and artifact collection, with model interception and MCP endpoints added automatically in allowlist and `no-network` modes.
 
@@ -140,6 +140,6 @@ Because verifiers never builds container images on the fly, a `[verifier.environ
 verifiers does not yet support every Harbor feature. The main current limitations are:
 
 - Outside Compose, container `ENTRYPOINT`s are replaced with a keepalive process, so services required by the task or by `[environment.healthcheck]` must be started during setup rather than relying on the image entrypoint.
-- Shared grading reopens network access unless `scoring.egress` lists what the grader may reach, in which case it runs under the task's network policy plus those URLs. Use separate verification (`environment_mode = "separate"`) when the grader needs its own runtime.
+- Shared grading reopens network access unless `scoring.network` sets the grader's policy, which then applies instead. Use separate verification (`environment_mode = "separate"`) when the grader needs its own runtime.
 - Verifier images defined via `tests/Dockerfile` must be built and published in advance.
 - [Multi-step tasks](https://www.harborframework.com/docs/tasks/multi-step) are not supported.

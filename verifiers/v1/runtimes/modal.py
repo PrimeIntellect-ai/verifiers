@@ -250,7 +250,9 @@ class ModalBackend(RuntimeBackend):
             experimental_options={"vm_runtime": True} if self.config.vm else {},
         )
 
-    async def prepare_execution(self, routes: list[str] | None) -> None:
+    async def prepare_execution(
+        self, routes: list[str] | None, network: NetworkPolicyConfig | None = None
+    ) -> None:
         """Apply TLS domain filtering after setup, retaining framework endpoints.
 
         Modal filters TLS SNI on port 443, not HTTP Host headers or URL paths.
@@ -263,7 +265,9 @@ class ModalBackend(RuntimeBackend):
                 domains, cidrs = ["*"], ["0.0.0.0/0"]
             else:
                 domains = [_egress_domain(route, framework=True) for route in routes]
-                domains.extend(_egress_domain(rule) for rule in self.config.allow)
+                domains.extend(
+                    _egress_domain(rule) for rule in (network or self.config).allow
+                )
                 domains = list(dict.fromkeys(d for d in domains if d is not None))
                 cidrs = []
             # Always send both lists: leaving the setup CIDR grant would bypass domains.

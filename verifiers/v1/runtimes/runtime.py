@@ -12,7 +12,7 @@ from pathlib import PurePosixPath
 from types import MappingProxyType
 from typing import Self
 
-from verifiers.v1.configs.runtime import egress_urls
+from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes.base import (
     _ENSURE_UV,
@@ -94,12 +94,26 @@ class Runtime:
     async def expose(self, port: int) -> str:
         return await self.backend.expose(port)
 
-    async def set_egress(self, urls: list[str]) -> None:
-        """Enforce the runtime's network policy plus `urls`, each with a scheme and host;
-        `["*"]` lifts the policy. Covers the whole runtime, not only this view, and returns
-        once the provider enforces it. A runtime without a policy keeps open egress."""
-        urls = egress_urls(list(urls))
-        await self.backend.prepare_execution(None if urls == ["*"] else urls)
+    async def set_network(self, network: NetworkPolicyConfig) -> None:
+        """Enforce `network` as given, in place of the policy the runtime started with,
+        on the whole runtime rather than only this view; return once the provider
+        enforces it. Framework routes are not added. A runtime that started without a
+        policy can only stay open."""
+        if not network.network_restricted:
+            await self.backend.prepare_execution(None)
+            return
+        config = self.backend.config
+        if not self.backend.network_restricted or not isinstance(
+            config, NetworkPolicyConfig
+        ):
+            raise SandboxError(
+                f"runtime {self.name!r} started without a network policy, so it cannot "
+                "take one"
+            )
+        policy = type(config).model_validate(
+            {**config.model_dump(), "allow": network.allow, "block": network.block}
+        )
+        await self.backend.prepare_execution([], policy)
 
     async def run(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
         return await self.backend._run(self, argv, env)
