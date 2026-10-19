@@ -92,10 +92,10 @@ class _PrivateNetworkDeployment(_DeploymentStrategy):
         # Each VM enforces its own policy. A tool server's VM keeps only its state
         # channel, reached as the server reaches it; LAN traffic is unaffected by either.
         def own(name, backend):
-            if name in self._internal:
-                return []
             if name == "main":
                 return routes
+            if name in self._internal:
+                return []
             return [backend.host_url(state_route)] if state_route else []
 
         await asyncio.gather(

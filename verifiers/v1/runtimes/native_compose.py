@@ -307,9 +307,9 @@ async def _import_image(client, project, container: str, identity: str) -> str:
                 and image.image_tag == "v1"
                 and image.artifact_type == "VM_SANDBOX"
                 and image.status == "COMPLETED"
-                and image.full_image_path
+                and image.display_ref
             ):
-                return image.full_image_path
+                return image.display_ref
         rootfs = project.directory / "rootfs.tar"
         result = await cli(
             "docker", "export", "--output", str(rootfs), container, env=project.env
@@ -374,41 +374,57 @@ class NativeProcesses:
     processes: dict[str, RuntimeProcess] = field(default_factory=dict)
 
     async def start(self, deployment) -> None:
-        addresses = {}
-        for name, backend in deployment.target_backends.items():
-            root = backend.bind().with_user(None).with_env({})
-            result = await root.run(["getent", "hosts", lan_host(backend)], {})
-            if result.exit_code or not result.stdout.strip():
-                raise SandboxError(f"Native Compose could not resolve service {name!r}")
-            addresses[name] = str(ipaddress.ip_address(result.stdout.split()[0]))
         for name, backend in deployment.target_backends.items():
             service = self.services[name]
-            names = []
-            for peer, other in self.services.items():
-                shared = (
-                    service.definition["networks"].keys()
+            runtime = backend.bind().with_user(None).with_env({})
+            peers = {
+                peer: shared
+                for peer, other in self.services.items()
+                if (
+                    shared := service.definition["networks"].keys()
                     & other.definition["networks"].keys()
                 )
-                if shared:
-                    aliases = [
-                        alias
-                        for network in sorted(shared)
-                        for alias in (other.definition["networks"][network] or {}).get(
-                            "aliases", []
-                        )
-                    ]
-                    names.append(
-                        f"{addresses[peer]} {' '.join(dict.fromkeys([peer, *aliases]))}"
+            }
+            hosts = {
+                lan_host(deployment.target_backends[peer]): peer
+                for peer in peers
+                if peer != name
+            }
+            # Prime's LAN DNS resolves peers, not the VM itself.
+            addresses = {name: "127.0.0.1"}
+            if hosts:
+                result = await runtime.run(["getent", "hosts", *hosts], {})
+                if result.exit_code:
+                    raise SandboxError(
+                        f"Native Compose could not resolve peers on {name!r}: {result.stderr}"
                     )
-            hosts = "\n".join(names) + "\n"
+                for line in result.stdout.splitlines():
+                    address, host, *_ = line.split()
+                    addresses[hosts[host]] = str(ipaddress.ip_address(address))
+                if addresses.keys() != peers.keys():
+                    raise SandboxError(
+                        f"Native Compose could not resolve every peer on {name!r}"
+                    )
+            names = []
+            for peer, shared in peers.items():
+                aliases = [
+                    alias
+                    for network in sorted(shared)
+                    for alias in (
+                        self.services[peer].definition["networks"][network] or {}
+                    ).get("aliases", [])
+                ]
+                names.append(
+                    f"{addresses[peer]} {' '.join(dict.fromkeys([peer, *aliases]))}"
+                )
+            host_entries = "\n".join(names) + "\n"
             backend.env = service.env
             backend.user = service.user
-            runtime = backend.bind().with_user(None).with_env({})
             if service.internal:
                 # Internal-only services have no internet, including during setup.
                 await backend.prepare_execution([])
             result = await runtime.run(
-                ["sh", "-c", f"printf %s {shlex.quote(hosts)} >> /etc/hosts"], {}
+                ["sh", "-c", f"printf %s {shlex.quote(host_entries)} >> /etc/hosts"], {}
             )
             if result.exit_code:
                 raise SandboxError(
@@ -489,7 +505,10 @@ class NativeProcesses:
                         # The base implementation kills a timed-out check; Prime's job API
                         # deliberately leaves ordinary background jobs running on cancellation.
                         result = await RuntimeBackend.run(
-                            runtime.backend, runtime, argv, {}
+                            runtime.backend,
+                            runtime,
+                            ["sh", "-c", 'exec "$@" > /dev/null 2>&1', "sh", *argv],
+                            {},
                         )
                     if result.exit_code == 0:
                         return
@@ -508,8 +527,16 @@ class NativeProcesses:
                     healthy[name] = group.create_task(ready(name, service))
         except ExceptionGroup as failed:
             raise failed.exceptions[0]
+        completed = {
+            dependency
+            for service in self.services.values()
+            for dependency, options in service.definition.get("depends_on", {}).items()
+            if options["condition"] == "service_completed_successfully"
+        }
         for name, process in self.processes.items():
-            if (code := await process.poll()) not in {None, 0}:
+            if (code := await process.poll()) is not None and (
+                code != 0 or name not in completed
+            ):
                 raise SandboxError(
                     f"Native Compose service {name!r} exited with {code}"
                 )
