@@ -49,8 +49,9 @@ class ProcessConfig(BaseConfig):
     environment: dict[str, str] = Field(default_factory=dict)
     """Reaches the node only, never the workspace."""
     passthrough: list[str] = Field(default_factory=list)
-    """Variables taken from the node's own environment, as Compose takes a bare `KEY`
-    from its own."""
+    """Variables whose values come from where the node runs, as a bare Compose `KEY`
+    does: the rollout's environment for a node packed as a Compose service, the
+    machine's own for a node on a machine of its own."""
     workdir: str | None = None
     readiness: list[str] | None = None
     """Exits 0 once the process serves. Runs as the process does: in its `workdir`,
@@ -448,7 +449,24 @@ def compose_project(topology: TopologyConfig, result: Plan) -> dict[str, Any]:
                 "interval": "2s",
                 "retries": max(1, int(process.readiness_timeout // 2)),
             }
+    # Compose interpolates `$VAR` from the evaluator's environment when it reads the
+    # file; a node's values are literal, as on a machine of its own.
+    for name in names:
+        services[name] = {
+            key: value if key == "networks" else _literal(value)
+            for key, value in services[name].items()
+        }
     return {"services": services, "networks": networks}
+
+
+def _literal(value: Any) -> Any:
+    if isinstance(value, str):
+        return value.replace("$", "$$")
+    if isinstance(value, list):
+        return [_literal(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _literal(item) for key, item in value.items()}
+    return value
 
 
 def nodes_from_compose(
@@ -474,7 +492,11 @@ def nodes_from_compose(
         if isinstance(mode, str) and mode.startswith("service:"):
             # It shares that service's network namespace; Compose rejects cycles.
             return networks(services[mode.removeprefix("service:")])
-        if mode not in (None, "bridge"):
+        if mode == "bridge":
+            # Docker's own default bridge, not a network of the project: it shares
+            # one only with other services in bridge mode.
+            return {"\0bridge"}
+        if mode is not None:
             raise ValueError(f"network_mode {mode!r} has no node equivalent")
         declared = service.get("networks") or ["default"]
         return set(declared if isinstance(declared, list) else declared.keys())

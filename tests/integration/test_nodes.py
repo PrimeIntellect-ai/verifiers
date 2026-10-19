@@ -116,7 +116,13 @@ async def test_a_node_with_a_policy_of_its_own_runs_on_a_machine_of_its_own():
 
 
 async def test_nodes_under_the_workspace_s_policy_share_its_machine():
-    db = vf.NodeConfig(process=vf.ProcessConfig(command=SERVE, readiness=READY))
+    # `$PORT` is the process's own variable, kept literal through Compose.
+    serve = ["sh", "-c", 'exec python -m http.server "$PORT" --directory /']
+    db = vf.NodeConfig(
+        process=vf.ProcessConfig(
+            command=serve, environment={"PORT": "8000"}, readiness=READY
+        )
+    )
     task = NodeTask(
         vf.TaskData(prompt="Probe the network", nodes={"db": db}),
         FetchToolTaskConfig(tools=vf.ToolsetConfig(colocated=True)),

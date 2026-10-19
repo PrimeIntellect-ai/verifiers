@@ -245,8 +245,16 @@ def test_compose_services_keep_their_compose_meaning():
     # No network: nothing reaches it, and it reaches nothing.
     assert services["batch"].reachable_from == []
     assert "batch" not in services["db"].reachable_from
-    bridged = {"services": {"main": {}, "x": {"network_mode": "bridge"}}}
-    assert nodes_from_compose(bridged)["x"].reachable_from == ["main"]
+    bridged = {
+        "services": {
+            "main": {},
+            "x": {"network_mode": "bridge"},
+            "y": {"network_mode": "bridge"},
+        }
+    }
+    # Docker's default bridge is not the project's network: x and y share only it.
+    assert nodes_from_compose(bridged)["x"].reachable_from == ["y"]
+    assert "x" not in nodes_from_compose(bridged)["main"].reachable_from
     host = {"services": {"main": {}, "x": {"image": "x", "network_mode": "host"}}}
     with pytest.raises(ValueError, match="network_mode 'host' has no node"):
         nodes_from_compose(host)
@@ -395,3 +403,22 @@ def test_a_packed_node_keeps_its_own_workdir_and_on_follows_the_workspace_rename
         {"app": vf.ToolsetConfig(on="app")}, project, compose_workspace="app"
     ).mcp_servers
     assert servers == {"app": "main"}
+
+
+def test_a_generated_compose_project_keeps_a_node_s_values_literal():
+    node = NodeConfig(
+        runtime={"image": "web", "workdir": "/srv/$APP"},
+        process=ProcessConfig(
+            command=["sh", "-c", "exec serve --token $TOKEN"],
+            environment={"GREETING": "costs $5"},
+            passthrough=["TOKEN"],
+            readiness=["sh", "-c", "test -n $TOKEN"],
+        ),
+    )
+    topology = TopologyConfig(nodes={"web": node})
+    web = compose_project(topology, plan(topology, OFFLINE))["services"]["web"]
+    # Escaped for Compose, which would otherwise read them from the evaluator.
+    assert web["command"] == ["sh", "-c", "exec serve --token $$TOKEN"]
+    assert web["environment"] == ["GREETING=costs $$5", "TOKEN"]
+    assert web["working_dir"] == "/srv/$$APP"
+    assert web["healthcheck"]["test"] == ["CMD", "sh", "-c", "test -n $$TOKEN"]
