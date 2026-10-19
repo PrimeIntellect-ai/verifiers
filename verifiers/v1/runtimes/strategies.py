@@ -60,6 +60,9 @@ class _ContainerDeployment(_DeploymentStrategy):
 
 
 class _PrivateNetworkDeployment(_DeploymentStrategy):
+    _networks: dict[str, list[str]] | None = None
+    _internal: frozenset[str] = frozenset()
+
     async def start(self, d):
         if d.borrowed_runtime is not None:
             raise ValueError(
@@ -72,7 +75,11 @@ class _PrivateNetworkDeployment(_DeploymentStrategy):
         self._services = await d.enter(AsyncExitStack())
         vms = await self._services.enter_async_context(
             private_network(
-                d.backend, members, partial(d.own, d.backend), interconnect=native
+                d.backend,
+                members,
+                partial(d.own, d.backend),
+                interconnect=native,
+                networks=self._networks,
             )
         )
         d.target_backends = {"main": d.backend, **vms}
@@ -80,19 +87,21 @@ class _PrivateNetworkDeployment(_DeploymentStrategy):
         if native:
             d.hosts["main"] = lan_host(d.backend)
         d.execution_backend = d.harness_backend = d.backend
-        self._service_backends = list(vms.values())
 
     async def prepare_execution(self, d, routes, state_route=None):
         # Each VM enforces its own policy. A tool server's VM keeps only its state
         # channel, reached as the server reaches it; LAN traffic is unaffected by either.
-        def own(backend):
+        def own(name, backend):
+            if name in self._internal:
+                return []
+            if name == "main":
+                return routes
             return [backend.host_url(state_route)] if state_route else []
 
         await asyncio.gather(
-            d.harness_backend.prepare_execution(routes),
             *(
-                backend.prepare_execution(own(backend))
-                for backend in self._service_backends
+                backend.prepare_execution(own(name, backend))
+                for name, backend in d.target_backends.items()
             ),
         )
 
@@ -135,6 +144,13 @@ class _NativeComposeDeployment(_PrivateNetworkDeployment):
         for field, value in main.config.model_dump().items():
             setattr(d.backend.info, field, value)
         d.env = main.env
+        self._networks = {}
+        for name, service in services.items():
+            for network in service.definition["networks"]:
+                self._networks.setdefault(network, []).append(name)
+        self._internal = frozenset(
+            name for name, service in services.items() if service.internal
+        )
         d.spec = ServicesSpec(
             {
                 name: service.config
