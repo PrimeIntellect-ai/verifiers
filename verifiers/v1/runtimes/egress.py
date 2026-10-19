@@ -191,44 +191,52 @@ class EgressProxy:
         upstream_writer: asyncio.StreamWriter | None = None
         response_started = False
         try:
-            head = await asyncio.wait_for(
-                reader.readuntil(b"\r\n\r\n"), _HEADER_TIMEOUT
-            )
-            client = h11.Connection(h11.SERVER)
-            client.receive_data(head)
-            request = client.next_event()
-            if not isinstance(request, h11.Request):
-                raise TypeError("expected an HTTP request")
-            method = request.method.decode("ascii")
-            target = request.target.decode("ascii")
-            parsed = urlsplit(target)
-            callback = None
-            if method != "CONNECT" and parsed.path.startswith(_CALLBACK_PREFIX):
-                token, separator, path = parsed.path[len(_CALLBACK_PREFIX) :].partition(
-                    "/"
+            challenged = False
+            while True:
+                head = await asyncio.wait_for(
+                    reader.readuntil(b"\r\n\r\n"), _HEADER_TIMEOUT
                 )
-                callback = self._callbacks.get(token)
-                if callback is not None:
-                    parsed = parsed._replace(path=f"/{path}" if separator else "/")
-            authorization = next(
-                (
-                    value
-                    for name, value in request.headers
-                    if name.lower() == b"proxy-authorization"
-                ),
-                b"",
-            )
-            if callback is None and not hmac.compare_digest(
-                authorization, self._authorization
-            ):
-                response_started = True
-                writer.write(
-                    b"HTTP/1.1 407 Proxy Authentication Required\r\n"
-                    b'Proxy-Authenticate: Basic realm="verifiers"\r\n'
-                    b"Content-Length: 0\r\n\r\n"
+                client = h11.Connection(h11.SERVER)
+                client.receive_data(head)
+                request = client.next_event()
+                if not isinstance(request, h11.Request):
+                    raise TypeError("expected an HTTP request")
+                method = request.method.decode("ascii")
+                target = request.target.decode("ascii")
+                parsed = urlsplit(target)
+                callback = None
+                if method != "CONNECT" and parsed.path.startswith(_CALLBACK_PREFIX):
+                    token, separator, path = parsed.path[
+                        len(_CALLBACK_PREFIX) :
+                    ].partition("/")
+                    callback = self._callbacks.get(token)
+                    if callback is not None:
+                        parsed = parsed._replace(path=f"/{path}" if separator else "/")
+                authorization = next(
+                    (
+                        value
+                        for name, value in request.headers
+                        if name.lower() == b"proxy-authorization"
+                    ),
+                    b"",
                 )
-                await _drain(writer)
-                return
+                if callback is None and not hmac.compare_digest(
+                    authorization, self._authorization
+                ):
+                    writer.write(
+                        b"HTTP/1.1 407 Proxy Authentication Required\r\n"
+                        b'Proxy-Authenticate: Basic realm="verifiers"\r\n'
+                        b"Content-Length: 0\r\n\r\n"
+                    )
+                    await _drain(writer)
+                    # Clients that first probe the auth scheme, like git through curl's
+                    # `anyauth`, retry their CONNECT on the same connection.
+                    if method != "CONNECT" or challenged:
+                        response_started = True
+                        return
+                    challenged = True
+                    continue
+                break
             connect = method == "CONNECT"
             if callback is not None:
                 scheme, host, port = callback.scheme, callback.host, callback.port
