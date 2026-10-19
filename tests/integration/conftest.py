@@ -23,7 +23,7 @@ from verifiers.v1.episode import Episode
 from verifiers.v1.types import SamplingConfig
 from verifiers.v1.utils.loaders import harness_config_type, load_environment
 
-CI_MODEL = "internal/deepseek-v4.1-flash"
+CI_MODEL = "internal/deepseek-v4.1-flash-1017-ht"
 CI_REASONING_EFFORT = "low"
 # Judge config fields that keep config-plugged judges on the CI model and effort.
 CI_JUDGE = {"model": CI_MODEL, "sampling": {"reasoning_effort": CI_REASONING_EFFORT}}
