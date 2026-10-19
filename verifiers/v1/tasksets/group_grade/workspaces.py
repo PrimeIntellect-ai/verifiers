@@ -59,7 +59,7 @@ async def collect_privileged(task: vf.Task, box: RuntimeConfig) -> vf.Privileged
         return await task.privileged()
     config = resolve_runtime_config(box, task)
     async with provision_runtime(config, env=dict(task.runtime_env())) as runtime:
-        await runtime.prepare_setup()
+        await runtime.backend.prepare_setup()
         trace = vf.Trace(
             task=TraceTask(
                 type=type(task).__name__, data=task.data, key=task.key, hash=task.hash
@@ -123,7 +123,7 @@ class Workspaces(vf.Toolset[WorkspacesConfig, GradeState]):
                 )
                 for path, content in self.staged.items():
                     await runtime.write(path, content)
-                await runtime.prepare_execution([])
+                await runtime.backend.prepare_execution([])
             except BaseException:
                 await stack.aclose()
                 raise
