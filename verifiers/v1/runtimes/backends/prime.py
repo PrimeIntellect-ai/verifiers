@@ -147,7 +147,6 @@ class PrimeProcess(RuntimeProcess):
 
 class PrimeBackend(RuntimeBackend):
     SUPPORTS_TASK_IMAGES: ClassVar[bool] = True
-    SUPPORTS_COMPOSE: ClassVar[bool] = True
     SUPPORTS_USER_SWITCHING: ClassVar[bool] = True
     SUPPORTS_PORT_EXPOSURE: ClassVar[bool] = True
 
