@@ -416,10 +416,13 @@ class DockerBackend(ContainerBackend):
         descriptors.frombytes(ancillary[0][2][: descriptors.itemsize])
         return socket.socket(fileno=descriptors[0])
 
-    async def prepare_execution(self, routes: list[str] | None) -> None:
-        """Allow the declared framework routes, then leave the proxy as the only way out."""
+    async def prepare_execution(
+        self, routes: list[str] | None, network: NetworkPolicyConfig | None = None
+    ) -> None:
+        """Allow the declared framework routes, then leave the proxy, enforcing the
+        configured policy or `network`, as the only way out."""
         if self._host_backend is not None:
-            await self._host_backend.prepare_execution(routes)
+            await self._host_backend.prepare_execution(routes, network)
             return
         if not self.network_restricted:
             return
@@ -434,7 +437,7 @@ class DockerBackend(ContainerBackend):
             for url in routes
         ]
         assert isinstance(self.config, NetworkPolicyConfig)
-        self._proxy.policy = NetworkPolicy(self.config, framework)
+        self._proxy.policy = NetworkPolicy(network or self.config, framework)
         if self._cut:
             return
         # Off Linux the host proxy has a real address; allow only its listening port.

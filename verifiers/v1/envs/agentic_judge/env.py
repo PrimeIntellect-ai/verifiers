@@ -165,8 +165,7 @@ class JudgeTask(vf.Task):
                 image=solved.image,
                 workdir=solved.workdir,
                 resources=solved.resources,
-                network_allow=solved.network_allow,
-                network_block=solved.network_block,
+                network=solved.network,
             ),
             files=files,
         )
@@ -334,9 +333,8 @@ class AgenticJudgeEnv(vf.Env[AgenticJudgeEnvConfig]):
                 "workdir": runtime.config.workdir,
             }
             if isinstance(runtime.config, NetworkPolicyConfig):
-                updates.update(
-                    network_allow=runtime.config.allow,
-                    network_block=runtime.config.block,
+                updates["network"] = NetworkPolicyConfig(
+                    allow=runtime.config.allow, block=runtime.config.block
                 )
             judge_task = judge_task.with_data(**updates)
             # A per-invocation view retains episode accounting and concurrency while

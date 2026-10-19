@@ -310,10 +310,13 @@ class RuntimeBackend(ABC):
             await self.prepare_execution(None)
         self._setup_claimed = True
 
-    async def prepare_execution(self, routes: list[str] | None) -> None:
+    async def prepare_execution(
+        self, routes: list[str] | None, network: NetworkPolicyConfig | None = None
+    ) -> None:
         """Last setup step, right before the agent starts. Restricted runtimes enforce
-        their policy here; `routes` identifies the interception and MCP endpoints.
-        None restores unrestricted egress for another trusted setup phase."""
+        their policy here, or `network` instead of it; `routes` identifies the
+        interception and MCP endpoints. None restores unrestricted egress for another
+        trusted setup phase."""
 
     @property
     def network_restricted(self) -> bool:

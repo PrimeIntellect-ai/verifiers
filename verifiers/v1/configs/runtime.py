@@ -55,7 +55,9 @@ def intersect_network_hosts(left: str, right: str) -> str:
 
 
 class NetworkPolicyConfig(BaseConfig):
-    """Shared execution-time policy surface for runtimes that support it."""
+    """What a box may reach. A runtime's own rules, a task's (`TaskData.network`) and a
+    task's scoring (`ScoringConfig.network`) all use it; a task's policy combines with its
+    runtime's rules: allowlists intersect and blocklists merge."""
 
     allow: list[str] = Field(default_factory=lambda: ["*"])
     """Destinations allowed during execution; `*` is unrestricted and `[]` is
@@ -87,10 +89,12 @@ class NetworkPolicyConfig(BaseConfig):
             for rule in self.block
         ) and any(network_rule_matches(rule, scheme, host, port) for rule in self.allow)
 
-    def with_task_network_policy(self, allow: list[str], block: list[str]) -> Self:
+    def with_task_network_policy(self, network: "NetworkPolicyConfig") -> Self:
         values = self.model_dump()
         # Intersection must not erase syntax the runtime cannot enforce.
-        task = type(self).model_validate({**values, "allow": allow, "block": block})
+        task = type(self).model_validate(
+            {**values, "allow": network.allow, "block": network.block}
+        )
         allow, block = task.allow, task.block
         if "*" in allow:
             allow = self.allow

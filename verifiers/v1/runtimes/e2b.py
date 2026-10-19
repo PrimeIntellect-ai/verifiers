@@ -437,17 +437,20 @@ class E2BBackend(RuntimeBackend):
         except Exception as e:
             raise SandboxError(f"e2b sandbox provisioning failed: {e}") from e
 
-    async def prepare_execution(self, routes: list[str] | None) -> None:
-        """Apply the host policy after setup; the update replaces all rules atomically."""
+    async def prepare_execution(
+        self, routes: list[str] | None, network: NetworkPolicyConfig | None = None
+    ) -> None:
+        """Apply the host policy, or `network`, after setup; the update replaces all
+        rules atomically."""
         if not self.network_restricted:
             return
-        network = _egress_update(self.config, routes)
+        update = _egress_update(network or self.config, routes)
         try:
-            await self._sandbox.update_network(network)
+            await self._sandbox.update_network(update)
         except Exception as e:
             raise SandboxError(f"e2b egress policy failed: {e}") from e
         logger.info(
-            "e2b: egress policy applied on sandbox %s (%s)", self.info.id, network
+            "e2b: egress policy applied on sandbox %s (%s)", self.info.id, update
         )
 
     def _command(

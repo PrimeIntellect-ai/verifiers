@@ -24,6 +24,7 @@ from verifiers.v1.errors import (
 from verifiers.v1.grading import (
     bind_scoring_env,
     grade_task,
+    scoring_network,
     scoring_transaction,
     verifier_runtime,
 )
@@ -880,6 +881,13 @@ class Rollout:
                                             "runtime": scoring_runtime,
                                         },
                                     )
+                                    if self._scoring_policy.network is not None:
+                                        await scoring_runtime.set_network(
+                                            scoring_network(
+                                                self.trace.agent.config.runtime,
+                                                self._scoring_policy.network,
+                                            )
+                                        )
                                 await self._scoring_task.score(
                                     trace, scoring_runtime, self.deployment
                                 )
