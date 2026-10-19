@@ -100,6 +100,8 @@ jobs:
             tests: tests/integration/test_agent_user.py
           - behavior: Network Policy
             tests: tests/integration/test_network_policy.py
+          - behavior: Scoring Egress
+            tests: tests/integration/test_scoring_egress.py
           - behavior: Skills
             tests: tests/integration/test_skills.py
           - behavior: Limits
