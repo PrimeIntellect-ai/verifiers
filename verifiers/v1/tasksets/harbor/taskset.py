@@ -550,6 +550,29 @@ def harbor_network(network) -> NetworkPolicyConfig:
     return NetworkPolicyConfig(allow=list(network.allowed_hosts))
 
 
+def shared_grading_network(parsed) -> NetworkPolicyConfig | None:
+    """The network a shared-box verifier grades under: Harbor's verifier phase policy,
+    or the `[environment]` baseline when the phase declares none. None opens the box for
+    grading, as for a public verifier. A restricted verifier beside a public agent phase
+    also grades open: its box started without a policy, so it cannot take one."""
+    from harbor.models.task.config import NetworkMode
+
+    baseline = parsed.environment.resolve_baseline()
+    grading = parsed.verifier.explicit_phase_policy() or baseline
+    if grading.network_mode == NetworkMode.PUBLIC:
+        return None
+    agent = parsed.agent.explicit_phase_policy() or baseline
+    if agent.network_mode == NetworkMode.PUBLIC:
+        logger.warning(
+            "Harbor task declares a %s verifier beside a public agent phase; shared "
+            "grading cannot restrict a box that started open, so it grades with open "
+            "network",
+            grading.network_mode.value,
+        )
+        return None
+    return harbor_network(grading)
+
+
 def task_resources(environment, multiplier: float) -> TaskResources:
     """Harbor environment resource requests, scaled, as `TaskResources`.
 
@@ -781,7 +804,10 @@ def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborD
         )
     return HarborData(
         idx=idx,
-        scoring=ScoringConfig(mode="isolated" if verifier is not None else "shared"),
+        scoring=ScoringConfig(
+            mode="isolated" if verifier is not None else "shared",
+            network=None if verifier is not None else shared_grading_network(parsed),
+        ),
         artifact_max_bytes=harbor_config.artifact_max_bytes,
         name=harbor_task.name,
         description=task.description if task else None,
