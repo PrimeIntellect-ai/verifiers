@@ -55,8 +55,6 @@ _PUBLIC_DOMAIN = "sandbox-v2-prod.pinfra.io"
 """Domain of the public URLs `https://<port>-<sandbox-id>.<domain>` that a LAN network's
 `internet` rule publishes ports at."""
 _EXPOSE_TAG = "vf-exposed"
-_EXPOSE_SYNC_SECONDS = 120
-"""Deadline for the platform to push an exposure's membership and rules to the VM."""
 
 
 BASE_LABELS: list[str] = []
@@ -428,45 +426,17 @@ class PrimeBackend(RuntimeBackend):
                             f"{self.name}-exposed", rules=rules
                         )
                         self._expose_network_id = network.id
-                        await self._client.add_lan_member(
-                            network.id, self.info.id, [_EXPOSE_TAG]
-                        )
                     else:
                         await self._client.set_lan_rules(self._expose_network_id, rules)
-                    await self._wait_expose_synced()
-                except SandboxError:
-                    raise
+                    # Joins (an idempotent PUT, so a retry re-adds a failed join) and
+                    # waits until the platform has pushed the membership and rules.
+                    await self._client._join_lan(
+                        self._expose_network_id, self.info.id, [_EXPOSE_TAG]
+                    )
                 except Exception as e:
                     raise SandboxError(f"prime expose port {port} failed: {e}") from e
                 self._exposed_ports = ports
         return f"https://{port}-{self.info.id}.{_PUBLIC_DOMAIN}"
-
-    async def _wait_expose_synced(self) -> None:
-        """Wait until the platform has pushed the exposure's membership and rules to the VM."""
-        try:
-            async with asyncio.timeout(_EXPOSE_SYNC_SECONDS):
-                delay = 0.1
-                while True:
-                    network = await self._client.get_lan_network(
-                        self._expose_network_id
-                    )
-                    member = next(
-                        (
-                            m
-                            for m in network.members or []
-                            if m.sandbox_id == self.info.id
-                        ),
-                        None,
-                    )
-                    if network.synced and member is not None and member.synced:
-                        return
-                    await asyncio.sleep(delay)
-                    delay = min(delay * 2, 2)
-        except TimeoutError as e:
-            raise SandboxError(
-                f"prime LAN network {self._expose_network_id} did not sync within "
-                f"{_EXPOSE_SYNC_SECONDS}s on sandbox {self.info.id}"
-            ) from e
 
     async def run_background(
         self, runtime: Runtime, argv: list[str], env: dict[str, str], log: str
