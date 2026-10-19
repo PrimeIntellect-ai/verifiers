@@ -11,9 +11,9 @@ from verifiers.v1.runtimes import (
     DockerConfig,
     PrimeBackend,
     PrimeConfig,
-    prime,
     private_network,
 )
+from verifiers.v1.runtimes.backends import prime
 from verifiers.v1.runtimes.strategies import (
     _ColocatedDeployment,
     _ContainerDeployment,
@@ -60,15 +60,15 @@ def test_tool_servers_on_prime_runtimes_beside_a_prime_workspace_get_vms():
 
 def test_the_deployment_joins_tool_vms_over_a_private_network():
     assert isinstance(
-        _deployment_strategy(None, PrimeConfig(), None, {"atlas": ATLAS}),
+        _deployment_strategy(None, PrimeBackend, None, {"atlas": ATLAS}),
         _PrivateNetworkDeployment,
     )
     assert isinstance(
-        _deployment_strategy(None, PrimeConfig(), None, {}), _ColocatedDeployment
+        _deployment_strategy(None, PrimeBackend, None, {}), _ColocatedDeployment
     )
     spec = vf.ComposeSpec("task")
     assert isinstance(
-        _deployment_strategy(None, PrimeConfig(), spec), _ContainerDeployment
+        _deployment_strategy(None, PrimeBackend, spec), _ContainerDeployment
     )
 
 

@@ -37,9 +37,7 @@ def prompt_text(trace) -> str:
 
 
 @pytest.mark.parametrize("notice", [True, False], ids=["notice-on", "notice-off"])
-@pytest.mark.parametrize(
-    "harness,harness_runtime", grid(runtimes=["prime"]), indirect=True
-)
+@pytest.mark.parametrize("harness,harness_runtime", grid(), indirect=True)
 async def test_network_policy(run, harness, harness_runtime, notice):
     episodes = await run(
         "network-policy",

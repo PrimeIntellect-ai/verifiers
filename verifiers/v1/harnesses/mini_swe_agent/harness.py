@@ -72,4 +72,4 @@ class MiniSWEAgentHarness(Harness[MiniSWEAgentHarnessConfig]):
             "MSWEA_SILENT_STARTUP": "true",
         }
         program = await runtime.prepare_uv_script(source, self.config.resolved_env)
-        return await runtime.run_program([*program, *args], env)
+        return await runtime.run([*program, *args], env)

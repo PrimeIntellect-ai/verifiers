@@ -64,7 +64,7 @@ class TaskResources(BaseModel):
     gpu: str | None = None
     """GPU spec, e.g. "A100" or "A100:2" (type[:count])."""
     disk: float | None = None
-    """Disk in GB (enforced by prime; advisory on local containers and modal)."""
+    """Disk in GB (enforced by prime; advisory on local containers)."""
 
 
 class TaskTimeout(BaseModel):

@@ -271,7 +271,7 @@ A toolset's config controls where the MCP server runs:
 
 - **Host subprocess (default)** — launches the server as a local subprocess with its own filesystem.
 - **`colocated = true`** (per-task toolsets only) — runs the tool server inside the agent's own runtime container so tools share the agent's filesystem directly.
-- **`service = "<name>"`** (per-task toolsets on Prime or Modal VM Compose) — runs the tool server inside a named service from the task's Compose stack. The harness reaches it over the Compose network by service name, so the tool server can front internal services that the workspace cannot reach directly.
+- **`service = "<name>"`** (per-task toolsets on Prime VM Compose) — runs the tool server inside a named service from the task's Compose stack. The harness reaches it over the Compose network by service name, so the tool server can front internal services that the workspace cannot reach directly.
 - **`runtime = { type = "docker", ... }`** — runs the tool server in its own dedicated container.
 - **`url = "https://.../mcp"`** — connects to an already-running streamable-HTTP MCP server instead of launching one.
 

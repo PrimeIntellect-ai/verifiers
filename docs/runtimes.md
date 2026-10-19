@@ -2,27 +2,26 @@
 
 A `Runtime` provides command and file access inside a sandbox with immutable user, `HOME`, and environment bindings. Task and harness hooks receive it as `runtime: vf.Runtime`, while configuration fields such as `agent.runtime` (and `--env.agent.runtime.type`, which defaults to `prime`) describe the runtime policy used to provision the sandbox. Because Python task hooks like `setup`, `finalize`, and `@vf.reward` always execute in the evaluator process, use their `runtime` parameter whenever you want to read files or run commands inside the sandbox; calling `Path(...).read_text()` directly reads from the evaluator host instead.
 
-## Capability matrix
+## Capabilities
 
-Every runtime adapter in verifiers supports running commands, reading and writing files, starting background services, and managing live processes, but they differ in how they handle isolation, hardware resources, and networking:
+Every runtime runs commands, reads and writes files, and starts background services. The runtimes differ in where they run and which features they support:
 
-| Capability | `subprocess` | `docker` | `podman` | `apptainer` | `prime` | `modal` | `e2b` |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| Runs on | Evaluator host | Local container engine | Local container engine | Apptainer host | Remote sandbox | Remote sandbox | Remote sandbox |
-| Task image and container-required tasks | No | Yes | Yes | Yes | Yes | Yes | Public Debian-based image |
-| `cpu` / `memory` settings | No | Yes | Yes | Yes | Yes | Yes | Yes |
-| Enforced `disk` size | No | No | No | No | Yes | No | No |
-| GPU selection | No setting | Count; checks requested type | NVIDIA CDI device count | All accessible NVIDIA GPUs | Type and count | Type and count; no GPUs with `vm = true` | No setting |
-| Execution-time allowlist | No | Yes | Yes | No | Hosts | HTTPS domains on port 443 | Hosts, IPs, CIDRs |
-| Execution-time deny list | No | Yes | Yes | No | Hosts | No | IPs and CIDRs |
-| Framework-only networking (`allow = []`) | No | Yes | Yes | No | Yes | Yes | Yes |
-| `TaskData.agent_user` | No | Yes | Yes | No | Yes | No | No |
-| Artifact transfer and isolated grading | No | Yes | Yes | Yes | Yes | Yes | Yes |
-| Harbor Docker Compose | No | Yes, with conditions below | No | No | Yes, in a VM | Yes, in an experimental VM | No |
+- **`subprocess`** runs commands directly on the evaluator host, with full access to local files, processes, and networking. Use it for fast local debugging with lightweight harnesses such as `bash` or `null`.
+- **`docker`** runs each rollout in a local container. Use it for local testing of tasks that need an image or a container-only harness. CPU, memory, and GPU limits depend on the host; GPU pass-through requires the NVIDIA Container Toolkit.
+- **`prime`** runs each rollout in a remote Prime sandbox, built for high-concurrency evaluation and RL training. It uses your Prime Intellect credentials, and it is the only runtime that enforces hard `disk` limits.
+- **`custom`** loads a runtime from your own package. See [runtime plugins](#runtime-plugins).
 
-- **Local runtimes (`subprocess`, `docker`, `podman`, `apptainer`)**: `subprocess` runs commands directly on the evaluator host with full access to local files, processes, and networking. It is useful for fast local debugging with lightweight harnesses like `bash` or `null`, but tasks that set `Task.NEEDS_CONTAINER = True`, specify a `TaskData.image`, enforce network policies, or use third-party CLI harnesses require a container runtime instead. For local containers, CPU, memory, and GPU limits depend on the host and container engine: Docker GPU pass-through requires the NVIDIA Container Toolkit, Podman requires NVIDIA CDI devices, and Apptainer passes `--nv` to expose host GPUs without enforcing a specific device count or model. Apptainer also shares the host network, so it cannot run tasks with egress restrictions.
-- **Remote sandbox runtimes (`prime`, `modal`, `e2b`)**: Remote sandboxes are built for high-concurrency evaluation and RL training. `prime` uses your Prime Intellect credentials and is the only backend that enforces hard `disk` limits (on other container runtimes, `disk` is treated as an advisory request). `modal` and `e2b` require installing their respective optional extras (`modal` or `e2b`) and configuring provider credentials. On Modal, standard sandboxes support GPU requests, whereas its VM mode (`vm = true`) is CPU-only. On E2B, the adapter builds and caches a sandbox template from a public Debian-based image along with the requested CPU and memory settings; network allowlists accept wildcard hostnames, IPs, and CIDRs (without schemes or ports), while blocklists accept IPs and CIDRs only.
-- **Multi-container Compose tasks and harness features**: Multi-container [Harbor](harbor.md) Docker Compose tasks are supported for CPU workloads on `docker` (with unrestricted networking and `--env.agent.deployment.trust-compose`), `prime` (inside a VM), and `modal` (using its experimental VM backend with `network_access = true`). Runtime capabilities are orthogonal to agent harness capabilities like MCP tool support, image inputs, or conversation resumption; see [harnesses](harnesses.md) for harness features and [building environments](building-environments.md#separate-agent-and-grading-sandboxes) for running separate solver and grading sandboxes.
+Each runtime declares its features through its backend's class attributes, and network policy support through its config. Before it provisions anything, the framework refuses a run that needs a feature the runtime does not declare. The error names the runtime and the missing feature.
+
+| Feature | Declared by | Built-in runtimes |
+| --- | --- | --- |
+| Task image, container-only harnesses, isolated scoring | `SUPPORTS_TASK_IMAGES` | `docker`, `prime` |
+| Task network policy | config inherits `NetworkPolicyConfig` | `docker`, `prime` |
+| Task `agent_user` | `SUPPORTS_USER_SWITCHING` | `docker`, `prime` |
+| Tool server in its own runtime | `SUPPORTS_PORT_EXPOSURE` | `subprocess`, `docker` |
+| Compose services | `SUPPORTS_COMPOSE` | `docker`, `prime` |
+
+Runtime capabilities are orthogonal to agent harness capabilities like MCP tool support, image inputs, or conversation resumption; see [harnesses](harnesses.md) for harness features and [building environments](building-environments.md#separate-agent-and-grading-sandboxes) for running separate solver and grading sandboxes.
 
 ## Images, resources, and timeouts
 
@@ -48,7 +47,7 @@ Timeouts and token budgets can be tuned at evaluation time under `env.agent`:
 
 ## Execution users
 
-On `docker`, `podman`, and `prime`, you can set `TaskData.agent_user` to run the agent under an existing non-root user account in the container image (with a writable home directory). Task `setup` still runs as the container's default user, after which harness setup, the agent process itself, and any colocated task tools execute as `agent_user`. Once the agent finishes, `finalize`, scoring, and artifact collection switch back to the default user.
+On `docker` and `prime`, you can set `TaskData.agent_user` to run the agent under an existing non-root user account in the container image (with a writable home directory). Task `setup` still runs as the container's default user, after which harness setup, the agent process itself, and any colocated task tools execute as `agent_user`. Once the agent finishes, `finalize`, scoring, and artifact collection switch back to the default user.
 
 Calling `runtime.with_user(...)` or `runtime.with_env(...)` returns an independent view over the same underlying resource without mutating existing views. Under the hood, a `RuntimeBackend` (such as `DockerBackend` or `PrimeBackend`) owns the provider lifecycle, including container startup, network policy, and teardown; `backend.bind()` creates a `Runtime` view without provisioning a new resource, and `runtime.backend` exposes the backend when explicit infrastructure operations are needed. `Agent.provision()` lends a runtime whose cleanup remains owned by the caller's context.
 
@@ -108,6 +107,84 @@ async def correct(self, runtime: vf.Runtime) -> float:
 
 Calling `prepare_uv_script` during `stage_verifier` (or during `setup` for a public checker that runs inside the solver sandbox) installs the script's PEP 723 dependencies before execution-time network restrictions lock down the container. Passing the identical script bytes to `run_uv_script` during scoring then reuses the prepared interpreter offline. Whenever your grader imports or executes code written by the agent, run it inside a container (`NEEDS_CONTAINER = True`) rather than in a Python hook on the evaluator. Have the grader script exit `0` and emit a `0.0` score when the submission is wrong or crashes, and reserve nonzero exit codes (raising in `@vf.reward`) for failures that prevented a valid grade from being computed.
 
+## Runtime plugins
+
+verifiers ships only the `prime` sandbox runtime. Run other providers, such as Modal or
+E2B, as plugins. Select `type = "custom"` to use a `RuntimeBackend` subclass from your
+own package:
+
+```toml
+[env.agent.runtime]
+type = "custom"
+import_path = "my_package.runtime.MyBackend"
+region = "us-east-1"
+```
+
+The backend sets `config_class` to its own `CustomRuntimeConfig` subclass. That class
+validates every field next to `import_path` when the config loads. The framework
+constructs the backend as `MyBackend(config, name)` with the validated config, like
+the built-in backends. A backend with `SUPPORTS_TASK_IMAGES` declares `image` and `workdir`
+fields, and a config that inherits `NetworkPolicyConfig` enforces task network
+policies:
+
+```python
+from typing import ClassVar
+
+from verifiers.v1.runtimes import CustomRuntimeConfig, CustomRuntimeInfo, RuntimeBackend
+
+
+class MyConfig(CustomRuntimeConfig):
+    region: str
+    image: str = "python:3.11-slim"
+    workdir: str | None = None
+
+
+class MyBackend(RuntimeBackend):
+    config_class = MyConfig
+    is_local: ClassVar[bool] = False
+    SUPPORTS_TASK_IMAGES: ClassVar[bool] = True
+
+    def __init__(self, config: MyConfig, name: str | None = None) -> None:
+        super().__init__(name)
+        self.config = config
+        self.info = CustomRuntimeInfo(**config.model_dump())
+```
+
+A backend implements this contract; `Runtime` views add user and environment
+bindings and the uv-script helpers on top of it:
+
+| Method | Required | Purpose |
+| --- | --- | --- |
+| `start()` | yes | Provision the resource. |
+| `cleanup()` or `teardown()` | yes | Free it. `cleanup` is synchronous and also runs at interpreter exit. |
+| `exec(runtime, argv, env)` | yes | Start a process and return a handle that streams its stdio. |
+| `write(runtime, path, data)` | yes | Write a file, creating parent directories. |
+| `run(runtime, argv, env)` | no | Run to completion. The default drains an `exec`. |
+| `run_background(runtime, argv, env, log)` | no | Start a long-lived process with its output in `log`. The default keeps an `exec` open for the process's life; override it when the provider runs detached jobs. |
+| `read(runtime, path, max_bytes)` | no | Read a file. The default reads through `run`. |
+| `expose(port)` | with `SUPPORTS_PORT_EXPOSURE` | Publish a port to a URL outside the runtime. |
+| `prepare_execution(routes, network)` | with `NetworkPolicyConfig` | Apply the network policy, or `network` in its place, before the agent starts; `None` routes reopen the network. |
+| `host_url(url)` | no | Rewrite a host URL for programs inside the runtime. |
+
+Install the plugin's package in every process that loads the config, because
+validation imports the backend. The capability flags and `is_local` default to off.
+`tests/unit/test_runtimes.py` has a complete example.
+
+### Checking a runtime
+
+`tests/unit/test_runtimes.py` tests the backend contract and every runtime feature. A
+feature the runtime declares must work, and a feature it does not declare must be
+refused before anything is provisioned. Pass your plugin's config with `--runtime` to
+run the tests against it. Run them before you use the plugin, and after you change it:
+
+```bash
+uv run pytest tests/unit/test_runtimes.py --runtime \
+    '{"type": "custom", "import_path": "my_package.runtime.MyBackend", "region": "us-east-1"}'
+```
+
+`--runtime` also takes a built-in type, for example `--runtime docker`. The tests
+expect `sh` and Python 3 in the runtime's default image.
+
 ## Deployment and services
 
 A `Deployment` coordinates all execution resources for a single rollout attempt: provisioning, placement, connectivity, and cleanup of the harness environment, the task workspace, supporting sidecar services, and fresh verification targets.
@@ -116,7 +193,9 @@ The **workspace** (`deployment.workspace`) is the `Runtime` where task commands 
 
 When a task defines **Compose services** by returning a `ComposeSpec` from `deployment_spec()`, the deployment brings up the multi-container stack and exposes the designated main service as `deployment.workspace` (for example, running `app` as the workspace while a `postgres` sidecar runs alongside it). Without a `ComposeSpec`, the deployment manages a single runtime.
 
-Task hooks can request `deployment` by parameter name and call `deployment.target(name)` to get a `Runtime` view for a specific named service. A task tool server can also run inside a named Compose service (`ToolsetConfig.service`, on a Prime or Modal VM); the harness reaches it over the Compose network by the service's name, so the tool server can front internal services that the workspace cannot reach directly. `finalize_services()` collects sidecar artifacts before isolated verification. On local Docker, Compose tasks require `agent.deployment.trust_compose = true` because task-authored Compose files can mount host paths and request Docker privileges.
+Task hooks can request `deployment` by parameter name and call `deployment.target(name)` to get a `Runtime` view for a specific named service. A task tool server can also run inside a named Compose service (`ToolsetConfig.service`, on a Prime VM); the harness reaches it over the Compose network by the service's name, so the tool server can front internal services that the workspace cannot reach directly. `finalize_services()` collects sidecar artifacts before isolated verification.
+
+Compose runs on local Docker or on a Prime VM. On Prime, one VM hosts the Docker daemon and every service, and its network policy applies to all of them. On local Docker, the evaluator's own Docker daemon runs the task's Compose file, and that file can mount host paths and request Docker privileges. So local Docker refuses Compose tasks unless you set `agent.deployment.trust_compose = true` (`--env.agent.deployment.trust-compose`). Only set it for task packages you trust. Local Compose does not enforce network policies, so run restricted Compose tasks on Prime.
 
 A tool server can also run on a Prime VM of its own, under an egress policy of its own: set its `ToolsetConfig.runtime` to a Prime runtime, such as `vf.PrimeConfig(image="example/tools:1", allow=["*"])` for a server that calls public APIs beside an offline workspace, or `allow=[]` for one that runs agent-submitted code with no egress at all. Beside a Prime workspace without Compose services, the server's VM boots with the workspace and joins it over a LAN network of the rollout's own, on which the workspace's VM may open connections to the server and nothing may open one to the workspace; the harness reaches the server at its VM's LAN name (`<sandbox-id>.sandbox.internal`), and `deployment.target(name)` gives task hooks the server's VM. The VM's policy applies when the workspace's does, after setup. Elsewhere such a server keeps its runtime's published port, which takes no network policy.
 
@@ -134,12 +213,12 @@ For example, to give the agent general internet access while blocking Hugging Fa
 
 ```toml
 [env.agent.runtime]
-type = "docker"
+type = "prime"
 allow = ["*"]
 block = ["huggingface.co", "*.huggingface.co"]
 ```
 
-Network policies take effect after task and harness `setup` complete (so `setup` can still download packages or assets) and remain active through `finalize` and scoring (except in Harbor's shared verifier mode, which [reopens network access during grading](harbor.md#network-policies)). On Modal, keep `network_access = true` when using an allowlist so `setup` stays online; setting `network_access = false` cuts off networking during `setup` as well.
+Network policies take effect after task and harness `setup` complete (so `setup` can still download packages or assets) and remain active through `finalize` and scoring (except in Harbor's shared verifier mode, which [reopens network access during grading](harbor.md#network-policies)).
 
 Scoring can have a policy of its own. `ScoringConfig.network` is the task's policy while scoring runs, in place of `TaskData.network`, and combines with the runtime's rules the same way. Verifiers applies it right before the scoring hooks run, in the workspace (`shared`) or the fresh verifier (`isolated`), so a grader that installs packages under a no-egress task needs no network code:
 

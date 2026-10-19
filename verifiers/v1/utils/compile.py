@@ -8,10 +8,8 @@ from collections.abc import Collection
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.harness import Harness
 from verifiers.v1.runtimes import (
-    PrimeConfig,
     RuntimeConfig,
-    SubprocessConfig,
-    runtime_is_local,
+    backend_cls,
 )
 from verifiers.v1.task import Task
 
@@ -29,10 +27,10 @@ def resolve_runtime_config(
     config = base
     updates: dict = {}
     if task.data.image is not None:
-        if isinstance(config, SubprocessConfig):
+        if not backend_cls(config).SUPPORTS_TASK_IMAGES:
             raise ValueError(
-                f"task {task.data.idx!r} requires image {task.data.image!r}, but the subprocess "
-                "runtime has no container; use the docker or prime runtime"
+                f"task {task.data.idx!r} requires image {task.data.image!r}, but the "
+                f"{config.type} runtime cannot run images; use a supported runtime"
             )
         updates["image"] = task.data.image
     workdir_spec = type(config).model_fields.get("workdir")
@@ -42,11 +40,21 @@ def resolve_runtime_config(
         and config.workdir == workdir_spec.default
     ):
         updates["workdir"] = task.data.workdir
+    if (
+        task.data.agent_user is not None
+        and not backend_cls(config).SUPPORTS_USER_SWITCHING
+    ):
+        raise ValueError(
+            f"task {task.data.idx!r} runs its agent as {task.data.agent_user!r}, but "
+            f"the {config.type} runtime cannot run as another user; use a supported "
+            "runtime"
+        )
     if task.data.network.network_restricted:
         if not isinstance(config, NetworkPolicyConfig):
             raise ValueError(
                 f"task {task.data.idx!r} requires a network policy, but the "
-                f"{config.type} runtime does not support framework-aware policies"
+                f"{config.type} runtime does not enforce network policies; use a "
+                "supported runtime"
             )
         config = config.with_task_network_policy(task.data.network)
     for resource, value in task.data.resources.model_dump(exclude_none=True).items():
@@ -93,37 +101,16 @@ def validate_pairing(
             "`skills` is set. Run them with a harness whose program discovers "
             "skills (e.g. --env.agent.harness.id claude-code)."
         )
-    if harness.NEEDS_CONTAINER and isinstance(runtime_config, SubprocessConfig):
+    container = backend_cls(runtime_config).SUPPORTS_TASK_IMAGES
+    if harness.NEEDS_CONTAINER and not container:
         raise ValueError(
             f"Harness {harness.config.id!r} needs a container runtime "
-            "(NEEDS_CONTAINER), but this run resolves to the subprocess runtime; "
-            "use --env.agent.runtime.type docker or prime."
+            f"(NEEDS_CONTAINER), but this run resolves to the {runtime_config.type} "
+            "runtime; use a supported runtime."
         )
-    if task_cls.NEEDS_CONTAINER and isinstance(runtime_config, SubprocessConfig):
+    if task_cls.NEEDS_CONTAINER and not container:
         raise ValueError(
             f"{task_cls.__name__} needs a container runtime (NEEDS_CONTAINER), but "
-            "this run resolves to the subprocess runtime; use "
-            "--env.<agent>.runtime.type docker or prime."
+            f"this run resolves to the {runtime_config.type} runtime; use a "
+            "supported runtime."
         )
-
-
-def cap_remote_agent_timeout(
-    agent_timeout: float | None, runtime_config: RuntimeConfig, task: Task
-) -> float | None:
-    """Remote sandboxes other than Prime's (which have no lifetime limit) live at
-    most 24 hours: cap the agent timeout there (with a warning) so a long run times
-    out cleanly instead of the provider killing the box mid-run."""
-    if agent_timeout is None or runtime_is_local(runtime_config):
-        return agent_timeout
-    if isinstance(runtime_config, PrimeConfig):
-        return agent_timeout
-    if agent_timeout > 24 * 60 * 60:
-        logger.warning(
-            "task %r resolves to a %.1f-hour agent timeout, but %s sandboxes have a "
-            "maximum lifetime of 24 hours; capping it at 24 hours",
-            task.data.idx,
-            agent_timeout / (60 * 60),
-            runtime_config.type,
-        )
-        return 24 * 60 * 60
-    return agent_timeout

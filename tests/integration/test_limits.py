@@ -19,7 +19,7 @@ async def test_cap(run, cap, stop_condition):
     (episode,) = await run(
         "counter-tool",
         harness="null",
-        runtime={"type": "subprocess"},
+        runtime={"type": "prime"},
         env={"agent": cap},
     )
     (trace,) = episode.traces
@@ -33,7 +33,7 @@ async def test_rollout_timeout(run):
     (episode,) = await run(
         "counter-tool",
         harness="null",
-        runtime={"type": "subprocess"},
+        runtime={"type": "prime"},
         rollout_timeout=1,
     )
     (trace,) = episode.traces

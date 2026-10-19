@@ -5,8 +5,8 @@ model-driven tests skip.
 
 Each behavior module fixes one task and fans it across the harness x runtime grid in
 `grid.py`, which also says why a cell is skipped. `run` drives the `Env` API in-process,
-the calls the eval CLI makes. The placement fixtures below are indirect-only: they translate a parametrized value, and using one without
-`indirect=True` fails loudly.
+the calls the eval CLI makes. The placement fixtures below are indirect-only: they
+translate a parametrized value, and using one without `indirect=True` fails loudly.
 """
 
 import asyncio
@@ -54,7 +54,7 @@ def tool_runtime(request) -> dict:
         return {"service": "tools"}
     if request.param == "service-vm":
         return {"service": "tools-vm"}
-    return {"runtime": {"type": request.param}}
+    return {"runtime": runtime_config(request.param)}
 
 
 # Built-in harnesses are bundled in the `harnesses` package; the agent CLIs (`rlm` /
@@ -180,7 +180,7 @@ def run():
     makes (`serving`, `slots`, `run_slot`, retries included), without its run
     directory, platform push, or dashboard. The Examples job covers that CLI layer."""
 
-    async def _run(taskset: str, **kwargs) -> list[Episode]:
+    async def _episodes(taskset: str, **kwargs) -> list[Episode]:
         config = _eval_config(taskset, **kwargs)
         env = load_environment(config.env)
         tasks = list(env.taskset.select(config.select))
@@ -198,7 +198,7 @@ def run():
                 )
             )
 
-    return _run
+    return _episodes
 
 
 @pytest.fixture

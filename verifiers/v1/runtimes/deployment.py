@@ -89,9 +89,7 @@ class Deployment:
         self.borrowed_runtime = borrowed_runtime
         from verifiers.v1.runtimes.strategies import _deployment_strategy
 
-        self._strategy = _deployment_strategy(
-            self.config, backend.config, spec, self.tool_vms
-        )
+        self._strategy = _deployment_strategy(self.config, backend, spec, self.tool_vms)
         self.target_backends: dict[str, RuntimeBackend] = {}
         self.hosts: dict[str, str] = {}
         """The hostname the workspace reaches a named target by, where it is not the

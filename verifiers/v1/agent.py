@@ -12,7 +12,7 @@ import logging
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager, nullcontext
 from contextvars import ContextVar
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from typing import Generic, Literal, Self, cast
 from weakref import WeakValueDictionary
 
@@ -37,7 +37,7 @@ from verifiers.v1.rollout import Rollout, RolloutTimeouts
 from verifiers.v1.runtimes import (
     Runtime,
     RuntimeConfig,
-    SubprocessConfig,
+    backend_cls,
     provision_backend,
     runtime_is_local,
 )
@@ -52,7 +52,6 @@ from verifiers.v1.types import (
 )
 from verifiers.v1.utils.aio import run_shielded
 from verifiers.v1.utils.compile import (
-    cap_remote_agent_timeout,
     resolve_runtime_config,
     validate_pairing,
 )
@@ -127,10 +126,10 @@ def _check_borrowed_placement(
             )
     if task.data.image is None:
         return
-    if isinstance(runtime.config, SubprocessConfig):
+    if not runtime.backend.SUPPORTS_TASK_IMAGES:
         raise TypeError(
             f"task {task.data.idx!r} requires image {task.data.image!r}, but the "
-            "borrowed runtime is subprocess-backed (no container); borrow a container "
+            f"borrowed {runtime.type} runtime cannot run images; borrow a container "
             "box (e.g. agent.provision(task)) or drop the task's image"
         )
     box_image = getattr(runtime.config, "image", None)
@@ -722,10 +721,13 @@ class Agent:
         on_score: Callable[[Trace, Runtime], Awaitable[None]] | None,
     ) -> Trace:
         params = self._rollout_params(task, runtime, dict(shared_tools or {}))
-        if collect_artifacts and isinstance(params["runtime_config"], SubprocessConfig):
+        if (
+            collect_artifacts
+            and not backend_cls(params["runtime_config"]).SUPPORTS_TASK_IMAGES
+        ):
             raise TypeError(
-                "artifact collection requires a container runtime; subprocess "
-                "artifacts live in a host-only temporary working directory"
+                "artifact collection requires a runtime with its own filesystem; the "
+                f"{params['runtime_config'].type} runtime cannot run images"
             )
         run = Rollout(
             task=task,
@@ -847,10 +849,7 @@ class Agent:
             "harness": harness,
             "ctx": self.ctx,
             "runtime_config": runtime_config,
-            "timeouts": replace(
-                timeouts,
-                agent=cap_remote_agent_timeout(timeouts.agent, runtime_config, task),
-            ),
+            "timeouts": timeouts,
             "limits": self.limits,
             "shared_tools": shared_tools,
             "interception": self._interception_for(run_is_local, task, shared_tools),

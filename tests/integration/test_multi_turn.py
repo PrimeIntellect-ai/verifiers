@@ -4,16 +4,16 @@ every other `dialect` a harness config can select. A turn the harness re-sends
 differently, beyond what its `replay_view` declares, forks the trace."""
 
 import pytest
-from grid import assert_one_branch, dialect_grid, grid, mark
+from grid import RUNTIMES, assert_one_branch, dialect_grid, grid, mark
 
 MULTI_TURN = [
-    *grid(needs=("shell",)),
+    *grid(runtimes=RUNTIMES, needs=("shell",)),
     *dialect_grid(needs=("shell",)),
     pytest.param(
         "bash",
-        {"type": "modal", "allow": []},
-        marks=[mark("bash"), mark("modal")],
-        id="bash-in-modal-framework-only",
+        {"type": "prime", "allow": []},
+        marks=[mark("bash"), mark("prime")],
+        id="bash-in-prime-framework-only",
     ),
 ]
 

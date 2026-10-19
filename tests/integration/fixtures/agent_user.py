@@ -90,7 +90,7 @@ class ScriptedAgentUserHarness(Harness[HarnessConfig]):
             "uv_script": script[-1],
             "read_secret_api": read_api,
         }
-        return await runtime.run_program(["sh", "-c", PROBE], {})
+        return await runtime.run(["sh", "-c", PROBE], {})
 
 
 class AgentUserData(vf.TaskData):

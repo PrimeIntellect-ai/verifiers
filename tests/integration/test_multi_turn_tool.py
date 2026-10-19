@@ -5,7 +5,7 @@ placements (colocated in the harness's box, in a Compose service beside it, or i
 runtime) on the runtime x runtime grid."""
 
 import pytest
-from grid import RUNTIMES, assert_one_branch, grid, placements
+from grid import assert_one_branch, grid, placements
 
 import verifiers.v1 as vf
 
@@ -37,7 +37,7 @@ async def test_tool(run, harness, harness_runtime):
 
 @pytest.mark.parametrize(
     "harness_runtime,tool_runtime",
-    placements(tool_runtimes=("colocated", "service", *RUNTIMES)),
+    placements(tool_runtimes=("colocated", "service", "subprocess", "prime")),
     indirect=True,
 )
 async def test_tool_placement(run, harness_runtime, tool_runtime):

@@ -39,7 +39,7 @@ print(json.dumps(reachable))
 
 class IdleHarness(vf.Harness):
     async def launch(self, ctx, trace, runtime, endpoint, secret, mcp_urls, data):
-        return await runtime.run_program(["true"], {})
+        return await runtime.run(["true"], {})
 
 
 class ProbeTask(vf.Task):
