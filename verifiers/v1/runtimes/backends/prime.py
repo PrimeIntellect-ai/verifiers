@@ -152,7 +152,7 @@ class PrimeProcess(RuntimeProcess):
 
 class PrimeBackend(RuntimeBackend):
     SUPPORTS_TASK_IMAGES: ClassVar[bool] = True
-    SUPPORTS_NESTED_CONTAINERS: ClassVar[bool] = True
+    SUPPORTS_COMPOSE: ClassVar[bool] = True
     SUPPORTS_USER_SWITCHING: ClassVar[bool] = True
 
     def __init__(self, config: PrimeConfig, name: str | None = None) -> None:

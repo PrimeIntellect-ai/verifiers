@@ -70,7 +70,7 @@ def import_backend(import_path: str) -> type[RuntimeBackend]:
             f"not {backend!r}"
         )
     config_class = plugin_config_class(backend)
-    if backend.SUPPORTS_TASK_IMAGES or backend.SUPPORTS_NESTED_CONTAINERS:
+    if backend.SUPPORTS_TASK_IMAGES or backend.SUPPORTS_COMPOSE:
         missing = {"image", "workdir"} - config_class.model_fields.keys()
         if missing:
             raise TypeError(

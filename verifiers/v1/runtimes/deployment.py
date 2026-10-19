@@ -28,6 +28,8 @@ logger = logging.getLogger(__name__)
 class DeploymentConfig(BaseConfig):
     mode: Literal["colocated"] = "colocated"
     """Harness and tools share the workspace."""
+    trust_compose: bool = False
+    """Permit task-authored Compose privileges and bind mounts on local Docker."""
 
 
 class _DeploymentStrategy:

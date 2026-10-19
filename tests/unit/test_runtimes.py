@@ -46,7 +46,7 @@ from verifiers.v1.runtimes import (
     backend_cls,
     provision_runtime,
 )
-from verifiers.v1.runtimes.compose import INSTALL_DOCKER, ComposeSpec
+from verifiers.v1.runtimes.compose import ComposeSpec, compose_services
 from verifiers.v1.runtimes.strategies import _deployment_strategy
 from verifiers.v1.utils.compile import resolve_runtime_config
 
@@ -55,7 +55,7 @@ SUPPORTED = {
     "task_images": {"docker", "prime"},
     "user_switching": {"docker", "prime"},
     "port_exposure": {"subprocess", "docker"},
-    "nested_containers": {"prime"},
+    "compose": {"docker", "prime"},
     "network_policies": {"docker", "prime"},
 }
 PYTHON = ["sh", "-c", 'exec "$(command -v python3 || command -v python)" "$@"', "py"]
@@ -96,12 +96,16 @@ def docker_available() -> bool:
     )
 
 
-@contextlib.asynccontextmanager
-async def provisioned(config: RuntimeConfig, **updates) -> AsyncIterator[Runtime]:
+def skip_unavailable(config: RuntimeConfig) -> None:
     if config.type == "docker" and not docker_available():
         pytest.skip("needs a reachable Docker daemon")
     if config.type == "prime" and not os.environ.get("PRIME_API_KEY"):
         pytest.skip("needs PRIME_API_KEY")
+
+
+@contextlib.asynccontextmanager
+async def provisioned(config: RuntimeConfig, **updates) -> AsyncIterator[Runtime]:
+    skip_unavailable(config)
     if updates:
         config = type(config).model_validate({**config.model_dump(), **updates})
     async with asyncio.timeout(TIMEOUT), provision_runtime(config) as view:
@@ -122,6 +126,29 @@ async def wait_for(
             await asyncio.sleep(0.5)
 
 
+FETCH = "import sys, urllib.request; print(urllib.request.urlopen(sys.argv[1]).read().decode())"
+
+
+@contextlib.asynccontextmanager
+async def host_server(body: bytes) -> AsyncIterator[str]:
+    """An HTTP server on host loopback that answers every request with `body`."""
+
+    async def answer(
+        reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+    ) -> None:
+        await reader.readuntil(b"\r\n\r\n")
+        writer.write(
+            b"HTTP/1.1 200 OK\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s"
+            % (len(body), body)
+        )
+        await writer.drain()
+        writer.close()
+
+    server = await asyncio.start_server(answer, "127.0.0.1", 0)
+    async with server:
+        yield f"http://127.0.0.1:{server.sockets[0].getsockname()[1]}/"
+
+
 def task(**data) -> vf.Task:
     return vf.Task(data=vf.TaskData(idx=0, prompt=None, **data))
 
@@ -134,7 +161,7 @@ def test_built_in_runtime_declares_its_features(name) -> None:
         "task_images": cls.SUPPORTS_TASK_IMAGES,
         "user_switching": cls.SUPPORTS_USER_SWITCHING,
         "port_exposure": cls.SUPPORTS_PORT_EXPOSURE,
-        "nested_containers": cls.SUPPORTS_NESTED_CONTAINERS,
+        "compose": cls.SUPPORTS_COMPOSE,
         "network_policies": isinstance(config, NetworkPolicyConfig),
     }
     assert declared == {f: name in runtimes for f, runtimes in SUPPORTED.items()}
@@ -255,27 +282,50 @@ async def test_port_exposure(runtime, monkeypatch) -> None:
         await wait_for(serving)
 
 
-async def test_nested_containers(runtime) -> None:
-    if not backend_cls(runtime).SUPPORTS_NESTED_CONTAINERS:
-        backend = SimpleNamespace(type=runtime.type, SUPPORTS_NESTED_CONTAINERS=False)
-        with refused(runtime, ValueError, "cannot run nested containers"):
+async def test_compose(runtime, tmp_path) -> None:
+    if not backend_cls(runtime).SUPPORTS_COMPOSE:
+        backend = SimpleNamespace(type=runtime.type, SUPPORTS_COMPOSE=False)
+        with refused(runtime, ValueError, "cannot run Compose services"):
             _deployment_strategy(None, backend, ComposeSpec(directory="."))
         return
-    async with provisioned(runtime) as view:
-        installed = await view.run(["sh", "-c", INSTALL_DOCKER], {})
-        assert installed.exit_code == 0, installed.stdout + installed.stderr
-        await view.run_background(
-            ["dockerd", "--host=unix:///var/run/docker.sock"], {}, "/tmp/dockerd.log"
-        )
+    skip_unavailable(runtime)
+    (tmp_path / "docker-compose.yaml").write_text(
+        "services:\n"
+        "  main: {}\n"
+        "  sidecar:\n"
+        "    image: alpine:3.20\n"
+        "    command: [sleep, infinity]\n"
+    )
+    spec = ComposeSpec(directory=str(tmp_path), file="docker-compose.yaml")
+    async with (
+        asyncio.timeout(TIMEOUT),
+        compose_services(runtime, spec, {}, trust_compose=True) as (services, _, _),
+    ):
+        assert set(services) == {"main", "sidecar"}
+        resolved = await services["main"].bind().run(["getent", "hosts", "sidecar"], {})
+        assert resolved.exit_code == 0, resolved
+        sidecar = services["sidecar"].bind()
+        result = await sidecar.run(["cat", "/etc/alpine-release"], {})
+        assert result.stdout.startswith("3.20"), result
+        if services["main"].is_local:
+            # Local services reach host loopback, as the interception server needs.
+            async with host_server(b"callback") as url:
+                workspace = services["main"].bind()
+                fetched = await workspace.run(
+                    [*PYTHON, "-c", FETCH, workspace.host_url(url)], {}
+                )
+                assert fetched.stdout.strip() == "callback", fetched
 
-        async def daemon_up() -> bool:
-            return (await view.run(["docker", "info"], {})).exit_code == 0
 
-        await wait_for(daemon_up)
-        result = await view.run(
-            ["docker", "run", "--rm", "alpine:3.20", "echo", "nested"], {}
-        )
-        assert result.stdout.strip() == "nested", result
+async def test_local_compose_needs_trust() -> None:
+    spec = ComposeSpec(directory=".")
+    with pytest.raises(ValueError, match="trust-compose"):
+        async with compose_services(vf.DockerConfig(), spec, {}):
+            pass
+    restricted = vf.DockerConfig(allow=["pypi.org"])
+    with pytest.raises(ValueError, match="does not enforce network policies"):
+        async with compose_services(restricted, spec, {}, trust_compose=True):
+            pass
 
 
 async def test_network_policies(runtime) -> None:

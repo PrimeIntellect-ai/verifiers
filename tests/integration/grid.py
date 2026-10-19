@@ -60,7 +60,7 @@ REFUSALS = {
     "user": "cannot run as another user",
     "network": "does not enforce network policies",
     "expose": "cannot expose a port",
-    "nested": "cannot run nested containers",
+    "compose": "cannot run Compose services",
 }
 
 # Harnesses that cannot run against the CI model yet.
@@ -227,8 +227,8 @@ def placements(
         for tool_runtime in tool_runtimes:
             marks = [mark(harness_runtime), mark(tool_runtime)]
             if tool_runtime == "service":
-                if not runtime_cls(harness_runtime).SUPPORTS_NESTED_CONTAINERS:
-                    marks.append(pytest.mark.refused(REFUSALS["nested"]))
+                if not runtime_cls(harness_runtime).SUPPORTS_COMPOSE:
+                    marks.append(pytest.mark.refused(REFUSALS["compose"]))
             elif (
                 tool_runtime != "colocated"
                 and not runtime_cls(tool_runtime).SUPPORTS_PORT_EXPOSURE

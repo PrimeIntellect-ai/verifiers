@@ -176,9 +176,8 @@ class RuntimeBackend(ABC):
     """Whether `expose` can publish a port inside this runtime to the outside, so a
     server here is reachable from another runtime."""
 
-    SUPPORTS_NESTED_CONTAINERS: ClassVar[bool] = False
-    """Whether the runtime can run nested containers, as a task's Docker Compose
-    services need."""
+    SUPPORTS_COMPOSE: ClassVar[bool] = False
+    """Whether the runtime can run a task's Docker Compose services."""
 
     scripts_dir: ClassVar[str] = "/tmp/vf-scripts"
     """Digest-keyed PEP 723 scripts inside the runtime. Sandboxes own their `/tmp`;

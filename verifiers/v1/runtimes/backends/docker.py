@@ -8,8 +8,9 @@ through an in-process proxy that enforces the policy by host name, and its host
 callbacks go through the same proxy. Before the agent starts, an iptables rule in the
 container's network namespace leaves the proxy as the only way out.
 
-The same backend also execs into Compose services on a provider VM through that VM's
-runtime."""
+The same backend also execs into a task's Compose services, on local Docker or on a
+provider VM through that VM's runtime. Local Compose services run on bridge networks;
+on Linux the workspace reaches host callbacks through the proxy."""
 
 from __future__ import annotations
 
@@ -228,6 +229,7 @@ class DockerBackend(RuntimeBackend):
     SUPPORTS_TASK_IMAGES: ClassVar[bool] = True
     SUPPORTS_USER_SWITCHING: ClassVar[bool] = True
     SUPPORTS_PORT_EXPOSURE: ClassVar[bool] = True
+    SUPPORTS_COMPOSE: ClassVar[bool] = True
     is_local = True
 
     def __init__(
@@ -262,9 +264,11 @@ class DockerBackend(RuntimeBackend):
         config: DockerConfig | PrimeConfig,
         container: str,
         *,
-        host_backend: RuntimeBackend,
+        host_backend: RuntimeBackend | None = None,
+        service_url: str | None = None,
     ) -> AsyncIterator[DockerBackend]:
-        """Borrow a container on a provider VM; its caller owns creation and removal."""
+        """Borrow a Compose service container; its caller owns creation and removal.
+        `service_url` is the host URL of a local workspace's published service port."""
         backend = cls(config, host_backend=host_backend)
         backend._container = container
         backend.info.borrowed = True  # cleanup never removes a borrowed container
@@ -283,8 +287,15 @@ class DockerBackend(RuntimeBackend):
             backend.config = config.model_copy(
                 update={"image": info["Image"], "workdir": info["WorkingDir"] or "/"}
             )
+            if host_backend is None:
+                backend.info.id = container
             backend.info.image = backend.config.image
             backend.info.workdir = backend.config.workdir
+            backend._service_url = service_url
+            if host_backend is None and service_url is not None and _LINUX:
+                # A bridged workspace reaches host loopback only through the proxy.
+                backend._proxy = EgressProxy(NetworkPolicy(NetworkPolicyConfig(), []))
+                await backend._proxy.start(listener=await backend._container_listener())
             yield backend
         finally:
             await backend.stop()
@@ -293,13 +304,19 @@ class DockerBackend(RuntimeBackend):
     def _restricted(self) -> bool:
         return (
             self._host_backend is None
+            and not self.info.borrowed
             and isinstance(self.config, NetworkPolicyConfig)
             and self.config.network_restricted
         )
 
     @property
     def _host_network(self) -> bool:
-        return self._host_backend is None and _LINUX and not self._restricted
+        return (
+            self._host_backend is None
+            and not self.info.borrowed
+            and _LINUX
+            and not self._restricted
+        )
 
     @property
     def published_port(self) -> int | None:
@@ -549,7 +566,7 @@ class DockerBackend(RuntimeBackend):
         if self._host_backend is not None:
             await self._host_backend.prepare_execution(routes)
             return
-        if self._proxy is None:
+        if self._proxy is None or not self._restricted:
             return
         if routes is None:
             self._proxy.policy = NetworkPolicy(
@@ -633,7 +650,7 @@ class DockerBackend(RuntimeBackend):
         self, env: dict[str, str], *, stdin: bool = False, user: str | None = None
     ) -> list[str]:
         assert self._container is not None
-        if self._proxy is not None:
+        if self._proxy is not None and self._restricted:
             # Every process goes through the proxy, so one started during setup keeps
             # its allowed egress after the cut.
             proxy = f"http://verifiers:{self._proxy.token}@{self._proxy_host}:{self._proxy.port}"

@@ -1,12 +1,14 @@
-"""Compose scoring uses live shared services or a released, collected submission, on a
-Prime VM."""
+"""Compose scoring uses live shared services or a released, collected submission, on
+local Docker and on a Prime VM."""
 
 import os
+import shutil
 
 import pytest
 
 import verifiers.v1 as vf
 from verifiers.v1.configs.agent import TimeoutConfig
+from verifiers.v1.runtimes.backends.docker import cli
 from verifiers.v1.tasksets.harbor.taskset import (
     CollectHook,
     HarborArtifact,
@@ -14,8 +16,36 @@ from verifiers.v1.tasksets.harbor.taskset import (
     HarborTask,
 )
 
-# Solver service backends by trace id, to check their VM is gone before grading.
+# Solver service backends by trace id, to check they are gone before grading.
 SOLVERS: dict[str, list] = {}
+RUNTIMES = [
+    pytest.param(
+        vf.DockerConfig(),
+        marks=[
+            pytest.mark.docker,
+            pytest.mark.skipif(not shutil.which("docker"), reason="needs Docker"),
+        ],
+        id="docker",
+    ),
+    pytest.param(
+        vf.PrimeConfig(labels=["vf-ci"]),
+        marks=[
+            pytest.mark.prime,
+            pytest.mark.skipif(
+                not os.environ.get("PRIME_API_KEY"), reason="needs PRIME_API_KEY"
+            ),
+        ],
+        id="prime",
+    ),
+]
+
+
+async def released(backend) -> bool:
+    """Whether a solver service is gone: its VM on Prime, its container locally."""
+    if backend._host_backend is not None:
+        return backend._host_backend.stopped
+    return (await cli("docker", "inspect", backend._container)).exit_code != 0
+
 
 IMAGE = "python:3.11-slim"
 COMPOSE = f"""
@@ -61,10 +91,9 @@ class ComposeTask(HarborTask):
         if deployment is not None:
             SOLVERS[trace.id] = list(deployment.target_backends.values())
         else:
-            # Fresh verifier setup happens only after the solver VM is removed.
-            assert all(
-                backend._host_backend.stopped for backend in SOLVERS[trace.id]
-            ), "solver services survived into grading"
+            # Fresh verifier setup happens only after the solver services are removed.
+            for backend in SOLVERS[trace.id]:
+                assert await released(backend), "solver services survived into grading"
             trace.info["solver_released_before_grading"] = True
 
     async def finalize_services(self, trace, targets):
@@ -94,13 +123,13 @@ class ComposeTask(HarborTask):
         "isolated-scoring-timeout",
     ],
 )
-@pytest.mark.prime
-@pytest.mark.skipif(not os.environ.get("PRIME_API_KEY"), reason="needs PRIME_API_KEY")
-async def test_compose_scoring(tmp_path, mode, collect_fails, scoring_timeout):
+@pytest.mark.parametrize("runtime", RUNTIMES)
+async def test_compose_scoring(tmp_path, runtime, mode, collect_fails, scoring_timeout):
     task = compose_task(tmp_path, collect_fails, scoring_timeout, mode)
     config = vf.AgentConfig(
         model="unused",
-        runtime=vf.PrimeConfig(labels=["vf-ci"]),
+        runtime=runtime,
+        deployment=vf.DeploymentConfig(trust_compose=True),
         scoring=vf.ScoringConfig(
             mode=mode,
             env={"EXPECT_SIDECAR": "1" if mode == "isolated" else "0"},
@@ -113,7 +142,8 @@ async def test_compose_scoring(tmp_path, mode, collect_fails, scoring_timeout):
     async with vf.Agent(config) as agent:
         agent.harness = ComposeHarness(vf.HarnessConfig())
         trace = await agent.run(task)
-    assert all(backend._host_backend.stopped for backend in SOLVERS.pop(trace.id, []))
+    for backend in SOLVERS.pop(trace.id, []):
+        assert await released(backend)
     if mode == "isolated" and collect_fails:
         assert not trace.ok
         assert "collect hook failed" in str(trace.errors)

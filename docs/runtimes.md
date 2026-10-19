@@ -19,7 +19,7 @@ Each runtime declares its features through its backend's class attributes, and n
 | Task network policy | config inherits `NetworkPolicyConfig` | `docker`, `prime` |
 | Task `agent_user` | `SUPPORTS_USER_SWITCHING` | `docker`, `prime` |
 | Tool server in its own runtime | `SUPPORTS_PORT_EXPOSURE` | `subprocess`, `docker` |
-| Nested containers, as Compose services need | `SUPPORTS_NESTED_CONTAINERS` | `prime` |
+| Compose services | `SUPPORTS_COMPOSE` | `docker`, `prime` |
 
 Runtime capabilities are orthogonal to agent harness capabilities like MCP tool support, image inputs, or conversation resumption; see [harnesses](harnesses.md) for harness features and [building environments](building-environments.md#separate-agent-and-grading-sandboxes) for running separate solver and grading sandboxes.
 
@@ -193,7 +193,9 @@ The **workspace** (`deployment.workspace`) is the `Runtime` where task commands 
 
 When a task defines **Compose services** by returning a `ComposeSpec` from `deployment_spec()`, the deployment brings up the multi-container stack and exposes the designated main service as `deployment.workspace` (for example, running `app` as the workspace while a `postgres` sidecar runs alongside it). Without a `ComposeSpec`, the deployment manages a single runtime.
 
-Task hooks can request `deployment` by parameter name and call `deployment.target(name)` to get a `Runtime` view for a specific named service. A task tool server can also run inside a named Compose service (`ToolsetConfig.service`, on a Prime VM); the harness reaches it over the Compose network by the service's name, so the tool server can front internal services that the workspace cannot reach directly. `finalize_services()` collects sidecar artifacts before isolated verification. Compose runs on Prime VMs.
+Task hooks can request `deployment` by parameter name and call `deployment.target(name)` to get a `Runtime` view for a specific named service. A task tool server can also run inside a named Compose service (`ToolsetConfig.service`, on a Prime VM); the harness reaches it over the Compose network by the service's name, so the tool server can front internal services that the workspace cannot reach directly. `finalize_services()` collects sidecar artifacts before isolated verification.
+
+Compose runs on local Docker or on a Prime VM. On Prime, one VM hosts the Docker daemon and every service, and its network policy applies to all of them. On local Docker, the evaluator's own Docker daemon runs the task's Compose file, and that file can mount host paths and request Docker privileges. So local Docker refuses Compose tasks unless you set `agent.deployment.trust_compose = true` (`--env.agent.deployment.trust-compose`). Only set it for task packages you trust. Local Compose does not enforce network policies, so run restricted Compose tasks on Prime.
 
 To validate an isolated task without calling a model, finalize the submission, collect its artifacts, and call `vf.grade_submission(task, trace, runtime)`. This runs the task's normal grader, verifier image, timeouts, and retries in a fresh verification target without taking ownership of the supplied solver runtime.
 

@@ -10,7 +10,9 @@ from grid import grid, runtimes_grid
     "preinstalled_tools", [False, True], ids=["fresh", "preinstalled"]
 )
 @pytest.mark.parametrize(
-    "harness_runtime", runtimes_grid(needs=("user",)), indirect=True
+    "harness_runtime",
+    runtimes_grid(("docker", "prime"), needs=("user",)),
+    indirect=True,
 )
 async def test_agent_user_cannot_act_as_root(run, harness_runtime, preinstalled_tools):
     """A scripted, model-free agent runs as the task's non-root `agent_user`. Root-only
@@ -40,7 +42,9 @@ async def test_agent_user_cannot_act_as_root(run, harness_runtime, preinstalled_
 
 
 @pytest.mark.parametrize(
-    "harness,harness_runtime", grid(needs=("user",)), indirect=True
+    "harness,harness_runtime",
+    grid(runtimes=("docker", "prime"), needs=("user",)),
+    indirect=True,
 )
 async def test_agent_user_harness(run, harness, harness_runtime, scripted_model):
     """Each harness installs and runs a turn as a non-root agent user against a scripted
