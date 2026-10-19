@@ -99,6 +99,7 @@ def _rows(file, offset: int = 0):
         except (ValueError, AttributeError):
             continue
         yield start, end - start, row, line
+    return offset
 
 
 def episode_lines(results_dir: Path) -> list[bytes]:
@@ -138,6 +139,7 @@ class _ReadIndex:
 
     def __init__(self, generation: tuple[int, ...]) -> None:
         self.generation = generation
+        self.end = 0
         self.db = sqlite3.connect(":memory:", check_same_thread=False)
         self.db.executescript(_SCHEMA)
 
@@ -207,6 +209,12 @@ class TraceStore:
         # index from its complete canonical rows without needing filesystem writes.
         with self.file.open("rb") as file, contextlib.ExitStack() as stack:
             stat = os.fstat(file.fileno())
+            cached = getattr(self._reader, "index", None)
+            if cached is not None and (
+                cached.generation[:2] != (stat.st_dev, stat.st_ino)
+                or cached.end > stat.st_size
+            ):
+                cached = None
             index = self.root / "traces.index.sqlite"
             if index.exists():
                 try:
@@ -219,6 +227,7 @@ class TraceStore:
                     )
                     db.execute("BEGIN")
                     saved = db.execute("SELECT dev, ino, end FROM meta").fetchone()
+                    stat = os.fstat(file.fileno())
                 except sqlite3.DatabaseError:
                     # A cache may be copied incompletely or left before its schema
                     # was initialized. Canonical rows remain readable unchanged.
@@ -226,15 +235,42 @@ class TraceStore:
                 if saved == (stat.st_dev, stat.st_ino, stat.st_size):
                     yield db, file
                     return
+                if (
+                    saved is not None
+                    and saved[:2] == (stat.st_dev, stat.st_ino)
+                    and 0 <= saved[2] <= stat.st_size
+                    and (cached is None or cached.end < saved[2])
+                ):
+                    # Copy only derived offsets, never the indexed JSON payloads.
+                    # Release the source snapshot before inspecting the live tail.
+                    prefix = _ReadIndex(())
+                    try:
+                        db.backup(prefix.db)
+                    except sqlite3.DatabaseError:
+                        pass  # A disposable cache cannot prevent canonical reads.
+                    else:
+                        prefix.end = saved[2]
+                        cached = prefix
             # A stale SQLite snapshot must not block an index commit while we
             # inspect a potentially large canonical stream.
             stack.close()
             generation = (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns)
-            cached = getattr(self._reader, "index", None)
             if cached is None or cached.generation != generation:
-                cached = _ReadIndex(generation)
-                for start, length, row, _ in _rows(file):
-                    self._index_row(cached.db, row, start, length)
+                if cached is None:
+                    cached = _ReadIndex(())
+                offset = cached.end
+                rows = _rows(file, offset)
+                try:
+                    while True:
+                        start, length, row, _ = next(rows)
+                        self._index_row(cached.db, row, start, length)
+                        offset = start + length
+                except StopIteration as done:
+                    # The parser's cursor covers invalid complete lines too, but
+                    # never an unfinished tail. Do not reread and accidentally skip
+                    # a valid row the live writer appended after the parser ended.
+                    offset = done.value if done.value is not None else offset
+                cached.end, cached.generation = offset, generation
                 self._reader.index = cached
             yield cached.db, file
 
@@ -328,6 +364,13 @@ class TraceStore:
                 None,
             )
 
+    def get_episode(self, trace_id: str) -> dict | None:
+        """Read a trace's complete owning episode from one coherent file snapshot."""
+        if not self.file.exists():
+            return None
+        with self._read_index() as (db, file):
+            return self._row(db, file, trace_id)
+
     def has(self, trace_id: str) -> bool:
         if not self.file.exists():
             return False
@@ -345,6 +388,24 @@ class TraceStore:
                 row[0]: (row[1], row[2])
                 for row in db.execute(
                     "SELECT traces.id, offset, length FROM traces JOIN episodes ON episodes.id=traces.episode"
+                )
+            }
+
+    def trace_addresses(self) -> dict[str, tuple[str, int, int]]:
+        """Map each trace ID to its latest owning episode and native byte address.
+
+        Values are ``(episode_id, offset, length)`` into ``traces.jsonl``. Distinct
+        episodes may reuse a trace ID; this projection selects its latest owner,
+        as ``get`` and ``index`` do, without changing either episode's payload.
+        """
+        if not self.file.exists():
+            return {}
+        with self._read_index() as (db, _):
+            return {
+                row[0]: (row[1], row[2], row[3])
+                for row in db.execute(
+                    "SELECT traces.id, episodes.id, offset, length FROM traces "
+                    "JOIN episodes ON episodes.id=traces.episode"
                 )
             }
 
