@@ -3,7 +3,9 @@ cell is skipped.
 
 Each behavior module fixes one task and fans it over `grid(...)`: every bundled harness
 on Prime, the production runtime. The basic single- and multi-turn behaviors also run
-on the local debug runtimes (`DEBUG_RUNTIMES`). Every reason a cell cannot run derives
+on the host (`DEBUG_RUNTIMES`), which needs no container. Docker cells run on the CI
+runner itself and make the jobs too slow, so the Docker runtime is covered by
+`tests/unit/test_runtimes.py` instead. Every reason a cell cannot run derives
 from a capability the code declares, never from a list of names, so the grid follows
 the code.
 
@@ -18,7 +20,7 @@ refuses an undeclared feature, with a message naming it, is tested in
 
 Every cell carries its axes' marks, so `-m` selects subsets:
 
-    uv run pytest tests/integration -n 8 -m "docker and codex"
+    uv run pytest tests/integration -n 8 -m "prime and codex"
     uv run pytest tests/integration -n 8 -m prime
 
 `terminus-2` (drives the host tmux) and `browser-use` (needs its Playwright image, which
@@ -52,7 +54,7 @@ HARNESSES: list[str | dict] = [
     "mini-swe-agent",
     "prime-agent",
 ]
-DEBUG_RUNTIMES = ("subprocess", "docker")
+DEBUG_RUNTIMES = ("subprocess",)
 RUNTIMES = (*DEBUG_RUNTIMES, "prime")
 
 # The runtime features a behavior can need, as `needs` names them.

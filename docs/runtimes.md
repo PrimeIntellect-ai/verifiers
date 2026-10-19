@@ -163,7 +163,7 @@ bindings and the uv-script helpers on top of it:
 | `run_background(runtime, argv, env, log)` | no | Start a long-lived process with its output in `log`. The default keeps an `exec` open for the process's life; override it when the provider runs detached jobs. |
 | `read(runtime, path, max_bytes)` | no | Read a file. The default reads through `run`. |
 | `expose(port)` | with `SUPPORTS_PORT_EXPOSURE` | Publish a port to a URL outside the runtime. |
-| `prepare_execution(routes)` | with `NetworkPolicyConfig` | Apply the network policy before the agent starts. |
+| `prepare_execution(routes, network)` | with `NetworkPolicyConfig` | Apply the network policy, or `network` in its place, before the agent starts; `None` routes reopen the network. |
 | `host_url(url)` | no | Rewrite a host URL for programs inside the runtime. |
 
 Install the plugin's package in every process that loads the config, because

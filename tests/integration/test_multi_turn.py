@@ -11,9 +11,9 @@ MULTI_TURN = [
     *dialect_grid(needs=("shell",)),
     pytest.param(
         "bash",
-        {"type": "docker", "allow": []},
-        marks=[mark("bash"), mark("docker")],
-        id="bash-in-docker-framework-only",
+        {"type": "prime", "allow": []},
+        marks=[mark("bash"), mark("prime")],
+        id="bash-in-prime-framework-only",
     ),
 ]
 
