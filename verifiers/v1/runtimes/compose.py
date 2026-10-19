@@ -147,6 +147,7 @@ async def compose_services(
         key: os.environ[key] for key in DOCKER_ENV if local and key in os.environ
     }
     host_backend = None
+    prepared_images: dict[str, str] | None = None
     stack = AsyncExitStack()
 
     async def run_host(*argv: str) -> ProgramResult:
@@ -307,6 +308,32 @@ async def compose_services(
                     raise SandboxError(
                         f"Loading host images failed: {loaded.stderr or loaded.stdout}"
                     )
+                manifest = await run_host(
+                    "sh",
+                    "-c",
+                    f"if [ -f {COMPOSE_IMAGES}/manifest.json ]; then cat {COMPOSE_IMAGES}/manifest.json; fi",
+                )
+                if manifest.exit_code:
+                    raise SandboxError("Reading prepared Compose image manifest failed")
+                if manifest.stdout.strip():
+                    prepared = json.loads(manifest.stdout)
+                    if prepared.get("version") != 1 or not isinstance(
+                        prepared.get("services"), dict
+                    ):
+                        raise SandboxError("Invalid prepared Compose image manifest")
+                    prepared_images = prepared["services"]
+                    for service, image in prepared_images.items():
+                        if not isinstance(image, str) or not image.startswith(
+                            "vf-prepared/"
+                        ):
+                            raise SandboxError(
+                                f"Invalid prepared image for {service!r}"
+                            )
+                        inspected = await run_host("docker", "image", "inspect", image)
+                        if inspected.exit_code:
+                            raise SandboxError(
+                                f"Missing prepared Compose image for {service!r}: {image}"
+                            )
                 root = "/vf-deployment"
                 await host_backend.bind().write(
                     "/tmp/vf-deployment.tar.gz",
@@ -405,6 +432,15 @@ async def compose_services(
                     publish["extra_hosts"] = {"host.docker.internal": "host-gateway"}
             elif isinstance(config, ModalConfig):
                 publish["ports"] = [f"{SERVICE_PORT}:{SERVICE_PORT}"]
+            if prepared_images is not None:
+                if prepared_images.keys() != services.keys():
+                    raise SandboxError(
+                        "Prepared Compose image services do not match this deployment"
+                    )
+                for service, image in prepared_images.items():
+                    overlay["services"].setdefault(service, {}).update(
+                        image=image, pull_policy="never"
+                    )
             if host_backend is None:
                 (directory / "overlay.json").write_text(json.dumps(overlay))
             else:
@@ -417,7 +453,16 @@ async def compose_services(
                 atexit.register(down)
                 stack.push_async_callback(release)
             # Cancellation kills the local CLI; the stack removes the project or VM.
-            await compose("up", "--detach", "--wait")
+            await compose(
+                "up",
+                "--detach",
+                "--wait",
+                *(
+                    ["--no-build", "--pull", "never"]
+                    if prepared_images is not None
+                    else []
+                ),
+            )
             containers = await compose(
                 "ps", "--all", "--format", "{{.ID}} {{.Service}}"
             )
