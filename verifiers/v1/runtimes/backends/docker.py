@@ -15,6 +15,8 @@ from __future__ import annotations
 import array
 import asyncio
 import contextlib
+import csv
+import io
 import json
 import logging
 import os
@@ -31,7 +33,9 @@ from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, ClassVar, Literal
 from urllib.parse import urlsplit
 
-from verifiers.v1.configs.runtime import NetworkPolicyConfig
+from pydantic import Field, field_validator
+
+from verifiers.v1.configs.runtime import BindMount, NetworkPolicyConfig, validate_mounts
 from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes.backends.subprocess import SubprocessProcess
 from verifiers.v1.runtimes.base import (
@@ -45,6 +49,7 @@ from verifiers.v1.runtimes.base import (
 from verifiers.v1.runtimes.egress import EgressProxy, NetworkPolicy, is_loopback_host
 from verifiers.v1.runtimes.runtime import Runtime
 from verifiers.v1.utils.aio import run_shielded
+from verifiers.v1.utils.artifacts import MOUNT_ARCHIVE_SCRIPT, validate_runtime_mounts
 from verifiers.v1.utils.scope import run_scope
 
 logger = logging.getLogger(__name__)
@@ -82,6 +87,15 @@ class DockerConfig(NetworkPolicyConfig):
     disk: float | None = None
     """Advisory disk request in GB. Docker has no portable per-container size limit, so this is accepted (so a task can declare it without a warning) but not
     enforced."""
+
+    mounts: dict[str, BindMount] = Field(default_factory=dict)
+    """Guest paths mapped to host paths, attached before task setup.
+    Read-only mounts include submounts and require Docker Engine/CLI >=25.0 and
+    Linux >=5.12 on the daemon. Artifacts inside writable mounts stay in place
+    for a grader with the same attachment; other artifacts must stay outside mounts.
+    Mount paths cannot traverse symlinks or be moved. Compose is unsupported."""
+
+    _validate_mounts = field_validator("mounts")(validate_mounts)
 
 
 class DockerRuntimeInfo(DockerConfig, BaseRuntimeInfo):
@@ -267,6 +281,8 @@ class DockerBackend(RuntimeBackend):
     ) -> AsyncIterator[DockerBackend]:
         """Borrow a Compose service container; its caller owns creation and removal.
         `service_url` is the host URL of a local workspace's published service port."""
+        if getattr(config, "mounts", {}):
+            raise ValueError("Cannot attach runtime mounts to an existing container")
         backend = cls(config, host_backend=host_backend)
         backend._container = container
         backend.info.borrowed = True  # cleanup never removes a borrowed container
@@ -365,6 +381,18 @@ class DockerBackend(RuntimeBackend):
             for key, value in self.env.items()
             for arg in ("--env", f"{key}={value}")
         ]
+        for target, mount in getattr(self.config, "mounts", {}).items():
+            bind_options = ["type=bind", f"source={mount.source}", f"target={target}"]
+            if mount.read_only:
+                # Refuse kernels that would leave nested mounts writable.
+                bind_options += [
+                    "readonly",
+                    "bind-propagation=rprivate",
+                    "bind-recursive=readonly",
+                ]
+            value = io.StringIO()
+            csv.writer(value).writerow(bind_options)
+            options += ["--mount", value.getvalue().removesuffix("\r\n")]
         run = await cli(
             "docker",
             "run",
@@ -432,6 +460,8 @@ class DockerBackend(RuntimeBackend):
         )
         if made.exit_code != 0:
             raise SandboxError(f"docker workdir setup failed: {made.stderr.strip()}")
+        if await validate_runtime_mounts(self.bind(), []):
+            await self.bind().prepare_uv_script(MOUNT_ARCHIVE_SCRIPT)
         published = await cli("docker", "port", self._container, f"{SERVICE_PORT}/tcp")
         host_port = (published.stdout.split() or [""])[0].rpartition(":")[2]
         if published.exit_code != 0 or not host_port.isdigit():

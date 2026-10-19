@@ -94,6 +94,8 @@ async def compose_services(
             "Local Compose tasks can access host files and Docker privileges; "
             "only run trusted tasks with --env.agent.deployment.trust-compose"
         )
+    if getattr(config, "mounts", {}):
+        raise ValueError("Runtime mounts are not supported for Compose tasks")
     if local and config.network_restricted:
         raise ValueError(
             "Local Compose does not enforce network policies; run the task on prime"

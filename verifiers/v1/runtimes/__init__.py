@@ -4,7 +4,7 @@ from typing import Annotated
 
 from pydantic import Field, SerializeAsAny
 
-from verifiers.v1.configs.runtime import NetworkPolicyConfig
+from verifiers.v1.configs.runtime import BindMount, NetworkPolicyConfig
 from verifiers.v1.runtimes.backends.custom import (
     CustomRuntimeConfig,
     CustomRuntimeInfo,
@@ -104,6 +104,7 @@ def runtime_is_local(config: RuntimeConfig) -> bool:
 
 __all__ = [
     "BaseRuntimeInfo",
+    "BindMount",
     "CustomRuntimeConfig",
     "CustomRuntimeInfo",
     "DockerBackend",

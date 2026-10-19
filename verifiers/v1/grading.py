@@ -3,6 +3,7 @@
 import asyncio
 import copy
 import logging
+import posixpath
 from contextlib import AsyncExitStack, contextmanager
 from pathlib import PurePosixPath
 
@@ -17,7 +18,7 @@ from verifiers.v1.runtimes import (
 )
 from verifiers.v1.task import Task
 from verifiers.v1.trace import Error, Trace
-from verifiers.v1.utils.artifacts import restore
+from verifiers.v1.utils.artifacts import ARTIFACTS_DIR, restore
 from verifiers.v1.utils.compile import resolve_runtime_config
 from verifiers.v1.utils.decorators import invoke
 from verifiers.v1.utils.env import resolve_env
@@ -78,6 +79,21 @@ def verifier_runtime(
         raise TaskError(
             f"cannot restore relative artifacts {relative!r} from {solver_dir} into {grader_dir}; use matching workdirs or absolute paths"
         )
+    # Collection leaves mounted artifacts in place, so a fresh verifier must
+    # attach the same storage rather than silently grading an empty workspace.
+    solver_mounts = getattr(solver_runtime.config, "mounts", {})
+    grader_mounts = getattr(config, "mounts", {})
+    paths = [
+        PurePosixPath(posixpath.normpath(str(solver_dir / source)))
+        for source in [ARTIFACTS_DIR, *(a.source for a in task.data.artifacts)]
+    ]
+    for target in solver_mounts.keys() | grader_mounts.keys():
+        if any(path.is_relative_to(target) for path in paths) and (
+            solver_mounts.get(target) != grader_mounts.get(target)
+        ):
+            raise TaskError(
+                f"artifact mount {target!r} must match in solver and verifier runtimes"
+            )
     return config
 
 

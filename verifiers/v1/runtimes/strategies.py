@@ -29,6 +29,9 @@ class _ColocatedDeployment(_DeploymentStrategy):
             try:
                 await deployment.execution_backend.stop()
             except Exception:
+                # Mounted submissions depend on completed writes and released consumers.
+                if getattr(deployment.execution_backend.config, "mounts", {}):
+                    raise
                 logger.warning("solver teardown failed before grading", exc_info=True)
 
 
