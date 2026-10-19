@@ -39,7 +39,7 @@ Harbor is a task-format adapter: its tasks work directly under `SingleAgentEnv`,
 
 ## Task images
 
-For standard single-container tasks, verifiers requires a pullable container image rather than building Dockerfiles on the fly (Compose tasks can build service images inside the sandbox; see [Deployment and services](runtimes.md#deployment-and-services)). To prepare images for your tasks, build each Dockerfile with Docker, push it to a registry, and set the resulting image reference on the task data.
+For standard single-container tasks, verifiers requires a pullable container image rather than building Dockerfiles on the fly. To prepare images for your tasks, build each Dockerfile, push it to a registry, and set the resulting image reference on the task data. Compose tasks run on local Docker, where they can build service images. On Prime, task subclasses can declare native VM services with `ServicesSpec` and start their processes during setup (see [Deployment and services](runtimes.md#deployment-and-services)); Harbor Compose files are not translated automatically.
 
 When a Compose task's `main` service has no `image` or `build`, verifiers builds `environment/Dockerfile`. Setting `ignore_dockerfile = true` uses the runtime image instead; an explicit task image also takes precedence over the implicit build.
 
@@ -125,7 +125,7 @@ The bridge supports `stdio`, `sse`, and `streamable-http` servers, forwarding th
 
 ## Artifacts and collect hooks
 
-`artifacts = [...]` and `[[verifier.collect]]` are read from `task.toml` ([Harbor artifact docs](https://www.harborframework.com/docs/run-jobs/results-and-artifacts)). Each entry's `service` selects the source runtime, defaulting to `main`, with additional services resolved from the deployment's Compose project. Missing Harbor artifacts are treated as optional during collection, so your test suite should fail if a required output file is absent (by contrast, native `vf.Artifact` declarations default to required).
+`artifacts = [...]` and `[[verifier.collect]]` are read from `task.toml` ([Harbor artifact docs](https://www.harborframework.com/docs/run-jobs/results-and-artifacts)). Each entry's `service` selects the source runtime, defaulting to `main`, with additional services resolved from the deployment's native VMs or local Compose project. Missing Harbor artifacts are treated as optional during collection, so your test suite should fail if a required output file is absent (by contrast, native `vf.Artifact` declarations default to required).
 
 Saving a trace writes its collected files alongside `traces.jsonl`, under `artifacts/<trace-id>/`; artifact bytes are excluded from the JSON. `destination` sets the saved path relative to that directory. Without it, files mirror their source paths with the leading `/` removed. For example, `{ source = "/app/report.json", destination = "report.json" }` saves `artifacts/<trace-id>/report.json` and restores `/app/report.json` for grading.
 
