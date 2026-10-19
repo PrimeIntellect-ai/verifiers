@@ -278,6 +278,15 @@ class Task(Generic[DataT, StateT, ConfigT]):
         """Inspect reference behavior before normal finalization and grading."""
         return
 
+    async def rescore(self, trace: Trace) -> None:
+        """Score a finished trace again, offline: clear its rewards, metrics and judge
+        calls, then run this task's signals that need only the trace."""
+        if trace.has_error:
+            raise ValueError("the rollout errored: its transcript is incomplete")
+        trace.info.pop("judge_calls", None)
+        trace.rewards, trace.metrics, trace.extra_usage = {}, {}, []
+        await self.score(trace)
+
     def defer_scoring(self) -> Self:
         """An independent copy whose task signals are deferred.
 
