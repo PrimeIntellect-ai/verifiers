@@ -106,6 +106,10 @@ def gate_key(
 ) -> str:
     """The gate a request belongs to: one per endpoint origin, credential and model, since
     providers limit per key and model. The credential is only hashed."""
+    # Anthropic sends the bare key; OpenAI sends the same key as a Bearer
+    # credential. Keep existing Bearer gate identities while sharing their cap.
+    if credential and not any(char.isspace() for char in credential):
+        credential = f"Bearer {credential}"
     origin = f"{url.scheme}://{url.host}:{url.port or ''}"
     identity = f"{origin}\n{credential}\n{model}"
     if scope is not None:
