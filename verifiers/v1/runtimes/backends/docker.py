@@ -1,16 +1,14 @@
-"""Local Docker runtime. On Linux an unrestricted container shares the host network,
-so host services and container ports are reachable on loopback. Elsewhere Docker runs
-in a VM: the container reaches host loopback through `host.docker.internal` and
-publishes one service port.
+"""Local Docker runtime. A container runs on the bridge network and publishes one
+service port. It reaches host-loopback services, such as the interception server,
+through an in-process proxy: on Linux the proxy listens in the container's network
+namespace, elsewhere on host loopback behind `host.docker.internal`.
 
-A container with a network policy runs on the bridge network instead. Its egress goes
-through an in-process proxy that enforces the policy by host name, and its host
-callbacks go through the same proxy. Before the agent starts, an iptables rule in the
+For a container with a network policy, the same proxy also carries its egress and
+enforces the policy by host name. Before the agent starts, an iptables rule in the
 container's network namespace leaves the proxy as the only way out.
 
 The same backend also execs into a task's Compose services, on local Docker or on a
-provider VM through that VM's runtime. Local Compose services run on bridge networks;
-on Linux the workspace reaches host callbacks through the proxy."""
+provider VM through that VM's runtime."""
 
 from __future__ import annotations
 
@@ -292,10 +290,10 @@ class DockerBackend(RuntimeBackend):
             backend.info.image = backend.config.image
             backend.info.workdir = backend.config.workdir
             backend._service_url = service_url
-            if host_backend is None and service_url is not None and _LINUX:
-                # A bridged workspace reaches host loopback only through the proxy.
-                backend._proxy = EgressProxy(NetworkPolicy(NetworkPolicyConfig(), []))
-                await backend._proxy.start(listener=await backend._container_listener())
+            if host_backend is None and service_url is not None:
+                await backend._start_proxy(
+                    NetworkPolicy(NetworkPolicyConfig(allow=[]), [])
+                )
             yield backend
         finally:
             await backend.stop()
@@ -310,17 +308,8 @@ class DockerBackend(RuntimeBackend):
         )
 
     @property
-    def _host_network(self) -> bool:
-        return (
-            self._host_backend is None
-            and not self.info.borrowed
-            and _LINUX
-            and not self._restricted
-        )
-
-    @property
-    def published_port(self) -> int | None:
-        return None if self._host_network else SERVICE_PORT
+    def published_port(self) -> int:
+        return SERVICE_PORT
 
     async def start(self) -> None:
         # Compose keeps its authored workdir; only standalone containers default to /app.
@@ -350,12 +339,9 @@ class DockerBackend(RuntimeBackend):
             await _ensure_network_image()
         # Engine names are global; cleanup must never target a caller's existing container.
         self._container = f"vf-{uuid.uuid4().hex}"
-        if self._host_network:
-            options = ["--network", "host"]
-        else:
-            options = ["--network", "bridge", "--publish", f"127.0.0.1::{SERVICE_PORT}"]
-            if not _LINUX:
-                options += ["--add-host", f"{_HOST_ALIAS}:host-gateway"]
+        options = ["--network", "bridge", "--publish", f"127.0.0.1::{SERVICE_PORT}"]
+        if not _LINUX:
+            options += ["--add-host", f"{_HOST_ALIAS}:host-gateway"]
         if self._restricted:
             options += [
                 "--cap-drop",
@@ -446,24 +432,20 @@ class DockerBackend(RuntimeBackend):
         )
         if made.exit_code != 0:
             raise SandboxError(f"docker workdir setup failed: {made.stderr.strip()}")
-        if not self._host_network:
-            published = await cli(
-                "docker", "port", self._container, f"{SERVICE_PORT}/tcp"
-            )
-            host_port = (published.stdout.split() or [""])[0].rpartition(":")[2]
-            if published.exit_code != 0 or not host_port.isdigit():
-                detail = (published.stderr or published.stdout).strip()
-                raise SandboxError(f"docker did not publish the service port: {detail}")
-            self._service_url = f"http://127.0.0.1:{host_port}"
-        if self._restricted:
-            # Setup egress stays open until prepare_execution applies the policy.
-            self._proxy = EgressProxy(
-                NetworkPolicy(NetworkPolicyConfig(), [], allow_non_global=True)
-            )
-            if _LINUX:
-                await self._proxy.start(listener=await self._container_listener())
-            else:
-                await self._proxy.start("127.0.0.1")
+        published = await cli("docker", "port", self._container, f"{SERVICE_PORT}/tcp")
+        host_port = (published.stdout.split() or [""])[0].rpartition(":")[2]
+        if published.exit_code != 0 or not host_port.isdigit():
+            detail = (published.stderr or published.stdout).strip()
+            raise SandboxError(f"docker did not publish the service port: {detail}")
+        self._service_url = f"http://127.0.0.1:{host_port}"
+        # An unrestricted container uses the proxy for host callbacks only. A restricted
+        # one sends its egress through it too, open until prepare_execution applies the
+        # policy.
+        await self._start_proxy(
+            NetworkPolicy(NetworkPolicyConfig(), [], allow_non_global=True)
+            if self._restricted
+            else NetworkPolicy(NetworkPolicyConfig(allow=[]), [])
+        )
         logger.info(
             "docker: started container %s (image=%s)",
             self._container,
@@ -473,20 +455,13 @@ class DockerBackend(RuntimeBackend):
     def host_url(self, url: str) -> str:
         if self._host_backend is not None:
             return self._host_backend.host_url(url)
-        parts = urlsplit(url)
-        if self._host_network or not is_loopback_host(parts.hostname or ""):
+        if self._proxy is None or not is_loopback_host(urlsplit(url).hostname or ""):
             return url
-        if self._proxy is not None:
-            return self._proxy.callback_url(url, self._proxy_host)
-        userinfo, at, _ = parts.netloc.rpartition("@")
-        port = f":{parts.port}" if parts.port else ""
-        return parts._replace(netloc=f"{userinfo}{at}{_HOST_ALIAS}{port}").geturl()
+        return self._proxy.callback_url(url, self._proxy_host)
 
     async def expose(self, port: int) -> str:
         if self._host_backend is not None:
             return await self._host_backend.expose(port)
-        if self._host_network:
-            return f"http://127.0.0.1:{port}"
         if port != SERVICE_PORT or self._service_url is None:
             raise SandboxError(f"docker publishes only port {SERVICE_PORT}, not {port}")
         return self._service_url
@@ -496,6 +471,13 @@ class DockerBackend(RuntimeBackend):
         """Where the container reaches the proxy: on Linux its listener lives in the
         container's own network namespace."""
         return "127.0.0.1" if _LINUX else _HOST_ALIAS
+
+    async def _start_proxy(self, policy: NetworkPolicy) -> None:
+        self._proxy = EgressProxy(policy)
+        if _LINUX:
+            await self._proxy.start(listener=await self._container_listener())
+        else:
+            await self._proxy.start("127.0.0.1")
 
     async def _container_listener(self) -> socket.socket:
         """Create the proxy listener inside the container netns, serviced here."""
