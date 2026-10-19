@@ -6,7 +6,7 @@ import json
 import os
 
 import pytest
-from fetch_tool_v1 import FetchToolTask, FetchToolTaskConfig
+from fetch_tool import FetchToolTask, FetchToolTaskConfig
 
 import verifiers.v1 as vf
 from verifiers.v1.configs.agent import TimeoutConfig

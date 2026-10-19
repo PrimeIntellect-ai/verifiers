@@ -108,6 +108,8 @@ jobs:
             tests: tests/integration/test_tool_vms.py
           - behavior: Sampling
             tests: tests/integration/test_sampling.py
+          - behavior: Parallel
+            tests: tests/integration/test_parallel.py
           - behavior: Skills
             tests: tests/integration/test_skills.py
           - behavior: Limits

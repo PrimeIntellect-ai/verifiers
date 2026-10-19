@@ -11,7 +11,7 @@ SAMPLING = {"temperature": 0.3, "top_p": 0.9, "reasoning_effort": "high"}
 @pytest.mark.parametrize("harness,harness_runtime", grid(), indirect=True)
 async def test_sampling_overrides(run, harness, harness_runtime):
     (episode,) = await run(
-        "echo-v1",
+        "echo",
         harness=harness,
         runtime=harness_runtime,
         env={"agent": {"sampling": SAMPLING}},

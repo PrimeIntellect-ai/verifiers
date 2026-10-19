@@ -1,4 +1,4 @@
-"""One task, one reply: the model echoes a phrase back (echo-v1), across the harness x
+"""One task, one reply: the model echoes a phrase back (echo), across the harness x
 runtime grid."""
 
 import pytest
@@ -16,7 +16,7 @@ SINGLE_TURN = skip_harness(
 @pytest.mark.parametrize("harness,harness_runtime", SINGLE_TURN, indirect=True)
 async def test_single_turn(run, harness, harness_runtime):
     (episode,) = await run(
-        "echo-v1",
+        "echo",
         harness=harness,
         runtime=harness_runtime,
         env={"agent": {"sampling": {"temperature": 0.0}}},
