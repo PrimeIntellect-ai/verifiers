@@ -588,7 +588,10 @@ class ChatDialect(Dialect[ChatCompletion]):
         # sampling config carries an extra field named `model`.
         overrides = sampling.model_dump(exclude_none=True)
         max_token_keys = {"max_tokens", "max_completion_tokens"}
-        max_tokens_overridden = not max_token_keys.isdisjoint(overrides)
+        max_tokens_overridden = (
+            "max_tokens" in sampling.model_fields_set
+            or not max_token_keys.isdisjoint(overrides)
+        )
         steered = {
             k: v
             for k, v in body.items()

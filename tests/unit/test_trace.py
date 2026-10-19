@@ -41,7 +41,7 @@ def test_bare_trace_round_trip(sampling):
     defaults = vf.SamplingConfig(temperature=0.7, max_tokens=128, top_k=40)
     # Resolve the live overrides before serializing the effective config on a trace.
     resolved = resolve_agent(spec, sampling=defaults)
-    assert set(vf.SamplingConfig.model_fields) <= resolved.sampling.model_fields_set
+    assert defaults.model_fields_set <= resolved.sampling.model_fields_set
     # The minimal trace: a base task, no nodes, no extras — dump and back into a plain Trace.
     tr = vf.Trace(
         agent=vf.AgentInfo(config=resolved),

@@ -175,7 +175,7 @@ def resolve_agent(
     for configured agent roles."""
     defaults = sampling or SamplingConfig()
     overrides = (spec.sampling or SamplingConfig()).model_dump(exclude_unset=True)
-    merged = {**defaults.model_dump(), **merge_defaults(defaults, overrides)}
+    merged = merge_defaults(defaults, overrides)
     return spec.model_copy(
         update={
             "harness": spec.harness if spec.harness is not None else harness,
