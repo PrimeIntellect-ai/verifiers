@@ -298,9 +298,10 @@ async def compose_services(
                         raise SandboxError(
                             f"Recording the Compose project failed: {saved.stderr}"
                         )
-                async with asyncio.timeout(60):
-                    while (await run_host("docker", "info")).exit_code:
-                        await asyncio.sleep(1)
+                # VM daemon readiness shares the caller's provisioning/setup budget.
+                # A cold or restored host can legitimately need more than one minute.
+                while (await run_host("docker", "info")).exit_code:
+                    await asyncio.sleep(1)
                 loaded = await run_host("sh", "-c", LOAD_IMAGES)
                 if loaded.exit_code:
                     raise SandboxError(
