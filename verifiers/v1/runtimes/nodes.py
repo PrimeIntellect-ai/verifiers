@@ -9,6 +9,7 @@ cannot do before anything is provisioned. Nothing provisions from a plan yet:
 
 from __future__ import annotations
 
+import shlex
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any, Literal
@@ -17,7 +18,12 @@ from pydantic import Field, TypeAdapter, model_validator
 from pydantic_config import BaseConfig
 
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
-from verifiers.v1.runtimes import RuntimeConfig, SubprocessConfig, backend_cls
+from verifiers.v1.runtimes import (
+    RuntimeBackend,
+    RuntimeConfig,
+    SubprocessConfig,
+    backend_cls,
+)
 
 WORKSPACE = "main"
 """The agent's workspace. Its runtime is the agent's runtime, resolved for the task."""
@@ -32,9 +38,13 @@ class PlacementError(ValueError):
 class ProcessConfig(BaseConfig):
     """A long-running process a node runs besides the tool servers placed on it."""
 
-    command: list[str]
+    command: list[str] | None = None
+    """None runs the image's own command."""
     environment: dict[str, str] = Field(default_factory=dict)
     """Reaches the node only, never the workspace."""
+    passthrough: list[str] = Field(default_factory=list)
+    """Variables taken from the node's own environment, as Compose takes a bare `KEY`
+    from its own."""
     workdir: str | None = None
     readiness: list[str] | None = None
     """Exits 0 once the process serves."""
@@ -192,10 +202,10 @@ def plan(
                     f"the {runtimes[node].type} runtime cannot join machines on a "
                     "private network; use a supported runtime"
                 )
-        if runtimes[source].type != runtimes[target].type:
+        if _backend(runtimes[source]) is not _backend(runtimes[target]):
             raise PlacementError(
                 f"nodes {source!r} and {target!r} need a private network across the "
-                f"{runtimes[source].type} and {runtimes[target].type} runtimes"
+                f"{_name(runtimes[source])} and {_name(runtimes[target])} runtimes"
             )
         return "private network"
 
@@ -223,6 +233,9 @@ def _runtime(
     capabilities: Callable[[RuntimeConfig], Capabilities],
 ) -> RuntimeConfig:
     overrides = dict(node.runtime)
+    # Without `type`, a node starts from the workspace's runtime; with it, from that
+    # runtime's defaults, even when it names the workspace's type.
+    inherits = "type" not in overrides
     kind = overrides.pop("type", workspace.type)
     # A node's egress policy replaces the workspace's whole: an `allow` alone must not
     # keep the workspace's `block`.
@@ -231,7 +244,7 @@ def _runtime(
         if {"allow", "block"} & overrides.keys()
         else {}
     )
-    base = workspace.model_dump() if kind == workspace.type else {}
+    base = workspace.model_dump() if inherits else {}
     adapter: TypeAdapter[Any] = TypeAdapter(RuntimeConfig)
     config = adapter.validate_python({**base, **overrides, "type": kind})
     if policy:
@@ -242,6 +255,15 @@ def _runtime(
             )
         config = adapter.validate_python({**config.model_dump(), **policy})
     return config
+
+
+def _backend(config: RuntimeConfig) -> type[RuntimeBackend]:
+    # Runtime plugins share `type = "custom"`; their backends tell them apart.
+    return backend_cls(config)
+
+
+def _name(config: RuntimeConfig) -> str:
+    return getattr(config, "import_path", config.type)
 
 
 def _policy(config: RuntimeConfig) -> tuple[tuple[str, ...], tuple[str, ...]] | None:
@@ -258,7 +280,11 @@ def _machines(
     # Egress belongs to a machine, so only nodes with one policy can share one.
     groups: dict[object, list[str]] = {}
     for name, config in runtimes.items():
-        key = name if topology.node(name).isolated else (config.type, _policy(config))
+        key = (
+            name
+            if topology.node(name).isolated
+            else (_backend(config), _policy(config))
+        )
         groups.setdefault(key, []).append(name)
     machines = []
     for names in groups.values():
@@ -286,6 +312,8 @@ def topology_from(
     nodes = nodes_from_compose(compose) if compose is not None else {}
     servers = {}
     for name, config in toolsets.items():
+        if config.url is not None:
+            continue  # a remote server: nothing to place
         if config.service is not None:
             servers[name] = config.service
         elif config.colocated:
@@ -293,9 +321,14 @@ def topology_from(
         elif not isinstance(config.runtime, SubprocessConfig):
             # A runtime of its own is a machine of its own, as a tool VM is today.
             node = f"tools-{name}"
+            if node in nodes:
+                raise ValueError(
+                    f"toolset {name!r} needs a node named {node!r}, which the Compose "
+                    "project already declares"
+                )
             nodes[node] = NodeConfig(runtime=config.runtime.model_dump(), isolated=True)
             servers[name] = node
-        elif config.url is None:
+        else:
             servers[name] = HOST
     return TopologyConfig(nodes=nodes, mcp_servers=servers)
 
@@ -312,8 +345,26 @@ def nodes_from_compose(
         return WORKSPACE if service == workspace else service
 
     def networks(service: Mapping[str, Any]) -> set[str]:
+        mode = service.get("network_mode")
+        if mode == "none":
+            return set()
+        if mode is not None:
+            raise ValueError(f"network_mode {mode!r} has no node equivalent")
         declared = service.get("networks") or ["default"]
         return set(declared if isinstance(declared, list) else declared.keys())
+
+    def environment(spec: Mapping[str, Any]) -> dict[str, str | None]:
+        """`KEY: value` or `KEY=value`; None for a bare `KEY`."""
+        declared = spec.get("environment") or {}
+        if isinstance(declared, list):
+            return {
+                key: value if sep else None
+                for key, sep, value in (item.partition("=") for item in declared)
+            }
+        return {
+            key: None if value is None else str(value)
+            for key, value in declared.items()
+        }
 
     nodes = {}
     for service, spec in services.items():
@@ -323,6 +374,9 @@ def nodes_from_compose(
             if other != service and networks(spec) & networks(other_spec)
         ]
         command = spec.get("command")
+        if isinstance(command, str):
+            command = shlex.split(command)  # as Compose splits it: no shell
+        variables = environment(spec)
         nodes[name(service)] = NodeConfig(
             # The workspace runs on the agent's runtime, with the task's image.
             runtime=(
@@ -330,15 +384,15 @@ def nodes_from_compose(
                 if "image" in spec and service != workspace
                 else {}
             ),
+            # Every other service runs a process: its command, or its image's own.
             process=(
                 ProcessConfig(
-                    command=command
-                    if isinstance(command, list)
-                    else ["sh", "-c", command],
-                    environment=dict(spec.get("environment") or {}),
+                    command=command,
+                    environment={k: v for k, v in variables.items() if v is not None},
+                    passthrough=[k for k, v in variables.items() if v is None],
                     workdir=spec.get("working_dir"),
                 )
-                if command is not None and service != workspace
+                if service != workspace
                 else None
             ),
             # Nothing reaches the workspace unless Compose let it.

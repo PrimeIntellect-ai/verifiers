@@ -4,9 +4,17 @@ planned from config alone, plus the refusals a runtime's capabilities imply."""
 from dataclasses import replace
 
 import pytest
+from pydantic import TypeAdapter
 
 import verifiers.v1 as vf
-from verifiers.v1.runtimes import DockerConfig, PrimeConfig, SubprocessConfig, nodes
+from verifiers.v1.runtimes import (
+    DockerConfig,
+    PrimeConfig,
+    RuntimeBackend,
+    RuntimeConfig,
+    SubprocessConfig,
+    nodes,
+)
 from verifiers.v1.runtimes.nodes import (
     Connection,
     NodeConfig,
@@ -106,7 +114,7 @@ def test_enterprise_ops_gym_packs_onto_one_machine_and_keeps_the_gyms_behind_too
     assert {("main", "tools"), ("tools", "calendar"), ("tools", "gmail")} <= pairs
     assert not {("main", "calendar"), ("main", "gmail")} & pairs
     assert {c.via for c in connections} == {"container network"}
-    assert topology.nodes["calendar"].process.command == ["sh", "-c", "serve"]
+    assert topology.nodes["calendar"].process.command == ["serve"]
 
 
 def test_forth_runs_agent_code_on_a_machine_of_its_own_only_when_isolated():
@@ -202,3 +210,91 @@ def test_todays_knobs_lower_to_a_topology():
         result.connections
     )
     assert result.machine("host") is None
+
+
+def test_compose_services_keep_their_compose_meaning():
+    project = {
+        "services": {
+            "main": {"image": "task"},
+            "db": {
+                "image": "postgres",
+                "environment": ["POSTGRES_PASSWORD=pw", "PGDATA"],
+                "working_dir": "/data",
+            },
+            "web": {
+                "image": "web",
+                "command": "serve --root '$HOME'",
+                "environment": {"PORT": 8080},
+            },
+            "batch": {"image": "batch", "network_mode": "none"},
+        }
+    }
+    services = nodes_from_compose(project)
+    # The image's own command, with the service's environment and working directory;
+    # a bare `KEY` takes its value from the node's environment.
+    assert services["db"].process == ProcessConfig(
+        environment={"POSTGRES_PASSWORD": "pw"}, passthrough=["PGDATA"], workdir="/data"
+    )
+    # Split as Compose splits it, with no shell to expand `$HOME`.
+    assert services["web"].process.command == ["serve", "--root", "$HOME"]
+    assert services["web"].process.environment == {"PORT": "8080"}
+    # No network: nothing reaches it, and it reaches nothing.
+    assert services["batch"].reachable_from == []
+    assert "batch" not in services["db"].reachable_from
+    host = {"services": {"main": {}, "x": {"image": "x", "network_mode": "host"}}}
+    with pytest.raises(ValueError, match="network_mode 'host' has no node"):
+        nodes_from_compose(host)
+
+
+def test_a_node_that_names_its_type_starts_from_that_runtimes_defaults():
+    workspace = PrimeConfig(allow=[], labels=["run"])
+    topology = TopologyConfig(
+        nodes={
+            "inherits": NodeConfig(runtime={"image": ATLAS}),
+            "fresh": NodeConfig(runtime={"type": "prime", "image": ATLAS}),
+        }
+    )
+    runtimes = plan(topology, workspace).runtimes
+    assert (runtimes["inherits"].labels, runtimes["inherits"].allow) == (["run"], [])
+    assert (runtimes["fresh"].labels, runtimes["fresh"].allow) == (
+        PrimeConfig().labels,
+        PrimeConfig().allow,
+    )
+
+
+class Plugin(RuntimeBackend):
+    SUPPORTS_PRIVATE_NETWORK = True
+
+
+class OtherPlugin(Plugin):
+    pass
+
+
+def test_runtime_plugins_are_told_apart_by_their_backends():
+    def plugin(name):
+        path = f"{__name__}.{name}"
+        return TypeAdapter(RuntimeConfig).validate_python(
+            {"type": "custom", "import_path": path}
+        )
+
+    other = NodeConfig(runtime={"import_path": f"{__name__}.OtherPlugin"})
+    topology = TopologyConfig(nodes={"tools": other}, mcp_servers={"tools": "tools"})
+    # Both are `type = "custom"`, but they cannot share a machine or a network.
+    with pytest.raises(PlacementError, match="across the .*Plugin and .*OtherPlugin"):
+        plan(topology, plugin("Plugin"))
+    same = TopologyConfig(
+        nodes={"tools": NodeConfig(isolated=True)}, mcp_servers={"tools": "tools"}
+    )
+    assert shape(plan(same, plugin("Plugin"))) == (
+        [("main",), ("tools",)],
+        {Connection("main", "tools", "mcp:tools", "private network")},
+    )
+
+
+def test_a_remote_toolset_is_not_placed_and_tool_nodes_keep_compose_names():
+    remote = vf.ToolsetConfig(url="https://tools.example/mcp", runtime=PrimeConfig())
+    assert topology_from({"remote": remote}).mcp_servers == {}
+    project = {"services": {"main": {}, "tools-search": {"image": "search"}}}
+    own = vf.ToolsetConfig(runtime=PrimeConfig())
+    with pytest.raises(ValueError, match="'tools-search', which the Compose project"):
+        topology_from({"search": own}, project)
