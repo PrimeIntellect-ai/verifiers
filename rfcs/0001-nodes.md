@@ -66,8 +66,16 @@ vf.TaskData(
     prompt=...,
     nodes={
         "atlas": vf.NodeConfig(
-            runtime={"image": "prime/prime/mcp-atlas:1.2.5", "cpu": 4, "memory": 10, "allow": ["*"]},
-            process=vf.ProcessConfig(command=["bash", "-lc", "<start atlas>"], readiness=["sh", "-c", "<list tools>"]),
+            runtime={
+                "image": "prime/prime/mcp-atlas:1.2.5",
+                "cpu": 4,
+                "memory": 10,
+                "allow": ["*"],
+            },
+            process=vf.ProcessConfig(
+                command=["bash", "-lc", "<start atlas>"],
+                readiness=["sh", "-c", "<list tools>"],
+            ),
             reachable_from=["main"],  # the default
             isolated=False,  # the default
         ),
