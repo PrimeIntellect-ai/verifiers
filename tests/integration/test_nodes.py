@@ -18,6 +18,9 @@ pytestmark = pytest.mark.skipif(
 )
 
 LABELS = ["vf-integration"]
+# Containers on a Prime VM pull from Docker Hub through the VMs' one shared egress
+# address, which its anonymous rate limit soon catches; this mirror has none.
+MIRRORED = "mirror.gcr.io/library/python:3.11-slim"
 SERVE = ["python", "-m", "http.server", "8000", "--directory", "/"]
 READY = [
     "python",
@@ -127,7 +130,7 @@ async def test_nodes_under_the_workspace_s_policy_share_its_machine():
         vf.TaskData(prompt="Probe the network", nodes={"db": db}),
         FetchToolTaskConfig(tools=vf.ToolsetConfig(colocated=True)),
     )
-    trace = await run(task, vf.PrimeConfig(labels=LABELS))
+    trace = await run(task, vf.PrimeConfig(labels=LABELS, image=MIRRORED))
     # A Compose service on the workspace's machine, at its own name.
     db_url = trace.info["urls"][0]
     assert db_url == "http://db:8000/"
