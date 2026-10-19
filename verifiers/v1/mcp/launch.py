@@ -434,17 +434,27 @@ async def _serve(
     state_secret: str = "",
     state_base: str | None = None,
     services: Mapping[str, Runtime] | None = None,
+    hosts: Mapping[str, str] | None = None,
+    placements: Mapping[str, Runtime] | None = None,
 ):
     cfg = server.config
     colocated = getattr(cfg, "colocated", False)
-    if (service := getattr(cfg, "service", None)) is not None:
-        # The harness reaches the server over the deployment's Compose network.
-        if services is None or service not in services:
+    service = getattr(cfg, "service", None)
+    own_vm = (placements or {}).get(server.server_name)
+    if service is not None or own_vm is not None:
+        # The harness reaches the server over the deployment's network: a Compose
+        # service by its name, a VM of its own by its LAN name.
+        if own_vm is not None:
+            runtime = own_vm
+            host = (hosts or {})[server.server_name]
+        elif services is None or service not in services:
             raise ToolsetError(
-                f"server {server.server_name!r} runs in Compose service {service!r}, "
+                f"server {server.server_name!r} runs in service {service!r}, "
                 "which needs a task whose Compose services define it"
             )
-        runtime = services[service]
+        else:
+            runtime = services[service]
+            host = (hosts or {}).get(service, service)
         if runtime.is_local:
             # A local service cannot reach the host-loopback state channel.
             raise ToolsetError(
@@ -463,7 +473,7 @@ async def _serve(
             ),
             state_secret=state_secret,
         )
-        yield _ServedServer(f"http://{service}:{port}/mcp", runtime)
+        yield _ServedServer(f"http://{host}:{port}/mcp", runtime)
         return
     async with contextlib.AsyncExitStack() as stack:
         # Colocated servers inherit the harness cut. A separately provisioned filtered
@@ -475,9 +485,10 @@ async def _serve(
             and not (colocated and harness_runtime is not None)
         ):
             raise ToolsetError(
-                "Runtime network policies are supported on the harness runtime; "
-                f"server {server.server_name!r} must be colocated or use an "
-                "unrestricted runtime"
+                f"server {server.server_name!r} restricts its runtime's network, which "
+                "needs the server colocated with the harness, or on a Prime runtime "
+                "of its own beside a Prime workspace without Compose services (it then "
+                "joins the rollout's private network)"
             )
         if colocated and harness_runtime is not None:
             runtime = harness_runtime
@@ -532,6 +543,8 @@ async def serve(
     state_secret: str = "",
     state_base: str | None = None,
     services: Mapping[str, Runtime] | None = None,
+    hosts: Mapping[str, str] | None = None,
+    placements: Mapping[str, Runtime] | None = None,
 ):
     """Serve one MCP server and yield the URL visible to its consumer."""
     async with _serve(
@@ -541,6 +554,8 @@ async def serve(
         state_secret=state_secret,
         state_base=state_base,
         services=services,
+        hosts=hosts,
+        placements=placements,
     ) as served:
         yield served.url
 
@@ -649,6 +664,8 @@ async def serve_tools(
     state_route: str = "",
     state_base: str | None = None,
     services: Mapping[str, Runtime] | None = None,
+    hosts: Mapping[str, str] | None = None,
+    placements: Mapping[str, Runtime] | None = None,
 ):
     """Bring up a rollout's tool servers and yield `{name: url}` the harness reaches: the
     task-scoped `toolsets` are launched by `serve` (placement off each one's `config`; the
@@ -690,6 +707,8 @@ async def serve_tools(
                         state_secret=state_secret,
                         state_base=state_base,
                         services=services,
+                        hosts=hosts,
+                        placements=placements,
                     )
                 )
                 logger.info("tool server '%s': %s", name, urls[name])

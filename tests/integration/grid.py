@@ -240,9 +240,13 @@ def skip_harness(cells: list, harness: str, reason: str) -> list:
 def placements(
     harness_runtimes: tuple[str, ...] = tuple(RUNTIMES),
     tool_runtimes: tuple[str, ...] = ("colocated", *RUNTIMES),
+    *,
+    shared: bool = False,
 ) -> list:
     """`(harness_runtime, tool_runtime)` cells for a tool server placed colocated in the
-    harness's box, in a Compose service beside it (`service`), or in its own runtime."""
+    harness's box, in a Compose service beside it (`service`), or in its own runtime
+    (on Prime beside a Prime harness, a VM on the rollout's private network). A `shared`
+    server runs once per eval, so it joins no rollout's network."""
     cells = []
     for harness_runtime in harness_runtimes:
         for tool_runtime in tool_runtimes:
@@ -264,6 +268,8 @@ def placements(
             elif (
                 tool_runtime not in ("colocated", "service")
                 and not runtime_cls(tool_runtime).supports_expose
+                # Beside a Prime harness, a rollout's Prime server joins its private network.
+                and not (not shared and tool_runtime == harness_runtime == "prime")
             ):
                 marks.append(
                     pytest.mark.skip(
