@@ -7,6 +7,7 @@ import time
 from collections.abc import Awaitable, Callable
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
+from urllib.parse import urlsplit
 
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.agent import AgentConfig
@@ -35,6 +36,7 @@ from verifiers.v1.runtimes import (
     RuntimeConfig,
     make_backend,
 )
+from verifiers.v1.runtimes.private_network import tool_vms
 from verifiers.v1.session import RolloutLimits, RolloutSession, hook_boundary
 from verifiers.v1.state import state_cls
 from verifiers.v1.task import Task
@@ -289,8 +291,18 @@ class Rollout:
                         "task.prompt, or drive the run through agent.interaction() and open "
                         "it with the first turn(message)"
                     )
+                async with boundary(ToolsetError, "building tool servers"):
+                    toolsets = self.task.toolsets(self.task.config)
+                spec = self.task.deployment_spec()
                 self.deployment = runtime.backend.deploy(
-                    spec=self.task.deployment_spec(),
+                    spec=spec,
+                    # Tool servers on Prime VMs of their own boot with the workspace.
+                    tool_vms=tool_vms(
+                        toolsets,
+                        runtime.backend.config,
+                        composed=spec is not None,
+                        borrowed=self._borrowed_runtime is not None,
+                    ),
                     env=runtime.env,
                     config=self._deployment_config,
                     borrowed_runtime=self._borrowed_runtime,
@@ -343,8 +355,6 @@ class Rollout:
                         runtime, self.task.data.agent_user
                     )
                     await self.harness.setup(self._agent_runtime)
-                async with boundary(ToolsetError, "building tool servers"):
-                    toolsets = self.task.toolsets(self.task.config)
                 # `base_url` is the interception server's reachable URL for this rollout.
                 # The harness reaches the model at `{base_url}/v1`; tool servers reach this
                 # rollout's `/state` + `/task` at `base_url` — it's universally reachable
@@ -364,6 +374,14 @@ class Rollout:
                 )
                 self._endpoint = runtime.host_url(f"{base_url.rstrip('/')}/v1")
                 self._secret = model_secret
+                services = (
+                    {
+                        name: self.deployment.target(name)
+                        for name in self.deployment.target_backends
+                    }
+                    if self.deployment.spec is not None
+                    else {}
+                )
                 self._urls = await self._stack.enter_async_context(
                     serve_tools(
                         toolsets,
@@ -372,12 +390,28 @@ class Rollout:
                         state_secret=state_secret,
                         state_route=self.trace.id,
                         state_base=base_url,
+                        services=services,
+                        hosts=self.deployment.hosts,
+                        # Tool servers on VMs of their own, by server name; an explicit
+                        # `service` names only a Compose service.
+                        placements={
+                            name: self.deployment.target(name)
+                            for name in self.deployment.tool_vms
+                        },
                     )
                 )
                 # Setup and service provisioning are complete. Apply the runtime's
                 # execution policy while preserving the framework routes the agent uses.
+                # Service hosts resolve inside the deployment (Compose names, LAN
+                # names), not as egress.
+                internal = {*services, *self.deployment.hosts.values()}
                 await self.deployment.prepare_execution(
-                    [self._endpoint, *self._urls.values()]
+                    [
+                        url
+                        for url in [self._endpoint, *self._urls.values()]
+                        if urlsplit(url).hostname not in internal
+                    ],
+                    state_route=f"{base_url.rstrip('/')}/state",
                 )
                 async with (
                     boundary(HarnessError, "opening harness session"),

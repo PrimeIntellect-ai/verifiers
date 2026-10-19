@@ -1,5 +1,5 @@
 """The seat's caps stop a rollout that would run on: the counter task wants three tool
-turns (counter-tool-v1), and each cap ends it after the first with its own stop
+turns (counter-tool), and each cap ends it after the first with its own stop
 condition. The turn cap also runs across the harness x runtime grid, since each program
 handles a refused request in its own way."""
 
@@ -17,7 +17,7 @@ CAPS = [
 @pytest.mark.parametrize("cap,stop_condition", CAPS)
 async def test_cap(run, cap, stop_condition):
     (episode,) = await run(
-        "counter-tool-v1",
+        "counter-tool",
         harness="null",
         runtime={"type": "subprocess"},
         env={"agent": cap},
@@ -31,7 +31,7 @@ async def test_cap(run, cap, stop_condition):
 
 async def test_rollout_timeout(run):
     (episode,) = await run(
-        "counter-tool-v1",
+        "counter-tool",
         harness="null",
         runtime={"type": "subprocess"},
         rollout_timeout=1,
@@ -44,7 +44,7 @@ async def test_rollout_timeout(run):
 @pytest.mark.parametrize("harness,harness_runtime", grid(needs=("mcp",)), indirect=True)
 async def test_max_turns(run, harness, harness_runtime):
     (episode,) = await run(
-        "counter-tool-v1",
+        "counter-tool",
         harness=harness,
         runtime=harness_runtime,
         max_turns=1,

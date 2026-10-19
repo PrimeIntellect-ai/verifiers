@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import Literal
 
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig, PinnedVersion
@@ -11,6 +12,7 @@ PROGRAM_SOURCE = (Path(__file__).resolve().parent / "program.py").read_text()
 
 
 class MiniSWEAgentHarnessConfig(HarnessConfig):
+    dialect: Literal["chat_completions"] = "chat_completions"
     version: PinnedVersion = "2.4.6"
     """mini-swe-agent release to install, pinned for reproducibility."""
 

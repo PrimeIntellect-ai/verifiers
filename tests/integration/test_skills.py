@@ -1,5 +1,5 @@
 """A task's skill reaches the program: the answer lives only in a SKILL.md the task
-installs (skill-codeword-v1), across the harness x runtime grid."""
+installs (skill-codeword), across the harness x runtime grid."""
 
 import pytest
 from grid import grid
@@ -10,7 +10,7 @@ from grid import grid
 )
 async def test_skills(run, harness, harness_runtime):
     (episode,) = await run(
-        "skill-codeword-v1",
+        "skill-codeword",
         harness=harness,
         runtime=harness_runtime,
         max_turns=8,

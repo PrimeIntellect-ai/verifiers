@@ -29,7 +29,7 @@ CI_REASONING_EFFORT = "low"
 CI_JUDGE = {"model": CI_MODEL, "sampling": {"reasoning_effort": CI_REASONING_EFFORT}}
 CI_DECISION_JUDGE = {"model": "cloudflare/clef"}
 
-# Fixture tasksets (echo-v1, echo-agentic-v1, ...) live in tests/integration/fixtures,
+# Fixture tasksets (echo, echo-agentic, ...) live in tests/integration/fixtures,
 # added to the path via `pythonpath` in pyproject so the loader resolves them by id.
 
 LIVE_FIXTURES = {"run", "live_ctx"}
@@ -46,9 +46,14 @@ def harness_runtime(request) -> dict:
 @pytest.fixture
 def tool_runtime(request) -> dict:
     """A `taskset.task.tools` override placing the tool server: `colocated` (inside the harness's
-    runtime) or its own runtime, by type."""
+    runtime), `service` (in the task's `tools` Compose service), `service-vm` (in the task's
+    `tools-vm` service VM) or its own runtime, by type."""
     if request.param == "colocated":
         return {"colocated": True}
+    if request.param == "service":
+        return {"service": "tools"}
+    if request.param == "service-vm":
+        return {"service": "tools-vm"}
     return {"runtime": {"type": request.param}}
 
 
@@ -65,7 +70,7 @@ def harness(request) -> HarnessConfig:
 def pytest_configure(config) -> None:
     """Self-launching tool servers run `python -m <module>` in a fresh subprocess, which
     inherits `PYTHONPATH` but not pytest's in-process `pythonpath`. Put the fixture dir on
-    `PYTHONPATH` so a fixture server module (e.g. `tool_response_image_v1`)
+    `PYTHONPATH` so a fixture server module (e.g. `tool_response_image`)
     resolves there too — an installed example package (e.g. `glossary`) already would."""
     config.addinivalue_line(
         "markers", "opencode: integration cells on the OpenCode harness"

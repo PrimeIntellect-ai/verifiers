@@ -10,7 +10,7 @@ async def test_env_id_user_sim(run):
     the conversation from the task's prompt-as-scenario; the assistant's trace is
     judged by the task's own reward; both sides land agent-stamped on one episode."""
     (episode,) = await run(
-        "echo-v1",
+        "echo",
         harness=None,  # multi-agent: each seat pins its own
         env={"id": "user-sim", "assistant": {"harness": {"id": "null"}}},
         max_turns=6,
@@ -44,7 +44,7 @@ async def test_env_id_user_sim_with_tools(run):
     Reward 1.0 proves the tool actually ran mid-conversation: its token never
     appears in any prompt."""
     (episode,) = await run(
-        "echo-tool-v1",
+        "echo-tool",
         harness=None,  # multi-agent: each seat pins its own
         env={"id": "user-sim", "assistant": {"harness": {"id": "null"}}},
         max_turns=8,

@@ -7,7 +7,7 @@ async def test_agentic_judge_shared_verifier(run, tmp_path):
     policy = tmp_path / "judge_policy.txt"
     policy.write_text("Check EMPIRICALLY that the agent echoed the word back.")
     (episode,) = await run(
-        "echo-v1",
+        "echo",
         harness=None,
         env={
             "id": "agentic-judge",
@@ -53,7 +53,7 @@ async def test_env_id_agentic_judge(run, tmp_path):
         "Check EMPIRICALLY that answer.txt contains exactly the requested phrase."
     )
     (episode,) = await run(
-        "echo-agentic-v1",
+        "echo-agentic",
         harness=None,
         env={
             "id": "agentic-judge",

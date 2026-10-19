@@ -24,7 +24,7 @@ async def test_rubric_judge(run, tmp_path, judge_id):
     if judge_id == "rubric":
         judge["path"] = str(rubric)
     (episode,) = await run(
-        "echo-v1",
+        "echo",
         harness="null",
         runtime={"type": "subprocess"},
         taskset_overrides={"task": {"judges": [judge]}},

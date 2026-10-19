@@ -23,6 +23,8 @@ from verifiers.v1.utils.env import resolve_env
 from verifiers.v1.utils.retries import RetryState, backoff
 
 logger = logging.getLogger(__name__)
+_SCORING_INFO_KEYS = ("judge_calls", "scoring_diagnostics")
+"""Accounting and diagnostics survive failed scoring attempts, unlike partial scores."""
 
 
 @contextmanager
@@ -32,11 +34,11 @@ def scoring_transaction(trace: Trace):
     try:
         yield
     except BaseException:
-        # Failed judges still consume tokens and calls; retain their accounting.
-        judge_calls = trace.info.get("judge_calls")
+        retained = {
+            key: trace.info[key] for key in _SCORING_INFO_KEYS if key in trace.info
+        }
         trace.state, trace.rewards, trace.metrics, trace.info = saved
-        if judge_calls is not None:
-            trace.info["judge_calls"] = judge_calls
+        trace.info.update(retained)
         raise
 
 
@@ -140,11 +142,16 @@ async def grade_task(
                         if on_score is not None:
                             await on_score(result, runtime)
                 finally:
-                    # Model-backed judges are billed even when an attempt fails.
-                    # Preserve their accounting without committing partial rewards/state.
+                    # Preserve failed attempts' evidence and accounting without
+                    # committing partial rewards/state.
                     trace.extra_usage = result.extra_usage
-                    if "judge_calls" in result.info:
-                        trace.info["judge_calls"] = result.info["judge_calls"]
+                    trace.info.update(
+                        {
+                            key: result.info[key]
+                            for key in _SCORING_INFO_KEYS
+                            if key in result.info
+                        }
+                    )
                 # Cleanup failure must not discard an authoritative completed score.
                 trace.state, trace.rewards, trace.metrics = (
                     result.state,

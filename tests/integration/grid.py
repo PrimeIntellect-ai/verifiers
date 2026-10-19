@@ -32,6 +32,7 @@ prime cannot pull) stay outside the grid.
 
 import shutil
 from collections.abc import Sequence
+from typing import get_args
 
 import pytest
 from pydantic import TypeAdapter
@@ -40,7 +41,7 @@ import verifiers.v1 as vf
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.harness import Harness
 from verifiers.v1.runtimes import RuntimeConfig, _backend_cls
-from verifiers.v1.utils.loaders import harness_class
+from verifiers.v1.utils.loaders import harness_class, harness_config_type
 
 HARNESSES: list[str | dict] = [
     "null",
@@ -49,6 +50,7 @@ HARNESSES: list[str | dict] = [
     "codex",
     "claude-code",
     "hermes-agent",
+    "deepseek",
     "kimi-code",
     "pi",
     "openclaw",
@@ -59,6 +61,8 @@ HARNESSES: list[str | dict] = [
 RUNTIMES = ["subprocess", "docker", "podman", "apptainer", "prime", "modal", "e2b"]
 ENGINES = ("podman", "apptainer")
 HARNESS_RUNTIMES = [runtime for runtime in RUNTIMES if runtime not in ENGINES]
+# Runtimes whose VMs run a task's Compose services.
+COMPOSE_VMS = ("prime", "modal")
 
 # Harnesses that cannot run against the CI model yet.
 # TODO: drop each entry once its fix lands.
@@ -187,6 +191,37 @@ def grid(
     return cells
 
 
+def dialects(harness: str) -> tuple[str, ...]:
+    """The dialects the harness config can select besides its default. Empty when the
+    program speaks one dialect or picks its own."""
+    field = harness_config_type(harness).model_fields["dialect"]
+    return tuple(
+        value
+        for arg in get_args(field.annotation)
+        for value in get_args(arg) or (arg,)
+        if value != field.default
+    )
+
+
+def dialect_grid(
+    runtimes: Sequence[str] = ("prime",), *, needs: tuple[str, ...] = ()
+) -> list:
+    """`grid` cells for every non-default `dialect` each harness config can select."""
+    cells = []
+    for harness in HARNESSES:
+        name = harness_id(harness)
+        for dialect in dialects(name):
+            for cell in grid([{"id": name, "dialect": dialect}], runtimes, needs=needs):
+                cells.append(
+                    pytest.param(
+                        *cell.values,
+                        marks=cell.marks,
+                        id=cell.id.replace(f"{name}-in-", f"{name}-{dialect}-in-"),
+                    )
+                )
+    return cells
+
+
 def skip_harness(cells: list, harness: str, reason: str) -> list:
     """Skip one harness's cells for a limit no capability flag declares. Each use names
     why, so a reader sees the gap and when it can go."""
@@ -205,9 +240,13 @@ def skip_harness(cells: list, harness: str, reason: str) -> list:
 def placements(
     harness_runtimes: tuple[str, ...] = tuple(RUNTIMES),
     tool_runtimes: tuple[str, ...] = ("colocated", *RUNTIMES),
+    *,
+    shared: bool = False,
 ) -> list:
     """`(harness_runtime, tool_runtime)` cells for a tool server placed colocated in the
-    harness's box or in its own runtime."""
+    harness's box, in a Compose service beside it (`service`), or in its own runtime
+    (on Prime beside a Prime harness, a VM on the rollout's private network). A `shared`
+    server runs once per eval, so it joins no rollout's network."""
     cells = []
     for harness_runtime in harness_runtimes:
         for tool_runtime in tool_runtimes:
@@ -219,9 +258,18 @@ def placements(
             ]
             if missing:
                 marks.append(pytest.mark.skip(reason=f"needs {missing[0]} on the host"))
+            elif tool_runtime == "service" and harness_runtime not in COMPOSE_VMS:
+                marks.append(
+                    pytest.mark.skip(
+                        reason="a tool server in a Compose service needs Compose on a "
+                        "Prime or Modal VM"
+                    )
+                )
             elif (
-                tool_runtime != "colocated"
+                tool_runtime not in ("colocated", "service")
                 and not runtime_cls(tool_runtime).supports_expose
+                # Beside a Prime harness, a rollout's Prime server joins its private network.
+                and not (not shared and tool_runtime == harness_runtime == "prime")
             ):
                 marks.append(
                     pytest.mark.skip(

@@ -1,5 +1,5 @@
 """One task, two segments: the harness preserves context and MCP access across a resumed
-exchange (echo-acp-resume-v1), across the harness x runtime grid."""
+exchange (echo-acp-resume), across the harness x runtime grid."""
 
 import pytest
 from grid import grid
@@ -11,7 +11,7 @@ from grid import grid
 async def test_resume_tool(run, harness, harness_runtime):
     """Each harness preserves context and MCP access across two segments."""
     (episode,) = await run(
-        "echo-acp-resume-v1",
+        "echo-acp-resume",
         harness=harness,
         runtime=harness_runtime,
         max_turns=8,
