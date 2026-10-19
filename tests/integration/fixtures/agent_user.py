@@ -1,4 +1,4 @@
-"""agent-user-v1: a scripted, model-free agent that runs as a non-root user and tries root actions.
+"""agent-user: a scripted, model-free agent that runs as a non-root user and tries root actions.
 
 Root setup creates the task's `agent_user`, plants a root-only secret, and prepares a uv
 script; the workdir stays root-owned, like a typical image WORKDIR. The scripted harness runs
