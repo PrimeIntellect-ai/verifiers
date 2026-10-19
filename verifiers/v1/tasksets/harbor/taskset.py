@@ -865,7 +865,7 @@ def parse_verifier_extras(
     )
 
     verifier = parsed.verifier
-    if verifier.user is not None:
+    if verifier.user not in (None, "root", 0):
         raise ValueError(f"{task_dir.name}: [verifier].user is not supported")
 
     artifacts: list[HarborArtifact] = []
@@ -962,7 +962,14 @@ def parse_verifier_environment(
             else TaskResources()
         ),
         workdir=environment.workdir if declared else None,
-        **environment.model_dump(include={"env", "healthcheck"}, mode="json"),
+        **environment.model_dump(include={"env"}, mode="json"),
+        # An agent service healthcheck does not apply to a separate grader image.
+        healthcheck=(
+            environment.healthcheck.model_dump(mode="json")
+            if environment.healthcheck is not None
+            and (declared or not definition.bundled_tests)
+            else None
+        ),
         fresh_copy=not declared,
         network=harbor_network(network),
     )

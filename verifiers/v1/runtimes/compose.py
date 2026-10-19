@@ -296,14 +296,13 @@ async def compose_services(
             if "workdir" in main:
                 main["working_dir"] = main.pop("workdir")
             overlay = {"services": {spec.workspace: main}}
+            # Port publication belongs to the service that owns main's network.
+            publish = overlay["services"].setdefault(owner, {})
+            if getattr(config, "cpu", None) is not None:
+                main["cpus"] = config.cpu
+            if getattr(config, "memory", None) is not None:
+                main["mem_limit"] = f"{config.memory}g"
             if local:
-                assert isinstance(config, DockerConfig)
-                if config.cpu is not None:
-                    main["cpus"] = config.cpu
-                if config.memory is not None:
-                    main["mem_limit"] = f"{config.memory}g"
-                # Port publication belongs to the service that owns main's network.
-                publish = overlay["services"].setdefault(owner, {})
                 publish["ports"] = [f"127.0.0.1::{SERVICE_PORT}"]
                 if sys.platform != "linux":
                     publish["extra_hosts"] = {"host.docker.internal": "host-gateway"}
