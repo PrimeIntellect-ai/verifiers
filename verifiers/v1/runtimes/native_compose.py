@@ -62,6 +62,7 @@ class NativeService:
     definition: dict
     user: str | None = None
     stop_signal: str = "SIGTERM"
+    internal: bool = False
 
 
 def validate_native(project) -> None:
@@ -71,12 +72,13 @@ def validate_native(project) -> None:
             "Native Compose does not support volumes, secrets or configs"
         )
     networks = config.get("networks", {})
-    if (
-        set(networks) != {"default"}
-        or set(networks["default"]) - {"name", "ipam"}
-        or networks["default"].get("ipam")
+    if not networks or any(
+        set(network) - {"name", "internal", "ipam"} or network.get("ipam")
+        for network in networks.values()
     ):
-        raise SandboxError("Native Compose requires a single default network")
+        raise SandboxError(
+            "Native Compose supports project networks with optional internal isolation"
+        )
     aliases = {}
     for name, service in config["services"].items():
         unsupported = set(service) - _SERVICE_FIELDS
@@ -135,11 +137,22 @@ def validate_native(project) -> None:
                     f"Native Compose dependency {name!r} -> {dependency!r} is unsupported"
                 )
         attached = service.get("networks", {})
-        if set(attached) != {"default"} or set(attached["default"] or {}) - {"aliases"}:
+        if (
+            not attached
+            or set(attached) - set(networks)
+            or any(set(options or {}) - {"aliases"} for options in attached.values())
+        ):
             raise SandboxError(
-                f"Native Compose service {name!r} requires the default network"
+                f"Native Compose service {name!r} requires project networks with optional aliases"
             )
-        for alias in [name, *(attached["default"] or {}).get("aliases", [])]:
+        for alias in [
+            name,
+            *(
+                alias
+                for options in attached.values()
+                for alias in (options or {}).get("aliases", [])
+            ),
+        ]:
             if (
                 not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_.-]*", alias)
                 or alias in {"localhost", "host.docker.internal"}
@@ -212,6 +225,10 @@ async def prepare_native(config: PrimeConfig, spec: ComposeSpec, env: dict[str, 
                     f"Native Compose service {name!r} has an unsupported health check"
                 )
             definition = project.config["services"][name]
+            internal = all(
+                project.config["networks"][network].get("internal", False)
+                for network in definition["networks"]
+            )
             if definition.get("cap_add") and user not in {None, "root"}:
                 raise SandboxError(
                     f"Native Compose service {name!r} requires root for SYS_PTRACE"
@@ -231,6 +248,8 @@ async def prepare_native(config: PrimeConfig, spec: ComposeSpec, env: dict[str, 
             )
             if name == "main":
                 options.update(cpu=config.cpu, memory=config.memory, disk=config.disk)
+            if internal:
+                options.update(allow=[], block=["*"])
             services[name] = NativeService(
                 PrimeConfig(**options),
                 argv,
@@ -240,6 +259,7 @@ async def prepare_native(config: PrimeConfig, spec: ComposeSpec, env: dict[str, 
                 definition,
                 user,
                 metadata.get("StopSignal") or "SIGTERM",
+                internal,
             )
         for name, service in services.items():
             for dependency, options in service.definition.get("depends_on", {}).items():
@@ -354,23 +374,39 @@ class NativeProcesses:
     processes: dict[str, RuntimeProcess] = field(default_factory=dict)
 
     async def start(self, deployment) -> None:
-        names = []
-        root = deployment.workspace.with_user(None).with_env({})
+        addresses = {}
         for name, backend in deployment.target_backends.items():
+            root = backend.bind().with_user(None).with_env({})
             result = await root.run(["getent", "hosts", lan_host(backend)], {})
             if result.exit_code or not result.stdout.strip():
                 raise SandboxError(f"Native Compose could not resolve service {name!r}")
-            address = str(ipaddress.ip_address(result.stdout.split()[0]))
-            aliases = (self.services[name].definition["networks"]["default"] or {}).get(
-                "aliases", []
-            )
-            names.append(f"{address} {' '.join(dict.fromkeys([name, *aliases]))}")
-        hosts = "\n".join(names) + "\n"
+            addresses[name] = str(ipaddress.ip_address(result.stdout.split()[0]))
         for name, backend in deployment.target_backends.items():
             service = self.services[name]
+            names = []
+            for peer, other in self.services.items():
+                shared = (
+                    service.definition["networks"].keys()
+                    & other.definition["networks"].keys()
+                )
+                if shared:
+                    aliases = [
+                        alias
+                        for network in sorted(shared)
+                        for alias in (other.definition["networks"][network] or {}).get(
+                            "aliases", []
+                        )
+                    ]
+                    names.append(
+                        f"{addresses[peer]} {' '.join(dict.fromkeys([peer, *aliases]))}"
+                    )
+            hosts = "\n".join(names) + "\n"
             backend.env = service.env
             backend.user = service.user
             runtime = backend.bind().with_user(None).with_env({})
+            if service.internal:
+                # Internal-only services have no internet, including during setup.
+                await backend.prepare_execution([])
             result = await runtime.run(
                 ["sh", "-c", f"printf %s {shlex.quote(hosts)} >> /etc/hosts"], {}
             )
