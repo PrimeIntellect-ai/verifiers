@@ -204,7 +204,7 @@ class DockerConfig(NetworkPolicyConfig):
 
 
 class PrimeVolume(BaseConfig):
-    """An existing named volume in the Prime SDK client's personal or team scope."""
+    """A named volume, created if missing in the SDK client's personal or team scope."""
 
     name: str = Field(min_length=1)
     read_only: bool = True
@@ -243,7 +243,8 @@ class PrimeConfig(NetworkPolicyConfig):
     — see interception.tunnel.prime.tunnel_limiter.)"""
 
     mounts: dict[str, PrimeVolume] = Field(default_factory=dict)
-    """Guest paths mapped to named Prime volumes. Each VM sees the head at creation;
+    """Guest paths mapped to Prime volumes, created if missing before the VM.
+    Each VM sees the volume head at creation;
     writes stay private until the SDK's `client.volumes.publish(sandbox_id, name)`
     finishes, before the VM stops. Verifiers never publishes or deletes volumes.
     Requires an SDK with volume support. Artifact roots must stay outside mounts;

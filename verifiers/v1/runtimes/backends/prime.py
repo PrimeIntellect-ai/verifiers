@@ -156,7 +156,7 @@ class PrimeBackend(RuntimeBackend):
         self.lan: tuple[str, list[str]] | None = None
 
     async def start(self) -> None:
-        from prime_sandboxes import CreateSandboxRequest
+        from prime_sandboxes import APIError, CreateSandboxRequest
 
         if self.config.mounts and "volumes" not in CreateSandboxRequest.model_fields:
             raise RuntimeError(
@@ -207,6 +207,15 @@ class PrimeBackend(RuntimeBackend):
                 )
                 or contextlib.nullcontext()
             ):
+                for name in dict.fromkeys(m.name for m in self.config.mounts.values()):
+                    try:
+                        await self._client.volumes.create(name)
+                    except APIError as error:
+                        # Create returns 409 when this scoped name already exists,
+                        # including when another runtime creates it concurrently.
+                        if not str(error).startswith("HTTP 409:"):
+                            raise
+
                 # Shielded through the id capture: a cancel that aborts the POST
                 # mid-flight leaves the platform creating a sandbox this side
                 # never learned the id of — teardown() then cannot delete it
