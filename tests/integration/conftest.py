@@ -4,15 +4,13 @@ resulting `Trace`(s). They need a model API key (`PRIME_API_KEY`); without one t
 model-driven tests skip.
 
 Each behavior module fixes one task and fans it across the harness x runtime grid in
-`grid.py`, which also says why a cell is skipped or refused. `run` drives the `Env` API
-in-process, the calls the eval CLI makes. In a `refused` cell, `run` checks the run fails
-with the expected message and ends the test as passed. The placement fixtures below are indirect-only: they translate a parametrized value, and using one without
-`indirect=True` fails loudly.
+`grid.py`, which also says why a cell is skipped. `run` drives the `Env` API in-process,
+the calls the eval CLI makes. The placement fixtures below are indirect-only: they
+translate a parametrized value, and using one without `indirect=True` fails loudly.
 """
 
 import asyncio
 import os
-import re
 from pathlib import Path
 
 import pytest
@@ -83,36 +81,6 @@ def pytest_configure(config) -> None:
         os.environ["PYTHONPATH"] = (
             f"{fixtures}{os.pathsep}{existing}" if existing else fixtures
         )
-
-
-class Refused(Exception):
-    """A `refused` cell failed with the expected message; the test passes."""
-
-
-@pytest.hookimpl(wrapper=True)
-def pytest_pyfunc_call(pyfuncitem):
-    try:
-        return (yield)
-    except Refused:
-        return True
-
-
-def _check_refused(pattern: str, failure: BaseException | None, episodes: list) -> None:
-    """The run of a `refused` cell fails with `pattern`, never with anything else."""
-    messages = [
-        error.message
-        for episode in episodes
-        for error in [
-            *episode.errors,
-            *(error for trace in episode.traces for error in trace.errors),
-        ]
-    ]
-    if failure is not None:
-        messages.append(str(failure))
-    assert messages, f"expected a refusal matching {pattern!r}, but the run succeeded"
-    unexpected = [message for message in messages if not re.search(pattern, message)]
-    assert not unexpected, f"expected only refusals matching {pattern!r}: {unexpected}"
-    raise Refused
 
 
 def pytest_collection_modifyitems(config, items) -> None:
@@ -211,7 +179,6 @@ def run(request):
     """Run a taskset's episodes in-process through the `Env` API: the calls `vf-eval`
     makes (`serving`, `slots`, `run_slot`, retries included), without its run
     directory, platform push, or dashboard. The Examples job covers that CLI layer."""
-    refused = request.node.get_closest_marker("refused")
 
     async def _episodes(taskset: str, **kwargs) -> list[Episode]:
         config = _eval_config(taskset, **kwargs)
@@ -231,16 +198,7 @@ def run(request):
                 )
             )
 
-    async def _run(taskset: str, **kwargs) -> list[Episode]:
-        if refused is None:
-            return await _episodes(taskset, **kwargs)
-        try:
-            episodes = await _episodes(taskset, **kwargs)
-        except Exception as failure:  # noqa: BLE001 - a refusal may surface at serving
-            _check_refused(refused.args[0], failure, [])
-        _check_refused(refused.args[0], None, episodes)
-
-    return _run
+    return _episodes
 
 
 @pytest.fixture

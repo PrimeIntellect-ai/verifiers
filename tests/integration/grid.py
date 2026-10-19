@@ -11,10 +11,10 @@ A harness without a capability the behavior needs is collected as a skip with it
 reason (`Harness.EXECUTES_CODE`, `SUPPORTS_MCP`, `SUPPORTS_SKILLS`, resume support via
 `SUPPORTS_RESUME` or a native session).
 
-A runtime without a capability the behavior needs still runs, marked `refused`: the run
-must fail with the framework's message for that gap, which the `run` fixture checks.
-The runtime gaps are `RuntimeBackend.SUPPORTS_TASK_IMAGES` (for `Harness.NEEDS_CONTAINER`) on
-the debug runtimes, and `SUPPORTS_PORT_EXPOSURE` for a tool server in its own Prime sandbox.
+A runtime without a feature the behavior needs (`RuntimeBackend.SUPPORTS_*`, or a
+`NetworkPolicyConfig` for a network policy) skips the cell the same way. That a runtime
+refuses an undeclared feature, with a message naming it, is tested in
+`tests/unit/test_runtimes.py`.
 
 Every cell carries its axes' marks, so `-m` selects subsets:
 
@@ -55,13 +55,13 @@ HARNESSES: list[str | dict] = [
 DEBUG_RUNTIMES = ("subprocess", "docker")
 RUNTIMES = (*DEBUG_RUNTIMES, "prime")
 
-# The framework's message for each runtime gap; a refused cell must fail with it.
-REFUSALS = {
-    "container": "needs a container runtime",
-    "user": "cannot run as another user",
-    "network": "does not enforce network policies",
-    "expose": "cannot expose a port",
-    "compose": "cannot run Compose services",
+# The runtime features a behavior can need, as `needs` names them.
+RUNTIME_FEATURES = {
+    "container": "task images",
+    "user": "running as another user",
+    "network": "network policies",
+    "expose": "port exposure",
+    "compose": "Compose services",
 }
 
 # Harnesses that cannot run against the CI model yet.
@@ -106,9 +106,19 @@ def runtime_cls(runtime: str) -> type:
     )
 
 
-def runtime_supports_network_policy(runtime: str) -> bool:
-    config = TypeAdapter(RuntimeConfig).validate_python(runtime_config(runtime))
-    return isinstance(config, NetworkPolicyConfig)
+def supports(runtime: str, feature: str) -> bool:
+    """Whether the runtime declares `feature`: a backend flag, or, for a network policy,
+    a config that inherits `NetworkPolicyConfig`."""
+    if feature == "network":
+        config = TypeAdapter(RuntimeConfig).validate_python(runtime_config(runtime))
+        return isinstance(config, NetworkPolicyConfig)
+    flag = {
+        "container": "SUPPORTS_TASK_IMAGES",
+        "user": "SUPPORTS_USER_SWITCHING",
+        "expose": "SUPPORTS_PORT_EXPOSURE",
+        "compose": "SUPPORTS_COMPOSE",
+    }[feature]
+    return getattr(runtime_cls(runtime), flag)
 
 
 def resumes(cls: type[Harness]) -> bool:
@@ -121,8 +131,11 @@ def resumes(cls: type[Harness]) -> bool:
     )
 
 
-def unsupported(harness: str | dict, needs: tuple[str, ...]) -> str | None:
-    """Why the harness cannot run this behavior, or None when it can."""
+def unsupported(
+    harness: str | dict, runtime: str, needs: tuple[str, ...]
+) -> str | None:
+    """Why this cell cannot run, or None when it can: a capability the behavior needs
+    that the harness or the runtime does not declare."""
     name = harness_id(harness)
     cls = harness_class(name)
     if "shell" in needs and not cls.EXECUTES_CODE:
@@ -133,32 +146,18 @@ def unsupported(harness: str | dict, needs: tuple[str, ...]) -> str | None:
         return f"{name} has no native skill support"
     if "resume" in needs and not resumes(cls):
         return f"{name} cannot resume an exchange"
+    runtime_needs = (*(("container",) if cls.NEEDS_CONTAINER else ()), *needs)
+    for feature in runtime_needs:
+        if feature in RUNTIME_FEATURES and not supports(runtime, feature):
+            return f"{runtime} does not support {RUNTIME_FEATURES[feature]}"
     return CI_MODEL_GAPS.get(name)
-
-
-def refused(harness: str | dict, runtime: str, needs: tuple[str, ...]) -> list[str]:
-    """The gaps the runtime may refuse this cell with; the first check to run wins."""
-    cls = runtime_cls(runtime)
-    gaps = []
-    if (
-        harness_class(harness_id(harness)).NEEDS_CONTAINER
-        and not cls.SUPPORTS_TASK_IMAGES
-    ):
-        gaps.append("container")
-    if "user" in needs and not cls.SUPPORTS_USER_SWITCHING:
-        gaps.append("user")
-    if "network" in needs and not runtime_supports_network_policy(runtime):
-        gaps.append("network")
-    return gaps
 
 
 def cell_marks(
     harness: str | dict, runtime: str, needs: tuple[str, ...]
 ) -> list[pytest.MarkDecorator]:
-    if reason := unsupported(harness, needs):
+    if reason := unsupported(harness, runtime, needs):
         return [pytest.mark.skip(reason=reason)]
-    if gaps := refused(harness, runtime, needs):
-        return [pytest.mark.refused("|".join(REFUSALS[gap] for gap in gaps))]
     return []
 
 
@@ -180,7 +179,7 @@ def grid(
     needs: tuple[str, ...] = (),
 ) -> list:
     """`(harness, harness_runtime)` cells, each marked by its axes, skipped where the
-    harness rules the behavior out, and refused where the runtime does."""
+    harness or the runtime rules the behavior out."""
     cells = []
     for harness in harnesses:
         for runtime in runtimes:
@@ -261,16 +260,16 @@ def placements(
     for harness_runtime in harness_runtimes:
         for tool_runtime in tool_runtimes:
             marks = [mark(harness_runtime), mark(tool_runtime)]
+            reason = None
             if tool_runtime == "service":
-                if not runtime_cls(harness_runtime).SUPPORTS_COMPOSE:
-                    marks.append(pytest.mark.refused(REFUSALS["compose"]))
-            elif (
-                tool_runtime != "colocated"
-                and not runtime_cls(tool_runtime).SUPPORTS_PORT_EXPOSURE
-                # Beside a Prime harness, a rollout's Prime server joins its private network.
-                and not (not shared and tool_runtime == harness_runtime == "prime")
+                reason = unsupported("null", harness_runtime, ("compose",))
+            # Beside a Prime harness, a rollout's Prime server joins its private network.
+            elif tool_runtime != "colocated" and not (
+                not shared and tool_runtime == harness_runtime == "prime"
             ):
-                marks.append(pytest.mark.refused(REFUSALS["expose"]))
+                reason = unsupported("null", tool_runtime, ("expose",))
+            if reason:
+                marks.append(pytest.mark.skip(reason=reason))
             cells.append(
                 pytest.param(
                     harness_runtime,
