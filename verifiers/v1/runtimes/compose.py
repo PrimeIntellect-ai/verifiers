@@ -74,6 +74,7 @@ class ComposeSpec:
     workspace: str = "main"
     host_image: str | None = None
     image_override: bool = False
+    build_dockerfile: bool = False
 
 
 @asynccontextmanager
@@ -190,7 +191,8 @@ async def compose_services(
                 # A template default must not replace an authored image or skip its build.
                 del base["services"][spec.workspace]["image"]
             elif (
-                not spec.image_override
+                spec.build_dockerfile
+                and not spec.image_override
                 and (
                     directory / "task" / Path(spec.file).parent / "Dockerfile"
                 ).is_file()
@@ -288,6 +290,8 @@ async def compose_services(
             )
             if spec.image_override:
                 main["image"] = config.image
+            elif "build" in base["services"][spec.workspace]:
+                main.pop("image", None)
             if "workdir" in main:
                 main["working_dir"] = main.pop("workdir")
             overlay = {"services": {spec.workspace: main}}
@@ -297,6 +301,13 @@ async def compose_services(
                 main["cpus"] = config.cpu
             if getattr(config, "memory", None) is not None:
                 main["mem_limit"] = f"{config.memory}g"
+            limits = {
+                key: main[field]
+                for key, field in (("cpus", "cpus"), ("memory", "mem_limit"))
+                if field in main
+            }
+            if limits:
+                main["deploy"] = {"resources": {"limits": limits}}
             if local:
                 publish["ports"] = [f"127.0.0.1::{SERVICE_PORT}"]
                 if sys.platform != "linux":
