@@ -13,7 +13,6 @@ Docker needs a reachable daemon and Prime needs `PRIME_API_KEY`; otherwise those
 skip."""
 
 import asyncio
-import base64
 import contextlib
 import json
 import os
@@ -48,7 +47,6 @@ from verifiers.v1.runtimes import (
     provision_runtime,
 )
 from verifiers.v1.runtimes.compose import ComposeSpec, compose_services
-from verifiers.v1.runtimes.egress import EgressProxy, NetworkPolicy
 from verifiers.v1.runtimes.strategies import _deployment_strategy
 from verifiers.v1.utils.compile import resolve_runtime_config
 
@@ -506,25 +504,3 @@ def test_custom_runtime_rejects_a_bad_import_path(import_path, error, match) -> 
         TypeAdapter(RuntimeConfig).validate_python(
             {"type": "custom", "import_path": import_path}
         )
-
-
-async def test_proxy_accepts_credentials_after_a_challenge() -> None:
-    """git, through curl's `anyauth`, first sends its CONNECT without credentials and
-    retries on the same connection after the 407."""
-    proxy = EgressProxy(NetworkPolicy(NetworkPolicyConfig(), []))
-    await proxy.start("127.0.0.1")
-    try:
-        reader, writer = await asyncio.open_connection("127.0.0.1", proxy.port)
-        connect = b"CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\n"
-        writer.write(connect + b"\r\n")
-        challenge = await reader.readuntil(b"\r\n\r\n")
-        assert challenge.startswith(b"HTTP/1.1 407"), challenge
-        credentials = base64.b64encode(f"verifiers:{proxy.token}".encode())
-        writer.write(
-            connect + b"Proxy-Authorization: Basic " + credentials + b"\r\n\r\n"
-        )
-        response = await reader.readuntil(b"\r\n\r\n")
-        assert response.startswith(b"HTTP/1.1 200"), response
-        writer.close()
-    finally:
-        await proxy.stop()

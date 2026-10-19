@@ -666,7 +666,9 @@ class DockerBackend(RuntimeBackend):
         if self._proxy is not None and self._restricted:
             # Every process goes through the proxy, so one started during setup keeps
             # its allowed egress after the cut.
-            proxy = f"http://verifiers:{self._proxy.token}@{self._proxy_host}:{self._proxy.port}"
+            # No credentials: only this container can reach its proxy, and tools that
+            # strip secret-looking variables would drop a URL that carried them.
+            proxy = f"http://{self._proxy_host}:{self._proxy.port}"
             exclusions = f"localhost,127.0.0.1,{_HOST_ALIAS}"
             env = {
                 **env,
