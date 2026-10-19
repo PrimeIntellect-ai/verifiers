@@ -202,7 +202,11 @@ class Runtime:
                         f"mv -f {shlex.quote(tmp)} {shlex.quote(path)} "
                         f"&& {{ {_ENSURE_UV}; }} "
                         f"&& uv sync --script {shlex.quote(path)} -q --no-config "
-                        f"&& uv python find --script {shlex.quote(path)} --no-config"
+                        # Managed-only discovery can skip the dependency virtualenv (uv 0.13).
+                        # Selection constraints belong to sync; discover the environment it prepared.
+                        "&& env -u UV_MANAGED_PYTHON -u UV_NO_MANAGED_PYTHON "
+                        "-u UV_PYTHON_PREFERENCE "
+                        f"uv python find --script {shlex.quote(path)} --no-config"
                     )
                     # Bootstrap dependencies before task networking is restricted;
                     # keep task offline settings on the returned program's processes.
