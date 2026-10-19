@@ -8,7 +8,7 @@ from grid import HARNESS_RUNTIMES, placements
 
 @pytest.mark.parametrize(
     "harness_runtime,tool_runtime",
-    placements(tool_runtimes=tuple(HARNESS_RUNTIMES)),
+    placements(tool_runtimes=tuple(HARNESS_RUNTIMES), shared=True),
     indirect=True,
 )
 async def test_shared_tool(run, harness_runtime, tool_runtime):
@@ -22,6 +22,7 @@ async def test_shared_tool(run, harness_runtime, tool_runtime):
         taskset_overrides={"tools": tool_runtime},
     )
     traces = [trace for episode in episodes for trace in episode.traces]
+    assert all(trace.num_branches == 1 for trace in traces)
     assert len(traces) == 2
     for trace in traces:
         assert trace.ok, [error.message for error in trace.errors]

@@ -17,6 +17,7 @@ async def test_env_id_user_sim(run):
         rollout_timeout=300,
     )
     traces = episode.traces
+    assert all(trace.num_branches == 1 for trace in traces)
     assert sorted(t.agent.name for t in traces) == ["assistant", "user"]
     (assistant,) = [t for t in traces if t.agent.name == "assistant"]
     (user,) = [t for t in traces if t.agent.name == "user"]
@@ -53,6 +54,7 @@ async def test_env_id_user_sim_with_tools(run):
         rollout_timeout=300,
     )
     traces = episode.traces
+    assert all(trace.num_branches == 1 for trace in traces)
     (assistant,) = [t for t in traces if t.agent.name == "assistant"]
     (user,) = [t for t in traces if t.agent.name == "user"]
     assert assistant.ok and user.ok

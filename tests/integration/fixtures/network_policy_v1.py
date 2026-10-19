@@ -1,32 +1,40 @@
-"""network-policy-v1: a scripted, model-free agent probes egress under the task's policy.
+"""network-policy-v1: the agent runs an egress probe under the task's network policy.
 
-Task 0 blocks `example.com`; task 1 allows only `pypi.org`. During execution the scripted
-harness fetches both hosts and the framework's own interception endpoint from inside the
-runtime and records which ones it reached. The reward is 1 only if the policy held: the
-denied host failed, the permitted host answered, and the framework route stayed reachable.
-Needs a runtime with network policy support (docker or prime).
+One task per policy the task data can declare: `open` (the default), `off` (an empty
+allowlist), `block` (blocks `example.com`) and `allow` (allows only `pypi.org`). Setup
+stages a probe script while egress is still open; the prompt asks the model to run it.
+The probe fetches both hosts and records which ones it reached, so the reward is 1 only
+if the policy held: each host answered exactly when the policy permits it. A harness
+without a shell writes no report and scores 0. Needs a runtime with network policy
+support; the integration test runs it on prime.
 """
 
 import json
 
 import verifiers.v1 as vf
-from verifiers.v1.clients import ModelContext
-from verifiers.v1.configs.harness import HarnessConfig
-from verifiers.v1.harness import Harness
-from verifiers.v1.runtimes import ProgramResult, Runtime
+from verifiers.v1.runtimes import Runtime
 
-__all__ = ["NetworkPolicyTaskset", "ScriptedNetworkProbeHarness"]
+__all__ = ["NetworkPolicyTaskset"]
 
 BLOCKED = "example.com"
 ALLOWED = "pypi.org"
-REPORT = "/tmp/network-policy-report.json"
+PROBE_PATH = "/tmp/network-probe.py"
+REPORT = "/tmp/network-probe.json"
+
+# What each task's policy lets through, keyed by task name.
+EXPECTED = {
+    "open": {"blocked": "ok", "allowed": "ok"},
+    "off": {"blocked": "denied", "allowed": "denied"},
+    "block": {"blocked": "denied", "allowed": "ok"},
+    "allow": {"blocked": "denied", "allowed": "ok"},
+}
 
 # Any HTTP answer, error status included, means the destination was reachable; a
 # refused connection, a proxy refusal, a DNS failure, or a timeout means it was not.
-PROBE = """
-import json, sys, urllib.error, urllib.request
-report = {}
-for name, url in json.loads(sys.argv[1]).items():
+PROBE = f"""
+import json, urllib.error, urllib.request
+report = {{}}
+for name, url in {{"blocked": "https://{BLOCKED}", "allowed": "https://{ALLOWED}/simple/"}}.items():
     try:
         urllib.request.urlopen(url, timeout=15)
         report[name] = "ok"
@@ -34,55 +42,41 @@ for name, url in json.loads(sys.argv[1]).items():
         report[name] = "ok"
     except Exception:
         report[name] = "denied"
-open(sys.argv[2], "w").write(json.dumps(report))
+open({REPORT!r}, "w").write(json.dumps(report))
+print(json.dumps(report))
 """
 
 
-class ScriptedNetworkProbeHarness(Harness[HarnessConfig]):
-    async def launch(
-        self,
-        ctx: ModelContext,
-        trace: vf.Trace,
-        runtime: Runtime,
-        endpoint: str,
-        secret: str,
-        mcp_urls: dict[str, str],
-        data: vf.TaskData,
-        tool_interception_url: str | None = None,
-    ) -> ProgramResult:
-        urls = {
-            "blocked": f"https://{BLOCKED}",
-            "allowed": f"https://{ALLOWED}/simple/",
-            "framework": endpoint,
-        }
-        return await runtime.run_program(
-            ["python3", "-c", PROBE, json.dumps(urls), REPORT], {}
-        )
-
-
 class NetworkPolicyTask(vf.Task):
+    async def setup(self, trace: vf.Trace, runtime: Runtime) -> None:
+        await runtime.write(PROBE_PATH, PROBE.encode())
+
     @vf.reward(weight=1.0)
     async def policy_held(self, trace: vf.Trace, runtime: Runtime) -> float:
-        report = json.loads(await runtime.read(REPORT))
+        result = await runtime.run(["cat", REPORT], {})
+        report = json.loads(result.stdout) if result.exit_code == 0 else None
         trace.info["network_report"] = report
-        return float(
-            report == {"blocked": "denied", "allowed": "ok", "framework": "ok"}
-        )
+        return float(report == EXPECTED[self.data.name])
 
 
 class NetworkPolicyTaskset(vf.Taskset[NetworkPolicyTask, vf.TasksetConfig]):
     def load(self) -> list[NetworkPolicyTask]:
+        policies = {
+            "open": {},
+            "off": {"network_allow": []},
+            "block": {"network_block": [BLOCKED]},
+            "allow": {"network_allow": [ALLOWED]},
+        }
+        prompt = (
+            f"Your only task: run the command `python3 {PROBE_PATH}` once in your "
+            "shell, then reply with exactly what it printed. Any network policy is "
+            "already enforced, so do not inspect, configure, or change the network or "
+            "firewall, and do not run any other command."
+        )
         return [
             NetworkPolicyTask(
-                vf.TaskData(
-                    idx=0, name="block", prompt="probe", network_block=[BLOCKED]
-                ),
+                vf.TaskData(idx=idx, name=name, prompt=prompt, **policy),
                 self.config.task,
-            ),
-            NetworkPolicyTask(
-                vf.TaskData(
-                    idx=1, name="allow", prompt="probe", network_allow=[ALLOWED]
-                ),
-                self.config.task,
-            ),
+            )
+            for idx, (name, policy) in enumerate(policies.items())
         ]

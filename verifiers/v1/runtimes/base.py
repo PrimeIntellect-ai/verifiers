@@ -1,26 +1,27 @@
-"""Execution runtime contract."""
+"""RuntimeBackend ownership and provider operations."""
+
+from __future__ import annotations
 
 import asyncio
 import atexit
 import base64
 import contextlib
-import copy
-import hashlib
 import logging
-import shlex
 import uuid
 import weakref
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass
-from pathlib import PurePosixPath
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
 
 from pydantic_config import BaseConfig
 
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.errors import SandboxError
 from verifiers.v1.utils.aio import run_shielded
+
+if TYPE_CHECKING:
+    from verifiers.v1.runtimes.runtime import Runtime
 
 logger = logging.getLogger(__name__)
 
@@ -108,15 +109,15 @@ def parse_gpu(gpu: str | None) -> tuple[str | None, int]:
 # that — so runtimes are also tracked in `_LIVE` and freed by a *synchronous* `atexit`
 # hook (`cleanup`), sync because the loop is gone at interpreter shutdown. SIGKILL runs
 # none of this.
-_LIVE: "weakref.WeakSet[Runtime]" = weakref.WeakSet()
+_LIVE: weakref.WeakSet[RuntimeBackend] = weakref.WeakSet()
 _atexit_armed = False
 
 
-def register(runtime: "Runtime") -> None:
+def register(backend: RuntimeBackend) -> None:
     """Track a runtime so the atexit hook can free it if a signal cuts its `finally` short.
     Weak, so a finished rollout's runtime drops out on its own; arms the hook once."""
     global _atexit_armed
-    _LIVE.add(runtime)
+    _LIVE.add(backend)
     if not _atexit_armed:
         _atexit_armed = True
         atexit.register(cleanup_at_exit)
@@ -126,9 +127,9 @@ def cleanup_at_exit() -> None:
     """Synchronously free any runtime still live at interpreter shutdown — a Ctrl-C /
     SIGTERM cancelled its `finally` mid-teardown. Sync on purpose (the event loop is gone);
     best-effort and idempotent (a clean `stop` already ran it)."""
-    for runtime in list(_LIVE):
+    for backend in list(_LIVE):
         with contextlib.suppress(Exception):
-            runtime.cleanup()
+            backend.cleanup()
 
 
 class BaseRuntimeInfo(BaseConfig):
@@ -138,8 +139,12 @@ class BaseRuntimeInfo(BaseConfig):
     (`Agent.run(runtime=...)`) rather than provisioning its own."""
 
 
-class Runtime(ABC):
-    __slots__ = ("env", "home", "user")
+class RuntimeBackend(ABC):
+    """Provider implementation for one container, VM, or local execution environment.
+
+    Holds shared resource state and implements lifecycle, networking, commands, and
+    file access. Handles bind user/env defaults without duplicating that resource.
+    """
 
     is_local: bool = True
     """Whether this runtime exchanges host-local URLs without a public tunnel. True for
@@ -147,10 +152,11 @@ class Runtime(ABC):
     use a host `Tunnel` inward plus `expose` outward."""
 
     supports_user: ClassVar[bool] = False
+    """Whether handles can bind another existing user."""
+
     supports_expose: ClassVar[bool] = True
     """Whether `expose` can publish a port inside this runtime to the outside, so a
     server here is reachable from another runtime."""
-    """Whether `with_user` can run this runtime's commands as another existing user."""
 
     scripts_dir: ClassVar[str] = "/tmp/vf-scripts"
     """Digest-keyed PEP 723 scripts inside the runtime. Sandboxes own their `/tmp`;
@@ -161,17 +167,13 @@ class Runtime(ABC):
     @property
     def supports_live_processes(self) -> bool:
         """Whether `open_process()` is implemented for this runtime instance."""
-        return type(self).open_process is not Runtime.open_process
+        return type(self)._open_process is not RuntimeBackend._open_process
 
     def __init__(self, name: str | None = None) -> None:
         self.name = name or f"vf-{uuid.uuid4().hex[:12]}"
         # Per-run task values live on the runtime rather than its serializable config/info.
         # Explicit process values (model credentials, proxy settings, etc.) override these.
         self.env: dict[str, str] = {}
-        self.user: str | None = None
-        """Existing user this view runs commands as; None uses the runtime's default."""
-        self.home: str | None = None
-        """`HOME` for `user`'s processes; None leaves the runtime's own."""
         self._uv_interpreters: dict[str, str] = {}
         self._uv_script_locks: dict[str, asyncio.Lock] = {}
         self._mcp_sources: set[str] = set()
@@ -182,6 +184,17 @@ class Runtime(ABC):
         """Whether teardown has begun (set by `stop`). A stopped runtime is dead: a rollout
         refuses to borrow one — the owner tore it down, so any use is a lifetime bug in the
         borrowing program, caught up front instead of failing opaquely mid-harness."""
+
+    def bind(self, *, env: Mapping[str, str] | None = None) -> Runtime:
+        """Access this resource with immutable bindings; does not provision anything."""
+        from verifiers.v1.runtimes.runtime import Runtime
+
+        return Runtime(self, env=self.env if env is None else env)
+
+    def deploy(self, **kwargs):
+        from verifiers.v1.runtimes.deployment import Deployment
+
+        return Deployment(self, **kwargs)
 
     @property
     def type(self) -> str:
@@ -214,63 +227,31 @@ class Runtime(ABC):
         is dead, and run off the event loop by `stop` on the normal path. Default no-op."""
 
     @abstractmethod
-    async def run(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
+    async def _run(
+        self, runtime: Runtime, argv: list[str], env: dict[str, str]
+    ) -> ProgramResult:
         pass
 
-    def process_env(self, env: dict[str, str]) -> dict[str, str]:
-        """Combine the task's runtime-wide environment with one process's values."""
-        home = {} if self.home is None else {"HOME": self.home}
-        return {**self.env, **home, **env}
-
-    def with_env(self, env: dict[str, str]) -> "Runtime":
-        """Share this physical runtime through a view with its own process environment."""
-        runtime = copy.copy(self)
-        # `env` is slotted, so every other runtime field stays physical and shared.
-        runtime.__dict__ = self.__dict__
-        runtime.env = dict(env)
-        return runtime
-
-    def with_user(self, user: str | None, home: str | None = None) -> "Runtime":
-        """A view of this runtime whose commands and file I/O run as `user` (an existing
-        user in the box) with `HOME` set to `home`; None returns the default user."""
-        if user is not None and not self.supports_user:
-            raise ValueError(
-                f"{type(self).__name__} cannot run commands as another user"
-            )
-        runtime = copy.copy(self)
-        runtime.__dict__ = self.__dict__
-        runtime.user = user
-        runtime.home = home if user is not None else None
-        return runtime
-
-    async def alive(self) -> bool:
-        """Whether the box still executes anything. Not every runtime raises when
-        the box is gone — some surface it as `exec`'s own non-zero result,
-        indistinguishable from the command failing. One probe on the failure path
-        tells the two apart before we blame anyone."""
-        try:
-            return (await self.run(["true"], {})).exit_code == 0
-        except Exception:  # noqa: BLE001 - failing to exec at all means the box is gone
-            return False
-
-    async def run_program(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
+    async def _run_program(
+        self, runtime: Runtime, argv: list[str], env: dict[str, str]
+    ) -> ProgramResult:
         """Run the harness's MAIN program — the rollout itself (a possibly long-lived, stateful,
         agentic run) — as opposed to the short idempotent infra ops (write / mv / install /
         provisioning) that go through `run`. No framework layer may replay this argv: doing so
         against the rollout's persistent trace would fork a duplicate branch. Provider SDKs may
         still retry individual safe transport operations underneath `run`."""
-        return await self.run(argv, env)
+        return await runtime.run(argv, env)
 
-    async def open_process(
-        self, argv: list[str], env: dict[str, str]
+    async def _open_process(
+        self, runtime: Runtime, argv: list[str], env: dict[str, str]
     ) -> RuntimeProcess:
         """Start a live process for a rollout-scoped harness session."""
         raise NotImplementedError(
             f"{type(self).__name__} does not support live processes"
         )
 
-    async def run_background(
-        self, argv: list[str], env: dict[str, str], log: str
+    async def _run_background(
+        self, runtime: Runtime, argv: list[str], env: dict[str, str], log: str
     ) -> None:
         """Start `argv` as a background process in the runtime (combined output to
         `log`, a path in the workspace) and return immediately. It runs until `stop()`
@@ -279,104 +260,10 @@ class Runtime(ABC):
             f"{type(self).__name__} does not support run_background"
         )
 
-    async def prepare_uv_script(
-        self,
-        script: str | bytes,
-        env: dict[str, str] | None = None,
-        *,
-        activate: bool = True,
-    ) -> list[str]:
-        """Prepare a PEP 723 script and return an argv that runs it.
-
-        ``activate=False`` invokes the resolved script interpreter directly, keeping
-        its environment variables out of child processes spawned by the script.
-        """
-        data = script.encode() if isinstance(script, str) else script
-        digest = hashlib.sha256(data).hexdigest()
-        # Each user needs its own writable script dir and uv environment.
-        directory = (
-            self.scripts_dir if self.user is None else f"{self.scripts_dir}-{self.user}"
-        )
-        path = f"{directory}/{digest}.py"
-        if path not in self._uv_interpreters:
-            async with self._uv_script_locks.setdefault(path, asyncio.Lock()):
-                if self.user is not None and not self._curl_ready:
-                    # Only root can install a downloader for the user's uv bootstrap.
-                    curl = await self.with_user(None).run(
-                        ["sh", "-c", _INSTALL_CURL], {}
-                    )
-                    self._curl_ready = curl.exit_code == 0
-                if path not in self._uv_interpreters:
-                    tmp = f"{path}.{uuid.uuid4().hex}.tmp"
-                    await self.write(tmp, data)
-                    command = (
-                        f"mv -f {shlex.quote(tmp)} {shlex.quote(path)} "
-                        f"&& {{ {_ENSURE_UV}; }} "
-                        f"&& uv sync --script {shlex.quote(path)} -q --no-config "
-                        f"&& uv python find --script {shlex.quote(path)} --no-config"
-                    )
-                    # Bootstrap dependencies before task networking is restricted;
-                    # keep task offline settings on the returned program's processes.
-                    result = await self.run(
-                        ["sh", "-c", command], {**(env or {}), "UV_OFFLINE": "false"}
-                    )
-                    if result.exit_code != 0:
-                        raise RuntimeError(
-                            "failed to prepare uv script: "
-                            f"{result.stderr.strip()[-2000:]}"
-                        )
-                    self._uv_interpreters[path] = result.stdout.strip().splitlines()[-1]
-        interpreter = self._uv_interpreters[path]
-        if not activate:
-            return [interpreter, path]
-        venv = str(PurePosixPath(interpreter).parent.parent)
-        command = (
-            'export VIRTUAL_ENV="$1" PATH="${1}/bin:$HOME/.local/bin:$PATH" '
-            'UV_INSTALL_DIR="$HOME/.local/bin" UV_RUN_RECURSION_DEPTH=1; '
-            'shift; exec "$@"'
-        )
-        return [
-            "sh",
-            "-c",
-            command,
-            "uv-script",
-            venv,
-            interpreter,
-            path,
-        ]
-
-    async def run_uv_script(
-        self,
-        script: str | bytes,
-        args: list[str] | None = None,
-        env: dict[str, str] | None = None,
-    ) -> ProgramResult:
-        """The script is written to a stable, content-addressed path rather than the per-rollout
-        workspace: uv keys its per-script environment by the script's full path, so a
-        unique path per call would mint a fresh env every rollout. A path derived from the
-        content means identical scripts share one path → uv reuses one env, bounded by the
-        number of distinct scripts. Published via a unique temp + atomic `mv`, so
-        concurrent rollouts writing the same content never race a half-written read."""
-        argv = await self.prepare_uv_script(script, env)
-        return await self.run([*argv, *(args or [])], env or {})
-
-    async def read(self, path: str, max_bytes: int | None = None) -> bytes:
-        """Read `path` into host memory. `max_bytes` caps the transfer, raising past
-        the cap — for a file written by something we don't control, whose size we
-        can't assume. The cap is enforced inside the box rather than after the
-        transfer. Framework method — override `_read`, not this."""
-        if max_bytes is None:
-            return await self._read(path)
-        if max_bytes < 0:
-            raise ValueError("max_bytes must be non-negative")
-        # One extra byte distinguishes an exact fit from a truncated file.
-        data = await self._read(path, max_bytes=max_bytes + 1)
-        if len(data) > max_bytes:
-            raise SandboxError(f"read {path!r}: over the {max_bytes} byte limit")
-        return data
-
     @abstractmethod
-    async def _read(self, path: str, max_bytes: int | None = None) -> bytes:
+    async def _read(
+        self, runtime: Runtime, path: str, max_bytes: int | None = None
+    ) -> bytes:
         """Read at most `max_bytes` bytes at the source, or the whole file if None.
 
         Overrides must accept `max_bytes` and enforce it before transferring data.
@@ -388,7 +275,7 @@ class Runtime(ABC):
         # Through a temp file, not a pipe: `head | base64` exits with base64's 0
         # even when the path is missing, and a missing file must raise here just
         # as it does from a native binary read.
-        result = await self.run(
+        result = await runtime.run(
             [
                 "sh",
                 "-c",
@@ -408,7 +295,7 @@ class Runtime(ABC):
         return base64.b64decode(result.stdout)
 
     @abstractmethod
-    async def write(self, path: str, data: bytes) -> None:
+    async def _write(self, runtime: Runtime, path: str, data: bytes) -> None:
         pass
 
     def host_url(self, url: str) -> str:

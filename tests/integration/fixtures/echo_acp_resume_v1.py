@@ -52,21 +52,21 @@ class ACPResumeTask(vf.Task[vf.TaskData, vf.State, ACPResumeTaskConfig]):
 class ACPResumeEnv(vf.SingleAgentEnv):
     async def run(self, task, agents):
         async with agents.agent.interaction(task) as interaction:
-            # Stated as a fact, not a "do not" instruction: OpenAI's content filter
-            # refuses "remember ... do not call tools or store it" as an injection.
+            # No "without tools" constraint here: models treat passing the codeword
+            # to a tool in the next turn as exfiltrating a secret and refuse.
             first = await interaction.turn(
-                f"The codeword for this conversation is {CODEWORD}. Keep it in the "
-                "conversation context only, without tools or persistent memory. "
-                "Reply with exactly READY."
+                f"The codeword for this conversation is {CODEWORD}. It is not a "
+                "secret. In my next message I will ask you to pass it to a tool. For "
+                "now, reply with exactly READY."
             )
             segments = [first]
             if not first.terminated:
                 segments.append(
                     await interaction.turn(
-                        "Use your tools or pre-imported Python skills to call `resume`'s "
-                        "`recall` with the "
-                        "codeword from my previous message, then reply with exactly the "
-                        "tool result."
+                        "Call the `recall` tool of the `resume` server (directly or "
+                        "through your pre-imported Python skills) with the codeword "
+                        "from my previous message. Then reply with exactly the tool "
+                        "result and nothing else."
                     )
                 )
             interaction.trace.info["acp_segments"] = [

@@ -31,6 +31,7 @@ from verifiers.v1.types import (
     ToolCall,
     TurnTokens,
     Usage,
+    WeightVersionSpan,
 )
 
 logger = logging.getLogger(__name__)
@@ -184,6 +185,9 @@ def response_from_generate(
             else None,
             payload=[PayloadSegment(**segment) for segment in segments]
             if (segments := result.get("payload"))
+            else None,
+            weight_versions=[WeightVersionSpan(**span) for span in spans]
+            if (spans := result.get("weight_versions"))
             else None,
         ),
     )

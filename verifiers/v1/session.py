@@ -35,6 +35,7 @@ from verifiers.v1.harnesses.utils.compaction import bound_tool_message
 from verifiers.v1.trace import InterceptRecord, Trace
 from verifiers.v1.types import (
     AssistantMessage,
+    DialectName,
     Messages,
     Request,
     Response,
@@ -232,7 +233,11 @@ class RolloutSession:
         return request.model_copy(update={"messages": messages}) if changed else request
 
     async def rewrite_request(
-        self, request: Request, *, run_stops: bool = True
+        self,
+        request: Request,
+        *,
+        run_stops: bool = True,
+        dialect: DialectName | None = None,
     ) -> tuple[Request, list[InterceptRecord], str | None]:
         """Run typed request interceptors and stops over one canonical request. Only the
         uncommitted tail's user and tool messages may change; a rewritten tool result is
@@ -242,7 +247,7 @@ class RolloutSession:
         if not self.request_interceptors and (not run_stops or not self.request_stops):
             return request, [], None
         candidates: set[int] = set()
-        tail_start = graph.message_prefix_len(self.trace, request.messages)
+        tail_start = graph.message_prefix_len(self.trace, request.messages, dialect)
         if self.request_interceptors:
             prepared_users = self.prepared_users.copy()
             for position in range(tail_start, len(request.messages)):

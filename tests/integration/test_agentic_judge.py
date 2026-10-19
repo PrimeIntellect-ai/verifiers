@@ -1,9 +1,7 @@
-"""The agentic judge envs verify a solver empirically in a sandbox: `shared-agentic-judge`
-reuses the solver's restricted box, `agentic-judge` restores the solver's artifact in a
-fresh box."""
+"""Agentic judging uses shared or isolated scoring to verify a solver in a sandbox."""
 
 
-async def test_env_id_shared_agentic_judge(run, tmp_path):
+async def test_agentic_judge_shared_verifier(run, tmp_path):
     """The shared agentic judge provisions one restricted solver-owned box and
     safely reuses it for the judge's empirical verification."""
     policy = tmp_path / "judge_policy.txt"
@@ -12,10 +10,11 @@ async def test_env_id_shared_agentic_judge(run, tmp_path):
         "echo-v1",
         harness=None,
         env={
-            "id": "shared-agentic-judge",
+            "id": "agentic-judge",
             "solver": {
                 "harness": {"id": "bash"},
                 "runtime": {"type": "docker", "block": ["example.com"]},
+                "scoring": {"mode": "shared"},
             },
             "judge": {
                 "harness": {"id": "bash"},
@@ -31,6 +30,7 @@ async def test_env_id_shared_agentic_judge(run, tmp_path):
         rollout_timeout=600,
     )
     traces = episode.traces
+    assert all(trace.num_branches == 1 for trace in traces)
     assert sorted(t.agent.name for t in traces) == ["judge", "solver"]
     (solver,) = [t for t in traces if t.agent.name == "solver"]
     (judge,) = [t for t in traces if t.agent.name == "judge"]
@@ -60,6 +60,7 @@ async def test_env_id_agentic_judge(run, tmp_path):
             "solver": {
                 "harness": {"id": "bash"},
                 "runtime": {"type": "docker", "block": ["example.com"]},
+                "scoring": {"mode": "isolated"},
             },
             "judge": {
                 "harness": {"id": "bash"},
@@ -75,6 +76,7 @@ async def test_env_id_agentic_judge(run, tmp_path):
         rollout_timeout=600,
     )
     traces = episode.traces
+    assert all(trace.num_branches == 1 for trace in traces)
     assert sorted(t.agent.name for t in traces) == ["judge", "solver"]
     (solver,) = [t for t in traces if t.agent.name == "solver"]
     (judge,) = [t for t in traces if t.agent.name == "judge"]

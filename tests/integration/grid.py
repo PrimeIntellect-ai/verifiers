@@ -12,7 +12,7 @@ capability the code declares, never from a list of names, so the grid follows th
 - `Harness.EXECUTES_CODE`, `SUPPORTS_MCP`, `SUPPORTS_SKILLS`, resume support
   (`SUPPORTS_RESUME` or a native session): the behavior needs a shell, MCP tools,
   skills, or a resumable exchange
-- `Runtime.supports_user`, `Runtime.supports_expose`, `NetworkPolicyConfig`: the
+- `RuntimeBackend.supports_user`, `RuntimeBackend.supports_expose`, `NetworkPolicyConfig`: the
   behavior needs a user switch, a tool server reachable from another runtime, or a
   network policy
 - `podman` / `apptainer` need their engine on the host
@@ -32,6 +32,7 @@ prime cannot pull) stay outside the grid.
 
 import shutil
 from collections.abc import Sequence
+from typing import get_args
 
 import pytest
 from pydantic import TypeAdapter
@@ -39,8 +40,8 @@ from pydantic import TypeAdapter
 import verifiers.v1 as vf
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.harness import Harness
-from verifiers.v1.runtimes import RuntimeConfig, _runtime_cls
-from verifiers.v1.utils.loaders import harness_class
+from verifiers.v1.runtimes import RuntimeConfig, _backend_cls
+from verifiers.v1.utils.loaders import harness_class, harness_config_type
 
 HARNESSES: list[str | dict] = [
     "null",
@@ -49,15 +50,26 @@ HARNESSES: list[str | dict] = [
     "codex",
     "claude-code",
     "hermes-agent",
+    "deepseek",
     "kimi-code",
     "pi",
     "openclaw",
+    "opencode",
     "mini-swe-agent",
     "prime-agent",
 ]
 RUNTIMES = ["subprocess", "docker", "podman", "apptainer", "prime", "modal", "e2b"]
 ENGINES = ("podman", "apptainer")
 HARNESS_RUNTIMES = [runtime for runtime in RUNTIMES if runtime not in ENGINES]
+# Runtimes whose VMs run a task's Compose services.
+COMPOSE_VMS = ("prime", "modal")
+
+# Harnesses that cannot run against the CI model yet.
+# TODO: drop each entry once its fix lands.
+CI_MODEL_GAPS = {
+    "kimi-code": "Prime chat completions rejects kimi-code's prompt_cache_key",
+    "openclaw": "openclaw cannot load the custom `internal/` model provider",
+}
 
 
 def agent_seats(taskset: str, env_id: str = "") -> list[str]:
@@ -92,7 +104,7 @@ def runtime_config(runtime: str, harness: str | dict | None = None) -> dict:
 
 
 def runtime_cls(runtime: str) -> type:
-    return _runtime_cls(TypeAdapter(RuntimeConfig).validate_python({"type": runtime}))
+    return _backend_cls(TypeAdapter(RuntimeConfig).validate_python({"type": runtime}))
 
 
 def runtime_supports_user(runtime: str) -> bool:
@@ -164,7 +176,10 @@ def grid(
     for harness in harnesses:
         for runtime in runtimes:
             marks = [mark(harness_id(harness)), mark(runtime)]
-            if reason := unsupported(harness, runtime, needs):
+            reason = unsupported(harness, runtime, needs) or CI_MODEL_GAPS.get(
+                harness_id(harness)
+            )
+            if reason:
                 marks.append(pytest.mark.skip(reason=reason))
             cells.append(
                 pytest.param(
@@ -174,6 +189,36 @@ def grid(
                     id=f"{harness_id(harness)}-in-{runtime}",
                 )
             )
+    return cells
+
+
+def transports(harness: str) -> tuple[str, ...]:
+    """The wire formats the harness config can select (`transport`) besides its
+    default. Empty when the program speaks one format or picks its own."""
+    field = harness_config_type(harness).model_fields.get("transport")
+    if field is None:
+        return ()
+    return tuple(t for t in get_args(field.annotation) if t != field.default)
+
+
+def transport_grid(
+    runtimes: Sequence[str] = ("prime",), *, needs: tuple[str, ...] = ()
+) -> list:
+    """`grid` cells for every non-default `transport` each harness config can select."""
+    cells = []
+    for harness in HARNESSES:
+        name = harness_id(harness)
+        for transport in transports(name):
+            for cell in grid(
+                [{"id": name, "transport": transport}], runtimes, needs=needs
+            ):
+                cells.append(
+                    pytest.param(
+                        *cell.values,
+                        marks=cell.marks,
+                        id=cell.id.replace(f"{name}-in-", f"{name}-{transport}-in-"),
+                    )
+                )
     return cells
 
 
@@ -195,9 +240,13 @@ def skip_harness(cells: list, harness: str, reason: str) -> list:
 def placements(
     harness_runtimes: tuple[str, ...] = tuple(RUNTIMES),
     tool_runtimes: tuple[str, ...] = ("colocated", *RUNTIMES),
+    *,
+    shared: bool = False,
 ) -> list:
     """`(harness_runtime, tool_runtime)` cells for a tool server placed colocated in the
-    harness's box or in its own runtime."""
+    harness's box, in a Compose service beside it (`service`), or in its own runtime
+    (on Prime beside a Prime harness, a VM on the rollout's private network). A `shared`
+    server runs once per eval, so it joins no rollout's network."""
     cells = []
     for harness_runtime in harness_runtimes:
         for tool_runtime in tool_runtimes:
@@ -209,9 +258,18 @@ def placements(
             ]
             if missing:
                 marks.append(pytest.mark.skip(reason=f"needs {missing[0]} on the host"))
+            elif tool_runtime == "service" and harness_runtime not in COMPOSE_VMS:
+                marks.append(
+                    pytest.mark.skip(
+                        reason="a tool server in a Compose service needs Compose on a "
+                        "Prime or Modal VM"
+                    )
+                )
             elif (
-                tool_runtime != "colocated"
+                tool_runtime not in ("colocated", "service")
                 and not runtime_cls(tool_runtime).supports_expose
+                # Beside a Prime harness, a rollout's Prime server joins its private network.
+                and not (not shared and tool_runtime == harness_runtime == "prime")
             ):
                 marks.append(
                     pytest.mark.skip(

@@ -52,5 +52,11 @@ async def test_agent_user_harness(run, harness, harness_runtime, scripted_model)
         client=scripted_model,
     )
     (trace,) = episode.traces
+    # mini-swe-agent only acts through tool calls: it drops a tool-less reply (the
+    # scripted "OK") from its history and resends only its format error, so the
+    # trace forks by design. Recheck on version bumps:
+    # https://github.com/SWE-agent/mini-swe-agent/blob/v2.4.6/src/minisweagent/agents/default.py#L114
+    if harness.id != "mini-swe-agent":
+        assert trace.num_branches == 1
     assert trace.ok, [error.message for error in trace.errors]
     assert trace.num_turns >= 1

@@ -19,6 +19,7 @@ async def test_resume_tool(run, harness, harness_runtime):
         rollout_timeout=600,
     )
     (trace,) = episode.traces
+    assert trace.num_branches == 1
     assert trace.ok, [error.message for error in trace.errors]
     assert trace.stop_condition == "user_closed"
     assert trace.rewards["resumed"].score == 1.0
@@ -27,10 +28,6 @@ async def test_resume_tool(run, harness, harness_runtime):
     assert segments[0]["terminated"] is False
     assert segments[1]["terminated"] is False
     assert trace.last_reply == segments[1]["last_reply"]
-    # Kimi Code's resumed requests replay history that differs from the turns it
-    # sampled (seen on prime), so its graph forks instead of extending one branch.
-    if harness.id != "kimi-code":
-        assert trace.num_branches == 1
     assert "tool" in segments[1]["roles"]
     assert segments[1]["tool_outputs"]
     if harness.id == "pi":

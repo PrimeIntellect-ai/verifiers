@@ -7,9 +7,13 @@
         "overview",
         "getting_started",
         "architecture",
+        "building-environments",
         "tasksets",
         "evaluation",
+        "runtimes",
+        "debugging",
         "harnesses",
+        "agent",
         "env",
         "harbor",
         "gepa"

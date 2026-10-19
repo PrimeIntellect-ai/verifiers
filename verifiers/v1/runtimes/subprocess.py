@@ -1,5 +1,7 @@
 """Local subprocess runtime."""
 
+from __future__ import annotations
+
 import asyncio
 import contextlib
 import os
@@ -16,9 +18,10 @@ from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes.base import (
     BaseRuntimeInfo,
     ProgramResult,
-    Runtime,
+    RuntimeBackend,
     RuntimeProcess,
 )
+from verifiers.v1.runtimes.runtime import Runtime
 from verifiers.v1.utils.paths import CACHE_DIR
 
 _BACKGROUND_STOP_TIMEOUT = 5
@@ -80,7 +83,7 @@ class SubprocessProcess(RuntimeProcess):
         signal_process(self._process, signal.SIGKILL)
 
 
-class SubprocessRuntime(Runtime):
+class SubprocessBackend(RuntimeBackend):
     # Share prepared script environments across the worker's per-rollout runtimes.
     scripts_dir: ClassVar[str] = str(CACHE_DIR / "runtimes" / "scripts")
     _interpreters: ClassVar[dict[str, str]] = {}
@@ -100,9 +103,11 @@ class SubprocessRuntime(Runtime):
         self.workdir.mkdir(parents=True)
         self.info.id = str(self.workdir)
 
-    async def run(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
+    async def _run(
+        self, runtime: Runtime, argv: list[str], env: dict[str, str]
+    ) -> ProgramResult:
         full_env = {k: v for k, v in os.environ.items() if "API_KEY" not in k.upper()}
-        full_env.update(self.process_env(env))
+        full_env.update(runtime.process_env(env))
         proc = await asyncio.create_subprocess_exec(
             *argv,
             env=full_env,
@@ -128,11 +133,11 @@ class SubprocessRuntime(Runtime):
             stderr=stderr.decode(errors="replace"),
         )
 
-    async def open_process(
-        self, argv: list[str], env: dict[str, str]
+    async def _open_process(
+        self, runtime: Runtime, argv: list[str], env: dict[str, str]
     ) -> RuntimeProcess:
         full_env = {k: v for k, v in os.environ.items() if "API_KEY" not in k.upper()}
-        full_env.update(self.process_env(env))
+        full_env.update(runtime.process_env(env))
         proc = await asyncio.create_subprocess_exec(
             *argv,
             env=full_env,
@@ -145,11 +150,11 @@ class SubprocessRuntime(Runtime):
         self._background.append(proc)
         return SubprocessProcess(proc)
 
-    async def run_background(
-        self, argv: list[str], env: dict[str, str], log: str
+    async def _run_background(
+        self, runtime: Runtime, argv: list[str], env: dict[str, str], log: str
     ) -> None:
         full_env = {k: v for k, v in os.environ.items() if "API_KEY" not in k.upper()}
-        full_env.update(self.process_env(env))
+        full_env.update(runtime.process_env(env))
         logfile = self.workdir / log
         with logfile.open(
             "wb"
@@ -166,7 +171,9 @@ class SubprocessRuntime(Runtime):
             proc
         )  # killed in stop() — a host process won't die on its own
 
-    async def _read(self, path: str, max_bytes: int | None = None) -> bytes:
+    async def _read(
+        self, runtime: Runtime, path: str, max_bytes: int | None = None
+    ) -> bytes:
         if max_bytes is None:
             return await asyncio.to_thread((self.workdir / path).read_bytes)
 
@@ -187,9 +194,11 @@ class SubprocessRuntime(Runtime):
             data = await asyncio.to_thread(read)
         except OSError as exc:
             raise SandboxError(f"read {path!r}: {exc}") from exc
-        return data if data is not None else await super()._read(path, max_bytes)
+        return (
+            data if data is not None else await super()._read(runtime, path, max_bytes)
+        )
 
-    async def write(self, path: str, data: bytes) -> None:
+    async def _write(self, runtime: Runtime, path: str, data: bytes) -> None:
         target = self.workdir / path
         target.parent.mkdir(parents=True, exist_ok=True)
         await asyncio.to_thread(target.write_bytes, data)

@@ -1,8 +1,18 @@
+from pydantic import SerializeAsAny, model_validator
+
 import verifiers.v1 as vf
+from verifiers.v1.utils.loaders import judge_config_type, narrow_plugin_field
 
 
 class InterceptionTaskConfig(vf.TaskConfig):
-    judge: vf.JudgeConfig = vf.JudgeConfig()
+    judge: SerializeAsAny[vf.JudgeConfig] = vf.JudgeConfig()
+
+    @model_validator(mode="before")
+    @classmethod
+    def resolve_judge(cls, data):
+        if isinstance(data, dict):
+            narrow_plugin_field(data, "judge", judge_config_type)
+        return data
 
 
 class InterceptionTask(vf.Task[vf.TaskData, vf.State, InterceptionTaskConfig]):
@@ -28,14 +38,29 @@ class InterceptionTask(vf.Task[vf.TaskData, vf.State, InterceptionTaskConfig]):
         if "JUDGE_BLOCK" not in candidate:
             return None
         # Trace is the canonical history; Response is the candidate being judged.
-        verdict = await vf.Judge(self.config.judge).complete(
-            "Reply BLOCK if the candidate contains JUDGE_BLOCK; otherwise ALLOW.\n\n"
-            f"{trace.transcript}\n\nCandidate:\n{candidate}",
-            trace=trace,
-        )
-        choice = vf.parse_judge_choice(verdict.text, choices=("BLOCK", "ALLOW"))
-        if choice is None:
-            raise ValueError(f"judge returned no BLOCK/ALLOW verdict: {verdict.text!r}")
+        if isinstance(self.config.judge, vf.DecisionJudgeConfig):
+            judge = vf.DecisionJudge(
+                self.config.judge.model_copy(update={"levels": ["ALLOW", "BLOCK"]})
+            )
+            verdict = await judge.evaluate(
+                trace=trace,
+                question="Classify the candidate: BLOCK if it contains JUDGE_BLOCK; otherwise ALLOW.",
+                response=candidate,
+                context=trace.transcript,
+            )
+            assert verdict.parsed is not None
+            choice = "BLOCK" if verdict.parsed >= 0.5 else "ALLOW"
+        else:
+            verdict = await vf.Judge(self.config.judge).complete(
+                "Reply BLOCK if the candidate contains JUDGE_BLOCK; otherwise ALLOW.\n\n"
+                f"{trace.transcript}\n\nCandidate:\n{candidate}",
+                trace=trace,
+            )
+            choice = vf.parse_judge_choice(verdict.text, choices=("BLOCK", "ALLOW"))
+            if choice is None:
+                raise ValueError(
+                    f"judge returned no BLOCK/ALLOW verdict: {verdict.text!r}"
+                )
         if choice == "BLOCK":
             return response.model_copy(
                 update={"message": vf.AssistantMessage(content="Blocked")}
