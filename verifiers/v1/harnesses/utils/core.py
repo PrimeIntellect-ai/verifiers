@@ -33,6 +33,11 @@ from tenacity import (
     wait_random_exponential,
 )
 
+if __package__:
+    # In the standalone harness bundle this helper is defined by compaction.py
+    # above this module; ordinary package imports need its module binding.
+    from verifiers.v1.harnesses.utils.compaction import read_tool_output
+
 if TYPE_CHECKING:
     # The harness bundles this module into the generated script before execution.
     from verifiers.v1.harnesses.utils.compaction import (  # noqa: TC004
@@ -225,11 +230,8 @@ def run_bash(command: str, timeout: int = 3600) -> str:
                 os.killpg(process.pid, signal.SIGKILL)
                 process.wait()
                 note = f"\nerror: command exceeded {timeout}s and was killed"
-            out.seek(0)
-            err.seek(0)
             # Commands print binary freely; undecodable bytes must not lose the output.
-            stdout = out.read().decode(errors="replace")
-            return stdout + err.read().decode(errors="replace") + note
+            return read_tool_output(out, err) + note
     except OSError as e:
         if e.errno in (errno.ENOSPC, errno.EDQUOT):
             return (

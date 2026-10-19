@@ -125,6 +125,45 @@ def bound_tool_message(message: dict) -> dict:
     return message
 
 
+def read_tool_output(*streams) -> str:
+    """Read captured tool output without allocating the whole capture in memory.
+
+    Bash output is already bounded at the model boundary. Apply that same budget
+    before decoding large captures, so a full tmpfs cannot OOM the harness itself.
+    """
+    sizes = [stream.seek(0, 2) for stream in streams]
+    total = sum(sizes)
+
+    def read_range(start, length):
+        chunks = []
+        for stream, size in zip(streams, sizes):
+            if start >= size:
+                start -= size
+                continue
+            stream.seek(start)
+            chunk = stream.read(min(length, size - start))
+            chunks.append(chunk)
+            length -= len(chunk)
+            start = 0
+            if not length:
+                break
+        return b"".join(chunks).decode("utf-8", errors="replace")
+
+    if total <= TOOL_OUTPUT_MAX_BYTES:
+        chunks = []
+        for stream in streams:
+            stream.seek(0)
+            chunks.append(stream.read().decode("utf-8", errors="replace"))
+        return "".join(chunks)
+    # Leave room for the notice inside the existing tool-message budget.
+    keep = (TOOL_OUTPUT_MAX_BYTES - 512) // 2
+    return (
+        f"Warning: truncated output (original size: {total} bytes)\n"
+        f"{read_range(0, keep)}\n[... {total - 2 * keep} bytes truncated ...]\n"
+        f"{read_range(total - keep, keep)}"
+    )
+
+
 def truncate_tool_output(text: str) -> str:
     """Keep the head and tail of an oversized tool result and say what was cut."""
     data = text.encode("utf-8")
