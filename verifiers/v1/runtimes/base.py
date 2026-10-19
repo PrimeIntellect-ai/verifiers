@@ -7,6 +7,7 @@ import atexit
 import base64
 import contextlib
 import logging
+import shlex
 import uuid
 import weakref
 from abc import ABC, abstractmethod
@@ -265,6 +266,21 @@ class RuntimeBackend(ABC):
         return ProgramResult(
             exit_code, stdout.decode(errors="replace"), stderr.decode(errors="replace")
         )
+
+    async def run_background(
+        self, runtime: Runtime, argv: list[str], env: dict[str, str], log: str
+    ) -> None:
+        """Start `argv` with its combined output in `log`, a path in the working
+        directory, and return; it runs until teardown ends the runtime. The default
+        keeps an `exec` handle open for the process's life. Override when the provider
+        runs detached jobs, so a long-lived server holds no client connection."""
+        script = f'exec "$@" > {shlex.quote(log)} 2>&1 < /dev/null'
+        process = await self.exec(runtime, ["sh", "-c", script, "sh", *argv], env)
+        # Prune in place: another start can append while `poll` awaits.
+        self._background.append(process)
+        for handle in list(self._background):
+            if await handle.poll() is not None and handle in self._background:
+                self._background.remove(handle)
 
     async def read(
         self, runtime: Runtime, path: str, max_bytes: int | None = None

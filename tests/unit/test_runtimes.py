@@ -525,7 +525,17 @@ async def test_concurrent_background_starts_keep_every_handle() -> None:
 
     backend = StubBackend()
     view = Runtime(backend)  # ty: ignore[invalid-argument-type]
+    # The base backend's default, which keeps an `exec` handle per process.
     await asyncio.gather(
-        *(view.run_background(["sleep", "600"], {}, f"{i}.log") for i in range(8))
+        *(
+            RuntimeBackend.run_background(
+                backend,  # ty: ignore[invalid-argument-type]
+                view,
+                ["sleep", "600"],
+                {},
+                f"{i}.log",
+            )
+            for i in range(8)
+        )
     )
     assert len(backend._background) == 8

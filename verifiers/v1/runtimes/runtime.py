@@ -102,15 +102,7 @@ class Runtime:
     ) -> None:
         """Start `argv` with its combined output in `log`, a path in the working
         directory, and return. The process runs until the runtime stops."""
-        script = f'exec "$@" > {shlex.quote(log)} 2>&1 < /dev/null'
-        process = await self.exec(["sh", "-c", script, "sh", *argv], env)
-        # Keep live handles until teardown ends the runtime and its processes. Prune
-        # in place: another start can append while `poll` awaits.
-        background = self.backend._background
-        background.append(process)
-        for handle in list(background):
-            if await handle.poll() is not None and handle in background:
-                background.remove(handle)
+        await self.backend.run_background(self, argv, env, log)
 
     async def write(self, path: str, data: bytes) -> None:
         await self.backend.write(self, path, data)

@@ -811,6 +811,19 @@ class DockerBackend(RuntimeBackend):
             f"{stderr or ready.stderr.strip()}"
         )
 
+    async def run_background(
+        self, runtime: Runtime, argv: list[str], env: dict[str, str], log: str
+    ) -> None:
+        # The engine owns the process as a detached exec; no client stays attached.
+        command = self._exec_argv(runtime.process_env(env), user=runtime.user)
+        command.insert(2, "--detach")
+        script = f"exec {shlex.join(argv)} > {shlex.quote(log)} 2>&1 < /dev/null"
+        result = await self._run_host(*command, "sh", "-c", script)
+        if result.exit_code != 0:
+            raise SandboxError(
+                f"docker background process failed: {result.stderr.strip()}"
+            )
+
     async def read(
         self, runtime: Runtime, path: str, max_bytes: int | None = None
     ) -> bytes:
