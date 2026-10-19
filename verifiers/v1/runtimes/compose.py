@@ -106,6 +106,9 @@ class ComposeSpec:
     services: Mapping[str, dict] = field(default_factory=dict)
     """Services the framework adds beside the authored ones (a task's tool sidecars),
     as Compose service definitions. A name the task's file also declares is refused."""
+    registry_mirrors: tuple[str, ...] = ()
+    """Registry mirrors for the provider VM's Docker daemon; local Docker uses its
+    own daemon configuration."""
 
 
 @asynccontextmanager
@@ -123,6 +126,10 @@ async def compose_services(
     if not isinstance(config, (DockerConfig, PrimeConfig, ModalConfig)):
         raise TypeError("Compose requires Docker, Prime VM or Modal VM")
     local = isinstance(config, DockerConfig)
+    if local and spec.registry_mirrors:
+        raise ValueError(
+            "Compose registry mirrors require a provider VM; configure the local Docker daemon directly"
+        )
     if local and not trust_compose:
         raise ValueError(
             "Local Compose tasks can access host files and Docker privileges; "
@@ -253,10 +260,19 @@ async def compose_services(
                         raise SandboxError(
                             f"Docker bootstrap failed: {install.stderr} {install.stdout}"
                         )
+                mirrors = [
+                    arg
+                    for mirror in spec.registry_mirrors
+                    for arg in ("--registry-mirror", mirror)
+                ]
                 await host_backend.bind().run_background(
-                    ["sh", "-c", PRIME_DOCKERD]
+                    [
+                        "sh",
+                        "-c",
+                        PRIME_DOCKERD + (" " + shlex.join(mirrors) if mirrors else ""),
+                    ]
                     if isinstance(config, PrimeConfig)
-                    else ["dockerd", "--host=unix:///var/run/docker.sock"],
+                    else ["dockerd", "--host=unix:///var/run/docker.sock", *mirrors],
                     {},
                     "/tmp/dockerd.log",
                 )

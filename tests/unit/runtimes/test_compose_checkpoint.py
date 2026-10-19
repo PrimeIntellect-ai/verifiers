@@ -9,6 +9,15 @@ from verifiers.v1.runtimes.modal import ModalBackend, ModalConfig
 from verifiers.v1.runtimes.prime import PrimeBackend, PrimeConfig
 
 
+async def test_compose_mirrors_do_not_reconfigure_local_docker(tmp_path):
+    from verifiers.v1.runtimes.compose import ComposeSpec, compose_services
+
+    spec = ComposeSpec(str(tmp_path), registry_mirrors=("https://mirror.gcr.io",))
+    with pytest.raises(ValueError, match="configure the local Docker daemon"):
+        async with compose_services(DockerConfig(), spec, {}, trust_compose=True):
+            pytest.fail("local Docker must not be configured by a task")
+
+
 @pytest.mark.parametrize("workdir", [None, "/explicit"])
 @pytest.mark.parametrize(
     "backend_type,config_type",

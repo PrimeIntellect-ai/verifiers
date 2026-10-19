@@ -82,6 +82,9 @@ REWARD_SCALAR_ADAPTER = TypeAdapter(
 class HarborTaskConfig(TaskConfig):
     reward_key: str = Field("reward", min_length=1)
     """Named verifier value used as the training reward; other values remain metrics."""
+    compose_registry_mirrors: list[str] = Field(default_factory=list)
+    """Docker registry mirrors on a Compose provider VM; empty keeps host defaults.
+    Service images, pinned digests and build inputs remain authored."""
     mcp_servers: list[dict] = Field(default_factory=list)
     """Task-declared connections, bound from HarborData during construction."""
 
@@ -319,6 +322,7 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
                 self.data.task_dir,
                 file="environment/docker-compose.yaml" if authored else None,
                 host_image=self.data.compose_host_image,
+                registry_mirrors=tuple(self.config.compose_registry_mirrors),
                 image_override=self.data.image is not None,
                 services=sidecars,
             )

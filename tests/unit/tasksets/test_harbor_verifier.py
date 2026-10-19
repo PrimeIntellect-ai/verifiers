@@ -5,7 +5,12 @@ import pytest
 import verifiers.v1 as vf
 from verifiers.v1.errors import SandboxError, TaskError
 from verifiers.v1.runtimes import ProgramResult
-from verifiers.v1.tasksets.harbor.taskset import HarborData, HarborTask, log_tails
+from verifiers.v1.tasksets.harbor.taskset import (
+    HarborData,
+    HarborTask,
+    HarborTaskConfig,
+    log_tails,
+)
 
 LOGS = "==> /logs/verifier/pg.log <==\nFATAL: could not start\n\n"
 
@@ -81,3 +86,28 @@ def test_log_tails_keep_the_end_of_every_log():
     assert tails.startswith("==> /logs/verifier/download.log <==\n")
     assert tails.count("x") <= 100
     assert tails.endswith(cause)
+
+
+@pytest.mark.parametrize("authored", [None, "task-compose-host"])
+@pytest.mark.parametrize("mirrors", [[], ["https://mirror.gcr.io"]])
+def test_compose_host_configuration_preserves_authored_task(
+    tmp_path, authored, mirrors
+):
+    environment = tmp_path / "environment"
+    environment.mkdir()
+    source = environment / "docker-compose.yaml"
+    content = "services:\n  main:\n    build: .\n"
+    source.write_text(content)
+    data = HarborData(prompt="p", task_dir=str(tmp_path), compose_host_image=authored)
+    original = data.model_dump_json()
+    config = HarborTaskConfig(compose_registry_mirrors=mirrors)
+    restored = HarborTaskConfig.model_validate_json(config.model_dump_json())
+
+    spec = HarborTask(data, restored).deployment_spec()
+
+    assert spec.host_image == authored
+    assert spec.registry_mirrors == tuple(mirrors)
+    assert spec.directory == str(tmp_path)
+    assert spec.file == "environment/docker-compose.yaml"
+    assert source.read_text() == content
+    assert data.model_dump_json() == original
