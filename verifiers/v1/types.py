@@ -125,6 +125,10 @@ class Request(BaseModel):
 
 FinishReason = Literal["stop", "length", "tool_calls"] | None
 
+DialectName = Literal["chat_completions", "responses", "anthropic_messages"]
+"""A model API wire format: a `Dialect.name`, and the values of harness `transport`
+settings."""
+
 
 class Usage(BaseModel):
     """Provider token accounting.
@@ -195,6 +199,14 @@ class RoutedExperts(TypedDict):
     data: Any
     shape: list[int]
     start: int
+
+
+class WeightVersionSpan(BaseModel):
+    """Completion tokens `[start, end)` were sampled by the engine weights labelled `version`."""
+
+    version: str
+    start: int
+    end: int
 
 
 @dataclass
@@ -272,6 +284,9 @@ class TurnTokens(BaseModel):
     # Transient carrier (excluded): per-completion-token sampling masks,
     # attributed to the assistant node by the turn's `commit`, then dropped.
     sampling_mask: SamplingMask | None = Field(default=None, exclude=True)
+    # Transient carrier (excluded): the engine's weight-version spans over the completion,
+    # attributed to the assistant node by the turn's `commit`, then dropped.
+    weight_versions: list[WeightVersionSpan] | None = Field(default=None, exclude=True)
 
 
 class Response(BaseModel):

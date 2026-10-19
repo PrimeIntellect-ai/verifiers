@@ -59,8 +59,7 @@ Task lifecycle hooks (`setup`, `finalize`, `stage_verifier`) and `@vf.reward` / 
 
 ```python
 async def setup(self, trace: vf.Trace, runtime: vf.Runtime) -> None:
-    await runtime.write("input.txt", b"task input
-")
+    await runtime.write("input.txt", b"task input\n")
     result = await runtime.run(["sh", "-c", "mkdir -p results"], {})
     if result.exit_code:
         raise RuntimeError(result.stderr)
@@ -196,6 +195,8 @@ When a task defines **Compose services** by returning a `ComposeSpec` from `depl
 Task hooks can request `deployment` by parameter name and call `deployment.target(name)` to get a `Runtime` view for a specific named service. A task tool server can also run inside a named Compose service (`ToolsetConfig.service`, on a Prime VM); the harness reaches it over the Compose network by the service's name, so the tool server can front internal services that the workspace cannot reach directly. `finalize_services()` collects sidecar artifacts before isolated verification.
 
 Compose runs on local Docker or on a Prime VM. On Prime, one VM hosts the Docker daemon and every service, and its network policy applies to all of them. On local Docker, the evaluator's own Docker daemon runs the task's Compose file, and that file can mount host paths and request Docker privileges. So local Docker refuses Compose tasks unless you set `agent.deployment.trust_compose = true` (`--env.agent.deployment.trust-compose`). Only set it for task packages you trust. Local Compose does not enforce network policies, so run restricted Compose tasks on Prime.
+
+A tool server can also run on a Prime VM of its own, under an egress policy of its own: set its `ToolsetConfig.runtime` to a Prime runtime, such as `vf.PrimeConfig(image="example/tools:1", allow=["*"])` for a server that calls public APIs beside an offline workspace, or `allow=[]` for one that runs agent-submitted code with no egress at all. Beside a Prime workspace without Compose services, the server's VM boots with the workspace and joins it over a LAN network of the rollout's own, on which the workspace's VM may open connections to the server and nothing may open one to the workspace; the harness reaches the server at its VM's LAN name (`<sandbox-id>.sandbox.internal`), and `deployment.target(name)` gives task hooks the server's VM. The VM's policy applies when the workspace's does, after setup. Elsewhere such a server keeps its runtime's published port, which takes no network policy.
 
 To validate an isolated task without calling a model, finalize the submission, collect its artifacts, and call `vf.grade_submission(task, trace, runtime)`. This runs the task's normal grader, verifier image, timeouts, and retries in a fresh verification target without taking ownership of the supplied solver runtime.
 

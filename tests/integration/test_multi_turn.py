@@ -1,13 +1,24 @@
 """One task, many turns: the model completes a shell task (echo-agentic-v1: write a phrase
-to a file, checked in the runtime) across the harness x runtime grid."""
+to a file, checked in the runtime) across the harness x runtime grid, and on prime over
+every other `transport` a harness config can select. A turn the harness re-sends
+differently, beyond what its `replay_view` declares, forks the trace."""
 
 import pytest
-from grid import RUNTIMES, grid
+from grid import RUNTIMES, grid, mark, transport_grid
+
+MULTI_TURN = [
+    *grid(runtimes=RUNTIMES, needs=("shell",)),
+    *transport_grid(needs=("shell",)),
+    pytest.param(
+        "bash",
+        {"type": "docker", "allow": []},
+        marks=[mark("bash"), mark("docker")],
+        id="bash-in-docker-framework-only",
+    ),
+]
 
 
-@pytest.mark.parametrize(
-    "harness,harness_runtime", grid(runtimes=RUNTIMES, needs=("shell",)), indirect=True
-)
+@pytest.mark.parametrize("harness,harness_runtime", MULTI_TURN, indirect=True)
 async def test_multi_turn(run, harness, harness_runtime):
     (episode,) = await run(
         "echo-agentic-v1",

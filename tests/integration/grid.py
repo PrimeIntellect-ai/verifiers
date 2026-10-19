@@ -26,6 +26,7 @@ prime cannot pull) stay outside the grid.
 """
 
 from collections.abc import Sequence
+from typing import get_args
 
 import pytest
 from pydantic import TypeAdapter
@@ -34,7 +35,7 @@ import verifiers.v1 as vf
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.harness import Harness
 from verifiers.v1.runtimes import RuntimeConfig, backend_cls
-from verifiers.v1.utils.loaders import harness_class
+from verifiers.v1.utils.loaders import harness_class, harness_config_type
 
 HARNESSES: list[str | dict] = [
     "null",
@@ -199,6 +200,36 @@ def grid(
     return cells
 
 
+def transports(harness: str) -> tuple[str, ...]:
+    """The wire formats the harness config can select (`transport`) besides its
+    default. Empty when the program speaks one format or picks its own."""
+    field = harness_config_type(harness).model_fields.get("transport")
+    if field is None:
+        return ()
+    return tuple(t for t in get_args(field.annotation) if t != field.default)
+
+
+def transport_grid(
+    runtimes: Sequence[str] = ("prime",), *, needs: tuple[str, ...] = ()
+) -> list:
+    """`grid` cells for every non-default `transport` each harness config can select."""
+    cells = []
+    for harness in HARNESSES:
+        name = harness_id(harness)
+        for transport in transports(name):
+            for cell in grid(
+                [{"id": name, "transport": transport}], runtimes, needs=needs
+            ):
+                cells.append(
+                    pytest.param(
+                        *cell.values,
+                        marks=cell.marks,
+                        id=cell.id.replace(f"{name}-in-", f"{name}-{transport}-in-"),
+                    )
+                )
+    return cells
+
+
 def skip_harness(cells: list, harness: str, reason: str) -> list:
     """Skip one harness's cells for a limit no capability flag declares. Each use names
     why, so a reader sees the gap and when it can go."""
@@ -217,11 +248,14 @@ def skip_harness(cells: list, harness: str, reason: str) -> list:
 def placements(
     harness_runtimes: tuple[str, ...] = ("prime",),
     tool_runtimes: tuple[str, ...] = ("colocated", "subprocess", "prime"),
+    *,
+    shared: bool = False,
 ) -> list:
     """`(harness_runtime, tool_runtime)` cells for a tool server placed colocated in the
-    harness's box, in a Compose service beside it (`service`), or in its own runtime. A
+    harness's box, in a Compose service beside it (`service`), or in its own runtime
+    (on Prime beside a Prime harness, a VM on the rollout's private network). A
     `subprocess` tool runtime is a server on the host, reached from the sandbox through
-    the tunnel."""
+    the tunnel. A `shared` server runs once per eval, so it joins no rollout's network."""
     cells = []
     for harness_runtime in harness_runtimes:
         for tool_runtime in tool_runtimes:
@@ -232,6 +266,8 @@ def placements(
             elif (
                 tool_runtime != "colocated"
                 and not runtime_cls(tool_runtime).SUPPORTS_PORT_EXPOSURE
+                # Beside a Prime harness, a rollout's Prime server joins its private network.
+                and not (not shared and tool_runtime == harness_runtime == "prime")
             ):
                 marks.append(pytest.mark.refused(REFUSALS["expose"]))
             cells.append(

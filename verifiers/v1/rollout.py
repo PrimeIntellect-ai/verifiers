@@ -35,6 +35,7 @@ from verifiers.v1.runtimes import (
     RuntimeConfig,
     make_backend,
 )
+from verifiers.v1.runtimes.private_network import tool_vms
 from verifiers.v1.session import RolloutLimits, RolloutSession, hook_boundary
 from verifiers.v1.state import state_cls
 from verifiers.v1.task import Task
@@ -286,8 +287,18 @@ class Rollout:
                         "task.prompt, or drive the run through agent.interaction() and open "
                         "it with the first turn(message)"
                     )
+                async with boundary(ToolsetError, "building tool servers"):
+                    toolsets = self.task.toolsets(self.task.config)
+                spec = self.task.deployment_spec()
                 self.deployment = runtime.backend.deploy(
-                    spec=self.task.deployment_spec(),
+                    spec=spec,
+                    # Tool servers on Prime VMs of their own boot with the workspace.
+                    tool_vms=tool_vms(
+                        toolsets,
+                        runtime.backend.config,
+                        composed=spec is not None,
+                        borrowed=self._borrowed_runtime is not None,
+                    ),
                     env=runtime.env,
                     config=self._deployment_config,
                     borrowed_runtime=self._borrowed_runtime,
@@ -340,8 +351,6 @@ class Rollout:
                         runtime, self.task.data.agent_user
                     )
                     await self.harness.setup(self._agent_runtime)
-                async with boundary(ToolsetError, "building tool servers"):
-                    toolsets = self.task.toolsets(self.task.config)
                 # `base_url` is the interception server's reachable URL for this rollout.
                 # The harness reaches the model at `{base_url}/v1`; tool servers reach this
                 # rollout's `/state` + `/task` at `base_url` — it's universally reachable
@@ -378,17 +387,27 @@ class Rollout:
                         state_route=self.trace.id,
                         state_base=base_url,
                         services=services,
+                        hosts=self.deployment.hosts,
+                        # Tool servers on VMs of their own, by server name; an explicit
+                        # `service` names only a Compose service.
+                        placements={
+                            name: self.deployment.target(name)
+                            for name in self.deployment.tool_vms
+                        },
                     )
                 )
                 # Setup and service provisioning are complete. Apply the runtime's
                 # execution policy while preserving the framework routes the agent uses.
-                # Compose service names resolve inside the deployment, not as egress.
+                # Service hosts resolve inside the deployment (Compose names, LAN
+                # names), not as egress.
+                internal = {*services, *self.deployment.hosts.values()}
                 await self.deployment.prepare_execution(
                     [
                         url
                         for url in [self._endpoint, *self._urls.values()]
-                        if urlsplit(url).hostname not in services
-                    ]
+                        if urlsplit(url).hostname not in internal
+                    ],
+                    state_route=f"{base_url.rstrip('/')}/state",
                 )
                 async with (
                     boundary(HarnessError, "opening harness session"),
