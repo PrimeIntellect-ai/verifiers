@@ -496,9 +496,10 @@ async def _serve(
         ):
             raise ToolsetError(
                 f"server {server.server_name!r} restricts its runtime's network, which "
-                "needs the server colocated with the harness, or on a Prime runtime "
-                "of its own beside a Prime workspace without Compose services (it then "
-                "joins the rollout's private network)"
+                "needs the server colocated with the harness, or on a runtime of its "
+                "own, of the workspace's runtime, beside a workspace without Compose "
+                "services whose runtime joins machines on a private network, such as "
+                "Prime (it then joins the rollout's private network)"
             )
         if colocated and harness_runtime is not None:
             runtime = harness_runtime

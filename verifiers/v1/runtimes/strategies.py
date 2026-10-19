@@ -7,7 +7,7 @@ from functools import partial
 
 from verifiers.v1.runtimes.compose import compose_services
 from verifiers.v1.runtimes.deployment import _DeploymentStrategy
-from verifiers.v1.runtimes.private_network import lan_host, private_network
+from verifiers.v1.runtimes.private_network import private_network
 
 logger = logging.getLogger(__name__)
 
@@ -71,7 +71,7 @@ class _PrivateNetworkDeployment(_DeploymentStrategy):
             private_network(d.backend, d.tool_vms, partial(d.own, d.backend))
         )
         d.target_backends = {"main": d.backend, **vms}
-        d.hosts = {name: lan_host(backend) for name, backend in vms.items()}
+        d.hosts = {name: backend.network_host for name, backend in vms.items()}
         d.execution_backend = d.harness_backend = d.backend
         self._service_backends = list(vms.values())
 

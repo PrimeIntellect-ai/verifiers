@@ -293,7 +293,7 @@ class Rollout:
                 spec = self.task.deployment_spec()
                 self.deployment = runtime.backend.deploy(
                     spec=spec,
-                    # Tool servers on Prime VMs of their own boot with the workspace.
+                    # Tool servers on machines of their own boot with the workspace.
                     tool_vms=tool_vms(
                         toolsets,
                         runtime.backend.config,
@@ -389,8 +389,8 @@ class Rollout:
                         state_base=base_url,
                         services=services,
                         hosts=self.deployment.hosts,
-                        # Tool servers on VMs of their own, by server name; an explicit
-                        # `service` names only a Compose service.
+                        # Tool servers on machines of their own, by server name; an
+                        # explicit `service` names only a Compose service.
                         placements={
                             name: self.deployment.target(name)
                             for name in self.deployment.tool_vms

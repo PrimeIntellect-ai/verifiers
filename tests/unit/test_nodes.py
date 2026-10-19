@@ -23,33 +23,25 @@ FORTH = "prime/prime/forth:1"
 OFFLINE = PrimeConfig(allow=[])  # a task with `network_allow = []`
 
 
-def capabilities(*, private_network: bool = True):
-    """What each backend declares, with Prime also declaring the private network its
-    LAN already provides (the RFC's next step)."""
-
-    def read(config) -> nodes.Capabilities:
-        declared = nodes.capabilities(config)
-        if config.type == "prime":
-            return replace(declared, private_network=private_network)
-        return declared
-
-    return read
+def without_private_network(config) -> nodes.Capabilities:
+    return replace(nodes.capabilities(config), private_network=False)
 
 
 def test_capabilities_are_what_the_backends_declare():
     prime = nodes.capabilities(PrimeConfig())
-    assert (prime.network_policy, prime.compose, prime.port_exposure) == (
+    assert (prime.network_policy, prime.compose, prime.private_network) == (
         True,
         True,
-        False,
+        True,
     )
-    assert not prime.private_network  # declared by no backend yet
+    assert not prime.port_exposure
     docker = nodes.capabilities(DockerConfig())
     assert (docker.network_policy, docker.compose, docker.port_exposure) == (
         True,
         True,
         True,
     )
+    assert not docker.private_network
     local = nodes.capabilities(SubprocessConfig())
     assert (local.network_policy, local.compose) == (False, False)
 
@@ -59,14 +51,14 @@ def shape(result):
 
 
 def test_declaring_nothing_is_todays_colocated_rollout():
-    result = plan(TopologyConfig(), OFFLINE, capabilities())
+    result = plan(TopologyConfig(), OFFLINE)
     assert shape(result) == ([("main",)], set())
     assert result.runtimes["main"] is OFFLINE
 
 
 def test_a_tool_server_on_the_evaluator_is_reached_through_the_tunnel():
     topology = TopologyConfig(mcp_servers={"search": "host"})
-    assert shape(plan(topology, OFFLINE, capabilities())) == (
+    assert shape(plan(topology, OFFLINE)) == (
         [("main",)],
         {Connection("main", "host", "mcp:search", "tunnel")},
     )
@@ -81,7 +73,7 @@ def test_atlas_gets_a_machine_of_its_own_because_its_egress_differs():
         },
         mcp_servers={"atlas": "atlas"},
     )
-    result = plan(topology, OFFLINE, capabilities())
+    result = plan(topology, OFFLINE)
     assert shape(result) == (
         [("main",), ("atlas",)],
         {Connection("main", "atlas", "mcp:atlas", "private network")},
@@ -91,7 +83,7 @@ def test_atlas_gets_a_machine_of_its_own_because_its_egress_differs():
     assert atlas.labels == OFFLINE.labels  # the rest follows the workspace
 
     with pytest.raises(PlacementError, match="cannot join machines on a private"):
-        plan(topology, OFFLINE, capabilities(private_network=False))
+        plan(topology, OFFLINE, without_private_network)
 
 
 EOG = {
@@ -108,7 +100,7 @@ def test_enterprise_ops_gym_packs_onto_one_machine_and_keeps_the_gyms_behind_too
     topology = TopologyConfig(
         nodes=nodes_from_compose(EOG), mcp_servers={"enterprise_ops": "tools"}
     )
-    machines, connections = shape(plan(topology, OFFLINE, capabilities()))
+    machines, connections = shape(plan(topology, OFFLINE))
     assert machines == [("main", "tools", "calendar", "gmail")]
     pairs = {(c.source, c.target) for c in connections}
     assert {("main", "tools"), ("tools", "calendar"), ("tools", "gmail")} <= pairs
@@ -122,12 +114,12 @@ def test_forth_runs_agent_code_on_a_machine_of_its_own_only_when_isolated():
         node = NodeConfig(runtime={"image": FORTH}, isolated=isolated)
         return TopologyConfig(nodes={"forth": node}, mcp_servers={"forth": "forth"})
 
-    assert shape(plan(topology(True), OFFLINE, capabilities())) == (
+    assert shape(plan(topology(True), OFFLINE)) == (
         [("main",), ("forth",)],
         {Connection("main", "forth", "mcp:forth", "private network")},
     )
     # The same policy as the workspace: without isolation it shares the machine.
-    packed = plan(topology(False), OFFLINE, capabilities())
+    packed = plan(topology(False), OFFLINE)
     assert shape(packed) == (
         [("main", "forth")],
         {Connection("main", "forth", "mcp:forth", "container network")},
@@ -140,7 +132,7 @@ def test_split_execution_is_the_agent_loop_on_another_node():
         nodes={"harness": harness}, harness_on="harness", execution_on="main"
     )
     # Packed: the loop and its credentials in one container, the workspace in another.
-    assert shape(plan(split, OFFLINE, capabilities())) == (
+    assert shape(plan(split, OFFLINE)) == (
         [("main", "harness")],
         {Connection("harness", "main", "execution", "container network")},
     )
@@ -153,7 +145,7 @@ def test_split_execution_is_the_agent_loop_on_another_node():
             }
         }
     )
-    assert shape(plan(apart, OFFLINE, capabilities())) == (
+    assert shape(plan(apart, OFFLINE)) == (
         [("main",), ("harness",)],
         {Connection("harness", "main", "execution", "private network")},
     )
@@ -162,8 +154,8 @@ def test_split_execution_is_the_agent_loop_on_another_node():
 def test_a_harness_on_the_evaluator_needs_a_workspace_that_exposes_a_port():
     hosted = TopologyConfig(harness_on="host")
     with pytest.raises(PlacementError, match="prime runtime cannot expose a port"):
-        plan(hosted, OFFLINE, capabilities())
-    assert shape(plan(hosted, DockerConfig(), capabilities())) == (
+        plan(hosted, OFFLINE)
+    assert shape(plan(hosted, DockerConfig())) == (
         [("main",)],
         {Connection("host", "main", "execution", "exposed port")},
     )
@@ -179,13 +171,13 @@ def test_refusals_name_the_runtime_and_the_gap():
 
     restricted = TopologyConfig(nodes={"tools": NodeConfig(runtime={"allow": []})})
     with pytest.raises(PlacementError, match="subprocess runtime does not enforce"):
-        plan(restricted, SubprocessConfig(), capabilities())
+        plan(restricted, SubprocessConfig())
 
     sidecar = TopologyConfig(
         nodes={"db": NodeConfig(process=ProcessConfig(command=["postgres"]))}
     )
     with pytest.raises(PlacementError, match="neither run Compose services"):
-        plan(sidecar, SubprocessConfig(), capabilities())
+        plan(sidecar, SubprocessConfig())
 
 
 def test_todays_knobs_lower_to_a_topology():
@@ -204,7 +196,7 @@ def test_todays_knobs_lower_to_a_topology():
     }
     # A server with a runtime of its own keeps a machine of its own, joined to the
     # workspace over the private network even beside Compose services.
-    result = plan(topology, OFFLINE, capabilities())
+    result = plan(topology, OFFLINE)
     assert result.machine("tools-forth") is not result.machine("main")
     assert Connection("main", "tools-forth", "mcp:forth", "private network") in set(
         result.connections

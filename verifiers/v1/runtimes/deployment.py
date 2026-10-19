@@ -11,7 +11,6 @@ from typing import Literal
 from pydantic_config import BaseConfig
 
 from verifiers.v1.runtimes import (
-    PrimeConfig,
     Runtime,
     RuntimeBackend,
     RuntimeConfig,
@@ -74,7 +73,7 @@ class Deployment:
         backend: RuntimeBackend,
         *,
         spec: ComposeSpec | None = None,
-        tool_vms: Mapping[str, PrimeConfig] | None = None,
+        tool_vms: Mapping[str, RuntimeConfig] | None = None,
         env: dict[str, str] | None = None,
         config: DeploymentConfig | None = None,
         borrowed_runtime: Runtime | None = None,
@@ -82,7 +81,7 @@ class Deployment:
         self.backend = backend
         self.spec = spec
         self.tool_vms = dict(tool_vms or {})
-        """Tool servers on Prime runtimes of their own, by server name, which join the
+        """Tool servers on runtimes of their own, by server name, which join the
         workspace over the rollout's private network."""
         self.env = dict(env or {})
         self.config = config or DeploymentConfig()
@@ -93,7 +92,7 @@ class Deployment:
         self.target_backends: dict[str, RuntimeBackend] = {}
         self.hosts: dict[str, str] = {}
         """The hostname the workspace reaches a named target by, where it is not the
-        target's name (a tool server VM's LAN name)."""
+        target's name (a tool server machine's `network_host`)."""
         self.harness_backend: RuntimeBackend | None = None
         self.execution_backend: RuntimeBackend | None = None
         self._stack = AsyncExitStack()

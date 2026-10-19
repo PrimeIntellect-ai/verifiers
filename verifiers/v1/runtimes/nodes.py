@@ -119,9 +119,7 @@ def capabilities(config: RuntimeConfig) -> Capabilities:
     return Capabilities(
         network_policy=isinstance(config, NetworkPolicyConfig),
         compose=cls.SUPPORTS_COMPOSE,
-        # Declared by a backend that can join machines on a private network, as
-        # Prime's LAN does (verifiers#2876); no backend declares it yet.
-        private_network=getattr(cls, "SUPPORTS_PRIVATE_NETWORK", False),
+        private_network=cls.SUPPORTS_PRIVATE_NETWORK,
         port_exposure=cls.SUPPORTS_PORT_EXPOSURE,
     )
 

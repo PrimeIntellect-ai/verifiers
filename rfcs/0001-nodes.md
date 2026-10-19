@@ -2,7 +2,7 @@
 
 - **Status:** draft for discussion.
 - **Builds on:** #2862, the runtime plugins and capability flags, and #2876, tool servers on Prime VMs of their own. Both are on main.
-- **Prototype:** this PR, `verifiers/v1/runtimes/nodes.py`. It plans from config and provisions nothing.
+- **In this PR:** `SUPPORTS_PRIVATE_NETWORK` on the backend contract, with Prime's LAN behind it, and a prototype planner in `verifiers/v1/runtimes/nodes.py` that plans from config and provisions nothing.
 
 ## Summary
 
@@ -142,17 +142,23 @@ Each of these is a case in `tests/unit/test_nodes.py`.
 PR #2862 is the layer below: what a runtime is and what it can do. Nodes sit on top: which runtimes a rollout has and how they connect.
 
 - **Runtimes:** a node's `runtime` is a #2862 `RuntimeConfig`, custom plugins included.
-- **Capabilities:** the planner reads #2862's flags (`SUPPORTS_COMPOSE`, `SUPPORTS_PORT_EXPOSURE`, and network policy through `NetworkPolicyConfig`). It adds one: **`SUPPORTS_PRIVATE_NETWORK`**, with a backend method behind it:
+- **Capabilities:** the planner reads #2862's flags (`SUPPORTS_COMPOSE`, `SUPPORTS_PORT_EXPOSURE`, and network policy through `NetworkPolicyConfig`). This PR adds one: **`SUPPORTS_PRIVATE_NETWORK`**, with a backend method behind it:
 
   ```python
+  @classmethod
+  @asynccontextmanager
   async def private_network(
-      self, members: dict[str, RuntimeBackend], rules: list[tuple[str, str]]
-  ) -> dict[str, str]:
-      """Join `members` (this runtime's type) on a network on which each (source, target)
-      rule may open connections and nothing else may; return each member's hostname."""
+      cls,
+      members: Mapping[str, RuntimeBackend],
+      rules: Collection[tuple[str, str]],
+  ) -> AsyncIterator[None]:
+      """A network of `members`' own, on which each `(source, target)` rule lets the
+      source open connections to the target, and nothing else may open any. Members
+      are backends of this runtime that have not started; each joins as it starts and
+      is reached at its `network_host`."""
   ```
 
-  #2876's LAN code (`runtimes/private_network.py`: create the network with its rules, then boot each member into it with its tag) becomes Prime's implementation. A plugin can implement the method too. #2862's conformance suite (`tests/unit/test_runtimes.py`) gets the matching test: a declared private network runs, and an undeclared one is refused.
+  Members join as they start because Prime joins a VM to its network at create. Prime's implementation creates the LAN network with its rules and tags each member; a VM on it keeps itself inside its idle timeout, since LAN traffic is not activity to the platform. A plugin can implement the method too. The conformance suite (`tests/unit/test_runtimes.py`) boots two machines with one rule and checks that the connection opens one way only, and that a runtime that does not declare a private network refuses one. Tool servers on runtimes of their own (#2876) now go through this method.
 - **Processes:** `exec`, #2862's one process primitive, carries a stdio transport between nodes on one machine.
 - **Local runtimes:** Docker enforces a policy through its egress proxy and packs nodes through local Compose, which needs `trust_compose`. Neither Docker nor subprocess has a private network, so plans that need several machines run on Prime, and the local runtimes refuse them with a message.
 
@@ -231,12 +237,15 @@ On main:
 - **#2862:** the runtime layer.
 - **#2876:** the private network, which every multi-machine plan needs, and the model's first slice. A tool server on a Prime runtime of its own runs on a node of its own: `ToolsetConfig.runtime` is that node's runtime, with no new class. Atlas (prime-envs#999) and forth-lang (prime-envs#989) use it.
 
+In this PR:
+
+- **`SUPPORTS_PRIVATE_NETWORK` and `private_network()`,** implemented by `PrimeBackend`, with the conformance test.
+
 Next:
 
-1. **`SUPPORTS_PRIVATE_NETWORK` and `private_network()` on `PrimeBackend`,** with the conformance test.
-2. **Wire the planner into `Deployment`,** replacing the strategies. Add `on` and nodes to config, and turn the toolset fields into aliases.
-3. **Rebase the split stack (#2803 → #2831 → #2850)** as `harness_on` / `execution_on`, with nano-rlm #218's transports as the `execution` bindings.
-4. **Optional:**
+1. **Wire the planner into `Deployment`,** replacing the strategies. Add `on` and nodes to config, and turn the toolset fields into aliases.
+2. **Rebase the split stack (#2803 → #2831 → #2850)** as `harness_on` / `execution_on`, with nano-rlm #218's transports as the `execution` bindings.
+3. **Optional:**
    - an ASP transport, once a harness we want supports ASP;
    - capability-based packing beyond policy equality.
 
@@ -261,4 +270,4 @@ Next:
 - `topology_from()`, which turns today's toolset knobs and a Compose project into a topology;
 - `nodes_from_compose()`.
 
-`TopologyConfig` flattens the proposed config surface into one model: `mcp_servers` maps each server to its node. "Placing the parts" says where each field would be set. Nothing calls it; `Deployment` still uses its strategies. The tests plan every rollout above from config alone, along with the refusals. On main, planning Atlas is refused, because no backend declares a private network yet. That is the next step above.
+`TopologyConfig` flattens the proposed config surface into one model: `mcp_servers` maps each server to its node. "Placing the parts" says where each field would be set. Nothing calls it; `Deployment` still uses its strategies. The tests plan every rollout above from config alone, with the capabilities the backends declare, along with the refusals.

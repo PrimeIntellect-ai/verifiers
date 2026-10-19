@@ -8,6 +8,7 @@ import verifiers.v1 as vf
 from verifiers.v1.errors import ToolsetError
 from verifiers.v1.mcp import launch
 from verifiers.v1.runtimes import (
+    DockerBackend,
     DockerConfig,
     PrimeBackend,
     PrimeConfig,
@@ -72,15 +73,30 @@ def test_the_deployment_joins_tool_vms_over_a_private_network():
     )
 
 
-def test_the_private_network_needs_a_prime_workspace():
-    workspace = SimpleNamespace(config=DockerConfig())
+def test_the_private_network_needs_a_runtime_that_declares_one():
+    workspace = DockerBackend(DockerConfig(), name="ws")
 
     async def enter():
-        async with private_network.private_network(workspace, {"atlas": ATLAS}, None):
+        members = {"tools": DockerConfig()}
+        async with private_network.private_network(workspace, members, None):
             pass
 
-    with pytest.raises(TypeError, match="needs the workspace on Prime, not docker"):
+    with pytest.raises(ValueError, match="the docker runtime cannot join machines"):
         asyncio.run(enter())
+
+
+def test_a_prime_network_joins_only_prime_machines_by_known_names(monkeypatch):
+    monkeypatch.setattr(prime, "ensure_prime_auth", lambda: None)
+    vm = PrimeBackend(ATLAS)
+
+    async def enter(members, rules):
+        async with PrimeBackend.private_network(members, rules):
+            pass
+
+    with pytest.raises(ValueError, match=r"only Prime machines, not \['ws'\]"):
+        asyncio.run(enter({"ws": DockerBackend(DockerConfig()), "vm": vm}, []))
+    with pytest.raises(ValueError, match=r"unknown members: \['db'\]"):
+        asyncio.run(enter({"vm": vm}, [("vm", "db")]))
 
 
 class FakeLanClient:
@@ -108,7 +124,7 @@ def boot(monkeypatch, members):
         events.append(("boot", self.name, self.config, self.lan))
         raise RuntimeError("booted")
 
-    monkeypatch.setattr(private_network, "leased_client", leased_client)
+    monkeypatch.setattr(prime, "leased_client", leased_client)
     monkeypatch.setattr(prime, "ensure_prime_auth", lambda: None)
     monkeypatch.setattr(PrimeBackend, "start", start)
     workspace = PrimeBackend(PrimeConfig(allow=[]), name="ws")
@@ -129,22 +145,23 @@ def test_each_vm_boots_its_server_runtime_as_given(monkeypatch):
     def shape(config):
         return config.image, config.cpu, config.memory, config.allow
 
-    assert shape(vms["ws-vf-tool-0"]) == ("atlas:1", 4, 10, ["*"])
-    assert shape(vms["ws-vf-tool-1"]) == ("forth:1", FORTH.cpu, FORTH.memory, [])
+    assert shape(vms["ws-tool-0"]) == ("atlas:1", 4, 10, ["*"])
+    assert shape(vms["ws-tool-1"]) == ("forth:1", FORTH.cpu, FORTH.memory, [])
     assert vms["ws"].allow == []  # the workspace keeps its own policy
 
 
 def test_the_network_starts_with_its_rules_and_every_vm_joins_as_it_boots(monkeypatch):
     events = boot(monkeypatch, {"atlas": ATLAS, "forth": FORTH})
+    # Only the workspace may open connections, to each server's VM.
     assert events[0] == (
         "network",
-        [("tag:vf-workspace", "tag:vf-tool-0"), ("tag:vf-workspace", "tag:vf-tool-1")],
+        [("tag:vf-0", "tag:vf-1"), ("tag:vf-0", "tag:vf-2")],
     )
     boots = {name: lan for kind, name, _, lan in events[1:-1] if kind == "boot"}
     assert boots == {
-        "ws": ("net1", ["vf-workspace"]),
-        "ws-vf-tool-0": ("net1", ["vf-tool-0"]),
-        "ws-vf-tool-1": ("net1", ["vf-tool-1"]),
+        "ws": ("net1", ["vf-0"]),
+        "ws-tool-0": ("net1", ["vf-1"]),
+        "ws-tool-1": ("net1", ["vf-2"]),
     }
     assert events[-1] == "network deleted"
 
