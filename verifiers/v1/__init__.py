@@ -34,6 +34,7 @@ if TYPE_CHECKING:
     from verifiers.v1.configs.judge import JudgeConfig, Judges
     from verifiers.v1.configs.retries import RetryConfig, RetryRule
     from verifiers.v1.configs.runtime import (
+        BindMount,
         CustomRuntimeConfig,
         DockerConfig,
         NetworkPolicyConfig,
@@ -213,6 +214,7 @@ _NAME_TO_MODULE = {
     "AssistantMessage": "verifiers.v1.types",
     "BaseClientConfig": "verifiers.v1.configs.client",
     "BaseConfig": "pydantic_config",
+    "BindMount": "verifiers.v1.configs.runtime",
     "Branch": "verifiers.v1.trace",
     "Client": "verifiers.v1.clients",
     "ClientConfig": "verifiers.v1.configs.client",
@@ -495,6 +497,7 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "ProgramResult",
     "SubprocessConfig",
     "DockerConfig",
+    "BindMount",
     "CustomRuntimeConfig",
     "NetworkPolicyConfig",
     "PrimeConfig",

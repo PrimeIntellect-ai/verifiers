@@ -3,11 +3,52 @@
 from fnmatch import fnmatchcase
 from glob import has_magic
 from itertools import product
-from typing import Annotated, Any, Literal, Self
+from pathlib import PurePosixPath
+from typing import Annotated, Any, Literal, Self, TypeVar
 from urllib.parse import SplitResult, urlsplit
 
-from pydantic import Field, SerializeAsAny, model_validator
+from pydantic import Field, SerializeAsAny, field_validator, model_validator
 from pydantic_config import BaseConfig
+
+
+class BindMount(BaseConfig):
+    """An existing file or directory on the container engine's host."""
+
+    source: str = Field(pattern=r"^/[^\x00]*$")
+    """Absolute host path. The runtime never creates or removes the source."""
+    read_only: bool = True
+
+
+Mount = TypeVar("Mount", bound=BaseConfig)
+
+
+def validate_mounts(mounts: dict[str, Mount]) -> dict[str, Mount]:
+    """Normalize disjoint guest mount targets without covering runtime staging."""
+    paths: dict[PurePosixPath, Mount] = {}
+    for target, mount in mounts.items():
+        path = PurePosixPath("/" + target.lstrip("/"))
+        if (
+            not target.startswith("/")
+            or path == PurePosixPath("/")
+            or ".." in path.parts
+            or "\x00" in target
+        ):
+            raise ValueError(
+                f"mount target {target!r} must be an absolute path below '/' with no '..' or NUL"
+            )
+        if any(
+            path.is_relative_to(other) or other.is_relative_to(path) for other in paths
+        ):
+            raise ValueError(f"mount target {target!r} overlaps another mount")
+        if any(
+            path.is_relative_to(reserved) or reserved.is_relative_to(path)
+            for reserved in (PurePosixPath("/tmp"), PurePosixPath("/var/tmp"))
+        ):
+            raise ValueError(
+                "/tmp and /var/tmp are reserved for runtime and artifact staging"
+            )
+        paths[path] = mount
+    return {str(path): mount for path, mount in paths.items()}
 
 
 def parse_network_rule(rule: str) -> tuple[SplitResult, str, int | None]:
@@ -152,6 +193,15 @@ class DockerConfig(NetworkPolicyConfig):
     disk: float | None = None
     """Advisory disk request in GB. Docker has no portable per-container size limit, so this is accepted (so a task can declare it without a warning) but not
     enforced."""
+
+
+    mounts: dict[str, BindMount] = Field(default_factory=dict)
+    """Guest paths mapped to host paths, attached before task setup.
+    Read-only mounts include submounts and require Docker Engine/CLI >=25.0 and
+    Linux >=5.12 on the daemon. Artifact roots must stay outside mounts.
+    Mount paths cannot traverse symlinks or be moved. Compose is unsupported."""
+
+    _validate_mounts = field_validator("mounts")(validate_mounts)
 
 
 class PrimeConfig(NetworkPolicyConfig):
