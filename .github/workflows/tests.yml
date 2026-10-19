@@ -102,6 +102,8 @@ jobs:
             tests: tests/integration/test_agent_user.py
           - behavior: Network Policy
             tests: tests/integration/test_network_policy.py
+          - behavior: Compose
+            tests: tests/integration/test_compose_scoring.py
           - behavior: Skills
             tests: tests/integration/test_skills.py
           - behavior: Limits
