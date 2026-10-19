@@ -92,6 +92,12 @@ async def resolve_agent_runtime(runtime: Runtime, user: str | None) -> Runtime:
         raise TaskError(f"agent_user {user!r} has no home directory ({home})")
     view = runtime.with_user(user, home=home)
     probe = await view.run(["sh", "-c", 'id -un; test -w "$HOME" && echo writable'], {})
+    if probe.exit_code != 0 and not probe.stdout.strip():
+        raise SandboxError(
+            f"Cannot launch agent_user {user!r} in {runtime.config.workdir!r}: "
+            f"{probe.stderr.strip()[-2000:]}",
+            kind="exec",
+        )
     effective, *rest = probe.stdout.split() or [""]
     if effective != user:
         raise SandboxError(

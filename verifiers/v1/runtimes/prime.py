@@ -340,7 +340,9 @@ class PrimeConfig(NetworkPolicyConfig):
     and caches the result, so later sandboxes on the same ref start in
     seconds."""
     workdir: str | None = None
-    """Working directory override; None preserves the image's working directory."""
+    """Working directory override. None discovers the image directory, using /
+    when Prime defaults to root's home. Explicit task/config directories win.
+    """
     region: str | None = None
     """Region to provision in (None = provider-chosen)."""
     labels: list[str] = Field(default_factory=list)
@@ -604,14 +606,25 @@ class PrimeBackend(RuntimeBackend):
                 if self.config.workdir is None:
                     cwd = await self._held(
                         "image workdir",
-                        lambda: self._client.execute_command(self.info.id, "pwd"),
+                        lambda: self._client.execute_command(
+                            self.info.id, "pwd; printf '%s\\n' \"$HOME\""
+                        ),
                     )
-                    workdir = cwd.stdout.strip()
-                    if cwd.exit_code != 0 or not workdir.startswith("/"):
+                    lines = cwd.stdout.strip().splitlines()
+                    if (
+                        cwd.exit_code != 0
+                        or len(lines) != 2
+                        or not all(path.startswith("/") for path in lines)
+                    ):
                         raise SandboxError(
                             f"Cannot resolve image working directory: {cwd.stderr}",
                             kind="exec",
                         )
+                    workdir, root_home = lines
+                    # The gateway uses root's home when the image has no WORKDIR.
+                    # Do not bind that private directory to every user's commands.
+                    if workdir == root_home:
+                        workdir = "/"
                     self.config = self.config.model_copy(update={"workdir": workdir})
                 self.info.workdir = self.config.workdir
                 await self._held(
