@@ -54,6 +54,22 @@ def intersect_network_hosts(left: str, right: str) -> str:
     return ""
 
 
+def egress_urls(urls: list[str]) -> list[str]:
+    """URLs a restricted runtime may reach beyond its network policy, each with a scheme and
+    host (paths are ignored), or `["*"]`, which lifts the policy."""
+    if "*" in urls:
+        if urls != ["*"]:
+            raise ValueError("'*' lifts the network policy; list it alone")
+        return urls
+    for url in urls:
+        parts = urlsplit(url)
+        if not parts.scheme or not parts.hostname:
+            raise ValueError(
+                f"egress entry {url!r} is not a URL with a scheme and host"
+            )
+    return urls
+
+
 class NetworkPolicyConfig(BaseConfig):
     """Shared execution-time policy surface for runtimes that support it."""
 

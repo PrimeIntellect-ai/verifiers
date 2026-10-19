@@ -417,9 +417,7 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
             )
 
     @reward(weight=1.0)
-    async def solved(
-        self, runtime: Runtime, trace: Trace, deployment=None
-    ) -> float | dict[str, float]:
+    async def solved(self, runtime: Runtime, trace: Trace) -> float | dict[str, float]:
         if self.data.verifier is not None:
             if not self.verifier_staged:
                 raise TaskError(
@@ -429,12 +427,11 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
                     "grading with --taskset.ignore-separate-verifier"
                 )
         else:
-            # Grading is trusted: a shared-box verifier must not inherit the agent
-            # phase's network restrictions (Harbor test scripts install their tools).
-            if deployment is not None:
-                await deployment.prepare_grading()
-            else:
-                await runtime.backend.prepare_execution(None)
+            # Grading is trusted: unless scoring declares its egress, a shared-box
+            # verifier must not inherit the agent phase's network restrictions (Harbor
+            # test scripts install their tools).
+            if self.scoring.egress is None:
+                await runtime.set_egress(["*"])
             if not self.verifier_staged:
                 await self.stage_tests(runtime)
         return await self.run_verifier(runtime, trace)

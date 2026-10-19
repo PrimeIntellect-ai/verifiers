@@ -140,6 +140,6 @@ Because verifiers never builds container images on the fly, a `[verifier.environ
 verifiers does not yet support every Harbor feature. The main current limitations are:
 
 - Outside Compose, container `ENTRYPOINT`s are replaced with a keepalive process, so services required by the task or by `[environment.healthcheck]` must be started during setup rather than relying on the image entrypoint.
-- Shared grading reopens network access instead of switching to a separate verifier-phase network policy; use separate verification (`environment_mode = "separate"`) when the grader requires its own restricted network policy.
+- Shared grading reopens network access unless `scoring.egress` lists what the grader may reach, in which case it runs under the task's network policy plus those URLs. Use separate verification (`environment_mode = "separate"`) when the grader needs its own runtime.
 - Verifier images defined via `tests/Dockerfile` must be built and published in advance.
 - [Multi-step tasks](https://www.harborframework.com/docs/tasks/multi-step) are not supported.

@@ -880,6 +880,10 @@ class Rollout:
                                             "runtime": scoring_runtime,
                                         },
                                     )
+                                    if self._scoring_policy.egress is not None:
+                                        await scoring_runtime.set_egress(
+                                            self._scoring_policy.egress
+                                        )
                                 await self._scoring_task.score(
                                     trace, scoring_runtime, self.deployment
                                 )

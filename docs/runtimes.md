@@ -139,6 +139,20 @@ allow = ["*"]
 block = ["huggingface.co", "*.huggingface.co"]
 ```
 
-Network policies take effect after task and harness `setup` complete (so `setup` can still download packages or assets) and remain active through `finalize` and scoring (except in Harbor's shared verifier mode, which [reopens network access during grading](harbor.md#network-policies)). On Modal, keep `network_access = true` when using an allowlist so `setup` stays online; setting `network_access = false` cuts off networking during `setup` as well.
+Network policies take effect after task and harness `setup` complete (so `setup` can still download packages or assets) and remain active through `finalize` and scoring (except in Harbor's shared verifier mode, which [reopens network access during grading](harbor.md#network-policies)).
+
+Scoring can declare what it needs beyond the policy. `ScoringConfig.egress` lists URLs (each with a scheme and host; paths are ignored) that scoring may reach, and `["*"]` lifts the policy. Verifiers applies it right before the scoring hooks run, in the workspace (`shared`) or the fresh verifier (`isolated`), so a grader that installs packages under a no-egress task needs no network code:
+
+```python
+vf.TaskData(
+    ...,
+    network_allow=[],
+    scoring=vf.ScoringConfig(
+        egress=["https://pypi.org", "https://files.pythonhosted.org"]
+    ),
+)
+```
+
+Unset, isolated scoring runs under the runtime's policy and shared scoring keeps the agent phase's network. A hook that needs to change it at another point can call `runtime.set_egress(urls)`, which takes the same values and applies to the whole runtime. On Modal, keep `network_access = true` when using an allowlist so `setup` stays online; setting `network_access = false` cuts off networking during `setup` as well.
 
 These egress rules govern processes inside the sandbox (including task tools configured with `colocated = true`), not Python hooks running on the evaluator or tools running in separate containers. For provider-hosted server tools that execute outside the sandbox, verifiers forwards supported domain restrictions to web search tools and disables any provider tools it cannot constrain (see [Harbor network policies](harbor.md#network-policies)). By default, restricted runs also append a short notice to the agent's system prompt (or first user message when the harness cannot append a system prompt) explaining the network policy; pass `--no-env.agent.network-notice` if a benchmark requires the unmodified prompt verbatim.

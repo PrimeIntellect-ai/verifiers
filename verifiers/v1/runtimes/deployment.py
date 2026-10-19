@@ -44,9 +44,6 @@ class _DeploymentStrategy:
     ) -> None:
         await deployment.harness_backend.prepare_execution(routes)
 
-    async def prepare_grading(self, deployment: Deployment) -> None:
-        await deployment.execution_backend.prepare_execution(None)
-
     async def stop_execution(self, deployment: Deployment) -> None:
         return
 
@@ -194,9 +191,6 @@ class Deployment:
         """Apply each target's execution policy: the harness's keeps `routes`, and a tool
         server's own VM keeps only `state_route`, its state channel."""
         await self._strategy.prepare_execution(self, routes, state_route)
-
-    async def prepare_grading(self) -> None:
-        await self._strategy.prepare_grading(self)
 
     async def close(self) -> None:
         async def release():

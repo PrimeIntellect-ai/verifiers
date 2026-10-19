@@ -2,10 +2,11 @@
 
 from typing import Literal
 
-from pydantic import SerializationInfo, field_serializer
+from pydantic import SerializationInfo, field_serializer, field_validator
 from pydantic_config import BaseConfig
 
 from verifiers.v1.configs.retries import RetryConfig
+from verifiers.v1.configs.runtime import egress_urls
 from verifiers.v1.runtimes import RuntimeConfig
 from verifiers.v1.utils.generic import merge_defaults
 
@@ -19,6 +20,16 @@ class ScoringConfig(BaseConfig):
     """Scoring-only variables, merged over task defaults and resolved at scoring time."""
     retries: RetryConfig = RetryConfig(max_retries=2)
     """Retry rules for fresh isolated scoring attempts; shared scoring is not retried."""
+    egress: list[str] | None = None
+    """URLs scoring may reach beyond the runtime's network policy, set before scoring runs;
+    `["*"]` lifts the policy. None keeps the default: isolated scoring runs under the
+    runtime's policy, shared scoring keeps the agent phase's network, and Harbor's shared
+    grading lifts the policy."""
+
+    @field_validator("egress")
+    @classmethod
+    def validate_egress(cls, egress: list[str] | None) -> list[str] | None:
+        return None if egress is None else egress_urls(egress)
 
     @field_serializer("runtime")
     def serialize_runtime(

@@ -132,7 +132,7 @@ async def grade_task(
                     runtime = bind_scoring_env(runtime, policy)
                     await runtime.backend.prepare_setup()
                     await stage_verifier(grader, result, runtime)
-                    await runtime.backend.prepare_execution([])
+                    await runtime.set_egress(policy.egress or [])
                 try:
                     async with (
                         asyncio.timeout_at(deadline),
