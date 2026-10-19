@@ -562,7 +562,8 @@ class DockerBackend(RuntimeBackend):
         return socket.socket(fileno=descriptors[0])
 
     async def prepare_execution(self, routes: list[str] | None) -> None:
-        """Allow the declared framework routes, then leave the proxy as the only way out."""
+        """Allow the declared framework routes, then leave the proxy as the only way out.
+        `None` reopens the network for a trusted phase, undoing the cut."""
         if self._host_backend is not None:
             await self._host_backend.prepare_execution(routes)
             return
@@ -572,6 +573,13 @@ class DockerBackend(RuntimeBackend):
             self._proxy.policy = NetworkPolicy(
                 NetworkPolicyConfig(), [], allow_non_global=True
             )
+            if self._cut:
+                await self._net_admin(
+                    "ip route del blackhole 127.0.0.11/32 table local; "
+                    "iptables -F INPUT; iptables -F OUTPUT",
+                    "reopen",
+                )
+                self._cut = False
             return
         framework = [
             urlsplit(url)._replace(path="", query="", fragment="").geturl()
@@ -616,8 +624,13 @@ class DockerBackend(RuntimeBackend):
             '-p tcp --dport "$PORT" -j ACCEPT; fi; '
             "iptables -A OUTPUT -j REJECT"
         )
+        await self._net_admin(script, "cut", proxy_address, str(self._proxy.port))
+        self._cut = True
+
+    async def _net_admin(self, script: str, action: str, *args: str) -> None:
+        """Run `script` with NET_ADMIN in the container's network namespace."""
         assert self._container is not None
-        cut = await cli(
+        result = await cli(
             "docker",
             "run",
             "--label",
@@ -633,13 +646,13 @@ class DockerBackend(RuntimeBackend):
             "sh",
             "-c",
             script,
-            "cut",
-            proxy_address,
-            str(self._proxy.port),
+            action,
+            *args,
         )
-        if cut.exit_code != 0:
-            raise SandboxError(f"docker network cut failed: {cut.stderr.strip()}")
-        self._cut = True
+        if result.exit_code != 0:
+            raise SandboxError(
+                f"docker network {action} failed: {result.stderr.strip()}"
+            )
 
     async def teardown(self) -> None:
         if self._proxy is not None:

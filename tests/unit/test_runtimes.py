@@ -126,6 +126,7 @@ async def wait_for(
             await asyncio.sleep(0.5)
 
 
+RESOLVE = "import socket, sys; socket.getaddrinfo(sys.argv[1], 443)"
 FETCH = "import sys, urllib.request; print(urllib.request.urlopen(sys.argv[1]).read().decode())"
 
 
@@ -350,6 +351,12 @@ async def test_network_policies(runtime) -> None:
         await view.backend.prepare_execution([])
         assert await reach(view, "https://pypi.org/simple/") == "ok"
         assert await reach(view, "https://example.com") == "denied"
+        # A trusted phase after the agent, such as shared grading, gets the network
+        # back, raw DNS included.
+        await view.backend.prepare_execution(None)
+        assert await reach(view, "https://example.com") == "ok"
+        resolved = await view.run([*PYTHON, "-c", RESOLVE, "example.com"], {})
+        assert resolved.exit_code == 0, resolved
 
 
 class HostProcess(RuntimeProcess):
