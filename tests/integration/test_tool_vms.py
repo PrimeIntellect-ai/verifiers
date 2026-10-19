@@ -69,7 +69,9 @@ async def test_a_tool_vm_keeps_its_own_egress_beside_a_restricted_workspace(
         runtime=vf.PrimeConfig(labels=["vf-integration"], allow=allow)
     )
     task = ProbeTask(
-        vf.TaskData(prompt="Probe the network", network_allow=[]),
+        vf.TaskData(
+            prompt="Probe the network", network=vf.NetworkPolicyConfig(allow=[])
+        ),
         FetchToolTaskConfig(tools=tools),
     )
     config = vf.AgentConfig(

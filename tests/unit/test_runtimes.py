@@ -332,7 +332,9 @@ async def test_local_compose_needs_trust() -> None:
 async def test_network_policies(runtime) -> None:
     if not isinstance(runtime, NetworkPolicyConfig):
         with refused(runtime, ValueError, "does not enforce network policies"):
-            resolve_runtime_config(runtime, task(network_allow=["pypi.org"]))
+            resolve_runtime_config(
+                runtime, task(network=NetworkPolicyConfig(allow=["pypi.org"]))
+            )
         return
     probe = (
         "import sys, urllib.request\n"

@@ -433,7 +433,7 @@ When you want to inspect or rewrite traffic in flight without ending the rollout
 - **Request interception** can rewrite new user or tool messages before the model sees them (without adding or removing messages, altering tool definitions, or changing tool-call names and IDs).
 - **Response interception** can replace the assistant's text reply before it reaches the harness (replacement responses cannot carry tool calls).
 
-For ordinary network isolation, configure `TaskData.network_allow` and `TaskData.network_block`. If you want to block a specific tool call before it executes and return a synthetic tool result so the agent can keep going, the harness must declare `SUPPORTS_TOOL_INTERCEPTION = True` and check tool calls before running them; otherwise, use a `vf.Response` stop hook to halt the rollout before the harness executes the tool. See the bundled [`interception`](../environments/interception/interception/taskset.py) and [`bash_interception`](../environments/bash_interception/bash_interception/taskset.py) environments for complete working examples.
+For ordinary network isolation, configure `TaskData.network` (see [network policies](runtimes.md#network-policies)). If you want to block a specific tool call before it executes and return a synthetic tool result so the agent can keep going, the harness must declare `SUPPORTS_TOOL_INTERCEPTION = True` and check tool calls before running them; otherwise, use a `vf.Response` stop hook to halt the rollout before the harness executes the tool. See the bundled [`interception`](../environments/interception/interception/taskset.py) and [`bash_interception`](../environments/bash_interception/bash_interception/taskset.py) environments for complete working examples.
 
 ## Beyond one agent
 

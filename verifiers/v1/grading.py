@@ -9,6 +9,7 @@ from pathlib import PurePosixPath
 from verifiers.v1.configs.scoring import ScoringConfig
 from verifiers.v1.errors import TaskError, boundary
 from verifiers.v1.runtimes import (
+    NetworkPolicyConfig,
     PrimeConfig,
     Runtime,
     RuntimeConfig,
@@ -56,6 +57,8 @@ def verifier_runtime(
         image=task.data.image or getattr(solver_runtime.config, "image", None),
         workdir=task.data.workdir or getattr(solver_runtime.config, "workdir", None),
     )
+    if policy.network is not None:
+        task = task.with_data(network=policy.network)
     config = resolve_runtime_config(source, task)
     if policy.runtime is not None and "image" in policy.runtime.model_fields_set:
         config = config.model_copy(update={"image": policy.runtime.image})
@@ -76,6 +79,21 @@ def verifier_runtime(
             f"cannot restore relative artifacts {relative!r} from {solver_dir} into {grader_dir}; use matching workdirs or absolute paths"
         )
     return config
+
+
+def scoring_network(
+    base: RuntimeConfig, network: NetworkPolicyConfig
+) -> NetworkPolicyConfig:
+    """`network` as the task's policy while scoring, combined with the runtime's own
+    rules the way `TaskData.network` is."""
+    if isinstance(base, NetworkPolicyConfig):
+        return base.with_task_network_policy(network)
+    if network.network_restricted:
+        raise TaskError(
+            f"scoring requires a network policy, but the {base.type} runtime does not "
+            "support one"
+        )
+    return network
 
 
 def bind_scoring_env(runtime: Runtime, policy: ScoringConfig) -> Runtime:
@@ -191,6 +209,9 @@ async def grade_submission(
 
     The caller finalizes the submission and collects artifacts into the trace first.
     Uses the task's grader, scoring policy, and timeouts, including retry behavior.
+    As in a rollout, the verifier derives from the agent's runtime config on the trace
+    (`trace.agent.config.runtime`), not from the solver's resolved one, so the solver
+    task's requirements, such as its network policy, don't carry over.
     """
     from verifiers.v1.runtimes.deployment import Deployment
 
@@ -198,7 +219,7 @@ async def grade_submission(
     if policy.mode != "isolated":
         raise ValueError("grade_submission requires isolated scoring")
     grader = task.grading_task(runtime, scoring=policy)
-    config = verifier_runtime(grader, runtime, runtime.config, policy)
+    config = verifier_runtime(grader, runtime, trace.agent.config.runtime, policy)
     deployment = Deployment(
         runtime.backend, borrowed_runtime=runtime, env=dict(runtime.env)
     )

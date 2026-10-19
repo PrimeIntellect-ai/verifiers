@@ -19,7 +19,7 @@ uv run vf-debug my-task -n 1 --command 'pwd && ls -la'
 `vf-validate` boots the configured runtime and runs task checks without an agent:
 
 - `--only-setup` runs `Task.setup(runtime)` to verify that containers, files, and background services start cleanly.
-- `--only-gold` runs `setup` followed by `Task.validate(runtime)` to check a reference answer or solution. `validate` returns `True` (valid), `False` (invalid), or `None` when the task defines no gold check (reported as `unchecked` rather than a pass).
+- `--only-gold` runs `setup` followed by `Task.validate(runtime)` to check a reference answer or solution; `validate` can also request the check's `trace` by name. `validate` returns `True` (valid), `False` (invalid), or `None` when the task defines no gold check (reported as `unchecked` rather than a pass).
 - `--only-noop` runs `setup`, `finalize`, and task scoring on the untouched environment. Any task that already scores `1.0` or higher with no agent actions is flagged as `invalid` (lower partial rewards pass the check and are recorded in the results, while tasks with no reward are marked `unchecked`).
 
 When you run `vf-validate` without an `--only-*` flag, it runs both the gold and noop checks in separate runtimes. Because validation runs directly against the task rather than through a harness or `Env`, it does not apply harness network restrictions, transfer artifacts, or invoke `stage_verifier`. If your gold check relies on private tests, call your staging helper inside `Task.validate`, and use a real `vf-eval` run to test the full isolated-grading lifecycle.

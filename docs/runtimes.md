@@ -34,7 +34,7 @@ data = vf.TaskData(
     workdir="/workspace",
     resources=vf.TaskResources(cpu=2, memory=4, disk=10),
     timeout=vf.TaskTimeout(setup=300, agent=1800, scoring=120),
-    network_allow=[],
+    network=vf.NetworkPolicyConfig(allow=[]),
 )
 ```
 
@@ -199,11 +199,11 @@ Compose runs on local Docker or on a Prime VM. On Prime, one VM hosts the Docker
 
 A tool server can also run on a Prime VM of its own, under an egress policy of its own: set its `ToolsetConfig.runtime` to a Prime runtime, such as `vf.PrimeConfig(image="example/tools:1", allow=["*"])` for a server that calls public APIs beside an offline workspace, or `allow=[]` for one that runs agent-submitted code with no egress at all. Beside a Prime workspace without Compose services, the server's VM boots with the workspace and joins it over a LAN network of the rollout's own, on which the workspace's VM may open connections to the server and nothing may open one to the workspace; the harness reaches the server at its VM's LAN name (`<sandbox-id>.sandbox.internal`), and `deployment.target(name)` gives task hooks the server's VM. The VM's policy applies when the workspace's does, after setup. Elsewhere such a server keeps its runtime's published port, which takes no network policy.
 
-To validate an isolated task without calling a model, finalize the submission, collect its artifacts, and call `vf.grade_submission(task, trace, runtime)`. This runs the task's normal grader, verifier image, timeouts, and retries in a fresh verification target without taking ownership of the supplied solver runtime.
+To validate an isolated task without calling a model, finalize the submission, collect its artifacts, and call `vf.grade_submission(task, trace, runtime)`. This runs the task's normal grader, verifier image, timeouts, and retries in a fresh verification target without taking ownership of the supplied solver runtime. As in a rollout, the verifier derives from the agent's runtime config on the trace (`trace.agent.config.runtime`), not from the solver's resolved config, so the solver task's requirements, such as its network policy, don't carry over. Inside `Task.validate`, request `trace` by name for vf-validate's trace, which records its runtime config.
 
 ## Network policies
 
-Task-level rules (`TaskData.network_allow` and `TaskData.network_block`) combine with runtime-level rules (`runtime.allow` and `runtime.block`) to control what the sandbox can reach once the agent starts:
+A task's policy (`TaskData.network`, a `vf.NetworkPolicyConfig` with `allow` and `block`) combines with the runtime's own rules (`runtime.allow` and `runtime.block`) to control what the sandbox can reach once the agent starts:
 
 - `["*"]` adds no restriction of its own, deferring to whichever policy is set on the other side.
 - `[]` blocks external egress and permits only connections required by verifiers (such as model API interception and MCP tool traffic).
@@ -219,5 +219,19 @@ block = ["huggingface.co", "*.huggingface.co"]
 ```
 
 Network policies take effect after task and harness `setup` complete (so `setup` can still download packages or assets) and remain active through `finalize` and scoring (except in Harbor's shared verifier mode, which [reopens network access during grading](harbor.md#network-policies)).
+
+Scoring can have a policy of its own. `ScoringConfig.network` is the task's policy while scoring runs, in place of `TaskData.network`, and combines with the runtime's rules the same way. Verifiers applies it right before the scoring hooks run, in the workspace (`shared`) or the fresh verifier (`isolated`), so a grader that installs packages under a no-egress task needs no network code:
+
+```python
+vf.TaskData(
+    ...,
+    network=vf.NetworkPolicyConfig(allow=[]),
+    scoring=vf.ScoringConfig(
+        network=vf.NetworkPolicyConfig(allow=["pypi.org", "files.pythonhosted.org"])
+    ),
+)
+```
+
+Unset, isolated scoring runs under `TaskData.network` and shared scoring keeps the agent phase's network. Shared scoring can't restrict a runtime that started without a policy; use isolated scoring for that. A hook that needs a different policy at another point can call `runtime.set_network(policy)`, which enforces the policy as given on the whole runtime.
 
 These egress rules govern processes inside the sandbox (including task tools configured with `colocated = true`), not Python hooks running on the evaluator or tools running in separate containers. For provider-hosted server tools that execute outside the sandbox, verifiers forwards supported domain restrictions to web search tools and disables any provider tools it cannot constrain (see [Harbor network policies](harbor.md#network-policies)). By default, restricted runs also append a short notice to the agent's system prompt (or first user message when the harness cannot append a system prompt) explaining the network policy; pass `--no-env.agent.network-notice` if a benchmark requires the unmodified prompt verbatim.

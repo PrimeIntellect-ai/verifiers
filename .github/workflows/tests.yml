@@ -110,6 +110,8 @@ jobs:
             tests: tests/integration/test_sampling.py
           - behavior: Parallel
             tests: tests/integration/test_parallel.py
+          - behavior: Scoring Network
+            tests: tests/integration/test_scoring_network.py
           - behavior: Skills
             tests: tests/integration/test_skills.py
           - behavior: Limits

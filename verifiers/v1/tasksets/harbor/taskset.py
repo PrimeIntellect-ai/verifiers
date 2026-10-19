@@ -31,6 +31,7 @@ from pathlib import Path, PurePosixPath
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
+from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.configs.scoring import ScoringConfig
 from verifiers.v1.configs.task import TaskConfig
 from verifiers.v1.configs.taskset import TasksetConfig
@@ -145,9 +146,9 @@ class VerifierConfig(BaseModel):
     declared `[verifier.environment]`. A fresh copy inherits the agent box's resolved
     resources; a declared environment states its own, and what it omits falls back to
     the run's rather than to the agent's task-derived values."""
-    network_allow: list[str] = Field(default_factory=lambda: ["*"])
-    """Destinations the verifier may reach, from the verifier's network mode. `["*"]`
-    is unrestricted; `[]` is Harbor's `no-network` / `allow_internet = false`."""
+    network: NetworkPolicyConfig = Field(default_factory=NetworkPolicyConfig)
+    """What the verifier may reach, from the verifier's network mode. `allow=["*"]` is
+    unrestricted; `allow=[]` is Harbor's `no-network` / `allow_internet = false`."""
 
 
 class HarborData(TaskData):
@@ -417,9 +418,7 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
             )
 
     @reward(weight=1.0)
-    async def solved(
-        self, runtime: Runtime, trace: Trace, deployment=None
-    ) -> float | dict[str, float]:
+    async def solved(self, runtime: Runtime, trace: Trace) -> float | dict[str, float]:
         if self.data.verifier is not None:
             if not self.verifier_staged:
                 raise TaskError(
@@ -429,12 +428,11 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
                     "grading with --taskset.ignore-separate-verifier"
                 )
         else:
-            # Grading is trusted: a shared-box verifier must not inherit the agent
-            # phase's network restrictions (Harbor test scripts install their tools).
-            if deployment is not None:
-                await deployment.prepare_grading()
-            else:
-                await runtime.backend.prepare_execution(None)
+            # Grading is trusted: unless scoring declares its network, a shared-box
+            # verifier must not inherit the agent phase's network restrictions (Harbor
+            # test scripts install their tools).
+            if self.scoring.network is None:
+                await runtime.set_network(NetworkPolicyConfig())
             if not self.verifier_staged:
                 await self.stage_tests(runtime)
         return await self.run_verifier(runtime, trace)
@@ -537,10 +535,19 @@ def verifier_box_data(data: HarborData) -> HarborData:
             "healthcheck": verifier.healthcheck,
             "skills": [],
             "mcp_servers": [],
-            "network_allow": list(verifier.network_allow),
-            "network_block": [],
+            "network": verifier.network,
         }
     )
+
+
+def harbor_network(network) -> NetworkPolicyConfig:
+    """A Harbor network mode as a network policy: `public` is unrestricted, and the
+    other modes allow only their hosts (none for `no-network`)."""
+    from harbor.models.task.config import NetworkMode
+
+    if network.network_mode == NetworkMode.PUBLIC:
+        return NetworkPolicyConfig()
+    return NetworkPolicyConfig(allow=list(network.allowed_hosts))
 
 
 def task_resources(environment, multiplier: float) -> TaskResources:
@@ -713,7 +720,6 @@ def resolve_image(
 def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborData:
     # Harbor is optional, so imports stay deferred until a Harbor task loads.
     from harbor.environments.definition import should_upload_environment_dir
-    from harbor.models.task.config import NetworkMode
     from harbor.models.task.task import Task as HarborModelTask
     from harbor.models.task.verifier_mode import resolve_verifier_environment_definition
 
@@ -783,11 +789,7 @@ def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborD
         image=image,
         workdir=environment.workdir,
         agent_user=None if parsed.agent.user is None else str(parsed.agent.user),
-        network_allow=(
-            ["*"]
-            if network.network_mode == NetworkMode.PUBLIC
-            else list(network.allowed_hosts)
-        ),
+        network=harbor_network(network),
         timeout=TaskTimeout(
             agent=agent_timeout * harbor_config.timeout_multiplier
             if agent_timeout is not None
@@ -888,7 +890,7 @@ def parse_verifier_environment(
     different image or only override resources. Image selection is resolved separately
     by Harbor: verifier image, tests build definition, then the agent environment.
     """
-    from harbor.models.task.config import NetworkMode, TaskOS
+    from harbor.models.task.config import TaskOS
     from harbor.models.task.paths import TaskPaths
     from harbor.models.task.verifier_mode import (
         VerifierEnvironmentMode,
@@ -932,11 +934,7 @@ def parse_verifier_environment(
         workdir=environment.workdir if declared else None,
         **environment.model_dump(include={"env", "healthcheck"}, mode="json"),
         fresh_copy=not declared,
-        network_allow=(
-            ["*"]
-            if network.network_mode == NetworkMode.PUBLIC
-            else list(network.allowed_hosts)
-        ),
+        network=harbor_network(network),
     )
 
 
