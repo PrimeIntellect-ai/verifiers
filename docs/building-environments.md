@@ -179,7 +179,7 @@ When your benchmark needs more than a single solver and deterministic grading, y
 - **Task-specific MCP tools**: define a [`vf.Toolset`](tasksets.md#adding-tools) on the task, running either in its own runtime or inside the agent sandbox with `colocated = true`.
 - **Multi-attempt sampling or model judges**: run the built-in `best-of-n` or `agentic-judge` environments, or `user-sim` when a model needs to role-play the user across turns.
 - **Games and multi-turn scripted interactions**: write a custom [`Env.run()`](env.md#custom-control-flow) that drives `agents.<role>.interaction(task)` across turns or agents. Note that a custom environment's `finalize(task, episode)` hook runs after agent runtimes have been torn down, so read from saved trace data (`trace.info`) rather than live sandboxes.
-- **Multiple services** (such as an application server paired with a database): return a `ServicesSpec` from `Task.deployment_spec()` for native Prime VMs, or a `ComposeSpec` for local Docker. [Harbor benchmarks](harbor.md) can supply a local Compose file (see [deployment and services](runtimes.md#deployment-and-services)).
+- **Multiple services** (such as an application server paired with a database): return a `ServicesSpec` from `Task.deployment_spec()` for prepared native Prime VMs, or a `ComposeSpec` for local Docker or Prime's supported Compose subset. [Harbor benchmarks](harbor.md) can supply a Compose file (see [deployment and services](runtimes.md#deployment-and-services)).
 - **Custom agent loops or CLI harnesses**: pick another built-in [harness](harnesses.md) or subclass `vf.Harness` to install and launch a different agent binary.
 
 ## Check the environment

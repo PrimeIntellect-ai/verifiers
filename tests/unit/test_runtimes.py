@@ -44,6 +44,7 @@ from verifiers.v1.runtimes import (
     RuntimeConfig,
     RuntimeProcess,
     backend_cls,
+    make_backend,
     provision_runtime,
 )
 from verifiers.v1.runtimes.compose import ComposeSpec, compose_services
@@ -55,7 +56,7 @@ SUPPORTED = {
     "task_images": {"docker", "prime"},
     "user_switching": {"docker", "prime"},
     "port_exposure": {"subprocess", "docker"},
-    "compose": {"docker"},
+    "compose": {"docker", "prime"},
     "network_policies": {"docker", "prime"},
 }
 PYTHON = ["sh", "-c", 'exec "$(command -v python3 || command -v python)" "$@"', "py"]
@@ -290,6 +291,8 @@ async def test_compose(runtime, tmp_path) -> None:
             _deployment_strategy(None, backend, ComposeSpec(directory="."))
         return
     skip_unavailable(runtime)
+    if not docker_available():
+        pytest.skip("Compose image preparation needs a reachable Docker daemon")
     (tmp_path / "docker-compose.yaml").write_text(
         "services:\n"
         "  main: {}\n"
@@ -298,10 +301,13 @@ async def test_compose(runtime, tmp_path) -> None:
         "    command: [sleep, infinity]\n"
     )
     spec = ComposeSpec(directory=str(tmp_path), file="docker-compose.yaml")
-    async with (
-        asyncio.timeout(TIMEOUT),
-        compose_services(runtime, spec, {}, trust_compose=True) as (services, _),
-    ):
+    deployment = make_backend(runtime).deploy(
+        spec=spec, config=vf.DeploymentConfig(trust_compose=True)
+    )
+    try:
+        async with asyncio.timeout(TIMEOUT):
+            await deployment.start()
+        services = deployment.target_backends
         assert set(services) == {"main", "sidecar"}
         resolved = await services["main"].bind().run(["getent", "hosts", "sidecar"], {})
         assert resolved.exit_code == 0, resolved
@@ -316,6 +322,8 @@ async def test_compose(runtime, tmp_path) -> None:
                     [*PYTHON, "-c", FETCH, workspace.host_url(url)], {}
                 )
                 assert fetched.stdout.strip() == "callback", fetched
+    finally:
+        await deployment.close()
 
 
 async def test_local_compose_needs_trust() -> None:

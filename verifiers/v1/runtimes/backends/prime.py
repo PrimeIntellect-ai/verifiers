@@ -10,7 +10,7 @@ import math
 import shlex
 import tempfile
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -188,16 +188,22 @@ class PrimeProcess(RuntimeProcess):
 class PrimeBackend(RuntimeBackend):
     SUPPORTS_TASK_IMAGES: ClassVar[bool] = True
     SUPPORTS_USER_SWITCHING: ClassVar[bool] = True
+    SUPPORTS_COMPOSE: ClassVar[bool] = True
 
     def __init__(self, config: PrimeConfig, name: str | None = None) -> None:
         ensure_prime_auth()
         super().__init__(name)
+        self.user: str | None = None
+        self._workdir_override = config.workdir
         self.config = config.model_copy(update={"workdir": config.workdir or "/app"})
         self.info = PrimeRuntimeInfo(**self.config.model_dump())
         self._client = None
         # A LAN network (id, tags) to join as the sandbox boots: prime-sandboxes joins it
         # once it is running, within `wait_for_creation` on the creating client.
         self.lan: tuple[str, list[str]] | None = None
+
+    def bind(self, *, env: Mapping[str, str] | None = None) -> Runtime:
+        return super().bind(env=env).with_user(self.user)
 
     async def start(self) -> None:
         from prime_sandboxes import CreateSandboxRequest
