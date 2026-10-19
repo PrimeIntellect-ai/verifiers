@@ -39,6 +39,7 @@ if TYPE_CHECKING:
         DockerConfig,
         NetworkPolicyConfig,
         PrimeConfig,
+        PrimeVolume,
         RuntimeConfig,
         SubprocessConfig,
     )
@@ -266,6 +267,7 @@ _NAME_TO_MODULE = {
     "PolicyEvent": "verifiers.v1.trace",
     "PolicySpan": "verifiers.v1.episode",
     "PrimeConfig": "verifiers.v1.configs.runtime",
+    "PrimeVolume": "verifiers.v1.configs.runtime",
     "ProgramResult": "verifiers.v1.runtimes",
     "ProviderError": "verifiers.v1.errors",
     "ReferenceJudge": "verifiers.v1.judges",
@@ -501,6 +503,7 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "CustomRuntimeConfig",
     "NetworkPolicyConfig",
     "PrimeConfig",
+    "PrimeVolume",
     "Env",
     "SingleAgentEnv",
     "EnvConfig",

@@ -31,6 +31,7 @@ from verifiers.v1.runtimes.base import (
 from verifiers.v1.runtimes.limiters import creation_limiter
 from verifiers.v1.runtimes.runtime import Runtime
 from verifiers.v1.utils.aio import run_shielded
+from verifiers.v1.utils.artifacts import validate_runtime_mounts
 from verifiers.v1.utils.prime import ensure_prime_auth
 from verifiers.v1.utils.scope import run_scope
 
@@ -157,6 +158,10 @@ class PrimeBackend(RuntimeBackend):
     async def start(self) -> None:
         from prime_sandboxes import CreateSandboxRequest
 
+        if self.config.mounts and "volumes" not in CreateSandboxRequest.model_fields:
+            raise RuntimeError(
+                "Prime volume mounts require a prime-sandboxes SDK with volume support"
+            )
         self._client = _lease_client()
         # Map the resources onto prime's API (minutes, split GPU; memory/disk are already
         # GB). gpu_type/region are only sent when set (else provider-chosen).
@@ -177,6 +182,11 @@ class PrimeBackend(RuntimeBackend):
             "gpu_type": gpu_type,
             "region": self.config.region,
         }
+        if self.config.mounts:
+            options["volumes"] = [
+                {"mount_path": target, **mount.model_dump()}
+                for target, mount in self.config.mounts.items()
+            ]
         if self.config.checkpoint:
             source = {"checkpoint_id": self.config.checkpoint}
         else:
@@ -234,6 +244,7 @@ class PrimeBackend(RuntimeBackend):
             await self._client.execute_command(
                 self.info.id, f"mkdir -p {shlex.quote(self.config.workdir)}"
             )
+            await validate_runtime_mounts(self.bind(), [])
         except (
             Exception
         ) as e:  # provisioning failure is one rollout's problem, not the eval's

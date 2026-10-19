@@ -203,6 +203,13 @@ class DockerConfig(NetworkPolicyConfig):
     _validate_mounts = field_validator("mounts")(validate_mounts)
 
 
+class PrimeVolume(BaseConfig):
+    """An existing named volume in the Prime SDK client's personal or team scope."""
+
+    name: str = Field(min_length=1)
+    read_only: bool = True
+
+
 class PrimeConfig(NetworkPolicyConfig):
     type: Literal["prime"] = "prime"
     image: str = "python:3.11-slim"
@@ -234,6 +241,15 @@ class PrimeConfig(NetworkPolicyConfig):
     """Pace sandbox creation to this many per minute, enforced run-wide across every
     env-server worker process (None/<= 0 disables it). (Tunnel creation is limited separately
     — see interception.tunnel.prime.tunnel_limiter.)"""
+
+    mounts: dict[str, PrimeVolume] = Field(default_factory=dict)
+    """Guest paths mapped to named Prime volumes. Each VM sees the head at creation;
+    writes stay private until the SDK's `client.volumes.publish(sandbox_id, name)`
+    finishes, before the VM stops. Verifiers never publishes or deletes volumes.
+    Requires an SDK with volume support. Artifact roots must stay outside mounts;
+    mount paths cannot traverse symlinks or be moved. Compose is unsupported."""
+
+    _validate_mounts = field_validator("mounts")(validate_mounts)
 
     @model_validator(mode="after")
     def _validate_egress(self) -> Self:
