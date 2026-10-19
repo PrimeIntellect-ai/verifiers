@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import importlib
+import sys
 import time
 import traceback
 import uuid
@@ -1063,6 +1064,8 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         """Record a stage deadline's expiry, and stop the trace as `<stage>_timeout`.
         The deadline is what ended the trace, so it replaces any earlier stop
         condition (a finalize deadline can expire after `agent_completed`)."""
+        if isinstance(error := sys.exception(), TimeoutError):
+            self.errors.append(Error.of(error))
         self.is_timeout = True
         self.stop(f"{stage}_timeout", override=True)
 
