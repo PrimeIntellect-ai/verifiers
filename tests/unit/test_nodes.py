@@ -1,15 +1,17 @@
 """The node model (rfcs/0001-nodes.md): each case is a rollout shape we run today,
 planned from config alone, plus the refusals a runtime's capabilities imply."""
 
+from dataclasses import replace
+
 import pytest
 
 import verifiers.v1 as vf
-from verifiers.v1.runtimes import DockerConfig, PrimeConfig
+from verifiers.v1.runtimes import DockerConfig, PrimeConfig, SubprocessConfig, nodes
 from verifiers.v1.runtimes.nodes import (
-    Capabilities,
     Connection,
     NodeConfig,
     PlacementError,
+    ProcessConfig,
     TopologyConfig,
     nodes_from_compose,
     plan,
@@ -22,25 +24,34 @@ OFFLINE = PrimeConfig(allow=[])  # a task with `network_allow = []`
 
 
 def capabilities(*, private_network: bool = True):
-    """Prime as it would be once its LAN backs a private network (verifiers#2876);
-    Docker and subprocess as #2862 leaves them."""
+    """What each backend declares, with Prime also declaring the private network its
+    LAN already provides (the RFC's next step)."""
 
-    def read(config) -> Capabilities:
+    def read(config) -> nodes.Capabilities:
+        declared = nodes.capabilities(config)
         if config.type == "prime":
-            return Capabilities(
-                network_policy=True,
-                nested_containers=True,
-                private_network=private_network,
-                port_exposure=False,
-            )
-        return Capabilities(
-            network_policy=False,
-            nested_containers=False,
-            private_network=False,
-            port_exposure=True,
-        )
+            return replace(declared, private_network=private_network)
+        return declared
 
     return read
+
+
+def test_capabilities_are_what_the_backends_declare():
+    prime = nodes.capabilities(PrimeConfig())
+    assert (prime.network_policy, prime.compose, prime.port_exposure) == (
+        True,
+        True,
+        False,
+    )
+    assert not prime.private_network  # declared by no backend yet
+    docker = nodes.capabilities(DockerConfig())
+    assert (docker.network_policy, docker.compose, docker.port_exposure) == (
+        True,
+        True,
+        True,
+    )
+    local = nodes.capabilities(SubprocessConfig())
+    assert (local.network_policy, local.compose) == (False, False)
 
 
 def shape(result):
@@ -167,12 +178,14 @@ def test_refusals_name_the_runtime_and_the_gap():
         TopologyConfig(nodes={"main": NodeConfig(runtime={"cpu": 8})})
 
     restricted = TopologyConfig(nodes={"tools": NodeConfig(runtime={"allow": []})})
-    with pytest.raises(PlacementError, match="docker runtime does not enforce"):
-        plan(restricted, DockerConfig(), capabilities())
+    with pytest.raises(PlacementError, match="subprocess runtime does not enforce"):
+        plan(restricted, SubprocessConfig(), capabilities())
 
-    sidecar = TopologyConfig(nodes={"db": NodeConfig(runtime={"image": "postgres"})})
-    with pytest.raises(PlacementError, match="neither run nested containers"):
-        plan(sidecar, DockerConfig(), capabilities())
+    sidecar = TopologyConfig(
+        nodes={"db": NodeConfig(process=ProcessConfig(command=["postgres"]))}
+    )
+    with pytest.raises(PlacementError, match="neither run Compose services"):
+        plan(sidecar, SubprocessConfig(), capabilities())
 
 
 def test_todays_knobs_lower_to_a_topology():
@@ -189,8 +202,11 @@ def test_todays_knobs_lower_to_a_topology():
         "gym": "tools",
         "forth": "tools-forth",
     }
-    # On #2862 that last server cannot be reached (Prime refuses `expose`); as a node
-    # with the workspace's policy it packs beside it instead.
+    # A server with a runtime of its own keeps a machine of its own, joined to the
+    # workspace over the private network even beside Compose services.
     result = plan(topology, OFFLINE, capabilities())
-    assert result.machine("tools-forth") is result.machine("main")
+    assert result.machine("tools-forth") is not result.machine("main")
+    assert Connection("main", "tools-forth", "mcp:forth", "private network") in set(
+        result.connections
+    )
     assert result.machine("host") is None

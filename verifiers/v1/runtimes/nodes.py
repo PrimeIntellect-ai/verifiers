@@ -109,7 +109,7 @@ class Capabilities:
     """What a runtime can do for a topology, read from its backend's declarations."""
 
     network_policy: bool
-    nested_containers: bool
+    compose: bool
     private_network: bool
     port_exposure: bool
 
@@ -118,7 +118,7 @@ def capabilities(config: RuntimeConfig) -> Capabilities:
     cls = backend_cls(config)
     return Capabilities(
         network_policy=isinstance(config, NetworkPolicyConfig),
-        nested_containers=cls.SUPPORTS_NESTED_CONTAINERS,
+        compose=cls.SUPPORTS_COMPOSE,
         # Declared by a backend that can join machines on a private network, as
         # Prime's LAN does (verifiers#2876); no backend declares it yet.
         private_network=getattr(cls, "SUPPORTS_PRIVATE_NETWORK", False),
@@ -265,14 +265,14 @@ def _machines(
     machines = []
     for names in groups.values():
         config = runtimes[names[0]]
-        if len(names) == 1 or capabilities(config).nested_containers:
+        if len(names) == 1 or capabilities(config).compose:
             machines.append(Machine(tuple(names), config))
         elif capabilities(config).private_network:
             machines.extend(Machine((name,), runtimes[name]) for name in names)
         else:
             raise PlacementError(
                 f"nodes {names} would share a machine, but the {config.type} runtime "
-                "can neither run nested containers nor join machines on a private "
+                "can neither run Compose services nor join machines on a private "
                 "network; use a supported runtime"
             )
     return tuple(machines)
@@ -293,8 +293,9 @@ def topology_from(
         elif config.colocated:
             servers[name] = WORKSPACE
         elif not isinstance(config.runtime, SubprocessConfig):
+            # A runtime of its own is a machine of its own, as a tool VM is today.
             node = f"tools-{name}"
-            nodes[node] = NodeConfig(runtime=config.runtime.model_dump())
+            nodes[node] = NodeConfig(runtime=config.runtime.model_dump(), isolated=True)
             servers[name] = node
         elif config.url is None:
             servers[name] = HOST

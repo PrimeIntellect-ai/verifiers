@@ -1,7 +1,7 @@
 # RFC 0001: Nodes, one placement model for a rollout
 
 - **Status:** draft for discussion.
-- **Base:** #2862, the runtime plugins and capability flags.
+- **Builds on:** #2862, the runtime plugins and capability flags, and #2876, tool servers on Prime VMs of their own. Both are on main.
 - **Prototype:** this PR, `verifiers/v1/runtimes/nodes.py`. It plans from config and provisions nothing.
 
 ## Summary
@@ -47,7 +47,7 @@ Who may reach whom is declared nowhere. Each strategy derives it separately: Com
 | Backends must be reachable only through the tool server | EnterpriseOpsGym: the gyms sit on an internal network behind `tools` | A Compose service (#2872) |
 | The agent loop and its credentials must stay out of the workspace | Split execution | A nested container (#2803) |
 
-Prime refuses `expose`, on main and in #2862. So before #2876, a tool server on a Prime runtime of its own could be reached only colocated, and its runtime could take no network policy. #2876 makes that runtime a VM on the rollout's private network, under its own policy, as Mika suggested: it keeps `runtime` and adds no class. The private network is the only path between Prime machines.
+Prime refuses `expose`, so the private network is the only path between Prime machines. A tool server on a Prime runtime of its own runs as a VM on the rollout's private network, under its own policy (#2876). As Mika suggested, it keeps `runtime` and adds no class.
 
 ## Principles
 
@@ -90,11 +90,12 @@ isolated = false            # the default
 | An MCP server: a `vf.Toolset`, an external command, or a URL | `mcp_servers.<name>.on` (a task's toolset: `task.tools.on`) | `host` |
 | A service | A node's `process` | none |
 | A simulated user | `user.on` | Where it runs today |
+| Shared grading | `main`, switched to the task's `scoring.network` | Unchanged |
 | Isolated grading | A fresh verifier node, after `main` stops | Unchanged |
 
 The agent config may add nodes for its own parts, such as the harness's node in split execution. They are merged with the task's, and a name used by both is an error.
 
-A tool server that only needs a node of its own keeps writing `runtime` on its toolset config, as Mika asked. `tools.runtime = PrimeConfig(...)` is shorthand for an implicit node named after the server, with that runtime, plus `on` that node. That is what #2876 implements today.
+A tool server that only needs a node of its own keeps writing `runtime` on its toolset config, as Mika asked. `tools.runtime = PrimeConfig(...)` is shorthand for an implicit `isolated` node named after the server, with that runtime, plus `on` that node. Main does this today for a server beside a Prime workspace without Compose services.
 
 ### What verifiers derives
 
@@ -103,13 +104,13 @@ A tool server that only needs a node of its own keeps writing `runtime` on its t
    - the harness connects to every MCP server's node.
 2. **Machines.** Nodes with the same runtime type and egress policy share a machine, unless one of them is `isolated`.
    - A machine holding one node boots that node's image directly. Atlas needs no Docker.
-   - A machine holding several runs them as containers. That needs `SUPPORTS_NESTED_CONTAINERS`; without it, they get a machine each on a private network. With neither, the plan is refused.
+   - A machine holding several runs them as containers. That needs `SUPPORTS_COMPOSE`; without it, they get a machine each on a private network. With neither, the plan is refused.
 3. **How each connection is realized:**
 
    | Between | Realization | Requires |
    | --- | --- | --- |
    | The same node | Loopback | none |
-   | Nodes on one machine | A container network per set of nodes that may reach each other | Nested containers |
+   | Nodes on one machine | A container network per set of nodes that may reach each other | `SUPPORTS_COMPOSE` |
    | Machines | A private network, with one rule per connection | `SUPPORTS_PRIVATE_NETWORK` on both |
    | A node to the evaluator | The tunnel, as the model endpoint uses today | none |
    | The evaluator to a node | `expose` | `SUPPORTS_PORT_EXPOSURE` |
@@ -141,7 +142,7 @@ Each of these is a case in `tests/unit/test_nodes.py`.
 PR #2862 is the layer below: what a runtime is and what it can do. Nodes sit on top: which runtimes a rollout has and how they connect.
 
 - **Runtimes:** a node's `runtime` is a #2862 `RuntimeConfig`, custom plugins included.
-- **Capabilities:** the planner reads #2862's flags (`SUPPORTS_NESTED_CONTAINERS`, `SUPPORTS_PORT_EXPOSURE`, and network policy through `NetworkPolicyConfig`). It adds one: **`SUPPORTS_PRIVATE_NETWORK`**, with a backend method behind it:
+- **Capabilities:** the planner reads #2862's flags (`SUPPORTS_COMPOSE`, `SUPPORTS_PORT_EXPOSURE`, and network policy through `NetworkPolicyConfig`). It adds one: **`SUPPORTS_PRIVATE_NETWORK`**, with a backend method behind it:
 
   ```python
   async def private_network(
@@ -151,9 +152,9 @@ PR #2862 is the layer below: what a runtime is and what it can do. Nodes sit on 
       rule may open connections and nothing else may; return each member's hostname."""
   ```
 
-  #2876's LAN code (`runtimes/private_network.py`: create the network, set the rules and wait until they apply, then create each member with its tags) becomes Prime's implementation. A plugin can implement the method too. #2862's conformance kit gets the matching test: a declared private network runs, and an undeclared one is refused.
+  #2876's LAN code (`runtimes/private_network.py`: create the network with its rules, then boot each member into it with its tag) becomes Prime's implementation. A plugin can implement the method too. #2862's conformance suite (`tests/unit/test_runtimes.py`) gets the matching test: a declared private network runs, and an undeclared one is refused.
 - **Processes:** `exec`, #2862's one process primitive, carries a stdio transport between nodes on one machine.
-- **What #2862 removed:** local Compose and Docker network policies. That leaves packing and private networks to Prime. The local debugging runtimes run one-node topologies, and refuse multi-node ones with a message.
+- **Local runtimes:** Docker enforces a policy through its egress proxy and packs nodes through local Compose, which needs `trust_compose`. Neither Docker nor subprocess has a private network, so plans that need several machines run on Prime, and the local runtimes refuse them with a message.
 
 ## How split execution fits
 
@@ -221,16 +222,21 @@ pi already has an ASP extension, and Harbor plans terminus-slim on ASP. This wou
   - `task.toml` MCP servers become `mcp_servers` sources.
   - `environment_mode = "separate"` is unchanged.
   - Harbor can't declare a per-service egress policy. A later Harbor field or a Compose extension (`x-vf-allow`) could add one.
-- **Our three multi-node envs** (EnterpriseOpsGym, Atlas, forth-lang; all unmerged) move to nodes.
+- **Our three multi-node envs** (EnterpriseOpsGym, Atlas, forth-lang, in prime-envs) move to nodes.
 
 ## Order of work
 
-1. **#2862:** the runtime layer.
-2. **#2876:** the private network, which every multi-machine plan needs, and the model's first slice. A tool server on a Prime runtime of its own runs on a node of its own: `ToolsetConfig.runtime` is that node's runtime, with no new class. Atlas (prime-envs#999) and forth-lang (prime-envs#989) use it.
-3. **`SUPPORTS_PRIVATE_NETWORK` and `private_network()` on `PrimeBackend`,** with the conformance test.
-4. **Wire the planner into `Deployment`,** replacing the strategies. Add `on` and nodes to config, and turn the toolset fields into aliases.
-5. **Rebase the split stack (#2803 → #2831 → #2850)** as `harness_on` / `execution_on`, with nano-rlm #218's transports as the `execution` bindings.
-6. **Optional:**
+On main:
+
+- **#2862:** the runtime layer.
+- **#2876:** the private network, which every multi-machine plan needs, and the model's first slice. A tool server on a Prime runtime of its own runs on a node of its own: `ToolsetConfig.runtime` is that node's runtime, with no new class. Atlas (prime-envs#999) and forth-lang (prime-envs#989) use it.
+
+Next:
+
+1. **`SUPPORTS_PRIVATE_NETWORK` and `private_network()` on `PrimeBackend`,** with the conformance test.
+2. **Wire the planner into `Deployment`,** replacing the strategies. Add `on` and nodes to config, and turn the toolset fields into aliases.
+3. **Rebase the split stack (#2803 → #2831 → #2850)** as `harness_on` / `execution_on`, with nano-rlm #218's transports as the `execution` bindings.
+4. **Optional:**
    - an ASP transport, once a harness we want supports ASP;
    - capability-based packing beyond policy equality.
 
@@ -242,6 +248,8 @@ pi already has an ASP extension, and Harbor plans terminus-slim on ASP. This wou
 4. **Per-row nodes:** a `TaskData.nodes` field, or a taskset hook that returns them?
 5. **A packed node's image:** its own container, or the machine's when it is the only node with an image?
 6. **Sharing across rollouts:** for example one instance of Atlas's stateless servers for many rollouts. Out of scope here.
+7. **Policy on local Compose.** Docker packs nodes through local Compose, which enforces no network policy. To refuse a restricted packed plan on Docker, the planner needs that stated: a flag of its own, or policy enforcement as part of `SUPPORTS_COMPOSE`?
+8. **Exposure on Prime.** A Prime VM can publish an HTTP port to the internet through a private-network rule from `internet` to its tag and port, with no authentication. That could back `SUPPORTS_PORT_EXPOSURE` for Prime VMs, and with it a harness or tool server reached from the evaluator. Tool servers would first need to authenticate their callers.
 
 ## The prototype in this PR
 
@@ -253,4 +261,4 @@ pi already has an ASP extension, and Harbor plans terminus-slim on ASP. This wou
 - `topology_from()`, which turns today's toolset knobs and a Compose project into a topology;
 - `nodes_from_compose()`.
 
-`TopologyConfig` flattens the proposed config surface into one model: `mcp_servers` maps each server to its node. "Placing the parts" says where each field would be set. Nothing calls it; `Deployment` still uses its strategies. The tests plan every rollout above from config alone, along with the refusals. Planning Atlas on unmodified #2862 is refused, because no backend declares a private network yet. That is step 3 above.
+`TopologyConfig` flattens the proposed config surface into one model: `mcp_servers` maps each server to its node. "Placing the parts" says where each field would be set. Nothing calls it; `Deployment` still uses its strategies. The tests plan every rollout above from config alone, along with the refusals. On main, planning Atlas is refused, because no backend declares a private network yet. That is the next step above.
