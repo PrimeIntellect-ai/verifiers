@@ -319,6 +319,31 @@ async def agent_round(monkeypatch, commands: list[str]) -> list[dict]:
     return messages
 
 
+@pytest.mark.parametrize("compacting", [False, True])
+@pytest.mark.parametrize("with_tool", [False, True])
+async def test_terminal_length_is_not_a_completed_answer_or_tool(compacting, with_tool):
+    completion = tool_call_completion(
+        "cut", "touch should-not-run" if with_tool else None
+    )
+    completion.choices[0].finish_reason = "length"
+    completion.choices[0].message.content = None
+
+    class Inbox:
+        async def get(self, path, cast_to):
+            return {"messages": []}
+
+    class Exhausted:
+        client = Inbox()
+        enabled = compacting
+        threshold = 100 if compacting else None
+
+        async def complete(self, messages):
+            return completion, messages
+
+    with pytest.raises(RuntimeError, match="finish_reason=length"):
+        await core.run_chat_loop(SimpleNamespace(), Exhausted(), [], {}, {}, None)
+
+
 @pytest.mark.skipif(not os.path.isdir("/dev/shm"), reason="no memory-backed fs")
 async def test_a_full_disk_still_runs_the_agents_commands(tmp_path, monkeypatch):
     victim = tmp_path / "big.log"

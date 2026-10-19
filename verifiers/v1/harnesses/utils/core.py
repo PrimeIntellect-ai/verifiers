@@ -459,6 +459,11 @@ async def run_chat_loop(
             if compacting or not is_context_overflow(error):
                 raise
             return
+        # Compaction may recover a length-finished response internally. A length
+        # still returned here is truncated output, never a completed answer (or
+        # a safe tool call), including a reasoning-only response with no text.
+        if completion.choices[0].finish_reason == "length":
+            raise RuntimeError("model output was truncated (finish_reason=length)")
         message = completion.choices[0].message
         messages.append(message.model_dump(exclude_none=True))
         if not message.tool_calls:
