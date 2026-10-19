@@ -1,16 +1,20 @@
 """Scoring's declared network: how agent and task policies combine, how it combines with
-the runtime's own rules, and what the runtime asks its provider for."""
+the runtime's own rules (in `grade_submission`, the agent's), and what the runtime asks
+its provider for."""
 
 from typing import cast
 
 import pytest
 
 import verifiers.v1 as vf
+from verifiers.v1 import grading
 from verifiers.v1.configs.scoring import resolve_scoring
 from verifiers.v1.errors import SandboxError, TaskError
-from verifiers.v1.grading import scoring_network
+from verifiers.v1.grading import grade_submission, scoring_network
+from verifiers.v1.runtimes import deployment
 from verifiers.v1.runtimes.base import RuntimeBackend
 from verifiers.v1.runtimes.runtime import Runtime
+from verifiers.v1.utils.compile import resolve_runtime_config
 
 PYPI = vf.NetworkPolicyConfig(allow=["pypi.org"])
 
@@ -67,3 +71,43 @@ async def test_set_network_cannot_restrict_a_runtime_that_started_open():
         await runtime.set_network(PYPI)
     await runtime.set_network(vf.NetworkPolicyConfig())
     assert backend.calls == [(None, None)]
+
+
+async def test_grade_submission_widens_from_the_agents_runtime(monkeypatch):
+    graded = []
+
+    async def grade_task(task, trace, config, *args, **kwargs):
+        graded.append(config)
+
+    class Deployment:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def start(self):
+            pass
+
+        async def close(self):
+            pass
+
+    monkeypatch.setattr(grading, "grade_task", grade_task)
+    monkeypatch.setattr(deployment, "Deployment", Deployment)
+    task = vf.Task(
+        vf.TaskData(
+            prompt="",
+            image="python:3.11-slim",
+            network=vf.NetworkPolicyConfig(allow=[]),
+            scoring=vf.ScoringConfig(mode="isolated", network=PYPI),
+        )
+    )
+    agent_runtime = vf.DockerConfig()
+    # The solver's resolved config carries the task's framework-only policy.
+    solver = Runtime(
+        cast(RuntimeBackend, Backend(resolve_runtime_config(agent_runtime, task)))
+    )
+    trace = vf.Trace(
+        agent=vf.AgentInfo(config=vf.AgentConfig(runtime=agent_runtime)),
+        task=vf.TraceTask(type="Task", data=task.data),
+    )
+    await grade_submission(task, trace, solver)
+    [config] = graded
+    assert config.allow == ["pypi.org"]

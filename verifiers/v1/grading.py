@@ -84,7 +84,7 @@ def scoring_network(
     """`network` as the task's policy while scoring, combined with the runtime's own
     rules the way `TaskData.network` is."""
     if isinstance(base, NetworkPolicyConfig):
-        return base.with_task_network_policy(network.allow, network.block)
+        return base.with_task_network_policy(network)
     if network.network_restricted:
         raise TaskError(
             f"scoring requires a network policy, but the {base.type} runtime does not "
@@ -206,6 +206,9 @@ async def grade_submission(
 
     The caller finalizes the submission and collects artifacts into the trace first.
     Uses the task's grader, scoring policy, and timeouts, including retry behavior.
+    As in a rollout, the verifier derives from the agent's runtime config on the trace
+    (`trace.agent.config.runtime`), not from the solver's resolved one, so the solver
+    task's requirements, such as its network policy, don't carry over.
     """
     from verifiers.v1.runtimes.deployment import Deployment
 
@@ -213,7 +216,7 @@ async def grade_submission(
     if policy.mode != "isolated":
         raise ValueError("grade_submission requires isolated scoring")
     grader = task.grading_task(runtime, scoring=policy)
-    config = verifier_runtime(grader, runtime, runtime.config, policy)
+    config = verifier_runtime(grader, runtime, trace.agent.config.runtime, policy)
     deployment = Deployment(
         runtime.backend, borrowed_runtime=runtime, env=dict(runtime.env)
     )

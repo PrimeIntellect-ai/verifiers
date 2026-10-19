@@ -1,7 +1,7 @@
 """Scoring runs under the network its policy declares: a task with framework-only egress
 probes two public hosts from its scoring hook, in the workspace (shared) and in a fresh
-verifier (isolated), and a Harbor task's trusted grading lifts the policy unless scoring
-declares its network."""
+verifier (isolated), in rollouts and in vf-validate, and a Harbor task's trusted grading
+lifts the policy unless scoring declares its network."""
 
 import json
 import shutil
@@ -9,7 +9,9 @@ import shutil
 import pytest
 
 import verifiers.v1 as vf
+from verifiers.v1.cli.validate import _run_check
 from verifiers.v1.configs.agent import TimeoutConfig
+from verifiers.v1.configs.cli.validate import ValidateConfig
 from verifiers.v1.tasksets.harbor.taskset import HarborData, HarborTask
 
 pytestmark = [
@@ -83,6 +85,35 @@ async def test_scoring_network(mode, network, reachable):
     trace = await run(task)
     assert trace.ok, trace.errors
     assert trace.info["reachable"] == reachable
+
+
+class ReachTask(vf.Task):
+    @vf.reward(weight=1.0)
+    async def reach(self, trace, runtime) -> float:
+        result = await runtime.run(["python", "-c", PROBE], {})
+        return float(json.loads(result.stdout) == ["example.com"])
+
+
+@pytest.mark.parametrize("mode", ["shared", "isolated"])
+async def test_validate_scores_under_the_declared_network(mode):
+    task = ReachTask(
+        vf.TaskData(
+            prompt="Do nothing",
+            image=IMAGE,
+            network=vf.NetworkPolicyConfig(allow=[]),
+            scoring=vf.ScoringConfig(
+                mode=mode,
+                network=vf.NetworkPolicyConfig(allow=["example.com"]),
+                retries=vf.RetryConfig(max_retries=0),
+            ),
+        )
+    )
+    row = await _run_check(task, ValidateConfig(runtime=vf.DockerConfig()), "noop")
+    # vf-validate never applies the agent phase's policy, so the shared workspace is open
+    # until scoring declares a network. Scoring that reaches only example.com passes the
+    # untouched task, which the noop check reports as invalid.
+    assert row["error"] is None
+    assert row["valid"] is False
 
 
 @pytest.mark.parametrize(

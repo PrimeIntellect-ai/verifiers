@@ -48,9 +48,7 @@ def resolve_runtime_config(
                 f"task {task.data.idx!r} requires a network policy, but the "
                 f"{config.type} runtime does not support framework-aware policies"
             )
-        config = config.with_task_network_policy(
-            task.data.network.allow, task.data.network.block
-        )
+        config = config.with_task_network_policy(task.data.network)
     for resource, value in task.data.resources.model_dump(exclude_none=True).items():
         spec = type(config).model_fields.get(resource)
         if spec is None:

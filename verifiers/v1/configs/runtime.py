@@ -89,10 +89,12 @@ class NetworkPolicyConfig(BaseConfig):
             for rule in self.block
         ) and any(network_rule_matches(rule, scheme, host, port) for rule in self.allow)
 
-    def with_task_network_policy(self, allow: list[str], block: list[str]) -> Self:
+    def with_task_network_policy(self, network: "NetworkPolicyConfig") -> Self:
         values = self.model_dump()
         # Intersection must not erase syntax the runtime cannot enforce.
-        task = type(self).model_validate({**values, "allow": allow, "block": block})
+        task = type(self).model_validate(
+            {**values, "allow": network.allow, "block": network.block}
+        )
         allow, block = task.allow, task.block
         if "*" in allow:
             allow = self.allow
