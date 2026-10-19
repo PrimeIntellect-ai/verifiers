@@ -13,7 +13,7 @@ A model in its harness solving a task produces a **rollout**. Each rollout has a
 - The `prime` runtime runs rollouts in remote Prime sandboxes. It is meant for production workloads like training or high-concurrency evaluation.
 - A `custom` runtime loads another provider from your own package, without upstreaming it. See [runtime plugins](runtimes.md#runtime-plugins).
 
-The `subprocess` and `docker` runtimes are for quick local testing without billing, and support fewer features. They refuse tasks that declare a network policy or need nested containers, such as Compose services. On Linux, Docker containers share the host network. On other platforms, they reach host services through `host.docker.internal`.
+The `subprocess` and `docker` runtimes are for quick local testing without billing, and support fewer features. They refuse tasks that need nested containers, such as Compose services, and `subprocess` also refuses tasks that declare a network policy. On Linux, an unrestricted Docker container shares the host network. On other platforms, Docker containers reach host services through `host.docker.internal`. A Docker container with a network policy runs on the bridge network, and its traffic goes through a verifiers proxy that enforces the policy.
 
 The harness runs inside the rollout runtime to interact with the task. Rather than calling the model provider directly, the harness sends model traffic through verifiers' **interception server** over a local connection or [Prime Tunnel](https://docs.primeintellect.ai/sandboxes/tunnel).
 

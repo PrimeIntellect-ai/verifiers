@@ -1,11 +1,19 @@
-"""Local Docker runtime. On Linux the container shares the host network, so host
-services and container ports are reachable on loopback. Elsewhere Docker runs in a
-VM: the container reaches host loopback through `host.docker.internal` and publishes
-one service port. Docker enforces no network policy. The same backend also execs into
-Compose services on a provider VM through that VM's runtime."""
+"""Local Docker runtime. On Linux an unrestricted container shares the host network,
+so host services and container ports are reachable on loopback. Elsewhere Docker runs
+in a VM: the container reaches host loopback through `host.docker.internal` and
+publishes one service port.
+
+A container with a network policy runs on the bridge network instead. Its egress goes
+through an in-process proxy that enforces the policy by host name, and its host
+callbacks go through the same proxy. Before the agent starts, an iptables rule in the
+container's network namespace leaves the proxy as the only way out.
+
+The same backend also execs into Compose services on a provider VM through that VM's
+runtime."""
 
 from __future__ import annotations
 
+import array
 import asyncio
 import contextlib
 import json
@@ -14,17 +22,17 @@ import os
 import re
 import shlex
 import signal
+import socket
 import subprocess
 import sys
+import tempfile
 import uuid
 from collections.abc import AsyncIterator
-from ipaddress import ip_address
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, ClassVar, Literal
 from urllib.parse import urlsplit
 
-from pydantic_config import BaseConfig
-
+from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes.backends.subprocess import SubprocessProcess
 from verifiers.v1.runtimes.base import (
@@ -35,6 +43,7 @@ from verifiers.v1.runtimes.base import (
     RuntimeProcess,
     parse_gpu,
 )
+from verifiers.v1.runtimes.egress import EgressProxy, NetworkPolicy, is_loopback_host
 from verifiers.v1.runtimes.runtime import Runtime
 from verifiers.v1.utils.aio import run_shielded
 from verifiers.v1.utils.scope import run_scope
@@ -44,11 +53,21 @@ logger = logging.getLogger(__name__)
 if TYPE_CHECKING:
     from verifiers.v1.runtimes.backends.prime import PrimeConfig
 
-_HOST_NETWORK = sys.platform == "linux"
+_LINUX = sys.platform == "linux"
 _HOST_ALIAS = "host.docker.internal"
+_NETWORK_IMAGE = "localhost/verifiers-network:1"
+_PASS_LISTENER = r"""
+import array, socket
+control = socket.socket(socket.AF_UNIX)
+control.connect("/run/vf/control.sock")
+listener = socket.socket()
+listener.bind(("127.0.0.1", 0))
+listener.listen()
+control.sendmsg([b"listener"], [(socket.SOL_SOCKET, socket.SCM_RIGHTS, array.array("i", [listener.fileno()]))])
+"""
 
 
-class DockerConfig(BaseConfig):
+class DockerConfig(NetworkPolicyConfig):
     type: Literal["docker"] = "docker"
     image: str = "python:3.11-slim"
     workdir: str | None = None
@@ -68,15 +87,6 @@ class DockerConfig(BaseConfig):
 
 class DockerRuntimeInfo(DockerConfig, BaseRuntimeInfo):
     pass
-
-
-def _is_loopback(host: str) -> bool:
-    if host == "localhost" or host.endswith(".localhost"):
-        return True
-    try:
-        return ip_address(host).is_loopback
-    except ValueError:
-        return False
 
 
 async def _communicate(
@@ -242,6 +252,8 @@ class DockerBackend(RuntimeBackend):
         self._service_url: str | None = None
         self._image_env: dict[str, str] = {}
         self._stopped = False
+        self._proxy: EgressProxy | None = None
+        self._cut = False
 
     @classmethod
     @contextlib.asynccontextmanager
@@ -278,10 +290,20 @@ class DockerBackend(RuntimeBackend):
             await backend.stop()
 
     @property
+    def _restricted(self) -> bool:
+        return (
+            self._host_backend is None
+            and isinstance(self.config, NetworkPolicyConfig)
+            and self.config.network_restricted
+        )
+
+    @property
+    def _host_network(self) -> bool:
+        return self._host_backend is None and _LINUX and not self._restricted
+
+    @property
     def published_port(self) -> int | None:
-        if self._host_backend is None and _HOST_NETWORK:
-            return None
-        return SERVICE_PORT
+        return None if self._host_network else SERVICE_PORT
 
     async def start(self) -> None:
         # Compose keeps its authored workdir; only standalone containers default to /app.
@@ -307,13 +329,27 @@ class DockerBackend(RuntimeBackend):
             raise RuntimeError(
                 f"docker runtime selected but the engine is not reachable: {detail}{hint}"
             )
+        if self._restricted:
+            await _ensure_network_image()
         # Engine names are global; cleanup must never target a caller's existing container.
         self._container = f"vf-{uuid.uuid4().hex}"
-        if _HOST_NETWORK:
+        if self._host_network:
             options = ["--network", "host"]
         else:
-            options = ["--publish", f"127.0.0.1::{SERVICE_PORT}"]
-            options += ["--add-host", f"{_HOST_ALIAS}:host-gateway"]
+            options = ["--network", "bridge", "--publish", f"127.0.0.1::{SERVICE_PORT}"]
+            if not _LINUX:
+                options += ["--add-host", f"{_HOST_ALIAS}:host-gateway"]
+        if self._restricted:
+            options += [
+                "--cap-drop",
+                "NET_ADMIN",
+                "--cap-drop",
+                "NET_RAW",
+                "--security-opt",
+                "no-new-privileges",
+                "--sysctl",
+                "net.ipv6.conf.all.disable_ipv6=1",
+            ]
         if self.config.cpu is not None:
             options += ["--cpus", str(self.config.cpu)]
         if self.config.memory is not None:
@@ -393,7 +429,7 @@ class DockerBackend(RuntimeBackend):
         )
         if made.exit_code != 0:
             raise SandboxError(f"docker workdir setup failed: {made.stderr.strip()}")
-        if not _HOST_NETWORK:
+        if not self._host_network:
             published = await cli(
                 "docker", "port", self._container, f"{SERVICE_PORT}/tcp"
             )
@@ -402,6 +438,15 @@ class DockerBackend(RuntimeBackend):
                 detail = (published.stderr or published.stdout).strip()
                 raise SandboxError(f"docker did not publish the service port: {detail}")
             self._service_url = f"http://127.0.0.1:{host_port}"
+        if self._restricted:
+            # Setup egress stays open until prepare_execution applies the policy.
+            self._proxy = EgressProxy(
+                NetworkPolicy(NetworkPolicyConfig(), [], allow_non_global=True)
+            )
+            if _LINUX:
+                await self._proxy.start(listener=await self._container_listener())
+            else:
+                await self._proxy.start("127.0.0.1")
         logger.info(
             "docker: started container %s (image=%s)",
             self._container,
@@ -412,8 +457,10 @@ class DockerBackend(RuntimeBackend):
         if self._host_backend is not None:
             return self._host_backend.host_url(url)
         parts = urlsplit(url)
-        if _HOST_NETWORK or not _is_loopback((parts.hostname or "").lower()):
+        if self._host_network or not is_loopback_host(parts.hostname or ""):
             return url
+        if self._proxy is not None:
+            return self._proxy.callback_url(url, self._proxy_host)
         userinfo, at, _ = parts.netloc.rpartition("@")
         port = f":{parts.port}" if parts.port else ""
         return parts._replace(netloc=f"{userinfo}{at}{_HOST_ALIAS}{port}").geturl()
@@ -421,20 +468,185 @@ class DockerBackend(RuntimeBackend):
     async def expose(self, port: int) -> str:
         if self._host_backend is not None:
             return await self._host_backend.expose(port)
-        if _HOST_NETWORK:
+        if self._host_network:
             return f"http://127.0.0.1:{port}"
         if port != SERVICE_PORT or self._service_url is None:
             raise SandboxError(f"docker publishes only port {SERVICE_PORT}, not {port}")
         return self._service_url
 
+    @property
+    def _proxy_host(self) -> str:
+        """Where the container reaches the proxy: on Linux its listener lives in the
+        container's own network namespace."""
+        return "127.0.0.1" if _LINUX else _HOST_ALIAS
+
+    async def _container_listener(self) -> socket.socket:
+        """Create the proxy listener inside the container netns, serviced here."""
+        # Reuse the task image offline; only images without Python need the shared helper.
+        assert self._container is not None
+        python = await cli(
+            "docker",
+            "exec",
+            self._container,
+            "python3",
+            "-I",
+            "-S",
+            "-c",
+            "import array, socket",
+        )
+        image = (
+            self.config.image
+            if python.exit_code == 0
+            else "docker.io/library/python:3.11-alpine"
+        )
+        with (
+            tempfile.TemporaryDirectory(prefix="vf-proxy-") as directory,
+            socket.socket(socket.AF_UNIX) as control,
+        ):
+            control.bind(f"{directory}/control.sock")
+            control.listen(1)
+            helper = await cli(
+                "docker",
+                "run",
+                "--label",
+                f"verifiers.run={run_scope()}",
+                "--rm",
+                "--user",
+                "0",
+                "--network",
+                f"container:{self._container}",
+                "--cap-drop",
+                "ALL",
+                "--cap-add",
+                "DAC_OVERRIDE",
+                "--security-opt",
+                "no-new-privileges",
+                "--volume",
+                f"{directory}:/run/vf:Z",
+                "--entrypoint",
+                "python3",
+                image,
+                "-I",
+                "-S",
+                "-c",
+                _PASS_LISTENER,
+            )
+            if helper.exit_code != 0:
+                raise SandboxError(
+                    f"docker proxy listener failed: {helper.stderr.strip()}"
+                )
+            connection, _ = control.accept()
+            with connection:
+                _, ancillary, *_ = connection.recvmsg(
+                    64, socket.CMSG_SPACE(array.array("i").itemsize)
+                )
+        descriptors = array.array("i")
+        descriptors.frombytes(ancillary[0][2][: descriptors.itemsize])
+        return socket.socket(fileno=descriptors[0])
+
     async def prepare_execution(self, routes: list[str] | None) -> None:
+        """Allow the declared framework routes, then leave the proxy as the only way out."""
         if self._host_backend is not None:
             await self._host_backend.prepare_execution(routes)
+            return
+        if self._proxy is None:
+            return
+        if routes is None:
+            self._proxy.policy = NetworkPolicy(
+                NetworkPolicyConfig(), [], allow_non_global=True
+            )
+            return
+        framework = [
+            urlsplit(url)._replace(path="", query="", fragment="").geturl()
+            for url in routes
+        ]
+        assert isinstance(self.config, NetworkPolicyConfig)
+        self._proxy.policy = NetworkPolicy(self.config, framework)
+        if self._cut:
+            return
+        # Off Linux the host proxy has a real address; allow only its listening port.
+        proxy_address = ""
+        if not _LINUX:
+            found = await self.bind().run(
+                [
+                    "sh",
+                    "-c",
+                    f"awk '$2 == \"{_HOST_ALIAS}\" {{ print $1; exit }}' /etc/hosts",
+                ],
+                {},
+            )
+            proxy_address = found.stdout.strip()
+            if found.exit_code != 0 or not proxy_address:
+                raise SandboxError(
+                    f"could not resolve {_HOST_ALIAS} in docker: {found.stderr.strip()}"
+                )
+        script = (
+            "set -eu; HOST=$1; PORT=$2; "
+            "GW=$(ip -4 route show default | awk '/^default via/{print $3; exit}'); "
+            # Docker's embedded DNS otherwise forwards requests outside the namespace.
+            "ip route add blackhole 127.0.0.11/32 table local; "
+            # Published loopback traffic comes from the gateway. Peers must not send
+            # requests or get replies.
+            "iptables -F INPUT; "
+            "iptables -A INPUT -m addrtype --src-type LOCAL -j ACCEPT; "
+            'iptables -A INPUT -s "$GW" -j ACCEPT; '
+            "iptables -A INPUT -m conntrack --ctstate ESTABLISHED,RELATED "
+            "--ctdir REPLY -j ACCEPT; iptables -A INPUT -j REJECT; "
+            "iptables -F OUTPUT; iptables -A OUTPUT -o lo -j ACCEPT; "
+            "iptables -A OUTPUT -m conntrack --ctstate ESTABLISHED,RELATED "
+            '--ctdir REPLY -d "$GW" -j ACCEPT; '
+            'if [ -n "$HOST" ]; then iptables -A OUTPUT -d "$HOST" '
+            '-p tcp --dport "$PORT" -j ACCEPT; fi; '
+            "iptables -A OUTPUT -j REJECT"
+        )
+        assert self._container is not None
+        cut = await cli(
+            "docker",
+            "run",
+            "--label",
+            f"verifiers.run={run_scope()}",
+            "--rm",
+            "--network",
+            f"container:{self._container}",
+            "--cap-drop",
+            "ALL",
+            "--cap-add",
+            "NET_ADMIN",
+            _NETWORK_IMAGE,
+            "sh",
+            "-c",
+            script,
+            "cut",
+            proxy_address,
+            str(self._proxy.port),
+        )
+        if cut.exit_code != 0:
+            raise SandboxError(f"docker network cut failed: {cut.stderr.strip()}")
+        self._cut = True
+
+    async def teardown(self) -> None:
+        if self._proxy is not None:
+            await self._proxy.stop()
+        await super().teardown()
 
     def _exec_argv(
         self, env: dict[str, str], *, stdin: bool = False, user: str | None = None
     ) -> list[str]:
         assert self._container is not None
+        if self._proxy is not None:
+            # Every process goes through the proxy, so one started during setup keeps
+            # its allowed egress after the cut.
+            proxy = f"http://verifiers:{self._proxy.token}@{self._proxy_host}:{self._proxy.port}"
+            exclusions = f"localhost,127.0.0.1,{_HOST_ALIAS}"
+            env = {
+                **env,
+                **dict.fromkeys(
+                    ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"), proxy
+                ),
+                "NO_PROXY": exclusions,
+                "no_proxy": exclusions,
+            }
+            return self._exec_command(env, stdin=stdin, user=user)
         # Callback URLs must bypass any proxy the image or task configures.
         values = {**self._image_env, **env}
         exclusions = dict.fromkeys(
@@ -449,6 +661,12 @@ class DockerBackend(RuntimeBackend):
             "NO_PROXY": ",".join(exclusions),
             "no_proxy": ",".join(exclusions),
         }
+        return self._exec_command(env, stdin=stdin, user=user)
+
+    def _exec_command(
+        self, env: dict[str, str], *, stdin: bool, user: str | None
+    ) -> list[str]:
+        assert self._container is not None
         return [
             "docker",
             "exec",
@@ -605,3 +823,22 @@ class DockerBackend(RuntimeBackend):
             raise SandboxError(
                 f"write {path!r}: {stderr.decode(errors='replace').strip()}"
             )
+
+
+async def _ensure_network_image() -> None:
+    """Cache the iptables image, so the cut never needs package mirrors."""
+    if (await cli("docker", "image", "inspect", _NETWORK_IMAGE)).exit_code == 0:
+        return
+    with tempfile.TemporaryDirectory(prefix="vf-network-") as directory:
+        built = await cli(
+            "docker",
+            "build",
+            "--tag",
+            _NETWORK_IMAGE,
+            "--file",
+            "-",
+            directory,
+            input=b"FROM docker.io/library/alpine:3.22\nRUN apk add --no-cache iptables\n",
+        )
+    if built.exit_code != 0:
+        raise SandboxError(f"docker network image build failed: {built.stderr.strip()}")

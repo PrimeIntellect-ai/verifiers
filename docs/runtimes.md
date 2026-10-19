@@ -16,7 +16,7 @@ Each runtime declares its features through its backend's class attributes, and n
 | Feature | Declared by | Built-in runtimes |
 | --- | --- | --- |
 | Task image, container-only harnesses, isolated scoring | `SUPPORTS_TASK_IMAGES` | `docker`, `prime` |
-| Task network policy | config inherits `NetworkPolicyConfig` | `prime` |
+| Task network policy | config inherits `NetworkPolicyConfig` | `docker`, `prime` |
 | Task `agent_user` | `SUPPORTS_USER_SWITCHING` | `docker`, `prime` |
 | Tool server in its own runtime | `SUPPORTS_PORT_EXPOSURE` | `subprocess`, `docker` |
 | Nested containers, as Compose services need | `SUPPORTS_NESTED_CONTAINERS` | `prime` |

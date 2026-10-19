@@ -56,7 +56,7 @@ SUPPORTED = {
     "user_switching": {"docker", "prime"},
     "port_exposure": {"subprocess", "docker"},
     "nested_containers": {"prime"},
-    "network_policies": {"prime"},
+    "network_policies": {"docker", "prime"},
 }
 PYTHON = ["sh", "-c", 'exec "$(command -v python3 || command -v python)" "$@"', "py"]
 IMAGE = "python:3.12-alpine"
@@ -128,13 +128,14 @@ def task(**data) -> vf.Task:
 
 @pytest.mark.parametrize("name", ["subprocess", "docker", "prime"])
 def test_built_in_runtime_declares_its_features(name) -> None:
-    cls = backend_cls(TypeAdapter(RuntimeConfig).validate_python({"type": name}))
+    config = TypeAdapter(RuntimeConfig).validate_python({"type": name})
+    cls = backend_cls(config)
     declared = {
         "task_images": cls.SUPPORTS_TASK_IMAGES,
         "user_switching": cls.SUPPORTS_USER_SWITCHING,
         "port_exposure": cls.SUPPORTS_PORT_EXPOSURE,
         "nested_containers": cls.SUPPORTS_NESTED_CONTAINERS,
-        "network_policies": name == "prime",
+        "network_policies": isinstance(config, NetworkPolicyConfig),
     }
     assert declared == {f: name in runtimes for f, runtimes in SUPPORTED.items()}
 
