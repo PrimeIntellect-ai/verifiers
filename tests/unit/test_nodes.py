@@ -339,10 +339,18 @@ def test_declared_nodes_on_the_workspace_s_machine_become_a_compose_project():
     project = compose_project(topology, plan(topology, OFFLINE))
     services, networks = project["services"], project["networks"]
     # A network of its own for egress, and one per connection, shared by its two ends.
-    assert set(services["main"]["networks"]) == {"vf-main", "vf-main-db"}
-    assert set(services["db"]["networks"]) == {"vf-db", "vf-main-db", "vf-db-cache"}
-    assert set(services["cache"]["networks"]) == {"vf-cache", "vf-db-cache"}
-    assert networks["vf-main"] == {} and networks["vf-db-cache"] == {"internal": True}
+    links = {
+        frozenset(n for n, s in services.items() if link in s["networks"])
+        for link in networks
+        if link.startswith("vf-link-")
+    }
+    assert links == {frozenset({"main", "db"}), frozenset({"db", "cache"})}
+    for name, service in services.items():
+        assert service["networks"][0] == f"vf-egress-{name}"
+        assert networks[f"vf-egress-{name}"] == {}
+    assert all(
+        networks[link] == {"internal": True} for link in networks if "link" in link
+    )
     assert services["db"]["image"] == "postgres" and "command" not in services["db"]
     assert services["db"]["environment"] == ["POSTGRES_PASSWORD=pw", "PGDATA"]
     assert services["db"]["healthcheck"]["test"] == ["CMD", "pg_isready"]
@@ -351,3 +359,17 @@ def test_declared_nodes_on_the_workspace_s_machine_become_a_compose_project():
     with pytest.raises(PlacementError, match="names Compose accepts"):
         named = TopologyConfig(nodes={"DB!": NodeConfig()})
         compose_project(named, plan(named, OFFLINE))
+
+
+def test_egress_networks_and_connection_networks_never_share_a_name():
+    # `main-db`'s egress network must not be the main -> db connection's network.
+    nodes = {"db": NodeConfig(), "main-db": NodeConfig()}
+    topology = TopologyConfig(nodes=nodes)
+    networks = compose_project(topology, plan(topology, OFFLINE))["networks"]
+    assert len(networks) == 5  # three egress networks, two connections
+
+
+def test_a_renamed_workspace_service_cannot_leave_another_named_main():
+    project = {"services": {"app": {}, "main": {"image": "other"}}}
+    with pytest.raises(ValueError, match="no other service can be named 'main'"):
+        nodes_from_compose(project, workspace="app")

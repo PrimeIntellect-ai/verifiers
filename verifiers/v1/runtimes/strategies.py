@@ -11,6 +11,7 @@ from functools import partial
 from pathlib import Path
 from typing import Any
 
+from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes import Runtime, RuntimeConfig
 from verifiers.v1.runtimes.compose import ComposeSpec, compose_services
 from verifiers.v1.runtimes.deployment import _DeploymentStrategy
@@ -113,12 +114,15 @@ class _PrivateNetworkDeployment(_DeploymentStrategy):
         d.hosts = {name: backend.network_host for name, backend in machines.items()}
         d.execution_backend = d.harness_backend = d.backend
         self._service_backends = machines
-        await asyncio.gather(
-            *(
-                start_process(machines[name].bind(), process)
-                for name, process in self._processes.items()
-            )
-        )
+        try:
+            # One process that fails cancels the others' readiness waits.
+            async with asyncio.TaskGroup() as group:
+                for name, process in self._processes.items():
+                    group.create_task(
+                        start_process(machines[name].bind(), process, name)
+                    )
+        except ExceptionGroup as failed:
+            raise failed.exceptions[0] from None
 
     async def prepare_execution(self, d, routes, state_route=None):
         # Each machine enforces its own policy. A tool server's machine keeps only its
@@ -156,13 +160,19 @@ class _PrivateNetworkDeployment(_DeploymentStrategy):
                 logger.warning("%s teardown failed before grading", what, exc_info=True)
 
 
-async def start_process(runtime: Runtime, process: ProcessConfig) -> None:
-    """Start a node's process on its machine and wait until its readiness check
-    passes."""
+PROCESS_LOG = "vf-process.log"
+"""A node's process output, in its machine's working directory."""
+
+
+async def start_process(runtime: Runtime, process: ProcessConfig, name: str) -> None:
+    """Start a node's process on its machine and wait, within its readiness timeout,
+    until its readiness check passes. The check runs as the process does."""
     assert process.command is not None
-    argv = process.command
-    if process.workdir is not None:
-        argv = [
+
+    def as_process(argv: list[str]) -> list[str]:
+        if process.workdir is None:
+            return argv
+        return [
             "sh",
             "-c",
             'cd "$1" && shift && exec "$@"',
@@ -170,10 +180,23 @@ async def start_process(runtime: Runtime, process: ProcessConfig) -> None:
             process.workdir,
             *argv,
         ]
-    await runtime.run_background(argv, dict(process.environment), "vf-process.log")
-    if process.readiness is not None:
-        while (await runtime.run(process.readiness, {})).exit_code:
-            await asyncio.sleep(1)
+
+    environment = dict(process.environment)
+    await runtime.run_background(as_process(process.command), environment, PROCESS_LOG)
+    if process.readiness is None:
+        return
+    try:
+        async with asyncio.timeout(process.readiness_timeout):
+            while (
+                await runtime.run(as_process(process.readiness), environment)
+            ).exit_code:
+                await asyncio.sleep(1)
+    except TimeoutError:
+        log = await runtime.run(["sh", "-c", f"tail -c 2000 {PROCESS_LOG}"], {})
+        raise SandboxError(
+            f"node {name!r}'s process was not ready within "
+            f"{process.readiness_timeout:g}s; its output ends: {log.stdout.strip()!r}"
+        ) from None
 
 
 def _deployment_strategy(config, backend, spec, plan=None, topology=None):

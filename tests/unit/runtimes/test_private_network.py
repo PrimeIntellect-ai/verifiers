@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 import verifiers.v1 as vf
-from verifiers.v1.errors import ToolsetError
+from verifiers.v1.errors import SandboxError, ToolsetError
 from verifiers.v1.mcp import launch
 from verifiers.v1.runtimes import (
     DockerBackend,
@@ -350,19 +350,34 @@ def test_a_node_s_process_starts_in_its_workdir_and_waits_until_ready():
             calls.append(("start", argv, env))
 
         async def run(self, argv, env):
-            calls.append(("check", argv))
+            calls.append(("check", argv, env))
             return SimpleNamespace(exit_code=0 if len(calls) == 3 else 1)
 
     process = ProcessConfig(
         command=["serve"], environment={"A": "1"}, workdir="/srv", readiness=["ready"]
     )
-    asyncio.run(start_process(Machine(), process))
+    asyncio.run(start_process(Machine(), process, "web"))
+    in_workdir = ["sh", "-c", 'cd "$1" && shift && exec "$@"', "sh", "/srv"]
+    # The readiness check runs as the process does: in its workdir, with its env.
     assert calls == [
-        (
-            "start",
-            ["sh", "-c", 'cd "$1" && shift && exec "$@"', "sh", "/srv", "serve"],
-            {"A": "1"},
-        ),
-        ("check", ["ready"]),
-        ("check", ["ready"]),
+        ("start", [*in_workdir, "serve"], {"A": "1"}),
+        ("check", [*in_workdir, "ready"], {"A": "1"}),
+        ("check", [*in_workdir, "ready"], {"A": "1"}),
     ]
+
+
+def test_a_node_s_process_that_never_gets_ready_fails_with_its_output():
+    class Machine:
+        async def run_background(self, argv, env, log):
+            pass
+
+        async def run(self, argv, env):
+            if argv[0] == "ready":
+                return SimpleNamespace(exit_code=1, stdout="")
+            return SimpleNamespace(exit_code=0, stdout="port 8000 in use\n")
+
+    process = ProcessConfig(
+        command=["serve"], readiness=["ready"], readiness_timeout=0.1
+    )
+    with pytest.raises(SandboxError, match="'web'.*within 0.1s.*port 8000 in use"):
+        asyncio.run(start_process(Machine(), process, "web"))

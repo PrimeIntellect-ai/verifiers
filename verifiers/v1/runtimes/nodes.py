@@ -53,7 +53,10 @@ class ProcessConfig(BaseConfig):
     from its own."""
     workdir: str | None = None
     readiness: list[str] | None = None
-    """Exits 0 once the process serves."""
+    """Exits 0 once the process serves. Runs as the process does: in its `workdir`,
+    with its `environment`."""
+    readiness_timeout: float = 600
+    """Seconds the readiness check may take to pass before the rollout fails."""
 
 
 class NodeConfig(BaseConfig):
@@ -401,22 +404,22 @@ def task_topology(
 def compose_project(topology: TopologyConfig, result: Plan) -> dict[str, Any]:
     """A Compose project for the declared nodes that share the workspace's machine.
 
-    Each service gets a network of its own for egress, and each connection between two
-    of them a network of those two. Container networks are symmetric: a target can
-    open connections to its source too, as on any Compose network."""
+    Each service gets a network of its own for egress (`vf-egress-<node>`), and each
+    connection between two of them a network of those two (`vf-link-<n>`). Container
+    networks are symmetric: a target can open connections to its source too, as on any
+    Compose network."""
     machine = result.machine(WORKSPACE)
     assert machine is not None
     names = [name for name in machine.nodes if name != WORKSPACE]
     if invalid := [n for n in names if not re.fullmatch(r"[a-z0-9][a-z0-9_.-]*", n)]:
         raise PlacementError(f"nodes {invalid} need names Compose accepts as services")
     services: dict[str, dict[str, Any]] = {
-        name: {"networks": [f"vf-{name}"]} for name in [WORKSPACE, *names]
+        name: {"networks": [f"vf-egress-{name}"]} for name in [WORKSPACE, *names]
     }
-    networks: dict[str, dict[str, Any]] = {f"vf-{name}": {} for name in services}
-    for connection in result.connections:
-        if connection.via != "container network":
-            continue
-        network = f"vf-{connection.source}-{connection.target}"
+    networks: dict[str, dict[str, Any]] = {f"vf-egress-{name}": {} for name in services}
+    links = [c for c in result.connections if c.via == "container network"]
+    for index, connection in enumerate(links):
+        network = f"vf-link-{index}"
         networks[network] = {"internal": True}
         for name in (connection.source, connection.target):
             services[name]["networks"].append(network)
@@ -439,7 +442,7 @@ def compose_project(topology: TopologyConfig, result: Plan) -> dict[str, Any]:
             service["healthcheck"] = {
                 "test": ["CMD", *process.readiness],
                 "interval": "2s",
-                "retries": 300,
+                "retries": max(1, int(process.readiness_timeout // 2)),
             }
     return {"services": services, "networks": networks}
 
@@ -451,6 +454,11 @@ def nodes_from_compose(
     that share a network may reach each other, as Compose lets them; the workspace
     service becomes `main`."""
     services: Mapping[str, Mapping[str, Any]] = project.get("services", {})
+    if workspace != WORKSPACE and WORKSPACE in services:
+        raise ValueError(
+            f"the Compose workspace service {workspace!r} is the {WORKSPACE!r} node, "
+            f"so no other service can be named {WORKSPACE!r}"
+        )
 
     def name(service: str) -> str:
         return WORKSPACE if service == workspace else service
