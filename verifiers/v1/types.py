@@ -126,8 +126,8 @@ class Request(BaseModel):
 FinishReason = Literal["stop", "length", "tool_calls"] | None
 
 DialectName = Literal["chat_completions", "responses", "anthropic_messages"]
-"""A model API wire format: a `Dialect.name`, and the values of harness `transport`
-settings."""
+"""A model API wire format: a `Dialect.name`, and the values of the harness `dialect`
+setting."""
 
 
 class Usage(BaseModel):
