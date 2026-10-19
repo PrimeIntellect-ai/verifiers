@@ -23,6 +23,7 @@ from pydantic import Field, model_validator
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes.base import (
+    SERVICE_PORT,
     BaseRuntimeInfo,
     ProgramResult,
     RuntimeBackend,
@@ -50,6 +51,12 @@ _OUTPUT_DEADLINE_SECONDS = 300
 _OUTPUT_RETRIES = 10
 """Re-reads of a finished job's output that the SDK still failed to fetch, before the
 exec is reported as failed."""
+_PUBLIC_DOMAIN = "sandbox-v2-prod.pinfra.io"
+"""Domain of the public URLs `https://<port>-<sandbox-id>.<domain>` that a LAN network's
+`internet` rule publishes ports at."""
+_EXPOSE_TAG = "vf-exposed"
+_EXPOSE_SYNC_SECONDS = 120
+"""Deadline for the platform to push an exposure's membership and rules to the VM."""
 
 
 BASE_LABELS: list[str] = []
@@ -189,6 +196,7 @@ class PrimeBackend(RuntimeBackend):
     SUPPORTS_TASK_IMAGES: ClassVar[bool] = True
     SUPPORTS_COMPOSE: ClassVar[bool] = True
     SUPPORTS_USER_SWITCHING: ClassVar[bool] = True
+    SUPPORTS_PORT_EXPOSURE: ClassVar[bool] = True
 
     def __init__(self, config: PrimeConfig, name: str | None = None) -> None:
         ensure_prime_auth()
@@ -199,6 +207,17 @@ class PrimeBackend(RuntimeBackend):
         # A LAN network (id, tags) to join as the sandbox boots: prime-sandboxes joins it
         # once it is running, within `wait_for_creation` on the creating client.
         self.lan: tuple[str, list[str]] | None = None
+        # Exposure state: a LAN network created on the first `expose`, separate from
+        # `lan`, and the ports its `internet` rule publishes.
+        self._expose_network_id: str | None = None
+        self._exposed_ports: list[int] = []
+        self._expose_lock = asyncio.Lock()
+
+    @property
+    def published_port(self) -> int:
+        # Any port can be exposed, but the public URL reaches only servers bound to
+        # 0.0.0.0, which `launch` arranges for a fixed published port.
+        return SERVICE_PORT
 
     async def start(self) -> None:
         from prime_sandboxes import CreateSandboxRequest
@@ -393,10 +412,61 @@ class PrimeBackend(RuntimeBackend):
         return PrimeProcess(process)
 
     async def expose(self, port: int) -> str:
-        raise SandboxError(
-            "the prime runtime cannot expose a port; colocate the service with its "
-            "consumer"
-        )
+        """Publish `port` through a LAN network whose `internet` rule exposes it on this
+        sandbox. The URL has no Prime authentication."""
+        from prime_sandboxes import LanRule
+
+        async with self._expose_lock:
+            if port not in self._exposed_ports:
+                ports = [*self._exposed_ports, port]
+                rules = [
+                    LanRule(from_="internet", to=f"tag:{_EXPOSE_TAG}", ports=ports)
+                ]
+                try:
+                    if self._expose_network_id is None:
+                        network = await self._client.create_lan_network(
+                            f"{self.name}-exposed", rules=rules
+                        )
+                        self._expose_network_id = network.id
+                        await self._client.add_lan_member(
+                            network.id, self.info.id, [_EXPOSE_TAG]
+                        )
+                    else:
+                        await self._client.set_lan_rules(self._expose_network_id, rules)
+                    await self._wait_expose_synced()
+                except SandboxError:
+                    raise
+                except Exception as e:
+                    raise SandboxError(f"prime expose port {port} failed: {e}") from e
+                self._exposed_ports = ports
+        return f"https://{port}-{self.info.id}.{_PUBLIC_DOMAIN}"
+
+    async def _wait_expose_synced(self) -> None:
+        """Wait until the platform has pushed the exposure's membership and rules to the VM."""
+        try:
+            async with asyncio.timeout(_EXPOSE_SYNC_SECONDS):
+                delay = 0.1
+                while True:
+                    network = await self._client.get_lan_network(
+                        self._expose_network_id
+                    )
+                    member = next(
+                        (
+                            m
+                            for m in network.members or []
+                            if m.sandbox_id == self.info.id
+                        ),
+                        None,
+                    )
+                    if network.synced and member is not None and member.synced:
+                        return
+                    await asyncio.sleep(delay)
+                    delay = min(delay * 2, 2)
+        except TimeoutError as e:
+            raise SandboxError(
+                f"prime LAN network {self._expose_network_id} did not sync within "
+                f"{_EXPOSE_SYNC_SECONDS}s on sandbox {self.info.id}"
+            ) from e
 
     async def run_background(
         self, runtime: Runtime, argv: list[str], env: dict[str, str], log: str
@@ -501,8 +571,12 @@ class PrimeBackend(RuntimeBackend):
             from prime_sandboxes import SandboxClient
             from prime_sandboxes.core import APIClient
 
+            client = SandboxClient(APIClient())
             with contextlib.suppress(Exception):
-                SandboxClient(APIClient()).delete(self.info.id)
+                client.delete(self.info.id)
+            if self._expose_network_id is not None:
+                with contextlib.suppress(Exception):
+                    client.delete_lan_network(self._expose_network_id)
 
     async def teardown(self) -> None:
         # Best-effort, idempotent teardown: delete the sandbox (the costly resource). Runs via
@@ -511,9 +585,22 @@ class PrimeBackend(RuntimeBackend):
         if client is None:
             return
         try:
-            if self.info.id is not None:  # keep info.id available after teardown
-                await client.delete(self.info.id)
-        except Exception as e:  # noqa: BLE001 - provider teardown is best-effort
-            logger.warning("prime: failed to delete sandbox %s: %s", self.info.id, e)
+            try:
+                if self.info.id is not None:  # keep info.id available after teardown
+                    await client.delete(self.info.id)
+            except Exception as e:  # noqa: BLE001 - provider teardown is best-effort
+                logger.warning(
+                    "prime: failed to delete sandbox %s: %s", self.info.id, e
+                )
+            if self._expose_network_id is not None:
+                try:
+                    await client.delete_lan_network(self._expose_network_id)
+                    self._expose_network_id = None
+                except Exception as e:  # noqa: BLE001 - provider teardown is best-effort
+                    logger.warning(
+                        "prime: failed to delete LAN network %s: %s",
+                        self._expose_network_id,
+                        e,
+                    )
         finally:
             await _release_client(client)

@@ -54,7 +54,7 @@ RUNTIMES = ["subprocess", "docker", "prime", "plugin"]
 SUPPORTED = {
     "task_images": {"docker", "prime"},
     "user_switching": {"docker", "prime"},
-    "port_exposure": {"subprocess", "docker"},
+    "port_exposure": {"subprocess", "docker", "prime"},
     "compose": {"docker", "prime"},
     "network_policies": {"docker", "prime"},
 }
