@@ -31,11 +31,14 @@ from verifiers.v1.cli.resolve import (
 from verifiers.v1.cli.resume import distribute
 from verifiers.v1.configs.cli.validate import ValidateConfig
 from verifiers.v1.errors import TaskError, boundary
-from verifiers.v1.runtimes import make_runtime
+from verifiers.v1.grading import bind_scoring_env, grade_task, verifier_runtime
+from verifiers.v1.runtimes import make_backend
+from verifiers.v1.runtimes.deployment import Deployment
 from verifiers.v1.state import state_cls
 from verifiers.v1.task import Task
 from verifiers.v1.trace import Trace, TraceTask
 from verifiers.v1.utils.aio import run_shielded
+from verifiers.v1.utils.artifacts import collect
 from verifiers.v1.utils.compile import resolve_runtime_config
 from verifiers.v1.utils.decorators import invoke
 from verifiers.v1.utils.interrupt import install_interrupt
@@ -244,17 +247,48 @@ async def _gold(task: Task, trace: Trace, runtime) -> bool | None:
     return await task.validate(runtime)
 
 
-async def _score_untouched(task: Task, trace: Trace, runtime) -> bool | None:
+async def _score_untouched(
+    task: Task, trace: Trace, runtime, deployment: Deployment, config: ValidateConfig
+) -> bool | None:
     """Finalize and score the freshly set-up task exactly as a rollout would, with no
     agent turn in between. Valid iff it does not already pass; `None` when the task
     declares no reward to check."""
+    policy = task.scoring
+    isolated = policy.mode == "isolated"
+    grader = task.grading_task(runtime, scoring=policy)
+    grading_config = (
+        verifier_runtime(grader, runtime, config.runtime, policy) if isolated else None
+    )
+    if not isolated and policy.runtime is not None:
+        raise TaskError("verifier runtime overrides require isolated verification")
     async with (
         asyncio.timeout(task.data.timeout.finalize),
         boundary(TaskError, "task finalize"),
     ):
-        await invoke(task.finalize, {"trace": trace, "runtime": runtime})
-    async with asyncio.timeout(task.data.timeout.scoring):
-        await task.score(trace, runtime)
+        await invoke(
+            task.finalize,
+            {"trace": trace, "runtime": runtime, "deployment": deployment},
+        )
+        if isolated:
+            if not trace.state.artifacts:
+                trace.state.artifacts = await collect(
+                    runtime, task.data.artifacts, max_bytes=task.data.artifact_max_bytes
+                )
+            await deployment.stop_execution()
+            await task.finalize_services(
+                trace,
+                {name: deployment.target(name) for name in deployment.target_backends},
+            )
+    if isolated:
+        timeouts = task.data.timeout
+        if config.timeout.setup is not None:
+            timeouts = timeouts.model_copy(update={"setup": config.timeout.setup})
+        await grade_task(grader, trace, grading_config, timeouts, policy, deployment)
+    else:
+        async with asyncio.timeout(task.data.timeout.scoring):
+            runtime = bind_scoring_env(runtime, policy)
+            await invoke(grader.stage_verifier, {"trace": trace, "runtime": runtime})
+            await grader.score(trace, runtime, deployment)
     if not trace.rewards:
         return None
     return trace.reward < SOLVED
@@ -266,7 +300,7 @@ CHECKS = {"setup": _setup_only, "gold": _gold, "noop": _score_untouched}
 
 async def _run_check(task: Task, config: ValidateConfig, mode: str) -> ResultRow:
     start = time.time()
-    runtime = make_runtime(
+    backend = make_backend(
         resolve_runtime_config(config.runtime, task),
         name=f"validate-{mode}-{task.data.idx}-{uuid4().hex[:8]}",
     )
@@ -278,8 +312,13 @@ async def _run_check(task: Task, config: ValidateConfig, mode: str) -> ResultRow
     valid: bool | None = False
     exc = None
     trace: Trace | None = None
+    deployment: Deployment | None = None
     try:
-        runtime.env = dict(task.runtime_env())
+        deployment = backend.deploy(
+            spec=task.deployment_spec(),
+            env=task.runtime_env(),
+            config=config.deployment,
+        )
         trace = Trace(
             task=TraceTask(
                 type=type(task).__name__, data=task.data, key=task.key, hash=task.hash
@@ -292,19 +331,37 @@ async def _run_check(task: Task, config: ValidateConfig, mode: str) -> ResultRow
                 trainable=False,
             ),
         )
-        await runtime.start()
+        await deployment.start()
+        runtime = deployment.workspace
+        await runtime.backend.prepare_setup()
         await asyncio.wait_for(
-            invoke(task.setup, {"trace": trace, "runtime": runtime}),
+            invoke(
+                task.setup,
+                {"trace": trace, "runtime": runtime, "deployment": deployment},
+            ),
             setup_timeout,
         )
         valid = await asyncio.wait_for(
-            CHECKS[mode](task, trace, runtime), config.timeout.total
+            invoke(
+                CHECKS[mode],
+                {
+                    "task": task,
+                    "trace": trace,
+                    "runtime": runtime,
+                    "deployment": deployment,
+                    "config": config,
+                },
+            ),
+            config.timeout.total,
         )
     except Exception as e:  # noqa: BLE001 - validation reports plugin failures per task
         exc = e
     finally:
         try:
-            await runtime.stop()
+            if deployment is not None:
+                await deployment.close()
+            else:
+                await backend.stop()
         except Exception:
             logger.warning(
                 "runtime teardown failed (task %s)", task.data.idx, exc_info=True

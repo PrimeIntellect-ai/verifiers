@@ -18,7 +18,7 @@ from verifiers.v1.errors import (
 )
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.task import TaskData
-from verifiers.v1.types import Messages
+from verifiers.v1.types import DialectName, Message, Messages
 from verifiers.v1.utils.decorators import (
     discover_decorated,
     invoke_all,
@@ -67,6 +67,14 @@ class Harness(ABC, Generic[ConfigT]):
     def __init__(self, config: ConfigT) -> None:
         self.config = config
 
+    def replay_view(self, message: Message, dialect: DialectName | None) -> Message:
+        """`message` as this harness re-sends it on later requests over `dialect` (None
+        before the first intercepted request). Override only for
+        deterministic cosmetic rewrites (e.g. dropped whitespace-only text), never for
+        content changes, so a replayed turn matches the turn it came from in the trace
+        graph instead of forking it."""
+        return message
+
     def resolve_prompt(
         self, task: TaskData
     ) -> tuple[str | None, str | Messages | None]:
@@ -104,7 +112,7 @@ class Harness(ABC, Generic[ConfigT]):
         return system, prompt
 
     async def setup(self, runtime: Runtime) -> None:
-        """Provision this harness in `runtime` before its execution timeout starts."""
+        """Provision this harness through `runtime` before its execution timeout starts."""
 
     async def install_skills(self, runtime: Runtime, dest: str) -> None:
         """Install `config.skills` in the program's discovery directory.
@@ -225,7 +233,11 @@ copy_failed=$(
         """Run this harness's `@metric` methods over the finished trace, recording
         each into `trace.metrics`. Metrics declare what they need (`task`, `trace`,
         `runtime`) and can read what the harness left behind in the runtime."""
-        available = {"task": trace.task.data, "trace": trace, "runtime": runtime}
+        available = {
+            "task": trace.task.data,
+            "trace": trace,
+            "runtime": runtime,
+        }
         fns = discover_decorated(self, "metric")
         seed(trace.metrics, (fn.__name__ for fn in fns))
         async with boundary(HarnessError, f"harness {self.config.id!r} metric"):
@@ -302,7 +314,7 @@ copy_failed=$(
         mcp_urls: dict[str, str],
         data: TaskData,
     ) -> ProgramResult:
-        """Run the harness program in `runtime` to completion and return its result.
+        """Run the harness program through `runtime` to completion and return its result.
         `data` is this segment's wire view of the task (`resolve_prompt(data)` — for
         a resumed exchange its prompt is the accreted conversation, and it may
         differ from `trace.task.data`, the run's recorded view); model calls must

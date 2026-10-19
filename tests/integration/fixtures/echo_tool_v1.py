@@ -1,0 +1,79 @@
+"""echo (v1, MCP tool): retrieve a stamped echo from a `vf.Toolset`, then report it.
+
+The v1 tool fixture for the integration grid. The task constructs an `EchoToolset`
+(`vf.Toolset`) in `Task.toolsets`, with one `@vf.tool` method whose placement is
+CLI-tunable (`--taskset.task.tools.colocated`, `--taskset.task.tools.service`,
+`--taskset.task.tools.runtime.type`): it runs colocated in the harness's runtime, in the
+task's `tools` Compose service (echo_tool_compose), or in its own runtime, and the
+harness must reach it wherever it lives. The tool stamps its output with a token the prompt
+never reveals, so the reward is 1.0 only if the model actually called the tool —
+trivial when the infra works, impossible when it doesn't. The tool is task-agnostic,
+so it would also serve taskset-scoped (`Taskset.toolsets`).
+"""
+
+from pathlib import Path
+
+import verifiers.v1 as vf
+from verifiers.v1.types import content_text
+
+PHRASE = "hello world"
+ECHO_TOKEN = "ok-7f3"  # the tool stamps this; only a real tool call can surface it
+COMPOSE = Path(__file__).with_name("echo_tool_compose")
+
+
+class EchoToolset(vf.Toolset[vf.ToolsetConfig]):
+    TOOL_PREFIX = "echo"
+
+    @vf.tool
+    def back(self, message: str) -> str:
+        """Echo the message back, stamped so the caller can prove the tool ran."""
+        return f"{message} [{ECHO_TOKEN}]"
+
+
+class EchoToolTaskConfig(vf.TaskConfig):
+    tools: vf.ToolsetConfig = vf.ToolsetConfig()
+
+
+class EchoToolTask(vf.Task[vf.TaskData, vf.State, EchoToolTaskConfig]):
+    @classmethod
+    def toolsets(cls, config: EchoToolTaskConfig) -> list[vf.Toolset]:
+        return [EchoToolset(config.tools)]
+
+    def deployment_spec(self) -> vf.ComposeSpec | None:
+        if self.config.tools.service is None:
+            return None
+        return vf.ComposeSpec(directory=str(COMPOSE), file="docker-compose.yaml")
+
+    @vf.reward(weight=1.0)
+    async def echoed(self, trace: vf.Trace) -> float:
+        # A stamped TOOL result proves the tool really ran with the phrase.
+        results = (content_text(m.content).lower() for m in trace.tool_messages)
+        return float(any(PHRASE in r and ECHO_TOKEN in r for r in results))
+
+
+class EchoToolConfig(vf.TasksetConfig):
+    task: EchoToolTaskConfig = EchoToolTaskConfig()
+
+
+class EchoToolTaskset(vf.Taskset[EchoToolTask, EchoToolConfig]):
+    def load(self) -> list[EchoToolTask]:
+        return [
+            EchoToolTask(
+                vf.TaskData(
+                    idx=0,
+                    prompt=(
+                        f"Call the `back` tool from the `echo` MCP server with the message "
+                        f'"{PHRASE}", then reply '
+                        "with exactly what it returns inside <answer></answer> tags."
+                    ),
+                ),
+                self.config.task,
+            )
+        ]
+
+
+__all__ = ["EchoToolTaskset"]
+
+
+if __name__ == "__main__":
+    EchoToolset.run()

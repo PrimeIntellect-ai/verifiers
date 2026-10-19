@@ -8,6 +8,7 @@ from verifiers.v1.harnesses.claude_code import (
     ClaudeCodeHarnessConfig,
 )
 from verifiers.v1.harnesses.codex import CodexHarness, CodexHarnessConfig
+from verifiers.v1.harnesses.deepseek import DeepSeekHarness, DeepSeekHarnessConfig
 from verifiers.v1.harnesses.hermes_agent import (
     HermesAgentHarness,
     HermesAgentHarnessConfig,
@@ -19,6 +20,7 @@ from verifiers.v1.harnesses.mini_swe_agent import (
 )
 from verifiers.v1.harnesses.null import NullHarness, NullHarnessConfig
 from verifiers.v1.harnesses.openclaw import OpenClawHarness, OpenClawHarnessConfig
+from verifiers.v1.harnesses.opencode import OpenCodeHarness, OpenCodeHarnessConfig
 from verifiers.v1.harnesses.pi import PiHarness, PiHarnessConfig
 from verifiers.v1.harnesses.prime_agent import (
     PrimeAgentHarness,
@@ -36,6 +38,8 @@ __all__ = [
     "ClaudeCodeHarnessConfig",
     "CodexHarness",
     "CodexHarnessConfig",
+    "DeepSeekHarness",
+    "DeepSeekHarnessConfig",
     "HermesAgentHarness",
     "HermesAgentHarnessConfig",
     "KimiCodeHarness",
@@ -46,6 +50,8 @@ __all__ = [
     "NullHarnessConfig",
     "OpenClawHarness",
     "OpenClawHarnessConfig",
+    "OpenCodeHarness",
+    "OpenCodeHarnessConfig",
     "PiHarness",
     "PiHarnessConfig",
     "PrimeAgentHarness",

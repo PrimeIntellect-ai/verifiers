@@ -27,6 +27,12 @@ from verifiers.v1.utils.aio import run_shielded
 
 ACP_SOURCE = (Path(__file__).resolve().parent / "runner.py").read_text()
 MAX_PACKET_BYTES = 128 * 1024 * 1024
+_STOP_CONDITIONS = {
+    "max_tokens": "max_output_tokens",
+    "max_turn_requests": "max_turns",
+    "refusal": "refusal",
+    "cancelled": "cancelled",
+}
 
 __all__ = ["ACPConfig", "ACPHarness", "ACPTurn"]
 
@@ -354,6 +360,7 @@ class ACPHarnessSession(HarnessSession):
                 raise
         turn = _turn_result(response)
         self.trace.root_reply = turn.reply.strip()
+        self.trace.info["acp_stop_reason"] = turn.stop_reason
         if not response.get("ok"):
             detail = response.get("error") or "ACP session request failed"
             if stderr := self._stderr():
@@ -368,6 +375,8 @@ class ACPHarnessSession(HarnessSession):
         harness = cast(ACPHarness, self.harness)
         harness._consume_protocol_metadata(self.trace, turn.response_metadata)
         harness.acp_turn_result(self.trace, turn)
+        if condition := _STOP_CONDITIONS.get(turn.stop_reason or ""):
+            self.trace.stop(condition)
         result = ProgramResult(exit_code=0, stdout=turn.reply, stderr="")
         _require_model_turn(self.trace, calls_before, result)
         return result
