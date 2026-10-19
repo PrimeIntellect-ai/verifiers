@@ -173,11 +173,6 @@ class HarborData(TaskData):
     healthcheck: dict | None = None
     mcp_servers: list[dict] = Field(default_factory=list)
     """Task-declared MCP servers, preserved for served-task reconstruction."""
-    compose_host_image: str | None = None
-    """Provider VM image hosting a Compose task's Docker daemon. Docker is installed
-    when the image lacks it, and `docker save` archives it ships in
-    /opt/verifiers/compose-images/ load before the services start. None uses a
-    stock image."""
     compose_build_dockerfile: bool = False
     """Use environment/Dockerfile when Compose's workspace has no image or build."""
     verifier_image: str | None = None
@@ -221,7 +216,6 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
         if (Path(self.data.task_dir) / "environment/docker-compose.yaml").is_file():
             return ComposeSpec(
                 self.data.task_dir,
-                host_image=self.data.compose_host_image,
                 image_override=self.data.image is not None,
                 build_dockerfile=self.data.compose_build_dockerfile,
             )
@@ -257,7 +251,7 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
             entry.service for entry in (*self.data.collect, *self.data.artifacts)
         )
         if missing := declared.keys() - targets.keys():
-            raise TaskError(f"Unknown Compose services: {sorted(missing)}")
+            raise TaskError(f"Unknown services: {sorted(missing)}")
         sidecars = {name: targets[name] for name in declared if name != "main"}
         if sidecars:
             await self.finalize(trace, targets["main"], sidecars)
@@ -273,7 +267,7 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
                 entry.service for entry in (*self.data.collect, *self.data.artifacts)
             }
             if missing := declared - deployment.target_backends.keys():
-                raise TaskError(f"Unknown Compose services: {sorted(missing)}")
+                raise TaskError(f"Unknown services: {sorted(missing)}")
         if self.data.upload_environment:
             await runtime.write(
                 "/tmp/environment.tgz",

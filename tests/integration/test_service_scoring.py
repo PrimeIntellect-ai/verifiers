@@ -1,6 +1,7 @@
-"""Compose scoring uses live shared services or a released, collected submission, on
-a Prime VM."""
+"""Native Prime services exchange data over a LAN, then grade against live services
+or a released, collected submission."""
 
+import asyncio
 import os
 
 import pytest
@@ -14,33 +15,13 @@ from verifiers.v1.tasksets.harbor.taskset import (
     HarborTask,
 )
 
-# Solver service backends by trace id, to check their VM is gone before grading.
+# Solver service backends by trace id, to check their VMs are gone before grading.
 SOLVERS: dict[str, list] = {}
 
 IMAGE = "python:3.11-slim"
-COMPOSE = f"""
-services:
-  main:
-    image: {IMAGE}
-    working_dir: /app
-    command: [sleep, infinity]
-    depends_on:
-      sidecar:
-        condition: service_healthy
-  sidecar:
-    environment:
-      COLLECTION_SCOPE: sidecar
-    image: {IMAGE}
-    command: [sh, -c, "mkdir -p /srv /evidence; echo 42 > /srv/answer; cd /srv; exec python -m http.server 8000"]
-    healthcheck:
-      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://localhost:8000/answer')"]
-      interval: 1s
-      timeout: 2s
-      retries: 30
-"""
 
 
-class ComposeHarness(vf.Harness):
+class ServiceHarness(vf.Harness):
     async def launch(self, ctx, trace, runtime, endpoint, secret, mcp_urls, data):
         return await runtime.run(
             [
@@ -48,33 +29,90 @@ class ComposeHarness(vf.Harness):
                 "-c",
                 (
                     "import urllib.request; "
-                    "open('/app/answer', 'wb').write(urllib.request.urlopen('http://sidecar:8000/answer').read())"
+                    "url = open('/app/service-url').read(); "
+                    "open('/app/answer', 'wb').write(urllib.request.urlopen(url, timeout=15).read())"
                 ),
             ],
             {},
         )
 
 
-class ComposeTask(HarborTask):
+class ServiceTask(HarborTask):
+    def deployment_spec(self):
+        return vf.ServicesSpec(
+            {"sidecar": vf.PrimeConfig(image=IMAGE, allow=[], labels=["vf-ci"])}
+        )
+
     async def setup(self, trace, runtime, deployment=None):
         await super().setup(runtime)
         if deployment is not None:
             SOLVERS[trace.id] = list(deployment.target_backends.values())
+            assert len({backend.info.id for backend in SOLVERS[trace.id]}) == 2
+            for name, target in (
+                ("main", runtime),
+                ("sidecar", deployment.target("sidecar")),
+            ):
+                await target.write("/srv/answer", b"42")
+                await target.run_background(
+                    [
+                        "python",
+                        "-m",
+                        "http.server",
+                        "8000",
+                        "--bind",
+                        "0.0.0.0",
+                        "--directory",
+                        "/srv",
+                    ],
+                    {"COLLECTION_SCOPE": name},
+                    log="/tmp/service.log",
+                )
+                async with asyncio.timeout(60):
+                    while (
+                        await target.run(
+                            [
+                                "python",
+                                "-c",
+                                "import urllib.request; urllib.request.urlopen('http://localhost:8000/answer', timeout=2)",
+                            ],
+                            {},
+                        )
+                    ).exit_code:
+                        await asyncio.sleep(1)
+            await runtime.write(
+                "/app/service-url",
+                f"http://{deployment.hosts['sidecar']}:8000/answer".encode(),
+            )
+            # Finalize probes the reverse direction after both egress policies apply.
+            await deployment.target("sidecar").write(
+                "/app/service-url",
+                f"http://{deployment.hosts['main']}:8000/answer".encode(),
+            )
         else:
-            # Fresh verifier setup happens only after the solver VM is removed.
-            assert all(
-                backend._host_backend.stopped for backend in SOLVERS[trace.id]
-            ), "solver services survived into grading"
+            # Fresh verifier setup happens only after all solver VMs are removed.
+            assert all(backend.stopped for backend in SOLVERS[trace.id]), (
+                "solver services survived into grading"
+            )
             trace.info["solver_released_before_grading"] = True
 
+    async def finalize(self, trace, runtime, sidecars=None, deployment=None):
+        if deployment is not None:
+            result = await deployment.target("sidecar").run(
+                [
+                    "python",
+                    "-c",
+                    "import urllib.request; assert urllib.request.urlopen(open('/app/service-url').read(), timeout=15).read() == b'42'",
+                ],
+                {},
+            )
+            assert result.exit_code == 0, result.stderr
+        await super().finalize(trace, runtime, sidecars)
+
     async def finalize_services(self, trace, targets):
-        main = targets["main"].backend
-        result = await main._run_host(
-            "docker", "inspect", "--format", "{{.State.Running}}", main._container
-        )
-        assert result.stdout.strip() == "false", (
+        assert targets["main"].backend.stopped, (
             "workspace must stop before sidecar collection"
         )
+        assert not targets["sidecar"].backend.stopped
         trace.info["collected_sidecars"] = True
         await super().finalize_services(trace, targets)
 
@@ -96,8 +134,8 @@ class ComposeTask(HarborTask):
 )
 @pytest.mark.prime
 @pytest.mark.skipif(not os.environ.get("PRIME_API_KEY"), reason="needs PRIME_API_KEY")
-async def test_compose_scoring(tmp_path, mode, collect_fails, scoring_timeout):
-    task = compose_task(tmp_path, collect_fails, scoring_timeout, mode)
+async def test_service_scoring(tmp_path, mode, collect_fails, scoring_timeout):
+    task = service_task(tmp_path, collect_fails, scoring_timeout, mode)
     config = vf.AgentConfig(
         model="unused",
         runtime=vf.PrimeConfig(labels=["vf-ci"]),
@@ -111,9 +149,9 @@ async def test_compose_scoring(tmp_path, mode, collect_fails, scoring_timeout):
         ),
     )
     async with vf.Agent(config) as agent:
-        agent.harness = ComposeHarness(vf.HarnessConfig())
+        agent.harness = ServiceHarness(vf.HarnessConfig())
         trace = await agent.run(task)
-    assert all(backend._host_backend.stopped for backend in SOLVERS.pop(trace.id, []))
+    assert all(backend.stopped for backend in SOLVERS.pop(trace.id, []))
     if mode == "isolated" and collect_fails:
         assert not trace.ok
         assert "collect hook failed" in str(trace.errors)
@@ -130,10 +168,7 @@ async def test_compose_scoring(tmp_path, mode, collect_fails, scoring_timeout):
         )
 
 
-def compose_task(tmp_path, collect_fails: bool, scoring_timeout: bool, mode: str):
-    environment = tmp_path / "environment"
-    environment.mkdir()
-    (environment / "docker-compose.yaml").write_text(COMPOSE)
+def service_task(tmp_path, collect_fails: bool, scoring_timeout: bool, mode: str):
     tests = tmp_path / "tests"
     tests.mkdir()
     (tests / "test.sh").write_text(
@@ -143,10 +178,12 @@ def compose_task(tmp_path, collect_fails: bool, scoring_timeout: bool, mode: str
         + ("sleep 30\n" if scoring_timeout else "")
         + "echo 1 > /logs/verifier/reward.txt\n"
     )
-    return ComposeTask(
+    return ServiceTask(
         HarborData(
             prompt="Copy the sidecar answer",
             task_dir=str(tmp_path),
+            image=IMAGE,
+            network=vf.NetworkPolicyConfig(allow=[]),
             env={"COLLECTION_SCOPE": "workspace"},
             # Exercise agent overrides in both directions, not just task defaults.
             scoring=vf.ScoringConfig(mode="isolated" if mode == "shared" else "shared"),
@@ -159,7 +196,7 @@ def compose_task(tmp_path, collect_fails: bool, scoring_timeout: bool, mode: str
                     service="sidecar",
                     command="exit 17"
                     if collect_fails
-                    else 'test "$COLLECTION_SCOPE" = sidecar && cp /srv/answer /evidence/result',
+                    else 'test "${COLLECTION_SCOPE-unset}" = unset && mkdir -p /evidence && cp /srv/answer /evidence/result',
                 )
             ],
         )

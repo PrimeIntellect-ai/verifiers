@@ -1,7 +1,7 @@
 """One task, one MCP tool: the model calls a tool whose output carries a stamp the prompt
 never reveals (echo-tool), so reward 1.0 proves the tool ran. Every MCP harness reaches
 it colocated across the harness x runtime grid; the chat loop reaches it across its
-placements (colocated in the harness's box, in a Compose service beside it, or its own
+placements (colocated in the harness's box, in a native service VM beside it, or its own
 runtime) on the runtime x runtime grid."""
 
 import pytest
@@ -42,7 +42,7 @@ async def test_tool(run, harness, harness_runtime):
 )
 async def test_tool_placement(run, harness_runtime, tool_runtime):
     """A `vf.Toolset` across its placement (`tool_runtime`: colocated in the harness's
-    runtime, in a Compose service beside it, or its own runtime) x the harness `runtime`,
+    runtime, in a native service VM beside it, or its own runtime) x the harness `runtime`,
     on the chat loop. Eval-wide SHARED servers are a different scope (`Taskset.toolsets`),
     covered by `test_shared_tool`."""
     (episode,) = await run(
@@ -73,7 +73,7 @@ async def test_tool_placement(run, harness_runtime, tool_runtime):
     ],
 )
 def test_service_placement_is_exclusive(placement):
-    """A server in a Compose service runs there: not colocated, remote or in a runtime of
+    """A server in a named service runs there: not colocated, remote or in a runtime of
     its own."""
     with pytest.raises(ValueError):
         vf.ToolsetConfig(service="tools", **placement)
