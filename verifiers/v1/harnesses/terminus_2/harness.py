@@ -1,5 +1,6 @@
 import logging
 from pathlib import Path
+from typing import Literal
 
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig, PinnedVersion
@@ -13,6 +14,7 @@ logger = logging.getLogger(__name__)
 
 
 class Terminus2HarnessConfig(HarnessConfig):
+    dialect: Literal["chat_completions"] = "chat_completions"
     version: PinnedVersion = "0.23.0"
     """Harbor release to install, pinned for reproducibility."""
 

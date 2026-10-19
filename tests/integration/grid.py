@@ -200,31 +200,32 @@ def grid(
     return cells
 
 
-def transports(harness: str) -> tuple[str, ...]:
-    """The wire formats the harness config can select (`transport`) besides its
-    default. Empty when the program speaks one format or picks its own."""
-    field = harness_config_type(harness).model_fields.get("transport")
-    if field is None:
-        return ()
-    return tuple(t for t in get_args(field.annotation) if t != field.default)
+def dialects(harness: str) -> tuple[str, ...]:
+    """The dialects the harness config can select besides its default. Empty when the
+    program speaks one dialect or picks its own."""
+    field = harness_config_type(harness).model_fields["dialect"]
+    return tuple(
+        value
+        for arg in get_args(field.annotation)
+        for value in get_args(arg) or (arg,)
+        if value != field.default
+    )
 
 
-def transport_grid(
+def dialect_grid(
     runtimes: Sequence[str] = ("prime",), *, needs: tuple[str, ...] = ()
 ) -> list:
-    """`grid` cells for every non-default `transport` each harness config can select."""
+    """`grid` cells for every non-default `dialect` each harness config can select."""
     cells = []
     for harness in HARNESSES:
         name = harness_id(harness)
-        for transport in transports(name):
-            for cell in grid(
-                [{"id": name, "transport": transport}], runtimes, needs=needs
-            ):
+        for dialect in dialects(name):
+            for cell in grid([{"id": name, "dialect": dialect}], runtimes, needs=needs):
                 cells.append(
                     pytest.param(
                         *cell.values,
                         marks=cell.marks,
-                        id=cell.id.replace(f"{name}-in-", f"{name}-{transport}-in-"),
+                        id=cell.id.replace(f"{name}-in-", f"{name}-{dialect}-in-"),
                     )
                 )
     return cells
