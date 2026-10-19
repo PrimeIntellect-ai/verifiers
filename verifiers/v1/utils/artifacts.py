@@ -100,12 +100,11 @@ async def validate_runtime_mounts(runtime: Runtime, sources: Iterable[str]) -> N
         '"$mount_path" >&2; exit 1; fi; done',
         "validate mount and artifact paths",
     )
-    # Renaming a parent relocates a bind mount without introducing any symlinks.
-    mountinfo = (await runtime.read("/proc/self/mountinfo")).decode(
-        errors="surrogateescape"
-    )
+    # Read procfs through exec: file downloads may require seeking to EOF.
+    mountinfo = await _run(runtime, "cat /proc/self/mountinfo", "read mount table")
     records = [line.split() for line in mountinfo.splitlines()]
     mounted = {record[4] for record in records}
+    # Renaming a parent relocates a bind mount without introducing any symlinks.
     for target in mounts:
         escaped = re.sub(r"[ \t\n\\]", lambda m: f"\\{ord(m[0]):03o}", target)
         if escaped not in mounted:
