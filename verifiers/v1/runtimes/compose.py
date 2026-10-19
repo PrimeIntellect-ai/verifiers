@@ -262,6 +262,8 @@ async def compose_services(
         raise ValueError(
             "Local Compose does not enforce network policies; use ServicesSpec on Prime"
         )
+    if config.gpu:
+        raise ValueError("Compose currently supports CPU tasks")
     stack = AsyncExitStack()
     try:
         async with asyncio.timeout(setup_timeout):
