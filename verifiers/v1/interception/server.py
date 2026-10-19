@@ -40,7 +40,7 @@ from pydantic_core import PydanticSerializationError, from_json, to_json
 from verifiers.v1 import graph, steering
 from verifiers.v1.clients import Client, resolve_client
 from verifiers.v1.clients.base import join_url
-from verifiers.v1.clients.client import RelayReply
+from verifiers.v1.clients.client import EncodedBody, RelayReply
 from verifiers.v1.clients.gate import REJECTION_STATUSES
 from verifiers.v1.configs.client import (
     BaseClientConfig,
@@ -699,7 +699,29 @@ class InterceptionServer(Interception):
             body = from_json(raw)
         except ValueError:
             body = json.loads(raw)
-        body = dialect.apply_overrides(body, ctx.model, ctx.sampling)
+        missing = object()
+        original_settings = {}
+
+        def apply_overrides(body: dict) -> dict:
+            nonlocal original_settings
+            # Retain only fields changed by the previous policy, not another copy
+            # of the conversation. A new model starts from the harness's settings,
+            # including settings the old model added or removed automatically.
+            restored = dict(body)
+            for key, value in original_settings.items():
+                if value is missing:
+                    restored.pop(key, None)
+                else:
+                    restored[key] = value
+            overridden = dialect.apply_overrides(restored, ctx.model, ctx.sampling)
+            original_settings = {
+                key: restored.get(key, missing)
+                for key in restored.keys() | overridden.keys()
+                if restored.get(key, missing) != overridden.get(key, missing)
+            }
+            return overridden
+
+        body = apply_overrides(body)
         streaming = dialect.streaming(body)
         retry = ctx.client.retry
         # The gate is the one retry layer for 429/529 only if it absorbs some.
@@ -894,7 +916,7 @@ class InterceptionServer(Interception):
             idempotent.completed_at = time.monotonic()
             return served
 
-        async def exchange() -> tuple[Response, bytes | None]:
+        async def send() -> tuple[Response, bytes | None]:
             """One provider exchange. What actually goes upstream: the native body with
             the rollout's model + sampling imposed — recorded raw on the trace, per call."""
             if relay:
@@ -918,6 +940,38 @@ class InterceptionServer(Interception):
             _check_tool_call_leak(response)
             return response, events
 
+        async def exchange(*, retrying: bool) -> tuple[Response, bytes | None]:
+            nonlocal ctx, client, upstream, settings, retry, gated, relay, policy_paths
+            if not retrying or (session.model_change is None and session.ctx is ctx):
+                return await send()
+            # A rejected exchange has finished: a queued policy may govern its
+            # next send without interrupting an in-flight call or rebuilding the
+            # graph turn. Use the same binding/admission path as a new request.
+            from verifiers.v1.model_routing import request_binding
+
+            async with request_binding(session, dialect, self._client):
+                ctx, client = session.ctx, session.client
+                body = (
+                    from_json(upstream.data)
+                    if isinstance(upstream, EncodedBody)
+                    else upstream
+                )
+                body = apply_overrides(body)
+                body, paths = self.mediate_capabilities(session, dialect, body)
+                policy_paths = list(dict.fromkeys([*policy_paths, *paths]))
+                upstream = client.hold(body)
+                settings = {
+                    key: value
+                    for key, value in body.items()
+                    if key == "model" or key in dialect.sampling_fields
+                }
+                del body
+                retry = ctx.client.retry
+                gate = ctx.client.request_gate
+                gated = gate is not None and gate.max_rejections > 0
+                relay = streaming and not isinstance(ctx.client, TrainClientConfig)
+                return await send()
+
         async def sample() -> web.Response:
             session.error = None
             call_response: Response | None = None
@@ -934,7 +988,9 @@ class InterceptionServer(Interception):
                     first_failure = 0.0
                     while True:
                         try:
-                            call_response, events = await exchange()
+                            call_response, events = await exchange(
+                                retrying=bool(failures)
+                            )
                             break
                         except ProviderError as e:
                             now = time.monotonic()
