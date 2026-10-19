@@ -358,7 +358,7 @@ def topology_from(
                 )
             servers[name] = WORKSPACE if config.service == authored else config.service
         elif config.node is not None:
-            servers[name] = config.node
+            servers[name] = WORKSPACE if config.node == authored else config.node
         elif isinstance(config.runtime, SubprocessConfig):
             servers[name] = HOST
         elif own_machines and _backend(config.runtime) is _backend(workspace):
@@ -426,6 +426,10 @@ def compose_project(topology: TopologyConfig, result: Plan) -> dict[str, Any]:
     for name in names:
         service = services[name]
         service["image"] = result.runtimes[name].image
+        # Only a workdir the node sets: it runs its own image, whose own default the
+        # workspace's workdir must not replace.
+        if (workdir := topology.node(name).runtime.get("workdir")) is not None:
+            service["working_dir"] = workdir
         process = topology.node(name).process
         if process is None:
             continue

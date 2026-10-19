@@ -373,3 +373,25 @@ def test_a_renamed_workspace_service_cannot_leave_another_named_main():
     project = {"services": {"app": {}, "main": {"image": "other"}}}
     with pytest.raises(ValueError, match="no other service can be named 'main'"):
         nodes_from_compose(project, workspace="app")
+
+
+def test_a_packed_node_keeps_its_own_workdir_and_on_follows_the_workspace_rename():
+    nodes = {
+        "db": NodeConfig(runtime={"image": "pg", "workdir": "/data"}),
+        "cache": NodeConfig(runtime={"image": "redis"}),
+        "web": NodeConfig(
+            runtime={"image": "web", "workdir": "/srv"},
+            process=ProcessConfig(workdir="/srv/app"),
+        ),
+    }
+    workspace = PrimeConfig(allow=[], workdir="/workspace")
+    topology = TopologyConfig(nodes=nodes)
+    services = compose_project(topology, plan(topology, workspace))["services"]
+    assert services["db"]["working_dir"] == "/data"
+    assert "working_dir" not in services["cache"]  # its image's own, not /workspace
+    assert services["web"]["working_dir"] == "/srv/app"  # the process's wins
+    project = {"services": {"app": {}, "tools": {"image": "tools"}}}
+    servers = topology_from(
+        {"app": vf.ToolsetConfig(on="app")}, project, compose_workspace="app"
+    ).mcp_servers
+    assert servers == {"app": "main"}
