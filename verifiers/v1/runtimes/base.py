@@ -22,6 +22,7 @@ from verifiers.v1.utils.aio import run_shielded
 
 if TYPE_CHECKING:
     from verifiers.v1.runtimes.runtime import Runtime
+    from verifiers.v1.trace import Trace
 
 logger = logging.getLogger(__name__)
 
@@ -301,6 +302,26 @@ class RuntimeBackend(ABC):
     def host_url(self, url: str) -> str:
         """The URL a program inside this runtime uses to reach a host-bound `url`."""
         return url
+
+    @property
+    def restored(self) -> bool:
+        """Whether this box started from a checkpoint (`restore_config`) rather than its
+        image: it already holds a past run's files, but none of its processes."""
+        return False
+
+    @property
+    def supports_checkpoint(self) -> bool:
+        """Whether `checkpoint()` is implemented for this backend."""
+        return type(self).checkpoint is not RuntimeBackend.checkpoint
+
+    async def checkpoint(self, trace: Trace | None = None) -> str:
+        """Save the box's filesystem and return the checkpoint's id once it can be
+        restored (`restore_config`). Files survive; running processes do not. With
+        `trace`, the checkpoint is recorded on it (`Trace.checkpoints`) at the run's
+        current turn."""
+        raise NotImplementedError(
+            f"{type(self).__name__} has no filesystem checkpoints"
+        )
 
     async def prepare_setup(self) -> None:
         """Open egress for trusted setup when reusing a restricted runtime."""
