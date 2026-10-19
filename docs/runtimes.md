@@ -211,16 +211,32 @@ class WebTask(vf.Task):
         web = deployment.target("web")
         await web.write("/srv/index.html", b"Hello from a native VM")
         await web.run_background(
-            ["python", "-m", "http.server", "8000", "--bind", "0.0.0.0", "--directory", "/srv"],
+            [
+                "python",
+                "-m",
+                "http.server",
+                "8000",
+                "--bind",
+                "0.0.0.0",
+                "--directory",
+                "/srv",
+            ],
             {},
             log="/tmp/web.log",
         )
         url = f"http://{deployment.hosts['web']}:8000"
         async with asyncio.timeout(30):
-            while (await runtime.run(
-                ["python", "-c", "import sys, urllib.request; urllib.request.urlopen(sys.argv[1], timeout=2)", url],
-                {},
-            )).exit_code:
+            while (
+                await runtime.run(
+                    [
+                        "python",
+                        "-c",
+                        "import sys, urllib.request; urllib.request.urlopen(sys.argv[1], timeout=2)",
+                        url,
+                    ],
+                    {},
+                )
+            ).exit_code:
                 await asyncio.sleep(1)
         await runtime.write("/app/web-url", url.encode())
 ```
