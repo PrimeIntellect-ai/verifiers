@@ -217,7 +217,11 @@ class Task(Generic[DataT, StateT, ConfigT]):
         return
 
     async def validate(self, runtime: Runtime) -> bool | None:
-        """Check the ground truth, or return None when no model-free check exists."""
+        """Check the ground truth, or return None when no model-free check exists.
+
+        Request `trace` by name for the check's trace, which `setup` ran with and which
+        records vf-validate's runtime config; pass it to `vf.grade_submission` to grade
+        as a rollout would."""
         return None
 
     def defer_scoring(self) -> Self:

@@ -116,6 +116,32 @@ async def test_validate_scores_under_the_declared_network(mode):
     assert row["valid"] is False
 
 
+class GoldReachTask(ReachTask):
+    async def validate(self, trace, runtime) -> bool:
+        await vf.grade_submission(self, trace, runtime)
+        return trace.reward == 1.0
+
+
+async def test_validate_grades_a_submission_under_the_declared_network():
+    task = GoldReachTask(
+        vf.TaskData(
+            prompt="Do nothing",
+            image=IMAGE,
+            network=vf.NetworkPolicyConfig(allow=[]),
+            scoring=vf.ScoringConfig(
+                mode="isolated",
+                network=vf.NetworkPolicyConfig(allow=["example.com"]),
+                retries=vf.RetryConfig(max_retries=0),
+            ),
+        )
+    )
+    # vf-validate's trace records its own runtime config, so the verifier can reach
+    # example.com although the task's policy is framework-only.
+    row = await _run_check(task, ValidateConfig(runtime=vf.DockerConfig()), "gold")
+    assert row["error"] is None
+    assert row["valid"] is True
+
+
 @pytest.mark.parametrize(
     ("network", "reward"),
     [(None, 1.0), (vf.NetworkPolicyConfig(allow=["pypi.org"]), 0.0)],

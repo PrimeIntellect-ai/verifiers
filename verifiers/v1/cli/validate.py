@@ -249,7 +249,7 @@ async def _setup_only(task: Task, trace: Trace, runtime) -> bool:
 
 async def _gold(task: Task, trace: Trace, runtime) -> bool | None:
     """Apply and check the reference answer."""
-    return await task.validate(runtime)
+    return await invoke(task.validate, {"trace": trace, "runtime": runtime})
 
 
 async def _score_untouched(
