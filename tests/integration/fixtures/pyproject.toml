@@ -10,15 +10,15 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 # Flat fixture modules whose tool servers self-launch in a sandbox (docker/prime) and so must
-# be importable there. The others (echo_v1, echo_user_sim_v1, echo_*_v0) have no server, so they
+# be importable there. The others (e.g. echo, echo_user_sim) have no server, so they
 # never get installed.
 [tool.hatch.build]
 include = [
-    "agent_user_v1.py",
-    "counter_tool_v1.py",
-    "echo_acp_resume_v1.py",
-    "echo_tool_v1.py",
-    "fetch_tool_v1.py",
-    "tool_response_image_v1.py",
+    "agent_user.py",
+    "counter_tool.py",
+    "echo_acp_resume.py",
+    "echo_tool.py",
+    "fetch_tool.py",
+    "tool_response_image.py",
     "pyproject.toml",
 ]

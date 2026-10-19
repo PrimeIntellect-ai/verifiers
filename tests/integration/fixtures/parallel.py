@@ -1,4 +1,4 @@
-"""parallel-v1: one rollout whose harness sends `n` chat programs at the model at once,
+"""parallel: one rollout whose harness sends `n` chat programs at the model at once,
 so their requests overlap on one trace. With `same_prompt`, every copy sends the task
 prompt; otherwise copy `i` appends its index, so the copies diverge after the system
 prompt."""
