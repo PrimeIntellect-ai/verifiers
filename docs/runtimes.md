@@ -201,6 +201,35 @@ Compose runs on local Docker or on a Prime VM. On Prime, one VM hosts the Docker
 
 A tool server can also run on a Prime VM of its own, under an egress policy of its own: set its `ToolsetConfig.runtime` to a Prime runtime, such as `vf.PrimeConfig(image="example/tools:1", allow=["*"])` for a server that calls public APIs beside an offline workspace, or `allow=[]` for one that runs agent-submitted code with no egress at all. Beside a Prime workspace without Compose services, the server's VM boots with the workspace and joins it over a LAN network of the rollout's own, on which the workspace's VM may open connections to the server and nothing may open one to the workspace; the harness reaches the server at its VM's LAN name (`<sandbox-id>.sandbox.internal`), and `deployment.target(name)` gives task hooks the server's VM. The VM's policy applies when the workspace's does, after setup. Elsewhere such a server keeps its runtime's published port, which takes no network policy. A runtime plugin that declares `SUPPORTS_PRIVATE_NETWORK` gets the same placement for a server on a runtime of its own type.
 
+### Nodes
+
+A task can declare the machines and services its rollout runs besides the workspace as **nodes**, by name, in `TaskData.nodes` (see [RFC 0001](../rfcs/0001-nodes.md)). Each node gives the runtime fields that differ from the workspace's, an optional long-running process, and the nodes that may open connections to it (by default the workspace):
+
+```python
+data = vf.TaskData(
+    prompt="Use the wiki tools to answer.",
+    network=vf.NetworkPolicyConfig(allow=[]),  # the workspace stays offline
+    nodes={
+        "wiki": vf.NodeConfig(
+            runtime={"image": "example/wiki:1", "allow": ["*"]},
+            process=vf.ProcessConfig(
+                command=["wiki-server", "--port", "8000"],
+                readiness=["curl", "-sf", "http://127.0.0.1:8000/health"],
+            ),
+        ),
+    },
+)
+```
+
+Before anything is provisioned, the rollout plans where each node runs, and refuses a plan its runtimes cannot realize:
+
+- A node under the workspace's network policy shares the workspace's machine. The deployment runs it as a Compose service of a generated project (`SUPPORTS_COMPOSE`), reached by its name, with one container network per connection.
+- A node with a policy of its own, or with `isolated = true`, gets a machine of its own on the rollout's private network (`SUPPORTS_PRIVATE_NETWORK`), with one rule per connection. The node's process starts there after the machine boots, and the machine's policy applies when the workspace's does. Such a node needs `process.command`, because the runtime does not run its image's own command.
+- A tool server runs on a node with `ToolsetConfig.on = "<node>"`; `on = "main"` is the workspace and `on = "host"` the evaluator. `colocated = true` and `service = "<name>"` remain as the older spellings of `on`.
+- Task hooks reach a node through `deployment.target(name)`, and the name the workspace resolves it by through `deployment.host(name)`.
+
+Nodes beside a task's own Compose project are not realized yet: declare packed services in that project instead. A Compose project and machines of their own cannot be combined either, since the Compose host VM cannot join the private network yet. Both are refused before provisioning.
+
 To validate an isolated task without calling a model, finalize the submission, collect its artifacts, and call `vf.grade_submission(task, trace, runtime)`. This runs the task's normal grader, verifier image, timeouts, and retries in a fresh verification target without taking ownership of the supplied solver runtime. As in a rollout, the verifier derives from the agent's runtime config on the trace (`trace.agent.config.runtime`), not from the solver's resolved config, so the solver task's requirements, such as its network policy, don't carry over. Inside `Task.validate`, request `trace` by name for vf-validate's trace, which records its runtime config.
 
 ## Network policies

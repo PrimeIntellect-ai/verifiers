@@ -15,11 +15,20 @@ from verifiers.v1.runtimes import (
     private_network,
 )
 from verifiers.v1.runtimes.backends import prime
+from verifiers.v1.runtimes.nodes import (
+    NodeConfig,
+    PlacementError,
+    ProcessConfig,
+    TopologyConfig,
+    plan,
+    topology_from,
+)
 from verifiers.v1.runtimes.strategies import (
     _ColocatedDeployment,
     _ContainerDeployment,
     _deployment_strategy,
     _PrivateNetworkDeployment,
+    start_process,
 )
 
 ATLAS = PrimeConfig(image="atlas:1", cpu=4, memory=10)  # open egress by default
@@ -30,47 +39,104 @@ def toolset(name, **config):
     return SimpleNamespace(server_name=name, config=vf.ToolsetConfig(**config))
 
 
-def test_tool_servers_on_prime_runtimes_beside_a_prime_workspace_get_vms():
-    toolsets = [
-        toolset("atlas", runtime=ATLAS),
-        toolset("search"),  # the evaluator
-        toolset("files", colocated=True, runtime=ATLAS),  # the workspace
-        toolset("remote", url="https://tools.example/mcp"),
-        toolset("gym", service="tools"),  # a Compose service
-        toolset("local", runtime=DockerConfig()),  # a published port
-    ]
-    vms = private_network.tool_vms
-    assert vms(toolsets, PrimeConfig(), composed=False, borrowed=False) == {
-        "atlas": ATLAS
+def test_tool_servers_with_runtimes_of_their_own_get_machines_beside_prime():
+    toolsets = {
+        "atlas": vf.ToolsetConfig(runtime=ATLAS),
+        "search": vf.ToolsetConfig(),  # the evaluator
+        "files": vf.ToolsetConfig(colocated=True, runtime=ATLAS),  # the workspace
+        "remote": vf.ToolsetConfig(url="https://tools.example/mcp"),
+        "local": vf.ToolsetConfig(runtime=DockerConfig()),  # a published port
     }
-    # Without a Prime workspace of the rollout's own, servers keep their published port.
-    for workspace, composed, borrowed in [
-        (DockerConfig(), False, False),
-        (PrimeConfig(), True, False),
-        (PrimeConfig(), False, True),
+    topology = topology_from(toolsets, workspace=PrimeConfig())
+    assert topology.mcp_servers == {
+        "atlas": "atlas",
+        "search": "host",
+        "files": "main",
+        "local": "host",
+    }
+    atlas = topology.nodes["atlas"]
+    assert atlas.isolated and atlas.runtime == ATLAS.model_dump()
+    # Without a Prime workspace of the rollout's own and without Compose services,
+    # a server keeps its runtime's published port, on the evaluator's side.
+    compose = {"services": {"main": {}, "tools": {"image": "tools"}}}
+    for args, kwargs in [
+        ((), {"workspace": DockerConfig()}),
+        ((), {"workspace": PrimeConfig(), "borrowed": True}),
+        ((compose,), {"workspace": PrimeConfig()}),
     ]:
-        assert vms(toolsets, workspace, composed=composed, borrowed=borrowed) == {}
-    with pytest.raises(ValueError, match="cannot be named 'main'"):
-        vms(
-            [toolset("main", runtime=ATLAS)],
-            PrimeConfig(),
-            composed=False,
-            borrowed=False,
-        )
+        assert topology_from(toolsets, *args, **kwargs).mcp_servers["atlas"] == "host"
 
 
-def test_the_deployment_joins_tool_vms_over_a_private_network():
-    assert isinstance(
-        _deployment_strategy(None, PrimeBackend, None, {"atlas": ATLAS}),
-        _PrivateNetworkDeployment,
+def test_a_server_runs_on_the_node_its_placement_names():
+    nodes = {"web": NodeConfig(runtime={"allow": ["*"]})}
+    compose = {"services": {"app": {}, "tools": {"image": "tools"}}}
+    servers = topology_from(
+        {
+            "on": vf.ToolsetConfig(on="tools"),
+            "gym": vf.ToolsetConfig(service="tools"),
+            "app": vf.ToolsetConfig(service="app"),  # the workspace's own service
+        },
+        compose,
+        compose_workspace="app",
+    ).mcp_servers
+    assert servers == {"on": "tools", "gym": "tools", "app": "main"}
+    assert topology_from(
+        {"web": vf.ToolsetConfig(on="web")}, nodes=nodes
+    ).mcp_servers == {"web": "web"}
+    with pytest.raises(ValueError, match="which needs a task whose Compose services"):
+        topology_from({"gym": vf.ToolsetConfig(service="tools")}, nodes=nodes)
+    with pytest.raises(ValueError, match="unknown nodes: \\['db'\\]"):
+        topology_from({"db": vf.ToolsetConfig(on="db")}, nodes=nodes)
+
+
+def test_a_placement_takes_one_spelling_and_a_node_s_runtime():
+    with pytest.raises(ValueError, match="takes no `colocated`, `service` or `url`"):
+        vf.ToolsetConfig(on="web", colocated=True)
+    with pytest.raises(ValueError, match="on node 'web' runs on that node"):
+        vf.ToolsetConfig(on="web", runtime=ATLAS)
+    # The evaluator provisions a runtime of the server's own, as without `on`.
+    assert vf.ToolsetConfig(on="host", runtime=ATLAS).node == "host"
+
+
+OFFLINE = PrimeConfig(allow=[])
+
+
+def realize(topology, spec=None, workspace=OFFLINE):
+    return _deployment_strategy(
+        None, PrimeBackend, spec, plan(topology, workspace), topology
     )
-    assert isinstance(
-        _deployment_strategy(None, PrimeBackend, None, {}), _ColocatedDeployment
-    )
-    spec = vf.ComposeSpec("task")
-    assert isinstance(
-        _deployment_strategy(None, PrimeBackend, spec), _ContainerDeployment
-    )
+
+
+def test_the_plan_picks_how_the_deployment_realizes_it():
+    assert isinstance(realize(TopologyConfig()), _ColocatedDeployment)
+    tools = topology_from({"atlas": vf.ToolsetConfig(runtime=ATLAS)}, workspace=OFFLINE)
+    own = realize(tools)
+    assert isinstance(own, _PrivateNetworkDeployment)
+    assert own._machines["atlas"].image == "atlas:1"
+    assert own._rules == [("main", "atlas")]
+    assert "atlas" in own._served
+    # The task's Compose services run as authored.
+    authored = topology_from({}, {"services": {"main": {}, "db": {"image": "pg"}}})
+    composed = realize(authored, vf.ComposeSpec("task"))
+    assert isinstance(composed, _ContainerDeployment) and composed._project is None
+    # Declared nodes under the workspace's policy join a Compose project of their own.
+    sidecar = TopologyConfig(nodes={"db": NodeConfig(runtime={"image": "pg"})})
+    generated = realize(sidecar)
+    assert isinstance(generated, _ContainerDeployment)
+    assert generated._project["services"]["db"]["image"] == "pg"
+
+
+def test_a_plan_the_deployment_cannot_realize_is_refused_before_provisioning():
+    sidecar = {"db": NodeConfig(runtime={"image": "pg"})}
+    online = {"web": NodeConfig(runtime={"allow": ["*"]})}
+    authored = {"services": {"main": {}, "tools": {"image": "tools"}}}
+    with pytest.raises(PlacementError, match="declare them as services of that"):
+        realize(topology_from({}, authored, sidecar), vf.ComposeSpec("task"))
+    with pytest.raises(PlacementError, match="cannot join it on a private network"):
+        realize(TopologyConfig(nodes={**sidecar, **online}))
+    imaged = {"web": NodeConfig(runtime={"allow": ["*"]}, process=ProcessConfig())}
+    with pytest.raises(PlacementError, match="set `process.command`"):
+        realize(TopologyConfig(nodes=imaged))
 
 
 def test_the_private_network_needs_a_runtime_that_declares_one():
@@ -145,8 +211,8 @@ def test_each_vm_boots_its_server_runtime_as_given(monkeypatch):
     def shape(config):
         return config.image, config.cpu, config.memory, config.allow
 
-    assert shape(vms["ws-tool-0"]) == ("atlas:1", 4, 10, ["*"])
-    assert shape(vms["ws-tool-1"]) == ("forth:1", FORTH.cpu, FORTH.memory, [])
+    assert shape(vms["ws-node-0"]) == ("atlas:1", 4, 10, ["*"])
+    assert shape(vms["ws-node-1"]) == ("forth:1", FORTH.cpu, FORTH.memory, [])
     assert vms["ws"].allow == []  # the workspace keeps its own policy
 
 
@@ -160,13 +226,13 @@ def test_the_network_starts_with_its_rules_and_every_vm_joins_as_it_boots(monkey
     boots = {name: lan for kind, name, _, lan in events[1:-1] if kind == "boot"}
     assert boots == {
         "ws": ("net1", ["vf-0"]),
-        "ws-tool-0": ("net1", ["vf-1"]),
-        "ws-tool-1": ("net1", ["vf-2"]),
+        "ws-node-0": ("net1", ["vf-1"]),
+        "ws-node-1": ("net1", ["vf-2"]),
     }
     assert events[-1] == "network deleted"
 
 
-def test_a_tool_vm_keeps_only_its_state_channel_and_the_harness_its_routes():
+def test_a_tool_machine_keeps_only_its_state_channel_and_the_harness_its_routes():
     applied = []
 
     def backend(name):
@@ -178,10 +244,13 @@ def test_a_tool_vm_keeps_only_its_state_channel_and_the_harness_its_routes():
 
         return SimpleNamespace(prepare_execution=prepare_execution, host_url=host_url)
 
-    strategy = _PrivateNetworkDeployment()
-    strategy._service_backends = [backend("forth")]
+    strategy = _PrivateNetworkDeployment(
+        {"forth": FORTH, "db": FORTH}, [], served=["forth"]
+    )
+    strategy._service_backends = {"forth": backend("forth"), "db": backend("db")}
     deployment = SimpleNamespace(harness_backend=backend("main"))
-    # The harness reaches the model and a remote tool server; the tool VM needs neither.
+    # The harness reaches the model and a remote tool server; the tool machine needs
+    # neither, and a machine without a tool server needs no state channel either.
     routes = ["https://tunnel.example/v1", "https://tools.example/mcp"]
     asyncio.run(
         strategy.prepare_execution(
@@ -189,6 +258,7 @@ def test_a_tool_vm_keeps_only_its_state_channel_and_the_harness_its_routes():
         )
     )
     assert sorted(applied) == [
+        ("db", []),
         ("forth", ["https://tunnel.example/state"]),
         ("main", routes),
     ]
@@ -204,7 +274,7 @@ def test_the_workspace_stops_before_tool_evidence_and_is_released_regardless():
         events.append("tool VMs released")
         raise RuntimeError("network deletion failed")
 
-    strategy = _PrivateNetworkDeployment()
+    strategy = _PrivateNetworkDeployment({}, [])
     strategy._services = SimpleNamespace(aclose=aclose)
     deployment = SimpleNamespace(execution_backend=SimpleNamespace(stop=stop))
 
@@ -252,20 +322,47 @@ def test_a_tool_server_on_its_own_vm_is_reached_by_its_lan_name(monkeypatch):
     )
 
 
-@pytest.mark.parametrize("service", ["main", "forth"])
-def test_an_explicit_service_names_only_a_compose_service(monkeypatch, service):
-    # The workspace and another server's VM are deployment targets, not services.
+def test_an_explicit_service_names_only_a_compose_service(monkeypatch):
+    # Another server's machine is a deployment target, not a service.
     runtime = SimpleNamespace(is_local=False, host_url=lambda url: url)
     with pytest.raises(ToolsetError, match="Compose services define it"):
         served_url(
             monkeypatch,
-            toolset("echo", service=service),
+            toolset("echo", service="forth"),
             services={},
             hosts={"forth": "sb1.sandbox.internal"},
             placements={"forth": runtime},
         )
+    with pytest.raises(ToolsetError, match="needs a task that declares that node"):
+        served_url(monkeypatch, toolset("echo", on="db"), services={})
 
 
 def test_a_restricted_runtime_without_a_private_network_is_refused(monkeypatch):
     with pytest.raises(ToolsetError, match="joins the rollout's private network"):
         served_url(monkeypatch, toolset("forth", runtime=FORTH))
+
+
+def test_a_node_s_process_starts_in_its_workdir_and_waits_until_ready():
+    calls = []
+
+    class Machine:
+        async def run_background(self, argv, env, log):
+            calls.append(("start", argv, env))
+
+        async def run(self, argv, env):
+            calls.append(("check", argv))
+            return SimpleNamespace(exit_code=0 if len(calls) == 3 else 1)
+
+    process = ProcessConfig(
+        command=["serve"], environment={"A": "1"}, workdir="/srv", readiness=["ready"]
+    )
+    asyncio.run(start_process(Machine(), process))
+    assert calls == [
+        (
+            "start",
+            ["sh", "-c", 'cd "$1" && shift && exec "$@"', "sh", "/srv", "serve"],
+            {"A": "1"},
+        ),
+        ("check", ["ready"]),
+        ("check", ["ready"]),
+    ]

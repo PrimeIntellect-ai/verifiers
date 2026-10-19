@@ -1,23 +1,29 @@
-"""Nodes: where each part of a rollout runs, and how the parts reach each other.
+"""Nodes: where each part of a rollout runs, and how the parts reach each other
+(`rfcs/0001-nodes.md`).
 
-A design prototype for `rfcs/0001-nodes.md`. Code says what runs (the task, the
-harness, tool servers); a topology says where. `plan` turns a topology into the
-machines to provision and the connections between them, and refuses what the runtimes
-cannot do before anything is provisioned. Nothing provisions from a plan yet:
-`Deployment` still uses its strategies.
+Code says what runs (the task, the harness, tool servers); a topology says where. A
+rollout's topology comes from what it declares (`topology_from`): its Compose
+services, the nodes its task declares (`TaskData.nodes`), and each tool server's
+placement (`ToolsetConfig.on`). `plan` turns it into the machines to provision and
+the connections between them, and refuses what the runtimes cannot do before anything
+is provisioned; `Deployment` realizes the plan.
 """
 
 from __future__ import annotations
 
+import re
 import shlex
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import Field, TypeAdapter, model_validator
 from pydantic_config import BaseConfig
 
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
+
+if TYPE_CHECKING:
+    from verifiers.v1.runtimes.compose import ComposeSpec
 from verifiers.v1.runtimes import (
     RuntimeBackend,
     RuntimeConfig,
@@ -78,6 +84,9 @@ class TopologyConfig(BaseConfig):
     """Where the harness's native tools (shell, files, kernels) execute."""
     mcp_servers: dict[str, str] = Field(default_factory=dict)
     """The node each MCP server runs on."""
+    compose: list[str] = Field(default_factory=list)
+    """The nodes that are services of the task's Compose project, which runs them as
+    authored."""
 
     @model_validator(mode="after")
     def _known_nodes(self):
@@ -277,60 +286,162 @@ def _machines(
     runtimes: Mapping[str, RuntimeConfig],
     capabilities: Callable[[RuntimeConfig], Capabilities],
 ) -> tuple[Machine, ...]:
-    # Egress belongs to a machine, so only nodes with one policy can share one.
-    groups: dict[object, list[str]] = {}
-    for name, config in runtimes.items():
-        key = (
-            name
-            if topology.node(name).isolated
-            else (_backend(config), _policy(config))
+    # Egress belongs to a machine, so only nodes under the workspace's policy can
+    # share its machine. Every other node gets a machine of its own.
+    workspace = runtimes[WORKSPACE]
+
+    def shares(name: str) -> bool:
+        config = runtimes[name]
+        return (
+            not topology.node(name).isolated
+            and not topology.node(WORKSPACE).isolated
+            and _backend(config) is _backend(workspace)
+            and _policy(config) == _policy(workspace)
         )
-        groups.setdefault(key, []).append(name)
-    machines = []
-    for names in groups.values():
-        config = runtimes[names[0]]
-        if len(names) == 1 or capabilities(config).compose:
-            machines.append(Machine(tuple(names), config))
-        elif capabilities(config).private_network:
-            machines.extend(Machine((name,), runtimes[name]) for name in names)
-        else:
-            raise PlacementError(
-                f"nodes {names} would share a machine, but the {config.type} runtime "
-                "can neither run Compose services nor join machines on a private "
-                "network; use a supported runtime"
-            )
+
+    packed = [WORKSPACE, *(n for n in runtimes if n != WORKSPACE and shares(n))]
+    if len(packed) == 1 or capabilities(workspace).compose:
+        machines = [Machine(tuple(packed), workspace)]
+    elif capabilities(workspace).private_network:
+        machines = [Machine((name,), runtimes[name]) for name in packed]
+    else:
+        raise PlacementError(
+            f"nodes {packed} would share a machine, but the {workspace.type} runtime "
+            "can neither run Compose services nor join machines on a private network; "
+            "use a supported runtime"
+        )
+    machines += [Machine((n,), runtimes[n]) for n in runtimes if n not in packed]
     return tuple(machines)
 
 
 def topology_from(
     toolsets: Mapping[str, Any],
     compose: Mapping[str, Any] | None = None,
+    nodes: Mapping[str, NodeConfig] | None = None,
+    *,
+    workspace: RuntimeConfig | None = None,
+    borrowed: bool = False,
+    compose_workspace: str | None = None,
 ) -> TopologyConfig:
-    """Today's placement knobs as a topology: each toolset's `colocated`, `runtime` or
-    `service`, and a task's Compose services. It shows that the model can say
-    everything they say; nothing calls it yet."""
-    nodes = nodes_from_compose(compose) if compose is not None else {}
+    """A rollout's topology: the services of its Compose project, the nodes its task
+    declares, and where each tool server runs, by server name.
+
+    A server runs where its `on` says (`colocated` and `service` are its older
+    spellings). Otherwise, a server with a runtime of its own gets a machine of its own
+    when the workspace (`workspace`, unborrowed and without Compose services) can join
+    one on a private network; any other server runs on the evaluator, which provisions
+    a runtime of its own at a published port. `compose_workspace` names the Compose
+    service that is the workspace (`main` by default)."""
+    authored = WORKSPACE if compose_workspace is None else compose_workspace
+    services = nodes_from_compose(compose, authored) if compose is not None else {}
+    if both := sorted(services.keys() & dict(nodes or {}).keys()):
+        raise ValueError(f"nodes {both} are both declared and Compose services")
+    declared = {**services, **(nodes or {})}
+    own_machines = (
+        workspace is not None
+        and compose is None
+        and not borrowed
+        and backend_cls(workspace).SUPPORTS_PRIVATE_NETWORK
+    )
     servers = {}
     for name, config in toolsets.items():
         if config.url is not None:
             continue  # a remote server: nothing to place
         if config.service is not None:
-            servers[name] = config.service
-        elif config.colocated:
-            servers[name] = WORKSPACE
-        elif not isinstance(config.runtime, SubprocessConfig):
-            # A runtime of its own is a machine of its own, as a tool VM is today.
-            node = f"tools-{name}"
-            if node in nodes:
+            if compose is None or config.service not in compose.get("services", {}):
                 raise ValueError(
-                    f"toolset {name!r} needs a node named {node!r}, which the Compose "
-                    "project already declares"
+                    f"server {name!r} runs in service {config.service!r}, which needs "
+                    "a task whose Compose services define it"
                 )
-            nodes[node] = NodeConfig(runtime=config.runtime.model_dump(), isolated=True)
-            servers[name] = node
+            servers[name] = WORKSPACE if config.service == authored else config.service
+        elif config.node is not None:
+            servers[name] = config.node
+        elif isinstance(config.runtime, SubprocessConfig):
+            servers[name] = HOST
+        elif own_machines and _backend(config.runtime) is _backend(workspace):
+            # A runtime of its own is a machine of its own, a node named after the
+            # server, so task hooks reach it as `deployment.target(name)`.
+            if name in (WORKSPACE, HOST) or name in declared:
+                raise ValueError(
+                    f"tool server {name!r} needs a machine of its own named after it, "
+                    "but that name is the workspace's, the evaluator's, or a node the "
+                    "task declares"
+                )
+            declared[name] = NodeConfig(
+                runtime=config.runtime.model_dump(), isolated=True
+            )
+            servers[name] = name
         else:
             servers[name] = HOST
-    return TopologyConfig(nodes=nodes, mcp_servers=servers)
+    return TopologyConfig(nodes=declared, mcp_servers=servers, compose=sorted(services))
+
+
+def task_topology(
+    toolsets: Mapping[str, Any],
+    spec: ComposeSpec | None,
+    nodes: Mapping[str, NodeConfig] | None,
+    *,
+    workspace: RuntimeConfig,
+    borrowed: bool = False,
+) -> TopologyConfig:
+    """`topology_from` for a task: its Compose file as authored, if it has one, and the
+    nodes its data declares."""
+    from verifiers.v1.runtimes.compose import authored_project
+
+    return topology_from(
+        toolsets,
+        authored_project(spec) if spec is not None else None,
+        nodes,
+        workspace=workspace,
+        borrowed=borrowed,
+        compose_workspace=spec.workspace if spec is not None else None,
+    )
+
+
+def compose_project(topology: TopologyConfig, result: Plan) -> dict[str, Any]:
+    """A Compose project for the declared nodes that share the workspace's machine.
+
+    Each service gets a network of its own for egress, and each connection between two
+    of them a network of those two. Container networks are symmetric: a target can
+    open connections to its source too, as on any Compose network."""
+    machine = result.machine(WORKSPACE)
+    assert machine is not None
+    names = [name for name in machine.nodes if name != WORKSPACE]
+    if invalid := [n for n in names if not re.fullmatch(r"[a-z0-9][a-z0-9_.-]*", n)]:
+        raise PlacementError(f"nodes {invalid} need names Compose accepts as services")
+    services: dict[str, dict[str, Any]] = {
+        name: {"networks": [f"vf-{name}"]} for name in [WORKSPACE, *names]
+    }
+    networks: dict[str, dict[str, Any]] = {f"vf-{name}": {} for name in services}
+    for connection in result.connections:
+        if connection.via != "container network":
+            continue
+        network = f"vf-{connection.source}-{connection.target}"
+        networks[network] = {"internal": True}
+        for name in (connection.source, connection.target):
+            services[name]["networks"].append(network)
+    for name in names:
+        service = services[name]
+        service["image"] = result.runtimes[name].image
+        process = topology.node(name).process
+        if process is None:
+            continue
+        if process.command is not None:
+            service["command"] = process.command
+        if process.environment or process.passthrough:
+            service["environment"] = [
+                *(f"{key}={value}" for key, value in process.environment.items()),
+                *process.passthrough,
+            ]
+        if process.workdir is not None:
+            service["working_dir"] = process.workdir
+        if process.readiness is not None:
+            service["healthcheck"] = {
+                "test": ["CMD", *process.readiness],
+                "interval": "2s",
+                "retries": 300,
+            }
+    return {"services": services, "networks": networks}
 
 
 def nodes_from_compose(
@@ -348,7 +459,10 @@ def nodes_from_compose(
         mode = service.get("network_mode")
         if mode == "none":
             return set()
-        if mode is not None:
+        if isinstance(mode, str) and mode.startswith("service:"):
+            # It shares that service's network namespace; Compose rejects cycles.
+            return networks(services[mode.removeprefix("service:")])
+        if mode not in (None, "bridge"):
             raise ValueError(f"network_mode {mode!r} has no node equivalent")
         declared = service.get("networks") or ["default"]
         return set(declared if isinstance(declared, list) else declared.keys())

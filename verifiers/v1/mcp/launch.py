@@ -448,28 +448,33 @@ async def _serve(
     placements: Mapping[str, Runtime] | None = None,
 ):
     cfg = server.config
-    colocated = getattr(cfg, "colocated", False)
-    service = getattr(cfg, "service", None)
-    own_vm = (placements or {}).get(server.server_name)
-    if service is not None or own_vm is not None:
-        # The harness reaches the server over the deployment's network: a Compose
-        # service by its name, a VM of its own by its LAN name.
-        if own_vm is not None:
-            runtime = own_vm
+    node = getattr(cfg, "node", None)
+    colocated = node == "main"
+    placed = (placements or {}).get(server.server_name)
+    if placed is not None or node not in (None, "main", "host"):
+        # The harness reaches a server on another node over the deployment's network:
+        # a Compose service by its name, a machine of its own by its network name.
+        if placed is not None:
+            runtime = placed
             host = (hosts or {})[server.server_name]
-        elif services is None or service not in services:
+        elif services is not None and node in services:
+            runtime = services[node]
+            host = (hosts or {}).get(node, node)
+        elif getattr(cfg, "service", None) is not None:
             raise ToolsetError(
-                f"server {server.server_name!r} runs in service {service!r}, "
+                f"server {server.server_name!r} runs in service {node!r}, "
                 "which needs a task whose Compose services define it"
             )
         else:
-            runtime = services[service]
-            host = (hosts or {}).get(service, service)
-        if runtime.is_local:
-            # A local service cannot reach the host-loopback state channel.
             raise ToolsetError(
-                f"server {server.server_name!r} runs in Compose service {service!r}, "
-                "which needs Compose on a remote runtime such as Prime"
+                f"server {server.server_name!r} runs on node {node!r}, which needs a "
+                "task that declares that node"
+            )
+        if runtime.is_local:
+            # A local node cannot reach the host-loopback state channel.
+            raise ToolsetError(
+                f"server {server.server_name!r} runs on node {node!r}, which needs "
+                "a remote runtime such as Prime"
             )
         port = await serve_in_runtime(
             server,

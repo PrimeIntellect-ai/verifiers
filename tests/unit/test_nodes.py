@@ -21,6 +21,7 @@ from verifiers.v1.runtimes.nodes import (
     PlacementError,
     ProcessConfig,
     TopologyConfig,
+    compose_project,
     nodes_from_compose,
     plan,
     topology_from,
@@ -195,20 +196,23 @@ def test_todays_knobs_lower_to_a_topology():
         "gym": vf.ToolsetConfig(service="tools"),
         "forth": vf.ToolsetConfig(runtime=PrimeConfig(image=FORTH, allow=[])),
     }
-    topology = topology_from(toolsets, EOG)
+    topology = topology_from(toolsets, EOG, workspace=OFFLINE)
+    # Beside Compose services, a server with a runtime of its own keeps its published
+    # port, provisioned from the evaluator's side.
     assert topology.mcp_servers == {
         "search": "host",
         "files": "main",
         "gym": "tools",
-        "forth": "tools-forth",
+        "forth": "host",
     }
-    # A server with a runtime of its own keeps a machine of its own, joined to the
-    # workspace over the private network even beside Compose services.
-    result = plan(topology, OFFLINE)
-    assert result.machine("tools-forth") is not result.machine("main")
-    assert Connection("main", "tools-forth", "mcp:forth", "private network") in set(
-        result.connections
-    )
+    assert topology.compose == ["calendar", "gmail", "main", "tools"]
+    # Without them, it gets a machine of its own on the private network.
+    alone = topology_from({"forth": toolsets["forth"]}, workspace=OFFLINE)
+    result = plan(alone, OFFLINE)
+    assert result.machine("forth") is not result.machine("main")
+    assert set(result.connections) == {
+        Connection("main", "forth", "mcp:forth", "private network")
+    }
     assert result.machine("host") is None
 
 
@@ -241,6 +245,8 @@ def test_compose_services_keep_their_compose_meaning():
     # No network: nothing reaches it, and it reaches nothing.
     assert services["batch"].reachable_from == []
     assert "batch" not in services["db"].reachable_from
+    bridged = {"services": {"main": {}, "x": {"network_mode": "bridge"}}}
+    assert nodes_from_compose(bridged)["x"].reachable_from == ["main"]
     host = {"services": {"main": {}, "x": {"image": "x", "network_mode": "host"}}}
     with pytest.raises(ValueError, match="network_mode 'host' has no node"):
         nodes_from_compose(host)
@@ -291,10 +297,57 @@ def test_runtime_plugins_are_told_apart_by_their_backends():
     )
 
 
-def test_a_remote_toolset_is_not_placed_and_tool_nodes_keep_compose_names():
+def test_a_remote_toolset_is_not_placed_and_tool_machines_take_free_names():
     remote = vf.ToolsetConfig(url="https://tools.example/mcp", runtime=PrimeConfig())
-    assert topology_from({"remote": remote}).mcp_servers == {}
-    project = {"services": {"main": {}, "tools-search": {"image": "search"}}}
+    assert topology_from({"remote": remote}, workspace=OFFLINE).mcp_servers == {}
+    declared = {"search": NodeConfig(runtime={"image": "search"})}
     own = vf.ToolsetConfig(runtime=PrimeConfig())
-    with pytest.raises(ValueError, match="'tools-search', which the Compose project"):
-        topology_from({"search": own}, project)
+    with pytest.raises(ValueError, match="'search' needs a machine of its own named"):
+        topology_from({"search": own}, nodes=declared, workspace=OFFLINE)
+    with pytest.raises(ValueError, match="'main' needs a machine of its own named"):
+        topology_from({"main": own}, workspace=OFFLINE)
+    authored = {"services": {"main": {}, "db": {}}}
+    with pytest.raises(ValueError, match=r"nodes \['db'\] are both declared"):
+        topology_from({}, authored, {"db": NodeConfig()})
+
+
+def test_only_the_workspace_s_machine_is_shared():
+    online = NodeConfig(runtime={"allow": ["*"]})
+    topology = TopologyConfig(
+        nodes={"atlas": online, "search": online},
+        mcp_servers={"atlas": "atlas", "search": "search"},
+    )
+    # The same policy as each other, but not the workspace's: a machine each.
+    assert shape(plan(topology, OFFLINE))[0] == [("main",), ("atlas",), ("search",)]
+
+
+def test_declared_nodes_on_the_workspace_s_machine_become_a_compose_project():
+    db = NodeConfig(
+        runtime={"image": "postgres"},
+        process=ProcessConfig(
+            environment={"POSTGRES_PASSWORD": "pw"},
+            passthrough=["PGDATA"],
+            readiness=["pg_isready"],
+        ),
+    )
+    cache = NodeConfig(
+        runtime={"image": "redis"},
+        process=ProcessConfig(command=["redis-server"], workdir="/data"),
+        reachable_from=["db"],
+    )
+    topology = TopologyConfig(nodes={"db": db, "cache": cache})
+    project = compose_project(topology, plan(topology, OFFLINE))
+    services, networks = project["services"], project["networks"]
+    # A network of its own for egress, and one per connection, shared by its two ends.
+    assert set(services["main"]["networks"]) == {"vf-main", "vf-main-db"}
+    assert set(services["db"]["networks"]) == {"vf-db", "vf-main-db", "vf-db-cache"}
+    assert set(services["cache"]["networks"]) == {"vf-cache", "vf-db-cache"}
+    assert networks["vf-main"] == {} and networks["vf-db-cache"] == {"internal": True}
+    assert services["db"]["image"] == "postgres" and "command" not in services["db"]
+    assert services["db"]["environment"] == ["POSTGRES_PASSWORD=pw", "PGDATA"]
+    assert services["db"]["healthcheck"]["test"] == ["CMD", "pg_isready"]
+    assert services["cache"]["command"] == ["redis-server"]
+    assert services["cache"]["working_dir"] == "/data"
+    with pytest.raises(PlacementError, match="names Compose accepts"):
+        named = TopologyConfig(nodes={"DB!": NodeConfig()})
+        compose_project(named, plan(named, OFFLINE))

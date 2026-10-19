@@ -1,8 +1,8 @@
 # RFC 0001: Nodes, one placement model for a rollout
 
-- **Status:** draft for discussion.
+- **Status:** implemented for a task's nodes and tool servers; the agent's side (split execution, a harness or user on a node) is still a proposal.
 - **Builds on:** #2862, the runtime plugins and capability flags, and #2876, tool servers on Prime VMs of their own. Both are on main.
-- **In this PR:** `SUPPORTS_PRIVATE_NETWORK` on the backend contract, with Prime's LAN behind it, and a prototype planner in `verifiers/v1/runtimes/nodes.py` that plans from config and provisions nothing.
+- **In this PR:** `SUPPORTS_PRIVATE_NETWORK` on the backend contract, with Prime's LAN behind it; `TaskData.nodes` and `ToolsetConfig.on`; and the planner (`verifiers/v1/runtimes/nodes.py`) wired into every rollout and `vf-validate`, which provision what it plans. See [In this PR](#in-this-pr).
 
 ## Summary
 
@@ -61,16 +61,22 @@ Prime refuses `expose`, so the private network is the only path between Prime ma
 
 ### Nodes
 
-```toml
-[env.taskset.task.nodes.atlas]
-runtime = { image = "prime/prime/mcp-atlas:1.2.5", cpu = 4, memory = 10, allow = ["*"] }
-process = { command = ["bash", "-lc", "<start atlas>"], readiness = ["sh", "-c", "<list tools>"] }
-reachable_from = ["main"]   # the default
-isolated = false            # the default
+```python
+vf.TaskData(
+    prompt=...,
+    nodes={
+        "atlas": vf.NodeConfig(
+            runtime={"image": "prime/prime/mcp-atlas:1.2.5", "cpu": 4, "memory": 10, "allow": ["*"]},
+            process=vf.ProcessConfig(command=["bash", "-lc", "<start atlas>"], readiness=["sh", "-c", "<list tools>"]),
+            reachable_from=["main"],  # the default
+            isolated=False,  # the default
+        ),
+    },
+)
 ```
 
 - **`runtime`:** the fields that differ from the workspace's runtime. Everything else follows the workspace: labels, team, idle timeout. Setting `type` starts from that runtime's defaults instead. A node's `allow` / `block` replace the workspace's policy whole.
-- **`process`:** optional. It is a long-running process besides any tool server placed on the node. Its environment reaches only that node.
+- **`process`:** optional. It is a long-running process besides any tool server placed on the node, with a readiness check. Its environment reaches only that node. Without a `command`, a node packed as a Compose service runs its image's own; a machine of its own needs one.
 - **`reachable_from`:** the nodes that may open connections to this one. The framework adds the connections its own parts need: the harness to its tools, and to where those tools execute.
 - **`isolated`:** gives the node a machine of its own even when it could share one. forth-lang uses this for agent code.
 
@@ -79,38 +85,38 @@ isolated = false            # the default
 - `main`, the workspace. It runs on the agent's runtime, resolved for the task by `resolve_runtime_config`. By default nothing may reach it.
 - `host`, the evaluator. Nothing is provisioned for it; it keeps its own egress, and nothing executes agent commands there.
 
-**Nodes per task row are data, not code.** EnterpriseOpsGym's gyms differ per row, so the taskset writes them into the row's data, and config can override them. `deployment_spec()` goes away.
+**Nodes per task row are data, not code.** EnterpriseOpsGym's gyms differ per row, so the taskset writes them into the row's data (`TaskData.nodes`). Later, config could override them, and `deployment_spec()` could go away.
 
 ### Placing the parts
 
 | Part | Where it is placed | Default |
 | --- | --- | --- |
-| The harness's agent loop (model credentials, conversation) | `agent.deployment.harness_on` | `main` |
-| The harness's native tools (shell, files, kernels) | `agent.deployment.execution_on` | Same as `harness_on` |
-| An MCP server: a `vf.Toolset`, an external command, or a URL | `mcp_servers.<name>.on` (a task's toolset: `task.tools.on`) | `host` |
-| A service | A node's `process` | none |
-| A simulated user | `user.on` | Where it runs today |
+| The harness's agent loop (model credentials, conversation) | `agent.deployment.harness_on` (proposed) | `main` |
+| The harness's native tools (shell, files, kernels) | `agent.deployment.execution_on` (proposed) | Same as `harness_on` |
+| A task's MCP server (`vf.Toolset`) | `ToolsetConfig.on` (in this PR) | `host` |
+| A service | A node's `process` (in this PR) | none |
+| A simulated user | `user.on` (proposed) | Where it runs today |
 | Shared grading | `main`, switched to the task's `scoring.network` | Unchanged |
 | Isolated grading | A fresh verifier node, after `main` stops | Unchanged |
 
 The agent config may add nodes for its own parts, such as the harness's node in split execution. They are merged with the task's, and a name used by both is an error.
 
-A tool server that only needs a node of its own keeps writing `runtime` on its toolset config, as Mika asked. `tools.runtime = PrimeConfig(...)` is shorthand for an implicit `isolated` node named after the server, with that runtime, plus `on` that node. Main does this today for a server beside a Prime workspace without Compose services.
+A tool server that only needs a node of its own keeps writing `runtime` on its toolset config, as Mika asked. `tools.runtime = PrimeConfig(...)` is shorthand for an implicit `isolated` node named after the server, with that runtime, plus `on` that node, beside a workspace without Compose services whose runtime has a private network. Elsewhere, the evaluator provisions the server's runtime at a published port, as before.
 
 ### What verifiers derives
 
 1. **Connections.** For each node T and each S in T's `reachable_from`, S may connect to T. On top of that:
    - the harness connects to where its native tools execute;
    - the harness connects to every MCP server's node.
-2. **Machines.** Nodes with the same runtime type and egress policy share a machine, unless one of them is `isolated`.
+2. **Machines.** Nodes with the workspace's runtime and egress policy share the workspace's machine, unless one of them is `isolated`. Every other node gets a machine of its own.
    - A machine holding one node boots that node's image directly. Atlas needs no Docker.
-   - A machine holding several runs them as containers. That needs `SUPPORTS_COMPOSE`; without it, they get a machine each on a private network. With neither, the plan is refused.
+   - The workspace's machine, holding several, runs them as containers: the task's Compose project, or one generated for its declared nodes. That needs `SUPPORTS_COMPOSE`; without it, they get a machine each on a private network. With neither, the plan is refused.
 3. **How each connection is realized:**
 
    | Between | Realization | Requires |
    | --- | --- | --- |
    | The same node | Loopback | none |
-   | Nodes on one machine | A container network per set of nodes that may reach each other | `SUPPORTS_COMPOSE` |
+   | Nodes on one machine | The task's Compose networks, or a container network per connection | `SUPPORTS_COMPOSE` |
    | Machines | A private network, with one rule per connection | `SUPPORTS_PRIVATE_NETWORK` on both |
    | A node to the evaluator | The tunnel, as the model endpoint uses today | none |
    | The evaluator to a node | `expose` | `SUPPORTS_PORT_EXPOSURE` |
@@ -216,12 +222,12 @@ pi already has an ASP extension, and Harbor plans terminus-slim on ASP. This wou
 | `ToolsetConfig.colocated` / `runtime` / `service` | `task.tools.on` (`topology_from` shows the mapping) |
 | `ToolsetConfig.url` | An MCP server whose source is a URL |
 | Harbor's MCP proxy toolset (`tasksets/harbor/toolset.py`) | `mcp_servers` entries with a command or URL source |
-| `_ColocatedDeployment`, `_ContainerDeployment`, `_PrivateNetworkDeployment` | One deployment that realizes a plan |
+| `_ColocatedDeployment`, `_ContainerDeployment`, `_PrivateNetworkDeployment` | Realizations a plan picks (in this PR); later, one deployment that realizes any plan |
 
 ## Compatibility
 
 - **Envs that declare nothing:** a plan with one `main` node, the harness inside it and tool servers on the evaluator. That's today. In prime-envs, about 100 of the 108 envs define no toolset.
-- **Python toolsets** (wikispeedia, browsecomp_plus, bfcl_v3, general_agent, ptx_remote): the class is unchanged. `colocated` and `service` stay as deprecated aliases of `on` for a release. `runtime` keeps its #2876 meaning: a node of the server's own.
+- **Python toolsets** (wikispeedia, browsecomp_plus, bfcl_v3, general_agent, ptx_remote): the class is unchanged. `colocated` and `service` stay as the older spellings of `on`. `runtime` keeps its #2876 meaning: a node of the server's own, named after it, so `deployment.target(name)` still reaches it.
 - **Harbor (22 envs) stays a task adapter.**
   - An image becomes `main`'s image.
   - `environment/docker-compose.yaml` becomes nodes through `nodes_from_compose`, all under the task's policy, so they pack onto one machine as today.
@@ -239,35 +245,46 @@ On main:
 
 In this PR:
 
-- **`SUPPORTS_PRIVATE_NETWORK` and `private_network()`,** implemented by `PrimeBackend`, with the conformance test.
+1. **`SUPPORTS_PRIVATE_NETWORK` and `private_network()`,** implemented by `PrimeBackend`, with the conformance test.
+2. **The planner, wired in.** `TaskData.nodes` and `ToolsetConfig.on`. Every rollout and `vf-validate` builds its topology (`task_topology`), plans it before provisioning, and the plan picks the realization.
 
 Next:
 
-1. **Wire the planner into `Deployment`,** replacing the strategies. Add `on` and nodes to config, and turn the toolset fields into aliases.
-2. **Rebase the split stack (#2803 → #2831 → #2850)** as `harness_on` / `execution_on`, with nano-rlm #218's transports as the `execution` bindings.
+1. **Rebase the split stack (#2803 → #2831 → #2850)** as `harness_on` / `execution_on`, with nano-rlm #218's transports as the `execution` bindings. That brings the agent's side into the topology.
+2. **One deployment for any plan,** replacing the three realizations. That covers a Compose project beside machines of its own, and declared nodes beside the task's own Compose project.
 3. **Optional:**
    - an ASP transport, once a harness we want supports ASP;
    - capability-based packing beyond policy equality.
 
+## Decisions taken in this PR
+
+Each one is reversible. The alternative is noted.
+
+1. **Names:** `on`, `nodes`, `NodeConfig` and `ProcessConfig`, and `reachable_from` on the target. Alternatives: `placement`, `hosts`, `reaches` on the source.
+2. **Per-row nodes:** a `TaskData.nodes` field, defaulting to None so existing task hashes don't change. Alternative: a taskset hook.
+3. **Packing:** only onto the workspace's machine. Two nodes that share a policy but not the workspace's get a machine each, which costs a VM but needs no Compose host on the private network. Alternative: pack them onto one machine of their own.
+4. **Declared nodes on the workspace's machine:** a generated Compose project, one service per node, with a network of its own per service for egress and one per connection. Container networks are symmetric, so a target can also open connections to its source. Alternative: per-connection iptables rules on the host VM.
+5. **A packed node's image:** its own container, the workspace's image unless it names one. Its `cpu` and `memory` are not applied; the workspace's machine keeps its own size.
+6. **Tool servers with a runtime of their own:** a machine of their own named after the server, where #2876 placed them, so `deployment.target(name)` keeps working. Elsewhere they keep their published port.
+7. **A machine of its own's name:** the workspace reaches it at its `network_host` (`<id>.sandbox.internal` on Prime), and task hooks look it up with `deployment.host(name)`. Alternative: an `/etc/hosts` alias in the workspace, so every node is reached by its name.
+8. **Refused for now:** declared nodes beside the task's own Compose project, and a Compose project beside machines of their own (its host VM cannot join the private network yet).
+
 ## Open questions
 
 1. **Resources on a packed machine.** Sum the nodes' `cpu` and `memory`, or take the largest? EnterpriseOpsGym sizes its host by hand today.
-2. **Names:** `on` or `placement`; `nodes` or `hosts`; `mcp_servers` for the placed thing, with `vf.Toolset` kept for the class.
-3. **Edges declared on the target or the source:** `reachable_from` on the target, or `reaches` on the source?
-4. **Per-row nodes:** a `TaskData.nodes` field, or a taskset hook that returns them?
-5. **A packed node's image:** its own container, or the machine's when it is the only node with an image?
-6. **Sharing across rollouts:** for example one instance of Atlas's stateless servers for many rollouts. Out of scope here.
-7. **Policy on local Compose.** Docker packs nodes through local Compose, which enforces no network policy. To refuse a restricted packed plan on Docker, the planner needs that stated: a flag of its own, or policy enforcement as part of `SUPPORTS_COMPOSE`?
-8. **Exposure on Prime.** A Prime VM can publish an HTTP port to the internet through a private-network rule from `internet` to its tag and port, with no authentication. That could back `SUPPORTS_PORT_EXPOSURE` for Prime VMs, and with it a harness or tool server reached from the evaluator. Tool servers would first need to authenticate their callers.
+2. **Config overrides of a row's nodes,** for example to give one node another image in an eval config.
+3. **Sharing across rollouts:** for example one instance of Atlas's stateless servers for many rollouts. Out of scope here.
+4. **Policy on local Compose.** Docker packs nodes through local Compose, which enforces no network policy. To refuse a restricted packed plan on Docker, the planner needs that stated: a flag of its own, or policy enforcement as part of `SUPPORTS_COMPOSE`?
+5. **Exposure on Prime.** A Prime VM can publish an HTTP port to the internet through a private-network rule from `internet` to its tag and port, with no authentication. That could back `SUPPORTS_PORT_EXPOSURE` for Prime VMs, and with it a harness or tool server reached from the evaluator. Tool servers would first need to authenticate their callers.
 
-## The prototype in this PR
+## In this PR
 
-`verifiers/v1/runtimes/nodes.py` contains:
+`verifiers/v1/runtimes/nodes.py`:
 
-- the config models (`NodeConfig`, `ProcessConfig`, `TopologyConfig`);
-- `plan()`, which returns machines and connections or raises `PlacementError`;
-- `capabilities()`, read from the backend's flags;
-- `topology_from()`, which turns today's toolset knobs and a Compose project into a topology;
+- the config models (`NodeConfig`, `ProcessConfig`, and `TopologyConfig`, which flattens a rollout's placements into one model);
+- `topology_from()` / `task_topology()`, which build a rollout's topology from its Compose project, `TaskData.nodes` and its toolsets' placements;
+- `plan()`, which returns machines and connections or raises `PlacementError`, from the capabilities the backends declare;
+- `compose_project()`, the Compose project for declared nodes on the workspace's machine;
 - `nodes_from_compose()`.
 
-`TopologyConfig` flattens the proposed config surface into one model: `mcp_servers` maps each server to its node. "Placing the parts" says where each field would be set. Nothing calls it; `Deployment` still uses its strategies. The tests plan every rollout above from config alone, with the capabilities the backends declare, along with the refusals.
+`runtimes/strategies.py` picks the realization from the plan and refuses what it cannot realize before provisioning. A machine of its own boots its node's runtime and starts its process. The private network carries one rule per planned connection, and a machine keeps its state channel only when it runs a tool server. The unit tests plan every rollout above from config. `tests/integration/test_nodes.py` runs a node on a machine of its own, and a node packed beside the workspace, live on Prime.

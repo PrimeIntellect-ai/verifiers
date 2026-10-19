@@ -1,56 +1,24 @@
-"""Tool servers on runtimes of their own, reached from the workspace over a private
-network.
+"""Machines of their own, joined to the workspace over the rollout's private network.
 
-A machine's network policy covers the whole machine, so a tool server whose egress or
-isolation differs from the workspace's, such as one that calls public APIs beside a
-workspace with none, or one that runs agent-submitted code with none, runs on a runtime
-of its own (`ToolsetConfig.runtime`). Beside a workspace whose runtime declares
+A machine's network policy covers the whole machine, so a node whose egress or
+isolation differs from the workspace's, such as a tool server that calls public APIs
+beside a workspace with none, or one that runs agent-submitted code with none, runs on
+a machine of its own. Beside a workspace whose runtime declares
 `SUPPORTS_PRIVATE_NETWORK`, as Prime's does, each rollout gets a network of its own on
-which the workspace may open connections to those servers' machines and nothing may
-open one to the workspace. The harness reaches a server at its machine's
+which only the planned connections may be opened. A node is reached at its machine's
 `network_host`.
 """
 
 import asyncio
 import logging
-from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Collection, Mapping
 from contextlib import AsyncExitStack, asynccontextmanager
 
-from verifiers.v1.runtimes import (
-    RuntimeBackend,
-    RuntimeConfig,
-    backend_cls,
-    make_backend,
-)
+from verifiers.v1.runtimes import RuntimeBackend, RuntimeConfig, make_backend
 
 logger = logging.getLogger(__name__)
 
 WORKSPACE = "main"
-
-
-def tool_vms(
-    toolsets, workspace, *, composed: bool, borrowed: bool
-) -> dict[str, RuntimeConfig]:
-    """The task's tool servers that join the workspace over the rollout's private
-    network, by server name: those on runtimes of their own, of the workspace's runtime,
-    beside a workspace of the rollout's own that declares a private network and has no
-    Compose services. Any other server keeps its runtime's published port, which takes
-    no network policy."""
-    if composed or borrowed or not backend_cls(workspace).SUPPORTS_PRIVATE_NETWORK:
-        return {}
-    vms = {
-        toolset.server_name: toolset.config.runtime
-        for toolset in toolsets
-        if backend_cls(toolset.config.runtime) is backend_cls(workspace)
-        and not toolset.config.colocated
-        and not toolset.config.url
-        and toolset.config.service is None
-    }
-    if WORKSPACE in vms:
-        raise ValueError(
-            f"a tool server on a machine of its own cannot be named {WORKSPACE!r}"
-        )
-    return vms
 
 
 @asynccontextmanager
@@ -58,19 +26,20 @@ async def private_network(
     workspace: RuntimeBackend,
     members: Mapping[str, RuntimeConfig],
     start_workspace: Callable[[], Awaitable[object]],
+    rules: Collection[tuple[str, str]] | None = None,
 ) -> AsyncIterator[dict[str, RuntimeBackend]]:
     """Boot the workspace and one machine per member together, on a network of the
-    rollout's own on which the workspace may open connections to every member."""
+    rollout's own on which each `(source, target)` rule lets the source open
+    connections to the target; by default, the workspace to every member."""
     backends = {
-        name: make_backend(config, f"{workspace.name}-tool-{index}")
+        name: make_backend(config, f"{workspace.name}-node-{index}")
         for index, (name, config) in enumerate(members.items())
     }
+    if rules is None:
+        rules = [(WORKSPACE, name) for name in backends]
     async with AsyncExitStack() as stack:
         await stack.enter_async_context(
-            type(workspace).private_network(
-                {WORKSPACE: workspace, **backends},
-                [(WORKSPACE, name) for name in backends],
-            )
+            type(workspace).private_network({WORKSPACE: workspace, **backends}, rules)
         )
 
         async def provision(backend: RuntimeBackend) -> None:

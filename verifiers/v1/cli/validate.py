@@ -39,6 +39,7 @@ from verifiers.v1.grading import (
 )
 from verifiers.v1.runtimes import make_backend
 from verifiers.v1.runtimes.deployment import Deployment
+from verifiers.v1.runtimes.nodes import plan, task_topology
 from verifiers.v1.state import state_cls
 from verifiers.v1.task import Task
 from verifiers.v1.trace import Trace, TraceTask
@@ -323,8 +324,17 @@ async def _run_check(task: Task, config: ValidateConfig, mode: str) -> ResultRow
     trace: Trace | None = None
     deployment: Deployment | None = None
     try:
+        spec = task.deployment_spec()
+        # The nodes the task declares, as a rollout plans them; no tool servers run here.
+        async with boundary(TaskError, "planning the task's nodes"):
+            topology = task_topology(
+                {}, spec, task.data.nodes, workspace=backend.config
+            )
+            placement = plan(topology, backend.config)
         deployment = backend.deploy(
-            spec=task.deployment_spec(),
+            spec=spec,
+            plan=placement,
+            topology=topology,
             env=task.runtime_env(),
             config=config.deployment,
         )

@@ -270,6 +270,7 @@ Tools defined on `Taskset.toolsets(config)` run in a server shared across a work
 A toolset's config controls where the MCP server runs:
 
 - **Host subprocess (default)** — launches the server as a local subprocess with its own filesystem.
+- **`on = "<node>"`** (per-task toolsets only) — runs the tool server on a node: `"main"` (the workspace), `"host"` (the evaluator), a node the task declares in `TaskData.nodes`, or a service of its Compose project. The harness reaches it over the rollout's network by the node's name; see [nodes](runtimes.md#nodes). `colocated` and `service` below are its older spellings.
 - **`colocated = true`** (per-task toolsets only) — runs the tool server inside the agent's own runtime container so tools share the agent's filesystem directly.
 - **`service = "<name>"`** (per-task toolsets on Prime VM Compose) — runs the tool server inside a named service from the task's Compose stack. The harness reaches it over the Compose network by service name, so the tool server can front internal services that the workspace cannot reach directly.
 - **`runtime = { type = "docker", ... }`** — runs the tool server in its own dedicated container.
