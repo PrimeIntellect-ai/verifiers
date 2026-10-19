@@ -7,6 +7,8 @@ program in the sandbox reaching a host service) is the shared host-side `Tunnel`
 (interception.tunnel), not the runtime's concern.
 """
 
+from __future__ import annotations
+
 import asyncio
 import contextlib
 import logging
@@ -26,10 +28,11 @@ from verifiers.v1.runtimes.base import (
     SERVICE_PORT,
     BaseRuntimeInfo,
     ProgramResult,
-    Runtime,
+    RuntimeBackend,
     RuntimeProcess,
 )
 from verifiers.v1.runtimes.limiters import creation_limiter
+from verifiers.v1.runtimes.runtime import Runtime
 from verifiers.v1.utils.aio import run_shielded
 from verifiers.v1.utils.scope import run_scope
 
@@ -100,7 +103,7 @@ class ModalConfig(NetworkPolicyConfig):
     env-server worker process (None/<= 0 disables it)."""
 
     @model_validator(mode="after")
-    def _validate_egress(self) -> "ModalConfig":
+    def _validate_egress(self) -> ModalConfig:
         if not self.network_restricted:
             return self
         if not self.network_access:
@@ -116,7 +119,7 @@ class ModalConfig(NetworkPolicyConfig):
         return self
 
     @model_validator(mode="after")
-    def _validate_vm(self) -> "ModalConfig":
+    def _validate_vm(self) -> ModalConfig:
         if self.vm and self.gpu:
             raise ValueError("Modal VM sandboxes support CPU workloads only")
         return self
@@ -169,7 +172,7 @@ class ModalProcess(RuntimeProcess):
             raise SandboxError(f"modal exec process signal failed: {stderr.strip()}")
 
 
-class ModalRuntime(Runtime):
+class ModalBackend(RuntimeBackend):
     is_local: ClassVar[bool] = False
 
     def __init__(self, config: ModalConfig, name: str | None = None) -> None:
@@ -187,7 +190,7 @@ class ModalRuntime(Runtime):
             import modal
         except ModuleNotFoundError as e:
             raise ModuleNotFoundError(
-                "ModalRuntime requires the Modal SDK; install `verifiers[modal]`."
+                "ModalBackend requires the Modal SDK; install `verifiers[modal]`."
             ) from e
 
         try:
@@ -292,10 +295,12 @@ class ModalRuntime(Runtime):
         tunnel = tunnels.get(port)
         return str(tunnel.url).rstrip("/") if tunnel else None
 
-    async def run(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
+    async def _run(
+        self, runtime: Runtime, argv: list[str], env: dict[str, str]
+    ) -> ProgramResult:
         try:
             proc = await self._sandbox.exec.aio(
-                *argv, workdir=self.config.workdir, env=self.process_env(env)
+                *argv, workdir=self.config.workdir, env=runtime.process_env(env)
             )
             # Drain both pipes concurrently so a large stderr can't deadlock stdout.
             stdout, stderr = await asyncio.gather(
@@ -312,8 +317,8 @@ class ModalRuntime(Runtime):
             stderr=stderr or "",
         )
 
-    async def open_process(
-        self, argv: list[str], env: dict[str, str]
+    async def _open_process(
+        self, runtime: Runtime, argv: list[str], env: dict[str, str]
     ) -> RuntimeProcess:
         pidfile = f".vf-process-{uuid.uuid4().hex}.pid"
         wrapper = 'echo $$ > "$1"; shift; exec "$@"'
@@ -326,13 +331,13 @@ class ModalRuntime(Runtime):
                 pidfile,
                 *argv,
                 workdir=self.config.workdir,
-                env=self.process_env(env),
+                env=runtime.process_env(env),
                 text=False,
             )
             loop = asyncio.get_running_loop()
             deadline = loop.time() + 5
             while True:
-                ready = await self.run(["cat", pidfile], {})
+                ready = await runtime.run(["cat", pidfile], {})
                 if ready.exit_code == 0 and ready.stdout.strip().isdigit():
                     return ModalProcess(
                         proc,
@@ -368,13 +373,13 @@ class ModalRuntime(Runtime):
         except Exception as e:
             raise SandboxError(f"modal live process failed to start: {e}") from e
 
-    async def run_background(
-        self, argv: list[str], env: dict[str, str], log: str
+    async def _run_background(
+        self, runtime: Runtime, argv: list[str], env: dict[str, str], log: str
     ) -> None:
         # `&` backgrounds inside the sandbox; the job returns immediately, the process
         # lives until the sandbox is terminated in stop().
         inner = f"nohup {shlex.join(argv)} > {shlex.quote(log)} 2>&1 &"
-        result = await self.run(["sh", "-c", inner], env)
+        result = await runtime.run(["sh", "-c", inner], env)
         if result.exit_code != 0:
             raise SandboxError(
                 f"modal background launch failed: {result.stderr.strip()}"
@@ -387,15 +392,17 @@ class ModalRuntime(Runtime):
             return path
         return f"{self.config.workdir.rstrip('/')}/{path}"
 
-    async def _read(self, path: str, max_bytes: int | None = None) -> bytes:
+    async def _read(
+        self, runtime: Runtime, path: str, max_bytes: int | None = None
+    ) -> bytes:
         if max_bytes is not None:
-            return await super()._read(path, max_bytes)
+            return await super()._read(runtime, path, max_bytes)
         try:
             return await self._sandbox.filesystem.read_bytes.aio(self._abs(path))
         except Exception as e:
             raise SandboxError(f"read {path!r}: {e}") from e
 
-    async def write(self, path: str, data: bytes) -> None:
+    async def _write(self, runtime: Runtime, path: str, data: bytes) -> None:
         # Create the parent first (Modal's write does not mkdir).
         target = self._abs(path)
         try:

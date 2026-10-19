@@ -9,8 +9,9 @@ server; un-entered, each run brings its own."""
 
 import asyncio
 import logging
-from collections.abc import AsyncIterator, Callable, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager, nullcontext
+from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
 from typing import Generic, Literal, Self, cast
 from weakref import WeakValueDictionary
@@ -37,7 +38,7 @@ from verifiers.v1.runtimes import (
     Runtime,
     RuntimeConfig,
     SubprocessConfig,
-    provision_runtime,
+    provision_backend,
     runtime_is_local,
 )
 from verifiers.v1.session import RolloutLimits
@@ -60,6 +61,11 @@ from verifiers.v1.utils.retries import RetryState, backoff
 __all__ = ["Agent", "AgentConfig", "Agents", "TimeoutConfig", "make_agent"]
 
 logger = logging.getLogger(__name__)
+
+# Only nested runs in this scoring attempt participate in its rollback.
+_scoring_runs: ContextVar[list[tuple["_EpisodeAgent", Trace]] | None] = ContextVar(
+    "scoring_runs", default=None
+)
 
 
 def resolve_rollout_timeouts(timeout: TimeoutConfig, task: Task) -> RolloutTimeouts:
@@ -657,6 +663,7 @@ class Agent:
         tools: Mapping[str, SharedToolServer] | None = None,
         on_trace: Callable[[Trace], None] | None = None,
         collect_artifacts: bool = False,
+        on_score: Callable[[Trace, Runtime], Awaitable[None]] | None = None,
     ) -> Trace:
         """Run this agent on `task` once and return the trace: one segment — the
         program runs on the task's prompt until it exits (a multi-turn exchange
@@ -667,7 +674,8 @@ class Agent:
         declared artifacts after its finalizer while its container runtime is still
         alive. Retries whole while the trace ends with a retryable error
         (`config.retries`) — never into a borrowed box; the final trace keeps earlier
-        attempts' errors."""
+        attempts' errors. `on_score(trace, runtime)` runs after task scoring in
+        the selected verifier workspace, inside its timeout and retry boundary."""
         if self._closed:
             raise RuntimeError("Agent is closed; create a new agent")
         retry = self.config.retries
@@ -675,7 +683,7 @@ class Agent:
         history: list = []
         for attempt in range(retry_state.max_retries + 1):
             trace = await self._run_once(
-                task, runtime, tools, on_trace, collect_artifacts
+                task, runtime, tools, on_trace, collect_artifacts, on_score
             )
             if attempt == retry_state.max_retries or trace.ok:
                 break
@@ -711,6 +719,7 @@ class Agent:
         shared_tools: Mapping[str, SharedToolServer] | None,
         on_trace: Callable[[Trace], None] | None,
         collect_artifacts: bool,
+        on_score: Callable[[Trace, Runtime], Awaitable[None]] | None,
     ) -> Trace:
         params = self._rollout_params(task, runtime, dict(shared_tools or {}))
         if collect_artifacts and isinstance(params["runtime_config"], SubprocessConfig):
@@ -722,6 +731,7 @@ class Agent:
             task=task,
             on_trace=on_trace,
             collect_artifacts=collect_artifacts,
+            on_score=on_score,
             **params,
         )
         try:
@@ -850,16 +860,16 @@ class Agent:
     @asynccontextmanager
     async def provision(self, task: Task | None = None) -> AsyncIterator[Runtime]:
         """Provision (and on exit tear down) a box from this agent's runtime
-        policy, resolved for `task` when given; share it via `run(..., runtime=box)`."""
+        policy, resolved for `task` when given; share it via `run(..., runtime=runtime)`."""
         config = (
             resolve_runtime_config(self.runtime_config, task, self._warned_resources)
             if task is not None
             else self.runtime_config
         )
-        async with provision_runtime(config) as runtime:
+        async with provision_backend(config) as backend:
             # Keep sandbox startup task-neutral: this box may later host another task.
-            runtime.env = dict(task.runtime_env()) if task is not None else {}
-            yield runtime
+            backend.env = dict(task.runtime_env()) if task is not None else {}
+            yield backend.bind()
 
 
 class _EpisodeAgent(Agent):
@@ -914,12 +924,50 @@ class _EpisodeAgent(Agent):
             if last is not None and self._on_discard is not None:
                 self._on_discard(last)
             last = trace
+            if (runs := _scoring_runs.get()) is not None:
+                runs.append((self, trace))
             if self._on_trace is not None:
                 self._on_trace(trace)
             if on_trace is not None:
                 on_trace(trace)
 
         return watch
+
+    def _scoring_callback(self, callback):
+        if callback is None:
+            return None
+
+        async def score(trace, runtime):
+            parent_runs = _scoring_runs.get()
+            runs = []
+            token = _scoring_runs.set(runs)
+            # The solver is idle while an Env runs a judge. Release its permit
+            # so a one-agent episode can enter the nested judge rollout.
+            if self._gate is not None:
+                self._gate.release()
+            try:
+                try:
+                    await callback(trace, runtime)
+                finally:
+                    _scoring_runs.reset(token)
+                    if self._gate is not None:
+                        await run_shielded(self._gate.acquire())
+            except BaseException:
+                for agent, child in runs:
+                    agent._completed[:] = [
+                        t for t in agent._completed if t is not child
+                    ]
+                    if agent._on_discard is not None:
+                        agent._on_discard(child)
+                    if child.usage is not None:
+                        trace.extra_usage.append(child.usage)
+                    trace.extra_usage.extend(child.extra_usage)
+                raise
+            else:
+                if parent_runs is not None:
+                    parent_runs.extend(runs)
+
+        return score
 
     async def run(
         self,
@@ -929,6 +977,7 @@ class _EpisodeAgent(Agent):
         tools: Mapping[str, SharedToolServer] | None = None,
         on_trace: Callable[[Trace], None] | None = None,
         collect_artifacts: bool = False,
+        on_score: Callable[[Trace, Runtime], Awaitable[None]] | None = None,
     ) -> Trace:
         async with self._gate or nullcontext():
             trace = await super().run(
@@ -937,6 +986,7 @@ class _EpisodeAgent(Agent):
                 tools=tools if tools is not None else self._shared_for(task),
                 on_trace=self._watch(on_trace),
                 collect_artifacts=collect_artifacts,
+                on_score=self._scoring_callback(on_score),
             )
         self._completed.append(trace)
         return trace

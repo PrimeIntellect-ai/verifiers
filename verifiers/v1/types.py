@@ -1,3 +1,4 @@
+import base64
 from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Annotated, Any, Literal, NotRequired
@@ -126,6 +127,10 @@ class Request(BaseModel):
 
 FinishReason = Literal["stop", "length", "tool_calls"] | None
 
+DialectName = Literal["chat_completions", "responses", "anthropic_messages"]
+"""A model API wire format: a `Dialect.name`, and the values of harness `transport`
+settings."""
+
 
 class Usage(BaseModel):
     """Provider token accounting.
@@ -212,6 +217,14 @@ class RoutedExperts(TypedDict):
     weights: NotRequired[RoutedExpertWeights]
 
 
+class WeightVersionSpan(BaseModel):
+    """Completion tokens `[start, end)` were sampled by the engine weights labelled `version`."""
+
+    version: str
+    start: int
+    end: int
+
+
 @dataclass
 class SamplingMask:
     """Sampling masks stored as flat int32 `ids` and `counts` arrays.
@@ -224,7 +237,16 @@ class SamplingMask:
     counts: Any
 
     @classmethod
-    def from_sampling_mask(cls, sampling_mask: list[list[int]]) -> "SamplingMask":
+    def from_sampling_mask(
+        cls, sampling_mask: list[list[int]] | dict[str, Any]
+    ) -> "SamplingMask":
+        """Build from vLLM's one-list-per-token masks, or from prime-rl's packed CSR
+        form: `{"ids", "counts"}`, each a base64 `{data, shape, dtype}` int32 array."""
+        if isinstance(sampling_mask, dict):
+            return cls(
+                ids=_decode_packed(sampling_mask["ids"], np.int32),
+                counts=_decode_packed(sampling_mask["counts"], np.int32),
+            )
         counts = np.fromiter(
             (len(row) for row in sampling_mask),
             dtype=np.int32,
@@ -236,6 +258,11 @@ class SamplingMask:
             else np.empty(0, dtype=np.int32)
         )
         return cls(ids=ids, counts=counts)
+
+
+def _decode_packed(packed: dict[str, Any], dtype: type) -> np.ndarray:
+    array = np.frombuffer(base64.b64decode(packed["data"]), dtype=packed["dtype"])
+    return array.astype(dtype, copy=False)
 
 
 class TurnTokens(BaseModel):
@@ -273,6 +300,9 @@ class TurnTokens(BaseModel):
     # Transient carrier (excluded): per-completion-token sampling masks,
     # attributed to the assistant node by the turn's `commit`, then dropped.
     sampling_mask: SamplingMask | None = Field(default=None, exclude=True)
+    # Transient carrier (excluded): the engine's weight-version spans over the completion,
+    # attributed to the assistant node by the turn's `commit`, then dropped.
+    weight_versions: list[WeightVersionSpan] | None = Field(default=None, exclude=True)
 
 
 class Response(BaseModel):

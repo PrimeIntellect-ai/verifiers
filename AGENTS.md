@@ -9,20 +9,20 @@
 ## Running code
 
 - **Always use uv**: run code and commands with `uv run`, never raw `python`. Make sure `uv` is installed ([docs](https://docs.astral.sh/uv/getting-started/installation/)).
-- **Scaffold environments**: create a new taskset/environment with `uv run vf-init <name>` (`uv run vf-init -h` lists options like `-T`/`-H`), and run evals with `uv run vf-eval <taskset>`.
+- **Run evals**: run a taskset with `uv run vf-eval <taskset>`.
 - **Validate TOML first**: validate config `.toml` files before running them.
 - **Don't add dependencies**: never add dependencies or optional extras to the top-level `pyproject.toml`.
 
 ## Docs
 
-- **Kept intentionally minimal**: `docs/`, `skills/`, and `configs/` are deliberately sparse. Don't touch them unless your change breaks their assumptions.
+- **Kept intentionally minimal**: `docs/` and `skills/` are deliberately sparse. Don't touch them unless your change breaks their assumptions.
 - **Docs reflect `main`, not history**: describe the current state of the codebase only — no removed/legacy fields, migration paths, or "this used to be X" anecdotes.
 
 ## Skills
 
-- **Use bundled skills first**: the skills in `skills/` cover the core workflows — `create-environments` (build or migrate a v1 taskset/environment/harness), `evaluate-environments` (configure and run evals), `release` (publish stable versions), and `brainstorm` (ideation and research planning). Reach for them before doing the work by hand.
+- **Use bundled skills first**: the `release` skill in `skills/` documents the stable-version release workflow, and the `bump` skill documents how to bump a pinned harness version.
 
 ## Testing
 
-- **Prefer e2e tests over unit tests**: v1's end-to-end tests are sufficient — extra unit tests clog the repo. Editing existing tests is fine; to check your own work, write a temporary script instead of committing new tests.
-- **Run the contributor checks**: run `uv run pre-commit install` once, then for touched areas `uv run ruff check --fix .`, `uv run pytest tests/`, and `uv run pre-commit run --all-files`.
+- **Two suites**: `tests/unit` runs one component in isolation, fast and without a network; `tests/integration` runs real evals (a live model, real runtimes) per behavior across the harness x runtime grid in `tests/integration/grid.py`. Prefer an integration cell over a unit test; a unit test earns its place by stating one component's intended behavior, not by asserting an implementation detail. To check your own work, write a temporary script instead of committing new tests.
+- **Run the contributor checks**: run `uv run pre-commit install` once, then for touched areas `uv run ruff check --fix .`, `uv run pytest tests/unit`, and `uv run pre-commit run --all-files`.

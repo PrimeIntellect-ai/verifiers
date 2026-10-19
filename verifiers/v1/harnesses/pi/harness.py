@@ -4,16 +4,17 @@ import json
 import logging
 import shlex
 from pathlib import Path
-from typing import Literal
 
 from verifiers.v1.acp import ACPConfig, ACPHarness
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig, PinnedVersion, skill_destination
 from verifiers.v1.harnesses.node import NODE_BIN_DIR, ensure_node
 from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
+from verifiers.v1.harnesses.utils.replay import drop_blank_text
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
+from verifiers.v1.types import DialectName, Message
 
 logger = logging.getLogger(__name__)
 
@@ -49,9 +50,7 @@ fi
 class PiHarnessConfig(HarnessConfig):
     version: PinnedVersion = "0.86.1"
     """Pi release to install, pinned for reproducibility."""
-    transport: Literal["chat_completions", "responses", "anthropic_messages"] = (
-        "chat_completions"
-    )
+    transport: DialectName = "chat_completions"
     """Model API transport."""
     supports_developer_role: bool | None = None
     """Override Pi's chat-completions role detection for custom model endpoints."""
@@ -64,6 +63,15 @@ class PiHarness(ACPHarness[PiHarnessConfig]):
     # Pi's project skill discovery is trust-gated (a prompt print mode can't answer),
     # so the installed skills are passed explicitly via `--skill` at launch.
     SUPPORTS_SKILLS = True
+
+    # pi-ai drops whitespace-only assistant text on replay over chat completions and
+    # Anthropic messages, not over Responses. Recheck on version bumps:
+    # https://github.com/earendil-works/pi/blob/v0.86.1/packages/ai/src/api/openai-completions.ts#L1290
+    # https://github.com/earendil-works/pi/blob/v0.86.1/packages/ai/src/api/anthropic-messages.ts#L1315
+    def replay_view(self, message: Message, dialect: DialectName | None) -> Message:
+        if dialect in ("chat_completions", "anthropic_messages"):
+            return drop_blank_text(message)
+        return message
 
     async def setup(self, runtime: Runtime) -> None:
         await ensure_node(runtime)

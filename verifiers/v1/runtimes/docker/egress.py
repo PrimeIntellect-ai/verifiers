@@ -161,9 +161,9 @@ class EgressProxy:
         self, bind_host: str | None = None, *, listener: socket.socket | None = None
     ) -> None:
         if listener is None:
-            self.server = await asyncio.start_server(self._handle, bind_host, 0)
+            self.server = await asyncio.start_server(self._runtime, bind_host, 0)
         else:
-            self.server = await asyncio.start_server(self._handle, sock=listener)
+            self.server = await asyncio.start_server(self._runtime, sock=listener)
         self.port = self.server.sockets[0].getsockname()[1]
 
     async def stop(self) -> None:
@@ -178,7 +178,7 @@ class EgressProxy:
         await asyncio.gather(*handlers, return_exceptions=True)
         await server.wait_closed()
 
-    async def _handle(
+    async def _runtime(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
     ) -> None:
         if self.server is None:
