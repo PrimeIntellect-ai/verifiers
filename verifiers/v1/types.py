@@ -201,6 +201,14 @@ class RoutedExperts(TypedDict):
     start: int
 
 
+class WeightVersionSpan(BaseModel):
+    """Completion tokens `[start, end)` were sampled by the engine weights labelled `version`."""
+
+    version: str
+    start: int
+    end: int
+
+
 @dataclass
 class SamplingMask:
     """Sampling masks stored as flat int32 `ids` and `counts` arrays.
@@ -276,6 +284,9 @@ class TurnTokens(BaseModel):
     # Transient carrier (excluded): per-completion-token sampling masks,
     # attributed to the assistant node by the turn's `commit`, then dropped.
     sampling_mask: SamplingMask | None = Field(default=None, exclude=True)
+    # Transient carrier (excluded): the engine's weight-version spans over the completion,
+    # attributed to the assistant node by the turn's `commit`, then dropped.
+    weight_versions: list[WeightVersionSpan] | None = Field(default=None, exclude=True)
 
 
 class Response(BaseModel):
