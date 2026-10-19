@@ -17,6 +17,6 @@ async def test_skills(run, harness, harness_runtime):
         max_tokens=8192,
     )
     (trace,) = episode.traces
-    assert_one_branch(trace, harness)
+    assert_one_branch(trace, harness, forks=("openclaw",))
     assert trace.ok, [error.message for error in trace.errors]
     assert trace.reward == 1.0, trace.last_reply

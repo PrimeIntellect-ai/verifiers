@@ -4,7 +4,7 @@ condition. The turn cap also runs across the harness x runtime grid, since each 
 handles a refused request in its own way."""
 
 import pytest
-from grid import assert_one_branch, grid
+from grid import grid
 
 CAPS = [
     pytest.param({"max_turns": 1}, "max_turns", id="max-turns"),
@@ -51,6 +51,6 @@ async def test_max_turns(run, harness, harness_runtime):
         max_tokens=8192,
     )
     (trace,) = episode.traces
-    assert_one_branch(trace, harness)
+    assert trace.num_branches == 1
     assert trace.stop_condition == "max_turns", [e.message for e in trace.errors]
     assert trace.num_turns == 1

@@ -19,7 +19,7 @@ async def test_resume_tool(run, harness, harness_runtime):
         rollout_timeout=600,
     )
     (trace,) = episode.traces
-    assert_one_branch(trace, harness)
+    assert_one_branch(trace, harness, forks=("openclaw",))
     assert trace.ok, [error.message for error in trace.errors]
     assert trace.stop_condition == "user_closed"
     assert trace.rewards["resumed"].score == 1.0

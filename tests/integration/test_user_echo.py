@@ -3,7 +3,7 @@ conversation each turn (echo-user-sim), across the harness x runtime grid; and t
 caller drives an agent turn by turn through `agent.interaction`."""
 
 import pytest
-from grid import assert_one_branch, grid
+from grid import grid
 
 import verifiers.v1 as vf
 
@@ -25,7 +25,7 @@ async def test_user(run, harness, harness_runtime):
         max_tokens=8192,
     )
     (trace,) = episode.traces
-    assert_one_branch(trace, harness)
+    assert trace.num_branches == 1
     assert trace.ok, [error.message for error in trace.errors]
     assert trace.num_turns >= 2  # genuinely multi-turn
     assert trace.stop_condition == "user_closed"  # leaving the interaction ended it

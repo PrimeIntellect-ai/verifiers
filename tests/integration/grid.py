@@ -72,10 +72,26 @@ CI_MODEL_GAPS = {
 }
 
 
-def assert_one_branch(trace: vf.Trace, harness: vf.HarnessConfig) -> None:
-    """A rollout records one branch, unless its harness rewrites its history by design
-    (`Harness.REWRITES_HISTORY`)."""
-    if not harness_class(harness.id).REWRITES_HISTORY:
+# Harnesses whose program rewrites earlier turns by design, so a rollout can record
+# several branches. Each test names the ones it lets fork. Recheck on version bumps.
+FORKS = {
+    # Acts only through tool calls: it drops a tool-less reply from its history and
+    # resends only its format error.
+    "mini-swe-agent": "https://github.com/SWE-agent/mini-swe-agent/blob/v2.4.6/src/minisweagent/agents/default.py#L114",
+    # Moves its runtime-context message to the tail of every request and drops the
+    # earlier one, unless the provider's replay policy is append-only.
+    "openclaw": "https://github.com/openclaw/openclaw/blob/v2026.9.5/src/agents/internal-runtime-context.ts#L402-L408",
+}
+
+
+def assert_one_branch(
+    trace: vf.Trace, harness: vf.HarnessConfig, forks: Sequence[str] = ()
+) -> None:
+    """A rollout records one branch, unless its harness is one of `forks` (see `FORKS`)."""
+    assert set(forks) <= FORKS.keys(), (
+        f"no FORKS reason for {set(forks) - FORKS.keys()}"
+    )
+    if harness.id not in forks:
         assert trace.num_branches == 1, f"{trace.num_branches} branches"
 
 

@@ -22,7 +22,7 @@ async def test_tool(run, harness, harness_runtime):
         taskset_overrides={"task": {"tools": {"colocated": True}}},
     )
     (trace,) = episode.traces
-    assert_one_branch(trace, harness)
+    assert_one_branch(trace, harness, forks=("openclaw",))
     assert trace.ok, [error.message for error in trace.errors]
     assert trace.num_turns >= 1
     # Reward 1.0 is the proof the tool ran. How a program surfaces an MCP tool to the

@@ -63,10 +63,6 @@ class Harness(ABC, Generic[ConfigT]):
     that installs and drives a third-party program — on the host (subprocess) it
     leaks host state (auth, config, processes) both ways. Only the minimal
     in-house loops (`bash`, `null`) override to False."""
-    REWRITES_HISTORY: ClassVar[bool] = False
-    """Whether the program drops or rewrites earlier turns when it resends its history,
-    so one rollout can record several branches. Each override links the upstream source
-    to recheck on version bumps."""
 
     def __init__(self, config: ConfigT) -> None:
         self.config = config
