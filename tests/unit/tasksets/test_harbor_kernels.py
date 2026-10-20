@@ -111,3 +111,19 @@ def test_staged_tests_are_root_owned(tmp_path):
     with tarfile.open(fileobj=io.BytesIO(data)) as tar:
         owners = {(m.name, m.uid, m.gid, m.uname) for m in tar.getmembers()}
     assert owners == {("sub", 0, 0, "root"), ("sub/test.sh", 0, 0, "root")}
+
+
+def test_a_verifier_and_its_collect_hooks_may_name_their_user(tmp_path):
+    """`[verifier].user` and a collect hook's `user` load, as Harbor runs them."""
+    task = tmp_path / "users"
+    (task / "tests").mkdir(parents=True)
+    (task / "tests/test.sh").write_text("exit 0\n")
+    (task / "instruction.md").write_text("Implement the requested change.")
+    (task / "task.toml").write_text(
+        '[environment]\ndocker_image = "python:3.11-slim"\n'
+        '[verifier]\nuser = "grader"\n'
+        '[[verifier.collect]]\ncommand = "true"\nuser = "root"\n'
+    )
+    data = harbor.parse_task(task, 0, harbor.HarborConfig())
+    assert data.verifier_user == "grader"
+    assert [hook.user for hook in data.collect] == ["root"]

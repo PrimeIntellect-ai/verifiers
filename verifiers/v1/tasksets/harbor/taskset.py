@@ -150,6 +150,8 @@ class CollectHook(BaseModel):
     command: str
     timeout_sec: float = 600.0
     service: str = "main"
+    user: str | None = None
+    """Who runs it; None (or root) is the runtime's default user."""
 
 
 class HarborArtifact(Artifact):
@@ -221,6 +223,8 @@ class HarborData(TaskData):
     verifier: VerifierConfig | None = None
     """The verifier's own box, when `[verifier].environment_mode` asks for one. None
     grades in the agent's box."""
+    verifier_user: str | None = None
+    """`[verifier].user`: who runs `test.sh`; None (or root) is the box's default user."""
 
 
 class HarborTask(Task[HarborData, State, HarborTaskConfig]):
@@ -497,9 +501,12 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
         """
         runtimes = sidecars or {"main": runtime}
         for hook in [hook for hook in self.data.collect if hook.service in runtimes]:
+            target = runtimes[hook.service]
+            if hook.user not in (None, "root", "0"):
+                target = target.with_user(hook.user)
             try:
                 result = await asyncio.wait_for(
-                    runtimes[hook.service].run(["sh", "-c", hook.command], {}),
+                    target.run(["sh", "-c", hook.command], {}),
                     hook.timeout_sec,
                 )
             except TimeoutError as exc:
@@ -675,6 +682,8 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
         script the same way, and scripts do grade the agent's work at `$PWD`. A task
         that keeps the launch's output (a diagnostic report) overrides this."""
         del trace
+        if self.data.verifier_user not in (None, "root", "0"):
+            runtime = runtime.with_user(self.data.verifier_user)
         return await runtime.run(
             ["bash", "/tests/test.sh"], resolve_env(self.scoring.env or {})
         )
@@ -1116,6 +1125,9 @@ def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborD
         artifacts=artifacts,
         collect=hooks,
         verifier=verifier,
+        verifier_user=None
+        if parsed.verifier.user is None
+        else str(parsed.verifier.user),
     )
 
 
@@ -1136,8 +1148,6 @@ def parse_verifier_extras(
     )
 
     verifier = parsed.verifier
-    if verifier.user is not None:
-        raise ValueError(f"{task_dir.name}: [verifier].user is not supported")
 
     artifacts: list[HarborArtifact] = []
     for entry in normalize_artifact_entries(parsed.artifacts):
@@ -1153,14 +1163,12 @@ def parse_verifier_extras(
 
     hooks: list[CollectHook] = []
     for hook in verifier.collect:
-        if hook.user is not None:
-            raise ValueError(
-                f"{task_dir.name}: collect hook `user` is not supported "
-                "(commands run as the runtime's default user)"
-            )
         hooks.append(
             CollectHook(
-                command=hook.command, timeout_sec=hook.timeout_sec, service=hook.service
+                command=hook.command,
+                timeout_sec=hook.timeout_sec,
+                service=hook.service,
+                user=None if hook.user is None else str(hook.user),
             )
         )
     services = {entry.service for entry in (*artifacts, *hooks)} - {"main"}
