@@ -53,11 +53,20 @@ def verifier_runtime(
         if policy.runtime is not None and source.checkpoint:
             raise TaskError("isolated verification requires an image, not a checkpoint")
         source = source.model_copy(update={"checkpoint": None})
-    # A task without its own image/workdir inherits the actual workspace's values,
-    # including a Compose image or split execution configuration.
+    # A task without its own image inherits the actual workspace's image and workdir,
+    # including a Compose image or split execution configuration. One with its own image
+    # and no workdir runs in that image's WORKDIR, as a container of it starts — unless
+    # it restores relative artifacts, which land where the solver's workdir put them.
+    relative_artifacts = any(
+        not PurePosixPath(a.source).is_absolute() for a in task.data.artifacts
+    )
+    inherit_workdir = task.data.image is None or relative_artifacts
     task = task.with_data(
         image=task.data.image or getattr(solver_runtime.config, "image", None),
-        workdir=task.data.workdir or getattr(solver_runtime.config, "workdir", None),
+        workdir=task.data.workdir
+        or (
+            getattr(solver_runtime.config, "workdir", None) if inherit_workdir else None
+        ),
     )
     config = resolve_runtime_config(source, task)
     if policy.runtime is not None and "image" in policy.runtime.model_fields_set:
