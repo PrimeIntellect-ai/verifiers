@@ -174,3 +174,16 @@ async def test_an_archive_over_the_budget_is_a_submission_defect() -> None:
     )
     with pytest.raises(RuntimeError, match="over the 1024-byte collection budget"):
         await collect(runtime, [Artifact(source="/app")], max_bytes=1024, sweep=False)
+
+
+@pytest.mark.asyncio
+async def test_a_root_the_run_left_nothing_in_is_kept_for_the_grader() -> None:
+    """A run that never wrote to `/logs/artifacts` collects nothing there: the grader's
+    own directory is not deleted, and exists as under Harbor's verifier."""
+    runtime, commands = box()
+    await restore(runtime, {"/logs/artifacts": None, "/app": archive(("app/", None))})
+    clear = commands[0]
+    assert clear.startswith("rm -rf -- /app && mkdir -p -- /app /logs/artifacts")
+    runtime, commands = box()
+    await restore(runtime, {"/logs/artifacts": None})
+    assert commands == ["mkdir -p -- /app /logs/artifacts"]

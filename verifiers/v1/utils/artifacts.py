@@ -285,16 +285,22 @@ async def restore(
             "writes to absolute paths on the host. Grade in a container."
         )
     check_restore(collected, protected=protected)
-    # Clear every root up front, not per entry: a later nested root would otherwise
-    # delete content an earlier one just restored. Clearing also drops any file or
-    # symlink the image left at the target.
-    roots = " ".join(shlex.quote(root) for root in collected)
+    # Clear every root that restores up front, not per entry: a later nested root
+    # would otherwise delete content an earlier one just restored. Clearing also drops
+    # any file or symlink the image left at the target. A root the run left nothing
+    # in (the convention dir of a run that never wrote there) is not cleared: the
+    # grader keeps what its image has there.
+    roots = " ".join(
+        shlex.quote(root) for root, archive in collected.items() if archive is not None
+    )
     # Container exec requires its configured cwd to exist, including while a
-    # submission replaces the entire working directory (or one of its parents).
+    # submission replaces the entire working directory (or one of its parents). The
+    # convention dir exists for the grader as under Harbor, whose verifier always has it.
     workdir = shlex.quote(getattr(runtime.config, "workdir", None) or "/")
+    clear = f"rm -rf -- {roots} && " if roots else ""
     await _run(
         runtime,
-        f"rm -rf -- {roots} && mkdir -p -- {workdir}",
+        f"{clear}mkdir -p -- {workdir} {shlex.quote(ARTIFACTS_DIR)}",
         "clear artifact roots",
     )
     for root, archive in collected.items():
