@@ -46,6 +46,7 @@ from verifiers.v1.runtimes.deployment import Deployment
 from verifiers.v1.state import State
 from verifiers.v1.task import Task, TaskData, TaskResources, TaskTimeout
 from verifiers.v1.taskset import Taskset
+from verifiers.v1.tasksets.harbor.context_owners import restore_owners
 from verifiers.v1.tasksets.harbor.entrypoint import start_entrypoint
 from verifiers.v1.toolbundles import ToolMount
 from verifiers.v1.trace import Trace
@@ -357,6 +358,8 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
         if guarded and trace is not None:
             trace.info["onednn_guard"] = guarded
         if (dockerfile := self.entrypoint_dockerfile()) is not None:
+            # Docker's COPY gives root what Prime's builder left with the context's owner.
+            await restore_owners(runtime, dockerfile)
             started = await start_entrypoint(runtime, dockerfile)
             if started is not None and trace is not None:
                 box = "verifier_" if dockerfile.parent.name == "tests" else ""
