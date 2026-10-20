@@ -376,6 +376,9 @@ async def test_unspecified_workdir_does_not_capture_root_login_directory(
         assert any(command.startswith("pwd;") for command, _ in commands) == (
             override is None
         )
-        assert (f"mkdir -p {expected} && mkdir -p -m 1777 /run/lock", "/") in commands
+        assert (
+            f"mkdir -p {expected} && mkdir -p -m 1777 /run/lock && {prime.HOSTS_ENTRY}",
+            "/",
+        ) in commands
     finally:
         await runtime.teardown()

@@ -429,6 +429,13 @@ class PrimeProcess(RuntimeProcess):
         await self._process.kill()
 
 
+HOSTS_ENTRY = (
+    'h=$(hostname); grep -qE "[[:space:]]$h([[:space:]]|$)" /etc/hosts 2>/dev/null'
+    ' || { printf "127.0.1.1\\t%s\\n" "$h" >> /etc/hosts; } 2>/dev/null || true'
+)
+"""Add the box's hostname to /etc/hosts when it is missing (never fails the start)."""
+
+
 class PrimeBackend(RuntimeBackend):
     supports_user: ClassVar[bool] = True
     supports_expose: ClassVar[bool] = False
@@ -631,14 +638,17 @@ class PrimeBackend(RuntimeBackend):
                     "workdir",
                     lambda: self._client.execute_command(
                         self.info.id,
-                        f"mkdir -p {shlex.quote(self.config.workdir)} && mkdir -p -m 1777 /run/lock",
+                        f"mkdir -p {shlex.quote(self.config.workdir)} && mkdir -p -m 1777 /run/lock"
+                        f" && {HOSTS_ENTRY}",
                         working_dir="/",
                     ),
                 )
                 # Prime boots /run as an empty tmpfs, including on checkpoint restore.
                 # Restore the standard lock directory before image service launchers run.
                 # Existing directories retain their permissions (mkdir -p -m only applies
-                # the mode when creating a directory).
+                # the mode when creating a directory). The box's own hostname resolves
+                # locally, as in Docker: Prime's /etc/hosts does not list it, so without a
+                # network every lookup of it (each `sudo`) waits 20 s on DNS.
                 if prepared.exit_code:
                     raise SandboxError(
                         f"Cannot prepare runtime directories: {prepared.stderr}",
