@@ -1033,6 +1033,10 @@ def _commit_turn(turn: PendingTurn, response: Response) -> int:
     _index_node(trace, assistant_id)
     new_node_ids.append(assistant_id)
 
+    # Replay arrays only feed training: an untrainable trace (e.g. a judge) keeps none.
+    if not trace.agent.trainable:
+        return assistant_id
+
     # Attribute this turn's expert-routing array onto the nodes created this turn (new input
     # nodes in creation order, then the assistant node), each getting the routing for its tokens.
     # The prefix goes in too, so the position the previous turn could only pad can be corrected.

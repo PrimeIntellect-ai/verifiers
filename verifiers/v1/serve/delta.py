@@ -4,13 +4,15 @@ The worker streams a served episode as it grows. Each trace announces its own ch
 (`Trace.notify`, fired by the rollout at every phase change and by the interception proxy
 after every recorded turn); the `DeltaStreamer` then diffs the run's live traces against
 what it has already sent and ships only the new part — the trace header once, then
-appended nodes / calls / errors, semantic links and routing-row repairs on earlier nodes, the scalar
-fields whose value changed (timing spans, stop condition, rewards, ...), and the
-`pending` preview — the messages of the request in flight that no node holds yet, so a
-watcher sees a tool result before the model has answered it. The `Trace` is
-append-only at turn granularity except for links and the last routing row of a node,
-which the next prefill can repair. Apart from these and the preview, every byte of the
-episode crosses the wire once and the stream costs about what a single reply would; the
+appended nodes / calls / errors, semantic links on earlier nodes, the scalar fields whose
+value changed (timing spans, stop condition, rewards, ...), and the `pending` preview —
+the messages of the request in flight that no node holds yet, so a watcher sees a tool
+result before the model has answered it. Streamed nodes leave out their replay arrays
+(`HEAVY_NODE_FIELDS`: routed experts, top logprobs, sampling masks); the final flush of a
+cleanly finished run sends them once per trace as an `arrays` delta. A watcher never needs
+them, so every in-flight episode costs the client only its messages and tokens, and the
+arrays arrive as final — including the last routing row of a node, which the next prefill
+can repair. Apart from the preview, every byte of the episode crosses the wire once; the
 reply that ends the run carries only the episode head and per-trace counts the client
 checks its assembly against. A cursor advances only once its delta is on the wire, so a
 send that fails is simply diffed again at the next flush.
@@ -29,10 +31,8 @@ from collections.abc import Awaitable, Callable, Iterable
 from typing import TYPE_CHECKING, Any, Self
 
 import msgpack
-import numpy as np
 from pydantic import BaseModel
 
-from verifiers.v1.graph import _decode_ndarray, _encode_ndarray
 from verifiers.v1.serve.encoding import msgpack_encoder
 
 if TYPE_CHECKING:
@@ -72,6 +72,10 @@ SCALAR_FIELDS = (
 )
 """Re-sent whole whenever their dumped value changes."""
 
+HEAVY_NODE_FIELDS = ("routed_experts", "top_logprobs", "sampling_mask")
+"""Per-token replay arrays: left out of streamed nodes, sent once per trace by the final
+flush (the `arrays` delta)."""
+
 
 def pack(payload: Any) -> bytes:
     return msgpack.packb(payload, default=msgpack_encoder, use_bin_type=True)
@@ -95,8 +99,8 @@ class TraceCursor:
         self.sent = dict.fromkeys(LIST_FIELDS, 0)
         self.links: list[int] = []
         """Per sent node, how many of its semantic links went out with or after it."""
-        self.final_rows: dict[int, bytes] = {}
-        """Per node that carries routing, its final row as packed when last sent."""
+        self.arrays_sent = False
+        """Whether the final flush sent the trace's replay arrays."""
         self.scalars: dict[str, bytes] = {}
         self.pending: bytes = pack([])
 
@@ -129,9 +133,10 @@ class DeltaStreamer:
             self._scheduled.cancel()
             self._scheduled = None
         if exc_type is None:
-            # let in-flight flushes finish, then send whatever the run left behind
+            # let in-flight flushes finish, then send whatever the run left behind,
+            # replay arrays included
             await asyncio.gather(*self._flushes, return_exceptions=True)
-            await self.flush()
+            await self.flush(final=True)
         else:
             for task in self._flushes:
                 task.cancel()
@@ -152,10 +157,10 @@ class DeltaStreamer:
         self._flushes.add(task)
         task.add_done_callback(self._flushes.discard)
 
-    async def flush(self) -> None:
+    async def flush(self, final: bool = False) -> None:
         # Serialized: deltas must leave in diff order, and the reply after the last.
         async with self._lock:
-            for trace_id, delta, cursor in self.diff():
+            for trace_id, delta, cursor in self.diff(final=final):
                 try:
                     await self.send(delta)
                 except Exception:  # the cursor stays put: the next flush diffs it again
@@ -168,35 +173,25 @@ class DeltaStreamer:
                 else:
                     self.cursors[trace_id] = cursor
 
-    def _maybe_add_routing_repairs(
-        self,
-        delta: dict[str, Any],
-        trace: Trace,
-        cursor: TraceCursor,
-        sent_nodes: int,
-    ) -> None:
-        """Add final rows repaired since they were sent, keyed by node index.
-
-        Record every node's current row on the cursor. `sent_nodes` is the pre-flush
-        count, so a node first sent in this delta is never reported as a repair.
-        """
-        repairs: dict[int, dict] = {}
+    @staticmethod
+    def _arrays(trace: Trace) -> dict[int, dict]:
+        """The trace's replay arrays, keyed by node index (nodes without any are left out)."""
+        arrays: dict[int, dict] = {}
         for index, node in enumerate(trace.nodes):
-            if node.routed_experts is None:
-                continue
-            row = _encode_ndarray(node.routed_experts[-1:])
-            packed = pack(row)
-            if cursor.final_rows.get(index) != packed:
-                cursor.final_rows[index] = packed
-                if index < sent_nodes:
-                    repairs[index] = row
-        if repairs:
-            delta["routing_repairs"] = repairs
+            fields = {
+                field: value
+                for field, value in dump(node, include=set(HEAVY_NODE_FIELDS)).items()
+                if value is not None
+            }
+            if fields:
+                arrays[index] = fields
+        return arrays
 
-    def diff(self) -> list[tuple[str, dict, TraceCursor | None]]:
+    def diff(self, final: bool = False) -> list[tuple[str, dict, TraceCursor | None]]:
         """Each trace's delta against its sent cursor, with the cursor as it stands once
         that delta is sent (None for a discard). Nothing here is committed: `flush`
-        stores a cursor only after its delta left."""
+        stores a cursor only after its delta left. `final` adds each trace's replay
+        arrays (once)."""
         traces = list(self.traces())
         live = {trace.id for trace in traces}
         deltas: list[tuple[str, dict, TraceCursor | None]] = []
@@ -219,12 +214,14 @@ class DeltaStreamer:
                     cursor.links[index] = len(node_links)
             if links:
                 delta["links"] = links
-            self._maybe_add_routing_repairs(delta, trace, cursor, cursor.sent["nodes"])
             for field in LIST_FIELDS:
                 items = getattr(trace, field)
                 sent = cursor.sent[field]
                 if len(items) > sent:
-                    delta[field] = [dump(item) for item in items[sent:]]
+                    exclude = set(HEAVY_NODE_FIELDS) if field == "nodes" else None
+                    delta[field] = [
+                        dump(item, exclude=exclude) for item in items[sent:]
+                    ]
                     cursor.sent[field] = len(items)
                     if field == "nodes":
                         cursor.links.extend(
@@ -245,6 +242,10 @@ class DeltaStreamer:
                 # nodes landing clear the preview on the client by themselves
                 if pending or "nodes" not in delta:
                     delta["pending"] = pending
+            if final and not cursor.arrays_sent:
+                cursor.arrays_sent = True
+                if arrays := self._arrays(trace):
+                    delta["arrays"] = arrays
             if len(delta) > 1:
                 deltas.append((trace.id, delta, cursor))
         return deltas
@@ -256,20 +257,6 @@ class EpisodeAssembly:
 
     def __init__(self) -> None:
         self.traces: dict[str, dict] = {}
-
-    def _maybe_apply_routing_repairs(self, delta: dict[str, Any], trace: dict) -> None:
-        """Replace repaired final rows in nodes the client already holds.
-
-        Rebuild each array: a repair can widen its dtype, and decoded rows alias
-        the original delta's bytes, which must remain unchanged for consumers.
-        """
-        for index, row in (delta.get("routing_repairs") or {}).items():
-            node = trace["nodes"][int(index)]
-            node["routed_experts"] = _encode_ndarray(
-                np.concatenate(
-                    [_decode_ndarray(node["routed_experts"])[:-1], _decode_ndarray(row)]
-                )
-            )
 
     def apply(self, delta: dict) -> None:
         trace_id = delta["trace"]
@@ -285,7 +272,6 @@ class EpisodeAssembly:
             }
         for index, links in (delta.get("links") or {}).items():
             trace["nodes"][int(index)]["semantic_parents"].extend(links)
-        self._maybe_apply_routing_repairs(delta, trace)
         # a later `links` delta grows a node's semantic_parents in place, so the node
         # is copied: the delta stays as it was when the caller received it
         if "nodes" in delta:
@@ -293,6 +279,9 @@ class EpisodeAssembly:
                 {**node, "semantic_parents": list(node.get("semantic_parents") or [])}
                 for node in delta["nodes"]
             )
+        # the final flush's replay arrays, after any nodes the same delta appended
+        for index, fields in (delta.get("arrays") or {}).items():
+            trace["nodes"][int(index)].update(fields)
         for field in LIST_FIELDS:
             if field in delta and field != "nodes":
                 trace[field].extend(delta[field])

@@ -215,6 +215,13 @@ async def test_deltas_stream_once_and_reassemble_the_episode(routing_dtype):
     assert sum("open" in delta for delta in deltas) == 1
     assert any("links" in delta for delta in deltas)
     assert deltas[-1]["set"]["stop_condition"] == "agent_completed"
+    # Replay arrays stay out of streamed nodes and arrive once, final, with the exit flush.
+    streamed_nodes = [node for delta in deltas for node in delta.get("nodes", [])]
+    assert not any("routed_experts" in node for node in streamed_nodes)
+    assert [i for i, delta in enumerate(deltas) if "arrays" in delta] == [
+        len(deltas) - 1
+    ]
+    assert list(deltas[-1]["arrays"]) == [1]
 
     handed = copy.deepcopy(deltas)
     assembly = EpisodeAssembly()
