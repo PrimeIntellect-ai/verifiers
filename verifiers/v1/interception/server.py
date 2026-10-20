@@ -105,6 +105,11 @@ RETRY_COUNT_HEADER = "x-stainless-retry-count"
 SHOULD_RETRY_HEADER = "x-should-retry"
 
 
+MAX_STREAM_CUT_OFFS = 5
+"""Streams a provider cuts mid-turn that each restart the call's retry budget; past it, the
+budget runs on as for any failure (a provider that cuts every stream still gives up)."""
+
+
 def _retry_wait(
     error: ProviderError,
     failures: int,
@@ -273,22 +278,42 @@ async def _collect_stream(
     events = bytearray()
     parser = dialect.stream_parser()
     saw_terminal = False
+    started = time.monotonic()
+    count = 0
+    last = b""
     try:
         async for chunk in reply.chunks:
             if not any(line.startswith(b"data:") for line in chunk.splitlines()):
                 continue
             events += chunk
+            count += 1
+            last = chunk
             saw_terminal |= dialect.is_terminal_event(chunk)
             if parser.on_done is not None and is_sse_done_event(chunk):
                 parser.on_done()
             parser.feed(chunk)
         if not saw_terminal:
-            raise ProviderError("upstream stream ended before its terminal event")
+            # Where the provider cut it: how long it streamed, how much arrived, and its
+            # last event, so a fixed cut-off (a proxy's stream limit) shows as one.
+            tail = last.decode(errors="replace").strip()[-200:]
+            error = ProviderError(
+                "upstream stream ended before its terminal event "
+                f"(after {time.monotonic() - started:.0f}s, {count} events, "
+                f"{len(events)} bytes; last event: {tail!r})"
+            )
+            error.streamed = count > 0
+            raise error
         return parser.finish(), bytes(events)
     except RolloutError:
         raise
-    except Exception as e:  # a malformed provider stream
-        raise ProviderError(str(e)) from e
+    except Exception as e:  # a malformed provider stream, or its connection dropped
+        error = ProviderError(
+            f"{e} (after {time.monotonic() - started:.0f}s, {count} events, {len(events)} bytes)"
+            if count
+            else str(e)
+        )
+        error.streamed = count > 0
+        raise error from e
     finally:
         await reply.close()
 
@@ -986,6 +1011,7 @@ class InterceptionServer(Interception):
                     # own request (or its retry, coalesced onto this one) waits throughout.
                     failures = 0
                     first_failure = 0.0
+                    cut_offs = 0
                     while True:
                         try:
                             call_response, events = await exchange(
@@ -996,6 +1022,16 @@ class InterceptionServer(Interception):
                             now = time.monotonic()
                             if not failures:
                                 first_failure = now
+                            elif (
+                                getattr(e, "streamed", False)
+                                and cut_offs < MAX_STREAM_CUT_OFFS
+                            ):
+                                # The provider was serving the turn when it cut the stream:
+                                # its time is no failing time, so the budget starts again
+                                # (a long turn's regeneration would otherwise spend it all).
+                                first_failure = now
+                            if getattr(e, "streamed", False):
+                                cut_offs += 1
                             wait = (
                                 None
                                 if session.released or session.stopped

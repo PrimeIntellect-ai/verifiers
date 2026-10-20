@@ -106,7 +106,9 @@ class Provider:
                 {
                     "index": 0,
                     "delta": delta,
-                    "finish_reason": completion["choices"][0]["finish_reason"],
+                    "finish_reason": None
+                    if failure == "cut"
+                    else completion["choices"][0]["finish_reason"],
                 }
             ],
         }
@@ -116,6 +118,9 @@ class Provider:
         if failure == "truncate":
             assert request.transport is not None
             request.transport.abort()
+            return stream
+        if failure == "cut":
+            # the provider closes the stream cleanly, its terminal event never sent
             return stream
         await stream.write(b"data: [DONE]\n\n")
         return stream
@@ -404,3 +409,34 @@ async def test_a_hook_failing_after_the_commit_is_not_sampled_again(monkeypatch)
     assert "the gate broke" in trace.errors[-1].message
     assert len(provider.requests) == 1
     assert len([node for node in trace.nodes if node.sampled]) == 1
+
+
+async def test_a_long_stream_cut_short_restarts_the_budget():
+    """The provider was serving the turn when it cut the stream: that time is no failing
+    time, so a long turn's regeneration does not spend the budget (on 2026-10-20 GLM cut
+    hour-long reasoning streams, and the second cut was already past a 900 s budget). The
+    cut is recorded with how long the stream ran and how much of it arrived."""
+    async with Provider((0.4, "cut"), (0.4, "truncate"), "ok") as provider:
+        agent = make(provider, StreamHarness, retry={"budget": 0.3})
+        trace = await agent.run(task())
+    assert trace.ok, trace.errors
+    assert len(provider.requests) == 3
+    cut = trace.calls[0].error
+    assert cut is not None and cut.message.startswith(
+        "upstream stream ended before its terminal event (after "
+    )
+    assert "1 events" in cut.message and "last event:" in cut.message
+    assert_committed_once(trace, sampled=1)
+
+
+async def test_a_provider_cutting_every_stream_still_gives_up(monkeypatch):
+    """Cut-offs restart the budget only `MAX_STREAM_CUT_OFFS` times: a provider that cuts
+    every stream still makes the failure final."""
+    monkeypatch.setattr(server, "RETRY_BACKOFF_SECONDS", 0.001)
+    async with Provider(*[(0.3, "cut")] * 50) as provider:
+        agent = make(provider, StreamHarness, retry={"budget": 0.2})
+        trace = await agent.run(task())
+    assert not trace.ok
+    assert trace.last_error is not None and "terminal event" in trace.last_error.message
+    # the first cut, then MAX_STREAM_CUT_OFFS - 1 that restart the budget, then one past it
+    assert len(provider.requests) == server.MAX_STREAM_CUT_OFFS + 1
