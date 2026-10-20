@@ -27,8 +27,9 @@ class HealthResponse(BaseResponse):
 
 
 class CancelRequest(BaseRequest):
-    """Abort an in-flight run by its wire ``request_id``. Idempotent — a
-    finished or unknown run cancels successfully with ``cancelled=False``."""
+    """End an in-flight run early by its wire ``request_id``: the run replies with
+    its episode, flagged ``cancelled``. Idempotent — a finished or unknown run
+    cancels successfully with ``cancelled=False``."""
 
     method: ClassVar[str] = "cancel"
     request_id: str

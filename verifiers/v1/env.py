@@ -62,6 +62,17 @@ class RunSlot:
     episode: Episode | None = None
     done: bool = False
     started: float | None = None
+    cancelled: bool = False
+    _runner: asyncio.Task | None = field(default=None, repr=False)
+
+    def cancel(self) -> None:
+        """End the episode early: `run_slot` returns it with the traces streamed so
+        far, flagged `cancelled`. A no-op once the episode is done."""
+        if self.done or self.cancelled:
+            return
+        self.cancelled = True
+        if self._runner is not None:
+            self._runner.cancel()
 
     @classmethod
     def finished(cls, episode: Episode) -> "RunSlot":
@@ -71,6 +82,15 @@ class RunSlot:
             episode=episode,
             done=True,
         )
+
+
+def _absorb_cancel(requested: bool) -> bool:
+    """Whether a `CancelledError` is the slot's own cancel request. If so, withdraw it
+    so the episode still returns; any other cancellation (shutdown) propagates."""
+    if not requested:
+        return False
+    task = asyncio.current_task()
+    return task is None or task.uncancel() == 0
 
 
 ConfigT = TypeVar("ConfigT", bound=EnvConfig)
@@ -238,6 +258,7 @@ class Env(ABC, Generic[ConfigT]):
         *,
         on_trace: Callable[[Trace], None] | None = None,
         on_discard: Callable[[Trace], None] | None = None,
+        cancelled: Callable[[], bool] = lambda: False,
     ) -> Episode:
         """One episode of `task`, minted as the wire atom: `setup()` then `run()`
         over fresh agents, then `finalize()`. Its agents run one at a time
@@ -246,16 +267,9 @@ class Env(ABC, Generic[ConfigT]):
         Traces join the episode as runs complete — a hook raising mid-way yields the
         completed subset, its exception on the episode's `errors`. `on_trace` observes
         each agent-run's trace at mint; `on_discard` its abandonment (a per-agent
-        retry mints a replacement)."""
-        episode = Episode(
-            env=EnvInfo(id=self.config.env_id),
-            task=TraceTask(
-                type=type(task).__name__,
-                data=task.data,
-                key=task.key,
-                hash=task.hash,
-            ),
-        )
+        retry mints a replacement). Once `cancelled()` reports a cancel request, the
+        episode returns the traces completed so far, flagged `cancelled`."""
+        episode = self._new_episode(task)
         agents = self._episode_agents(ctx, episode.traces, on_trace, on_discard)
         try:
             async with asyncio.timeout(self.config.timeout.episode):
@@ -268,6 +282,11 @@ class Env(ABC, Generic[ConfigT]):
                             f"{type(self).__name__}.run() ran no agent — every "
                             "episode must carry at least one run"
                         )
+        except asyncio.CancelledError:
+            if not _absorb_cancel(cancelled()):
+                raise
+            episode.cancelled = True
+            return episode
         except Exception as e:  # noqa: BLE001 - episode boundary records every hook failure
             # Only the deadline's expiry: inner TimeoutErrors became EnvError already.
             if isinstance(e, TimeoutError):
@@ -283,6 +302,11 @@ class Env(ABC, Generic[ConfigT]):
             async with asyncio.timeout(self.config.timeout.finalize):
                 async with boundary(EnvError, f"{type(self).__name__}.finalize()"):
                     await self.finalize(task, episode)
+        except asyncio.CancelledError:
+            if not _absorb_cancel(cancelled()):
+                raise
+            episode.cancelled = True
+            return episode
         except Exception as e:  # noqa: BLE001 - episode boundary records every hook failure
             # As above: a TimeoutError here is the deadline's own expiry.
             if isinstance(e, TimeoutError):
@@ -297,6 +321,17 @@ class Env(ABC, Generic[ConfigT]):
         # (retry history merges into `errors` later without touching it).
         episode.ok = all(t.ok for t in episode.traces)
         return episode
+
+    def _new_episode(self, task: Task) -> Episode:
+        return Episode(
+            env=EnvInfo(id=self.config.env_id),
+            task=TraceTask(
+                type=type(task).__name__,
+                data=task.data,
+                key=task.key,
+                hash=task.hash,
+            ),
+        )
 
     def slots(self, task: Task, n: int = 1) -> list[RunSlot]:
         """Plan `n` independent episodes of `task` (`-r n`): nothing couples them."""
@@ -317,7 +352,8 @@ class Env(ABC, Generic[ConfigT]):
         permit for the attempt in flight, held across the whole of it (its agents,
         their boxes, `finalize()`) and released before a retry's backoff and before
         `on_complete` (the runners' persistence hook, which fires when final).
-        `on_trace` sees each trace at mint, after it joined `slot.traces`."""
+        `on_trace` sees each trace at mint, after it joined `slot.traces`.
+        `slot.cancel()` ends it early, retries included."""
 
         async def attempt() -> Episode:
             slot.traces = []  # a retry shows the fresh attempt's traces
@@ -334,14 +370,36 @@ class Env(ABC, Generic[ConfigT]):
                     live.remove(trace)
 
             async with semaphore or contextlib.nullcontext():
-                return await self.run_episode(
+                episode = await self.run_episode(
                     slot.task,
                     ctx,
                     on_trace=minted,
                     on_discard=discard,
+                    cancelled=lambda: slot.cancelled,
                 )
+            if episode.cancelled:
+                # Keep what streamed, the runs cut short too: stopped as `cancelled`.
+                for trace in live:
+                    trace.stop("cancelled")
+                episode.traces = list(live)
+            return episode
 
-        episode = await run_episode_with_retry(attempt, self.config.retries)
+        slot._runner = asyncio.current_task()
+        try:
+            if slot.cancelled:
+                episode = self._new_episode(slot.task)
+                episode.cancelled = True
+            else:
+                episode = await run_episode_with_retry(attempt, self.config.retries)
+        except asyncio.CancelledError:
+            # Cancelled outside an attempt (queued on the semaphore, in a retry's
+            # backoff): no attempt holds an episode, so it carries no traces.
+            if not _absorb_cancel(slot.cancelled):
+                raise
+            episode = self._new_episode(slot.task)
+            episode.cancelled = True
+        finally:
+            slot._runner = None
         slot.traces = list(episode.traces)
         slot.episode = episode
         slot.done = True

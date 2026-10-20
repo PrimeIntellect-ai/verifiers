@@ -102,6 +102,10 @@ class Episode(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     is_timeout: bool = False
     """Whether the env's own `run()`/`finalize()` deadline expired; a per-agent
     stage deadline flags its trace (`Trace.is_timeout`)."""
+    cancelled: bool = False
+    """Whether the run was cancelled on request (`RunSlot.cancel`) before it finished.
+    Its traces are the ones streamed by then, a run cut short stopped as
+    `cancelled`; `ok` stays False."""
     errors: list[Error] = Field(default_factory=list)
     """Every error captured across attempts, oldest to newest."""
     traces: list[Trace[DataT, StateT, AgentConfigT]] = Field(default_factory=list)

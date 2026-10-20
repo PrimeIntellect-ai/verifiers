@@ -96,10 +96,12 @@ class EnvClient:
         response_type: type[ResponseT],
         timeout: float | None = None,
         on_delta: Callable[[bytes], None] | None = None,
+        cancel: asyncio.Event | None = None,
     ) -> ResponseT:
         """Send a typed request and validate the reply into `response_type`. A
         `timeout` is only used for health polling — rollouts run untimed. `on_delta`
-        receives each `delta` frame the request streams before its reply."""
+        receives each `delta` frame the request streams before its reply. Setting
+        `cancel` asks the server to end the run early; its reply still lands here."""
         self._ensure_receiver()
         request_id = uuid.uuid4().hex
         future: asyncio.Future[bytes] = asyncio.get_running_loop().create_future()
@@ -109,6 +111,11 @@ class EnvClient:
         payload = msgpack.packb(request.model_dump(mode="json"), use_bin_type=True)
         await self.socket.send_multipart(
             [request_id.encode(), request.method.encode(), payload]
+        )
+        watcher = (
+            asyncio.create_task(self._cancel_on(cancel, request_id))
+            if cancel is not None
+            else None
         )
         try:
             data = await asyncio.wait_for(future, timeout)
@@ -129,6 +136,8 @@ class EnvClient:
             raise
         finally:
             self._deltas.pop(request_id, None)
+            if watcher is not None:
+                watcher.cancel()
         response = response_type.model_validate(unpack(data))
         if not response.success:
             raise RuntimeError(response.error or "env server request failed")
@@ -150,6 +159,10 @@ class EnvClient:
                 lambda task: None if task.cancelled() else task.exception()
             )
             raise
+
+    async def _cancel_on(self, cancel: asyncio.Event, run_request_id: str) -> None:
+        await cancel.wait()
+        await self._send_cancel(run_request_id)
 
     async def _send_cancel(self, run_request_id: str) -> None:
         """Best-effort server-side abort of an abandoned run."""
@@ -190,13 +203,15 @@ class EnvClient:
         sampling: SamplingConfig,
         task_data: dict,
         on_delta: Callable[[dict], None] | None = None,
+        cancel: asyncio.Event | None = None,
     ) -> WireEpisode:
         """Run one rollout; return its episode record — flat traces (typed
         `Trace[WireTaskData]`) plus the shared stamp. The server takes the task
         itself (`task_data`, its dumped `TaskData`). The traces stream in as the
         rollout runs, one delta per turn or phase change (`serve.delta`); `on_delta`
         sees each as it lands, so a caller can relay or persist the stream. The
-        episode returned is assembled from the same deltas."""
+        episode returned is assembled from the same deltas. Setting `cancel` ends the
+        rollout early: the episode returned is flagged `cancelled`."""
         assembly = EpisodeAssembly()
 
         def apply(data: bytes) -> None:
@@ -214,6 +229,7 @@ class EnvClient:
             ),
             RunResponse,
             on_delta=apply,
+            cancel=cancel,
         )
         assert response.head is not None
         return await self._validate_episode(
