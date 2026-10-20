@@ -56,7 +56,8 @@ class AgentConfig(BaseConfig):
     client: ClientConfig | None = None
     """Endpoint override (None = the run's client)."""
     sampling: SamplingConfig | None = None
-    """Sampling values merged onto the run's sampling."""
+    """Own sampling values. Inherit the run's sampling only when model and client
+    are both unpinned; a pinned seat starts from provider defaults."""
 
     max_turns: int | None = None
     """Max model turns per run (None = no limit)."""
@@ -141,10 +142,13 @@ def resolve_agent(
     sampling: SamplingConfig | None = None,
     harness: HarnessConfig | None = None,
 ) -> AgentConfig:
-    """`spec` with what it leaves unset filled from the run's defaults; its own
-    sampling values merge over the run's. The one place a seat's identity resolves,
-    for configured agent roles."""
-    defaults = sampling or SamplingConfig()
+    """Fill unset identity fields from the run. Sampling inherits from the run only
+    for a seat on its unpinned model and client; a pinned seat uses its own sampling.
+    The one place a configured agent role's identity resolves."""
+    inherits_policy = spec.model is None and spec.client is None
+    defaults = (
+        sampling if inherits_policy and sampling is not None else SamplingConfig()
+    )
     overrides = (spec.sampling or SamplingConfig()).model_dump(exclude_unset=True)
     merged = {**defaults.model_dump(), **merge_defaults(defaults, overrides)}
     return spec.model_copy(
