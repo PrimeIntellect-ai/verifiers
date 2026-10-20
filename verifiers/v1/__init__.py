@@ -406,11 +406,15 @@ from verifiers.v1.runtimes.deployment import (
     Deployment,
     DeploymentConfig,
 )
+from verifiers.v1.runtimes.nodes import NodeConfig, PlacementError, ProcessConfig
 
 __all__ += [
     "ComposeSpec",
     "Deployment",
     "DeploymentConfig",
+    "NodeConfig",
+    "PlacementError",
+    "ProcessConfig",
 ]
 
 from verifiers.v1.configs.scoring import ScoringConfig

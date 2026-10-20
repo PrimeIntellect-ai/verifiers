@@ -4,14 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator
 from contextlib import AsyncExitStack, asynccontextmanager
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from pydantic_config import BaseConfig
 
 from verifiers.v1.runtimes import (
-    PrimeConfig,
     Runtime,
     RuntimeBackend,
     RuntimeConfig,
@@ -22,6 +21,9 @@ from verifiers.v1.runtimes.base import (
 )
 from verifiers.v1.runtimes.compose import ComposeSpec
 from verifiers.v1.utils.aio import run_shielded
+
+if TYPE_CHECKING:
+    from verifiers.v1.runtimes.nodes import Plan, TopologyConfig
 
 logger = logging.getLogger(__name__)
 
@@ -74,26 +76,31 @@ class Deployment:
         backend: RuntimeBackend,
         *,
         spec: ComposeSpec | None = None,
-        tool_vms: Mapping[str, PrimeConfig] | None = None,
+        plan: Plan | None = None,
+        topology: TopologyConfig | None = None,
         env: dict[str, str] | None = None,
         config: DeploymentConfig | None = None,
         borrowed_runtime: Runtime | None = None,
     ):
         self.backend = backend
         self.spec = spec
-        self.tool_vms = dict(tool_vms or {})
-        """Tool servers on Prime runtimes of their own, by server name, which join the
-        workspace over the rollout's private network."""
+        self.plan = plan
+        """The machines and connections this deployment realizes (`runtimes.nodes`);
+        None for the task's Compose services, or the workspace alone."""
+        self.topology = topology
         self.env = dict(env or {})
         self.config = config or DeploymentConfig()
         self.borrowed_runtime = borrowed_runtime
         from verifiers.v1.runtimes.strategies import _deployment_strategy
 
-        self._strategy = _deployment_strategy(self.config, backend, spec, self.tool_vms)
+        # Before anything is provisioned: a plan this deployment cannot realize fails here.
+        self._strategy = _deployment_strategy(
+            self.config, backend, spec, plan, topology
+        )
         self.target_backends: dict[str, RuntimeBackend] = {}
         self.hosts: dict[str, str] = {}
         """The hostname the workspace reaches a named target by, where it is not the
-        target's name (a tool server VM's LAN name)."""
+        target's name (a machine of its own's `network_host`)."""
         self.harness_backend: RuntimeBackend | None = None
         self.execution_backend: RuntimeBackend | None = None
         self._stack = AsyncExitStack()
@@ -151,6 +158,10 @@ class Deployment:
         if self.borrowed_runtime is not None:
             return self.borrowed_runtime.with_env(self.env)
         return self.execution_backend.bind(env=self.env)
+
+    def host(self, name: str) -> str:
+        """The hostname the workspace reaches a named target by."""
+        return self.hosts.get(name, name)
 
     def target(self, name: str) -> Runtime:
         """Access a named runtime, such as a Compose service, through an execution view."""

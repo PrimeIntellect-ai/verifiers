@@ -15,30 +15,47 @@ if TYPE_CHECKING:
 
 
 class ToolsetConfig(BaseConfig):
+    on: str | None = None
+    """The node the server runs on: `"host"` (the evaluator), `"main"` (the
+    workspace), a node the task declares (`TaskData.nodes`), or a service of its
+    Compose project. The harness reaches a server on another node over the rollout's
+    network, by that node's name, so the workspace needs no access to whatever the
+    server fronts. Unset, `colocated`, `service` and `runtime` decide."""
     colocated: bool = False
+    """Run the server in the workspace: `on = "main"`."""
     runtime: RuntimeConfig = SubprocessConfig()
-    """Where the server runs: the evaluator by default. A Prime runtime beside a Prime
-    workspace without Compose services is a VM of the server's own that joins the
-    workspace over the rollout's private network, under its own egress policy."""
+    """Where the server runs when `on` is unset: the evaluator by default. A runtime of
+    the workspace's type, beside a workspace without Compose services whose runtime
+    joins machines on a private network (Prime), is a machine of the server's own on
+    that network, under its own egress policy."""
     url: str | None = None
     service: str | None = None
-    """Run the server in this service of the task's Compose services (on a Prime
-    VM). The harness reaches it over the Compose network by the service's name, so the
-    workspace needs no access to whatever the server fronts."""
+    """Run the server in this service of the task's Compose services: `on = service`."""
+
+    @property
+    def node(self) -> str | None:
+        """The node `on`, `colocated` or `service` names, if any."""
+        if self.on is not None:
+            return self.on
+        return "main" if self.colocated else self.service
 
     @model_validator(mode="after")
     def _one_placement(self):
-        if self.service is None:
-            return self
-        if self.colocated or self.url:
+        if self.on is not None and (self.colocated or self.service or self.url):
+            raise ValueError(
+                "a tool server placed with `on` takes no `colocated`, `service` or `url`"
+            )
+        if self.service is not None and (self.colocated or self.url):
             raise ValueError(
                 "a tool server placed in a Compose service is neither colocated nor remote"
             )
-        # The service is the server's runtime; another one, or its policy, would go unused.
-        if not isinstance(self.runtime, SubprocessConfig):
-            raise ValueError(  # noqa: TRY004 - Pydantic validators must raise ValueError
-                "a tool server placed in a Compose service runs in that service and "
-                f"takes no runtime of its own (got {self.runtime.type})"
+        # The node is the server's runtime; another one, or its policy, would go unused.
+        if self.node not in (None, "host", "main") and not isinstance(
+            self.runtime, SubprocessConfig
+        ):
+            raise ValueError(
+                f"a tool server on node {self.node!r} runs on that node and takes no "
+                f"runtime of its own (got {self.runtime.type})"
             )
         return self
 

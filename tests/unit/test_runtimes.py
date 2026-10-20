@@ -44,6 +44,7 @@ from verifiers.v1.runtimes import (
     RuntimeConfig,
     RuntimeProcess,
     backend_cls,
+    make_backend,
     provision_runtime,
 )
 from verifiers.v1.runtimes.compose import ComposeSpec, compose_services
@@ -57,6 +58,7 @@ SUPPORTED = {
     "port_exposure": {"subprocess", "docker"},
     "compose": {"docker", "prime"},
     "network_policies": {"docker", "prime"},
+    "private_network": {"prime"},
 }
 PYTHON = ["sh", "-c", 'exec "$(command -v python3 || command -v python)" "$@"', "py"]
 IMAGE = "python:3.12-alpine"
@@ -164,6 +166,7 @@ def test_built_in_runtime_declares_its_features(name) -> None:
         "port_exposure": cls.SUPPORTS_PORT_EXPOSURE,
         "compose": cls.SUPPORTS_COMPOSE,
         "network_policies": isinstance(config, NetworkPolicyConfig),
+        "private_network": cls.SUPPORTS_PRIVATE_NETWORK,
     }
     assert declared == {f: name in runtimes for f, runtimes in SUPPORTED.items()}
 
@@ -359,6 +362,56 @@ async def test_network_policies(runtime) -> None:
         assert await reach(view, "https://example.com") == "ok"
         resolved = await view.run([*PYTHON, "-c", RESOLVE, "example.com"], {})
         assert resolved.exit_code == 0, resolved
+
+
+async def test_private_network(runtime) -> None:
+    cls = backend_cls(runtime)
+    if not cls.SUPPORTS_PRIVATE_NETWORK:
+        members = {"client": make_backend(runtime), "server": make_backend(runtime)}
+        with refused(runtime, ValueError, "cannot join machines on a private network"):
+            async with cls.private_network(members, [("client", "server")]):
+                pass
+        return
+    skip_unavailable(runtime)
+    probe = (
+        "import sys, urllib.request\n"
+        "try:\n"
+        "    print(urllib.request.urlopen(sys.argv[1], timeout=10).read().decode())\n"
+        "except Exception:\n"
+        "    print('denied')\n"
+    )
+    members = {"client": make_backend(runtime), "server": make_backend(runtime)}
+    views = {name: member.bind() for name, member in members.items()}
+
+    async def fetch(name: str, host: str) -> str:
+        url = f"http://{host}:8000/"
+        return (await views[name].run([*PYTHON, "-c", probe, url], {})).stdout.strip()
+
+    async with asyncio.timeout(TIMEOUT), contextlib.AsyncExitStack() as stack:
+        # Only the client may open connections, and only to the server.
+        await stack.enter_async_context(
+            cls.private_network(members, [("client", "server")])
+        )
+        for member in members.values():
+            stack.push_async_callback(member.stop)
+        await asyncio.gather(*(member.start() for member in members.values()))
+        for name, view in views.items():
+            await view.write("vf-www/index.html", name.encode())
+            await view.run_background(
+                [*PYTHON, "-m", "http.server", "8000", "-d", "vf-www"], {}, "http.log"
+            )
+        for name in members:
+            await wait_for(lambda name=name: _equals(fetch(name, "127.0.0.1"), name))
+        server, client = members["server"].network_host, members["client"].network_host
+        await wait_for(lambda: _equals(fetch("client", server), "server"))
+        # The server resolves the client's name but cannot connect to it.
+        resolved = await views["server"].run([*PYTHON, "-c", RESOLVE, client], {})
+        assert resolved.exit_code == 0, resolved
+        assert await fetch("server", client) == "denied"
+
+
+async def _equals(value: Awaitable[str], expected: str) -> bool:
+    return await value == expected
 
 
 class HostProcess(RuntimeProcess):

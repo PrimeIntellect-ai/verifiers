@@ -10,7 +10,7 @@ import math
 import shlex
 import tempfile
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Collection, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -189,6 +189,7 @@ class PrimeBackend(RuntimeBackend):
     SUPPORTS_TASK_IMAGES: ClassVar[bool] = True
     SUPPORTS_COMPOSE: ClassVar[bool] = True
     SUPPORTS_USER_SWITCHING: ClassVar[bool] = True
+    SUPPORTS_PRIVATE_NETWORK: ClassVar[bool] = True
 
     def __init__(self, config: PrimeConfig, name: str | None = None) -> None:
         ensure_prime_auth()
@@ -199,6 +200,64 @@ class PrimeBackend(RuntimeBackend):
         # A LAN network (id, tags) to join as the sandbox boots: prime-sandboxes joins it
         # once it is running, within `wait_for_creation` on the creating client.
         self.lan: tuple[str, list[str]] | None = None
+        self._keepalive: asyncio.Task[None] | None = None
+
+    @classmethod
+    @asynccontextmanager
+    async def private_network(
+        cls,
+        members: Mapping[str, RuntimeBackend],
+        rules: Collection[tuple[str, str]],
+    ) -> AsyncIterator[None]:
+        """A LAN network created with its rules. A member's join completes only once the
+        network exists on the platform, so every member joins under them. Members are
+        tagged by position, since their names need not be valid LAN tags."""
+        from prime_sandboxes import LanRule
+
+        if foreign := sorted(
+            name for name, member in members.items() if not isinstance(member, cls)
+        ):
+            raise ValueError(
+                f"a Prime private network joins only Prime machines, not {foreign}"
+            )
+        if unknown := sorted({name for rule in rules for name in rule} - set(members)):
+            raise ValueError(f"private network rules name unknown members: {unknown}")
+        tags = {name: f"vf-{index}" for index, name in enumerate(members)}
+        async with leased_client() as client:
+            network = await client.create_lan_network(
+                f"vf-{uuid.uuid4().hex[:16]}",
+                rules=[
+                    LanRule(from_=f"tag:{tags[source]}", to=f"tag:{tags[target]}")
+                    for source, target in rules
+                ],
+            )
+
+            async def delete() -> None:
+                try:
+                    await client.delete_lan_network(network.id)
+                except Exception:
+                    logger.warning(
+                        "LAN network %s deletion failed", network.id, exc_info=True
+                    )
+
+            try:
+                for name, member in members.items():
+                    assert isinstance(member, PrimeBackend)
+                    member.lan = (network.id, [tags[name]])
+                yield
+            finally:
+                await run_shielded(delete())
+
+    @property
+    def network_host(self) -> str:
+        """The LAN name, which the LAN's DNS keeps current."""
+        return f"{self.info.id}.sandbox.internal"
+
+    async def _keep_alive(self, every: float) -> None:
+        while True:
+            await asyncio.sleep(every)
+            with contextlib.suppress(Exception):
+                await self.bind().run(["true"], {})
 
     async def start(self) -> None:
         from prime_sandboxes import CreateSandboxRequest
@@ -284,6 +343,12 @@ class PrimeBackend(RuntimeBackend):
             Exception
         ) as e:  # provisioning failure is one rollout's problem, not the eval's
             raise SandboxError(f"prime sandbox provisioning failed: {e}") from e
+        if self.lan is not None and self.config.idle_timeout is not None:
+            # LAN traffic is not activity to the platform, and a member may see no
+            # commands of its own, as a tool server's VM does: keep it inside its idle
+            # timeout until it is released.
+            every = max(10.0, self.config.idle_timeout / 3)
+            self._keepalive = asyncio.create_task(self._keep_alive(every))
 
     async def prepare_execution(
         self, routes: list[str] | None, network: NetworkPolicyConfig | None = None
@@ -510,6 +575,9 @@ class PrimeBackend(RuntimeBackend):
         client, self._client = self._client, None  # `_client` is the idempotency guard
         if client is None:
             return
+        if self._keepalive is not None:
+            self._keepalive.cancel()
+            await asyncio.gather(self._keepalive, return_exceptions=True)
         try:
             if self.info.id is not None:  # keep info.id available after teardown
                 await client.delete(self.info.id)

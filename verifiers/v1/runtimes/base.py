@@ -11,7 +11,7 @@ import shlex
 import uuid
 import weakref
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Collection, Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, ClassVar
 
@@ -179,6 +179,11 @@ class RuntimeBackend(ABC):
 
     SUPPORTS_COMPOSE: ClassVar[bool] = False
     """Whether the runtime can run a task's Docker Compose services."""
+
+    SUPPORTS_PRIVATE_NETWORK: ClassVar[bool] = False
+    """Whether `private_network` can join this runtime's machines on a network of their
+    own, so a server on one is reachable from another while each keeps its own network
+    policy."""
 
     scripts_dir: ClassVar[str] = "/tmp/vf-scripts"
     """Digest-keyed PEP 723 scripts inside the runtime. Sandboxes own their `/tmp`;
@@ -362,6 +367,32 @@ class RuntimeBackend(ABC):
         down with the sandbox in `stop()`. The reverse of a
         host `Tunnel` (interception.tunnel, which reaches a host port from inside a runtime)."""
         return f"http://127.0.0.1:{port}"
+
+    @classmethod
+    @contextlib.asynccontextmanager
+    async def private_network(
+        cls,
+        members: Mapping[str, RuntimeBackend],
+        rules: Collection[tuple[str, str]],
+    ) -> AsyncIterator[None]:
+        """A network of `members`' own, on which each `(source, target)` rule lets the
+        source open connections to the target, and nothing else may open any. Members
+        are backends of this runtime that have not started; each joins as it starts and
+        is reached at its `network_host`. The network is removed on exit, so stop the
+        members first."""
+        kinds = sorted({member.type for member in members.values()})
+        raise ValueError(
+            f"the {'/'.join(kinds) or cls.__name__} runtime cannot join machines on a "
+            "private network; use a supported runtime"
+        )
+        yield
+
+    @property
+    def network_host(self) -> str:
+        """The name the other members of its private network reach this runtime by."""
+        raise ValueError(
+            f"the {self.type} runtime cannot join machines on a private network"
+        )
 
 
 async def _drain(stream: AsyncIterator[bytes]) -> bytes:
