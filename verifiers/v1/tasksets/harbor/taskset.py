@@ -353,6 +353,9 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
         # container's own PID namespace.
         if not isinstance(self.deployment_spec(), ComposeSpec):
             await runtime.backend.isolate_processes()
+        guarded = await guard_onednn(runtime)
+        if guarded and trace is not None:
+            trace.info["onednn_guard"] = guarded
         if (dockerfile := self.entrypoint_dockerfile()) is not None:
             started = await start_entrypoint(runtime, dockerfile)
             if started is not None and trace is not None:
@@ -695,6 +698,37 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
                 "expected an object of finite numeric rewards"
             ) from exc
         return {name: float(value) for name, value in scores.items()}
+
+
+ONEDNN_GUARD = "/tmp/vf-onednn-guard.py"
+PYTHONS = r"""
+for py in $(command -v python3 python 2>/dev/null) /usr/local/bin/python3* /usr/bin/python3* \
+    /opt/*/bin/python3* /opt/conda/bin/python3* /*/.venv/bin/python3 /app/*/.venv/bin/python3; do
+  case "$py" in *python3|*python3.[0-9]|*python3.[0-9][0-9]|*/python) ;; *) continue ;; esac
+  [ -x "$py" ] || continue
+  real=$(readlink -f "$py" 2>/dev/null || echo "$py")
+  case " $seen " in *" $real "*) continue ;; esac
+  seen="$seen $real"
+  printf '%s: %s\n' "$py" "$("$py" -I "$1" 2>&1 | tail -n 1)"
+done
+"""
+
+
+async def guard_onednn(runtime: Runtime) -> str:
+    """Install `onednn_guard` into each of the box's Python interpreters that has torch,
+    on a CPU whose reported topology makes oneDNN divide by zero; returns what it
+    installed (empty when nothing). Best effort: a box this cannot reach keeps oneDNN."""
+    try:
+        await runtime.write(
+            ONEDNN_GUARD, (Path(__file__).parent / "onednn_guard.py").read_bytes()
+        )
+        result = await runtime.run(["sh", "-c", PYTHONS, "vf", ONEDNN_GUARD], {})
+    except SandboxError as exc:
+        logger.warning("oneDNN guard not installed: %s", exc)
+        return ""
+    return "\n".join(
+        line for line in result.stdout.splitlines() if "installed in" in line
+    )
 
 
 def log_tails(files: str, size: int = 800) -> str:
