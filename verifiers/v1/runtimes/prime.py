@@ -198,15 +198,37 @@ filesystem, under the mount, and a non-recursive bind of / reaches it. Files alr
 in the tmpfs are kept; a box without `mount` keeps the empty tmpfs."""
 
 _PID_NAMESPACE_FILE = "/run/vf-pid-namespace"
+_REAPER = """
+import os, signal
+for sig in (signal.SIGHUP, signal.SIGINT, signal.SIGTERM, signal.SIGQUIT):
+    signal.signal(sig, signal.SIG_IGN)
+def reap(*_):
+    while True:
+        try:
+            if os.waitpid(-1, os.WNOHANG)[0] == 0:
+                return
+        except ChildProcessError:
+            return
+signal.signal(signal.SIGCHLD, reap)
+reap()
+while True:
+    signal.pause()
+"""
+"""The namespace's PID 1 where the box has Python: it reaps orphans, as the box's own
+init does, so a grader that kills a process and checks it is gone does not find its
+zombie; it has no children of its own a grader could kill. Elsewhere it is Harbor's
+`sleep infinity`."""
 _PID_NAMESPACE = rf"""
 set -u
 f={_PID_NAMESPACE_FILE}
+REAPER={shlex.quote(_REAPER)}
 p=$(cat "$f" 2>/dev/null) && [ -n "$p" ] && [ -e "/proc/$p/ns/pid" ] && exit 0
 command -v unshare >/dev/null 2>&1 && command -v nsenter >/dev/null 2>&1 || {{
   echo "no unshare/nsenter in this image" >&2; exit 3; }}
 rm -f "$f" "$f.parent"
 setsid sh -c 'echo $$ > "$0.parent"; exec unshare --pid --fork --mount-proc \
-  sleep infinity' "$f" </dev/null >/dev/null 2>&1 &
+  sh -c "command -v python3 >/dev/null 2>&1 && exec python3 -I -S -c \"\$0\"; exec sleep infinity" \
+  "$1"' "$f" "$REAPER" </dev/null >/dev/null 2>&1 &
 for i in $(seq 1 100); do
   u=$(cat "$f.parent" 2>/dev/null)
   c=$( [ -n "$u" ] && cat "/proc/$u/task/$u/children" 2>/dev/null | awk '{{print $1}}')
@@ -998,11 +1020,13 @@ class PrimeBackend(RuntimeBackend):
             return command, user
         inner = shlex.quote(command)
         # Entering a mount namespace moves the working directory to its root: keep the
-        # command's own.
+        # command's own. The command gets a session of its own inside the namespace, as
+        # a user's does (`_as_user`): one led from outside reads as session 0 there, and
+        # a grader that stops a session it resolved to 0 stops the daemon's group.
         entered = (
             f'p=$(cat {_PID_NAMESPACE_FILE} 2>/dev/null); if [ -n "$p" ] && '
             f'[ -e "/proc/$p/ns/pid" ]; then exec nsenter -t "$p" -p -m --wd="$PWD" '
-            f"-- sh -c {inner}; fi; exec sh -c {inner}"
+            f"-- setsid -w sh -c {inner}; fi; exec sh -c {inner}"
         )
         return entered, None
 

@@ -478,6 +478,7 @@ async def test_a_box_with_a_pid_namespace_runs_every_command_inside_it(
     await runtime.bind().with_user("agent").run(["make"], {})
     [(start, _), (root, _), (user, _)] = client.started
     assert "unshare --pid --fork --mount-proc" in start
+    assert "exec python3 -I -S -c" in start  # an init that reaps orphans
     assert root.startswith("p=$(cat /run/vf-pid-namespace") and "nsenter -t" in root
     assert root.endswith("exec sh -c true")
     assert "nsenter -t" in user and "setpriv --reuid=agent" in user
