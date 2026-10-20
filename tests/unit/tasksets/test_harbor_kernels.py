@@ -70,3 +70,31 @@ def test_a_verifier_table_naming_only_its_image_is_sized_like_the_environment(
         "gpu": None,
         "disk": 10.0,
     }
+
+
+def test_a_bare_name_caches_what_its_registry_resolves_to_now(tmp_path):
+    """A bare dataset name follows its local registry's current `head`, so moving
+    head to a new commit is a new cache entry; a pinned version keeps its own."""
+    import json
+
+    registry = tmp_path / "registry.json"
+
+    def publish(commit):
+        tasks = [{"name": "t", "git_url": "file:///r", "git_commit_id": commit}]
+        registry.write_text(
+            json.dumps(
+                [
+                    {"name": "x", "version": "v1", "tasks": tasks},
+                    {"name": "x", "version": "head", "tasks": tasks},
+                ]
+            )
+        )
+
+    bare = harbor.HarborConfig(dataset="x", registry_path=registry)
+    pinned = harbor.HarborConfig(dataset="x@v1", registry_path=registry)
+    publish("aaa")
+    first, first_pinned = harbor.cache_dir(bare), harbor.cache_dir(pinned)
+    assert harbor.cache_dir(bare) == first
+    publish("bbb")
+    assert harbor.cache_dir(bare) != first
+    assert harbor.cache_dir(pinned) == first_pinned

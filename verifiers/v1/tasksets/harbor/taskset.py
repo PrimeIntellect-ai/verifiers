@@ -756,12 +756,45 @@ def cache_dir(config: HarborConfig) -> Path:
         selector_parts.extend(("registry_path", str(registry_path)))
     if config.registry_url is not None:
         selector_parts.extend(("registry_url", config.registry_url))
+    if (
+        "@" not in config.dataset
+        and config.registry_path is not None
+        and config.repo is None
+    ):
+        # A bare name selects whatever version the local registry resolves to now
+        # (its `head`, say), so the cache follows what that version lists.
+        selector_parts.extend(("resolved", local_registry_spec(config)))
 
     name = config.dataset.replace("/", "_").replace("@", "_")
     if len(selector_parts) > 1:
         digest = hashlib.sha256("\0".join(selector_parts).encode()).hexdigest()[:12]
         name = f"{name}_{digest}"
     return CACHE / name
+
+
+def local_registry_spec(config: HarborConfig) -> str:
+    """The dataset version a bare name resolves to in a local `registry.json`, as
+    Harbor resolves it, with the tasks that version lists; empty when the file or the
+    name is absent (the download then reports it)."""
+    import json
+
+    from harbor.registry.client.base import resolve_version
+
+    try:
+        registry = json.loads(config.registry_path.expanduser().read_text())
+    except (OSError, ValueError):
+        return ""
+    specs = {
+        str(spec.get("version")): spec
+        for spec in registry
+        if isinstance(spec, dict) and spec.get("name") == config.dataset
+    }
+    if not specs:
+        return ""
+    version = resolve_version(list(specs))
+    return json.dumps(
+        {"version": version, "tasks": specs[version].get("tasks")}, sort_keys=True
+    )
 
 
 def download_command(config: HarborConfig, output_dir: Path) -> list[str]:
