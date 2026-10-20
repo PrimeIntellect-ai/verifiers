@@ -481,3 +481,35 @@ async def test_a_box_with_a_pid_namespace_runs_every_command_inside_it(
     assert root.startswith("p=$(cat /run/vf-pid-namespace") and "nsenter -t" in root
     assert root.endswith("exec sh -c true")
     assert "nsenter -t" in user and "setpriv --reuid=agent" in user
+
+
+class LostWorkdirClient(UserJobClient):
+    """Refuses the first launch: the box's workdir is gone."""
+
+    def __init__(self):
+        super().__init__(tools=True)
+        self.made: list[str] = []
+
+    async def execute_command(self, sandbox_id, command, **kwargs):
+        self.made.append(command)
+        return SimpleNamespace(exit_code=0, stdout="")
+
+    async def start_background_job(self, sandbox_id, command, **kwargs):
+        if not self.made:
+            raise RuntimeError(
+                "process stream RPC failed (invalid_argument): cwd '/app' does not exist"
+            )
+        return await super().start_background_job(sandbox_id, command, **kwargs)
+
+
+async def test_a_command_after_the_workdir_was_removed_runs_in_it_again(
+    monkeypatch, no_sleep
+):
+    """An agent that removed the workdir (`rm -rf /app`) keeps working: the box makes
+    the directory again rather than refusing every later command."""
+    monkeypatch.setattr(prime, "ensure_prime_auth", lambda: None)
+    runtime = PrimeBackend(PrimeConfig(workdir="/app"))
+    runtime.info.id = "sb1"
+    runtime._client = client = LostWorkdirClient()
+    result = await runtime.bind().run(["ls"], {})
+    assert (result.exit_code, client.made) == (0, ["mkdir -p /app"])

@@ -914,6 +914,32 @@ class PrimeBackend(RuntimeBackend):
             policy.get("deny"),
         )
 
+    async def _in_workdir(self, start: Callable[[], Awaitable[T]]) -> T:
+        """`start()`, a command's launch, made again once the box's workdir exists:
+        the platform refuses every command whose working directory is gone, so an
+        agent or a script that removed the workdir (`rm -rf /app`, a replaced tree)
+        otherwise ended the rollout at its next command, where Docker's container
+        keeps its WORKDIR's mount point."""
+        try:
+            return await start()
+        except Exception as e:
+            missing = _MISSING_CWD.search(str(e))
+            if missing is None or missing.group(1) != self.config.workdir:
+                raise
+            logger.warning(
+                "prime: sandbox %s lost its working directory %s; making it again",
+                self.info.id,
+                missing.group(1),
+            )
+            made = await self._client.execute_command(
+                self.info.id,
+                f"mkdir -p {shlex.quote(missing.group(1))}",
+                working_dir="/",
+            )
+            if made.exit_code:
+                raise
+            return await start()
+
     async def _route_egress(self, block: bool) -> None:
         """Refuse outbound connections in the box itself under a deny-all policy, and
         lift that once a policy opens it again (`_NO_ROUTE`). Best effort: the
@@ -1014,12 +1040,14 @@ class PrimeBackend(RuntimeBackend):
             # Poll directly so rollout cancellation owns the execution timeout.
             began = time.monotonic()
             command, user = await self._job(runtime, shlex.join(argv))
-            job = await self._client.start_background_job(
-                self.info.id,
-                command,
-                working_dir=self.config.workdir,
-                env=runtime.process_env(env),
-                user=user,
+            job = await self._in_workdir(
+                lambda: self._client.start_background_job(
+                    self.info.id,
+                    command,
+                    working_dir=self.config.workdir,
+                    env=runtime.process_env(env),
+                    user=user,
+                )
             )
             _call_stats.record("exec.start", time.monotonic() - began)
             delay = 0.1
@@ -1107,12 +1135,14 @@ class PrimeBackend(RuntimeBackend):
     ) -> RuntimeProcess:
         try:
             command, user = await self._job(runtime, shlex.join(argv))
-            process = await self._client.open_process(
-                self.info.id,
-                command,
-                working_dir=self.config.workdir,
-                env=runtime.process_env(env),
-                user=user,
+            process = await self._in_workdir(
+                lambda: self._client.open_process(
+                    self.info.id,
+                    command,
+                    working_dir=self.config.workdir,
+                    env=runtime.process_env(env),
+                    user=user,
+                )
             )
         except Exception as e:
             raise SandboxError(
@@ -1240,12 +1270,14 @@ class PrimeBackend(RuntimeBackend):
             command, user = await self._job(
                 runtime, f"exec {shlex.join(argv)} > {shlex.quote(log)} 2>&1"
             )
-            await self._client.start_background_job(
-                self.info.id,
-                command,
-                working_dir=self.config.workdir,
-                env=runtime.process_env(env),
-                user=user,
+            await self._in_workdir(
+                lambda: self._client.start_background_job(
+                    self.info.id,
+                    command,
+                    working_dir=self.config.workdir,
+                    env=runtime.process_env(env),
+                    user=user,
+                )
             )
         except Exception as e:
             raise SandboxError(
@@ -1265,12 +1297,14 @@ class PrimeBackend(RuntimeBackend):
                 command, user = await self._job(
                     runtime, f"{reader} -- {shlex.quote(path)}"
                 )
-                process = await self._client.open_process(
-                    self.info.id,
-                    command,
-                    working_dir=self.config.workdir,
-                    env=runtime.process_env({}),
-                    user=user,
+                process = await self._in_workdir(
+                    lambda: self._client.open_process(
+                        self.info.id,
+                        command,
+                        working_dir=self.config.workdir,
+                        env=runtime.process_env({}),
+                        user=user,
+                    )
                 )
                 async with contextlib.aclosing(process):
                     with io.BytesIO() as data:
