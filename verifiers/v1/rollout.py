@@ -24,6 +24,7 @@ from verifiers.v1.errors import (
 from verifiers.v1.grading import (
     bind_scoring_env,
     grade_task,
+    scoring_network,
     scoring_transaction,
     verifier_runtime,
 )
@@ -31,7 +32,6 @@ from verifiers.v1.harness import Harness, HarnessSession
 from verifiers.v1.interception import Interception, serve_interception
 from verifiers.v1.mcp import SharedToolServer, serve_tools
 from verifiers.v1.runtimes import (
-    ModalConfig,
     Runtime,
     RuntimeConfig,
     make_backend,
@@ -161,10 +161,7 @@ class Rollout:
             ctx=ctx,
             trace=self.trace,
             network_policy=(
-                NetworkPolicyConfig(allow=[])
-                if isinstance(execution_policy, ModalConfig)
-                and not execution_policy.network_access
-                else execution_policy
+                execution_policy
                 if isinstance(execution_policy, NetworkPolicyConfig)
                 else NetworkPolicyConfig()
             ),
@@ -585,8 +582,9 @@ class Rollout:
             else segment_start + max(0.0, self._agent_time_remaining)
         )
         # Prefer an intercepted model/tool error to the harness exit it caused.
+        deadline = asyncio.timeout_at(self.deadline_at)
         try:
-            async with asyncio.timeout_at(self.deadline_at):
+            async with deadline:
                 assert self._harness_session is not None
                 if messages is not None and self._session.request_interceptors:
                     prepared, rewrites = await self._session.prepare_users(
@@ -610,6 +608,12 @@ class Rollout:
             return False
         except Exception as e:  # noqa: BLE001 - harness boundary records every rollout failure
             if self._session.stopped:
+                return False
+            # A runtime can report the cancellation the deadline caused as its own
+            # error (Prime's SDK raises one for a cancelled request); the expired
+            # deadline is still the outcome.
+            if deadline.expired():
+                self.timeout("agent")
                 return False
             real = self._session.error
             if real is not None and isinstance(e, RolloutError):
@@ -899,6 +903,13 @@ class Rollout:
                                             "runtime": scoring_runtime,
                                         },
                                     )
+                                    if self._scoring_policy.network is not None:
+                                        await scoring_runtime.set_network(
+                                            scoring_network(
+                                                self.trace.agent.config.runtime,
+                                                self._scoring_policy.network,
+                                            )
+                                        )
                                 await self._scoring_task.score(
                                     trace, scoring_runtime, self.deployment
                                 )

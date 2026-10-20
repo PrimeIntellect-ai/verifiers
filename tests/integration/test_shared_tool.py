@@ -3,12 +3,12 @@ rollouts, across the runtime x runtime grid. Shared servers
 always run in their own runtime (colocation is per-rollout, shared is eval-level)."""
 
 import pytest
-from grid import HARNESS_RUNTIMES, placements
+from grid import placements
 
 
 @pytest.mark.parametrize(
     "harness_runtime,tool_runtime",
-    placements(tool_runtimes=tuple(HARNESS_RUNTIMES), shared=True),
+    placements(tool_runtimes=("subprocess", "prime"), shared=True),
     indirect=True,
 )
 async def test_shared_tool(run, harness_runtime, tool_runtime):

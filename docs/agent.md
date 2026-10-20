@@ -54,4 +54,5 @@ When `mode="isolated"`, verifiers restores the task's collected artifacts into a
 
 - `agent.scoring.runtime` optionally overrides the runtime configuration used for the isolated verifier.
 - `agent.scoring.env` merges over `TaskData.scoring.env` in both `shared` and `isolated` modes, resolving `${VAR}` and `${VAR:-default}` templates from the host environment when scoring starts.
+- `agent.scoring.network` sets the task's network policy while scoring runs, replacing `TaskData.scoring.network`; see [network policies](runtimes.md#network-policies).
 - `agent.scoring.retries` configures `RetryConfig` for isolated scoring (defaulting to `max_retries = 2`), reusing the completed submission in a fresh scoring environment whenever a retryable error occurs. Shared scoring is not retried.

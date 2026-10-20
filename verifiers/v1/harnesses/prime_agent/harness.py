@@ -82,6 +82,8 @@ class PrimeAgentHarnessConfig(HarnessConfig):
 
     autonomous: bool = False
     """Enable Prime Agent's autonomous continuation loop."""
+    # Over Responses it replays an earlier turn without its reasoning.
+    dialect: Literal["chat_completions", "anthropic_messages"] = "chat_completions"
 
 
 class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
@@ -209,8 +211,15 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
         models = {
             "providers": {
                 PROVIDER: {
-                    "baseUrl": endpoint,
-                    "api": "openai-completions",
+                    # Its Anthropic provider appends `/v1/messages` to the base URL.
+                    "baseUrl": endpoint.removesuffix("/v1")
+                    if self.config.dialect == "anthropic_messages"
+                    else endpoint,
+                    "api": {
+                        "chat_completions": "openai-completions",
+                        "responses": "openai-responses",
+                        "anthropic_messages": "anthropic-messages",
+                    }[self.config.dialect],
                     "apiKey": KEY_VAR,
                     "models": [
                         {

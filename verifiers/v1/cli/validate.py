@@ -31,7 +31,12 @@ from verifiers.v1.cli.resolve import (
 from verifiers.v1.cli.resume import distribute
 from verifiers.v1.configs.cli.validate import ValidateConfig
 from verifiers.v1.errors import TaskError, boundary
-from verifiers.v1.grading import bind_scoring_env, grade_task, verifier_runtime
+from verifiers.v1.grading import (
+    bind_scoring_env,
+    grade_task,
+    scoring_network,
+    verifier_runtime,
+)
 from verifiers.v1.runtimes import make_backend
 from verifiers.v1.runtimes.deployment import Deployment
 from verifiers.v1.state import state_cls
@@ -244,7 +249,7 @@ async def _setup_only(task: Task, trace: Trace, runtime) -> bool:
 
 async def _gold(task: Task, trace: Trace, runtime) -> bool | None:
     """Apply and check the reference answer."""
-    return await task.validate(runtime)
+    return await invoke(task.validate, {"trace": trace, "runtime": runtime})
 
 
 async def _score_untouched(
@@ -288,6 +293,10 @@ async def _score_untouched(
         async with asyncio.timeout(task.data.timeout.scoring):
             runtime = bind_scoring_env(runtime, policy)
             await invoke(grader.stage_verifier, {"trace": trace, "runtime": runtime})
+            if policy.network is not None:
+                await runtime.set_network(
+                    scoring_network(config.runtime, policy.network)
+                )
             await grader.score(trace, runtime, deployment)
     if not trace.rewards:
         return None

@@ -1,9 +1,7 @@
 """In-process HTTP(S) proxy for Docker policy and host callbacks."""
 
 import asyncio
-import base64
 import contextlib
-import hmac
 import secrets
 import socket
 import ssl
@@ -126,10 +124,6 @@ class _Callback:
 class EgressProxy:
     def __init__(self, policy: NetworkPolicy) -> None:
         self.policy = policy
-        self.token = secrets.token_urlsafe(32)
-        self._authorization = b"Basic " + base64.b64encode(
-            f"verifiers:{self.token}".encode()
-        )
         self._callbacks: dict[str, _Callback] = {}
         self._callback_tokens: dict[_Callback, str] = {}
         self._handlers: set[asyncio.Task] = set()
@@ -210,25 +204,6 @@ class EgressProxy:
                 callback = self._callbacks.get(token)
                 if callback is not None:
                     parsed = parsed._replace(path=f"/{path}" if separator else "/")
-            authorization = next(
-                (
-                    value
-                    for name, value in request.headers
-                    if name.lower() == b"proxy-authorization"
-                ),
-                b"",
-            )
-            if callback is None and not hmac.compare_digest(
-                authorization, self._authorization
-            ):
-                response_started = True
-                writer.write(
-                    b"HTTP/1.1 407 Proxy Authentication Required\r\n"
-                    b'Proxy-Authenticate: Basic realm="verifiers"\r\n'
-                    b"Content-Length: 0\r\n\r\n"
-                )
-                await _drain(writer)
-                return
             connect = method == "CONNECT"
             if callback is not None:
                 scheme, host, port = callback.scheme, callback.host, callback.port

@@ -1,4 +1,4 @@
-"""network-policy-v1: the agent runs an egress probe under the task's network policy.
+"""network-policy: the agent runs an egress probe under the task's network policy.
 
 One task per policy the task data can declare: `open` (the default), `off` (an empty
 allowlist), `block` (blocks `example.com`) and `allow` (allows only `pypi.org`). Setup
@@ -63,9 +63,9 @@ class NetworkPolicyTaskset(vf.Taskset[NetworkPolicyTask, vf.TasksetConfig]):
     def load(self) -> list[NetworkPolicyTask]:
         policies = {
             "open": {},
-            "off": {"network_allow": []},
-            "block": {"network_block": [BLOCKED]},
-            "allow": {"network_allow": [ALLOWED]},
+            "off": {"network": vf.NetworkPolicyConfig(allow=[])},
+            "block": {"network": vf.NetworkPolicyConfig(block=[BLOCKED])},
+            "allow": {"network": vf.NetworkPolicyConfig(allow=[ALLOWED])},
         }
         prompt = (
             f"Your only task: run the command `python3 {PROBE_PATH}` once in your "

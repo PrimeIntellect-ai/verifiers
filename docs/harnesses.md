@@ -65,7 +65,7 @@ class MyHarness(Harness[MyHarnessConfig]):
             "HARNESS_BASE_MODEL": ctx.model,
             "HARNESS_SYSTEM_PROMPT": system or "",
         }
-        return await runtime.run_program(["<HARNESS_BINARY>", str(prompt or "")], env)
+        return await runtime.run(["<HARNESS_BINARY>", str(prompt or "")], env)
 ```
 
 Replace the placeholder installation command, binary, and environment variable names with the ones your program expects. Every model call must be routed through the interception server at `endpoint` (authenticated with `secret`) so verifiers can record the conversation and build the `Trace` from the returned `ProgramResult`. Merging `self.config.resolved_env` into the process environment ensures any variables configured via `env` and `forward_env` are passed through. When a task sets `agent_user`, `setup` runs as that user too, so install the harness into a writable path and leave system package installation to the container image or task `setup`.

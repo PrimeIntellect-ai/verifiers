@@ -18,11 +18,11 @@ Because Python task hooks always execute on the evaluator, calling `Path.read_te
 To scaffold a new environment package inside a verifiers checkout, initialize a standalone library with `uv` and add an editable dependency on the repository:
 
 ```bash
-uv init --lib --build-backend hatch --no-workspace --python '>=3.11' environments/file_sum_v1
-uv add --project environments/file_sum_v1 --editable "$PWD"
+uv init --lib --build-backend hatch --no-workspace --python '>=3.11' environments/file_sum
+uv add --project environments/file_sum --editable "$PWD"
 ```
 
-This creates `environments/file_sum_v1/pyproject.toml` with its own dependency list. Define your task data, lifecycle hooks, and scoring in `environments/file_sum_v1/src/file_sum_v1/taskset.py`, and re-export the `Taskset` (along with an `Env` class if the package requires a custom one) from `src/file_sum_v1/__init__.py` so verifiers can discover them.
+This creates `environments/file_sum/pyproject.toml` with its own dependency list. Define your task data, lifecycle hooks, and scoring in `environments/file_sum/src/file_sum/taskset.py`, and re-export the `Taskset` (along with an `Env` class if the package requires a custom one) from `src/file_sum/__init__.py` so verifiers can discover them.
 
 As covered in [tasksets](tasksets.md), dataset-level options belong on `TasksetConfig`, per-task behavior settings belong on `TaskConfig`, and immutable per-example fields belong on `TaskData`. Always load tasks by implementing `Taskset.load()` rather than overriding `Taskset.__init__`.
 
@@ -65,7 +65,7 @@ sequenceDiagram
     E->>G: Remove sandbox
 ```
 
-Here is a complete `src/file_sum_v1/taskset.py` that stages an input file for the solver and grades the output file in an isolated sandbox by default:
+Here is a complete `src/file_sum/taskset.py` that stages an input file for the solver and grades the output file in an isolated sandbox by default:
 
 ```python
 import verifiers.v1 as vf
@@ -109,10 +109,10 @@ class FileSumTaskset(vf.Taskset[FileSumTask, vf.TasksetConfig]):
 
 Because `setup` runs in both the solver sandbox and the fresh grading sandbox, writing an empty `/app/output/answer.txt` during `setup` guarantees that an untouched task scores zero instead of failing with a missing-file error. When the grading sandbox starts, verifiers runs `setup` first and then restores `/app/output` from the solver, overwriting the placeholder with the agent's actual output before `correct` reads it. The `validate` method reuses the same reward function by writing the known gold answer and checking that `correct` returns `1.0`.
 
-Export `FileSumTaskset` in `src/file_sum_v1/__init__.py`:
+Export `FileSumTaskset` in `src/file_sum/__init__.py`:
 
 ```python
-from file_sum_v1.taskset import FileSumTaskset
+from file_sum.taskset import FileSumTaskset
 
 __all__ = ["FileSumTaskset"]
 ```
@@ -127,7 +127,7 @@ Save an evaluation config as `file-sum.toml`:
 model = "z-ai/glm-5.2"
 
 [env.taskset]
-id = "file-sum-v1"
+id = "file-sum"
 
 [env.agent.harness]
 id = "bash"
@@ -164,7 +164,7 @@ from importlib.resources import files
 
 
 async def stage_verifier(self, runtime: vf.Runtime) -> None:
-    tests = files("file_sum_v1").joinpath("private_tests.py").read_bytes()
+    tests = files("file_sum").joinpath("private_tests.py").read_bytes()
     await runtime.write("/tests/check.py", tests)
 ```
 
@@ -187,10 +187,10 @@ When your benchmark needs more than a single solver and deterministic grading, y
 Install your new package into the CLI environment and run a quick smoke test before launching a full evaluation:
 
 ```bash
-uv pip install -e environments/file_sum_v1
+uv pip install -e environments/file_sum
 uv run vf-eval @ file-sum.toml --dry-run
-uv run vf-validate file-sum-v1 --runtime.type docker -n 1
+uv run vf-validate file-sum --runtime.type docker -n 1
 uv run vf-eval @ file-sum.toml -n 1 -r 1 -c 1 --no-push
 ```
 
-`--dry-run` validates the TOML config and taskset resolution without starting containers. Next, `vf-validate` runs your task's `validate` hook and a no-op check inside a single sandbox to confirm that the gold answer scores `1.0` while an untouched workspace scores `0.0`. Because `vf-validate` exercises `Task` directly in one sandbox, it does not transfer artifacts or call `stage_verifier` automatically; if your gold check needs to exercise the full isolated-grading flow without a model, finalize the submission and call `await vf.grade_submission(self, trace, runtime)` inside `validate` (or call `await self.stage_verifier(runtime)` directly). Finally, running a single rollout with `vf-eval -n 1 -r 1 -c 1 --no-push` exercises the full solver-to-verifier transfer lifecycle; see [debugging](debugging.md) for inspecting saved traces and diagnosing setup or grading errors.
+`--dry-run` validates the TOML config and taskset resolution without starting containers. Next, `vf-validate` runs your task's `validate` hook and a no-op check inside a single sandbox to confirm that the gold answer scores `1.0` while an untouched workspace scores `0.0`. Because `vf-validate` exercises `Task` directly in one sandbox, it does not transfer artifacts or call `stage_verifier` automatically; if your gold check needs to exercise the full isolated-grading flow without a model, request `trace` by name in `validate`, finalize the submission, and call `await vf.grade_submission(self, trace, runtime)` (or call `await self.stage_verifier(runtime)` directly). Finally, running a single rollout with `vf-eval -n 1 -r 1 -c 1 --no-push` exercises the full solver-to-verifier transfer lifecycle; see [debugging](debugging.md) for inspecting saved traces and diagnosing setup or grading errors.

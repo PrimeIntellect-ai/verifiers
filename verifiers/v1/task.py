@@ -21,6 +21,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from typing_extensions import TypeVar
 
 from verifiers.v1.configs.harness import SkillSource
+from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.configs.scoring import ScoringConfig
 from verifiers.v1.configs.task import TaskConfig
 from verifiers.v1.errors import TaskError, boundary
@@ -63,7 +64,7 @@ class TaskResources(BaseModel):
     gpu: str | None = None
     """GPU spec, e.g. "A100" or "A100:2" (type[:count])."""
     disk: float | None = None
-    """Disk in GB (enforced by prime; advisory on local containers and modal)."""
+    """Disk in GB (enforced by prime; advisory on local containers)."""
 
 
 class TaskTimeout(BaseModel):
@@ -128,14 +129,12 @@ class TaskData(BaseModel):
     skills: list[SkillSource] = Field(default_factory=list)
     """Skill sources installed before the harness's configured skills for this task."""
 
-    network_allow: list[str] = Field(default_factory=lambda: ["*"])
-    """Execution-time destinations requested by this task. `*` leaves the runtime
-    allowlist unchanged; concrete lists intersect with the runtime's rules. Unsupported
-    intersections are rejected. Prime runtimes accept host-level entries."""
-    network_block: list[str] = Field(default_factory=list)
-    """Execution-time destinations denied by this task and combined with runtime
-    blocks. Non-empty concrete allowlists cannot be combined with blocklists. Docker
-    framework routes take precedence; ordinary Prime deny rules pass through unchanged."""
+    network: NetworkPolicyConfig = Field(default_factory=NetworkPolicyConfig)
+    """What the task's box may reach once the agent starts, combined with the runtime's
+    own rules: `allow=["*"]` leaves the runtime's allowlist unchanged, concrete allowlists
+    intersect with it, and blocklists merge. Unsupported intersections are rejected, and a
+    concrete allowlist cannot be combined with a blocklist. Prime runtimes accept
+    host-level entries; Docker framework routes take precedence."""
 
     artifacts: list[Artifact] = Field(default_factory=list)
     """Paths collected from one runtime and restored at the same locations in another,
@@ -259,8 +258,21 @@ class Task(Generic[DataT, StateT, ConfigT]):
         return Privileged(files=files)
 
     async def validate(self, runtime: Runtime) -> bool | None:
-        """Check the ground truth, or return None when no model-free check exists."""
+        """Check the ground truth, or return None when no model-free check exists.
+
+        Request `trace` by name for the check's trace, which `setup` ran with and which
+        records vf-validate's runtime config; pass it to `vf.grade_submission` to grade
+        as a rollout would."""
         return None
+
+    async def rescore(self, trace: Trace) -> None:
+        """Score a finished trace again, offline: clear its rewards, metrics and judge
+        calls, then run this task's signals that need only the trace."""
+        if trace.has_error:
+            raise ValueError("the rollout errored: its transcript is incomplete")
+        trace.info.pop("judge_calls", None)
+        trace.rewards, trace.metrics, trace.extra_usage = {}, {}, []
+        await self.score(trace)
 
     def defer_scoring(self) -> Self:
         """An independent copy whose task signals are deferred.

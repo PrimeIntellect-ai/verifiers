@@ -6,7 +6,7 @@ import json
 import os
 
 import pytest
-from fetch_tool_v1 import FetchToolTask, FetchToolTaskConfig
+from fetch_tool import FetchToolTask, FetchToolTaskConfig
 
 import verifiers.v1 as vf
 from verifiers.v1.configs.agent import TimeoutConfig
@@ -49,7 +49,7 @@ class ProbeHarness(vf.Harness):
 
     async def launch(self, ctx, trace, runtime, endpoint, secret, mcp_urls, data):
         trace.info["url"] = mcp_urls["fetch"]
-        return await runtime.run_program(["python", "-c", PROBE, mcp_urls["fetch"]], {})
+        return await runtime.run(["python", "-c", PROBE, mcp_urls["fetch"]], {})
 
 
 class ProbeTask(FetchToolTask):
@@ -69,7 +69,9 @@ async def test_a_tool_vm_keeps_its_own_egress_beside_a_restricted_workspace(
         runtime=vf.PrimeConfig(labels=["vf-integration"], allow=allow)
     )
     task = ProbeTask(
-        vf.TaskData(prompt="Probe the network", network_allow=[]),
+        vf.TaskData(
+            prompt="Probe the network", network=vf.NetworkPolicyConfig(allow=[])
+        ),
         FetchToolTaskConfig(tools=tools),
     )
     config = vf.AgentConfig(

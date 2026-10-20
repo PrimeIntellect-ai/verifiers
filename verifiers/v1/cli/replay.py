@@ -1,7 +1,8 @@
 """Offline scoring for saved traces.
 
-Replay clears each trace's scores and recomputes everything computable from the saved
-transcript — trace-only handlers plus the layered config's judges. Runtime-requiring
+Replay re-scores each trace with `Task.rescore`: its scores cleared, everything
+computable from the saved transcript recomputed — trace-only handlers plus the layered
+config's judges. Runtime-requiring
 signals don't run offline, so a replay carries offline scores only; the source run keeps
 the runtime-recorded values. Its saved config is the base for replay-specific overrides.
 Multi-agent runs don't support replay: re-scoring is per trace, and the env's
@@ -152,16 +153,13 @@ async def run_replay(config: ReplayConfig, source: Path, out: Path) -> list[Trac
                 st.state, st.detail, st.end = "skipped", "rollout errored", time.time()
             else:
                 st.state = "running"
-                # Clear the recorded scores; only offline-recomputable ones come back.
-                trace.info.pop("judge_calls", None)
-                trace.rewards, trace.metrics, trace.extra_usage = {}, {}, []
                 # The declared Task for a rebuilt row, the base Task for the
                 # WireTaskData fallback.
                 task = (task_cls if isinstance(row, data_cls) else Task)(
                     row, config=config.taskset.task
                 )
                 try:
-                    await task.score(trace)
+                    await task.rescore(trace)
                     st.state, st.detail = "scored", f"reward {trace.reward:.3f}"
                 except Exception as exc:
                     st.state, st.detail = "error", type(exc).__name__
