@@ -345,6 +345,13 @@ async def _run_harbor_check(task: Task, config: ValidateConfig, mode: str) -> Re
                 continue
             row = _row(task, name, attempt.valid, None, start)
             row.update(attempt.model_dump(exclude={"valid"}))
+            if name == "noop":
+                # As a native noop row records its untouched scoring (`_is_final`).
+                scored = (attempt.trace or {}).get("rewards") or {}
+                row["rewards"] = {
+                    key: value.get("score") if isinstance(value, dict) else None
+                    for key, value in scored.items()
+                }
             if attempt.infrastructure:
                 timed_out = "timeout" in (attempt.trace or {}).get("stop_condition", "")
                 row.update(
