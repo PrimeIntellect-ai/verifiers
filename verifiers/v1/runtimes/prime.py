@@ -223,6 +223,14 @@ echo "the PID namespace's init did not start" >&2; exit 1
 """Start the box's PID namespace (`isolate_processes`): `unshare` in a session of its
 own, its forked child the namespace's init, recorded for each command's `nsenter`."""
 
+_IMAGE_WORKDIR = (
+    "pwd; h=$(awk -F: '$1 == \"root\" {print $6; exit}' /etc/passwd 2>/dev/null); "
+    "printf '%s\\n' \"${h:-$HOME}\""
+)
+"""The gateway's starting directory, and root's login directory, which the gateway
+starts in when the image declares no WORKDIR: root's passwd entry, whatever the image's
+HOME says."""
+
 _CHECKPOINT_DELETE_DEADLINE_SECONDS = 300
 """How long a checkpoint delete keeps retrying the platform's 409. It refuses while a
 box started from the checkpoint, or the checkpoint's source box, still runs, and boxes
@@ -758,7 +766,7 @@ class PrimeBackend(RuntimeBackend):
                     cwd = await self._held(
                         "image workdir",
                         lambda: self._client.execute_command(
-                            self.info.id, "pwd; printf '%s\\n' \"$HOME\""
+                            self.info.id, _IMAGE_WORKDIR
                         ),
                     )
                     lines = cwd.stdout.strip().splitlines()
@@ -772,8 +780,10 @@ class PrimeBackend(RuntimeBackend):
                             kind="exec",
                         )
                     workdir, root_home = lines
-                    # The gateway uses root's home when the image has no WORKDIR.
-                    # Do not bind that private directory to every user's commands.
+                    # The gateway uses root's home (its passwd entry, whatever the
+                    # image's HOME says) when the image has no WORKDIR, where Docker
+                    # uses /. Do not bind that private directory to every user's
+                    # commands.
                     if workdir == root_home:
                         workdir = "/"
                     self.config = self.config.model_copy(update={"workdir": workdir})

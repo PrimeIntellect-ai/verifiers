@@ -385,3 +385,21 @@ async def test_unspecified_workdir_does_not_capture_root_login_directory(
         ) in commands
     finally:
         await runtime.teardown()
+
+
+def test_root_login_directory_is_roots_own_whatever_the_images_home():
+    """An image whose ENV sets HOME elsewhere still has the gateway start in root's
+    passwd home when it declares no WORKDIR, where Docker starts in /: discovery
+    compares against that home, not $HOME (an unprivileged grader cannot getcwd in
+    /root)."""
+    import pwd
+    import subprocess
+
+    run = subprocess.run(
+        ["sh", "-c", prime._IMAGE_WORKDIR],
+        env={"HOME": "/gradescratch/home", "PATH": "/usr/bin:/bin"},
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert run.stdout.splitlines()[1] == pwd.getpwnam("root").pw_dir
