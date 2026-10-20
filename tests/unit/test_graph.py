@@ -305,6 +305,14 @@ def _replayed_trace(replay_view, sampled, replayed, dialect=None):
         ),
         (strip_text, {"content": "Calling it.\n\n"}, {"content": "Calling it."}),
         (strip_text, {"content": None}, {"reasoning_content": " "}),
+        (
+            strip_text,
+            {"content": "\n\n"},
+            {
+                "reasoning_content": " ",
+                "provider_state": [{"type": "thinking", "thinking": " "}],
+            },
+        ),
     ],
 )
 def test_replay_view_matches_cosmetically_rewritten_turns(view, sampled, replayed):

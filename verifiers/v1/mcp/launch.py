@@ -31,6 +31,7 @@ from verifiers.v1.mcp.server import (
 )
 from verifiers.v1.runtimes import (
     Runtime,
+    backend_cls,
     provision_backend,
 )
 from verifiers.v1.runtimes.base import _ENSURE_UV
@@ -243,7 +244,14 @@ async def _install_in_sandbox(server: ServerBase, agent_runtime: Runtime) -> str
     # the VM's root disk. Keep source, build scratch space, and uv's cache on the
     # durable runtime filesystem so ordinary dependency installs cannot exhaust
     # the tmpfs.
-    workdir = str(PurePosixPath(runtime.config.workdir))
+    # Every runtime runs commands in its working directory; not every config names it.
+    located = await runtime.run(["pwd"], {})
+    workdir = located.stdout.strip()
+    if located.exit_code or not workdir:
+        raise ToolsetError(
+            f"server {server.server_name!r}: cannot locate the runtime's working "
+            f"directory: {located.stderr.strip()}"
+        )
     root = str(PurePosixPath(workdir) / ".vf-src")
     temp = str(PurePosixPath(workdir) / ".vf-tmp")
     cache = str(PurePosixPath(workdir) / ".vf-uv-cache")
@@ -252,10 +260,12 @@ async def _install_in_sandbox(server: ServerBase, agent_runtime: Runtime) -> str
     root_q, temp_q, cache_q, venv_q = map(shlex.quote, (root, temp, cache, venv))
     # Colocated servers and borrowed views install into one physical environment.
     # Serialize its mutations and only remember sources after a successful install.
-    async with runtime.backend._mcp_install_lock:
+    async with runtime.backend.cache.mcp_lock:
         sources = dict.fromkeys((_package_dir(ServerBase), _package_dir(type(server))))
         pending = [
-            source for source in sources if source not in runtime.backend._mcp_sources
+            source
+            for source in sources
+            if source not in runtime.backend.cache.mcp_sources
         ]
         if pending:
             setup = (
@@ -265,7 +275,7 @@ async def _install_in_sandbox(server: ServerBase, agent_runtime: Runtime) -> str
             )
             if agent_runtime.user is not None:
                 setup += f"export UV_PYTHON_INSTALL_DIR={shlex.quote(python_dir)}; "
-            if not runtime.backend._mcp_sources:
+            if not runtime.backend.cache.mcp_sources:
                 # Failed installs can leave the venv behind; retain it when retrying.
                 setup += f"{_ENSURE_UV}; uv venv --allow-existing {venv_q}; "
             # Drain remote writes and installs before cancellation releases the lock.
@@ -280,7 +290,7 @@ async def _install_in_sandbox(server: ServerBase, agent_runtime: Runtime) -> str
                     f"server {server.server_name!r} install failed in runtime: "
                     f"{(result.stderr or result.stdout).strip()[-2000:]}"
                 )
-            runtime.backend._mcp_sources.update(pending)
+            runtime.backend.cache.mcp_sources.update(pending)
         if agent_runtime.user is not None:
             # Root's uv lives in its home; copy it into the venv, open to the agent.
             python_q = shlex.quote(python_dir)
@@ -459,7 +469,7 @@ async def _serve(
             # A local service cannot reach the host-loopback state channel.
             raise ToolsetError(
                 f"server {server.server_name!r} runs in Compose service {service!r}, "
-                "which needs Compose on a Prime or Modal VM"
+                "which needs Compose on a remote runtime such as Prime"
             )
         port = await serve_in_runtime(
             server,
@@ -492,6 +502,12 @@ async def _serve(
             )
         if colocated and harness_runtime is not None:
             runtime = harness_runtime
+        elif not backend_cls(cfg.runtime).SUPPORTS_PORT_EXPOSURE:
+            raise ToolsetError(
+                f"server {server.server_name!r} runs in its own runtime, but the "
+                f"{cfg.runtime.type} runtime cannot expose a port; colocate it with the "
+                "harness or use a supported runtime"
+            )
         else:
             backend = await stack.enter_async_context(provision_backend(cfg.runtime))
             runtime = backend.bind()

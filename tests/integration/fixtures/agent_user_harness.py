@@ -1,4 +1,4 @@
-"""agent-user-harness-v1: one turn of any harness running as a non-root agent user.
+"""agent-user-harness: one turn of any harness running as a non-root agent user.
 
 Root setup creates the task's `agent_user` (images normally ship one) and hands it the
 workdir; the harness then installs, launches as that user, and answers a one-line prompt.
