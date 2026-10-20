@@ -1,0 +1,73 @@
+"""echo: ask the model to repeat a short phrase back verbatim (single-turn).
+
+The smallest possible reward-1 taskset — no dataset, no tools, no reasoning required — so an
+end-to-end eval run is fast and deterministic. The reward is 1.0 when the phrase appears in
+the model's reply. It's a fixture taskset for the integration suite (in tests/integration/fixtures,
+resolved by id `echo` via pytest's `pythonpath`).
+"""
+
+from pydantic import Field
+
+import verifiers.v1 as vf
+
+
+def _key(text: str) -> str:
+    """Lenient comparison key: lowercase, alphanumerics only."""
+    return "".join(c for c in text.casefold() if c.isalnum())
+
+
+def lenient_match(answer: str, text: str) -> bool:
+    """True if `answer` appears in `text` ignoring case, spacing, and punctuation — so a
+    reformatted echo ("Hello, World!") still counts."""
+    return _key(answer) in _key(text)
+
+
+class EchoData(vf.TaskData):
+    answer: str
+    """The phrase the model should echo back."""
+
+
+class EchoTask(vf.Task[EchoData]):
+    @property
+    def key(self) -> str:
+        return f"echo:{self.data.answer}"
+
+    @vf.stop
+    async def single_turn(self, trace: vf.Trace) -> bool:
+        return trace.num_turns >= 1
+
+    @vf.reward(weight=1.0)
+    async def echoed(self, trace: vf.Trace) -> float:
+        reply = trace.assistant_messages[-1].content if trace.assistant_messages else ""
+        return float(lenient_match(self.data.answer, reply or ""))
+
+
+class EchoConfig(vf.TasksetConfig):
+    phrases: list[str] = Field(
+        default_factory=lambda: ["hello world", "ping", "verifiers"]
+    )
+
+
+class EchoTaskset(vf.Taskset[EchoTask, EchoConfig]):
+    def load(self) -> list[EchoTask]:
+        return [
+            # Keep coding-agent harnesses on the direct-response path instead of
+            # spending this single-turn smoke task on a tool call. Phrased as an
+            # instruction rather than a prohibition: OpenAI's content filter refuses
+            # "Do not call tools ... include this exact phrase" as an injection.
+            EchoTask(
+                EchoData(
+                    idx=i,
+                    prompt=(
+                        "Answer directly without using tools or running code. Your reply "
+                        f"must contain this exact phrase: {phrase}"
+                    ),
+                    answer=phrase,
+                ),
+                self.config.task,
+            )
+            for i, phrase in enumerate(self.config.phrases)
+        ]
+
+
+__all__ = ["EchoTaskset"]

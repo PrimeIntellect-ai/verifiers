@@ -2,83 +2,88 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Annotated
 
-from pydantic import Field
+from pydantic import Field, SerializeAsAny
 
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
-from verifiers.v1.runtimes.apptainer import (
-    ApptainerConfig,
-    ApptainerRuntime,
-    ApptainerRuntimeInfo,
+from verifiers.v1.runtimes.backends.custom import (
+    CustomRuntimeConfig,
+    CustomRuntimeInfo,
+    import_backend,
 )
-from verifiers.v1.runtimes.base import (
-    BaseRuntimeInfo,
-    ProgramResult,
-    Runtime,
-    RuntimeProcess,
-    register,
-)
-from verifiers.v1.runtimes.docker import (
+from verifiers.v1.runtimes.backends.docker import (
+    DockerBackend,
     DockerConfig,
-    DockerRuntime,
     DockerRuntimeInfo,
-    PodmanConfig,
-    PodmanRuntime,
-    PodmanRuntimeInfo,
 )
-from verifiers.v1.runtimes.e2b import E2BConfig, E2BRuntime, E2BRuntimeInfo
-from verifiers.v1.runtimes.modal import ModalConfig, ModalRuntime, ModalRuntimeInfo
-from verifiers.v1.runtimes.prime import (
+from verifiers.v1.runtimes.backends.prime import (
+    PrimeBackend,
     PrimeConfig,
-    PrimeRuntime,
     PrimeRuntimeInfo,
     set_base_sandbox_labels,
     set_default_sandbox_lifetime,
 )
-from verifiers.v1.runtimes.subprocess import (
+from verifiers.v1.runtimes.backends.subprocess import (
+    SubprocessBackend,
     SubprocessConfig,
-    SubprocessRuntime,
     SubprocessRuntimeInfo,
 )
+from verifiers.v1.runtimes.base import (
+    BaseRuntimeInfo,
+    ProgramResult,
+    RuntimeBackend,
+    RuntimeProcess,
+    register,
+)
+from verifiers.v1.runtimes.runtime import Runtime
 
-RuntimeConfig = Annotated[
-    SubprocessConfig
-    | DockerConfig
-    | PodmanConfig
-    | ApptainerConfig
-    | PrimeConfig
-    | ModalConfig
-    | E2BConfig,
-    Field(discriminator="type"),
+# Serialized by the runtime type, so a custom runtime's typed config keeps its fields.
+RuntimeConfig = SerializeAsAny[
+    Annotated[
+        SubprocessConfig | DockerConfig | PrimeConfig | CustomRuntimeConfig,
+        Field(discriminator="type"),
+    ]
 ]
 
 RuntimeInfo = Annotated[
-    SubprocessRuntimeInfo
-    | DockerRuntimeInfo
-    | PodmanRuntimeInfo
-    | ApptainerRuntimeInfo
-    | PrimeRuntimeInfo
-    | ModalRuntimeInfo
-    | E2BRuntimeInfo,
+    SubprocessRuntimeInfo | DockerRuntimeInfo | PrimeRuntimeInfo | CustomRuntimeInfo,
     Field(discriminator="type"),
 ]
 
 
-def _runtime_cls(config: RuntimeConfig) -> type[Runtime]:
+def backend_cls(config: RuntimeConfig) -> type[RuntimeBackend]:
+    """The backend class for `config`, whose class attributes declare its capabilities."""
+    if isinstance(config, CustomRuntimeConfig):
+        return import_backend(config.import_path)
     return {
-        "subprocess": SubprocessRuntime,
-        "docker": DockerRuntime,
-        "podman": PodmanRuntime,
-        "apptainer": ApptainerRuntime,
-        "prime": PrimeRuntime,
-        "modal": ModalRuntime,
-        "e2b": E2BRuntime,
+        "subprocess": SubprocessBackend,
+        "docker": DockerBackend,
+        "prime": PrimeBackend,
     }[config.type]
 
 
-def make_runtime(config: RuntimeConfig, name: str | None = None) -> Runtime:
-    runtime = _runtime_cls(config)(config, name)
-    register(runtime)
-    return runtime
+def make_backend(config: RuntimeConfig, name: str | None = None) -> RuntimeBackend:
+    backend = backend_cls(config)(config, name)
+    register(backend)
+    return backend
+
+
+@asynccontextmanager
+async def provision_backend(
+    config: RuntimeConfig,
+    name: str | None = None,
+    env: dict[str, str] | None = None,
+) -> AsyncIterator[RuntimeBackend]:
+    """Provision a box from `config` and tear it down on exit.
+
+    `start()` sits inside the `try`: a failed start may already hold a paid sandbox, so
+    it has to reach `stop()` (which is safe on a partially-started runtime)."""
+    backend = make_backend(config, name)
+    backend.env = dict(env or {})
+    try:
+        await backend.start()
+        yield backend
+    finally:
+        await backend.stop()
 
 
 @asynccontextmanager
@@ -87,55 +92,40 @@ async def provision_runtime(
     name: str | None = None,
     env: dict[str, str] | None = None,
 ) -> AsyncIterator[Runtime]:
-    """Provision a box from `config` and tear it down on exit.
-
-    `start()` sits inside the `try`: a failed start may already hold a paid sandbox, so
-    it has to reach `stop()` (which is safe on a partially-started runtime)."""
-    runtime = make_runtime(config, name)
-    runtime.env = dict(env or {})
-    try:
-        await runtime.start()
-        yield runtime
-    finally:
-        await runtime.stop()
+    """Lend an execution view; the context owns provisioning and cleanup."""
+    async with provision_backend(config, name, env) as backend:
+        yield backend.bind()
 
 
 def runtime_is_local(config: RuntimeConfig) -> bool:
     """Whether a runtime of this config exchanges host-local URLs without a public
     tunnel, read off the runtime class without provisioning one."""
-    return _runtime_cls(config).is_local
+    return backend_cls(config).is_local
 
 
 __all__ = [
-    "ApptainerConfig",
-    "ApptainerRuntime",
-    "ApptainerRuntimeInfo",
     "BaseRuntimeInfo",
+    "CustomRuntimeConfig",
+    "CustomRuntimeInfo",
+    "DockerBackend",
     "DockerConfig",
-    "DockerRuntime",
     "DockerRuntimeInfo",
-    "E2BConfig",
-    "E2BRuntime",
-    "E2BRuntimeInfo",
-    "ModalConfig",
-    "ModalRuntime",
-    "ModalRuntimeInfo",
     "NetworkPolicyConfig",
-    "PodmanConfig",
-    "PodmanRuntime",
-    "PodmanRuntimeInfo",
+    "PrimeBackend",
     "PrimeConfig",
-    "PrimeRuntime",
     "PrimeRuntimeInfo",
     "ProgramResult",
     "Runtime",
+    "RuntimeBackend",
     "RuntimeConfig",
     "RuntimeInfo",
     "RuntimeProcess",
+    "SubprocessBackend",
     "SubprocessConfig",
-    "SubprocessRuntime",
     "SubprocessRuntimeInfo",
-    "make_runtime",
+    "backend_cls",
+    "make_backend",
+    "provision_backend",
     "provision_runtime",
     "runtime_is_local",
     "set_base_sandbox_labels",

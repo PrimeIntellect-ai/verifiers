@@ -24,7 +24,7 @@ import binascii
 import hashlib
 import json
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -33,6 +33,7 @@ from pydantic import (
     ConfigDict,
     Field,
     FieldSerializationInfo,
+    ValidationInfo,
     field_serializer,
     field_validator,
 )
@@ -42,12 +43,15 @@ from renderers.base import RenderedTokens
 from verifiers.v1.semantic import ParentLink
 from verifiers.v1.types import (
     AssistantMessage,
+    DialectName,
     Message,
     Response,
     SamplingMask,
     TextContentPart,
     Tool,
     ToolMessage,
+    TopLogprobs,
+    WeightVersionSpan,
 )
 
 if TYPE_CHECKING:
@@ -163,6 +167,13 @@ class MessageNode(BaseModel):
     `ids` stores the flat token ids and `counts` stores each token's row size. Assistant
     nodes only. The arrays serialize as raw-byte `__nd__` dictionaries.
     """
+    weight_versions: list[WeightVersionSpan] | None = None
+    """Engine weight-version spans over this node's sampled tokens (indexes into the
+    completion, as vLLM returns them). Assistant nodes only; None when the engine labels
+    none."""
+
+    top_logprobs: SkipJsonSchema[TopLogprobs | None] = None
+    """Sampler top-k probabilities for sampled tokens; unnormalized over the head."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
@@ -204,26 +215,28 @@ class MessageNode(BaseModel):
             return _decode_ndarray(value)
         raise TypeError(f"cannot build ndarray field from {type(value).__name__}")
 
-    @field_serializer("sampling_mask")
-    def serialize_sampling_mask(self, mask: SamplingMask | None) -> dict | None:
-        if mask is None:
+    @field_serializer("sampling_mask", "top_logprobs")
+    def serialize_sampling_arrays(
+        self, payload: SamplingMask | TopLogprobs | None
+    ) -> dict | None:
+        if payload is None:
             return None
         return {
-            "ids": _encode_ndarray(mask.ids),
-            "counts": _encode_ndarray(mask.counts),
+            field.name: _encode_ndarray(getattr(payload, field.name))
+            for field in fields(payload)
         }
 
-    @field_validator("sampling_mask", mode="before")
+    @field_validator("sampling_mask", "top_logprobs", mode="before")
     @classmethod
-    def deserialize_sampling_mask(cls, value: Any) -> SamplingMask | None:
-        if value is None or isinstance(value, SamplingMask):
+    def deserialize_sampling_arrays(
+        cls, value: Any, info: ValidationInfo
+    ) -> SamplingMask | TopLogprobs | None:
+        kind = SamplingMask if info.field_name == "sampling_mask" else TopLogprobs
+        if value is None or isinstance(value, kind):
             return value
         if isinstance(value, dict):
-            return SamplingMask(
-                ids=_decode_ndarray(value["ids"]),
-                counts=_decode_ndarray(value["counts"]),
-            )
-        raise TypeError(f"cannot build SamplingMask from {type(value).__name__}")
+            return kind(**{key: _decode_ndarray(array) for key, array in value.items()})
+        raise TypeError(f"cannot build {kind.__name__} from {type(value).__name__}")
 
 
 def _canonical_tool_arguments(arguments: str) -> str:
@@ -321,27 +334,56 @@ def _tools_hash(tools: list[Tool] | None) -> str:
     return hashlib.blake2b(data, digest_size=16).hexdigest()
 
 
+def _message_key(trace: Trace, message: Message, dialect: DialectName | None) -> str:
+    """`message_hash` of the message as the trace's harness replays it over `dialect`,
+    so a turn the harness re-sends with cosmetic rewrites still matches the node it
+    came from."""
+    view = trace._replay_view
+    return message_hash(view(message, dialect) if view is not None else message)
+
+
 def _node_key(
-    parent: int | None, message: Message, tools: list[Tool] | None = None
+    trace: Trace,
+    parent: int | None,
+    message: Message,
+    tools: list[Tool] | None = None,
+    *,
+    dialect: DialectName | None,
 ) -> tuple[int | None, str | None, str]:
     return (
         parent,
         _tools_hash(tools) if parent is None else None,
-        message_hash(message),
+        _message_key(trace, message, dialect),
     )
 
 
-def _head_index(trace: Trace) -> dict[tuple[int | None, str | None, str], int]:
-    """Physical node key -> id, rebuilt lazily after deserialization."""
-    if not trace._head_index and trace.nodes:
-        trace._head_index = {
-            _node_key(node.parent, node.message, node.tools): nid
+def _head_index(
+    trace: Trace, dialect: DialectName | None
+) -> dict[tuple[int | None, str | None, str], int]:
+    """Physical node key -> id under `dialect`'s replay view, built lazily per dialect
+    (and after deserialization)."""
+    index = trace._head_index.get(dialect)
+    if index is None:
+        index = trace._head_index[dialect] = {
+            _node_key(
+                trace, node.parent, node.message, node.tools, dialect=dialect
+            ): nid
             for nid, node in enumerate(trace.nodes)
         }
-    return trace._head_index
+    return index
 
 
-def message_prefix_len(trace: Trace, prompt: list[Message]) -> int:
+def _index_node(trace: Trace, node_id: int) -> None:
+    """Point every built dialect index at a new node."""
+    node = trace.nodes[node_id]
+    for dialect, index in trace._head_index.items():
+        key = _node_key(trace, node.parent, node.message, node.tools, dialect=dialect)
+        index[key] = node_id
+
+
+def message_prefix_len(
+    trace: Trace, prompt: list[Message], dialect: DialectName | None = None
+) -> int:
     """Length of the longest message-only graph prefix matching `prompt`."""
     children: dict[int | None, list[int]] = {}
     for node_id, node in enumerate(trace.nodes):
@@ -350,12 +392,12 @@ def message_prefix_len(trace: Trace, prompt: list[Message]) -> int:
     parents: list[int | None] = [None]
     matched = 0
     for message in prompt:
-        key = message_hash(message)
+        key = _message_key(trace, message, dialect)
         parents = [
             node_id
             for parent in parents
             for node_id in children.get(parent, [])
-            if message_hash(trace.nodes[node_id].message) == key
+            if _message_key(trace, trace.nodes[node_id].message, dialect) == key
         ]
         if not parents:
             break
@@ -370,6 +412,8 @@ def _matching_node(
     token_ids: list[int] | None = None,
     renderer_token_ids: list[int] | None = None,
     tools: list[Tool] | None = None,
+    *,
+    dialect: DialectName | None,
 ) -> int | None:
     """Find an existing child, optionally requiring its exact token spans.
 
@@ -377,8 +421,8 @@ def _matching_node(
     prefix breaks can leave older physical variants under the same key, so a token mismatch falls
     back to a reverse scan rather than materializing a duplicate of an already-existing variant.
     """
-    key = _node_key(parent, message, tools)
-    indexed = _head_index(trace).get(key)
+    key = _node_key(trace, parent, message, tools, dialect=dialect)
+    indexed = _head_index(trace, dialect).get(key)
     if (
         indexed is not None
         and (token_ids is None or trace.nodes[indexed].token_ids == token_ids)
@@ -397,7 +441,8 @@ def _matching_node(
         if (
             (token_ids is None or node.token_ids == token_ids)
             and (renderer_token_ids is None or node.logical_ids == renderer_token_ids)
-            and _node_key(node.parent, node.message, node.tools) == key
+            and _node_key(trace, node.parent, node.message, node.tools, dialect=dialect)
+            == key
         ):
             return node_id
     return None
@@ -414,6 +459,8 @@ def _matching_prefix_node(
     renderer_start: int,
     renderer_stop: int,
     tools: list[Tool] | None = None,
+    *,
+    dialect: DialectName | None,
 ) -> int | None:
     """Find the longest content-equivalent child matching inside `[start, stop]`.
 
@@ -422,8 +469,8 @@ def _matching_prefix_node(
     otherwise-missing message boundary. The next attributed message's start bounds the match:
     a sampled variant must never consume tokens that the renderer assigned to that message.
     """
-    key = _node_key(parent, message, tools)
-    indexed = _head_index(trace).get(key)
+    key = _node_key(trace, parent, message, tools, dialect=dialect)
+    indexed = _head_index(trace, dialect).get(key)
     candidates: list[int] = []
     if indexed is not None:
         candidates.append(indexed)
@@ -432,9 +479,11 @@ def _matching_prefix_node(
         for node_id in range(len(trace.nodes) - 1, -1, -1)
         if node_id != indexed
         and _node_key(
+            trace,
             trace.nodes[node_id].parent,
             trace.nodes[node_id].message,
             trace.nodes[node_id].tools,
+            dialect=dialect,
         )
         == key
     )
@@ -469,6 +518,8 @@ class PendingTurn:
     tools: list[Tool]
     prefix_node_ids: list[int]
     path_len: int
+    dialect: DialectName | None = None
+    """The wire format of the request, whose replay view matches its prompt."""
 
     @property
     def tail_start(self) -> int:
@@ -547,13 +598,14 @@ class PendingTurn:
     def commit_prompt(self) -> None:
         """Record an input that terminated before model inference."""
         parent = self.prefix_node_ids[-1] if self.prefix_node_ids else None
-        index = _head_index(self.trace)
+        _head_index(self.trace, self.dialect)
         for message in self.tail:
-            existing = _matching_node(self.trace, parent, message, tools=self.tools)
+            existing = _matching_node(
+                self.trace, parent, message, tools=self.tools, dialect=self.dialect
+            )
             if existing is not None:
                 parent = existing
                 continue
-            previous = parent
             self.trace.nodes.append(
                 MessageNode(
                     parent=parent,
@@ -562,7 +614,7 @@ class PendingTurn:
                 )
             )
             parent = len(self.trace.nodes) - 1
-            index[_node_key(previous, message, self.tools)] = parent
+            _index_node(self.trace, parent)
         if self.tools:
             self.trace.tools = list(
                 {
@@ -577,9 +629,11 @@ def prepare_turn(
     trace: Trace,
     prompt: list[Message],
     tools: list[Tool] | None = None,
+    dialect: DialectName | None = None,
 ) -> PendingTurn:
-    """Resolve a physical message-and-tools prefix without mutating the trace."""
-    idx = _head_index(trace)
+    """Resolve a physical message-and-tools prefix without mutating the trace. `dialect`
+    is the request's wire format, whose replay view matches the prompt to stored nodes."""
+    idx = _head_index(trace, dialect)
     tools = list(tools or [])
     tools_hash = _tools_hash(tools)
     parent: int | None = None
@@ -603,7 +657,7 @@ def prepare_turn(
             if len(children) == 1 and trace.nodes[children[0]].message == msg:
                 existing = children[0]
         if existing is None:
-            message_key = message_hash(msg)
+            message_key = _message_key(trace, msg, dialect)
             existing = idx.get(
                 (parent, tools_hash if parent is None else None, message_key)
             )
@@ -618,6 +672,7 @@ def prepare_turn(
         tools=tools,
         prefix_node_ids=prefix_node_ids,
         path_len=path_len,
+        dialect=dialect,
     )
 
 
@@ -775,6 +830,23 @@ def _project_prompt_attribution(
     return projected_spans, projected_is_content
 
 
+def _attribute_top_logprobs(
+    trace: Trace, assistant_id: int, payload: TopLogprobs | None
+) -> None:
+    """Attach a completion-aligned top-k sampling head to the assistant node."""
+    if payload is None:
+        return
+    node = trace.nodes[assistant_id]
+    if (
+        len(payload.counts) != sum(node.mask)
+        or (payload.counts < 0).any()
+        or int(payload.counts.sum()) != len(payload.ids)
+        or len(payload.ids) != len(payload.logprobs)
+    ):
+        raise ValueError("Top logprobs must align with every sampled node token")
+    node.top_logprobs = payload
+
+
 def _commit_turn(turn: PendingTurn, response: Response) -> int:
     trace = turn.trace
     prompt = turn.prompt
@@ -790,7 +862,7 @@ def _commit_turn(turn: PendingTurn, response: Response) -> int:
     )
     renderer_spans = tokens.message_spans if tokens else None
     renderer_is_content = tokens.is_content if tokens else None
-    idx = _head_index(trace)
+    _head_index(trace, turn.dialect)
 
     prefix = turn.prefix_node_ids
     path_len = turn.path_len
@@ -875,6 +947,7 @@ def _commit_turn(turn: PendingTurn, response: Response) -> int:
                 renderer_path_len,
                 next_renderer_start,
                 tools=turn.tools,
+                dialect=turn.dialect,
             )
             if existing is not None:
                 end += len(trace.nodes[existing].token_ids)
@@ -889,6 +962,7 @@ def _commit_turn(turn: PendingTurn, response: Response) -> int:
                 node_tokens if tokens is not None else None,
                 renderer_node_tokens if tokens is not None else None,
                 tools=turn.tools,
+                dialect=turn.dialect,
             )
         if existing is None:
             break
@@ -903,7 +977,6 @@ def _commit_turn(turn: PendingTurn, response: Response) -> int:
     # Track new nodes separately so routed-expert attribution needs only node ids, not this path.
     new_node_ids: list[int] = []
     for i, msg in enumerate(prompt[num_reused:], start=num_reused):
-        key = _node_key(parent, msg, turn.tools)
         start = path_len if cursor is None else cursor
         span = spans[i] if spans and i < len(spans) else None
         end = span[1] if span else start
@@ -927,7 +1000,7 @@ def _commit_turn(turn: PendingTurn, response: Response) -> int:
             )
         )
         parent = len(trace.nodes) - 1
-        idx[key] = parent
+        _index_node(trace, parent)
         new_node_ids.append(parent)
         cursor = end
         renderer_cursor = renderer_end
@@ -953,10 +1026,11 @@ def _commit_turn(turn: PendingTurn, response: Response) -> int:
             else [],
             # TurnTokens is discarded after commit, so transfer its logprobs without copying.
             logprobs=tokens.completion_logprobs if tokens else [],
+            weight_versions=tokens.weight_versions if tokens else None,
         )
     )
     assistant_id = len(trace.nodes) - 1
-    idx[_node_key(parent, response.message, turn.tools)] = assistant_id
+    _index_node(trace, assistant_id)
     new_node_ids.append(assistant_id)
 
     # Attribute this turn's expert-routing array onto the nodes created this turn (new input
@@ -969,6 +1043,9 @@ def _commit_turn(turn: PendingTurn, response: Response) -> int:
     # Sampling masks are completion-aligned, so only the sampled node carries them.
     _attribute_sampling_mask(
         trace, assistant_id, tokens.sampling_mask if tokens else None
+    )
+    _attribute_top_logprobs(
+        trace, assistant_id, tokens.top_logprobs if tokens else None
     )
 
     return assistant_id

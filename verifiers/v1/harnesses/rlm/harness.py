@@ -31,7 +31,6 @@ BuiltinTool = Literal["bash", "edit", "fetch", "ipython"]
 
 RLM_REPO = "github.com/PrimeIntellect-ai/nano-rlm.git"
 RLM_CACHE_DIR = "/tmp/vf-rlm"
-SKILLS_DIR = "/task/rlm-skills"
 RLM_STATE_DIR = "/tmp/vf-rlm-state"
 RLM_RUNTIME_METADATA_KEY = "ai.prime.rlm/runtime-v1"
 RLM_SESSION_METADATA_KEY = "ai.prime.rlm/session-v1"
@@ -68,8 +67,9 @@ class CompactionConfig(BaseConfig):
 
 
 class RLMHarnessConfig(HarnessConfig):
+    dialect: Literal["chat_completions"] = "chat_completions"
     version: str = Field(
-        default="c38e20b60c90bbf625274d3fde2b2a384f390a66", min_length=1
+        default="77c3489d1a7f918b75c31e195480ed3556af60a5", min_length=1
     )
     """Git ref (branch, tag, or commit) of nano-rlm to install. Must know every
     field this harness puts on the wire, i.e. be at least the default ref."""
@@ -151,12 +151,14 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
         if self.config.skills:
             # Editable skill packages and uv's tool environment must belong to this run.
             self._skills_install_dir = f"{RLM_CACHE_DIR}-skills-{secrets.token_hex(16)}"
+            await self.install_skills(runtime, f"{self._skills_home()}/skills")
         directory = self._install_dir()
-        skills_dir = f"{directory}/skills" if self.config.skills else SKILLS_DIR
-        await self.install_skills(runtime, skills_dir)
         binary = f"{directory}/bin/rlm"
         checkout = f"{directory}/checkout"
         ready = f"{directory}/.ready"
+        # install.sh installs the Python skill packages under $RLM_HOME/skills.
+        home = self._skills_home()
+        home_env = f"RLM_HOME={home} " if home else ""
         # install.sh fetches curl/uv itself; add git only when the image lacks it.
         install = (
             f"rm -f {ready} && "
@@ -164,8 +166,10 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
             "{ apt-get update -qq && apt-get install -y -qq git; } && "
             f"rm -rf {checkout} && git clone https://{RLM_REPO} {checkout} && "
             f"git -C {checkout} checkout {shlex.quote(self.config.version)} && "
-            f"sed -i 's|/task/rlm-skills|{skills_dir}|g' {checkout}/install.sh && "
-            f"UV_INSTALL_DIR={directory}/bin UV_TOOL_BIN_DIR={directory}/bin "
+            # The editable install needs the files, not the history; agents searching
+            # their workspace for a repository must not find the harness's own.
+            f"rm -rf {checkout}/.git && "
+            f"{home_env}UV_INSTALL_DIR={directory}/bin UV_TOOL_BIN_DIR={directory}/bin "
             f"UV_TOOL_DIR={directory}/tools "
             f"RLM_CHECKOUT_PATH={checkout} bash {checkout}/install.sh && "
             f"touch {ready})"
@@ -245,7 +249,7 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
             ),
             "leaf_append_to_system_prompt": self.config.leaf_append_to_system_prompt,
             "skills": list(self.config.builtin_skills),
-            "kernel_env": runtime.env,
+            "kernel_env": dict(runtime.env),
             "search_api_key": self.config.resolved_env.get("SERPER_API_KEY"),
         }
         if self.config.builtin_tools is not None:
@@ -296,9 +300,15 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
                 runtime, self._skills_install_dir, "RLM skill installation"
             )
 
-    @staticmethod
-    def _home(trace: Trace) -> str:
-        return f"{RLM_STATE_DIR}/{trace.id}/home"
+    def _home(self, trace: Trace) -> str:
+        return self._skills_home() or f"{RLM_STATE_DIR}/{trace.id}/home"
+
+    def _skills_home(self) -> str | None:
+        """rlm's home for a run that carries skills: they sit in its `skills/`, where
+        rlm installs and lists them, so the install and the process share it."""
+        if self._skills_install_dir is None:
+            return None
+        return f"{self._skills_install_dir}/home"
 
     def _install_dir(self) -> str:
         cache_key = hashlib.sha256(self.config.version.encode()).hexdigest()

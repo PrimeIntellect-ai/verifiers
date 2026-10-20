@@ -27,11 +27,21 @@ from verifiers.v1.utils.generic import concrete_type, prefix_validation_error
 
 
 def builtin_harness_ids() -> list[str]:
-    """The harness ids that ship with verifiers (the `verifiers.v1.harnesses`
-    subpackages)."""
+    """The harness ids that ship with verifiers: the `verifiers.v1.harnesses`
+    subpackages that export a `Harness`, by their hyphenated id."""
     from verifiers.v1 import harnesses
 
-    return sorted(m.name for m in pkgutil.iter_modules(harnesses.__path__))
+    ids = []
+    for info in pkgutil.iter_modules(harnesses.__path__):
+        if not info.ispkg:
+            continue
+        module = importlib.import_module(f"{harnesses.__name__}.{info.name}")
+        try:
+            _plugin_class(module, Harness, "harness")
+        except (AttributeError, TypeError):
+            continue
+        ids.append(info.name.replace("_", "-"))
+    return sorted(ids)
 
 
 def narrow_plugin_field(
@@ -42,7 +52,8 @@ def narrow_plugin_field(
 ) -> None:
     raw = data.get(field)
     if isinstance(raw, BaseConfig):
-        raw = raw.model_dump()
+        # Unset fields take the concrete type's defaults, which may narrow the base's.
+        raw = raw.model_dump(exclude_unset=True)
     raw = dict(raw or {})
     ident = raw.get("id") or default_id
     if not ident:
