@@ -129,7 +129,7 @@ async def run_episode_with_retry(
     state = RetryState(retry)
     for attempt in range(state.max_retries + 1):
         final = await run()
-        if attempt == state.max_retries or final.ok:
+        if attempt == state.max_retries or final.ok or final.cancelled:
             break
         # Successful traces may contain recovered failures from agent retries.
         errors = list(final.errors)

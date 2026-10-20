@@ -8,6 +8,7 @@ import zmq.asyncio
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.client import ClientConfig
 from verifiers.v1.configs.env import EnvConfig
+from verifiers.v1.env import RunSlot
 from verifiers.v1.serve.delta import DeltaStreamer, TraceSummary, dump, pack
 from verifiers.v1.serve.encoding import msgpack_encoder
 from verifiers.v1.serve.types import (
@@ -52,6 +53,8 @@ class EnvServer:
         self._gate = asyncio.Semaphore(max_concurrent) if max_concurrent else None
         # In-flight run tasks by wire request_id, so a `cancel` can abort them
         self._running: dict[str, asyncio.Task] = {}
+        # Their slots, so a `cancel` ends the episode early instead
+        self._slots: dict[str, RunSlot] = {}
         self.ctx = zmq.asyncio.Context()
         self.frontend = self.ctx.socket(zmq.ROUTER)
         self.frontend.setsockopt(zmq.ROUTER_MANDATORY, 1)
@@ -99,6 +102,7 @@ class EnvServer:
     ) -> RunResponse:
         ctx = self._context(req.client, req.model, req.sampling)
         (slot,) = self.env.slots(self._build_task(req.task_data))
+        self._slots[request_id.decode()] = slot
 
         async def send_delta(delta: dict) -> None:
             await self.frontend.send_multipart(
@@ -138,11 +142,17 @@ class EnvServer:
                     )
                 finally:
                     self._running.pop(request_id.decode(), None)
+                    self._slots.pop(request_id.decode(), None)
             elif route == "cancel":
                 target = CancelRequest.model_validate(raw).request_id
+                slot = self._slots.get(target)
                 running = self._running.get(target)
-                if running is not None:
+                if slot is not None:
+                    # The run replies with its episode, flagged `cancelled`.
+                    slot.cancel()
+                elif running is not None:
                     running.cancel()
+                if running is not None:
                     logger.info("cancelled run %s on client request", target)
                 response = CancelResponse(cancelled=running is not None)
             else:
