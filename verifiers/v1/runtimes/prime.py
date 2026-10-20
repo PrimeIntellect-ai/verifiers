@@ -987,10 +987,12 @@ class PrimeBackend(RuntimeBackend):
         if not self._pid_namespace or user is not None:
             return command, user
         inner = shlex.quote(command)
+        # Entering a mount namespace moves the working directory to its root: keep the
+        # command's own.
         entered = (
             f'p=$(cat {_PID_NAMESPACE_FILE} 2>/dev/null); if [ -n "$p" ] && '
-            f'[ -e "/proc/$p/ns/pid" ]; then exec nsenter -t "$p" -p -m -- sh -c {inner}; '
-            f"fi; exec sh -c {inner}"
+            f'[ -e "/proc/$p/ns/pid" ]; then exec nsenter -t "$p" -p -m --wd="$PWD" '
+            f"-- sh -c {inner}; fi; exec sh -c {inner}"
         )
         return entered, None
 
