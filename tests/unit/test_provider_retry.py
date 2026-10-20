@@ -107,7 +107,7 @@ class Provider:
                     "index": 0,
                     "delta": delta,
                     "finish_reason": None
-                    if failure == "cut"
+                    if failure in ("cut", "error-event")
                     else completion["choices"][0]["finish_reason"],
                 }
             ],
@@ -121,6 +121,12 @@ class Provider:
             return stream
         if failure == "cut":
             # the provider closes the stream cleanly, its terminal event never sent
+            return stream
+        if failure == "error-event":
+            # the provider fails the turn inside the stream, then ends it as if done
+            error = {"error": {"message": "Service error. Please retry shortly."}}
+            await stream.write(f"data: {json.dumps(error)}\n\n".encode())
+            await stream.write(b"data: [DONE]\n\n")
             return stream
         await stream.write(b"data: [DONE]\n\n")
         return stream
@@ -440,3 +446,17 @@ async def test_a_provider_cutting_every_stream_still_gives_up(monkeypatch):
     assert trace.last_error is not None and "terminal event" in trace.last_error.message
     # the first cut, then MAX_STREAM_CUT_OFFS - 1 that restart the budget, then one past it
     assert len(provider.requests) == server.MAX_STREAM_CUT_OFFS + 1
+
+
+async def test_an_error_event_inside_a_stream_is_retried_in_place():
+    """Nemotron's gateway fails a turn mid-stream with an SSE error event ("Service error.
+    Please retry shortly.") and then [DONE]. Forwarded, the harness's SDK raised it and the
+    rollout died after hours; it is a cut, sampled again in place."""
+    async with Provider("error-event", "error-event", "ok") as provider:
+        agent = make(provider, StreamHarness, retry={"budget": 0.3})
+        trace = await agent.run(task())
+    assert trace.ok, trace.errors
+    assert len(provider.requests) == 3
+    error = trace.calls[0].error
+    assert error is not None and "Service error. Please retry shortly." in error.message
+    assert_committed_once(trace, sampled=1)

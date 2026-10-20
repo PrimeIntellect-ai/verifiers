@@ -269,6 +269,29 @@ def _prune_idempotent_requests(session: RolloutSession, now: float) -> None:
                 session.idempotent_requests.pop(key)
 
 
+def _stream_error(chunk: bytes) -> str | None:
+    """The message of an SSE error event in `chunk` (a `data:` payload whose JSON object has
+    an `error`), or None."""
+    for line in chunk.splitlines():
+        if not line.startswith(b"data:"):
+            continue
+        payload = line[5:].strip()
+        if not payload.startswith(b"{") or b'"error"' not in payload:
+            continue
+        try:
+            data = json.loads(payload)
+        except ValueError:
+            continue
+        if isinstance(data, dict) and data.get("error"):
+            error = data["error"]
+            return (
+                str(error.get("message") or error)
+                if isinstance(error, dict)
+                else str(error)
+            )
+    return None
+
+
 async def _collect_stream(
     dialect: Dialect, reply: RelayReply
 ) -> tuple[Response, bytes]:
@@ -285,6 +308,16 @@ async def _collect_stream(
         async for chunk in reply.chunks:
             if not any(line.startswith(b"data:") for line in chunk.splitlines()):
                 continue
+            if message := _stream_error(chunk):
+                # The provider failed the turn mid-stream with an error event (Nemotron's
+                # gateway: "Service error. Please retry shortly.", then [DONE]): a cut, not
+                # an answer to forward, so the turn is sampled again in place.
+                error = ProviderError(
+                    f"upstream stream sent an error event: {message} "
+                    f"(after {time.monotonic() - started:.0f}s, {count} events, {len(events)} bytes)"
+                )
+                error.streamed = True
+                raise error
             events += chunk
             count += 1
             last = chunk
