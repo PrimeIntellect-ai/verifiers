@@ -4,6 +4,9 @@ import json
 from pathlib import Path
 from typing import Literal
 
+from pydantic import PositiveInt, model_validator
+from pydantic_config import BaseConfig
+
 from verifiers.v1.acp import ACPConfig, ACPHarness
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig, PinnedVersion
@@ -26,6 +29,26 @@ npm install --prefix "$VF_OPENCODE_DIR" --no-audit --no-fund --omit=dev \
 """
 
 
+class OpenCodeCompactionConfig(BaseConfig):
+    """OpenCode's auto-compaction, keyed to the model's context window."""
+
+    context_window: PositiveInt
+    """The model's context window in tokens (OpenCode's model `limit.context`). OpenCode
+    also caps each request's `max_completion_tokens` to the room left in it."""
+    summarize_at_tokens: PositiveInt | None = None
+    """Compact once the conversation reaches this many tokens; must be below
+    `context_window`. When unset, OpenCode compacts max(10%, 16k) tokens below it."""
+
+    @model_validator(mode="after")
+    def _below_window(self) -> "OpenCodeCompactionConfig":
+        if (
+            self.summarize_at_tokens is not None
+            and self.summarize_at_tokens >= self.context_window
+        ):
+            raise ValueError("summarize_at_tokens must be below context_window")
+        return self
+
+
 class OpenCodeHarnessConfig(HarnessConfig):
     version: PinnedVersion = "2.0.26"
     """OpenCode 2 release to install, pinned for reproducibility."""
@@ -35,6 +58,10 @@ class OpenCodeHarnessConfig(HarnessConfig):
     """Model API transport."""
     disabled_tools: list[str] | None = None
     """OpenCode permission actions to deny, such as shell, read, or edit."""
+    compaction: OpenCodeCompactionConfig | None = None
+    """Auto-compaction. OpenCode compacts only for a model whose context window it
+    knows, and the interception model has none: unset, a rollout never compacts and
+    ends at the provider's context limit."""
 
 
 class OpenCodeHarness(ACPHarness[OpenCodeHarnessConfig]):
@@ -81,6 +108,10 @@ class OpenCodeHarness(ACPHarness[OpenCodeHarnessConfig]):
             "responses": "openai-compatible/responses",
             "anthropic_messages": "anthropic-compatible",
         }[self.config.transport]
+        model: dict = {"modelID": ctx.model}
+        compaction = self.config.compaction
+        if compaction is not None:
+            model["limit"] = {"context": compaction.context_window}
         settings = {
             "model": "intercept/model",
             "providers": {
@@ -88,7 +119,7 @@ class OpenCodeHarness(ACPHarness[OpenCodeHarnessConfig]):
                     "env": [KEY_VAR],
                     "package": f"@opencode/ai/providers/{package}",
                     "settings": {"baseURL": endpoint},
-                    "models": {"model": {"modelID": ctx.model}},
+                    "models": {"model": model},
                 }
             },
             "default_agent": "build",
@@ -105,6 +136,11 @@ class OpenCodeHarness(ACPHarness[OpenCodeHarnessConfig]):
             "share": "disabled",
             "snapshots": False,
         }
+        if compaction is not None and compaction.summarize_at_tokens is not None:
+            # OpenCode compacts at `limit.context - buffer` tokens.
+            settings["compaction"] = {
+                "buffer": compaction.context_window - compaction.summarize_at_tokens
+            }
         if mcp_urls:
             plugin_dir = f"{root}/mcp-ready"
             await runtime.write(f"{plugin_dir}/index.js", MCP_READY)
