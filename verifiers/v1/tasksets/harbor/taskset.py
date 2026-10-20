@@ -1152,10 +1152,15 @@ def make_tar(directory: Path) -> bytes:
 class HarborTaskset(Taskset[HarborTask, HarborConfig]):
     def load(self) -> Iterator[HarborTask]:
         root = dataset_dir(self.config)
+        found = sorted(toml_path.parent for toml_path in root.rglob("task.toml"))
+        # A task.toml inside another task's folder (a fixture its environment ships, such
+        # as a nested task definition its tests use) is part of that task, not a task.
+        tasks = set(found)
         task_dirs = [
-            toml_path.parent
-            for toml_path in sorted(root.rglob("task.toml"))
-            if (self.config.tasks is None or toml_path.parent.name in self.config.tasks)
+            task_dir
+            for task_dir in found
+            if not any(parent in tasks for parent in task_dir.parents)
+            and (self.config.tasks is None or task_dir.name in self.config.tasks)
         ]
         if not task_dirs:
             raise ValueError(f"no harbor tasks found in {root}")
