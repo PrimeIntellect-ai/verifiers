@@ -45,6 +45,7 @@ from verifiers.v1.runtimes.deployment import Deployment
 from verifiers.v1.state import State
 from verifiers.v1.task import Task, TaskData, TaskResources, TaskTimeout
 from verifiers.v1.taskset import Taskset
+from verifiers.v1.tasksets.harbor.entrypoint import start_entrypoint
 from verifiers.v1.toolbundles import ToolMount
 from verifiers.v1.trace import Trace
 from verifiers.v1.utils.artifacts import MAX_ARTIFACT_BYTES, Artifact, collect
@@ -342,8 +343,17 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
         return resolve_env(self.data.env)
 
     async def setup(
-        self, runtime: Runtime, deployment: Deployment | None = None
+        self,
+        runtime: Runtime,
+        deployment: Deployment | None = None,
+        trace: Trace | None = None,
     ) -> None:
+        # Harbor's Docker start runs the image's ENTRYPOINT before anything else.
+        if (dockerfile := self.entrypoint_dockerfile()) is not None:
+            started = await start_entrypoint(runtime, dockerfile)
+            if started is not None and trace is not None:
+                box = "verifier_" if dockerfile.parent.name == "tests" else ""
+                trace.info[f"{box}entrypoint"] = started
         if deployment is not None:
             declared = {
                 entry.service for entry in (*self.data.collect, *self.data.artifacts)
@@ -375,6 +385,27 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
             await self.mount_tools(runtime, deployment)
         if self.data.healthcheck is not None:
             await self.wait_for_health(runtime, self.data.healthcheck)
+
+    def entrypoint_dockerfile(self) -> Path | None:
+        """The Dockerfile whose ENTRYPOINT this box's image starts with, when nothing
+        else runs it: a Compose service's runs under the VM's Docker, and a box on the
+        harness image (no pullable image, or the environment uploaded) has none."""
+        from verifiers.v1.runtimes.compose import ComposeSpec
+
+        task_dir = Path(self.data.task_dir)
+        if (
+            not self.data.task_dir
+            or self.data.image is None
+            or self.data.upload_environment
+            or isinstance(self.deployment_spec(), ComposeSpec)
+        ):
+            return None
+        verifier_box = (
+            self.data.verifier is not None
+            and self.data.verifier_image is not None
+            and self.data.image == self.data.verifier_image
+        )
+        return task_dir / ("tests" if verifier_box else "environment") / "Dockerfile"
 
     def _sidecars(
         self, deployment: Deployment | None
