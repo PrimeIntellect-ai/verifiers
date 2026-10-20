@@ -51,8 +51,9 @@ class SharedToolsetConfig(BaseConfig):
 class Toolset(ServerBase[ConfigT, StateT]):
     def register(self, mcp: MCPServer) -> None:
         for fn in discover_decorated(self, "tool"):
+            name = getattr(fn, "tool_name", None) or fn.__name__
             mcp.add_tool(
-                self._with_state(fn),
-                name=getattr(fn, "tool_name", None) or fn.__name__,
+                self._with_gate(self._with_state(fn), name),
+                name=name,
                 description=(fn.__doc__ or "").strip() or None,
             )

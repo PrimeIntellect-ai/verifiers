@@ -45,7 +45,8 @@ class Harness(ABC, Generic[ConfigT]):
     """Whether the program asks the rollout's `/tool` gate (handed over as
     `tool_interception_url`) before executing each tool call, so a request hook can
     deny a call and the model sees the policy's result in its place. Without the gate
-    a pre-execution rewrite can only end the rollout."""
+    a pre-execution rewrite of a direct call can only end the rollout; a `vf.Toolset`
+    server enforces it for its own tools either way."""
     SUPPORTS_RESUME: ClassVar[bool] = False
     """Whether the default `resume()` can relaunch this harness from the
     accumulated Messages transcript."""

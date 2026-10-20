@@ -442,6 +442,7 @@ class InterceptionServer(Interception):
         app.router.add_get("/state", self.handle_state_get)
         app.router.add_put("/state", self.handle_state_put)
         app.router.add_post("/tool", self.handle_tool)
+        app.router.add_post("/gate", self.handle_gate)
         # A launched tool server fetches its rollout's task here to run `setup_task` — the task
         # is never passed via env, only over this channel, keyed by the state bearer.
         app.router.add_get("/task", self.handle_task_get)
@@ -516,6 +517,31 @@ class InterceptionServer(Interception):
             return web.json_response(
                 await session.decide_tool(
                     str(body.get("tool_call_id", "")),
+                    body.get("name"),
+                    body.get("arguments"),
+                )
+            )
+        except RolloutError as error:
+            session.error = error
+            return web.json_response({"error": str(error)}, status=400)
+
+    async def handle_gate(self, request: web.Request) -> web.Response:
+        """`POST /gate`: a rollout's tool server asks, keyed by its state bearer, whether
+        to run a `@vf.tool` call — `{name, arguments}` in, a `decide_tool` verdict out.
+        This covers calls a program makes through a wrapper the hooks never saw as this
+        tool; a call the harness's own gate already judged keeps that verdict."""
+        session = self._session_for(request, allow_service=True)
+        if session is None:
+            return web.json_response({"error": "unauthorized"}, status=401)
+        if session.released or not (
+            session.request_interceptors or session.request_stops
+        ):
+            return web.json_response({"action": "allow"})
+        body = from_json(await request.read())
+        try:
+            return web.json_response(
+                await session.decide_tool(
+                    f"vf-gate-{secrets.token_hex(8)}",
                     body.get("name"),
                     body.get("arguments"),
                 )
