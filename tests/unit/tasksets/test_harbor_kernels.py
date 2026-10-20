@@ -98,3 +98,16 @@ def test_a_bare_name_caches_what_its_registry_resolves_to_now(tmp_path):
     publish("bbb")
     assert harbor.cache_dir(bare) != first
     assert harbor.cache_dir(pinned) == first_pinned
+
+
+def test_staged_tests_are_root_owned(tmp_path):
+    """/tests lands root-owned, as Harbor's copy into a container leaves it."""
+    import io
+    import tarfile
+
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "sub" / "test.sh").write_text("exit 0\n")
+    data = harbor.make_tar(tmp_path)
+    with tarfile.open(fileobj=io.BytesIO(data)) as tar:
+        owners = {(m.name, m.uid, m.gid, m.uname) for m in tar.getmembers()}
+    assert owners == {("sub", 0, 0, "root"), ("sub/test.sh", 0, 0, "root")}
