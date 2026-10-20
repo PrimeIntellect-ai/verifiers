@@ -163,8 +163,9 @@ def test_a_tool_vm_keeps_only_its_state_channel_and_the_harness_its_routes():
         return SimpleNamespace(prepare_execution=prepare_execution, host_url=host_url)
 
     strategy = _PrivateNetworkDeployment()
-    strategy._service_backends = [backend("forth")]
-    deployment = SimpleNamespace(harness_backend=backend("main"))
+    deployment = SimpleNamespace(
+        target_backends={"main": backend("main"), "forth": backend("forth")}
+    )
     # The harness reaches the model and a remote tool server; the tool VM needs neither.
     routes = ["https://tunnel.example/v1", "https://tools.example/mcp"]
     asyncio.run(

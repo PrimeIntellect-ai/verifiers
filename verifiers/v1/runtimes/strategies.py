@@ -60,6 +60,9 @@ class _ContainerDeployment(_DeploymentStrategy):
 
 
 class _PrivateNetworkDeployment(_DeploymentStrategy):
+    _networks: dict[str, list[str]] | None = None
+    _internal: frozenset[str] = frozenset()
+
     async def start(self, d):
         if d.borrowed_runtime is not None:
             raise ValueError(
@@ -72,7 +75,11 @@ class _PrivateNetworkDeployment(_DeploymentStrategy):
         self._services = await d.enter(AsyncExitStack())
         vms = await self._services.enter_async_context(
             private_network(
-                d.backend, members, partial(d.own, d.backend), interconnect=native
+                d.backend,
+                members,
+                partial(d.own, d.backend),
+                interconnect=native,
+                networks=self._networks,
             )
         )
         d.target_backends = {"main": d.backend, **vms}
@@ -80,19 +87,21 @@ class _PrivateNetworkDeployment(_DeploymentStrategy):
         if native:
             d.hosts["main"] = lan_host(d.backend)
         d.execution_backend = d.harness_backend = d.backend
-        self._service_backends = list(vms.values())
 
     async def prepare_execution(self, d, routes, state_route=None):
         # Each VM enforces its own policy. A tool server's VM keeps only its state
         # channel, reached as the server reaches it; LAN traffic is unaffected by either.
-        def own(backend):
+        def own(name, backend):
+            if name == "main":
+                return routes
+            if name in self._internal:
+                return []
             return [backend.host_url(state_route)] if state_route else []
 
         await asyncio.gather(
-            d.harness_backend.prepare_execution(routes),
             *(
-                backend.prepare_execution(own(backend))
-                for backend in self._service_backends
+                backend.prepare_execution(own(name, backend))
+                for name, backend in d.target_backends.items()
             ),
         )
 
@@ -115,6 +124,59 @@ class _PrivateNetworkDeployment(_DeploymentStrategy):
                 logger.warning("%s teardown failed before grading", what, exc_info=True)
 
 
+class _NativeComposeDeployment(_PrivateNetworkDeployment):
+    _processes = None
+
+    async def start(self, d):
+        from verifiers.v1.runtimes.native_compose import NativeProcesses, prepare_native
+
+        if d.borrowed_runtime is not None:
+            raise ValueError("a composed deployment cannot borrow a single target")
+        services = await prepare_native(
+            d.backend.config.model_copy(
+                update={"workdir": d.backend._workdir_override}
+            ),
+            d.spec,
+            d.env,
+        )
+        main = services["main"]
+        d.backend.config = main.config
+        for field, value in main.config.model_dump().items():
+            setattr(d.backend.info, field, value)
+        d.env = main.env
+        self._networks = {}
+        for name, service in services.items():
+            for network in service.definition["networks"]:
+                self._networks.setdefault(network, []).append(name)
+        self._internal = frozenset(
+            name for name, service in services.items() if service.internal
+        )
+        d.spec = ServicesSpec(
+            {
+                name: service.config
+                for name, service in services.items()
+                if name != "main"
+            }
+        )
+        await super().start(d)
+        self._processes = NativeProcesses(services)
+        await self._processes.start(d)
+
+    async def stop_execution(self, d):
+        await self._processes.stop(d, ["main"])
+        await super().stop_execution(d)
+
+    async def prepare_verifier(self, deployment):
+        await self.close(deployment)
+        await super().prepare_verifier(deployment)
+
+    async def close(self, deployment):
+        if self._processes is not None:
+            await self._processes.stop(
+                deployment, reversed(list(self._processes.processes))
+            )
+
+
 def _deployment_strategy(config, backend, spec, tool_vms=None):
     if isinstance(spec, ServicesSpec):
         if not isinstance(backend, PrimeBackend):
@@ -129,6 +191,8 @@ def _deployment_strategy(config, backend, spec, tool_vms=None):
             raise ValueError("Native services require PrimeConfig runtimes")
         return _PrivateNetworkDeployment()
     if spec is not None:
+        if isinstance(backend, PrimeBackend):
+            return _NativeComposeDeployment()
         if not backend.SUPPORTS_COMPOSE:
             raise ValueError(
                 f"the task deploys Compose services, but the {backend.type} runtime "
