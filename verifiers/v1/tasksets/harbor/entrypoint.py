@@ -32,6 +32,15 @@ COMMAND = ["sh", "-c", "while :; do sleep 3600; done", READY]
 STATE = "/run/vf-harbor-entrypoint"
 LOG = f"{STATE}.log"
 PID = f"{STATE}.pid"
+RECORD = 'echo $$ > {pid} || exit 1; exec "$@"'
+LAUNCH = (
+    "record=$1; shift; command -v setsid >/dev/null 2>&1 && "
+    'exec setsid sh -c "$record" "$0" "$@"; exec sh -c "$record" "$0" "$@"'
+)
+"""Records the entrypoint's pid, then runs it in a session of its own, as a container's
+first process is: a box's command daemon shares the process group of what it starts,
+and the platform drops a box whose group holds a stopped process (a grader that
+`pkill -STOP`s the agent's user would stop the entrypoint's `runuser` child)."""
 WAIT_SECONDS = 600.0
 FOREGROUND_GRACE_SECONDS = 5.0
 OUTPUT_BYTES = 4000
@@ -200,7 +209,7 @@ async def start_entrypoint(
     # The image's USER runs its entrypoint, as Docker starts it.
     starter = runtime if user is None else runtime.with_user(user)
     await starter.run_background(
-        ["sh", "-c", f'echo $$ > {PID} && exec "$@"', "vf-harbor-entrypoint", *argv],
+        ["sh", "-c", LAUNCH, "vf-harbor-entrypoint", RECORD.format(pid=PID), *argv],
         {},
         LOG,
     )

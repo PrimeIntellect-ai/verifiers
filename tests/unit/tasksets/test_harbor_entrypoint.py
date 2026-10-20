@@ -1,6 +1,7 @@
 """A Harbor image's ENTRYPOINT starts with the box, as Harbor's Docker start runs it."""
 
-import asyncio
+import os
+import signal
 
 import pytest
 
@@ -64,11 +65,15 @@ async def test_setup_waits_for_the_entrypoint_to_finish_its_start(
     monkeypatch.setattr(entrypoint, "LOG", str(tmp_path / "log"))
     async with vf.runtimes.provision_runtime(SubprocessConfig()) as box:
         runtime = box.with_env({"STARTER": str(starter), "APP": str(app)})
-        started = await entrypoint.start_entrypoint(runtime, dockerfile, wait=30)
+        try:
+            started = await entrypoint.start_entrypoint(runtime, dockerfile, wait=30)
+        finally:
+            # The entrypoint runs in a session of its own, as in a box: end it.
+            pid = int((tmp_path / "pid").read_text())
+            os.killpg(pid, signal.SIGKILL)
         assert started["state"] == state
         assert (app / "Cargo.toml").is_file()
         if state == "execd":
-            await asyncio.sleep(0)
             assert (app / "served").is_file()
 
 
