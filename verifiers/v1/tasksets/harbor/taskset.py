@@ -124,6 +124,11 @@ class HarborConfig(TasksetConfig):
     instead of rejecting it. The Dockerfile is NOT built, so the task scores against the
     harness image rather than its declared environment — only correct when that image already
     has what the task needs (e.g. you've pointed the runtime at the right image)."""
+    boots_kernels: bool = False
+    """Whether this taskset boots the kernel a task declares in `[metadata.prime_kernel]` (a
+    kernel feature the provider's guest kernel lacks, such as Landlock). A plain Harbor
+    taskset does not, so it refuses such a task rather than running it on a box that cannot
+    grade it; a kernel-booting taskset (sft-gen's `sft-gen-kernel-harbor`) sets it."""
     ignore_separate_verifier: bool = False
     """Grade every task in the agent's own box, even one whose `[verifier]` asks for a
     separate one. Trades the isolation for a sandbox per task; useful when provisioning
@@ -942,6 +947,12 @@ def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborD
     )
     network = parsed.agent.explicit_phase_policy() or environment.resolve_baseline()
     task, meta = parsed.task, parsed.metadata
+    if "prime_kernel" in (meta or {}) and not harbor_config.boots_kernels:
+        raise ValueError(
+            f"{task_dir.name}: declares [metadata.prime_kernel] (it needs a kernel the "
+            "provider's boxes do not run); load it with a taskset that boots it, such as "
+            "sft-gen's `sft-gen-kernel-harbor`"
+        )
     authors = (
         [Author(name=author.name, email=author.email) for author in task.authors]
         if task
