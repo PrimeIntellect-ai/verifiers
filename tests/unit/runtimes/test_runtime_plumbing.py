@@ -396,3 +396,41 @@ async def test_uv_scripts_respect_runtime_temporary_directory(
         assert (result.exit_code, result.stdout) == (0, "ready\n")
     finally:
         await backend.teardown()
+
+
+class UserJobClient:
+    """Records how each job starts; the privilege-drop probe answers `tools`."""
+
+    def __init__(self, tools: bool):
+        self.tools = tools
+        self.started: list[tuple[str, str | None]] = []
+
+    async def execute_command(self, sandbox_id, command, **kwargs):
+        return SimpleNamespace(exit_code=0 if self.tools else 1, stdout="")
+
+    async def start_background_job(self, sandbox_id, command, **kwargs):
+        self.started.append((command, kwargs.get("user")))
+        return JOB
+
+    async def get_background_job(self, *args, **kwargs):
+        return DONE
+
+
+@pytest.mark.parametrize("tools", [True, False])
+async def test_a_users_command_runs_in_a_session_of_its_own(runtime, no_sleep, tools):
+    """The platform drops a box whose daemon's process group holds a stopped process,
+    and starts a user's job in that group: a grader stopping the agent's user lost the
+    box. With `setsid` and `setpriv` in the box, the job starts as root and drops to the
+    user in a new session; without them the platform starts it as the user."""
+    runtime.info.id = "sb1"
+    runtime._client = client = UserJobClient(tools)
+    await runtime.bind().with_user("agent").run(["make", "test"], {})
+    await runtime.bind().run(["true"], {})
+    [(command, user), (root_command, root_user)] = client.started
+    if tools:
+        assert user is None
+        assert command.startswith("exec setsid -w setpriv --reuid=agent ")
+        assert command.endswith("sh -c 'make test'")
+    else:
+        assert (command, user) == ("make test", "agent")
+    assert (root_command, root_user) == ("true", None)

@@ -457,6 +457,9 @@ class PrimeBackend(RuntimeBackend):
         self.config = config
         self.info = PrimeRuntimeInfo(**self.config.model_dump())
         self._client = None
+        self._drops_privileges: bool | None = None
+        """Whether this box can run a user's command through `_as_user` (None: not yet
+        asked)."""
         self.placed = False
         """The box has answered an exec: a placement lost from now on is the box lost,
         not an outage."""
@@ -779,18 +782,58 @@ class PrimeBackend(RuntimeBackend):
             policy.get("deny"),
         )
 
+    async def _as_user(self, runtime: Runtime, command: str) -> tuple[str, str | None]:
+        """`command` and the user the platform should start it as, for `runtime`'s user.
+
+        The platform starts every command in its daemon's process group, and drops the
+        box when that group holds a stopped process. A user's command started as that
+        user puts its whole job there, so a grader that `pkill -STOP`s the agent's user
+        (quiescing the agent before it grades) lost the box. Where the box has `setsid`
+        and `setpriv`, the job starts as root and the command drops to the user in a
+        session of its own, the way each `docker exec` gets one; otherwise the platform
+        starts it as the user, as before."""
+        user = runtime.user
+        if user is None:
+            return command, None
+        if self._drops_privileges is None:
+            try:
+                probe = await self._client.execute_command(
+                    self.info.id,
+                    "command -v setsid >/dev/null && command -v setpriv >/dev/null",
+                    timeout=60,
+                )
+                self._drops_privileges = probe.exit_code == 0
+            except Exception as e:  # noqa: BLE001 - the platform's own user switch works too
+                logger.debug("prime: privilege-drop probe failed: %s", e)
+                return command, user
+        if not self._drops_privileges:
+            return command, user
+        name = shlex.quote(user)
+        home = (
+            ""
+            if runtime.home is not None
+            else f"HOME=\"$(awk -F: -v u={name} '$1 == u {{print $6}}' /etc/passwd)\" "
+        )
+        dropped = (
+            f'exec setsid -w setpriv --reuid={name} --regid="$(id -g {name})" '
+            f"--init-groups -- env {home}USER={name} LOGNAME={name} "
+            f"sh -c {shlex.quote(command)}"
+        )
+        return dropped, None
+
     async def _run(
         self, runtime: Runtime, argv: list[str], env: dict[str, str]
     ) -> ProgramResult:
         try:
             # Poll directly so rollout cancellation owns the execution timeout.
             began = time.monotonic()
+            command, user = await self._as_user(runtime, shlex.join(argv))
             job = await self._client.start_background_job(
                 self.info.id,
-                shlex.join(argv),
+                command,
                 working_dir=self.config.workdir,
                 env=runtime.process_env(env),
-                user=runtime.user,
+                user=user,
             )
             _call_stats.record("exec.start", time.monotonic() - began)
             delay = 0.1
@@ -823,7 +866,7 @@ class PrimeBackend(RuntimeBackend):
                     output_retries += 1
                 elif loop.time() >= next_check:
                     next_check = loop.time() + _LIVENESS_INTERVAL_SECONDS
-                    alive = await self._job_alive(job, runtime.user)
+                    alive = await self._job_alive(job, user)
                     misses = 0 if alive is not False else misses + 1
                     if misses >= _LIVENESS_MISSES:
                         raise _JobDied(
@@ -877,12 +920,13 @@ class PrimeBackend(RuntimeBackend):
         self, runtime: Runtime, argv: list[str], env: dict[str, str]
     ) -> RuntimeProcess:
         try:
+            command, user = await self._as_user(runtime, shlex.join(argv))
             process = await self._client.open_process(
                 self.info.id,
-                shlex.join(argv),
+                command,
                 working_dir=self.config.workdir,
                 env=runtime.process_env(env),
-                user=runtime.user,
+                user=user,
             )
         except Exception as e:
             raise SandboxError(
@@ -1006,14 +1050,16 @@ class PrimeBackend(RuntimeBackend):
     async def _run_background(
         self, runtime: Runtime, argv: list[str], env: dict[str, str], log: str
     ) -> None:
-        command = f"exec {shlex.join(argv)} > {shlex.quote(log)} 2>&1"
         try:
+            command, user = await self._as_user(
+                runtime, f"exec {shlex.join(argv)} > {shlex.quote(log)} 2>&1"
+            )
             await self._client.start_background_job(
                 self.info.id,
                 command,
                 working_dir=self.config.workdir,
                 env=runtime.process_env(env),
-                user=runtime.user,
+                user=user,
             )
         except Exception as e:
             raise SandboxError(
@@ -1030,12 +1076,15 @@ class PrimeBackend(RuntimeBackend):
             try:
                 # Stream binary output: execute_command buffers base64 text for the
                 # entire file. Bound the source read and the host buffer independently.
+                command, user = await self._as_user(
+                    runtime, f"{reader} -- {shlex.quote(path)}"
+                )
                 process = await self._client.open_process(
                     self.info.id,
-                    f"{reader} -- {shlex.quote(path)}",
+                    command,
                     working_dir=self.config.workdir,
                     env=runtime.process_env({}),
-                    user=runtime.user,
+                    user=user,
                 )
                 async with contextlib.aclosing(process):
                     with io.BytesIO() as data:
