@@ -248,10 +248,25 @@ class Task(Generic[DataT, StateT, ConfigT]):
         return
 
     async def validate(
-        self, runtime: Runtime | RuntimeConfig
+        self,
+        runtime: Runtime | RuntimeConfig,
+        *,
+        baseline: bool = False,
+        gold: bool = False,
+        **settings: Any,
     ) -> bool | ValidationResult | None:
-        """Check the ground truth, or return None when no model-free check exists."""
-        return None
+        """Check the ground truth, or return None when no model-free check exists.
+
+        A caller that asks for the untouched (`baseline`) or gold attempt gets
+        them graded in native deployments, as `validation.validate_pair` runs
+        them; the gold attempt needs a `gold_source`."""
+        if not (baseline or gold):
+            return None
+        from verifiers.v1.validation import validate_pair
+
+        return await validate_pair(
+            self, runtime, baseline=baseline, gold=gold, **settings
+        )
 
     async def validation_before(
         self, trace: Trace, runtime: Runtime, kind: str

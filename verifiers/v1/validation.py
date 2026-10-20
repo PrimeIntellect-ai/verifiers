@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import copy
 from collections.abc import Awaitable, Callable
 from pathlib import Path, PurePosixPath
@@ -220,3 +221,76 @@ async def validate_attempt(
         ),
         infrastructure=infrastructure,
     )
+
+
+async def validate_pair(
+    task: Task,
+    runtime: Runtime | RuntimeConfig,
+    *,
+    baseline: bool = True,
+    gold: bool = True,
+    baseline_max: float = 0.0,
+    gold_min: float = 1.0,
+    gold_rewards: dict[str, float] | None = None,
+    baseline_rewards: list[str] | None = None,
+    gold_source: Path | None = None,
+    gold_target_dir: str = "/solution",
+    gold_command: list[str] | None = None,
+    timeout: TimeoutConfig | None = None,
+    retries: RetryConfig | None = None,
+    on_trace: Callable[[Trace], None] | None = None,
+    run_attempt: ValidationRunner | None = None,
+) -> ValidationResult:
+    """Grade untouched and gold work in independent native deployments.
+
+    The gold attempt places `gold_source` at `gold_target_dir` and runs
+    `gold_command` (default: its solve.sh). Each reward must meet its inclusive
+    bound. Callers may repeat this check concurrently; neither attempt reuses
+    the caller's live workspace.
+    """
+    runs = {}
+    results = {
+        "baseline": ValidationAttempt(enabled=False),
+        "gold": ValidationAttempt(enabled=False),
+    }
+    if baseline:
+        runs["baseline"] = validate_attempt(
+            task,
+            runtime,
+            maximum=None if baseline_rewards else baseline_max,
+            maximum_rewards={name: baseline_max for name in baseline_rewards}
+            if baseline_rewards
+            else None,
+            timeout=timeout,
+            retries=retries,
+            on_trace=on_trace,
+            run_attempt=run_attempt,
+        )
+    if gold and (
+        gold_source is None
+        or not gold_source.is_dir()
+        or (gold_command is None and not (gold_source / "solve.sh").is_file())
+    ):
+        results["gold"] = ValidationAttempt(
+            error=f"gold solution unavailable: {gold_source}"
+        )
+    elif gold:
+        runs["gold"] = validate_attempt(
+            task,
+            runtime,
+            source=gold_source,
+            target_dir=gold_target_dir,
+            command=(
+                gold_command
+                if gold_command is not None
+                else ["bash", f"{gold_target_dir.rstrip('/')}/solve.sh"]
+            ),
+            minimum=None if gold_rewards else gold_min,
+            minimum_rewards=gold_rewards,
+            timeout=timeout,
+            retries=retries,
+            on_trace=on_trace,
+            run_attempt=run_attempt,
+        )
+    results.update(zip(runs, await asyncio.gather(*runs.values())))
+    return ValidationResult(**results)

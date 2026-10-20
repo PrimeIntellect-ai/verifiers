@@ -51,10 +51,9 @@ from verifiers.v1.utils.artifacts import MAX_ARTIFACT_BYTES, Artifact, collect
 from verifiers.v1.utils.decorators import reward
 from verifiers.v1.utils.env import resolve_env
 from verifiers.v1.validation import (
-    ValidationAttempt,
     ValidationResult,
     ValidationRunner,
-    validate_attempt,
+    validate_pair,
 )
 
 logger = logging.getLogger(__name__)
@@ -245,52 +244,23 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
         Each reward must meet its inclusive bound. Callers may repeat this check
         concurrently; neither attempt reuses the caller's live workspace.
         """
-        source = gold_source or Path(self.data.task_dir) / "solution"
-        runs = {}
-        results = {
-            "baseline": ValidationAttempt(enabled=False),
-            "gold": ValidationAttempt(enabled=False),
-        }
-        if baseline:
-            runs["baseline"] = validate_attempt(
-                self,
-                runtime,
-                maximum=None if baseline_rewards else baseline_max,
-                maximum_rewards={name: baseline_max for name in baseline_rewards}
-                if baseline_rewards
-                else None,
-                timeout=timeout,
-                retries=retries,
-                on_trace=on_trace,
-                run_attempt=run_attempt,
-            )
-        if gold and (
-            not source.is_dir()
-            or (gold_command is None and not (source / "solve.sh").is_file())
-        ):
-            results["gold"] = ValidationAttempt(
-                error=f"gold solution unavailable: {source}"
-            )
-        elif gold:
-            runs["gold"] = validate_attempt(
-                self,
-                runtime,
-                source=source,
-                target_dir=gold_target_dir,
-                command=(
-                    gold_command
-                    if gold_command is not None
-                    else ["bash", f"{gold_target_dir.rstrip('/')}/solve.sh"]
-                ),
-                minimum=None if gold_rewards else gold_min,
-                minimum_rewards=gold_rewards,
-                timeout=timeout,
-                retries=retries,
-                on_trace=on_trace,
-                run_attempt=run_attempt,
-            )
-        results.update(zip(runs, await asyncio.gather(*runs.values())))
-        return ValidationResult(**results)
+        return await validate_pair(
+            self,
+            runtime,
+            baseline=baseline,
+            gold=gold,
+            baseline_max=baseline_max,
+            gold_min=gold_min,
+            gold_rewards=gold_rewards,
+            baseline_rewards=baseline_rewards,
+            gold_source=gold_source or Path(self.data.task_dir) / "solution",
+            gold_target_dir=gold_target_dir,
+            gold_command=gold_command,
+            timeout=timeout,
+            retries=retries,
+            on_trace=on_trace,
+            run_attempt=run_attempt,
+        )
 
     def __init__(self, data: HarborData, config: HarborTaskConfig | None = None):
         super().__init__(data, config)
