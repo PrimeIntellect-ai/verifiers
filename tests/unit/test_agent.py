@@ -6,6 +6,7 @@ import asyncio
 from types import SimpleNamespace
 
 import pytest
+from pydantic import ValidationError
 
 import verifiers.v1 as vf
 from verifiers.v1.agent import Interaction, TimeoutConfig, _EpisodeAgent
@@ -132,3 +133,6 @@ def test_with_config_keeps_an_episode_agents_standing():
     assert (run._name, run.trainable, run._gate) == ("solver", False, gate)
     assert run._completed is completed and run._warned_resources is warned
     assert seat.config.harness.id == "bash" and seat.limits.max_turns is None
+    assert seat.with_config(timeout={"rollout": 5}).timeout == timeout
+    with pytest.raises(ValidationError):
+        seat.with_config(max_turn=3)

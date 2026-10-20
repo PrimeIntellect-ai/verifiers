@@ -600,7 +600,9 @@ class Agent:
         its config cannot say ahead, e.g. a harness config naming a per-run
         credential. The copy starts un-entered and owns no interception server."""
         clone = copy.copy(self)
-        clone._configure(self.config.model_copy(update=update))
+        clone._configure(
+            type(self.config).model_validate({**dict(self.config), **update})
+        )
         clone._entered, clone._server = False, None
         return clone
 
