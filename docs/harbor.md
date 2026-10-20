@@ -39,7 +39,9 @@ Harbor is a task-format adapter: its tasks work directly under `SingleAgentEnv`,
 
 ## Task images
 
-For standard single-container tasks, verifiers requires a pullable container image rather than building Dockerfiles on the fly (Compose tasks can build service images inside the sandbox; see [Deployment and services](runtimes.md#deployment-and-services)). To prepare images for your tasks, build each Dockerfile with Docker, push it to a registry, and set the resulting image reference on the task data.
+For standard single-container tasks, verifiers requires a pullable container image rather than building Dockerfiles on the fly. To prepare images for your tasks, build each Dockerfile, push it to a registry, and set the resulting image reference on the task data. Compose tasks run on local Docker, where they can build service images. On Prime, task subclasses can declare native VM services with `ServicesSpec` and start their processes during setup (see [Deployment and services](runtimes.md#deployment-and-services)); Harbor Compose files are not translated automatically.
+
+When a Compose task's `main` service has no `image` or `build`, verifiers builds `environment/Dockerfile`. Setting `ignore_dockerfile = true` uses the runtime image instead; an explicit task image also takes precedence over the implicit build.
 
 You can override each task's `image` and `verifier_image` in `load()` using `task.with_data(...)`, which returns a copy of the task with only the specified fields updated:
 
@@ -123,7 +125,7 @@ The bridge supports `stdio`, `sse`, and `streamable-http` servers, forwarding th
 
 ## Artifacts and collect hooks
 
-`artifacts = [...]` and `[[verifier.collect]]` are read from `task.toml` ([Harbor artifact docs](https://www.harborframework.com/docs/run-jobs/results-and-artifacts)). Each entry's `service` selects the source runtime, defaulting to `main`, with additional services resolved from the deployment's Compose project. Missing Harbor artifacts are treated as optional during collection, so your test suite should fail if a required output file is absent (by contrast, native `vf.Artifact` declarations default to required).
+`artifacts = [...]` and `[[verifier.collect]]` are read from `task.toml` ([Harbor artifact docs](https://www.harborframework.com/docs/run-jobs/results-and-artifacts)). Each entry's `service` selects the source runtime, defaulting to `main`, with additional services resolved from the deployment's native VMs or local Compose project. Missing Harbor artifacts are treated as optional during collection, so your test suite should fail if a required output file is absent (by contrast, native `vf.Artifact` declarations default to required).
 
 Saving a trace writes its collected files alongside `traces.jsonl`, under `artifacts/<trace-id>/`; artifact bytes are excluded from the JSON. `destination` sets the saved path relative to that directory. Without it, files mirror their source paths with the leading `/` removed. For example, `{ source = "/app/report.json", destination = "report.json" }` saves `artifacts/<trace-id>/report.json` and restores `/app/report.json` for grading.
 
@@ -135,7 +137,7 @@ One behavioral difference from `harbor run` is worth noting: **A failing collect
 
 Setting `[verifier].environment_mode = "separate"` grades the task in a fresh container that the agent never touched ([Harbor verifier docs](https://www.harborframework.com/docs/tasks/verifier)). The rollout lifecycle collects the solver's declared artifacts and `/logs/artifacts/` while its deployment is alive, stops the workspace before collecting sidecar evidence, tears down the solver deployment, and provisions a fresh grading target. It then restores the artifacts, stages the verifier tests, and records the resulting rewards and metrics onto the solver's trace. Setup, artifact restoration, and scoring retry in fresh targets according to `agent.scoring.retries` (defaulting to two retries) before failing the attempt.
 
-Because verifiers never builds container images on the fly, a `[verifier.environment]` that relies on `tests/Dockerfile` without a pre-built `docker_image` must be built, pushed to a registry, and referenced via `docker_image` (or `verifier_image`). Setting `ignore_dockerfile = true` falls back to running the verifier inside the solver's image and logs a warning since that diverges from the task's declared verifier environment. Setting `ignore_separate_verifier = true` forces every task back into shared grading inside the solver's container, trading grading isolation for a single sandbox per task.
+A `[verifier.environment]` that relies on `tests/Dockerfile` without a pre-built `docker_image` must be built, pushed to a registry, and referenced via `docker_image` (or `verifier_image`). Setting `ignore_dockerfile = true` falls back to running the verifier inside the solver's image and logs a warning since that diverges from the task's declared verifier environment. Setting `ignore_separate_verifier = true` forces every task back into shared grading inside the solver's container, trading grading isolation for a single sandbox per task.
 
 ## Limitations
 

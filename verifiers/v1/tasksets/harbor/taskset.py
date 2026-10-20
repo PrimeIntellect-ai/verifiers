@@ -7,8 +7,9 @@ touched, carrying only what the task declared — the rollout provisions and
 grades that box. Either way the score lands in
 ``/logs/verifier/reward.json`` or the legacy ``reward.txt``.
 
-A pullable ``[environment].docker_image`` becomes ``TaskData.image``. Verifiers does
-not build Dockerfile-only environments, so those are rejected unless ``ignore_dockerfile``
+A pullable ``[environment].docker_image`` becomes ``TaskData.image``. Compose can build
+its workspace from ``environment/Dockerfile``. Single-container Dockerfile-only
+environments are rejected unless ``ignore_dockerfile``
 deliberately uses the harness runtime image. Tasks without an environment also use that
 image unless ``require_image`` is set. Separate verifiers prefer their own image
 or tests build definition, then fall back to the agent environment. Unsupported verifier builds are rejected unless
@@ -99,8 +100,8 @@ class HarborConfig(TasksetConfig):
     require_image: bool = False
     """For a task with NO declared environment at all (no docker_image, no Dockerfile),
     whether to reject it (True) or run it on the runtime's default image (False). A task
-    whose environment is a `Dockerfile` is rejected too (building Dockerfiles isn't
-    supported), unless `ignore_dockerfile`."""
+    whose environment is only a `Dockerfile` without Compose is rejected too,
+    unless `ignore_dockerfile`."""
     ignore_dockerfile: bool = False
     """Run a task whose environment is only a `Dockerfile` on the harness runtime's image
     instead of rejecting it. The Dockerfile is NOT built, so the task scores against the
@@ -172,11 +173,8 @@ class HarborData(TaskData):
     healthcheck: dict | None = None
     mcp_servers: list[dict] = Field(default_factory=list)
     """Task-declared MCP servers, preserved for served-task reconstruction."""
-    compose_host_image: str | None = None
-    """Provider VM image hosting a Compose task's Docker daemon. Docker is installed
-    when the image lacks it, and `docker save` archives it ships in
-    /opt/verifiers/compose-images/ load before the services start. None uses a
-    stock image."""
+    compose_build_dockerfile: bool = False
+    """Use environment/Dockerfile when Compose's workspace has no image or build."""
     verifier_image: str | None = None
     """Pullable image for a separate verifier, containing the complete `/tests` suite.
     None keeps the solver image and stages the task package's tests."""
@@ -218,8 +216,8 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
         if (Path(self.data.task_dir) / "environment/docker-compose.yaml").is_file():
             return ComposeSpec(
                 self.data.task_dir,
-                host_image=self.data.compose_host_image,
                 image_override=self.data.image is not None,
+                build_dockerfile=self.data.compose_build_dockerfile,
             )
         return super().deployment_spec()
 
@@ -253,7 +251,7 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
             entry.service for entry in (*self.data.collect, *self.data.artifacts)
         )
         if missing := declared.keys() - targets.keys():
-            raise TaskError(f"Unknown Compose services: {sorted(missing)}")
+            raise TaskError(f"Unknown services: {sorted(missing)}")
         sidecars = {name: targets[name] for name in declared if name != "main"}
         if sidecars:
             await self.finalize(trace, targets["main"], sidecars)
@@ -269,7 +267,7 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
                 entry.service for entry in (*self.data.collect, *self.data.artifacts)
             }
             if missing := declared - deployment.target_backends.keys():
-                raise TaskError(f"Unknown Compose services: {sorted(missing)}")
+                raise TaskError(f"Unknown services: {sorted(missing)}")
         if self.data.upload_environment:
             await runtime.write(
                 "/tmp/environment.tgz",
@@ -697,8 +695,9 @@ def resolve_image(
 ) -> str | None:
     """Choose a pullable image without silently ignoring a declared Dockerfile.
 
-    ``None`` keeps the harness image for the solver, or the solver image for a
-    separate verifier. A declared verifier environment without an image implies
+    ``None`` lets Compose select its workspace image, otherwise keeps the harness
+    image for the solver, or the solver image for a separate verifier.
+    A declared verifier environment without an image implies
     a dedicated build only when the resolved definition contains one.
     """
     if image:
@@ -708,7 +707,11 @@ def resolve_image(
         import yaml
 
         main = yaml.safe_load(compose.read_text())["services"].get("main", {})
-        if main.get("image") or "build" in main:
+        if (
+            main.get("image")
+            or "build" in main
+            or (not ignore_dockerfile and (compose.parent / "Dockerfile").is_file())
+        ):
             return None
     section = "verifier.environment" if verifier else "environment"
     dockerfile = "tests/Dockerfile" if verifier else "environment/Dockerfile"
@@ -831,6 +834,7 @@ def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborD
         category=meta.get("category"),
         tags=meta.get("tags", []),
         task_dir=str(task_dir),
+        compose_build_dockerfile=not harbor_config.ignore_dockerfile,
         upload_environment=upload_environment,
         skills=[{"runtime": environment.skills_dir}] if environment.skills_dir else [],
         **environment.model_dump(
@@ -861,7 +865,7 @@ def parse_verifier_extras(
     )
 
     verifier = parsed.verifier
-    if verifier.user is not None:
+    if verifier.user not in (None, "root", 0):
         raise ValueError(f"{task_dir.name}: [verifier].user is not supported")
 
     artifacts: list[HarborArtifact] = []
@@ -958,7 +962,14 @@ def parse_verifier_environment(
             else TaskResources()
         ),
         workdir=environment.workdir if declared else None,
-        **environment.model_dump(include={"env", "healthcheck"}, mode="json"),
+        **environment.model_dump(include={"env"}, mode="json"),
+        # An agent service healthcheck does not apply to a separate grader image.
+        healthcheck=(
+            environment.healthcheck.model_dump(mode="json")
+            if environment.healthcheck is not None
+            and (declared or not definition.bundled_tests)
+            else None
+        ),
         fresh_copy=not declared,
         network=harbor_network(network),
     )

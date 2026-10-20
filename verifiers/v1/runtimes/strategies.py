@@ -1,12 +1,13 @@
-"""Colocated execution, composed task services, and tool servers on VMs of their own."""
+"""Colocated execution, local Compose, and native Prime service VMs."""
 
 import asyncio
 import logging
 from contextlib import AsyncExitStack
 from functools import partial
 
+from verifiers.v1.runtimes import PrimeBackend, PrimeConfig
 from verifiers.v1.runtimes.compose import compose_services
-from verifiers.v1.runtimes.deployment import _DeploymentStrategy
+from verifiers.v1.runtimes.deployment import ServicesSpec, _DeploymentStrategy
 from verifiers.v1.runtimes.private_network import lan_host, private_network
 
 logger = logging.getLogger(__name__)
@@ -37,7 +38,7 @@ class _ContainerDeployment(_DeploymentStrategy):
         if d.borrowed_runtime is not None:
             raise ValueError("a composed deployment cannot borrow a single target")
         self._services = await d.enter(AsyncExitStack())
-        services, self._stop_main, _ = await self._services.enter_async_context(
+        services, self._stop_main = await self._services.enter_async_context(
             compose_services(
                 d.backend.config, d.spec, d.env, trust_compose=d.config.trust_compose
             )
@@ -62,16 +63,22 @@ class _PrivateNetworkDeployment(_DeploymentStrategy):
     async def start(self, d):
         if d.borrowed_runtime is not None:
             raise ValueError(
-                "a deployment with tool servers on VMs of their own cannot borrow a "
+                "a deployment with services on VMs of their own cannot borrow a "
                 "single target"
             )
         d.backend.env = d.env
+        native = isinstance(d.spec, ServicesSpec)
+        members = d.spec.services if native else d.tool_vms
         self._services = await d.enter(AsyncExitStack())
         vms = await self._services.enter_async_context(
-            private_network(d.backend, d.tool_vms, partial(d.own, d.backend))
+            private_network(
+                d.backend, members, partial(d.own, d.backend), interconnect=native
+            )
         )
         d.target_backends = {"main": d.backend, **vms}
         d.hosts = {name: lan_host(backend) for name, backend in vms.items()}
+        if native:
+            d.hosts["main"] = lan_host(d.backend)
         d.execution_backend = d.harness_backend = d.backend
         self._service_backends = list(vms.values())
 
@@ -90,17 +97,17 @@ class _PrivateNetworkDeployment(_DeploymentStrategy):
         )
 
     async def stop_execution(self, d):
-        # As Compose stops its workspace: nothing the agent left running may reach the
-        # tool servers' VMs while their evidence is collected.
+        # Nothing the agent left running may reach services while their evidence is
+        # collected.
         await d.execution_backend.stop()
 
     async def prepare_verifier(self, deployment):
         # Evidence is collected; release the solver's VMs before the verifier clock
-        # starts, the workspace's even if the tool server VMs' or the network's release
+        # starts, the workspace's even if the service VMs' or the network's release
         # fails.
         for release, what in (
             (deployment.execution_backend.stop, "workspace VM"),
-            (self._services.aclose, "tool server VMs"),
+            (self._services.aclose, "service VMs"),
         ):
             try:
                 await release()
@@ -109,11 +116,23 @@ class _PrivateNetworkDeployment(_DeploymentStrategy):
 
 
 def _deployment_strategy(config, backend, spec, tool_vms=None):
+    if isinstance(spec, ServicesSpec):
+        if not isinstance(backend, PrimeBackend):
+            raise TypeError("Native service VMs require a Prime workspace")
+        if "main" in spec.services:
+            raise ValueError(
+                "'main' is the task workspace; name its services separately"
+            )
+        if any(
+            not isinstance(runtime, PrimeConfig) for runtime in spec.services.values()
+        ):
+            raise ValueError("Native services require PrimeConfig runtimes")
+        return _PrivateNetworkDeployment()
     if spec is not None:
         if not backend.SUPPORTS_COMPOSE:
             raise ValueError(
                 f"the task deploys Compose services, but the {backend.type} runtime "
-                "cannot run Compose services; use a supported runtime"
+                "cannot run Compose services; use ServicesSpec on Prime or local Docker"
             )
         return _ContainerDeployment()
     if tool_vms:

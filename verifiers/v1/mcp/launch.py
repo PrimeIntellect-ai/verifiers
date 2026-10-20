@@ -460,7 +460,7 @@ async def _serve(
         elif services is None or service not in services:
             raise ToolsetError(
                 f"server {server.server_name!r} runs in service {service!r}, "
-                "which needs a task whose Compose services define it"
+                "which needs a task whose services define it"
             )
         else:
             runtime = services[service]
@@ -468,8 +468,8 @@ async def _serve(
         if runtime.is_local:
             # A local service cannot reach the host-loopback state channel.
             raise ToolsetError(
-                f"server {server.server_name!r} runs in Compose service {service!r}, "
-                "which needs Compose on a remote runtime such as Prime"
+                f"server {server.server_name!r} runs in service {service!r}, "
+                "which needs a native Prime service VM"
             )
         port = await serve_in_runtime(
             server,
@@ -497,7 +497,7 @@ async def _serve(
             raise ToolsetError(
                 f"server {server.server_name!r} restricts its runtime's network, which "
                 "needs the server colocated with the harness, or on a Prime runtime "
-                "of its own beside a Prime workspace without Compose services (it then "
+                "of its own beside a Prime workspace without a task service spec (it then "
                 "joins the rollout's private network)"
             )
         if colocated and harness_runtime is not None:

@@ -405,12 +405,14 @@ from verifiers.v1.runtimes.compose import ComposeSpec
 from verifiers.v1.runtimes.deployment import (
     Deployment,
     DeploymentConfig,
+    ServicesSpec,
 )
 
 __all__ += [
     "ComposeSpec",
     "Deployment",
     "DeploymentConfig",
+    "ServicesSpec",
 ]
 
 from verifiers.v1.configs.scoring import ScoringConfig

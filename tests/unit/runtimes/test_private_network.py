@@ -8,6 +8,7 @@ import verifiers.v1 as vf
 from verifiers.v1.errors import ToolsetError
 from verifiers.v1.mcp import launch
 from verifiers.v1.runtimes import (
+    DockerBackend,
     DockerConfig,
     PrimeBackend,
     PrimeConfig,
@@ -35,7 +36,7 @@ def test_tool_servers_on_prime_runtimes_beside_a_prime_workspace_get_vms():
         toolset("search"),  # the evaluator
         toolset("files", colocated=True, runtime=ATLAS),  # the workspace
         toolset("remote", url="https://tools.example/mcp"),
-        toolset("gym", service="tools"),  # a Compose service
+        toolset("gym", service="tools"),  # a named task service
         toolset("local", runtime=DockerConfig()),  # a published port
     ]
     vms = private_network.tool_vms
@@ -68,7 +69,7 @@ def test_the_deployment_joins_tool_vms_over_a_private_network():
     )
     spec = vf.ComposeSpec("task")
     assert isinstance(
-        _deployment_strategy(None, PrimeBackend, spec), _ContainerDeployment
+        _deployment_strategy(None, DockerBackend, spec), _ContainerDeployment
     )
 
 
@@ -236,10 +237,10 @@ def test_a_tool_server_on_its_own_vm_is_reached_by_its_lan_name(monkeypatch):
 
 
 @pytest.mark.parametrize("service", ["main", "forth"])
-def test_an_explicit_service_names_only_a_compose_service(monkeypatch, service):
-    # The workspace and another server's VM are deployment targets, not services.
+def test_an_explicit_service_needs_a_task_service_spec(monkeypatch, service):
+    # Without a service spec, these are targets for independent tool placement.
     runtime = SimpleNamespace(is_local=False, host_url=lambda url: url)
-    with pytest.raises(ToolsetError, match="Compose services define it"):
+    with pytest.raises(ToolsetError, match="services define it"):
         served_url(
             monkeypatch,
             toolset("echo", service=service),

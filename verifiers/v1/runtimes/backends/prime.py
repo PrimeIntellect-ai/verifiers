@@ -187,7 +187,6 @@ class PrimeProcess(RuntimeProcess):
 
 class PrimeBackend(RuntimeBackend):
     SUPPORTS_TASK_IMAGES: ClassVar[bool] = True
-    SUPPORTS_COMPOSE: ClassVar[bool] = True
     SUPPORTS_USER_SWITCHING: ClassVar[bool] = True
 
     def __init__(self, config: PrimeConfig, name: str | None = None) -> None:
@@ -273,12 +272,18 @@ class PrimeBackend(RuntimeBackend):
                     self.config.image,
                     self.info.id,
                 )
-            await self._client.wait_for_creation(self.info.id, max_attempts=180)
+            await self._client.wait_for_creation(self.info.id, max_attempts=900)
             logger.info(
                 "prime: sandbox %s up (image=%s)", self.info.id, self.config.image
             )
             await self._client.execute_command(
                 self.info.id, f"mkdir -p {shlex.quote(self.config.workdir)}"
+            )
+            # Imported image filesystems may not map the VM's generated hostname.
+            await self._client.execute_command(
+                self.info.id,
+                'getent hosts "$(cat /proc/sys/kernel/hostname)" >/dev/null || '
+                'printf "127.0.1.1 %s\\n" "$(cat /proc/sys/kernel/hostname)" >> /etc/hosts',
             )
         except (
             Exception
