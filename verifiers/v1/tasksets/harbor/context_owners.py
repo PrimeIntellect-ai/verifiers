@@ -8,8 +8,8 @@ owning them, fails in the box and not under Docker.
 
 `context_files` lists, from the task's Dockerfile, each file the final stage copied from
 the context, where it landed and the owner the context gave it; `restore_owners` gives
-those still carrying that owner back to root. Files a later `RUN` passes to `chown` are
-left alone, since the Dockerfile set their owner itself, and so is anything the context
+those still carrying that owner back to root. Files a later `RUN` (or a context script
+it runs) passes to `chown` are left alone, since the Dockerfile set their owner itself, and so is anything the context
 did not hold (created later under the same uid).
 """
 
@@ -108,6 +108,24 @@ def context_files(dockerfile: Path) -> list[tuple[str, bool, int, int]]:
                 elif path.is_file():
                     landed = posixpath.join(target, path.name) if many else target
                     copies.append((index, str(path), landed))
+    # What a RUN executes includes the context scripts it calls (`RUN bash
+    # /tmp/setup.sh`, where setup.sh hands /app to the agent): their text counts too.
+    scripts = {
+        landed: source
+        for _, source, landed in copies
+        if os.path.isfile(source) and os.path.getsize(source) < 1_000_000
+    }
+
+    def executed(arguments: str) -> str:
+        text = [arguments]
+        for landed, source in scripts.items():
+            if landed in arguments or re.search(
+                rf"(^|[\s/]){re.escape(posixpath.basename(landed))}(\s|$|;|&)",
+                arguments,
+            ):
+                text.append(Path(source).read_text(errors="replace"))
+        return "\n".join(text)
+
     owned = []
     for index, source, landed in copies:
         landed = posixpath.normpath(landed)
@@ -115,7 +133,7 @@ def context_files(dockerfile: Path) -> list[tuple[str, bool, int, int]]:
             path
             for keyword, arguments in steps[index + 1 :]
             if keyword == "RUN"
-            for path in _chowned(arguments)
+            for path in _chowned(executed(arguments))
         ]
         if any(landed == p or landed.startswith(p.rstrip("/") + "/") for p in later):
             continue

@@ -32,3 +32,18 @@ def test_the_final_stages_context_copies_are_listed_with_their_owner(tmp_path):
         ("/opt/setup.sh", True, *owner),
         ("/opt/seeded.txt", True, *owner),
     ]
+
+
+def test_files_a_called_script_chowns_keep_their_owner(tmp_path):
+    """A RUN that calls a context script handing /app to the agent sets those owners
+    itself, as the image's own build does: they are left alone."""
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "main.rs").write_text("x")
+    (tmp_path / "setup.sh").write_text("useradd agent\nchown -R agent:agent /app\n")
+    (tmp_path / "Dockerfile").write_text(
+        "FROM rust\nCOPY app/ /app/\nCOPY setup.sh /tmp/setup.sh\n"
+        "RUN bash /tmp/setup.sh && rm /tmp/setup.sh\n"
+    )
+    assert [path for path, *_ in context_files(tmp_path / "Dockerfile")] == [
+        "/tmp/setup.sh"
+    ]
