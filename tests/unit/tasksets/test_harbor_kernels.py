@@ -66,7 +66,15 @@ def test_a_verifier_table_naming_only_its_image_is_sized_like_the_environment(
     )
     data = harbor.parse_task(task, 0, harbor.HarborConfig())
     assert data.verifier_image == "python:3.12-slim"
+    # The parsed task keeps what it declares, so its key does not move ...
     assert data.verifier.resources.model_dump() == {
+        "cpu": 2,
+        "memory": None,
+        "gpu": None,
+        "disk": None,
+    }
+    # ... and the verifier's box takes the environment's sizes for the rest.
+    assert harbor.verifier_box_data(data).resources.model_dump() == {
         "cpu": 2,
         "memory": 7.0,
         "gpu": None,

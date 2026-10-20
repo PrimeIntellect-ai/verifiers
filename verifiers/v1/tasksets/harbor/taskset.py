@@ -767,6 +767,20 @@ def verifier_box_data(data: HarborData) -> HarborData:
     if verifier is None:
         raise TaskError(f"task {data.name!r} declares no separate verifier")
     fresh = verifier.fresh_copy
+    # A size a declared environment leaves unset is unbounded under Harbor's Docker,
+    # never smaller than the agent's box; a provider's default (one small CPU) would
+    # starve a grader the task sized for its environment, so an unset size is the
+    # task's `[environment]` one. Resolved here, for the box, so the task's own data
+    # (and its key) stays as parsed.
+    sized = TaskResources(
+        **{
+            field: getattr(verifier.resources, field)
+            if getattr(verifier.resources, field) is not None
+            else getattr(data.resources, field)
+            for field in ("cpu", "memory", "disk")
+        },
+        gpu=verifier.resources.gpu,
+    )
     return data.model_copy(
         update={
             "name": f"{data.name} (verifier)",
@@ -774,7 +788,7 @@ def verifier_box_data(data: HarborData) -> HarborData:
             if data.verifier_image is not None
             else data.image,
             "workdir": data.workdir if fresh else verifier.workdir,
-            "resources": data.resources if fresh else verifier.resources,
+            "resources": data.resources if fresh else sized,
             "upload_environment": data.upload_environment
             if data.verifier_image is None
             else False,
@@ -1258,24 +1272,12 @@ def parse_verifier_environment(
         )
 
     network = parsed.verifier.explicit_phase_policy() or environment.resolve_baseline()
-    # A declared environment states its own resources. One it leaves unset is unbounded
-    # under Harbor's Docker, never smaller than the agent's box; a provider's default
-    # (one small CPU) would starve a grader the task sized for its environment, so an
-    # unset size is the task's `[environment]` one. A table that only names the image
-    # (one pinned from a `tests/` build, where Harbor grades in a copy of
-    # `[environment]`) thereby gets that copy's resources.
-    sized = environment.model_copy(
-        update={
-            field: getattr(parsed.environment, field)
-            for field in ("cpus", "memory_mb", "storage_mb")
-            if getattr(environment, field) is None
-        }
-    )
     return VerifierConfig(
-        # A fresh copy is the task's environment, so it keeps whatever the agent box
-        # resolved to.
+        # A declared environment states its own resources; what it leaves out is filled
+        # when the verifier's box is built (`verifier_box_data`). A fresh copy is the
+        # task's environment, so it keeps whatever the agent box resolved to.
         resources=(
-            task_resources(sized, harbor_config.resource_multiplier)
+            task_resources(environment, harbor_config.resource_multiplier)
             if declared
             else TaskResources()
         ),
