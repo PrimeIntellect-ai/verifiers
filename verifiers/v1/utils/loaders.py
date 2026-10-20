@@ -52,7 +52,8 @@ def narrow_plugin_field(
 ) -> None:
     raw = data.get(field)
     if isinstance(raw, BaseConfig):
-        raw = raw.model_dump()
+        # Unset fields take the concrete type's defaults, which may narrow the base's.
+        raw = raw.model_dump(exclude_unset=True)
     raw = dict(raw or {})
     ident = raw.get("id") or default_id
     if not ident:

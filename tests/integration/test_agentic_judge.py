@@ -1,21 +1,20 @@
-"""The agentic judge envs verify a solver empirically in a sandbox: `shared-agentic-judge`
-reuses the solver's restricted box, `agentic-judge` restores the solver's artifact in a
-fresh box."""
+"""Agentic judging uses shared or isolated scoring to verify a solver in a sandbox."""
 
 
-async def test_env_id_shared_agentic_judge(run, tmp_path):
+async def test_agentic_judge_shared_verifier(run, tmp_path):
     """The shared agentic judge provisions one restricted solver-owned box and
     safely reuses it for the judge's empirical verification."""
     policy = tmp_path / "judge_policy.txt"
     policy.write_text("Check EMPIRICALLY that the agent echoed the word back.")
     (episode,) = await run(
-        "echo-v1",
+        "echo",
         harness=None,
         env={
-            "id": "shared-agentic-judge",
+            "id": "agentic-judge",
             "solver": {
                 "harness": {"id": "bash"},
-                "runtime": {"type": "docker", "block": ["example.com"]},
+                "runtime": {"type": "prime", "block": ["example.com"]},
+                "scoring": {"mode": "shared"},
             },
             "judge": {
                 "harness": {"id": "bash"},
@@ -31,6 +30,7 @@ async def test_env_id_shared_agentic_judge(run, tmp_path):
         rollout_timeout=600,
     )
     traces = episode.traces
+    assert all(trace.num_branches == 1 for trace in traces)
     assert sorted(t.agent.name for t in traces) == ["judge", "solver"]
     (solver,) = [t for t in traces if t.agent.name == "solver"]
     (judge,) = [t for t in traces if t.agent.name == "judge"]
@@ -53,13 +53,14 @@ async def test_env_id_agentic_judge(run, tmp_path):
         "Check EMPIRICALLY that answer.txt contains exactly the requested phrase."
     )
     (episode,) = await run(
-        "echo-agentic-v1",
+        "echo-agentic",
         harness=None,
         env={
             "id": "agentic-judge",
             "solver": {
                 "harness": {"id": "bash"},
-                "runtime": {"type": "docker", "block": ["example.com"]},
+                "runtime": {"type": "prime", "block": ["example.com"]},
+                "scoring": {"mode": "isolated"},
             },
             "judge": {
                 "harness": {"id": "bash"},
@@ -75,6 +76,7 @@ async def test_env_id_agentic_judge(run, tmp_path):
         rollout_timeout=600,
     )
     traces = episode.traces
+    assert all(trace.num_branches == 1 for trace in traces)
     assert sorted(t.agent.name for t in traces) == ["judge", "solver"]
     (solver,) = [t for t in traces if t.agent.name == "solver"]
     (judge,) = [t for t in traces if t.agent.name == "judge"]
@@ -82,7 +84,7 @@ async def test_env_id_agentic_judge(run, tmp_path):
     assert judge.agent.trainable is False
     assert solver.agent.runtime is not None and judge.agent.runtime is not None
     assert solver.agent.runtime.id != judge.agent.runtime.id
-    assert solver.agent.runtime.type == judge.agent.runtime.type == "docker"
+    assert solver.agent.runtime.type == judge.agent.runtime.type == "prime"
     assert "/app/answer.txt" in solver.state.artifacts
     assert solver.rewards["wrote_phrase"].score == 1.0
     assert solver.rewards["wrote_phrase"].weight == 0.5

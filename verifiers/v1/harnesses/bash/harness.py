@@ -1,4 +1,5 @@
 import os
+from typing import Literal
 
 from pydantic import PositiveInt
 from pydantic_config import BaseConfig
@@ -38,6 +39,7 @@ class CompactionConfig(BaseConfig):
 
 
 class BashHarnessConfig(HarnessConfig):
+    dialect: Literal["chat_completions"] = "chat_completions"
     edit: bool = True
     """Offer the local `edit` tool (single-occurrence string replacement in a file) alongside
     `bash`. On by default; set `--env.agent.harness.edit false` for a bash-only agent."""
@@ -79,9 +81,20 @@ class BashHarness(Harness[BashHarnessConfig]):
             fragments.append(EDIT_SYSTEM_PROMPT)
         if self.config.search:
             fragments.append(SEARCH_PROMPT)
-        system_prompt = "\n\n".join(
-            p for p in (" ".join(fragments), system_prompt) if p
-        )
+        harness_prompt = " ".join(fragments)
+        system_prompt = "\n\n".join(p for p in (harness_prompt, system_prompt) if p)
+        # Default resume replays the transcript. If there was no task system
+        # prompt, that transcript already contains this harness prompt.
+        if (
+            data.system_prompt is None
+            and prompt is not None
+            and not isinstance(prompt, str)
+            and any(
+                message.role == "system" and message.content == harness_prompt
+                for message in prompt
+            )
+        ):
+            system_prompt = None
         env = {**self.config.resolved_env}
         args = ["--bash"]
         if tool_interception_url:

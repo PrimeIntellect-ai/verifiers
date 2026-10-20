@@ -61,6 +61,7 @@ from verifiers.v1.errors import (
     ToolsetError,
     TunnelError,
 )
+from verifiers.v1.grading import grade_submission
 from verifiers.v1.graph import MessageNode
 from verifiers.v1.harness import Harness, HarnessSession
 from verifiers.v1.judge import Judge, JudgeResponse, JudgeView
@@ -79,9 +80,9 @@ from verifiers.v1.mcp import (
     ToolsetConfig,
 )
 from verifiers.v1.runtimes import (
-    ApptainerConfig,
+    CustomRuntimeConfig,
     DockerConfig,
-    PodmanConfig,
+    NetworkPolicyConfig,
     PrimeConfig,
     ProgramResult,
     Runtime,
@@ -137,6 +138,7 @@ from verifiers.v1.types import (
     Tool,
     ToolCall,
     ToolMessage,
+    TopLogprobs,
     TurnTokens,
     Usage,
     UserMessage,
@@ -259,6 +261,7 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "Branch",
     "TurnTokens",
     "SamplingMask",
+    "TopLogprobs",
     "Timing",
     "TimeSpan",
     "TimeSplit",
@@ -314,8 +317,8 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "ProgramResult",
     "SubprocessConfig",
     "DockerConfig",
-    "PodmanConfig",
-    "ApptainerConfig",
+    "CustomRuntimeConfig",
+    "NetworkPolicyConfig",
     "PrimeConfig",
     "Env",
     "SingleAgentEnv",
@@ -371,6 +374,7 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "PATCH_CAP_BYTES",
     "capture_patch",
     "resolve_head",
+    "grade_submission",
     # grading artifacts
     "ARTIFACTS_DIR",
     "Artifact",
@@ -396,3 +400,19 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
 # silent until an app opts in: a NullHandler on the package root absorbs records
 # so nothing is emitted (and no "no handler" warning) unless handlers are added.
 _logging.getLogger(__name__).addHandler(_logging.NullHandler())
+
+from verifiers.v1.runtimes.compose import ComposeSpec
+from verifiers.v1.runtimes.deployment import (
+    Deployment,
+    DeploymentConfig,
+)
+
+__all__ += [
+    "ComposeSpec",
+    "Deployment",
+    "DeploymentConfig",
+]
+
+from verifiers.v1.configs.scoring import ScoringConfig
+
+__all__ += ["ScoringConfig"]

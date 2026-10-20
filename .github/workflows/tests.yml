@@ -32,6 +32,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
+      PRIME_API_KEY: ${{ secrets.PRIME_API_KEY }}
+      PRIME_TEAM_ID: ${{ secrets.PRIME_TEAM_ID }}
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
     strategy:
       fail-fast: false
@@ -100,6 +102,16 @@ jobs:
             tests: tests/integration/test_agent_user.py
           - behavior: Network Policy
             tests: tests/integration/test_network_policy.py
+          - behavior: Compose
+            tests: tests/integration/test_compose_scoring.py
+          - behavior: Tool VMs
+            tests: tests/integration/test_tool_vms.py
+          - behavior: Sampling
+            tests: tests/integration/test_sampling.py
+          - behavior: Parallel
+            tests: tests/integration/test_parallel.py
+          - behavior: Scoring Network
+            tests: tests/integration/test_scoring_network.py
           - behavior: Skills
             tests: tests/integration/test_skills.py
           - behavior: Limits
@@ -163,7 +175,7 @@ jobs:
 
       - name: Run integration tests
         run: |
-          uv run pytest ${{ matrix.tests }} -vv -n 8 --dist worksteal -m "not podman and not apptainer and not modal and not e2b" --durations=25 --junitxml=test-results.xml
+          uv run pytest ${{ matrix.tests }} -vv -n 8 --dist worksteal --durations=25 --junitxml=test-results.xml
 
       - name: Upload test results
         if: always()

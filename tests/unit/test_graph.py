@@ -5,6 +5,7 @@ import pytest
 
 import verifiers.v1 as vf
 from verifiers.v1 import graph
+from verifiers.v1.harnesses.utils.replay import drop_blank_text, strip_text
 from verifiers.v1.types import TurnTokens
 
 
@@ -343,6 +344,96 @@ def test_reasoning_content_participates_in_graph_prefix_matching():
         if isinstance(node.message, vf.AssistantMessage) and node.message.tool_calls
     ]
     assert len(tool_call_nodes) == 2
+
+
+def _replayed_trace(replay_view, sampled, replayed, dialect=None):
+    """One tool turn sampled as `sampled` and re-sent as `replayed` on the next turn."""
+    trace = vf.Trace(
+        agent=vf.AgentInfo(config=vf.AgentConfig()),
+        task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt="go")),
+    )
+    trace._replay_view = replay_view
+    user = vf.UserMessage(content="go")
+    call = vf.ToolCall(id="call_0", name="lookup", arguments="{}")
+    graph.prepare_turn(trace, [user], dialect=dialect).commit(
+        _response(vf.AssistantMessage(tool_calls=[call], **sampled))
+    )
+    graph.prepare_turn(
+        trace,
+        [
+            user,
+            vf.AssistantMessage(tool_calls=[call], **replayed),
+            vf.ToolMessage(content="result", tool_call_id="call_0"),
+        ],
+        dialect=dialect,
+    ).commit(_response(vf.AssistantMessage(content="done")))
+    return trace
+
+
+@pytest.mark.parametrize(
+    "view,sampled,replayed",
+    [
+        (drop_blank_text, {"content": "\n\n"}, {"content": None}),
+        (
+            drop_blank_text,
+            {"content": "\n\n", "reasoning_content": "plan"},
+            {"reasoning_content": "plan"},
+        ),
+        (strip_text, {"content": "Calling it.\n\n"}, {"content": "Calling it."}),
+        (strip_text, {"content": None}, {"reasoning_content": " "}),
+        (
+            strip_text,
+            {"content": "\n\n"},
+            {
+                "reasoning_content": " ",
+                "provider_state": [{"type": "thinking", "thinking": " "}],
+            },
+        ),
+    ],
+)
+def test_replay_view_matches_cosmetically_rewritten_turns(view, sampled, replayed):
+    assert _replayed_trace(None, sampled, replayed).num_branches == 2
+    trace = _replayed_trace(lambda message, _: view(message), sampled, replayed)
+    assert trace.num_branches == 1
+
+
+@pytest.mark.parametrize(
+    "dialect,branches", [("chat_completions", 1), ("responses", 2)]
+)
+def test_replay_view_receives_the_request_dialect(dialect, branches):
+    def view(message, dialect):
+        return drop_blank_text(message) if dialect == "chat_completions" else message
+
+    trace = _replayed_trace(view, {"content": "\n\n"}, {"content": None}, dialect)
+    assert trace.num_branches == branches
+
+
+def test_overlapping_requests_keep_their_own_dialect():
+    trace = vf.Trace(
+        agent=vf.AgentInfo(config=vf.AgentConfig()),
+        task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt="go")),
+    )
+    trace._replay_view = lambda message, dialect: (
+        drop_blank_text(message) if dialect == "chat_completions" else message
+    )
+    user = vf.UserMessage(content="go")
+    call = vf.ToolCall(id="call_0", name="lookup", arguments="{}")
+    graph.prepare_turn(trace, [user], dialect="chat_completions").commit(
+        _response(vf.AssistantMessage(content="\n\n", tool_calls=[call]))
+    )
+    replay = [
+        user,
+        vf.AssistantMessage(tool_calls=[call]),
+        vf.ToolMessage(content="result", tool_call_id="call_0"),
+    ]
+    chat = graph.prepare_turn(trace, replay, dialect="chat_completions")
+    responses = graph.prepare_turn(trace, replay, dialect="responses")
+    responses.commit(_response(vf.AssistantMessage(content="other")))
+    done = chat.commit(_response(vf.AssistantMessage(content="done")))
+
+    assert chat.prefix_node_ids == [0, 1]
+    assert responses.prefix_node_ids == [0]
+    assert graph.path(trace, done)[1] == trace.nodes[1].message
 
 
 @pytest.mark.parametrize("same_tools", [False, True])
