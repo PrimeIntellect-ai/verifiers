@@ -36,6 +36,7 @@ class HarborMCPToolset(Toolset[HarborMCPConfig]):
                         "VF_CONFIG",
                         "VF_STATE_URL",
                         "VF_STATE_SECRET",
+                        "VF_PARENT_PID",
                         "MCP_HOST",
                         "MCP_PORT",
                         "MCP_PORT_FILE",

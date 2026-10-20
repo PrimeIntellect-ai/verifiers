@@ -110,12 +110,19 @@ def _request_query(name: str) -> str | None:
 
 
 def _die_with_parent() -> None:
-    """On Linux, prevent a server from outliving its launcher."""
+    """On Linux, prevent a server from outliving its launcher.
+
+    The death signal only covers a parent that dies after it is armed, and the server arms it
+    after its imports. A launcher that names itself in `VF_PARENT_PID` is checked once armed:
+    if it already died, the server was reparented and exits instead of serving no one."""
     import ctypes
     import signal
 
     with contextlib.suppress(Exception):
         ctypes.CDLL(None).prctl(1, signal.SIGKILL)  # PR_SET_PDEATHSIG
+    parent = os.environ.get("VF_PARENT_PID")
+    if parent and os.getppid() != int(parent):
+        raise SystemExit(f"launcher {parent} exited before the server started")
 
 
 def _import_ref(ref: str) -> object:
