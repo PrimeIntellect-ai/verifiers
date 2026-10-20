@@ -50,8 +50,7 @@ fi
 class PiHarnessConfig(HarnessConfig):
     version: PinnedVersion = "0.86.1"
     """Pi release to install, pinned for reproducibility."""
-    transport: DialectName = "chat_completions"
-    """Model API transport."""
+    dialect: DialectName = "chat_completions"
     supports_developer_role: bool | None = None
     """Override Pi's chat-completions role detection for custom model endpoints."""
 
@@ -118,10 +117,10 @@ class PiHarness(ACPHarness[PiHarnessConfig]):
             "chat_completions": "openai-completions",
             "responses": "openai-responses",
             "anthropic_messages": "anthropic-messages",
-        }[self.config.transport]
+        }[self.config.dialect]
         base_url = (
             endpoint.removesuffix("/v1")
-            if self.config.transport == "anthropic_messages"
+            if self.config.dialect == "anthropic_messages"
             else endpoint
         )
         model_config = {
@@ -130,12 +129,12 @@ class PiHarness(ACPHarness[PiHarnessConfig]):
             "input": ["text", "image"],
             **(
                 {"compat": {"sessionAffinityFormat": "openai-nosession"}}
-                if self.config.transport == "responses"
+                if self.config.dialect == "responses"
                 else {}
             ),
         }
         if (
-            self.config.transport == "chat_completions"
+            self.config.dialect == "chat_completions"
             and self.config.supports_developer_role is not None
         ):
             model_config["compat"] = {

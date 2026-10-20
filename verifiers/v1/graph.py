@@ -23,7 +23,7 @@ from __future__ import annotations
 import hashlib
 import json
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -32,6 +32,7 @@ from pydantic import (
     ConfigDict,
     Field,
     FieldSerializationInfo,
+    ValidationInfo,
     field_serializer,
     field_validator,
 )
@@ -55,6 +56,7 @@ from verifiers.v1.types import (
     TextContentPart,
     Tool,
     ToolMessage,
+    TopLogprobs,
     WeightVersionSpan,
 )
 
@@ -175,6 +177,9 @@ class MessageNode(BaseModel):
     completion, as vLLM returns them). Assistant nodes only; None when the engine labels
     none."""
 
+    top_logprobs: SkipJsonSchema[TopLogprobs | None] = None
+    """Sampler top-k probabilities for sampled tokens; unnormalized over the head."""
+
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     @property
@@ -225,26 +230,28 @@ class MessageNode(BaseModel):
             return value
         raise ValueError(f"cannot build routing field from {type(value).__name__}")
 
-    @field_serializer("sampling_mask")
-    def serialize_sampling_mask(self, mask: SamplingMask | None) -> dict | None:
-        if mask is None:
+    @field_serializer("sampling_mask", "top_logprobs")
+    def serialize_sampling_arrays(
+        self, payload: SamplingMask | TopLogprobs | None
+    ) -> dict | None:
+        if payload is None:
             return None
         return {
-            "ids": _encode_ndarray(mask.ids),
-            "counts": _encode_ndarray(mask.counts),
+            field.name: _encode_ndarray(getattr(payload, field.name))
+            for field in fields(payload)
         }
 
-    @field_validator("sampling_mask", mode="before")
+    @field_validator("sampling_mask", "top_logprobs", mode="before")
     @classmethod
-    def deserialize_sampling_mask(cls, value: Any) -> SamplingMask | None:
-        if value is None or isinstance(value, SamplingMask):
+    def deserialize_sampling_arrays(
+        cls, value: Any, info: ValidationInfo
+    ) -> SamplingMask | TopLogprobs | None:
+        kind = SamplingMask if info.field_name == "sampling_mask" else TopLogprobs
+        if value is None or isinstance(value, kind):
             return value
         if isinstance(value, dict):
-            return SamplingMask(
-                ids=_decode_ndarray(value["ids"]),
-                counts=_decode_ndarray(value["counts"]),
-            )
-        raise TypeError(f"cannot build SamplingMask from {type(value).__name__}")
+            return kind(**{key: _decode_ndarray(array) for key, array in value.items()})
+        raise TypeError(f"cannot build {kind.__name__} from {type(value).__name__}")
 
 
 def _canonical_tool_arguments(arguments: str) -> str:
@@ -835,6 +842,23 @@ def _project_prompt_attribution(
     return projected_spans, projected_is_content
 
 
+def _attribute_top_logprobs(
+    trace: Trace, assistant_id: int, payload: TopLogprobs | None
+) -> None:
+    """Attach a completion-aligned top-k sampling head to the assistant node."""
+    if payload is None:
+        return
+    node = trace.nodes[assistant_id]
+    if (
+        len(payload.counts) != sum(node.mask)
+        or (payload.counts < 0).any()
+        or int(payload.counts.sum()) != len(payload.ids)
+        or len(payload.ids) != len(payload.logprobs)
+    ):
+        raise ValueError("Top logprobs must align with every sampled node token")
+    node.top_logprobs = payload
+
+
 def _commit_turn(turn: PendingTurn, response: Response) -> int:
     trace = turn.trace
     prompt = turn.prompt
@@ -1086,6 +1110,9 @@ def _commit_turn(turn: PendingTurn, response: Response) -> int:
     # Sampling masks are completion-aligned, so only the sampled node carries them.
     _attribute_sampling_mask(
         trace, assistant_id, tokens.sampling_mask if tokens else None
+    )
+    _attribute_top_logprobs(
+        trace, assistant_id, tokens.top_logprobs if tokens else None
     )
 
     return assistant_id

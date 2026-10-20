@@ -32,6 +32,7 @@ from verifiers.v1.types import (
     SamplingMask,
     Tool,
     ToolMessage,
+    TopLogprobs,
     Usage,
     content_text,
 )
@@ -45,6 +46,7 @@ EXCLUDE_FIELDS: dict = {
         "__all__": {
             "routed_experts",
             "sampling_mask",
+            "top_logprobs",
         }
     }
 }
@@ -373,6 +375,24 @@ class Branch(BaseModel):
             else np.zeros(0, dtype=np.int32)
         )
         return SamplingMask(ids=ids, counts=np.concatenate(counts_parts))
+
+    @property
+    def top_logprobs(self) -> TopLogprobs | None:
+        """Top-k sampling heads aligned to this branch's token ids."""
+        heads = [n.top_logprobs for n in self.nodes if n.top_logprobs is not None]
+        if not heads:
+            return None
+        counts = []
+        for node in self.nodes:
+            rows = np.zeros(len(node.mask), dtype=np.int32)
+            if node.top_logprobs is not None:
+                rows[np.nonzero(node.mask)[0]] = node.top_logprobs.counts
+            counts.append(rows)
+        return TopLogprobs(
+            ids=np.concatenate([head.ids for head in heads]),
+            logprobs=np.concatenate([head.logprobs for head in heads]),
+            counts=np.concatenate(counts),
+        )
 
     @property
     def usage(self) -> Usage | None:

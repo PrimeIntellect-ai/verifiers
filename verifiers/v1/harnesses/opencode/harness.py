@@ -30,8 +30,7 @@ npm install --prefix "$VF_OPENCODE_DIR" --no-audit --no-fund --omit=dev \
 class OpenCodeHarnessConfig(HarnessConfig):
     version: PinnedVersion = "2.0.26"
     """OpenCode 2 release to install, pinned for reproducibility."""
-    transport: DialectName = "chat_completions"
-    """Model API transport."""
+    dialect: DialectName = "chat_completions"
     disabled_tools: list[str] | None = None
     """OpenCode permission actions to deny, such as shell, read, or edit."""
 
@@ -87,7 +86,7 @@ class OpenCodeHarness(ACPHarness[OpenCodeHarnessConfig]):
             "chat_completions": "openai-compatible",
             "responses": "openai-compatible/responses",
             "anthropic_messages": "anthropic-compatible",
-        }[self.config.transport]
+        }[self.config.dialect]
         settings = {
             "model": "intercept/model",
             "providers": {

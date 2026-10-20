@@ -1,6 +1,6 @@
 """duet: the smallest multi-agent environment — two roles echo the same phrase.
 
-The multi-agent fixture for the v1 integration suite (resolved by id `duet-v1`): an
+The multi-agent fixture for the v1 integration suite (resolved by id `duet`): an
 `Env` subclass exported alongside its taskset, with two roles ("a", a trainable
 seat on the run's model; "b", pinned untrainable), a `run()` that fans both out on
 the task, and a `finalize()` that records a sibling-dependent signal. One episode
@@ -9,7 +9,7 @@ should land one record carrying two role-stamped traces.
 
 import asyncio
 
-from echo_v1 import EchoTaskset, lenient_match
+from echo import EchoTaskset, lenient_match
 
 import verifiers.v1 as vf
 

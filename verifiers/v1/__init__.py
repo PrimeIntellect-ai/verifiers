@@ -81,9 +81,9 @@ from verifiers.v1.mcp import (
 )
 from verifiers.v1.routing import RoutingData
 from verifiers.v1.runtimes import (
-    ApptainerConfig,
+    CustomRuntimeConfig,
     DockerConfig,
-    PodmanConfig,
+    NetworkPolicyConfig,
     PrimeConfig,
     ProgramResult,
     Runtime,
@@ -139,6 +139,7 @@ from verifiers.v1.types import (
     Tool,
     ToolCall,
     ToolMessage,
+    TopLogprobs,
     TurnTokens,
     Usage,
     UserMessage,
@@ -262,6 +263,7 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "TurnTokens",
     "SamplingMask",
     "RoutingData",
+    "TopLogprobs",
     "Timing",
     "TimeSpan",
     "TimeSplit",
@@ -317,8 +319,8 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "ProgramResult",
     "SubprocessConfig",
     "DockerConfig",
-    "PodmanConfig",
-    "ApptainerConfig",
+    "CustomRuntimeConfig",
+    "NetworkPolicyConfig",
     "PrimeConfig",
     "Env",
     "SingleAgentEnv",

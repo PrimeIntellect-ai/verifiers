@@ -53,15 +53,15 @@ If you don't need custom user-facing settings, you can omit the config subclass.
 Following the standard [package setup](building-environments.md#create-a-package), a taskset package needs just two files:
 
 ```text
-environments/addition_v1/src/addition_v1/
+environments/addition/src/addition/
 ├── __init__.py  # exports the taskset entry point
 └── taskset.py   # defines the data, tasks, and taskset
 ```
 
-Re-export the taskset class in `src/addition_v1/__init__.py` so verifiers can discover and load it:
+Re-export the taskset class in `src/addition/__init__.py` so verifiers can discover and load it:
 
 ```python
-from addition_v1.taskset import AdditionTaskset
+from addition.taskset import AdditionTaskset
 
 __all__ = ["AdditionTaskset"]
 ```
@@ -69,8 +69,8 @@ __all__ = ["AdditionTaskset"]
 Then install the package into the Python environment running the CLI and verify that it loads:
 
 ```bash
-uv pip install -e environments/addition_v1
-uv run vf-eval addition-v1 --dry-run
+uv pip install -e environments/addition
+uv run vf-eval addition --dry-run
 ```
 
 ## Data and configuration
@@ -271,7 +271,7 @@ A toolset's config controls where the MCP server runs:
 
 - **Host subprocess (default)** — launches the server as a local subprocess with its own filesystem.
 - **`colocated = true`** (per-task toolsets only) — runs the tool server inside the agent's own runtime container so tools share the agent's filesystem directly.
-- **`service = "<name>"`** (per-task toolsets on Prime or Modal VM Compose) — runs the tool server inside a named service from the task's Compose stack. The harness reaches it over the Compose network by service name, so the tool server can front internal services that the workspace cannot reach directly.
+- **`service = "<name>"`** (per-task toolsets on Prime VM Compose) — runs the tool server inside a named service from the task's Compose stack. The harness reaches it over the Compose network by service name, so the tool server can front internal services that the workspace cannot reach directly.
 - **`runtime = { type = "docker", ... }`** — runs the tool server in its own dedicated container.
 - **`url = "https://.../mcp"`** — connects to an already-running streamable-HTTP MCP server instead of launching one.
 
@@ -433,7 +433,7 @@ When you want to inspect or rewrite traffic in flight without ending the rollout
 - **Request interception** can rewrite new user or tool messages before the model sees them (without adding or removing messages, altering tool definitions, or changing tool-call names and IDs).
 - **Response interception** can replace the assistant's text reply before it reaches the harness (replacement responses cannot carry tool calls).
 
-For ordinary network isolation, configure `TaskData.network_allow` and `TaskData.network_block`. If you want to block a specific tool call before it executes and return a synthetic tool result so the agent can keep going, the harness must declare `SUPPORTS_TOOL_INTERCEPTION = True` and check tool calls before running them; otherwise, use a `vf.Response` stop hook to halt the rollout before the harness executes the tool. See the bundled [`interception`](../environments/interception/interception/taskset.py) and [`bash_interception`](../environments/bash_interception/bash_interception/taskset.py) environments for complete working examples.
+For ordinary network isolation, configure `TaskData.network` (see [network policies](runtimes.md#network-policies)). If you want to block a specific tool call before it executes and return a synthetic tool result so the agent can keep going, the harness must declare `SUPPORTS_TOOL_INTERCEPTION = True` and check tool calls before running them; otherwise, use a `vf.Response` stop hook to halt the rollout before the harness executes the tool. See the bundled [`interception`](../environments/interception/interception/taskset.py) and [`bash_interception`](../environments/bash_interception/bash_interception/taskset.py) environments for complete working examples.
 
 ## Beyond one agent
 

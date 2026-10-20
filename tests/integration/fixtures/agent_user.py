@@ -1,4 +1,4 @@
-"""agent-user-v1: a scripted, model-free agent that runs as a non-root user and tries root actions.
+"""agent-user: a scripted, model-free agent that runs as a non-root user and tries root actions.
 
 Root setup creates the task's `agent_user`, plants a root-only secret, and prepares a uv
 script; the workdir stays root-owned, like a typical image WORKDIR. The scripted harness runs
@@ -90,7 +90,7 @@ class ScriptedAgentUserHarness(Harness[HarnessConfig]):
             "uv_script": script[-1],
             "read_secret_api": read_api,
         }
-        return await runtime.run_program(["sh", "-c", PROBE], {})
+        return await runtime.run(["sh", "-c", PROBE], {})
 
 
 class AgentUserData(vf.TaskData):

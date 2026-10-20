@@ -22,7 +22,7 @@ from verifiers.v1.runtimes import (
     RuntimeBackend,
     make_backend,
 )
-from verifiers.v1.runtimes.prime import leased_client
+from verifiers.v1.runtimes.backends.prime import leased_client
 from verifiers.v1.utils.aio import run_shielded
 
 logger = logging.getLogger(__name__)

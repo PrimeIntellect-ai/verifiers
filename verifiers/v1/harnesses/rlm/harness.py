@@ -67,6 +67,7 @@ class CompactionConfig(BaseConfig):
 
 
 class RLMHarnessConfig(HarnessConfig):
+    dialect: Literal["chat_completions"] = "chat_completions"
     version: str = Field(
         default="77c3489d1a7f918b75c31e195480ed3556af60a5", min_length=1
     )
