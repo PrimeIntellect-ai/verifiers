@@ -86,6 +86,16 @@ load the SDK's calls queue in the process for tens of seconds before they are se
 """Wait for a checkpoint to become restorable. An incremental checkpoint takes seconds;
 the first of a box holding several GB can take minutes."""
 
+IMAGE_RUN = (
+    '{ m=$(mktemp -d) && mount --bind / "$m" && cp -an "$m/run/." /run/; '
+    'umount "$m"; rmdir "$m"; } >/dev/null 2>&1;'
+)
+"""Copy what the image keeps under /run (a service's socket directory, a checker's
+private work directory, made at build time) into the tmpfs Prime mounts there, as a
+container started from the image would have it: the image's /run is still on the root
+filesystem, under the mount, and a non-recursive bind of / reaches it. Files already
+in the tmpfs are kept; a box without `mount` keeps the empty tmpfs."""
+
 _CHECKPOINT_DELETE_DEADLINE_SECONDS = 300
 """How long a checkpoint delete keeps retrying the platform's 409. It refuses while a
 box started from the checkpoint, or the checkpoint's source box, still runs, and boxes
@@ -638,13 +648,14 @@ class PrimeBackend(RuntimeBackend):
                     "workdir",
                     lambda: self._client.execute_command(
                         self.info.id,
-                        f"mkdir -p {shlex.quote(self.config.workdir)} && mkdir -p -m 1777 /run/lock"
-                        f" && {HOSTS_ENTRY}",
+                        f"{IMAGE_RUN} mkdir -p {shlex.quote(self.config.workdir)}"
+                        f" && mkdir -p -m 1777 /run/lock && {HOSTS_ENTRY}",
                         working_dir="/",
                     ),
                 )
-                # Prime boots /run as an empty tmpfs, including on checkpoint restore.
-                # Restore the standard lock directory before image service launchers run.
+                # Prime boots /run as an empty tmpfs, including on checkpoint restore,
+                # over what the image put there (`IMAGE_RUN` copies it back). Restore the
+                # standard lock directory before image service launchers run.
                 # Existing directories retain their permissions (mkdir -p -m only applies
                 # the mode when creating a directory). The box's own hostname resolves
                 # locally, as in Docker: Prime's /etc/hosts does not list it, so without a

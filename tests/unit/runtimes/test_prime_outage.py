@@ -377,7 +377,10 @@ async def test_unspecified_workdir_does_not_capture_root_login_directory(
             override is None
         )
         assert (
-            f"mkdir -p {expected} && mkdir -p -m 1777 /run/lock && {prime.HOSTS_ENTRY}",
+            (
+                f"{prime.IMAGE_RUN} mkdir -p {expected}"
+                f" && mkdir -p -m 1777 /run/lock && {prime.HOSTS_ENTRY}"
+            ),
             "/",
         ) in commands
     finally:
