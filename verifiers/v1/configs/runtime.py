@@ -247,7 +247,7 @@ class PrimeConfig(NetworkPolicyConfig):
     Each VM sees the volume head at creation;
     writes stay private until the SDK's `client.volumes.publish(sandbox_id, name)`
     finishes, before the VM stops. Verifiers never publishes or deletes volumes.
-    Requires an SDK with volume support. Artifact roots must stay outside mounts;
+    Artifact roots must stay outside mounts;
     mount paths cannot traverse symlinks or be moved. Compose is unsupported."""
 
     _validate_mounts = field_validator("mounts")(validate_mounts)

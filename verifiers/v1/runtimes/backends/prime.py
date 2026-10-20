@@ -158,10 +158,6 @@ class PrimeBackend(RuntimeBackend):
     async def start(self) -> None:
         from prime_sandboxes import APIError, CreateSandboxRequest
 
-        if self.config.mounts and "volumes" not in CreateSandboxRequest.model_fields:
-            raise RuntimeError(
-                "Prime volume mounts require a prime-sandboxes SDK with volume support"
-            )
         self._client = _lease_client()
         # Map the resources onto prime's API (minutes, split GPU; memory/disk are already
         # GB). gpu_type/region are only sent when set (else provider-chosen).
