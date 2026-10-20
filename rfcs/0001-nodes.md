@@ -84,7 +84,7 @@ vf.TaskData(
 ```
 
 - **`runtime`:** the fields that differ from the workspace's runtime. Everything else follows the workspace: labels, team, idle timeout. Setting `type` starts from that runtime's defaults instead. A node's `allow` / `block` replace the workspace's policy whole.
-- **`process`:** optional. It is a long-running process besides any tool server placed on the node, with a readiness check. Its environment reaches only that node. Without a `command`, a node packed as a Compose service runs its image's own; a machine of its own needs one.
+- **`process`:** optional. It is a long-running process besides any tool server placed on the node, with a readiness check. Its environment reaches only that node. Without a `command`, a node packed as a Compose service runs its image's own; a machine of its own needs one. Without a process, a node runs nothing of its own and idles.
 - **`reachable_from`:** the nodes that may open connections to this one. The framework adds the connections its own parts need: the harness to its tools, and to where those tools execute.
 - **`isolated`:** gives the node a machine of its own even when it could share one. forth-lang uses this for agent code.
 

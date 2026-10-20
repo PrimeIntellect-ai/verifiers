@@ -33,6 +33,8 @@ from verifiers.v1.runtimes import (
 
 WORKSPACE = "main"
 """The agent's workspace. Its runtime is the agent's runtime, resolved for the task."""
+IDLE = ("sh", "-c", "trap 'exit 0' TERM; while :; do sleep 3600 & wait $!; done")
+"""A packed node's command when it runs no process of its own."""
 HOST = "host"
 """The evaluator itself: no runtime is provisioned for it, and its egress is its own."""
 
@@ -67,6 +69,9 @@ class NodeConfig(BaseConfig):
     """Runtime fields that differ from the workspace's, such as `image`, `cpu` or
     `allow`. Setting `type` starts from that runtime's defaults instead."""
     process: ProcessConfig | None = None
+    """A long-running process of the node's own. Without one, the node runs nothing of
+    its own: a machine of its own, or a container that idles, for tool servers and
+    hooks."""
     reachable_from: list[str] = Field(default_factory=lambda: [WORKSPACE])
     """Nodes that may open connections to this one. The framework adds the connections
     its own parts need: the harness to its tools and to where they execute."""
@@ -433,6 +438,9 @@ def compose_project(topology: TopologyConfig, result: Plan) -> dict[str, Any]:
             service["working_dir"] = workdir
         process = topology.node(name).process
         if process is None:
+            # Nothing of its own runs, as on a machine of its own: the container idles
+            # for tool servers and hooks, whatever its image's own command would do.
+            service["command"] = list(IDLE)
             continue
         if process.command is not None:
             service["command"] = process.command

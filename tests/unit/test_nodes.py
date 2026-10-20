@@ -397,6 +397,12 @@ def test_a_packed_node_keeps_its_own_workdir_and_on_follows_the_workspace_rename
     services = compose_project(topology, plan(topology, workspace))["services"]
     assert services["db"]["working_dir"] == "/data"
     assert "working_dir" not in services["cache"]  # its image's own, not /workspace
+    # Without a process, it idles rather than run an image command that may exit.
+    assert services["cache"]["command"] == [
+        "sh",
+        "-c",
+        "trap 'exit 0' TERM; while :; do sleep 3600 & wait $$!; done",
+    ]
     assert services["web"]["working_dir"] == "/srv/app"  # the process's wins
     project = {"services": {"app": {}, "tools": {"image": "tools"}}}
     servers = topology_from(

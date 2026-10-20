@@ -126,12 +126,18 @@ async def test_nodes_under_the_workspace_s_policy_share_its_machine():
             command=serve, environment={"PORT": "8000"}, readiness=READY
         )
     )
+    # A node with no process idles, and runs the tool server placed on it.
     task = NodeTask(
-        vf.TaskData(prompt="Probe the network", nodes={"db": db}),
-        FetchToolTaskConfig(tools=vf.ToolsetConfig(colocated=True)),
+        vf.TaskData(
+            prompt="Probe the network", nodes={"db": db, "tools": vf.NodeConfig()}
+        ),
+        FetchToolTaskConfig(tools=vf.ToolsetConfig(on="tools")),
     )
     trace = await run(task, vf.PrimeConfig(labels=LABELS, image=MIRRORED))
-    # A Compose service on the workspace's machine, at its own name.
-    db_url = trace.info["urls"][0]
+    # Compose services on the workspace's machine, at their own names.
+    db_url, tool = trace.info["urls"][0], trace.info["mcp"]["fetch"]
     assert db_url == "http://db:8000/"
-    assert trace.info["workspace"][db_url] == 200, trace.info["workspace"]
+    assert urlsplit(tool).hostname == "tools"
+    workspace = trace.info["workspace"]
+    assert workspace[db_url] == 200, workspace
+    assert isinstance(workspace[tool], int), workspace
