@@ -81,6 +81,10 @@ class ValidationHarness(Harness[ValidationHarnessConfig]):
     ):
         from verifiers.v1.utils.decorators import invoke
 
+        # The reference is staged as root and runs as the agent would (Harbor's oracle
+        # executes solve.sh as the task's [agent] user), so a solution that only works
+        # as root, or a grader that checks who ran it, sees what a solver's run leaves.
+        solver = runtime
         runtime = runtime.with_user(None)
         if self.config.source is not None:
             for source in sorted(self.config.source.rglob("*")):
@@ -94,9 +98,10 @@ class ValidationHarness(Harness[ValidationHarnessConfig]):
         hooks = {"trace": trace, "runtime": runtime, "kind": self.kind}
         await invoke(self.task.validation_before, hooks)
         if self.config.command:
-            result = await runtime.run(self.config.command, {})
+            result = await solver.run(self.config.command, {})
             trace.info["oracle"] = {
                 "argv": self.config.command,
+                "user": solver.user,
                 "exit_code": result.exit_code,
                 "stdout": result.stdout[-4000:],
                 "stderr": result.stderr[-4000:],

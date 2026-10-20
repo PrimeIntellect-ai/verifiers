@@ -42,3 +42,32 @@ async def test_a_plain_task_without_a_request_has_no_model_free_check(tmp_path: 
         result.gold.valid is None and "gold solution unavailable" in result.gold.error
     )
     assert not result.baseline.enabled
+
+
+async def test_the_reference_runs_as_the_agents_user(tmp_path: Path):
+    """The reference is staged as root and runs as the task's agent user, as Harbor's
+    oracle runs solve.sh."""
+    from types import SimpleNamespace
+
+    from verifiers.v1.runtimes import ProgramResult
+    from verifiers.v1.validation import ValidationHarness, ValidationHarnessConfig
+
+    ran: list[tuple[str | None, list[str]]] = []
+
+    class Box:
+        def __init__(self, user):
+            self.user = user
+
+        def with_user(self, user, home=None):
+            return Box(user)
+
+        async def run(self, argv, env):
+            ran.append((self.user, argv))
+            return ProgramResult(exit_code=0, stdout="", stderr="")
+
+    harness = ValidationHarness(ValidationHarnessConfig(command=["bash", "solve.sh"]))
+    harness.task, harness.kind = task(), "gold"
+    trace = SimpleNamespace(info={})
+    await harness.launch(None, trace, Box("agent"), None, None, [], None)
+    assert ran == [("agent", ["bash", "solve.sh"])]
+    assert trace.info["oracle"]["user"] == "agent"
