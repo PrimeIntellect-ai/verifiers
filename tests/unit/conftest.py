@@ -8,6 +8,14 @@ from verifiers.v1.graph import MessageNode
 from verifiers.v1.types import AssistantMessage, UserMessage
 
 
+def pytest_addoption(parser: pytest.Parser) -> None:
+    parser.addoption(
+        "--runtime",
+        help="run test_runtimes.py against this runtime only: a type, or a runtime "
+        "config as JSON, such as a custom runtime plugin",
+    )
+
+
 class QAData(vf.TaskData):
     answer: str = ""
 

@@ -103,11 +103,13 @@ Harbor's effective agent network policy is applied on Docker and Prime VM runtim
 
 | Harbor mode | Task network setting |
 | --- | --- |
-| `public` | `network_allow = ["*"]`, leaving the evaluator runtime policy intact |
-| `no-network` | `network_allow = []`, allowing only framework connections |
-| `allowlist` | `network_allow = allowed_hosts` |
+| `public` | `network.allow = ["*"]`, leaving the evaluator runtime policy intact |
+| `no-network` | `network.allow = []`, allowing only framework connections |
+| `allowlist` | `network.allow = allowed_hosts` |
 
 Task and harness setup runs online before network restrictions take effect. The policy is applied immediately before the agent launches and stays active through finalization and artifact collection, with model interception and MCP endpoints added automatically in allowlist and `no-network` modes.
+
+Grading follows Harbor's verifier phase policy: `[verifier].network_mode`, or the `[environment]` baseline when the verifier declares none. A separate verifier runs under it. A shared-box verifier grades under it when it restricts the network and the agent phase is restricted too, since the box must start with a policy to take one; otherwise shared grading opens the network. A task's `scoring.network` replaces it.
 
 When both the task and the runtime specify allowlists, only destinations permitted by both remain; blocklists combine across both, an empty allowlist (`no-network`) takes precedence, and nonempty allowlists cannot be combined with blocklists (see [runtimes](runtimes.md#network-policies) for runtime support).
 
@@ -140,6 +142,6 @@ Because verifiers never builds container images on the fly, a `[verifier.environ
 verifiers does not yet support every Harbor feature. The main current limitations are:
 
 - Outside Compose, container `ENTRYPOINT`s are replaced with a keepalive process, so services required by the task or by `[environment.healthcheck]` must be started during setup rather than relying on the image entrypoint.
-- Shared grading reopens network access instead of switching to a separate verifier-phase network policy; use separate verification (`environment_mode = "separate"`) when the grader requires its own restricted network policy.
+- A restricted shared-box verifier beside a public agent phase grades with open network: the box started without a policy. Use separate verification (`environment_mode = "separate"`) when such a grader needs its own policy or runtime.
 - Verifier images defined via `tests/Dockerfile` must be built and published in advance.
 - [Multi-step tasks](https://www.harborframework.com/docs/tasks/multi-step) are not supported.

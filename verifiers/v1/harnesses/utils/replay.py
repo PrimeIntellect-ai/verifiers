@@ -19,7 +19,7 @@ def drop_blank_text(message: Message) -> Message:
 
 def strip_text(message: Message) -> Message:
     """Clients that store assistant text stripped, and pad a missing reasoning field
-    with a single space on replay."""
+    (or Anthropic thinking block) with a single space on replay."""
     if not isinstance(message, AssistantMessage):
         return message
     update: dict = {}
@@ -27,4 +27,14 @@ def strip_text(message: Message) -> Message:
         update["content"] = message.content.strip() or None
     if message.reasoning_content is not None and not message.reasoning_content.strip():
         update["reasoning_content"] = None
+    if message.provider_state and any(
+        _blank_thinking(item) for item in message.provider_state
+    ):
+        update["provider_state"] = [
+            item for item in message.provider_state if not _blank_thinking(item)
+        ] or None
     return message.model_copy(update=update) if update else message
+
+
+def _blank_thinking(item: dict) -> bool:
+    return item.get("type") == "thinking" and not str(item.get("thinking", "")).strip()

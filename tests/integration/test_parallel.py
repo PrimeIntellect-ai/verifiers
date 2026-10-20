@@ -3,7 +3,7 @@ upstream at once, and the trace graph keeps one branch per copy that shares exac
 prefix the copies have in common."""
 
 import pytest
-from parallel_v1 import ParallelHarnessConfig
+from parallel import ParallelHarnessConfig
 
 N = 4
 
@@ -12,8 +12,8 @@ N = 4
 @pytest.mark.parametrize("same_prompt", [True, False], ids=["same", "distinct"])
 async def test_parallel_requests(run, harness_runtime, scripted_model, same_prompt):
     (episode,) = await run(
-        "parallel-v1",
-        harness=ParallelHarnessConfig(id="parallel-v1", n=N, same_prompt=same_prompt),
+        "parallel",
+        harness=ParallelHarnessConfig(id="parallel", n=N, same_prompt=same_prompt),
         runtime=harness_runtime,
         client=scripted_model,
     )

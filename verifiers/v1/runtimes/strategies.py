@@ -5,7 +5,6 @@ import logging
 from contextlib import AsyncExitStack
 from functools import partial
 
-from verifiers.v1.runtimes import DockerConfig, ModalConfig, PrimeConfig
 from verifiers.v1.runtimes.compose import compose_services
 from verifiers.v1.runtimes.deployment import _DeploymentStrategy
 from verifiers.v1.runtimes.private_network import lan_host, private_network
@@ -109,10 +108,13 @@ class _PrivateNetworkDeployment(_DeploymentStrategy):
                 logger.warning("%s teardown failed before grading", what, exc_info=True)
 
 
-def _deployment_strategy(config, runtime_config, spec, tool_vms=None):
+def _deployment_strategy(config, backend, spec, tool_vms=None):
     if spec is not None:
-        if not isinstance(runtime_config, (DockerConfig, PrimeConfig, ModalConfig)):
-            raise ValueError("Compose requires Docker, Prime, or Modal VM runtime")
+        if not backend.SUPPORTS_COMPOSE:
+            raise ValueError(
+                f"the task deploys Compose services, but the {backend.type} runtime "
+                "cannot run Compose services; use a supported runtime"
+            )
         return _ContainerDeployment()
     if tool_vms:
         return _PrivateNetworkDeployment()

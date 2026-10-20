@@ -7,13 +7,13 @@ async def test_agentic_judge_shared_verifier(run, tmp_path):
     policy = tmp_path / "judge_policy.txt"
     policy.write_text("Check EMPIRICALLY that the agent echoed the word back.")
     (episode,) = await run(
-        "echo-v1",
+        "echo",
         harness=None,
         env={
             "id": "agentic-judge",
             "solver": {
                 "harness": {"id": "bash"},
-                "runtime": {"type": "docker", "block": ["example.com"]},
+                "runtime": {"type": "prime", "block": ["example.com"]},
                 "scoring": {"mode": "shared"},
             },
             "judge": {
@@ -53,13 +53,13 @@ async def test_env_id_agentic_judge(run, tmp_path):
         "Check EMPIRICALLY that answer.txt contains exactly the requested phrase."
     )
     (episode,) = await run(
-        "echo-agentic-v1",
+        "echo-agentic",
         harness=None,
         env={
             "id": "agentic-judge",
             "solver": {
                 "harness": {"id": "bash"},
-                "runtime": {"type": "docker", "block": ["example.com"]},
+                "runtime": {"type": "prime", "block": ["example.com"]},
                 "scoring": {"mode": "isolated"},
             },
             "judge": {
@@ -84,7 +84,7 @@ async def test_env_id_agentic_judge(run, tmp_path):
     assert judge.agent.trainable is False
     assert solver.agent.runtime is not None and judge.agent.runtime is not None
     assert solver.agent.runtime.id != judge.agent.runtime.id
-    assert solver.agent.runtime.type == judge.agent.runtime.type == "docker"
+    assert solver.agent.runtime.type == judge.agent.runtime.type == "prime"
     assert "/app/answer.txt" in solver.state.artifacts
     assert solver.rewards["wrote_phrase"].score == 1.0
     assert solver.rewards["wrote_phrase"].weight == 0.5

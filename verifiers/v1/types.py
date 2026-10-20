@@ -126,8 +126,8 @@ class Request(BaseModel):
 FinishReason = Literal["stop", "length", "tool_calls"] | None
 
 DialectName = Literal["chat_completions", "responses", "anthropic_messages"]
-"""A model API wire format: a `Dialect.name`, and the values of harness `transport`
-settings."""
+"""A model API wire format: a `Dialect.name`, and the values of the harness `dialect`
+setting."""
 
 
 class Usage(BaseModel):
@@ -249,6 +249,41 @@ def _decode_packed(packed: dict[str, Any], dtype: type) -> np.ndarray:
     return array.astype(dtype, copy=False)
 
 
+@dataclass
+class TopLogprobs:
+    """Top-k sampling head stored as flat `ids`, `logprobs` and `counts` arrays.
+
+    Each row holds one completion token's top-k sampler candidates in descending
+    probability order, independent of the sampled action. Row boundaries come from
+    `counts`; `ids` and `logprobs` share the same flat layout.
+    """
+
+    ids: Any
+    logprobs: Any
+    counts: Any
+
+    @classmethod
+    def from_top_logprobs(
+        cls, ids: list[list[int]], logprobs: list[list[float]]
+    ) -> "TopLogprobs":
+        if len(ids) != len(logprobs):
+            raise ValueError("top ids and logprobs must have one row per token")
+        counts = np.fromiter(
+            (len(row) for row in ids),
+            dtype=np.int32,
+            count=len(ids),
+        )
+        if any(len(ids[i]) != len(logprobs[i]) for i in range(len(ids))):
+            raise ValueError("top ids and logprobs rows must be the same length")
+        return cls(
+            ids=np.fromiter((token for row in ids for token in row), dtype=np.int32),
+            logprobs=np.fromiter(
+                (p for row in logprobs for p in row), dtype=np.float32
+            ),
+            counts=counts,
+        )
+
+
 class TurnTokens(BaseModel):
     """Training tokens from renderer tokenization or provider-returned token IDs."""
 
@@ -287,6 +322,10 @@ class TurnTokens(BaseModel):
     # Transient carrier (excluded): the engine's weight-version spans over the completion,
     # attributed to the assistant node by the turn's `commit`, then dropped.
     weight_versions: list[WeightVersionSpan] | None = Field(default=None, exclude=True)
+
+    # Transient carrier (excluded): per-completion-token top-k sampling heads,
+    # attributed to the assistant node by the turn's `commit`, then dropped.
+    top_logprobs: TopLogprobs | None = Field(default=None, exclude=True)
 
 
 class Response(BaseModel):
