@@ -1,5 +1,7 @@
 """A task that declares the kernel it needs is never run by a taskset that cannot boot it."""
 
+from pathlib import Path
+
 import pytest
 
 from verifiers.v1.tasksets.harbor import taskset as harbor
@@ -131,3 +133,24 @@ def test_a_verifier_and_its_collect_hooks_may_name_their_user(tmp_path):
     data = harbor.parse_task(task, 0, harbor.HarborConfig())
     assert data.verifier_user == "grader"
     assert [hook.user for hook in data.collect] == ["root"]
+
+
+def test_a_download_holding_lfs_pointers_is_not_cached(tmp_path, monkeypatch):
+    """A Harbor export whose `git lfs pull` failed holds pointers where the task's
+    binaries belong; it is refused rather than cached and graded from."""
+    import subprocess
+
+    def download(command, **kwargs):
+        task = Path(command[command.index("-o") + 1]) / "t" / "solution"
+        task.mkdir(parents=True)
+        (task / "gold.bin").write_text(
+            "version https://git-lfs.github.com/spec/v1\noid sha256:ab\nsize 2742090\n"
+        )
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(harbor, "CACHE", tmp_path / "cache")
+    monkeypatch.setattr(harbor, "harbor_cli", lambda: "harbor")
+    monkeypatch.setattr(harbor.subprocess, "run", download)
+    with pytest.raises(RuntimeError, match="Git LFS"):
+        harbor.dataset_dir(harbor.HarborConfig(dataset="x@1"))
+    assert not harbor.cache_dir(harbor.HarborConfig(dataset="x@1")).exists()

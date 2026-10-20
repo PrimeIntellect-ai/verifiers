@@ -927,6 +927,12 @@ def dataset_dir(config: HarborConfig) -> Path:
             if output := "\n".join(outputs):
                 message = f"{message}:\n{output}"
             raise RuntimeError(message) from exc
+        if pointers := lfs_pointers(export_dir):
+            raise RuntimeError(
+                f"Harbor download of {config.dataset!r} left {len(pointers)} Git LFS "
+                "pointer(s) in place of their files (its `git lfs pull` failed), e.g. "
+                f"{[str(p.relative_to(export_dir)) for p in pointers[:5]]}; not caching it"
+            )
         try:
             export_dir.rename(out)
         except OSError:
@@ -934,6 +940,27 @@ def dataset_dir(config: HarborConfig) -> Path:
                 return out
             raise
     return out
+
+
+LFS_POINTER = b"version https://git-lfs.github.com/spec/v1"
+
+
+def lfs_pointers(root: Path) -> list[Path]:
+    """Files under `root` that are Git LFS pointers, not the content they stand for.
+
+    Harbor's download ignores a failed `git lfs pull`, so an export can hold a
+    pointer where a task ships a binary (programbench's gold.bin), and every grade
+    from it is silently wrong."""
+    found = []
+    for path in root.rglob("*"):
+        try:
+            if path.is_file() and not path.is_symlink() and path.stat().st_size < 1024:
+                with path.open("rb") as f:
+                    if f.read(len(LFS_POINTER)) == LFS_POINTER:
+                        found.append(path)
+        except OSError:
+            continue
+    return sorted(found)
 
 
 def resolve_image(
