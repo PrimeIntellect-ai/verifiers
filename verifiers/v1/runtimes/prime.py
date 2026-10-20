@@ -197,6 +197,32 @@ container started from the image would have it: the image's /run is still on the
 filesystem, under the mount, and a non-recursive bind of / reaches it. Files already
 in the tmpfs are kept; a box without `mount` keeps the empty tmpfs."""
 
+_PID_NAMESPACE_FILE = "/run/vf-pid-namespace"
+_PID_NAMESPACE = rf"""
+set -u
+f={_PID_NAMESPACE_FILE}
+p=$(cat "$f" 2>/dev/null) && [ -n "$p" ] && [ -e "/proc/$p/ns/pid" ] && exit 0
+command -v unshare >/dev/null 2>&1 && command -v nsenter >/dev/null 2>&1 || {{
+  echo "no unshare/nsenter in this image" >&2; exit 3; }}
+rm -f "$f" "$f.parent"
+setsid sh -c 'echo $$ > "$0.parent"; exec unshare --pid --fork --mount-proc \
+  sleep infinity' "$f" </dev/null >/dev/null 2>&1 &
+for i in $(seq 1 100); do
+  u=$(cat "$f.parent" 2>/dev/null)
+  c=$( [ -n "$u" ] && cat "/proc/$u/task/$u/children" 2>/dev/null | awk '{{print $1}}')
+  [ -n "$c" ] || c=$( [ -n "$u" ] && awk -v u="$u" '$4 == u {{print $1; exit}}' \
+    /proc/[0-9]*/stat 2>/dev/null)
+  if [ -n "$c" ] && [ -e "/proc/$c/ns/pid" ] && \
+     [ "$(readlink "/proc/$c/ns/pid")" != "$(readlink /proc/self/ns/pid)" ]; then
+    printf '%s\n' "$c" > "$f" && chmod 600 "$f" && exit 0
+  fi
+  sleep 0.1
+done
+echo "the PID namespace's init did not start" >&2; exit 1
+"""
+"""Start the box's PID namespace (`isolate_processes`): `unshare` in a session of its
+own, its forked child the namespace's init, recorded for each command's `nsenter`."""
+
 _CHECKPOINT_DELETE_DEADLINE_SECONDS = 300
 """How long a checkpoint delete keeps retrying the platform's 409. It refuses while a
 box started from the checkpoint, or the checkpoint's source box, still runs, and boxes
@@ -563,6 +589,8 @@ class PrimeBackend(RuntimeBackend):
         self._drops_privileges: bool | None = None
         """Whether this box can run a user's command through `_as_user` (None: not yet
         asked)."""
+        self._pid_namespace = False
+        """Whether `isolate_processes` gave this box's commands a PID namespace."""
         self.placed = False
         """The box has answered an exec: a placement lost from now on is the box lost,
         not an outage."""
@@ -906,6 +934,40 @@ class PrimeBackend(RuntimeBackend):
             )
         self._routes_blocked = block and not result.exit_code
 
+    async def isolate_processes(self) -> None:
+        """Give this box's later commands a PID namespace of their own, as a container's
+        processes have: its first process is Harbor's `sleep infinity`, which no signal
+        from inside ends, and every command runs inside it. A grader that kills every process
+        but PID 1 and its own ancestors (Docker shows it nothing else) otherwise kills
+        the platform's command daemon, and the box with it; one that refuses to grade
+        while a kernel thread it cannot kill is listed sees none here either. Needs
+        `unshare` and `nsenter` in the image; without them commands run as before."""
+        if self._pid_namespace:
+            return
+        result = await self._run(Runtime(self), ["sh", "-c", _PID_NAMESPACE], {})
+        self._pid_namespace = result.exit_code == 0
+        if not self._pid_namespace:
+            logger.warning(
+                "prime: no PID namespace on sandbox %s: %s",
+                self.info.id,
+                (result.stderr or result.stdout).strip()[-300:],
+            )
+
+    async def _job(self, runtime: Runtime, command: str) -> tuple[str, str | None]:
+        """`command` as the platform should start it, and the user to start it as: as
+        the runtime's user (`_as_user`), inside the box's PID namespace once it has one
+        (`isolate_processes`), and outside it should that namespace's init be gone."""
+        command, user = await self._as_user(runtime, command)
+        if not self._pid_namespace or user is not None:
+            return command, user
+        inner = shlex.quote(command)
+        entered = (
+            f'p=$(cat {_PID_NAMESPACE_FILE} 2>/dev/null); if [ -n "$p" ] && '
+            f'[ -e "/proc/$p/ns/pid" ]; then exec nsenter -t "$p" -p -m -- sh -c {inner}; '
+            f"fi; exec sh -c {inner}"
+        )
+        return entered, None
+
     async def _as_user(self, runtime: Runtime, command: str) -> tuple[str, str | None]:
         """`command` and the user the platform should start it as, for `runtime`'s user.
 
@@ -951,7 +1013,7 @@ class PrimeBackend(RuntimeBackend):
         try:
             # Poll directly so rollout cancellation owns the execution timeout.
             began = time.monotonic()
-            command, user = await self._as_user(runtime, shlex.join(argv))
+            command, user = await self._job(runtime, shlex.join(argv))
             job = await self._client.start_background_job(
                 self.info.id,
                 command,
@@ -1044,7 +1106,7 @@ class PrimeBackend(RuntimeBackend):
         self, runtime: Runtime, argv: list[str], env: dict[str, str]
     ) -> RuntimeProcess:
         try:
-            command, user = await self._as_user(runtime, shlex.join(argv))
+            command, user = await self._job(runtime, shlex.join(argv))
             process = await self._client.open_process(
                 self.info.id,
                 command,
@@ -1175,7 +1237,7 @@ class PrimeBackend(RuntimeBackend):
         self, runtime: Runtime, argv: list[str], env: dict[str, str], log: str
     ) -> None:
         try:
-            command, user = await self._as_user(
+            command, user = await self._job(
                 runtime, f"exec {shlex.join(argv)} > {shlex.quote(log)} 2>&1"
             )
             await self._client.start_background_job(
@@ -1200,7 +1262,7 @@ class PrimeBackend(RuntimeBackend):
             try:
                 # Stream binary output: execute_command buffers base64 text for the
                 # entire file. Bound the source read and the host buffer independently.
-                command, user = await self._as_user(
+                command, user = await self._job(
                     runtime, f"{reader} -- {shlex.quote(path)}"
                 )
                 process = await self._client.open_process(

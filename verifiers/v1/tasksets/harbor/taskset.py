@@ -41,6 +41,7 @@ from verifiers.v1.configs.task import TaskConfig
 from verifiers.v1.configs.taskset import TasksetConfig
 from verifiers.v1.errors import SandboxError, TaskError
 from verifiers.v1.runtimes import ProgramResult, Runtime, RuntimeConfig
+from verifiers.v1.runtimes.compose import ComposeSpec
 from verifiers.v1.runtimes.deployment import Deployment
 from verifiers.v1.state import State
 from verifiers.v1.task import Task, TaskData, TaskResources, TaskTimeout
@@ -348,7 +349,10 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
         deployment: Deployment | None = None,
         trace: Trace | None = None,
     ) -> None:
-        # Harbor's Docker start runs the image's ENTRYPOINT before anything else.
+        # Harbor's Docker start runs the image's ENTRYPOINT before anything else, in the
+        # container's own PID namespace.
+        if not isinstance(self.deployment_spec(), ComposeSpec):
+            await runtime.backend.isolate_processes()
         if (dockerfile := self.entrypoint_dockerfile()) is not None:
             started = await start_entrypoint(runtime, dockerfile)
             if started is not None and trace is not None:
@@ -390,8 +394,6 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
         """The Dockerfile whose ENTRYPOINT this box's image starts with, when nothing
         else runs it: a Compose service's runs under the VM's Docker, and a box on the
         harness image (no pullable image, or the environment uploaded) has none."""
-        from verifiers.v1.runtimes.compose import ComposeSpec
-
         task_dir = Path(self.data.task_dir)
         if (
             not self.data.task_dir
@@ -431,7 +433,9 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
         self, runtime: Runtime, deployment: Deployment | None = None
     ) -> None:
         """A box from a checkpoint keeps its files but no process: start the tool
-        servers again over the state they left on disk."""
+        servers again over the state they left on disk, in a PID namespace again."""
+        if not isinstance(self.deployment_spec(), ComposeSpec):
+            await runtime.backend.isolate_processes()
         await toolbundles.start(
             runtime, [m for m in self.data.tools if m.placement == "box"]
         )

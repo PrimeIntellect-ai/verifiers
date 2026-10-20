@@ -373,6 +373,11 @@ class RuntimeBackend(ABC):
         """The URL a program inside this runtime uses to reach a host-bound `url`."""
         return url
 
+    async def isolate_processes(self) -> None:
+        """Give this box's later commands a PID namespace of their own, as a container's
+        processes have, where the box itself shows them more (its own init and daemons).
+        A container runtime's processes already have one: nothing to do."""
+
     async def prepare_setup(self) -> None:
         """Open egress for trusted setup when reusing a restricted runtime."""
         if not self.network_restricted:

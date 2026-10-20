@@ -463,3 +463,21 @@ async def test_a_deny_all_policy_refuses_connections_in_the_box_until_lifted(
     modes = [command.split()[-1] for command, _ in client.started]
     assert modes == ["block", "open"]
     assert all(" vf-egress " in command for command, _ in client.started)
+
+
+async def test_a_box_with_a_pid_namespace_runs_every_command_inside_it(
+    runtime, no_sleep
+):
+    """Once `isolate_processes` started the box's PID namespace, root and user commands
+    enter it, so a grader that kills all but PID 1 sees only the task's processes; a
+    command still runs outside should the namespace's init be gone."""
+    runtime.info.id = "sb1"
+    runtime._client = client = UserJobClient(tools=True)
+    await runtime.isolate_processes()
+    await runtime.bind().run(["true"], {})
+    await runtime.bind().with_user("agent").run(["make"], {})
+    [(start, _), (root, _), (user, _)] = client.started
+    assert "unshare --pid --fork --mount-proc" in start
+    assert root.startswith("p=$(cat /run/vf-pid-namespace") and "nsenter -t" in root
+    assert root.endswith("exec sh -c true")
+    assert "nsenter -t" in user and "setpriv --reuid=agent" in user
