@@ -86,6 +86,107 @@ load the SDK's calls queue in the process for tens of seconds before they are se
 """Wait for a checkpoint to become restorable. An incremental checkpoint takes seconds;
 the first of a box holding several GB can take minutes."""
 
+_NO_ROUTE = r"""
+set -u
+saved=/run/vf-egress-gateway
+# The platform's own addresses stay routed: its agent endpoint, and the private ranges
+# its control plane reaches the box from (an exec's replies leave by the default route).
+KEEP="192.0.2.0/24 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 100.64.0.0/10"
+gateway() {  # the default route's gateway, from /proc/net/route's little-endian hex
+  g=$(awk 'NR > 1 && $2 == "00000000" && $3 != "00000000" { print $3; exit }' /proc/net/route)
+  [ -n "$g" ] || return 0
+  printf '%d.%d.%d.%d\n' "0x${g#??????}" "0x$(echo "$g" | cut -c5-6)" \
+    "0x$(echo "$g" | cut -c3-4)" "0x$(echo "$g" | cut -c1-2)"
+}
+route() {  # route <block|open> <gateway>
+  if command -v ip >/dev/null 2>&1; then
+    if [ "$1" = block ]; then
+      for net in $KEEP; do ip route replace "$net" via "$2" || return 1; done
+      ip route replace unreachable default
+    else
+      ip route replace default via "$2"
+    fi
+  elif command -v python3 >/dev/null 2>&1; then
+    python3 - "$1" "$2" $KEEP <<'PY'
+import fcntl, socket, struct, sys
+def addr(ip):
+    return struct.pack("HH4s8x", socket.AF_INET, 0, socket.inet_aton(ip))
+def change(request, dst, mask, flags, gw="0.0.0.0"):
+    # x86-64 `struct rtentry`: the three sockaddrs at 8, flags at 56; 120 bytes.
+    route = bytearray(120)
+    route[8:56] = addr(dst) + addr(gw) + addr(mask)
+    route[56:58] = struct.pack("H", flags)
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+        try:
+            fcntl.ioctl(s, request, route)
+        except (FileExistsError, ProcessLookupError):
+            pass
+UP, GATEWAY, HOST, REJECT = 0x1, 0x2, 0x4, 0x200
+ADD, DELETE = 0x890B, 0x890C
+mode, gw = sys.argv[1:3]
+if mode == "block":
+    for net in sys.argv[3:]:
+        dst, bits = net.split("/")
+        mask = (0xFFFFFFFF << (32 - int(bits))) & 0xFFFFFFFF
+        flags = UP | GATEWAY | (HOST if bits == "32" else 0)
+        change(ADD, dst, socket.inet_ntoa(struct.pack("!I", mask)), flags, gw)
+    change(DELETE, "0.0.0.0", "0.0.0.0", UP | GATEWAY, gw)
+    try:
+        change(ADD, "0.0.0.0", "0.0.0.0", UP | REJECT)
+    except OSError:
+        change(ADD, "0.0.0.0", "0.0.0.0", UP | GATEWAY, gw)
+        raise
+else:
+    change(DELETE, "0.0.0.0", "0.0.0.0", UP | REJECT)
+    change(ADD, "0.0.0.0", "0.0.0.0", UP | GATEWAY, gw)
+PY
+  elif command -v perl >/dev/null 2>&1; then
+    perl - "$1" "$2" $KEEP <<'PL'
+use strict; use Socket;
+my ($mode, $gw, @keep) = @ARGV;
+my ($UP, $GATEWAY, $HOST, $REJECT, $ADD, $DELETE) = (1, 2, 4, 0x200, 0x890B, 0x890C);
+socket(my $s, AF_INET, SOCK_DGRAM, 0) or die "socket: $!";
+sub addr { pack("S n a4 x8", AF_INET, 0, inet_aton($_[0])) }
+sub change {  # x86-64 `struct rtentry`, as the Python path packs it
+  my ($request, $dst, $mask, $flags, $via) = @_;
+  my $route = pack("x8 a16 a16 a16 S x62", addr($dst), addr($via // "0.0.0.0"),
+                   addr($mask), $flags);
+  ioctl($s, $request, $route) or $!{EEXIST} or $!{ESRCH} or die "route: $!";
+}
+if ($mode eq "block") {
+  for (@keep) {
+    my ($dst, $bits) = split m{/};
+    my $mask = inet_ntoa(pack("N", (0xFFFFFFFF << (32 - $bits)) & 0xFFFFFFFF));
+    change($ADD, $dst, $mask, $UP | $GATEWAY | ($bits == 32 ? $HOST : 0), $gw);
+  }
+  change($DELETE, "0.0.0.0", "0.0.0.0", $UP | $GATEWAY, $gw);
+  eval { change($ADD, "0.0.0.0", "0.0.0.0", $UP | $REJECT); 1 }
+    or do { change($ADD, "0.0.0.0", "0.0.0.0", $UP | $GATEWAY, $gw); die $@ };
+} else {
+  change($DELETE, "0.0.0.0", "0.0.0.0", $UP | $REJECT);
+  change($ADD, "0.0.0.0", "0.0.0.0", $UP | $GATEWAY, $gw);
+}
+PL
+  else
+    echo "no ip, python3 or perl in this image" >&2; return 1
+  fi
+}
+if [ "$1" = block ]; then
+  gw=$(cat "$saved" 2>/dev/null || gateway)
+  [ -n "$gw" ] || { echo "no default route" >&2; exit 1; }
+  printf '%s\n' "$gw" > "$saved" && route block "$gw"
+elif [ -f "$saved" ]; then
+  route open "$(cat "$saved")" && rm -f "$saved"
+fi
+"""
+"""The in-box half of a deny-all policy. The platform's filter is a proxy that accepts
+each TCP handshake and resets at the first byte, so `connect()` to any address succeeds
+where Docker's `network_mode: none` (Harbor's no-network) refuses it. Replacing the box's
+default route with an unreachable one refuses it here too (ENETUNREACH), keeping routes
+to the platform's agent endpoint and private ranges; a later open policy restores the
+saved gateway. Uses `ip`, else Python's or Perl's route ioctls; with none of them
+the platform's filter is left alone."""
+
 IMAGE_RUN = (
     '{ m=$(mktemp -d) && mount --bind / "$m" && cp -an "$m/run/." /run/; '
     'umount "$m"; rmdir "$m"; } >/dev/null 2>&1;'
@@ -457,6 +558,8 @@ class PrimeBackend(RuntimeBackend):
         self.config = config
         self.info = PrimeRuntimeInfo(**self.config.model_dump())
         self._client = None
+        self._routes_blocked = False
+        """`_route_egress` refused outbound connections in the box."""
         self._drops_privileges: bool | None = None
         """Whether this box can run a user's command through `_as_user` (None: not yet
         asked)."""
@@ -775,12 +878,33 @@ class PrimeBackend(RuntimeBackend):
             raise SandboxError(
                 f"prime egress policy failed: {e}", kind=sandbox_error_kind(e)
             ) from e
+        await self._route_egress(policy.get("deny") == ["*"])
         logger.info(
             "prime: egress policy applied on sandbox %s (allow=%s block=%s)",
             self.info.id,
             policy.get("allow"),
             policy.get("deny"),
         )
+
+    async def _route_egress(self, block: bool) -> None:
+        """Refuse outbound connections in the box itself under a deny-all policy, and
+        lift that once a policy opens it again (`_NO_ROUTE`). Best effort: the
+        platform's filter still holds every destination either way."""
+        if not block and not self._routes_blocked:
+            return
+        result = await self._run(
+            Runtime(self),
+            ["sh", "-c", _NO_ROUTE, "vf-egress", "block" if block else "open"],
+            {},
+        )
+        if result.exit_code:
+            logger.warning(
+                "prime: in-box egress route %s failed on sandbox %s: %s",
+                "block" if block else "restore",
+                self.info.id,
+                (result.stderr or result.stdout).strip()[-500:],
+            )
+        self._routes_blocked = block and not result.exit_code
 
     async def _as_user(self, runtime: Runtime, command: str) -> tuple[str, str | None]:
         """`command` and the user the platform should start it as, for `runtime`'s user.

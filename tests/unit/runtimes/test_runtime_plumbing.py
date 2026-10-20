@@ -434,3 +434,32 @@ async def test_a_users_command_runs_in_a_session_of_its_own(runtime, no_sleep, t
     else:
         assert (command, user) == ("make test", "agent")
     assert (root_command, root_user) == ("true", None)
+
+
+class EgressClient(UserJobClient):
+    def __init__(self):
+        super().__init__(tools=True)
+        self.policies: list[dict] = []
+
+    async def set_network(self, sandbox_id, **policy):
+        self.policies.append(policy)
+        return SimpleNamespace(applied=True)
+
+
+async def test_a_deny_all_policy_refuses_connections_in_the_box_until_lifted(
+    monkeypatch, no_sleep
+):
+    """The platform's filter accepts a TCP handshake to anywhere and resets it at the
+    first byte; under deny-all the box's own default route refuses it, as Docker's
+    `network_mode: none` does, and an open policy gives the route back."""
+    monkeypatch.setattr(prime, "ensure_prime_auth", lambda: None)
+    runtime = PrimeBackend(PrimeConfig(allow=[]))
+    runtime.info.id = "sb1"
+    runtime._client = client = EgressClient()
+    await runtime.prepare_execution([])
+    await runtime.prepare_execution(None)
+    await runtime.prepare_execution(None)  # nothing left to restore
+    assert client.policies == [{"deny": ["*"]}, {"allow": ["*"]}, {"allow": ["*"]}]
+    modes = [command.split()[-1] for command, _ in client.started]
+    assert modes == ["block", "open"]
+    assert all(" vf-egress " in command for command, _ in client.started)
