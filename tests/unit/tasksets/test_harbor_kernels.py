@@ -44,3 +44,29 @@ def test_a_task_toml_inside_another_task_is_part_of_it(tmp_path, monkeypatch):
     assert [t.data.name for t in harbor.HarborTaskset(harbor.HarborConfig())] == [
         "outer"
     ]
+
+
+def test_a_verifier_table_naming_only_its_image_is_sized_like_the_environment(
+    tmp_path,
+):
+    """A separate verifier whose `[verifier.environment]` names only an image grades
+    with the task's declared sizes rather than the provider's smallest box; sizes the
+    table states still win."""
+    task = tmp_path / "sized"
+    (task / "tests").mkdir(parents=True)
+    (task / "tests/test.sh").write_text("exit 0\n")
+    (task / "instruction.md").write_text("Implement the requested change.")
+    (task / "task.toml").write_text(
+        '[environment]\ndocker_image = "python:3.11-slim"\n'
+        "cpus = 4\nmemory_mb = 7168\nstorage_mb = 10240\n"
+        '[verifier]\nenvironment_mode = "separate"\n'
+        '[verifier.environment]\ndocker_image = "python:3.12-slim"\ncpus = 2\n'
+    )
+    data = harbor.parse_task(task, 0, harbor.HarborConfig())
+    assert data.verifier_image == "python:3.12-slim"
+    assert data.verifier.resources.model_dump() == {
+        "cpu": 2,
+        "memory": 7.0,
+        "gpu": None,
+        "disk": 10.0,
+    }

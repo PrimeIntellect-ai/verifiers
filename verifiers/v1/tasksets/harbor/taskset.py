@@ -1118,12 +1118,24 @@ def parse_verifier_environment(
         )
 
     network = parsed.verifier.explicit_phase_policy() or environment.resolve_baseline()
+    # A declared environment states its own resources. One it leaves unset is unbounded
+    # under Harbor's Docker, never smaller than the agent's box; a provider's default
+    # (one small CPU) would starve a grader the task sized for its environment, so an
+    # unset size is the task's `[environment]` one. A table that only names the image
+    # (one pinned from a `tests/` build, where Harbor grades in a copy of
+    # `[environment]`) thereby gets that copy's resources.
+    sized = environment.model_copy(
+        update={
+            field: getattr(parsed.environment, field)
+            for field in ("cpus", "memory_mb", "storage_mb")
+            if getattr(environment, field) is None
+        }
+    )
     return VerifierConfig(
-        # A declared environment states its own resources; what it leaves out is the
-        # run's default, not the agent task's. A fresh copy is the task's environment,
-        # so it keeps whatever the agent box resolved to.
+        # A fresh copy is the task's environment, so it keeps whatever the agent box
+        # resolved to.
         resources=(
-            task_resources(environment, harbor_config.resource_multiplier)
+            task_resources(sized, harbor_config.resource_multiplier)
             if declared
             else TaskResources()
         ),
