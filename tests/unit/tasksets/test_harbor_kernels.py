@@ -162,3 +162,16 @@ def test_a_download_holding_lfs_pointers_is_not_cached(tmp_path, monkeypatch):
     with pytest.raises(RuntimeError, match="Git LFS"):
         harbor.dataset_dir(harbor.HarborConfig(dataset="x@1"))
     assert not harbor.cache_dir(harbor.HarborConfig(dataset="x@1")).exists()
+
+
+def test_unset_users_leave_the_task_data_dump_as_it_was():
+    """`verifier_user` and a collect hook's `user` appear in the dump only when set,
+    so tasks that name none keep their data hash (and every call fingerprint on it)."""
+    data = harbor.HarborData(
+        idx=0, prompt="p", collect=[harbor.CollectHook(command="true")]
+    )
+    dumped = data.model_dump(mode="json")
+    assert "verifier_user" not in dumped and "user" not in dumped["collect"][0]
+    named = data.model_copy(update={"verifier_user": "grader"})
+    assert named.model_dump(mode="json")["verifier_user"] == "grader"
+    assert harbor.HarborData.model_validate(dumped) == data

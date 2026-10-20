@@ -150,8 +150,10 @@ class CollectHook(BaseModel):
     command: str
     timeout_sec: float = 600.0
     service: str = "main"
-    user: str | None = None
-    """Who runs it; None (or root) is the runtime's default user."""
+    user: str | None = Field(None, exclude_if=lambda user: user is None)
+    """Who runs it; None (or root) is the runtime's default user. Left out of the dump
+    while unset, so tasks that name none keep the data (and call fingerprints) they had
+    before the field existed."""
 
 
 class HarborArtifact(Artifact):
@@ -223,8 +225,9 @@ class HarborData(TaskData):
     verifier: VerifierConfig | None = None
     """The verifier's own box, when `[verifier].environment_mode` asks for one. None
     grades in the agent's box."""
-    verifier_user: str | None = None
-    """`[verifier].user`: who runs `test.sh`; None (or root) is the box's default user."""
+    verifier_user: str | None = Field(None, exclude_if=lambda user: user is None)
+    """`[verifier].user`: who runs `test.sh`; None (or root) is the box's default user.
+    Left out of the dump while unset, like `CollectHook.user`."""
 
 
 class HarborTask(Task[HarborData, State, HarborTaskConfig]):
