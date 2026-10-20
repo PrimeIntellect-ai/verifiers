@@ -1267,13 +1267,16 @@ def parse_verifier_environment(
 # and tests to bound memory while reusing both archives across rollouts.
 @lru_cache(maxsize=2)
 def make_tar(directory: Path) -> bytes:
-    """`directory`'s contents, root-owned as Harbor's copy into a container leaves them:
-    a grader that trusts only root-owned files under /tests (abundant-programbench
-    wim-archive) refuses ones carrying the host's uid."""
+    """`directory`'s contents, root-owned as Harbor's copy into a container leaves them,
+    with the modes git records (no group or other write, whatever this checkout's
+    umask): a grader that trusts only root-owned, unwritable files under /tests
+    (abundant-programbench wim-archive) refuses ones carrying the host's uid or a
+    group-writable mode."""
 
     def as_root(info: tarfile.TarInfo) -> tarfile.TarInfo:
         info.uid = info.gid = 0
         info.uname = info.gname = "root"
+        info.mode &= ~0o022
         return info
 
     buffer = io.BytesIO()

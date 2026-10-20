@@ -101,16 +101,20 @@ def test_a_bare_name_caches_what_its_registry_resolves_to_now(tmp_path):
 
 
 def test_staged_tests_are_root_owned(tmp_path):
-    """/tests lands root-owned, as Harbor's copy into a container leaves it."""
+    """/tests lands root-owned, with git's modes, as Harbor's copy leaves it."""
     import io
     import tarfile
 
-    (tmp_path / "sub").mkdir()
+    (tmp_path / "sub").mkdir(mode=0o775)
     (tmp_path / "sub" / "test.sh").write_text("exit 0\n")
+    (tmp_path / "sub" / "test.sh").chmod(0o664)
     data = harbor.make_tar(tmp_path)
     with tarfile.open(fileobj=io.BytesIO(data)) as tar:
-        owners = {(m.name, m.uid, m.gid, m.uname) for m in tar.getmembers()}
-    assert owners == {("sub", 0, 0, "root"), ("sub/test.sh", 0, 0, "root")}
+        owners = {(m.name, m.uid, m.gid, m.uname, m.mode) for m in tar.getmembers()}
+    assert owners == {
+        ("sub", 0, 0, "root", 0o755),
+        ("sub/test.sh", 0, 0, "root", 0o644),
+    }
 
 
 def test_a_verifier_and_its_collect_hooks_may_name_their_user(tmp_path):
