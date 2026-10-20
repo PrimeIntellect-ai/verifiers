@@ -214,6 +214,10 @@ class ServerBase(Generic[ConfigT, StateT]):
     async def _setup_task_from_channel(
         self, state_url: str | None, secret: str
     ) -> None:
+        # Without a `setup_task` the task is unused: skip the round trip, which crosses the
+        # state channel (a tunnel for remote runtimes) before the server can serve.
+        if type(self).setup_task is ServerBase.setup_task:
+            return
         task = await self._fetch_task(state_url, secret)
         if task is not None:
             await self.setup_task(task)
