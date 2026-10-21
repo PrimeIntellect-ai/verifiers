@@ -85,7 +85,12 @@ async def compose_services(
     trust_compose: bool = False,
     setup_timeout: float | None = None,
 ) -> AsyncIterator[
-    tuple[dict[str, DockerBackend], Callable[[], Awaitable[str]], RuntimeBackend | None]
+    tuple[
+        dict[str, DockerBackend],
+        Callable[[], Awaitable[str]],
+        RuntimeBackend | None,
+        str | None,
+    ]
 ]:
     """Own one Compose attempt and lend its services until the context exits."""
     local = isinstance(config, DockerConfig)
@@ -345,6 +350,9 @@ async def compose_services(
             backends,
             partial(compose, "stop", spec.workspace, timeout=60),
             host_backend,
+            backends[spec.workspace].config.image
+            if services[spec.workspace].get("build")
+            else None,
         )
     finally:
         await run_shielded(stack.aclose())

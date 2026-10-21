@@ -68,6 +68,19 @@ class ComposeTask(HarborTask):
             assert all(
                 backend._host_backend.stopped for backend in SOLVERS[trace.id]
             ), "solver services survived into grading"
+            if "build-main" in self.data.tags:
+                result = await runtime.run(
+                    [
+                        "sh",
+                        "-c",
+                        "test -f /built-from-dockerfile && test ! -e /app/answer",
+                    ],
+                    {},
+                )
+                assert result.exit_code == 0, (
+                    "verifier was not rebuilt from clean inputs"
+                )
+                trace.info["verifier_rebuilt_from_dockerfile"] = True
             trace.info["solver_released_before_grading"] = True
 
     async def finalize_services(self, trace, targets):
@@ -90,6 +103,7 @@ class ComposeTask(HarborTask):
         ("isolated", True, False, False),
         ("isolated", False, True, False),
         ("shared", True, False, True),
+        ("isolated", False, False, True),
     ],
     ids=[
         "shared-skips-sidecars",
@@ -97,6 +111,7 @@ class ComposeTask(HarborTask):
         "isolated-collect-failure",
         "isolated-scoring-timeout",
         "shared-builds-main",
+        "isolated-builds-main",
     ],
 )
 @pytest.mark.prime
@@ -134,6 +149,9 @@ async def test_compose_scoring(
         assert bool(trace.info.get("collected_sidecars")) == (mode == "isolated")
         assert bool(trace.info.get("solver_released_before_grading")) == (
             mode == "isolated"
+        )
+        assert bool(trace.info.get("verifier_rebuilt_from_dockerfile")) == (
+            mode == "isolated" and build_main
         )
 
 

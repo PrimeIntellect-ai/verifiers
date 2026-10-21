@@ -300,7 +300,7 @@ async def test_compose(runtime, tmp_path) -> None:
     spec = ComposeSpec(directory=str(tmp_path), file="docker-compose.yaml")
     async with (
         asyncio.timeout(TIMEOUT),
-        compose_services(runtime, spec, {}, trust_compose=True) as (services, _, _),
+        compose_services(runtime, spec, {}, trust_compose=True) as (services, _, _, _),
     ):
         assert set(services) == {"main", "sidecar"}
         resolved = await services["main"].bind().run(["getent", "hosts", "sidecar"], {})
