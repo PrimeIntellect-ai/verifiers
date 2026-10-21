@@ -512,7 +512,11 @@ class Rollout:
                 )
                 restored = self._continues and runtime.backend.restored
                 setup = self.task.restore if restored else self.task.setup
-                if not live:
+                if live:
+                    left = self._box.hosted[self._resumes_id]
+                    if type(left) is type(self.task.config):
+                        self.task.config = left
+                else:
                     async with (
                         boundary(
                             TaskError, "task restore" if restored else "task setup"
@@ -530,7 +534,7 @@ class Rollout:
                     self._box is not None
                     and self._box.generation == self.box_generation
                 ):
-                    self._box.hosted.add(self.trace.id)
+                    self._box.hosted[self.trace.id] = self.task.config
                 async with (
                     boundary(HarnessError, "harness setup"),
                 ):

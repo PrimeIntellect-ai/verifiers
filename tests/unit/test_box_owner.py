@@ -406,3 +406,36 @@ async def test_a_model_failure_on_a_borrowed_box_continues_on_it(model):
         assert interaction.failed_attempts == [] and interaction.trace.ok
         assert segment.last_reply.startswith("done")
         assert vf.box_of(box).generation == 0
+
+
+class Served(vf.TaskConfig):
+    url: str | None = None
+
+
+SERVED: list[str | None] = []
+
+
+class ServingTask(vf.Task[vf.TaskData, vf.State, Served]):
+    """Starts a server in setup and keeps its url on its config (as Task QC's audit tools do)."""
+
+    async def setup(self, trace: vf.Trace, runtime: vf.Runtime) -> None:
+        EVENTS.append("setup")
+        self.config = self.config.model_copy(update={"url": "http://box:1234"})
+
+    async def finalize(self, trace: vf.Trace, runtime: vf.Runtime) -> None:
+        SERVED.append(self.config.url)
+
+
+async def test_a_live_continuation_finds_the_task_config_its_setup_left(model):
+    """A continuation on the box its run set up runs no setup: the task rebuilt from the
+    trace still sees the config that setup left (a tool server's url), not a fresh one."""
+    SERVED.clear()
+    agent = make(model)
+    first_task = ServingTask(vf.TaskData(idx=0, prompt="start"))
+    async with agent.provision(first_task) as box:
+        first = await agent.run(first_task, runtime=box)
+        assert first.ok, first.errors
+        second = await make(model).run(resume=first, note="again", runtime=box)
+    assert second.ok, second.errors
+    assert EVENTS.count("setup") == 1
+    assert SERVED == ["http://box:1234", "http://box:1234"]

@@ -83,10 +83,12 @@ class Box:
         started from."""
         self.generation = 0
         """How many times `replace` swapped the box."""
-        self.hosted: set[str] = set()
+        self.hosted: dict[str, Any] = {}
         """The traces whose runs set up or continued on the current box (this
-        generation). A continuation of one of them finds the task as that run left it:
-        it runs neither `Task.setup` nor `Task.restore` (`Rollout.open`)."""
+        generation), each with its task's config as that run left it. A continuation of
+        one of them finds the task as that run left it, its config included (a tool
+        server setup started in the box keeps its url): it runs neither `Task.setup`
+        nor `Task.restore` (`Rollout.open`)."""
         self._lock = asyncio.Lock()
         # On the backend: every view of the box (`with_env`, `with_user`) shares it.
         runtime.backend.__dict__[_ATTR] = self
@@ -143,7 +145,7 @@ class Box:
             old = backend.adopt(fresh)
             backend.__dict__[_ATTR] = self
             self.generation += 1
-            self.hosted = set()
+            self.hosted = {}
             self.restored = self.latest = Checkpoint(
                 id=source.id, turns=0, restored=True, time=time.time()
             )
