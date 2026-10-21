@@ -33,8 +33,9 @@ class OpenCodeCompactionConfig(BaseConfig):
     """OpenCode's auto-compaction, keyed to the model's context window."""
 
     context_window: PositiveInt
-    """The model's context window in tokens (OpenCode's model `limit.context`). OpenCode
-    also caps each request's `max_completion_tokens` to the room left in it."""
+    """The model's context window in tokens (OpenCode's model `limit.context`, and its
+    `limit.output`, so a request's `max_completion_tokens` is the room left in the
+    window rather than OpenCode's default 32,000)."""
     summarize_at_tokens: PositiveInt | None = None
     """Compact once the conversation reaches this many tokens; must be below
     `context_window`. When unset, OpenCode compacts max(10%, 16k) tokens below it."""
@@ -111,7 +112,13 @@ class OpenCodeHarness(ACPHarness[OpenCodeHarnessConfig]):
         model: dict = {"modelID": ctx.model}
         compaction = self.config.compaction
         if compaction is not None:
-            model["limit"] = {"context": compaction.context_window}
+            # OpenCode caps each request's output at `limit.output`, 32,000 tokens when
+            # unset, and at the room left in the window: with the window as the output
+            # limit, only the window bounds it.
+            model["limit"] = {
+                "context": compaction.context_window,
+                "output": compaction.context_window,
+            }
         settings = {
             "model": "intercept/model",
             "providers": {

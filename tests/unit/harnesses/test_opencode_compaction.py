@@ -57,7 +57,8 @@ def test_compaction_sets_window_and_threshold():
     s = settings(compaction={"context_window": 262144, "summarize_at_tokens": 200000})
     assert s["providers"]["intercept"]["models"]["model"] == {
         "modelID": "m",
-        "limit": {"context": 262144},
+        # The window bounds output too, not OpenCode's default 32,000-token cap.
+        "limit": {"context": 262144, "output": 262144},
     }
     assert s["compaction"] == {"buffer": 62144}
 
@@ -65,7 +66,8 @@ def test_compaction_sets_window_and_threshold():
 def test_window_alone_keeps_opencode_default_threshold():
     s = settings(compaction={"context_window": 262144})
     assert s["providers"]["intercept"]["models"]["model"]["limit"] == {
-        "context": 262144
+        "context": 262144,
+        "output": 262144,
     }
     assert "compaction" not in s
 
