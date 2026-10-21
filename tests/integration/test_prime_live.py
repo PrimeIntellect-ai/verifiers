@@ -12,7 +12,7 @@ import uuid
 import pytest
 
 from verifiers.v1.runtimes import sweep
-from verifiers.v1.runtimes.prime import PrimeBackend, PrimeConfig
+from verifiers.v1.runtimes.backends.prime import PrimeBackend, PrimeConfig
 
 pytestmark = [
     pytest.mark.prime,

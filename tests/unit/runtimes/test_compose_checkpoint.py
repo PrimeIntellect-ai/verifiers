@@ -5,8 +5,7 @@ from contextlib import asynccontextmanager
 import pytest
 
 from verifiers.v1.runtimes import DockerBackend, DockerConfig
-from verifiers.v1.runtimes.modal import ModalBackend, ModalConfig
-from verifiers.v1.runtimes.prime import PrimeBackend, PrimeConfig
+from verifiers.v1.runtimes.backends.prime import PrimeBackend, PrimeConfig
 
 
 async def test_compose_mirrors_do_not_reconfigure_local_docker(tmp_path):
@@ -23,14 +22,14 @@ async def test_compose_mirrors_do_not_reconfigure_local_docker(tmp_path):
     "backend_type,config_type",
     [
         (PrimeBackend, PrimeConfig),
-        (ModalBackend, ModalConfig),
         (DockerBackend, DockerConfig),
     ],
 )
 async def test_composition_preserves_the_declared_workspace(
     monkeypatch, tmp_path, workdir, backend_type, config_type
 ):
-    from verifiers.v1.runtimes import prime, strategies
+    from verifiers.v1.runtimes import strategies
+    from verifiers.v1.runtimes.backends import prime
     from verifiers.v1.runtimes.compose import ComposeSpec
 
     monkeypatch.setattr(prime, "ensure_prime_auth", lambda: None)
@@ -39,7 +38,7 @@ async def test_composition_preserves_the_declared_workspace(
     @asynccontextmanager
     async def services(config, spec, environment, **kwargs):
         seen.append(config.workdir)
-        yield {"main": object()}, None, None
+        yield {"main": object()}, None, None, None
 
     monkeypatch.setattr(strategies, "compose_services", services)
     backend = backend_type(config_type(workdir=workdir))

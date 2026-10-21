@@ -3,7 +3,7 @@
 from pathlib import Path
 
 import verifiers.v1 as vf
-from verifiers.v1.runtimes.subprocess import SubprocessConfig
+from verifiers.v1.runtimes.backends.subprocess import SubprocessConfig
 
 
 class FileTask(vf.Task[vf.TaskData, vf.State, vf.TaskConfig]):

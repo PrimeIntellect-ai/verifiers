@@ -1,5 +1,6 @@
 import os
 import shlex
+from typing import Literal
 
 from pydantic import Field, NonNegativeInt, PositiveInt, field_validator
 from pydantic_config import BaseConfig
@@ -62,6 +63,7 @@ class CompactionConfig(BaseConfig):
 
 
 class BashHarnessConfig(HarnessConfig):
+    dialect: Literal["chat_completions"] = "chat_completions"
     edit: bool = True
     """Offer the local `edit` tool (single-occurrence string replacement in a file) alongside
     `bash`. On by default; set `--env.agent.harness.edit false` for a bash-only agent."""

@@ -976,7 +976,7 @@ async def test_an_episode_run_again_skips_its_finished_calls(
         lambda config: ScriptHarness(config) if config.id == "null" else load(config),
     )
     PairEnv.root, PairEnv.crash = tmp_path / "traces", True
-    env = PairEnv(PairConfig(taskset=vf.TasksetConfig(id="echo-v1")))
+    env = PairEnv(PairConfig(taskset=vf.TasksetConfig(id="echo")))
     ctx = ModelContext(
         model="scripted",
         client=EvalClientConfig(base_url=model.url, api_key_var="SCRIPTED_KEY"),
@@ -1037,7 +1037,7 @@ async def test_an_exchange_cut_after_its_last_turn_replays_into_the_episode(
         lambda config: ScriptHarness(config) if config.id == "null" else load(config),
     )
     TalkEnv.root, TalkEnv.crash = tmp_path / "traces", True
-    env = TalkEnv(PairConfig(taskset=vf.TasksetConfig(id="echo-v1")))
+    env = TalkEnv(PairConfig(taskset=vf.TasksetConfig(id="echo")))
     ctx = ModelContext(
         model="scripted",
         client=EvalClientConfig(base_url=model.url, api_key_var="SCRIPTED_KEY"),
@@ -1100,7 +1100,7 @@ def scoped(model, tmp_path, monkeypatch):
     )
     ScopedEnv.root, ScopedEnv.labels, ScopedEnv.hold = tmp_path, {"job": "j1"}, False
     ScopedEnv.entered, ScopedEnv.release = asyncio.Event(), asyncio.Event()
-    env = ScopedEnv(PairConfig(taskset=vf.TasksetConfig(id="echo-v1")))
+    env = ScopedEnv(PairConfig(taskset=vf.TasksetConfig(id="echo")))
     ctx = ModelContext(
         model="scripted",
         client=EvalClientConfig(base_url=model.url, api_key_var="SCRIPTED_KEY"),
@@ -1187,7 +1187,7 @@ def studio(model, tmp_path, monkeypatch):
         lambda config: ScriptHarness(config) if config.id == "null" else load(config),
     )
     StudioEnv.root, StudioEnv.precheck, StudioEnv.host = tmp_path / "traces", False, []
-    env = StudioEnv(StudioConfig(taskset=vf.TasksetConfig(id="echo-v1")))
+    env = StudioEnv(StudioConfig(taskset=vf.TasksetConfig(id="echo")))
     ctx = ModelContext(
         model="scripted",
         client=EvalClientConfig(base_url=model.url, api_key_var="SCRIPTED_KEY"),
@@ -1198,7 +1198,7 @@ def studio(model, tmp_path, monkeypatch):
 async def crash_in_the_judges_second_write(env, ctx, monkeypatch):
     """Run the episode until the judge's second tool call, then kill it there, as a
     dying env server would: the judge's trace is left as its last per-call save."""
-    original = FakeBackend._write
+    original = FakeBackend.write
     episode = asyncio.current_task()
     writes = {"b.txt": 0}
 
@@ -1210,12 +1210,12 @@ async def crash_in_the_judges_second_write(env, ctx, monkeypatch):
                 await asyncio.Event().wait()
         await original(self, runtime, path, data)
 
-    monkeypatch.setattr(FakeBackend, "_write", write)
+    monkeypatch.setattr(FakeBackend, "write", write)
     try:
         with pytest.raises(asyncio.CancelledError):
             await env.run_episode(task(), ctx)
     finally:
-        monkeypatch.setattr(FakeBackend, "_write", original)
+        monkeypatch.setattr(FakeBackend, "write", original)
         episode.uncancel()
 
 

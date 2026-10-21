@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import copy
 import logging
+import math
 import time
 from collections.abc import Awaitable, Callable
 from contextlib import AsyncExitStack
@@ -24,11 +25,13 @@ from verifiers.v1.errors import (
     SandboxError,
     TaskError,
     ToolsetError,
+    UnscoredError,
     boundary,
 )
 from verifiers.v1.grading import (
     bind_scoring_env,
     grade_task,
+    scoring_network,
     scoring_transaction,
     verifier_runtime,
 )
@@ -36,11 +39,11 @@ from verifiers.v1.harness import Harness, HarnessSession
 from verifiers.v1.interception import Interception, serve_interception
 from verifiers.v1.mcp import SharedToolServer, serve_tools
 from verifiers.v1.runtimes import (
-    ModalConfig,
     Runtime,
     RuntimeConfig,
     make_backend,
 )
+from verifiers.v1.runtimes.private_network import tool_vms
 from verifiers.v1.session import RolloutLimits, RolloutSession, hook_boundary
 from verifiers.v1.state import state_cls
 from verifiers.v1.task import Task
@@ -217,10 +220,7 @@ class Rollout:
             ctx=ctx,
             trace=self.trace,
             network_policy=(
-                NetworkPolicyConfig(allow=[])
-                if isinstance(execution_policy, ModalConfig)
-                and not execution_policy.network_access
-                else execution_policy
+                execution_policy
                 if isinstance(execution_policy, NetworkPolicyConfig)
                 else NetworkPolicyConfig()
             ),
@@ -414,8 +414,20 @@ class Rollout:
                         "task.prompt, or drive the run through agent.interaction() and open "
                         "it with the first turn(message)"
                     )
+                async with boundary(ToolsetError, "building tool servers"):
+                    toolsets = self.task.toolsets(self.task.config)
+                    if self._messaging:
+                        toolsets = [*toolsets, messaging_toolset()]
+                spec = self.task.deployment_spec()
                 self.deployment = runtime.backend.deploy(
-                    spec=self.task.deployment_spec(),
+                    spec=spec,
+                    # Tool servers on Prime VMs of their own boot with the workspace.
+                    tool_vms=tool_vms(
+                        toolsets,
+                        runtime.backend.config,
+                        composed=spec is not None,
+                        borrowed=self._borrowed_runtime is not None,
+                    ),
                     env=runtime.env,
                     config=self._deployment_config,
                     borrowed_runtime=self._borrowed_runtime,
@@ -506,10 +518,6 @@ class Rollout:
                         runtime, self.task.data.agent_user
                     )
                     await self.harness.setup(self._agent_runtime)
-                async with boundary(ToolsetError, "building tool servers"):
-                    toolsets = self.task.toolsets(self.task.config)
-                    if self._messaging:
-                        toolsets = [*toolsets, messaging_toolset()]
                 # `base_url` is the interception server's reachable URL for this rollout.
                 # The harness reaches the model at `{base_url}/v1`; tool servers reach this
                 # rollout's `/state` + `/task` at `base_url` — it's universally reachable
@@ -546,17 +554,27 @@ class Rollout:
                         state_route=self.trace.id,
                         state_base=base_url,
                         services=services,
+                        hosts=self.deployment.hosts,
+                        # Tool servers on VMs of their own, by server name; an explicit
+                        # `service` names only a Compose service.
+                        placements={
+                            name: self.deployment.target(name)
+                            for name in self.deployment.tool_vms
+                        },
                     )
                 )
                 # Setup and service provisioning are complete. Apply the runtime's
                 # execution policy while preserving the framework routes the agent uses.
-                # Compose service names resolve inside the deployment, not as egress.
+                # Service hosts resolve inside the deployment (Compose names, LAN
+                # names), not as egress.
+                internal = {*services, *self.deployment.hosts.values()}
                 await self.deployment.prepare_execution(
                     [
                         url
                         for url in [self._endpoint, *self._urls.values()]
-                        if urlsplit(url).hostname not in services
-                    ]
+                        if urlsplit(url).hostname not in internal
+                    ],
+                    state_route=f"{base_url.rstrip('/')}/state",
                 )
                 async with (
                     boundary(HarnessError, "opening harness session"),
@@ -872,9 +890,10 @@ class Rollout:
             else segment_start + max(0.0, self._agent_time_remaining)
         )
         # Prefer an intercepted model/tool error to the harness exit it caused.
+        deadline = asyncio.timeout_at(self.deadline_at)
         try:
             self._in_step = True
-            async with asyncio.timeout_at(self.deadline_at):
+            async with deadline:
                 assert self._harness_session is not None
                 if messages is not None and self._session.request_interceptors:
                     prepared, rewrites = await self._session.prepare_users(
@@ -898,6 +917,12 @@ class Rollout:
             return False
         except Exception as e:  # noqa: BLE001 - harness boundary records every rollout failure
             if self._session.stopped:
+                return False
+            # A runtime can report the cancellation the deadline caused as its own
+            # error (Prime's SDK raises one for a cancelled request); the expired
+            # deadline is still the outcome.
+            if deadline.expired():
+                self.timeout("agent")
                 return False
             real = self._session.error
             if real is not None and isinstance(e, RolloutError):
@@ -1172,6 +1197,13 @@ class Rollout:
                                             "runtime": scoring_runtime,
                                         },
                                     )
+                                    if self._scoring_policy.network is not None:
+                                        await scoring_runtime.set_network(
+                                            scoring_network(
+                                                self.trace.agent.config.runtime,
+                                                self._scoring_policy.network,
+                                            )
+                                        )
                                 await self._scoring_task.score(
                                     trace, scoring_runtime, self.deployment
                                 )
@@ -1189,6 +1221,21 @@ class Rollout:
                         # the metrics read what it handed over and left behind.
                         await self._close_harness()
                         await self._score_harness(runtime, self._metrics_deadline())
+                # A nan reward scores nothing: keep it unscored (None) and fail the
+                # rollout after scoring, so it is never retried as a scoring failure.
+                unscored = [
+                    name
+                    for name, reward in trace.rewards.items()
+                    if reward is not None and math.isnan(reward.score)
+                ]
+                if unscored:
+                    for name in unscored:
+                        trace.rewards[name] = None
+                    self.fail(
+                        UnscoredError(
+                            f"reward {', '.join(unscored)} scored nothing (nan)"
+                        )
+                    )
                 trace.timing.scoring.end = time.time()
                 trace.notify()
         except Exception as e:  # noqa: BLE001 - finalize boundary records every rollout failure

@@ -15,6 +15,7 @@ import time
 import uuid
 from collections import defaultdict
 from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, ClassVar, Literal, TypeVar
@@ -484,6 +485,40 @@ _discards: set[asyncio.Task] = set()
 """Background deletes of abandoned checkpoints, held so they are not collected."""
 
 
+def _lease_client() -> Any:
+    from prime_sandboxes import AsyncSandboxClient
+
+    loop = asyncio.get_running_loop()
+    shared = _shared_clients.get(loop)
+    if shared is None:
+        shared = _shared_clients[loop] = _SharedClient(
+            AsyncSandboxClient(background_job_output_concurrency=_OUTPUT_READS)
+        )
+    shared.leases += 1
+    return shared.client
+
+
+async def _release_client(client: Any) -> None:
+    loop = asyncio.get_running_loop()
+    shared = _shared_clients[loop]
+    shared.leases -= 1
+    if not shared.leases:  # the last lease on this loop closes the client
+        del _shared_clients[loop]
+        with contextlib.suppress(Exception):
+            await client.aclose()
+
+
+@asynccontextmanager
+async def leased_client() -> AsyncIterator[Any]:
+    """This event loop's shared client, for calls that belong to no one sandbox, such as
+    LAN networks."""
+    client = _lease_client()
+    try:
+        yield client
+    finally:
+        await _release_client(client)
+
+
 def set_base_sandbox_labels(labels: list[str]) -> None:
     """Set process-wide base labels attached to every Prime sandbox, extended by each
     runtime's ``PrimeConfig.labels``. Call it in the process that creates the sandboxes
@@ -604,9 +639,9 @@ HOSTS_ENTRY = (
 
 
 class PrimeBackend(RuntimeBackend):
-    supports_user: ClassVar[bool] = True
-    supports_expose: ClassVar[bool] = False
-    is_local: ClassVar[bool] = False
+    SUPPORTS_TASK_IMAGES: ClassVar[bool] = True
+    SUPPORTS_COMPOSE: ClassVar[bool] = True
+    SUPPORTS_USER_SWITCHING: ClassVar[bool] = True
 
     def __init__(self, config: PrimeConfig, name: str | None = None) -> None:
         ensure_prime_auth()
@@ -624,10 +659,9 @@ class PrimeBackend(RuntimeBackend):
         self.placed = False
         """The box has answered an exec: a placement lost from now on is the box lost,
         not an outage."""
-
-    @property
-    def supports_live_processes(self) -> bool:
-        return True
+        # A LAN network (id, tags) to join as the sandbox boots: prime-sandboxes joins it
+        # once it is running, within `wait_for_creation` on the creating client.
+        self.lan: tuple[str, list[str]] | None = None
 
     def _kind(
         self, error: BaseException, default: SandboxErrorKind = "unknown"
@@ -688,16 +722,9 @@ class PrimeBackend(RuntimeBackend):
             delay = min(delay * 2, HOLD_MAX_S)
 
     async def start(self) -> None:
-        from prime_sandboxes import AsyncSandboxClient, CreateSandboxRequest
+        from prime_sandboxes import CreateSandboxRequest
 
-        loop = asyncio.get_running_loop()
-        shared = _shared_clients.get(loop)
-        if shared is None:
-            shared = _shared_clients[loop] = _SharedClient(
-                AsyncSandboxClient(background_job_output_concurrency=_OUTPUT_READS)
-            )
-        shared.leases += 1
-        self._client = shared.client
+        self._client = _lease_client()
         # Map the resources onto prime's API (minutes, split GPU; memory/disk are already
         # GB). gpu_type/region are only sent when set (else provider-chosen).
         gpu_type, gpu_count = parse_gpu(self.config.gpu)
@@ -724,6 +751,8 @@ class PrimeBackend(RuntimeBackend):
                 "docker_image": self.config.image,
                 "disk_size_gb": self.config.disk,
             }
+        if self.lan is not None:
+            options["lan_network_id"], options["lan_tags"] = self.lan
         scope = run_scope()
         labels = [*BASE_LABELS, *self.config.labels, scope]
 
@@ -898,10 +927,14 @@ class PrimeBackend(RuntimeBackend):
             )
             await self._held("boot", wait, attempts=1)
 
-    async def prepare_execution(self, routes: list[str] | None) -> None:
-        """Apply the host policy after setup and wait until the platform enforces it."""
+    async def prepare_execution(
+        self, routes: list[str] | None, network: NetworkPolicyConfig | None = None
+    ) -> None:
+        """Apply the host policy, or `network`, after setup and wait until the platform
+        enforces it."""
         if not self.network_restricted:
             return
+        config = network or self.config
         try:
             if routes is None:
                 policy = {"allow": ["*"]}
@@ -911,10 +944,10 @@ class PrimeBackend(RuntimeBackend):
                         h for h in (urlsplit(route).hostname for route in routes) if h
                     )
                 )
-                if self.config.allow == ["*"]:
-                    policy = {"deny": self.config.block}
+                if config.allow == ["*"]:
+                    policy = {"deny": config.block}
                 else:
-                    entries = list(dict.fromkeys([*hosts, *self.config.allow]))
+                    entries = list(dict.fromkeys([*hosts, *config.allow]))
                     validate_egress_lists(entries, None)
                     policy = {"allow": entries} if entries else {"deny": ["*"]}
             status = await self._client.set_network(self.info.id, **policy)
@@ -978,7 +1011,7 @@ class PrimeBackend(RuntimeBackend):
         platform's filter still holds every destination either way."""
         if not block and not self._routes_blocked:
             return
-        result = await self._run(
+        result = await self.run(
             Runtime(self),
             ["sh", "-c", _NO_ROUTE, "vf-egress", "block" if block else "open"],
             {},
@@ -1002,7 +1035,7 @@ class PrimeBackend(RuntimeBackend):
         `unshare` and `nsenter` in the image; without them commands run as before."""
         if self._pid_namespace:
             return
-        result = await self._run(Runtime(self), ["sh", "-c", _PID_NAMESPACE], {})
+        result = await self.run(Runtime(self), ["sh", "-c", _PID_NAMESPACE], {})
         self._pid_namespace = result.exit_code == 0
         if not self._pid_namespace:
             logger.warning(
@@ -1069,7 +1102,7 @@ class PrimeBackend(RuntimeBackend):
         )
         return dropped, None
 
-    async def _run(
+    async def run(
         self, runtime: Runtime, argv: list[str], env: dict[str, str]
     ) -> ProgramResult:
         try:
@@ -1166,7 +1199,7 @@ class PrimeBackend(RuntimeBackend):
         verdict = (result.stdout or "").strip()
         return {"alive": True, "dead": False}.get(verdict)
 
-    async def _open_process(
+    async def exec(
         self, runtime: Runtime, argv: list[str], env: dict[str, str]
     ) -> RuntimeProcess:
         try:
@@ -1182,7 +1215,7 @@ class PrimeBackend(RuntimeBackend):
             )
         except Exception as e:
             raise SandboxError(
-                f"prime live process failed to start: {e}",
+                f"prime streaming process failed to start: {e}",
                 kind=self._kind(e, "exec"),
             ) from e
         return PrimeProcess(process)
@@ -1295,16 +1328,18 @@ class PrimeBackend(RuntimeBackend):
 
     async def expose(self, port: int) -> str:
         raise SandboxError(
-            "Prime VM sandboxes do not support port exposure; colocate the service "
-            "with its consumer, or use a docker or modal service runtime"
+            "the prime runtime cannot expose a port; colocate the service with its "
+            "consumer"
         )
 
-    async def _run_background(
+    async def run_background(
         self, runtime: Runtime, argv: list[str], env: dict[str, str], log: str
     ) -> None:
+        # A server-owned job runs without a client stream for its whole life.
         try:
             command, user = await self._job(
-                runtime, f"exec {shlex.join(argv)} > {shlex.quote(log)} 2>&1"
+                runtime,
+                f"exec {shlex.join(argv)} > {shlex.quote(log)} 2>&1 < /dev/null",
             )
             await self._in_workdir(
                 lambda: self._client.start_background_job(
@@ -1321,7 +1356,7 @@ class PrimeBackend(RuntimeBackend):
                 kind=self._kind(e, "exec"),
             ) from e
 
-    async def _read(
+    async def read(
         self, runtime: Runtime, path: str, max_bytes: int | None = None
     ) -> bytes:
         # The file API acts as the default user; a user view reads through exec.
@@ -1380,7 +1415,7 @@ class PrimeBackend(RuntimeBackend):
         except Exception as e:
             raise SandboxError(f"read {path!r}: {e}", kind=self._kind(e, "io")) from e
 
-    async def _write(self, runtime: Runtime, path: str, data: bytes) -> None:
+    async def write(self, runtime: Runtime, path: str, data: bytes) -> None:
         # The gateway creates missing parents and uploads binary data without command-line
         # limits. Resolve relative paths here because uploads do not use this runtime's workdir.
         target = (
@@ -1573,10 +1608,4 @@ class PrimeBackend(RuntimeBackend):
         except Exception as e:  # noqa: BLE001 - provider teardown is best-effort
             logger.warning("prime: failed to delete sandbox %s: %s", self.info.id, e)
         finally:
-            loop = asyncio.get_running_loop()
-            shared = _shared_clients[loop]
-            shared.leases -= 1
-            if not shared.leases:  # last runtime on this loop closes the client
-                del _shared_clients[loop]
-                with contextlib.suppress(Exception):
-                    await client.aclose()
+            await _release_client(client)

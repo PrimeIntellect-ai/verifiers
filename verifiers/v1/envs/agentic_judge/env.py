@@ -19,8 +19,10 @@ from verifiers.v1.judges.rubric import (
     Criterion,
     RubricVerdicts,
     checked_criteria,
+    criterion_metrics,
     load_criteria,
     score_verdicts,
+    weighted_score,
 )
 from verifiers.v1.utils.compile import validate_pairing
 
@@ -46,10 +48,7 @@ SOLVED = Criterion(
 
 
 def _verdict_section(criteria: list[Criterion]) -> str:
-    listing = "\n".join(
-        f"- {c.name}: {c.text} (answer one of, worst to best: {', '.join(c.choices)})"
-        for c in criteria
-    )
+    listing = "\n".join(c.render() for c in criteria)
     return f"""\
 ## Your verdict
 
@@ -166,8 +165,7 @@ class JudgeTask(vf.Task):
                 image=solved.image,
                 workdir=solved.workdir,
                 resources=solved.resources,
-                network_allow=solved.network_allow,
-                network_block=solved.network_block,
+                network=solved.network,
             ),
             files=files,
         )
@@ -281,7 +279,7 @@ async def judge_solution(
 ) -> tuple[dict[str, float], vf.Trace]:
     """Run `judge` on `solution` in its scoring workspace `runtime`, the box an
     `on_score` callback gets, and return each criterion's score (its verdict
-    normalized to [0, 1], `score_verdicts`) with the judge's trace. `isolated` says
+    scored by `Criterion.score`) with the judge's trace. `isolated` says
     whether `runtime` is a fresh verifier or the solver's own box; `durable`, when
     given, is passed to the judge's `run`. A judge run that fails, or a verdict that
     is malformed or misses a criterion, raises: no score."""
@@ -293,9 +291,8 @@ async def judge_solution(
         "workdir": runtime.config.workdir,
     }
     if isinstance(runtime.config, NetworkPolicyConfig):
-        updates.update(
-            network_allow=runtime.config.allow,
-            network_block=runtime.config.block,
+        updates["network"] = NetworkPolicyConfig(
+            allow=runtime.config.allow, block=runtime.config.block
         )
     judge_task = judge_task.with_data(**updates)
     # A per-invocation view retains episode accounting and concurrency while
@@ -358,17 +355,21 @@ class AgenticJudgeEnv(vf.Env[AgenticJudgeEnvConfig]):
         # The judge grades the policy; its tokens are never training data.
         agents.judge.trainable = False
 
-    def _record_verdict(self, solution: vf.Trace, scores: dict[str, float]) -> None:
+    def _record_verdict(
+        self, solution: vf.Trace, scores: dict[str, float], verdict: vf.Trace
+    ) -> None:
+        verdicts = RubricVerdicts.model_validate(verdict.info.get("verdict")).verdicts
         criteria = self.config.task.resolved_criteria()
-        for criterion in criteria:
-            solution.record_metric(f"judge/{criterion.name}", scores[criterion.name])
+        solution.record_metrics(criterion_metrics("judge", verdicts, criteria, scores))
         if self.config.score.task_weight != 1.0:
             for reward in solution.rewards.values():
                 if reward is not None:
                     reward.weight *= self.config.score.task_weight
-        total = sum(criterion.weight for criterion in criteria)
-        reward = sum(c.weight * scores[c.name] for c in criteria) / total
-        solution.record_reward("judge", reward, weight=self.config.score.judge_weight)
+        solution.record_reward(
+            "judge",
+            weighted_score(scores, criteria),
+            weight=self.config.score.judge_weight,
+        )
 
     async def run(self, task: vf.Task, agents: vf.Agents) -> None:
         policy = resolve_scoring(task.scoring, self.config.solver.scoring)
@@ -380,13 +381,13 @@ class AgenticJudgeEnv(vf.Env[AgenticJudgeEnvConfig]):
         validate_pairing(self._harnesses["judge"], JudgeTask, workspace)
 
         async def judge(solution: vf.Trace, runtime: vf.Runtime) -> None:
-            scores, _ = await judge_solution(
+            scores, verdict = await judge_solution(
                 agents.judge,
                 solution,
                 runtime,
                 self.config.task,
                 isolated=policy.mode == "isolated",
             )
-            self._record_verdict(solution, scores)
+            self._record_verdict(solution, scores, verdict)
 
         await agents.solver.run(task, on_score=judge)

@@ -41,6 +41,7 @@ from verifiers.v1.types import (
     SamplingMask,
     Tool,
     ToolMessage,
+    TopLogprobs,
     Usage,
     UserMessage,
     content_text,
@@ -56,6 +57,7 @@ EXCLUDE_FIELDS: dict = {
         "__all__": {
             "routed_experts",
             "sampling_mask",
+            "top_logprobs",
         }
     }
 }
@@ -506,6 +508,24 @@ class Branch(BaseModel):
         return SamplingMask(ids=ids, counts=np.concatenate(counts_parts))
 
     @property
+    def top_logprobs(self) -> TopLogprobs | None:
+        """Top-k sampling heads aligned to this branch's token ids."""
+        heads = [n.top_logprobs for n in self.nodes if n.top_logprobs is not None]
+        if not heads:
+            return None
+        counts = []
+        for node in self.nodes:
+            rows = np.zeros(len(node.mask), dtype=np.int32)
+            if node.top_logprobs is not None:
+                rows[np.nonzero(node.mask)[0]] = node.top_logprobs.counts
+            counts.append(rows)
+        return TopLogprobs(
+            ids=np.concatenate([head.ids for head in heads]),
+            logprobs=np.concatenate([head.logprobs for head in heads]),
+            counts=np.concatenate(counts),
+        )
+
+    @property
     def usage(self) -> Usage | None:
         return Usage.aggregate(c.usage for c in self.calls if c.usage is not None)
 
@@ -604,10 +624,10 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     timing: Timing = Field(default_factory=Timing)
 
     _head_index: dict = PrivateAttr(default_factory=dict)
-    """Physical node key -> node id for the graph builder."""
+    """Dialect -> physical node key -> node id for the graph builder."""
     _replay_view: Any = PrivateAttr(default=None)
     """The harness's `replay_view`, applied to both sides when the graph builder matches
-    a replayed message against a stored node."""
+    a replayed message against a stored node, with the request's dialect."""
     _on_change: Any = PrivateAttr(default=None)
     _kept: bool = PrivateAttr(default=False)
     _pending: dict[int, list[Message]] = PrivateAttr(default_factory=dict)

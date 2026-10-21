@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+from typing import Literal
 
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig, PinnedVersion
@@ -12,6 +13,7 @@ PROGRAM_SOURCE = (Path(__file__).resolve().parent / "program.py").read_text()
 
 
 class MiniSWEAgentHarnessConfig(HarnessConfig):
+    dialect: Literal["chat_completions"] = "chat_completions"
     version: PinnedVersion = "2.4.6"
     """mini-swe-agent release to install, pinned for reproducibility."""
 
@@ -74,4 +76,4 @@ class MiniSWEAgentHarness(Harness[MiniSWEAgentHarnessConfig]):
         await runtime.write(args_file, json.dumps(args).encode())
         await runtime.run(["chmod", "600", args_file], {})
         program = await runtime.prepare_uv_script(source, self.config.resolved_env)
-        return await runtime.run_program([*program, args_file], env)
+        return await runtime.run([*program, args_file], env)

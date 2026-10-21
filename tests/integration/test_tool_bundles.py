@@ -84,7 +84,11 @@ def task(tmp_path) -> HarborTask:
 async def graded(task: HarborTask, act) -> vf.Trace:
     trace = vf.Trace(
         task=vf.TraceTask.of(task),
-        agent=vf.AgentInfo(config=vf.AgentConfig(model="unused")),
+        agent=vf.AgentInfo(
+            config=vf.AgentConfig(
+                model="unused", runtime=vf.DockerConfig(image=IMAGE, workdir="/app")
+            )
+        ),
     )
     backend = make_backend(vf.DockerConfig(image=IMAGE, workdir="/app"))
     deployment = backend.deploy(

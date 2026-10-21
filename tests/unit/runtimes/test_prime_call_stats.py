@@ -2,7 +2,7 @@
 
 import logging
 
-from verifiers.v1.runtimes import prime
+from verifiers.v1.runtimes.backends import prime
 
 
 def test_call_stats_summarize_once_an_interval_and_start_over(

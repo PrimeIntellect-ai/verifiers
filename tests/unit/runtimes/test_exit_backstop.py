@@ -17,13 +17,16 @@ class Counted(base.RuntimeBackend):
     async def start(self) -> None:
         return None
 
-    async def _run(self, runtime, argv, env):  # pragma: no cover - never run
+    async def exec(self, runtime, argv, env):  # pragma: no cover - never run
         raise NotImplementedError
 
-    async def _read(self, *args, **kwargs):  # pragma: no cover - never run
+    async def run(self, runtime, argv, env):  # pragma: no cover - never run
         raise NotImplementedError
 
-    async def _write(self, *args, **kwargs):  # pragma: no cover - never run
+    async def read(self, *args, **kwargs):  # pragma: no cover - never run
+        raise NotImplementedError
+
+    async def write(self, *args, **kwargs):  # pragma: no cover - never run
         raise NotImplementedError
 
     def cleanup(self) -> None:

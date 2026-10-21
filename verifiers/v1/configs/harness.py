@@ -9,7 +9,7 @@ from typing import Annotated, Literal
 from pydantic import ConfigDict, Field, FiniteFloat
 from pydantic_config import BaseConfig
 
-from verifiers.v1.types import ID
+from verifiers.v1.types import ID, DialectName
 
 PinnedVersion = Annotated[str, Field(pattern=r"^[A-Za-z0-9._+-]+$")]
 """A release/tag a harness pins its program install to."""
@@ -52,6 +52,9 @@ class HarnessConfig(BaseConfig):
     tool_timeout: FiniteFloat = Field(600.0, gt=0)
     """Seconds a single MCP tool call may take; raise it for tools that boot a VM."""
     disabled_tools: list[str] | None = None
+    dialect: DialectName | Literal["auto"] = "auto"
+    """Model API wire format the program speaks. `auto` lets the program pick, e.g. from
+    the model. Each harness narrows this to the formats it can select."""
     skills: list[SkillSource] = Field(default_factory=list)
     """Host skill folders or `{runtime: path}` roots of skills inside the runtime.
     Sources are installed in order; later files override matching earlier files.

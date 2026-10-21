@@ -710,7 +710,7 @@ async def test_message_agent_steers_a_sibling_seat(model):
     seat = {"runtime": {"type": "subprocess"}, "harness": {"id": "null"}}
     env = PairEnv(
         PairConfig(
-            taskset=vf.TasksetConfig(id="echo-v1"),
+            taskset=vf.TasksetConfig(id="echo"),
             max_concurrent_agents=None,
             lead=vf.AgentConfig(**seat, message_agents=True),
             worker=vf.AgentConfig(**seat),

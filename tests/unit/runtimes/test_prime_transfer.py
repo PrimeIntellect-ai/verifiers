@@ -17,9 +17,10 @@ from prime_sandboxes.exceptions import (
 from prime_sandboxes.models import CommandResponse
 
 from verifiers.v1.errors import SandboxError
-from verifiers.v1.runtimes import Runtime, prime
+from verifiers.v1.runtimes import Runtime
+from verifiers.v1.runtimes.backends import prime
+from verifiers.v1.runtimes.backends.prime import PrimeBackend, PrimeConfig
 from verifiers.v1.runtimes.base import ProgramResult
-from verifiers.v1.runtimes.prime import PrimeBackend, PrimeConfig
 
 PART = 10
 
@@ -80,7 +81,7 @@ def runtime(monkeypatch) -> Runtime:
         )
         return ProgramResult(done.returncode, done.stdout, done.stderr)
 
-    monkeypatch.setattr(PrimeBackend, "_run", run)
+    monkeypatch.setattr(PrimeBackend, "run", run)
     box = PrimeBackend(PrimeConfig(transfer_timeout=42))
     box.info.id = "sb1"
     box._client = LocalBoxClient()

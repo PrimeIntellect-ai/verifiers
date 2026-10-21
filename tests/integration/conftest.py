@@ -5,8 +5,8 @@ model-driven tests skip.
 
 Each behavior module fixes one task and fans it across the harness x runtime grid in
 `grid.py`, which also says why a cell is skipped. `run` drives the `Env` API in-process,
-the calls the eval CLI makes. The placement fixtures below are indirect-only: they translate a parametrized value, and using one without
-`indirect=True` fails loudly.
+the calls the eval CLI makes. The placement fixtures below are indirect-only: they
+translate a parametrized value, and using one without `indirect=True` fails loudly.
 """
 
 import asyncio
@@ -29,7 +29,7 @@ CI_REASONING_EFFORT = "low"
 CI_JUDGE = {"model": CI_MODEL, "sampling": {"reasoning_effort": CI_REASONING_EFFORT}}
 CI_DECISION_JUDGE = {"model": "cloudflare/clef"}
 
-# Fixture tasksets (echo-v1, echo-agentic-v1, ...) live in tests/integration/fixtures,
+# Fixture tasksets (echo, echo-agentic, ...) live in tests/integration/fixtures,
 # added to the path via `pythonpath` in pyproject so the loader resolves them by id.
 
 LIVE_FIXTURES = {"run", "live_ctx"}
@@ -46,12 +46,15 @@ def harness_runtime(request) -> dict:
 @pytest.fixture
 def tool_runtime(request) -> dict:
     """A `taskset.task.tools` override placing the tool server: `colocated` (inside the harness's
-    runtime), `service` (in the task's `tools` Compose service) or its own runtime, by type."""
+    runtime), `service` (in the task's `tools` Compose service), `service-vm` (in the task's
+    `tools-vm` service VM) or its own runtime, by type."""
     if request.param == "colocated":
         return {"colocated": True}
     if request.param == "service":
         return {"service": "tools"}
-    return {"runtime": {"type": request.param}}
+    if request.param == "service-vm":
+        return {"service": "tools-vm"}
+    return {"runtime": runtime_config(request.param)}
 
 
 # Built-in harnesses are bundled in the `harnesses` package; the agent CLIs (`rlm` /
@@ -67,7 +70,7 @@ def harness(request) -> HarnessConfig:
 def pytest_configure(config) -> None:
     """Self-launching tool servers run `python -m <module>` in a fresh subprocess, which
     inherits `PYTHONPATH` but not pytest's in-process `pythonpath`. Put the fixture dir on
-    `PYTHONPATH` so a fixture server module (e.g. `tool_response_image_v1`)
+    `PYTHONPATH` so a fixture server module (e.g. `tool_response_image`)
     resolves there too — an installed example package (e.g. `glossary`) already would."""
     config.addinivalue_line(
         "markers", "opencode: integration cells on the OpenCode harness"
@@ -177,7 +180,7 @@ def run():
     makes (`serving`, `slots`, `run_slot`, retries included), without its run
     directory, platform push, or dashboard. The Examples job covers that CLI layer."""
 
-    async def _run(taskset: str, **kwargs) -> list[Episode]:
+    async def _episodes(taskset: str, **kwargs) -> list[Episode]:
         config = _eval_config(taskset, **kwargs)
         env = load_environment(config.env)
         tasks = list(env.taskset.select(config.select))
@@ -195,7 +198,7 @@ def run():
                 )
             )
 
-    return _run
+    return _episodes
 
 
 @pytest.fixture

@@ -27,7 +27,13 @@ from verifiers.v1.configs.runtime import (
     intersect_network_hosts,
     parse_network_rule,
 )
-from verifiers.v1.types import Request, Response, Sampling, SamplingConfig
+from verifiers.v1.types import (
+    DialectName,
+    Request,
+    Response,
+    Sampling,
+    SamplingConfig,
+)
 
 RespT = TypeVar("RespT", bound=BaseModel)
 RawRequest = dict[str, Any]
@@ -263,6 +269,9 @@ class Dialect(ABC, Generic[RespT]):
     rewriting them. Implement a `Dialect` + register it in `dialects.DIALECTS` and a harness
     speaking that format works end-to-end."""
 
+    name: ClassVar[DialectName]
+    """The wire format's name, passed to `Harness.replay_view`."""
+
     sampling_fields: ClassVar[frozenset[str]] = frozenset()
     """Request keys that are call settings — what shapes generation given the same
     conversation: decoding knobs, budgets/stops, reasoning effort, output contract.
@@ -307,7 +316,7 @@ class Dialect(ABC, Generic[RespT]):
         client ends on an earlier event (e.g. Responses' `response.completed`) overrides this."""
         return is_sse_done_event(chunk)
 
-    def error_body(self, message: str) -> dict:
+    def error_body(self, message: str, *, status_code: int = 400) -> dict:
         """An error payload in this format's error shape (OpenAI by default)."""
         return {"error": {"message": message, "type": "invalid_request_error"}}
 

@@ -19,7 +19,10 @@ from verifiers.v1.harness import Harness
 from verifiers.v1.harnesses.bash import harness as bash
 from verifiers.v1.harnesses.utils import compaction, core, mcp
 from verifiers.v1.runtimes import Runtime
-from verifiers.v1.runtimes.subprocess import SubprocessBackend, SubprocessConfig
+from verifiers.v1.runtimes.backends.subprocess import (
+    SubprocessBackend,
+    SubprocessConfig,
+)
 from verifiers.v1.task import TaskData
 from verifiers.v1.types import (
     AssistantMessage,

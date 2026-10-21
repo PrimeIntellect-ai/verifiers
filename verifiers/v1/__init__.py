@@ -106,6 +106,7 @@ from verifiers.v1.errors import (
     TaskError,
     ToolsetError,
     TunnelError,
+    UnscoredError,
     outage_kind,
 )
 from verifiers.v1.grading import grade_submission
@@ -128,9 +129,9 @@ from verifiers.v1.mcp import (
 )
 from verifiers.v1.probe import ProbeCheck, ProbeReport, probe
 from verifiers.v1.runtimes import (
-    ApptainerConfig,
+    CustomRuntimeConfig,
     DockerConfig,
-    PodmanConfig,
+    NetworkPolicyConfig,
     PrimeConfig,
     ProgramResult,
     Runtime,
@@ -189,6 +190,7 @@ from verifiers.v1.types import (
     Tool,
     ToolCall,
     ToolMessage,
+    TopLogprobs,
     TurnTokens,
     Usage,
     UserMessage,
@@ -338,6 +340,7 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "Branch",
     "TurnTokens",
     "SamplingMask",
+    "TopLogprobs",
     "Timing",
     "TimeSpan",
     "TimeSplit",
@@ -376,6 +379,7 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "SandboxError",
     "SandboxErrorKind",
     "TaskError",
+    "UnscoredError",
     "InterceptionError",
     "TunnelError",
     # clients
@@ -412,8 +416,8 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "ProgramResult",
     "SubprocessConfig",
     "DockerConfig",
-    "PodmanConfig",
-    "ApptainerConfig",
+    "CustomRuntimeConfig",
+    "NetworkPolicyConfig",
     "PrimeConfig",
     "Env",
     "SingleAgentEnv",

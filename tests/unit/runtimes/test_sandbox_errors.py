@@ -24,9 +24,9 @@ from prime_sandboxes.exceptions import (
 
 import verifiers.v1 as vf
 from verifiers.v1.errors import SandboxError, error_kind, sandbox_error_kind
-from verifiers.v1.runtimes import prime
+from verifiers.v1.runtimes.backends import prime
+from verifiers.v1.runtimes.backends.prime import PrimeBackend, PrimeConfig
 from verifiers.v1.runtimes.base import ProgramResult, RuntimeBackend
-from verifiers.v1.runtimes.prime import PrimeBackend, PrimeConfig
 from verifiers.v1.trace import TraceTask
 
 
@@ -406,13 +406,16 @@ class _Box(RuntimeBackend):
     async def start(self) -> None:
         pass
 
-    async def _run(self, runtime, argv, env) -> ProgramResult:
+    async def exec(self, runtime, argv, env):
+        raise NotImplementedError
+
+    async def run(self, runtime, argv, env) -> ProgramResult:
         return ProgramResult(exit_code=0, stdout="", stderr="")
 
-    async def _read(self, runtime, path, max_bytes=None) -> bytes:
+    async def read(self, runtime, path, max_bytes=None) -> bytes:
         return b""
 
-    async def _write(self, runtime, path, data) -> None:
+    async def write(self, runtime, path, data) -> None:
         pass
 
 
@@ -546,13 +549,16 @@ class Probed(RuntimeBackend):
 
     async def start(self) -> None: ...
 
-    async def _run(self, runtime, argv, env) -> ProgramResult:
-        raise self.error
-
-    async def _read(self, runtime, path, max_bytes=None) -> bytes:
+    async def exec(self, runtime, argv, env):
         raise NotImplementedError
 
-    async def _write(self, runtime, path, data) -> None: ...
+    async def run(self, runtime, argv, env) -> ProgramResult:
+        raise self.error
+
+    async def read(self, runtime, path, max_bytes=None) -> bytes:
+        raise NotImplementedError
+
+    async def write(self, runtime, path, data) -> None: ...
 
 
 async def test_alive_tells_a_gone_box_from_an_unreachable_platform():

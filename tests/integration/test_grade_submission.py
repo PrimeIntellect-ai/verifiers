@@ -52,7 +52,11 @@ async def solved_submission(task: AnswerTask, runtime: vf.Runtime) -> vf.Trace:
     await runtime.write("/var/tmp/solver-only", b"solver")
     trace = vf.Trace(
         task=vf.TraceTask.of(task),
-        agent=vf.AgentInfo(config=vf.AgentConfig(model="test/fake-model")),
+        agent=vf.AgentInfo(
+            config=vf.AgentConfig(
+                model="test/fake-model", runtime=runtime.backend.config
+            )
+        ),
     )
     trace.state.artifacts = await vf.collect(runtime, task.data.artifacts)
     return trace

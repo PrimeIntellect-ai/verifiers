@@ -1,6 +1,5 @@
 """Prime tunnel: expose the host interception port via prime_tunnel (frpc). The default;
-works from any host with prime credentials, for consumers in prime *or* modal sandboxes
-alike — and the only tunnel the framework can mint on demand, so it's what the elastic
+works from any host with prime credentials, for consumers in any remote sandbox — and the only tunnel the framework can mint on demand, so it's what the elastic
 pool scales with."""
 
 import asyncio
@@ -11,8 +10,8 @@ from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Literal
 
 from verifiers.v1.interception.tunnel.base import BaseTunnelConfig, Tunnel
+from verifiers.v1.runtimes.backends.prime import run_labels
 from verifiers.v1.runtimes.limiters import CreationLimiter
-from verifiers.v1.runtimes.prime import run_labels
 from verifiers.v1.utils.aio import run_shielded
 from verifiers.v1.utils.prime import ensure_prime_auth
 from verifiers.v1.utils.scope import run_scope

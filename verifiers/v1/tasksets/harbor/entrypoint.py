@@ -222,7 +222,7 @@ async def start_entrypoint(
     Never fails setup itself: the box is what the image's start left, as under Docker,
     and an entrypoint that exits or keeps a shell running past `wait` is recorded."""
     start = entrypoint_argv(dockerfile)
-    if start is None or not runtime.supports_live_processes:
+    if start is None:
         return None
     argv, user = start
     # Root's files, made before the entrypoint runs (it may tighten /tmp, and the

@@ -25,9 +25,9 @@ from verifiers.v1.harnesses.mini_swe_agent import (
 from verifiers.v1.harnesses.null import NullHarness, NullHarnessConfig
 from verifiers.v1.harnesses.terminus_2 import Terminus2Harness, Terminus2HarnessConfig
 from verifiers.v1.harnesses.utils.launch import launch_chat_program
-from verifiers.v1.runtimes import prime
+from verifiers.v1.runtimes.backends import prime
+from verifiers.v1.runtimes.backends.prime import PrimeBackend, PrimeConfig
 from verifiers.v1.runtimes.base import ProgramResult
-from verifiers.v1.runtimes.prime import PrimeBackend, PrimeConfig
 from verifiers.v1.task import TaskData
 from verifiers.v1.types import UserMessage
 
@@ -47,14 +47,12 @@ class RecordingRuntime:
     async def prepare_uv_script(self, source, env, *, activate=True):
         return ["python", "program.py"]
 
-    async def run_program(self, argv, env):
-        self.argv = argv
-        self.env = env
-        return ProgramResult(exit_code=0, stdout="", stderr="")
-
     async def run(self, argv, env):
         if argv[:2] == ["chmod", "600"]:
             self.private.add(argv[2])
+        elif argv[:2] == ["python", "program.py"]:  # the harness's program
+            self.argv = argv
+            self.env = env
         return ProgramResult(exit_code=0, stdout="", stderr="")
 
 
@@ -342,10 +340,15 @@ async def test_a_prepared_script_deleted_on_the_box_is_prepared_again(
     # A privileged solver's `rm -rf /tmp/vf*` took the bash program out from under
     # the solvability judge that borrowed its box next: the runtime's cache still
     # named the script, so setup skipped it and the judge failed to start.
-    from verifiers.v1.runtimes.subprocess import SubprocessBackend, SubprocessConfig
+    from verifiers.v1.runtimes.backends.subprocess import (
+        SubprocessBackend,
+        SubprocessConfig,
+    )
 
     monkeypatch.setattr(SubprocessBackend, "scripts_dir", str(tmp_path / "scripts"))
-    monkeypatch.setattr(SubprocessBackend, "_interpreters", {})
+    monkeypatch.setattr(
+        "verifiers.v1.runtimes.backends.subprocess._UV_INTERPRETERS", {}
+    )
     script = '# /// script\n# dependencies = []\n# ///\nprint("ran")\n'
     backend = SubprocessBackend(SubprocessConfig())
     runtime = backend.bind()
@@ -364,12 +367,17 @@ async def test_a_prepared_script_deleted_on_the_box_is_prepared_again(
 async def test_uv_scripts_respect_runtime_temporary_directory(
     tmp_path, monkeypatch, source
 ):
+    from verifiers.v1.runtimes.backends.subprocess import (
+        SubprocessBackend,
+        SubprocessConfig,
+    )
     from verifiers.v1.runtimes.base import RuntimeBackend
-    from verifiers.v1.runtimes.subprocess import SubprocessBackend, SubprocessConfig
 
     temporary = tmp_path / "agent's temporary directory"
     temporary.mkdir()
-    monkeypatch.setattr(SubprocessBackend, "_interpreters", {})
+    monkeypatch.setattr(
+        "verifiers.v1.runtimes.backends.subprocess._UV_INTERPRETERS", {}
+    )
     explicit = tmp_path / "explicit-script-cache"
     monkeypatch.setattr(
         SubprocessBackend,
@@ -522,9 +530,14 @@ async def test_uv_scripts_keep_their_environment_when_the_image_disables_uv_cach
 ):
     # Task images that set `ENV UV_NO_CACHE=1` made uv delete the script environment
     # it had just synced, so the harness started on a bare interpreter without anyio.
-    from verifiers.v1.runtimes.subprocess import SubprocessBackend, SubprocessConfig
+    from verifiers.v1.runtimes.backends.subprocess import (
+        SubprocessBackend,
+        SubprocessConfig,
+    )
 
-    monkeypatch.setattr(SubprocessBackend, "_interpreters", {})
+    monkeypatch.setattr(
+        "verifiers.v1.runtimes.backends.subprocess._UV_INTERPRETERS", {}
+    )
     monkeypatch.setattr(SubprocessBackend, "scripts_dir", str(tmp_path / "scripts"))
     monkeypatch.setenv("UV_NO_CACHE", "1")
     backend = SubprocessBackend(SubprocessConfig())

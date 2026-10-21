@@ -1,6 +1,7 @@
 import json
 import logging
 from pathlib import Path
+from typing import Literal
 
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig, PinnedVersion
@@ -14,6 +15,7 @@ logger = logging.getLogger(__name__)
 
 
 class Terminus2HarnessConfig(HarnessConfig):
+    dialect: Literal["chat_completions"] = "chat_completions"
     version: PinnedVersion = "0.23.0"
     """Harbor release to install, pinned for reproducibility."""
 
@@ -69,7 +71,7 @@ class Terminus2Harness(Harness[Terminus2HarnessConfig]):
             await runtime.run(["chmod", "600", prompt_file], {})
             source = PROGRAM_SOURCE.replace("{version}", self.config.version)
             program = await runtime.prepare_uv_script(source, self.config.resolved_env)
-            return await runtime.run_program([*program, *args], env)
+            return await runtime.run([*program, *args], env)
         finally:
             # Harbor normally destroys its whole sandbox; this adapter borrows the
             # Verifiers runtime, so clean up Terminus's detached tmux server ourselves.

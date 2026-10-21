@@ -60,7 +60,7 @@ class BadLabelsEnv(PlainEnv):
 
 
 async def run(cls) -> vf.Episode:
-    env = cls(SoloConfig(taskset=vf.TasksetConfig(id="echo-v1")))
+    env = cls(SoloConfig(taskset=vf.TasksetConfig(id="echo")))
     return await env.run_episode(
         vf.Task(vf.TaskData(idx=0, prompt="hi")),
         ModelContext(model="stub", client=EvalClientConfig()),

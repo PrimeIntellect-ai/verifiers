@@ -14,15 +14,15 @@ A taskset is the collection and loader for the work to evaluate or train on. Eac
 
 ## Harness
 
-A harness is the program the model is run in, e.g. Claude Code, Codex or mini-swe-agent.
+A harness is the program the model is run in, e.g. Claude Code, Codex, or mini-swe-agent.
 
 ## Agent
 
-An Agent is the combination of harness × model × runtime policy which produces a `Trace`.
+An agent is the combination of harness × model × runtime policy, which produces a `Trace` for each **rollout**.
 
 ## Environment
 
-An environment has one or multiple agents and defines the control flow among them.
+An environment has one or multiple agents and defines the control flow among them across an **episode** (for example, running a single agent, retrying across multiple attempts, or pairing an agent with a judge or simulated user).
 
 ## Toolset
 
@@ -30,16 +30,19 @@ A set of tools defined by the taskset that are installed as MCP servers into the
 
 ## Trace
 
-A trace records the message graph, rewards, metrics, errors, and one per-call record (`ModelCall`) per provider exchange (its model, sampling, finish reason, usage, timing, and any error), etc. When using verifiers for training with [prime-rl](https://github.com/PrimeIntellect-ai/prime-rl), it stores additional information such as tokens and logprobs, built incrementally using [renderers](https://github.com/PrimeIntellect-ai/renderers).
+A trace records the message graph, rewards, metrics, errors, and one per-call record (`ModelCall`) per provider exchange (its model, sampling, finish reason, usage, timing, and any error). When using verifiers for training with [prime-rl](https://github.com/PrimeIntellect-ai/prime-rl), it stores additional information such as tokens and logprobs, built incrementally using [renderers](https://github.com/PrimeIntellect-ai/renderers).
 
 ## Documentation
 
-- [Getting started](getting_started.md) - How to install verifiers and the needed skills.
+- [Getting started](getting_started.md) — Installation, CLI commands, and skills
 - [Architecture](architecture.md) — How verifiers works behind-the-scenes
+- [Building environments](building-environments.md) — Build a package and separate agent execution from grading
 - [Tasksets](tasksets.md) — How to create tasksets
   - [Harbor Tasksets](harbor.md) — How to create Harbor-based tasksets
 - [Evaluation](evaluation.md) — How to evaluate tasksets
+- [Runtimes](runtimes.md) — Containers, files, resources, deployments, and network access
+- [Debugging](debugging.md) — Check setup, diagnose failures, and re-score saved runs
 - [Harnesses](harnesses.md) — How to build custom harnesses
 - [Agent](agent.md) — How to run standalone agents
-- [Runtime](runtime.md) — Execution handles, deployments, and Compose services
 - [Env](env.md) — How to build multi-agent environments
+- [GEPA](gepa.md) — Optimize a taskset's system prompt

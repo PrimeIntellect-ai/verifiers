@@ -17,7 +17,8 @@ from prime_tunnel.core import client as tunnel_client_module
 from prime_tunnel.models import TunnelInfo, TunnelListPage
 
 import verifiers.v1.interception.tunnel.prime as tunnel_prime
-from verifiers.v1.runtimes import prime, sweep
+from verifiers.v1.runtimes import sweep
+from verifiers.v1.runtimes.backends import prime
 from verifiers.v1.runtimes.prime_images import delete_image
 
 NOW = datetime(2026, 10, 13, tzinfo=UTC)
@@ -231,7 +232,7 @@ async def test_prime_reports_the_stored_bytes_of_the_checkpoints_it_still_holds(
     import prime_sandboxes
 
     from verifiers.v1.runtimes import PrimeConfig
-    from verifiers.v1.runtimes.prime import PrimeBackend
+    from verifiers.v1.runtimes.backends.prime import PrimeBackend
 
     asked: list[list[str]] = []
 

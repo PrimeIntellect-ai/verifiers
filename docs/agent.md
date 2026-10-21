@@ -1,26 +1,50 @@
 # Agent
 
-An `Agent` is a configured `harness` with a model running in a `Runtime`. It can be configured with an `AgentConfig`. An agent is given a `Task` and produces a `Trace`.
+An `Agent` pairs a configured harness and model with a `Runtime`, configured through `AgentConfig`. Calling `agent.run(task)` executes a full rollout on a `Task` and returns its `Trace`:
 
 ```python
+import verifiers.v1 as vf
+
+
 async with vf.make_agent(vf.AgentConfig(model="z-ai/glm-5.2")) as solver:
     trace = await solver.run(vf.Task(vf.TaskData(prompt="What is 2+2?")))
 ```
 
-`agent.interaction(task)` holds a rollout open turn by turn. The caller acts as the
-user, and each `turn()` runs one harness segment (i.e., a message, tool call, tool result etc.). A `Segment` therefore contains messages, tool calls etc.
+If you want to drive a conversation turn by turn instead of running to completion in one shot, `agent.interaction(task)` holds the rollout open as an async context manager. The caller acts as the user, and each call to `turn()` runs one harness segment (which may span several model and tool calls) and returns a `Segment`. If the task already defines a `prompt`, call `turn()` with no arguments to run the opening turn; if `prompt=None`, pass the first user message to `turn(message)`.
+
+You can keep sending follow-up messages until `segment.terminated` is true (subsequent calls after termination return an empty terminated segment without consuming the message), or exit the `async with` block early to end the exchange yourself. Leaving the block finalizes and scores the rollout so `interaction.trace` is ready to inspect:
 
 ```python
-async with agent.interaction(task) as interaction:
-    segment = await interaction.turn("hello")
-    if not segment.terminated:
-        segment = await interaction.turn(f"you said: {segment.last_reply}")
+import verifiers.v1 as vf
+
+
+task = vf.Task(vf.TaskData(prompt=None))
+config = vf.AgentConfig(model="z-ai/glm-5.2", max_turns=3)
+async with vf.make_agent(config) as solver:
+    async with solver.interaction(task) as interaction:
+        segment = await interaction.turn("hello")
+        while not segment.terminated:
+            segment = await interaction.turn(f"you said: {segment.last_reply}")
 
 trace = interaction.trace
 ```
 
-See [Runtime](runtime.md) for execution handles, resource ownership, and deployment
-of the harness, task workspace, and supporting services.
+See [Runtimes](runtimes.md) for execution handles, resource ownership, and deployment of the harness, task workspace, and supporting services.
+
+## Messages during an active turn
+
+`turn()` is designed for sequential exchanges where each user message waits for the previous segment to finish. When you need to send input while the agent is still working, or wake an idle interaction with new input, use `interaction.send()`:
+
+```python
+receipt = await interaction.send(
+    "Also check the empty-input case.", mode="queue", message_id="followup-1"
+)
+```
+
+- `mode="steer"` (the default) injects the message at the harness's next safe point during active work, which requires a harness that supports live steering.
+- `mode="queue"` holds the message until the current turn yields, then delivers any pending messages together in order at the start of the next turn. Because it waits for a turn boundary rather than interrupting an active tool or model call, it does not require steering support.
+
+For tasks that define an initial `prompt`, start the opening `turn()` before calling `send()`. Note that the returned receipt confirms whether the message was accepted for delivery, not that the agent has finished acting on it. Keep the `interaction` context open while the agent works, since exiting the block cancels outstanding deliveries and finishes the rollout.
 
 ## Steering
 
@@ -33,16 +57,14 @@ refuses a steer. `trace.steers` records each steer and the model call it landed 
 
 ## Verification placement
 
-`agent.scoring.mode` selects `shared` or `isolated` scoring. Tasks declare defaults
-through `TaskData.scoring`, using the same `ScoringConfig`. Explicit agent fields
-override task fields; otherwise scoring defaults to `shared`. Isolated verification
-restores collected artifacts into a fresh runtime before task scoring.
-`agent.scoring.runtime` overrides the isolated verifier's runtime.
-`agent.scoring.env` merges over task scoring variables in either placement;
-`${VAR}` and `${VAR:-default}` templates resolve only when scoring starts.
-`agent.scoring.retries` uses `RetryConfig` for isolated scoring, with a default
-`max_retries = 2`. Its rules select retryable errors; retries reuse the completed
-submission in a fresh scoring environment. Shared scoring is not retried.
+`agent.scoring.mode` selects whether task scoring runs in the agent's workspace (`shared`) or in a fresh container (`isolated`). Tasks can declare their own defaults on `TaskData.scoring` via `ScoringConfig`, and any fields explicitly set on `agent.scoring` override the task defaults (falling back to `shared` when neither sets a mode).
+
+When `mode="isolated"`, verifiers restores the task's collected artifacts into a fresh runtime before running task metrics, rewards, and judge plugins:
+
+- `agent.scoring.runtime` optionally overrides the runtime configuration used for the isolated verifier.
+- `agent.scoring.env` merges over `TaskData.scoring.env` in both `shared` and `isolated` modes, resolving `${VAR}` and `${VAR:-default}` templates from the host environment when scoring starts.
+- `agent.scoring.network` sets the task's network policy while scoring runs, replacing `TaskData.scoring.network`; see [network policies](runtimes.md#network-policies).
+- `agent.scoring.retries` configures `RetryConfig` for isolated scoring (defaulting to `max_retries = 2`), reusing the completed submission in a fresh scoring environment whenever a retryable error occurs. Shared scoring is not retried.
 
 ## Shared boxes
 

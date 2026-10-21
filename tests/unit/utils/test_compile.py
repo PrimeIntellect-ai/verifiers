@@ -1,5 +1,5 @@
 """`validate_pairing` rejects a harness x task x runtime combination that can never run,
-before any runtime is provisioned. The integration grid skips the same cells."""
+before any runtime is provisioned. The integration grid refuses the same cells."""
 
 import pytest
 

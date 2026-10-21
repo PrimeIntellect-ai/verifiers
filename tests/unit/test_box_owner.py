@@ -148,7 +148,7 @@ async def test_two_seats_resume_on_the_box_their_owner_restores(
             return box, first, second
 
     writes = {"b.txt": 0}
-    original = FakeBackend._write
+    original = FakeBackend.write
 
     async def write(self, runtime, path, data):
         if path == "b.txt":
@@ -157,7 +157,7 @@ async def test_two_seats_resume_on_the_box_their_owner_restores(
                 raise box_lost()
         await original(self, runtime, path, data)
 
-    monkeypatch.setattr(FakeBackend, "_write", write)
+    monkeypatch.setattr(FakeBackend, "write", write)
     with vf.use_durable(vf.Durable(store, match={"job": "j1"})):
         box, first, failed = await episode()
         assert first.ok and not failed.ok
@@ -229,7 +229,7 @@ async def test_a_box_restores_from_where_a_run_started_before_it_saved(
 
     with vf.use_durable(vf.Durable(store)):
         FakeBackend.failing_checkpoints = set(range(4, 100))  # the reviewer's saves
-        original = FakeBackend._write
+        original = FakeBackend.write
         writes = {"b.txt": 0}
 
         async def write(self, runtime, path, data):
@@ -239,7 +239,7 @@ async def test_a_box_restores_from_where_a_run_started_before_it_saved(
                     raise box_lost()
             await original(self, runtime, path, data)
 
-        monkeypatch.setattr(FakeBackend, "_write", write)
+        monkeypatch.setattr(FakeBackend, "write", write)
         box, first, failed = await episode()
         assert first.ok and not failed.ok and failed.checkpoints == []
         assert failed.labels["box"]["checkpoint"]["id"] == first.checkpoints[-1].id

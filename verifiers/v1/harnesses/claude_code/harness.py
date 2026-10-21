@@ -1,6 +1,7 @@
 """Run Claude Code through the Claude Agent SDK ACP adapter."""
 
 import json
+from typing import Literal
 
 from verifiers.v1.acp import ACPConfig, ACPHarness
 from verifiers.v1.clients import ModelContext
@@ -11,7 +12,7 @@ from verifiers.v1.harnesses.utils.replay import drop_blank_text
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
-from verifiers.v1.types import Message
+from verifiers.v1.types import DialectName, Message
 
 CLAUDE_ACP_DIR = "/var/tmp/vf-claude-agent-acp-{version}-{acp_version}"
 PACKAGES_DIR = f"{CLAUDE_ACP_DIR}/packages"
@@ -32,6 +33,7 @@ touch {ready}
 
 
 class ClaudeCodeHarnessConfig(HarnessConfig):
+    dialect: Literal["anthropic_messages"] = "anthropic_messages"
     version: PinnedVersion = "2.1.278"
     """Claude Code release to install, pinned for reproducibility."""
 
@@ -44,7 +46,7 @@ class ClaudeCodeHarness(ACPHarness[ClaudeCodeHarnessConfig]):
 
     # Claude Code drops whitespace-only text blocks on replay. Closed source: observed
     # with 2.1.278, recheck on version bumps.
-    def replay_view(self, message: Message) -> Message:
+    def replay_view(self, message: Message, dialect: DialectName | None) -> Message:
         return drop_blank_text(message)
 
     async def setup(self, runtime: Runtime) -> None:

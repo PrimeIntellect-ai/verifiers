@@ -10,9 +10,9 @@ import httpx
 import pytest
 
 from verifiers.v1.errors import SandboxError
-from verifiers.v1.runtimes import prime
+from verifiers.v1.runtimes.backends import prime
+from verifiers.v1.runtimes.backends.prime import PrimeBackend, PrimeConfig
 from verifiers.v1.runtimes.limiters import CreationBacklogFull, CreationLimiter
-from verifiers.v1.runtimes.prime import PrimeBackend, PrimeConfig
 
 
 def status_error(status: int, body: dict | None = None) -> httpx.HTTPStatusError:

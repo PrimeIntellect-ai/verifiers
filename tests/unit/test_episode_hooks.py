@@ -100,7 +100,7 @@ class LabeledEnv(vf.Env[DuetConfig]):
 
 
 def env(cls, **config) -> vf.Env:
-    return cls(DuetConfig(taskset=vf.TasksetConfig(id="echo-v1"), **config))
+    return cls(DuetConfig(taskset=vf.TasksetConfig(id="echo"), **config))
 
 
 async def test_trace_labels_land_before_observers(stub_rollouts):

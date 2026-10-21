@@ -23,7 +23,7 @@ import verifiers.v1.rollout as rollout_module
 from verifiers.v1.dialects.chat import message_to_wire
 from verifiers.v1.harnesses.null.harness import NullHarness
 from verifiers.v1.runtimes import ProgramResult, SubprocessConfig
-from verifiers.v1.runtimes.subprocess import SubprocessBackend
+from verifiers.v1.runtimes.backends.subprocess import SubprocessBackend
 from verifiers.v1.utils.retries import RETRY_NOTE, retryable_error
 
 TOOLS = [
@@ -163,10 +163,10 @@ class FakeBackend(SubprocessBackend):
     def restored(self) -> bool:
         return self.source is not None
 
-    async def _write(self, runtime, path: str, data: bytes) -> None:
+    async def write(self, runtime, path: str, data: bytes) -> None:
         if (error := self.doomed.pop(path, None)) is not None:
             raise error()
-        await super()._write(runtime, path, data)
+        await super().write(runtime, path, data)
 
     async def checkpoint(self) -> str:
         FakeBackend.attempts += 1

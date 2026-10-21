@@ -17,11 +17,14 @@ if TYPE_CHECKING:
 class ToolsetConfig(BaseConfig):
     colocated: bool = False
     runtime: RuntimeConfig = SubprocessConfig()
+    """Where the server runs: the evaluator by default. A Prime runtime beside a Prime
+    workspace without Compose services is a VM of the server's own that joins the
+    workspace over the rollout's private network, under its own egress policy."""
     url: str | None = None
     service: str | None = None
-    """Run the server in this service of the task's Compose services (on a Prime or
-    Modal VM). The harness reaches it over the Compose network by the service's name,
-    so the workspace needs no access to whatever the server fronts."""
+    """Run the server in this service of the task's Compose services (on a Prime
+    VM). The harness reaches it over the Compose network by the service's name, so the
+    workspace needs no access to whatever the server fronts."""
 
     @model_validator(mode="after")
     def _one_placement(self):

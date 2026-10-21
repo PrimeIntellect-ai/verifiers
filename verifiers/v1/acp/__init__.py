@@ -27,6 +27,12 @@ from verifiers.v1.utils.aio import run_shielded
 
 ACP_SOURCE = (Path(__file__).resolve().parent / "runner.py").read_text()
 MAX_PACKET_BYTES = 128 * 1024 * 1024
+_STOP_CONDITIONS = {
+    "max_tokens": "max_output_tokens",
+    "max_turn_requests": "max_turns",
+    "refusal": "refusal",
+    "cancelled": "cancelled",
+}
 
 __all__ = ["ACPConfig", "ACPHarness", "ACPTurn"]
 
@@ -116,10 +122,6 @@ class ACPHarness(Harness[ConfigT]):
         data: TaskData,
         tool_interception_url: str | None = None,
     ) -> HarnessSession:
-        if not runtime.supports_live_processes:
-            raise HarnessError(
-                f"harness {self.config.id!r} requires a runtime with live process support"
-            )
         config = await self.prepare_acp(
             ctx, trace, runtime, endpoint, secret, mcp_urls, data
         )
@@ -243,7 +245,7 @@ class ACPHarnessSession(HarnessSession):
             {**self.config.env, "UV_FROZEN": "false"},
             activate=False,
         )
-        process = await self.runtime.open_process(program, self.config.env)
+        process = await self.runtime.exec(program, self.config.env)
         self._process = process
         self._reader = _PacketReader(process.stdout)
         self._response_task = asyncio.create_task(self._read_responses(self._reader))
@@ -359,6 +361,7 @@ class ACPHarnessSession(HarnessSession):
                 raise
         turn = _turn_result(response)
         self.trace.root_reply = turn.reply.strip()
+        self.trace.info["acp_stop_reason"] = turn.stop_reason
         if not response.get("ok"):
             detail = response.get("error") or "ACP session request failed"
             if stderr := self._stderr():
@@ -373,6 +376,8 @@ class ACPHarnessSession(HarnessSession):
         harness = cast(ACPHarness, self.harness)
         harness._consume_protocol_metadata(self.trace, turn.response_metadata)
         harness.acp_turn_result(self.trace, turn)
+        if condition := _STOP_CONDITIONS.get(turn.stop_reason or ""):
+            self.trace.stop(condition)
         result = ProgramResult(exit_code=0, stdout=turn.reply, stderr="")
         _require_model_turn(self.trace, calls_before, result)
         return result

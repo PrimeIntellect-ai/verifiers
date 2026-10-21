@@ -21,7 +21,7 @@ import verifiers.v1.rollout as rollout_module
 import verifiers.v1.runtimes as runtimes_module
 from verifiers.v1.harnesses.null.harness import NullHarness
 from verifiers.v1.runtimes import ProgramResult, SubprocessConfig
-from verifiers.v1.runtimes.subprocess import SubprocessBackend
+from verifiers.v1.runtimes.backends.subprocess import SubprocessBackend
 
 EVENTS: list[str] = []
 SEEN: list[list[str]] = []
