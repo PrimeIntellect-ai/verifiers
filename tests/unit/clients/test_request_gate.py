@@ -724,3 +724,65 @@ async def test_a_resize_reaches_running_processes(tmp_path):
         )
     assert codes == [0, 0]
     assert provider.served == 60 and provider.peak == 4 and provider.rejected == 0
+
+
+async def test_a_request_waiting_on_a_busy_gate_lock_never_stalls_its_event_loop(
+    tmp_path,
+):
+    # Every process on the host flocks the gate's state for each admission. Taken on the
+    # event loop, a contended lock stalled every coroutine of a worker (its box polls among
+    # them) for as long as another process held it: box setups blew their timeouts.
+    import fcntl
+
+    gate = ModelGate(tmp_path, "k", "m")
+    config = RequestGateConfig(max_concurrent=1, adaptive=False)
+    other = os.open(
+        gate.state_path, os.O_RDWR | os.O_CREAT, 0o600
+    )  # another process's lock
+    fcntl.flock(other, fcntl.LOCK_EX)
+    ticks = 0
+
+    async def ticking():
+        nonlocal ticks
+        while True:
+            ticks += 1
+            await asyncio.sleep(0.01)
+
+    ticker = asyncio.create_task(ticking())
+    admission = asyncio.create_task(gate.acquire(config))
+    await asyncio.sleep(0.5)
+    assert not admission.done() and ticks >= 20  # the loop ran while the lock was held
+    fcntl.flock(other, fcntl.LOCK_UN)
+    os.close(other)
+    slot = await asyncio.wait_for(admission, 5)
+    ticker.cancel()
+    gate.release(slot, config, "ok")  # applied on the gate's thread
+    for _ in range(100):
+        if gate.try_admit(config) is not None:
+            break
+        await asyncio.sleep(0.05)
+    else:
+        pytest.fail("the released slot never came back")
+
+
+async def test_a_cancelled_admission_returns_the_slot_its_gate_thread_took(tmp_path):
+    import fcntl
+
+    gate = ModelGate(tmp_path, "k", "m")
+    config = RequestGateConfig(max_concurrent=1, adaptive=False)
+    other = os.open(gate.state_path, os.O_RDWR | os.O_CREAT, 0o600)
+    fcntl.flock(other, fcntl.LOCK_EX)
+    admission = asyncio.create_task(gate.acquire(config))
+    await asyncio.sleep(0.2)
+    admission.cancel()
+    fcntl.flock(other, fcntl.LOCK_UN)
+    os.close(other)
+    with pytest.raises(asyncio.CancelledError):
+        await admission
+    for _ in range(
+        100
+    ):  # the gate thread finishes the admission, then gives the slot back
+        if not gate._held:
+            break
+        await asyncio.sleep(0.05)
+    assert gate._held == set()

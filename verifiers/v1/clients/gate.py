@@ -63,6 +63,7 @@ import time
 import weakref
 from collections import deque
 from collections.abc import AsyncIterator, Callable, Iterator
+from concurrent.futures import Future, ThreadPoolExecutor
 from contextvars import ContextVar
 from pathlib import Path
 from typing import Any, Literal
@@ -148,6 +149,23 @@ def _slug(model: str) -> str:
 def _count(value: Any) -> int:
     """A positive count from the shared state, else 0."""
     return value if type(value) is int and value > 0 else 0
+
+
+_BLOCKING: tuple[int, ThreadPoolExecutor] | None = None
+
+
+def _blocking() -> ThreadPoolExecutor:
+    """The process's threads for the gate's `flock`ed work, so a contended lock never
+    blocks an event loop: every process on the host takes it for each admission, ticket
+    and release, and a loop blocked on it stalls every other coroutine (box polls among
+    them) for as long as the lock is busy."""
+    global _BLOCKING
+    if _BLOCKING is None or _BLOCKING[0] != os.getpid():
+        _BLOCKING = (
+            os.getpid(),
+            ThreadPoolExecutor(max_workers=8, thread_name_prefix="request-gate"),
+        )
+    return _BLOCKING[1]
 
 
 @contextlib.contextmanager
@@ -385,6 +403,14 @@ class ModelGate:
         release is queued, and applied here when `_mutex` is free, else by its holder
         when it leaves."""
         self._releases.append((slot, config, outcome))
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:  # off any event loop: nothing to stall, apply it now
+            self._released()
+        else:
+            _blocking().submit(self._released)
+
+    def _released(self) -> None:
         self._apply_releases()
         self._wake_head()
 
@@ -417,14 +443,12 @@ class ModelGate:
             return
         self._held.discard(slot)
         fcntl.flock(self._fds[slot], fcntl.LOCK_UN)
-        if outcome == "other":
-            return
+        if outcome != "rejected":
+            return  # only a rejection changes the shared state
         with self._state() as state:
             cap = self._cap(state, config)
             limit = self._limit(state, config, cap)
             now = time.time()
-            if outcome == "ok":
-                return
             state["rejections"] = state.get("rejections", 0) + 1
             if (
                 config.adaptive
@@ -447,10 +471,10 @@ class ModelGate:
         with self._queue_lock:
             idle = not self._queue
         if idle:
-            slot = self.try_admit(config)
+            slot = await self._admit(config)
             if slot is not None:
                 return slot
-        ticket = self.take_ticket()
+        ticket = await asyncio.wrap_future(_blocking().submit(self.take_ticket))
         waiter = _Waiter(asyncio.get_running_loop(), ticket)
         with self._queue_lock:
             self._queue.append(waiter)
@@ -461,7 +485,7 @@ class ModelGate:
                 await waiter.event.wait()  # set once it is first
             while True:
                 waiter.event.clear()
-                slot = self.try_admit(config, ticket)
+                slot = await self._admit(config, ticket)
                 if slot is not None:
                     admitted = True
                     return slot
@@ -470,8 +494,7 @@ class ModelGate:
                         await waiter.event.wait()
         finally:
             if not admitted:
-                with contextlib.suppress(OSError):
-                    self.drop_ticket(ticket)
+                _blocking().submit(self._drop_quietly, ticket)
             with self._queue_lock:
                 was_first = bool(self._queue) and self._queue[0] is waiter
                 with contextlib.suppress(ValueError):
@@ -479,6 +502,31 @@ class ModelGate:
                 if was_first:
                     while self._queue and not self._queue[0].wake():
                         self._forget(self._queue.popleft())
+
+    async def _admit(
+        self, config: RequestGateConfig, ticket: int | None = None
+    ) -> int | None:
+        """`try_admit` on a gate thread. Cancelled while it runs, a slot it still takes is
+        released, never kept by a request that is gone."""
+        future = _blocking().submit(self.try_admit, config, ticket)
+        try:
+            return await asyncio.wrap_future(future)
+        except asyncio.CancelledError:
+
+            def undo(done: Future) -> None:
+                if (
+                    not done.cancelled()
+                    and done.exception() is None
+                    and done.result() is not None
+                ):
+                    self.release(done.result(), config, "other")
+
+            future.add_done_callback(undo)
+            raise
+
+    def _drop_quietly(self, ticket: int) -> None:
+        with contextlib.suppress(OSError):
+            self.drop_ticket(ticket)
 
     def close_inherited(self) -> None:
         """Drop the descriptors a forked child inherited: their locks are the parent's."""
