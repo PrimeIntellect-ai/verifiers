@@ -210,8 +210,12 @@ class Runtime:
                     )
                     # Bootstrap dependencies before task networking is restricted;
                     # keep task offline settings on the returned program's processes.
+                    # An image's `UV_NO_CACHE=1` makes uv build the script environment
+                    # in a throwaway cache and delete it on exit, so `uv python find`
+                    # would return a bare interpreter without the script's dependencies.
                     result = await self.run(
-                        ["sh", "-c", command], {**(env or {}), "UV_OFFLINE": "false"}
+                        ["sh", "-c", command],
+                        {**(env or {}), "UV_OFFLINE": "false", "UV_NO_CACHE": "0"},
                     )
                     if result.exit_code != 0:
                         raise RuntimeError(

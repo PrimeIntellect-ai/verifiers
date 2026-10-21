@@ -514,3 +514,29 @@ async def test_a_command_after_the_workdir_was_removed_runs_in_it_again(
     runtime._client = client = LostWorkdirClient()
     result = await runtime.bind().run(["ls"], {})
     assert (result.exit_code, client.made) == (0, ["mkdir -p /app"])
+
+
+async def test_uv_scripts_keep_their_environment_when_the_image_disables_uv_caching(
+    tmp_path, monkeypatch
+):
+    # Task images that set `ENV UV_NO_CACHE=1` made uv delete the script environment
+    # it had just synced, so the harness started on a bare interpreter without anyio.
+    from verifiers.v1.runtimes.subprocess import SubprocessBackend, SubprocessConfig
+
+    monkeypatch.setattr(SubprocessBackend, "_interpreters", {})
+    monkeypatch.setattr(SubprocessBackend, "scripts_dir", str(tmp_path / "scripts"))
+    monkeypatch.setenv("UV_NO_CACHE", "1")
+    backend = SubprocessBackend(SubprocessConfig())
+    runtime = backend.bind()
+    await backend.start()
+    try:
+        argv = await runtime.prepare_uv_script(
+            "# /// script\n# dependencies = []\n# ///\nprint('ready')\n",
+            {"UV_PYTHON": sys.executable, "UV_CACHE_DIR": str(tmp_path / "uv-cache")},
+            activate=False,
+        )
+        result = await runtime.run(argv, {})
+    finally:
+        await backend.teardown()
+    assert str(tmp_path / "uv-cache") in argv[0]
+    assert (result.exit_code, result.stdout) == (0, "ready\n")
