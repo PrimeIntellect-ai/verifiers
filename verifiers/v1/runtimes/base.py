@@ -330,6 +330,15 @@ class RuntimeBackend(ABC):
             await self.prepare_execution(None)
         self._setup_claimed = True
 
+    async def enforce_policy(self) -> None:
+        """Put a restricted runtime under its own policy now, with no framework routes,
+        as `provision_backend` does before it hands a box over. The next
+        `prepare_setup` reopens it for trusted setup."""
+        if not self.network_restricted:
+            return
+        await self.prepare_execution([])
+        self._setup_claimed = True
+
     async def prepare_execution(
         self, routes: list[str] | None, network: NetworkPolicyConfig | None = None
     ) -> None:

@@ -349,6 +349,10 @@ async def test_network_policies(runtime) -> None:
         return (await view.run([*PYTHON, "-c", probe, url], {})).stdout.strip()
 
     async with provisioned(runtime, allow=["pypi.org"], block=[]) as view:
+        # A box provisioned on its own is under its policy until setup opens it.
+        assert await reach(view, "https://pypi.org/simple/") == "ok"
+        assert await reach(view, "https://example.com") == "denied"
+        await view.backend.prepare_setup()
         assert await reach(view, "https://example.com") == "ok", "setup must be open"
         await view.backend.prepare_execution([])
         assert await reach(view, "https://pypi.org/simple/") == "ok"

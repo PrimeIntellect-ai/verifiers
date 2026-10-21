@@ -74,12 +74,41 @@ async def provision_backend(
 ) -> AsyncIterator[RuntimeBackend]:
     """Provision a box from `config` and tear it down on exit.
 
-    `start()` sits inside the `try`: a failed start may already hold a paid sandbox, so
-    it has to reach `stop()` (which is safe on a partially-started runtime)."""
+    A restricted box is under its network policy before it is handed over
+    (`RuntimeBackend.enforce_policy`), so a caller that never reaches
+    `prepare_execution` still runs under it; `prepare_setup()` opens it for trusted
+    setup."""
+    async with _provision(config, name, env, enforce_policy=True) as backend:
+        yield backend
+
+
+@asynccontextmanager
+async def _provision_open_backend(
+    config: RuntimeConfig, env: dict[str, str] | None = None
+) -> AsyncIterator[RuntimeBackend]:
+    """`provision_backend`, but a restricted box is handed over **open**. Framework use
+    only: the caller must apply the policy itself (`prepare_execution`) before anything
+    untrusted runs in the box, or the box keeps open egress."""
+    async with _provision(config, None, env, enforce_policy=False) as backend:
+        yield backend
+
+
+@asynccontextmanager
+async def _provision(
+    config: RuntimeConfig,
+    name: str | None,
+    env: dict[str, str] | None,
+    *,
+    enforce_policy: bool,
+) -> AsyncIterator[RuntimeBackend]:
+    # `start()` sits inside the `try`: a failed start may already hold a paid sandbox,
+    # so it has to reach `stop()` (which is safe on a partially-started runtime).
     backend = make_backend(config, name)
     backend.env = dict(env or {})
     try:
         await backend.start()
+        if enforce_policy:
+            await backend.enforce_policy()
         yield backend
     finally:
         await backend.stop()

@@ -222,6 +222,8 @@ block = ["huggingface.co", "*.huggingface.co"]
 
 Network policies take effect after task and harness `setup` complete (so `setup` can still download packages or assets) and remain active through `finalize` and scoring (except in Harbor's shared verifier mode, which [reopens network access during grading](harbor.md#network-policies)).
 
+A box you provision yourself, with `Agent.provision()` or `provision_runtime`, is under its runtime's policy by the time it is handed to you (it is open only while it boots), not only once an agent starts. A run placed into it opens it for that run's setup; `runtime.backend.prepare_setup()` opens it by hand.
+
 Scoring can have a policy of its own. `ScoringConfig.network` is the task's policy while scoring runs, in place of `TaskData.network`, and combines with the runtime's rules the same way. Verifiers applies it right before the scoring hooks run, in the workspace (`shared`) or the fresh verifier (`isolated`), so a grader that installs packages under a no-egress task needs no network code:
 
 ```python

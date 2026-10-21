@@ -15,7 +15,7 @@ from verifiers.v1.runtimes import (
     Runtime,
     RuntimeBackend,
     RuntimeConfig,
-    provision_backend,
+    _provision_open_backend,
 )
 from verifiers.v1.runtimes.base import (
     register,
@@ -57,7 +57,8 @@ class _DeploymentStrategy:
     async def verifier(
         self, deployment: Deployment, config: RuntimeConfig, env: dict[str, str]
     ) -> AsyncIterator[RuntimeBackend]:
-        async with provision_backend(config, env=env) as backend:
+        # Grading stages the verifier open, then applies its policy.
+        async with _provision_open_backend(config, env=env) as backend:
             yield backend
 
 

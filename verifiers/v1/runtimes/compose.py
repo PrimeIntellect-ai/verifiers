@@ -25,7 +25,7 @@ from verifiers.v1.runtimes import (
     DockerConfig,
     RuntimeBackend,
     RuntimeConfig,
-    provision_backend,
+    _provision_open_backend,
 )
 from verifiers.v1.runtimes.backends.docker import cli
 from verifiers.v1.runtimes.base import SERVICE_PORT, ProgramResult
@@ -366,7 +366,8 @@ async def provision_vm_host(
     host_config = VM_HOST
     if spec.host_image is not None:
         host_config = {**host_config, "image": spec.host_image}
-    async with provision_backend(config.model_copy(update=host_config)) as host:
+    # The host installs Docker open; its services' `prepare_execution` applies the policy.
+    async with _provision_open_backend(config.model_copy(update=host_config)) as host:
         runtime = host.bind()
         install = await runtime.run(["sh", "-c", INSTALL_DOCKER], {})
         if install.exit_code:
