@@ -13,6 +13,7 @@ it runs) passes to `chown` are left alone, since the Dockerfile set their owner 
 did not hold (created later under the same uid).
 """
 
+import asyncio
 import os
 import posixpath
 import re
@@ -119,22 +120,25 @@ def context_files(dockerfile: Path) -> list[tuple[str, bool, int, int]]:
     def executed(arguments: str) -> str:
         text = [arguments]
         for landed, source in scripts.items():
-            if landed in arguments or re.search(
-                rf"(^|[\s/]){re.escape(posixpath.basename(landed))}(\s|$|;|&)",
-                arguments,
+            name = posixpath.basename(landed)
+            if landed in arguments or (
+                name in arguments
+                and re.search(rf"(^|[\s/]){re.escape(name)}(\s|$|;|&)", arguments)
             ):
                 text.append(Path(source).read_text(errors="replace"))
         return "\n".join(text)
 
+    # What each RUN chowns, read once: a context of thousands of files would otherwise
+    # rescan every script for every copied file, for hours.
+    chowned = {
+        index: _chowned(executed(arguments))
+        for index, (keyword, arguments) in enumerate(steps)
+        if keyword == "RUN"
+    }
     owned = []
     for index, source, landed in copies:
         landed = posixpath.normpath(landed)
-        later = [
-            path
-            for keyword, arguments in steps[index + 1 :]
-            if keyword == "RUN"
-            for path in _chowned(executed(arguments))
-        ]
+        later = [path for at, paths in chowned.items() if at > index for path in paths]
         if any(landed == p or landed.startswith(p.rstrip("/") + "/") for p in later):
             continue
         stat = os.stat(source)
@@ -145,7 +149,9 @@ def context_files(dockerfile: Path) -> list[tuple[str, bool, int, int]]:
 async def restore_owners(runtime: Runtime, dockerfile: Path) -> int:
     """Give the context's files in the box back to root (`context_files`); returns how
     many were listed."""
-    files = context_files(dockerfile)
+    # Off the event loop: reading a large context takes a while, and every other box
+    # this process drives waits while it does.
+    files = await asyncio.to_thread(context_files, dockerfile)
     if not files:
         return 0
     listing = "".join(
