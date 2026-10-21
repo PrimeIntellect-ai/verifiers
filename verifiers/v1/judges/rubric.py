@@ -64,8 +64,8 @@ class Criterion(BaseModel):
         default_factory=lambda: ["no", "yes"], min_length=2
     )
     """Allowed answers. A list is ordered **worst → best**: the first scores 0.0, the last 1.0,
-    the rest evenly spaced by rank. A mapping gives each answer its own score, 0.0 to 1.0, in
-    any order; `nan` scores nothing, which leaves the rollout unscored when the criterion
+    the rest evenly spaced by rank. A mapping gives each answer its own finite score, in any
+    order; `nan` scores nothing, which leaves the rollout unscored when the criterion
     carries weight. Default `["no", "yes"]` is a binary check. Needs >= 2, no duplicates."""
 
     @field_validator("choices")
@@ -75,10 +75,8 @@ class Criterion(BaseModel):
     ) -> list[str] | dict[str, float]:
         if isinstance(v, list) and len(set(v)) != len(v):
             raise ValueError(f"`choices` has duplicate options: {v}")
-        if isinstance(v, dict) and any(
-            not (math.isnan(score) or 0.0 <= score <= 1.0) for score in v.values()
-        ):
-            raise ValueError(f"`choices` scores must be 0.0 to 1.0 or nan: {v}")
+        if isinstance(v, dict) and any(math.isinf(score) for score in v.values()):
+            raise ValueError(f"`choices` scores must be finite or nan: {v}")
         return v
 
     def score(self, choice: str) -> float:
