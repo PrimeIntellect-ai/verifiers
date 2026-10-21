@@ -542,6 +542,12 @@ class Rollout:
                 # The harness reaches the model at `{base_url}/v1`; tool servers reach this
                 # rollout's `/state` + `/task` at `base_url` — it's universally reachable
                 # (the interception is exposed whenever any consumer is remote).
+                # A task may configure its tool servers in setup (one it started in the
+                # box sets its toolset's url): they serve as setup left them.
+                async with boundary(ToolsetError, "building tool servers"):
+                    toolsets = self.task.toolsets(self.task.config)
+                    if self._messaging:
+                        toolsets = [*toolsets, messaging_toolset()]
                 (
                     base_url,
                     model_secret,
