@@ -199,7 +199,9 @@ def response_from_generate(
 
 def _is_valid_incremental_tail(messages: list[dict[str, Any]]) -> bool:
     """Let the renderer extend append-only tool results and user messages."""
-    return bool(messages) and all(message.get("role") in ("tool", "user") for message in messages)
+    return bool(messages) and all(
+        message.get("role") in ("tool", "user") for message in messages
+    )
 
 
 def _has_multimodal_content(messages) -> bool:
