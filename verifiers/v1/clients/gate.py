@@ -15,12 +15,13 @@ around each admission, holds the cap, the adaptive limit and running counters as
 users file; the first one in, finding no other user, starts the state afresh, so what an
 earlier run learned or was set to does not carry over to the next.
 
-The cap (`max_concurrent` in the state) is shared: the first admission after a fresh start
-writes its config's `max_concurrent`, and from then on every process admits under the
-shared cap, whatever its own config says. `resize` moves the cap of live gates (an
-operator, e.g. prime-rl's `eval control resize-requests`): a raise takes effect at the
-next admission, a lower sheds nothing and admits no one until fewer than the new cap are
-in flight. Admission counts the admitted slots the state records (`holders`, slot to
+The cap (`max_concurrent` in the state) is shared: the largest `max_concurrent` among the
+configs admitting through the gate, so a seat configured with a smaller gate for the same
+model never shrinks everyone's cap by admitting first after a restart. `resize` moves the
+cap of live gates (an operator, e.g. prime-rl's `eval control resize-requests`) and holds
+it against every config until the gate's users are gone: a raise takes effect at the next
+admission, a lower sheds nothing and admits no one until fewer than the new cap are in
+flight. Admission counts the admitted slots the state records (`holders`, slot to
 process, the dead ones dropped), so requests admitted under a higher cap count until they
 finish, and takes the lowest slot no one holds.
 
@@ -267,9 +268,9 @@ class ModelGate:
 
     @staticmethod
     def _cap(state: dict[str, Any], config: RequestGateConfig) -> int:
-        """The shared cap; the first admission after a fresh start sets it from `config`."""
+        """The shared cap: the largest config's, or what `resize` set."""
         cap = _count(state.get("max_concurrent"))
-        if not cap:
+        if not cap or (config.max_concurrent > cap and not state.get("resized")):
             cap = state["max_concurrent"] = config.max_concurrent
         return cap
 
@@ -637,8 +638,8 @@ def resize(
     """Set the shared cap of the gates under `directory` (only `model`'s, if given) to
     `max_concurrent`, for every process using them; returns their states as
     `gate_states` does. A raise restarts the adaptive limit at the new cap, a lower keeps
-    a learned limit already below it (module doc). It holds until the gate's users are
-    gone: the next run starts from its own config."""
+    a learned limit already below it (module doc). It holds against every config until
+    the gate's users are gone: the next run starts from its own config."""
     if max_concurrent < 1:
         raise ValueError(f"a request cap must be at least 1, not {max_concurrent}")
     states = []
@@ -656,6 +657,7 @@ def resize(
                     state.pop("limit", None)
                     state.pop("lowered", None)
                 state["max_concurrent"] = max_concurrent
+                state["resized"] = True
                 state["slots"] = max(max_concurrent, old, _count(state.get("slots")))
                 states.append(_summary(state, time.time()))
         finally:

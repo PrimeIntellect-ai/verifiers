@@ -634,6 +634,15 @@ def test_a_lowered_cap_sheds_nothing_and_admits_once_below_it(tmp_path):
     assert json.loads(first.state_path.read_text())["slots"] == 2, "back to the cap"
 
 
+def test_a_smaller_config_admitting_first_never_shrinks_the_shared_cap(tmp_path):
+    small, large = ModelGate(tmp_path, "k", "m"), ModelGate(tmp_path, "k", "m")
+    assert len(admit_all(small, RequestGateConfig(max_concurrent=2))) == 2
+    assert len(admit_all(large, RequestGateConfig(max_concurrent=6))) == 4
+    (status,) = gate_module.gate_states(tmp_path)
+    assert status["max_concurrent"] == 6
+    assert small.try_admit(RequestGateConfig(max_concurrent=2)) is None, "at the cap"
+
+
 def test_a_joining_user_admits_under_the_shared_cap_and_a_fresh_one_under_its_config(
     tmp_path,
 ):
