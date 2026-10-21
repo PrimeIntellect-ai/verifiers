@@ -153,7 +153,11 @@ async def test_the_adaptive_limit_shrinks_under_a_lower_provider_limit(tmp_path)
         responses = await asyncio.gather(*(post(http, provider.url) for _ in range(40)))
     assert all(r.status_code == 200 for r in responses), "every 429 was absorbed"
     assert provider.rejected > 0
-    final = state(tmp_path)
+    for _ in range(100):  # releases on an event loop land on the gate's thread
+        final = state(tmp_path)
+        if final.get("rejections") == provider.rejected:
+            break
+        await asyncio.sleep(0.02)
     assert final["rejections"] == provider.rejected
     assert final["limit"] < 12
 
@@ -454,7 +458,11 @@ async def test_a_rejection_cancelled_while_closing_returns_its_permit(tmp_path):
     with pytest.raises(asyncio.CancelledError):
         await sending
     gate = ModelGate(tmp_path / "gates", gate_key(request.url, "", MODEL), MODEL)
-    assert gate.try_admit(config) == 0, "the only slot is free again"
+    for _ in range(100):  # a release on an event loop lands on the gate's thread
+        if (slot := gate.try_admit(config)) is not None:
+            break
+        await asyncio.sleep(0.02)
+    assert slot == 0, "the only slot is free again"
 
 
 def test_a_stream_collected_unclosed_inside_the_gate_does_not_deadlock(

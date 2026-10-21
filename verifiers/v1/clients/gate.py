@@ -20,8 +20,9 @@ writes its config's `max_concurrent`, and from then on every process admits unde
 shared cap, whatever its own config says. `resize` moves the cap of live gates (an
 operator, e.g. prime-rl's `eval control resize-requests`): a raise takes effect at the
 next admission, a lower sheds nothing and admits no one until fewer than the new cap are
-in flight. Admission scans the slots up to the cap and any held above it (`slots`), so
-requests admitted under a higher cap count until they finish.
+in flight. Admission counts the admitted slots the state records (`holders`, slot to
+process, the dead ones dropped), so requests admitted under a higher cap count until they
+finish, and takes the lowest slot no one holds.
 
 The cap is never exceeded. Under it, with `adaptive`, a 429/529 lowers the limit by
 `decrease_factor` (at most once per `decrease_cooldown`), and the limit climbs back to the
@@ -313,6 +314,33 @@ class ModelGate:
         live.sort(key=lambda ticket: ticket[0])
         return live
 
+    def _holders(self, state: dict[str, Any]) -> dict[str, int]:
+        """The admitted slots host-wide, `{slot: pid}`, without those of processes that
+        are gone (their slot locks went with them). Counting them is what admission
+        needs: scanning every slot file under the state lock made each admission cost
+        O(cap) syscalls with the whole host waiting on that lock. Slots this process
+        holds are always in it; slots locked by a process the map does not know are
+        probed again (an older version of this code admitted without the map)."""
+        alive: dict[int, bool] = {}
+        holders: dict[str, int] = {}
+        recorded = state.get("holders")
+        for slot, pid in recorded.items() if isinstance(recorded, dict) else ():
+            if not isinstance(pid, int) or pid <= 0:
+                continue
+            if pid not in alive:
+                try:
+                    os.kill(pid, 0)
+                    alive[pid] = True
+                except ProcessLookupError:
+                    alive[pid] = False
+                except PermissionError:
+                    alive[pid] = True
+            if alive[pid]:
+                holders[str(slot)] = pid
+        for slot in self._held:
+            holders[str(slot)] = os.getpid()
+        return holders
+
     def take_ticket(self) -> int:
         """Join the host-wide queue: a ticket behind every waiting request."""
         with self._mutex, self._state() as state:
@@ -350,28 +378,31 @@ class ModelGate:
                     if ticket is None
                     else sum(1 for t in tickets if t[0] < ticket)
                 )
-                held, free, top = 0, None, 0
-                for slot in range(max(cap, _count(state.get("slots")))):
-                    if slot in self._held:
-                        held, top = held + 1, slot + 1
-                        continue
-                    fd = self._slot_fd(slot)
-                    try:
-                        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    except BlockingIOError:
-                        held, top = held + 1, slot + 1
-                        continue
-                    if free is None:
+                holders = self._holders(state)
+                held, free = len(holders), None
+                if held + ahead < int(limit):
+                    for slot in range(max(cap, held + 1) + len(holders)):
+                        if str(slot) in holders:
+                            continue
+                        fd = self._slot_fd(slot)
+                        try:
+                            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        except BlockingIOError:
+                            # Held by a process the map does not know (an older version):
+                            # count it, and look again at the next admission.
+                            holders[str(slot)] = 0
+                            held += 1
+                            if held + ahead >= int(limit):
+                                break
+                            continue
                         free = slot
-                    else:
-                        fcntl.flock(fd, fcntl.LOCK_UN)
+                        break
+                top = max((int(s) + 1 for s in holders), default=0)
                 # Room for this request: fewer than the limit held, counting the older
                 # tickets as ahead of it.
-                if free is not None and held + ahead >= int(limit):
-                    fcntl.flock(self._fds[free], fcntl.LOCK_UN)
-                    free = None
                 if free is not None:
                     self._held.add(free)
+                    holders[str(free)] = os.getpid()
                     state["admitted"] = state.get("admitted", 0) + 1
                     top = max(top, free + 1)
                     if ticket is not None:
@@ -391,6 +422,7 @@ class ModelGate:
                 # slots above the cap stay scanned while a request admitted under a
                 # higher cap holds one; admission only takes the lowest free slot
                 state.update(model=self.model, slots=max(cap, top), limit=limit)
+                state["holders"] = {k: v for k, v in holders.items() if v}
                 state["in_flight"] = held + (free is not None)
                 return free
         finally:
@@ -443,9 +475,13 @@ class ModelGate:
             return
         self._held.discard(slot)
         fcntl.flock(self._fds[slot], fcntl.LOCK_UN)
-        if outcome != "rejected":
-            return  # only a rejection changes the shared state
         with self._state() as state:
+            holders = state.get("holders")
+            if isinstance(holders, dict):
+                holders.pop(str(slot), None)
+                state["in_flight"] = len(holders)
+            if outcome != "rejected":
+                return  # only a rejection feeds the adaptive limit
             cap = self._cap(state, config)
             limit = self._limit(state, config, cap)
             now = time.time()
