@@ -131,6 +131,8 @@ bash-interception = { path = "environments/bash_interception", editable = true }
 web-search-interception = { path = "environments/web_search_interception", editable = true }
 
 [tool.uv.exclude-newer-package]
+# CA bundle: security fixes (e.g. 2026.10.19 for the eMudhra compromise) must not wait out the cooldown
+certifi = false
 # Bounded cutoffs for the explicitly requested tool upgrades.
 # Full UTC timestamps: bare dates resolve to local-tz midnight and churn the
 # lockfile across timezones.
