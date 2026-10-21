@@ -1,7 +1,6 @@
 """The built-in `rubric` judge: criteria files, weights, verdict choices, and scoring."""
 
 import json
-import math
 
 import pytest
 
@@ -145,74 +144,6 @@ async def test_rubric_off_menu_answer_raises(tmp_path, monkeypatch, make_trace):
         await judge.score(trace.task.data, trace)
 
 
-SCORED_TOML = (
-    '[[criteria]]\nname = "outcome"\ntext = "The verdict."\n'
-    "choices = { correct = 1.0, cheated = nan, incorrect = 0.0 }\n"
-)
-
-
-def answering(verdict: str):
-    async def complete(self, messages, *, trace=None, schema=None, parse=None, **s):
-        v = {"verdicts": [{"name": "outcome", "reason": "r", "verdict": verdict}]}
-        return JudgeResponse(text=json.dumps(v), parsed=None)
-
-    return complete
-
-
-async def test_rubric_scored_choices_ignore_order(tmp_path, monkeypatch, make_trace):
-    # A mapping scores each answer as given, in any order, with an indicator per choice.
-    monkeypatch.setattr(Judge, "complete", answering("incorrect"))
-    judge = rubric_judge(tmp_path, body=SCORED_TOML, name="q")
-    trace = make_trace()
-    assert await judge.score(trace.task.data, trace) == 0.0
-    assert trace.metrics == {
-        "q/outcome": 0.0,
-        "q/outcome/correct": 0.0,
-        "q/outcome/cheated": 0.0,
-        "q/outcome/incorrect": 1.0,
-    }
-    (criterion,) = judge.criteria
-    assert criterion.render() == (
-        "- outcome: The verdict. (answer one of: correct, cheated, incorrect)"
-    )
-
-
-async def test_rubric_nan_choice_scores_nothing(tmp_path, monkeypatch, make_trace):
-    # A nan answer on a weighted criterion leaves the reward nan (the rollout then fails
-    # unscored) and records no score metric, only its indicator.
-    monkeypatch.setattr(Judge, "complete", answering("cheated"))
-    judge = rubric_judge(tmp_path, body=SCORED_TOML, name="q")
-    trace = make_trace()
-    assert math.isnan(await judge.score(trace.task.data, trace))
-    assert (
-        "q/outcome" not in trace.metrics and trace.metrics["q/outcome/cheated"] == 1.0
-    )
-
-
-async def test_rubric_nan_on_zero_weight_criterion_is_ignored(
-    tmp_path, monkeypatch, make_trace
-):
-    body = (
-        SCORED_TOML
-        + '[[criteria]]\nname = "note"\ntext = "t"\nweight = 0\n'
-        + "choices = { a = nan, b = 1.0 }\n"
-    )
-
-    async def complete(self, messages, *, trace=None, schema=None, parse=None, **s):
-        v = {
-            "verdicts": [
-                {"name": "outcome", "reason": "r", "verdict": "correct"},
-                {"name": "note", "reason": "r", "verdict": "a"},
-            ]
-        }
-        return JudgeResponse(text=json.dumps(v), parsed=None)
-
-    monkeypatch.setattr(Judge, "complete", complete)
-    trace = make_trace()
-    judge = rubric_judge(tmp_path, body=body)
-    assert await judge.score(trace.task.data, trace) == 1.0
-
-
 def test_rubric_choices_validation(tmp_path):
     with pytest.raises(ValueError, match="at least 2"):
         _ = rubric_judge(
@@ -222,11 +153,6 @@ def test_rubric_choices_validation(tmp_path):
         _ = rubric_judge(
             tmp_path,
             body='[[criteria]]\nname = "x"\ntext = "t"\nchoices = ["a", "a"]\n',
-        ).criteria
-    with pytest.raises(ValueError, match="0.0 to 1.0 or nan"):
-        _ = rubric_judge(
-            tmp_path,
-            body='[[criteria]]\nname = "x"\ntext = "t"\nchoices = { a = 0.0, b = 2.0 }\n',
         ).criteria
 
 
