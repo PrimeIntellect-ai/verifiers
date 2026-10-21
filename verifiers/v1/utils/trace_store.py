@@ -135,7 +135,7 @@ def _replace(path: Path, lines: Iterable[bytes]) -> None:
 
 
 class _ReadIndex:
-    """One thread's reusable cache for an unindexed, read-only stream."""
+    """A store's reusable in-memory index of a stream its readers found unindexed."""
 
     def __init__(self, generation: tuple[int, ...]) -> None:
         self.generation = generation
@@ -159,7 +159,10 @@ class TraceStore:
     def __init__(self, root: Path, *, env: str = "") -> None:
         self.root, self.env = Path(root), env
         self.file = self.root / TRACES_FILE
-        self._reader = threading.local()
+        self._read_cache: _ReadIndex | None = None
+        # One cache per store, shared by its reading threads: a copy of the whole index
+        # per thread grows with the run times the threads that ever read it stale.
+        self._read_lock = threading.RLock()
 
     @contextlib.contextmanager
     def _indexed(self):
@@ -209,13 +212,8 @@ class TraceStore:
         # index from its complete canonical rows without needing filesystem writes.
         with self.file.open("rb") as file, contextlib.ExitStack() as stack:
             stat = os.fstat(file.fileno())
-            cached = getattr(self._reader, "index", None)
-            if cached is not None and (
-                cached.generation[:2] != (stat.st_dev, stat.st_ino)
-                or cached.end > stat.st_size
-            ):
-                cached = None
             index = self.root / "traces.index.sqlite"
+            db, saved = None, None
             if index.exists():
                 try:
                     db = stack.enter_context(
@@ -235,44 +233,62 @@ class TraceStore:
                 if saved == (stat.st_dev, stat.st_ino, stat.st_size):
                     yield db, file
                     return
-                if (
-                    saved is not None
-                    and saved[:2] == (stat.st_dev, stat.st_ino)
-                    and 0 <= saved[2] <= stat.st_size
-                    and (cached is None or cached.end < saved[2])
+
+            def current(cached: _ReadIndex | None, stat) -> _ReadIndex | None:
+                if cached is not None and (
+                    cached.generation[:2] != (stat.st_dev, stat.st_ino)
+                    or cached.end > stat.st_size
                 ):
-                    # Copy only derived offsets, never the indexed JSON payloads.
-                    # Release the source snapshot before inspecting the live tail.
-                    prefix = _ReadIndex(())
-                    try:
-                        db.backup(prefix.db)
-                    except sqlite3.DatabaseError:
-                        pass  # A disposable cache cannot prevent canonical reads.
-                    else:
-                        prefix.end = saved[2]
-                        cached = prefix
-            # A stale SQLite snapshot must not block an index commit while we
-            # inspect a potentially large canonical stream.
-            stack.close()
-            generation = (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns)
-            if cached is None or cached.generation != generation:
-                if cached is None:
-                    cached = _ReadIndex(())
-                offset = cached.end
-                rows = _rows(file, offset)
+                    return None
+                return cached
+
+            prefix = None
+            peek = current(self._read_cache, os.fstat(file.fileno()))
+            if (
+                saved is not None
+                and saved[:2] == (stat.st_dev, stat.st_ino)
+                and 0 <= saved[2] <= stat.st_size
+                and (peek is None or peek.end < saved[2])
+            ):
+                # Copy only derived offsets, never the indexed JSON payloads.
+                # Release the source snapshot before inspecting the live tail.
+                prefix = _ReadIndex(())
                 try:
-                    while True:
-                        start, length, row, _ = next(rows)
-                        self._index_row(cached.db, row, start, length)
-                        offset = start + length
-                except StopIteration as done:
-                    # The parser's cursor covers invalid complete lines too, but
-                    # never an unfinished tail. Do not reread and accidentally skip
-                    # a valid row the live writer appended after the parser ended.
-                    offset = done.value if done.value is not None else offset
-                cached.end, cached.generation = offset, generation
-                self._reader.index = cached
-            yield cached.db, file
+                    db.backup(prefix.db)
+                except sqlite3.DatabaseError:
+                    prefix = None  # A disposable cache cannot prevent canonical reads.
+                else:
+                    prefix.end = saved[2]
+            # A stale SQLite snapshot must not block an index commit while we
+            # inspect a potentially large canonical stream, or wait for the cache.
+            stack.close()
+            # One cache per store, read and extended under its lock, its connection used
+            # by one reader at a time.
+            with self._read_lock:
+                # Another reader may have indexed past this one's look at the file.
+                stat = os.fstat(file.fileno())
+                cached = current(self._read_cache, stat)
+                if prefix is not None and (cached is None or cached.end < prefix.end):
+                    cached = prefix
+                generation = (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns)
+                if cached is None or cached.generation != generation:
+                    if cached is None:
+                        cached = _ReadIndex(())
+                    offset = cached.end
+                    rows = _rows(file, offset)
+                    try:
+                        while True:
+                            start, length, row, _ = next(rows)
+                            self._index_row(cached.db, row, start, length)
+                            offset = start + length
+                    except StopIteration as done:
+                        # The parser's cursor covers invalid complete lines too, but
+                        # never an unfinished tail. Do not reread and accidentally skip
+                        # a valid row the live writer appended after the parser ended.
+                        offset = done.value if done.value is not None else offset
+                    cached.end, cached.generation = offset, generation
+                    self._read_cache = cached
+                yield cached.db, file
 
     @staticmethod
     def _index_row(db, row: dict, offset: int, length: int) -> None:

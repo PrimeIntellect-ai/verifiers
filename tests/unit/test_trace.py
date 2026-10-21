@@ -293,3 +293,45 @@ def test_a_deep_copy_of_a_watched_trace_watches_nothing_and_the_original_keeps_i
     assert watcher.seen == 0
     trace.notify()
     assert watcher.seen == 1
+
+
+def test_readers_of_a_stale_trace_index_share_one_in_memory_copy(tmp_path):
+    # A reader that finds `traces.index.sqlite` behind the stream (a writer mid-append)
+    # copies the index into memory and indexes the tail. Every reading thread shares
+    # that copy: one per thread would hold the whole index once per thread.
+    import gc
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+
+    from verifiers.v1.utils.trace_store import TraceStore, _ReadIndex
+
+    def trace(prompt):
+        return vf.Trace(
+            agent=vf.AgentInfo(config=vf.AgentConfig()),
+            task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt=prompt)),
+        )
+
+    store = TraceStore(tmp_path)
+    written = [trace(f"q{n}") for n in range(3)]
+    for t in written:
+        store.write(t)
+    late = trace("late")
+    with (tmp_path / "traces.jsonl").open("ab") as stream:  # appended, not yet indexed
+        stream.write(
+            vf.Episode(task=late.task, traces=[late], ok=True)
+            .model_dump_json()
+            .encode()
+            + b"\n"
+        )
+
+    barrier = Barrier(8)
+
+    def read(t):
+        barrier.wait()
+        return store.get(t.id).id
+
+    with ThreadPoolExecutor(8) as pool:
+        found = list(pool.map(read, [*written, late, *written, late]))
+        gc.collect()
+        assert sum(isinstance(o, _ReadIndex) for o in gc.get_objects()) == 1
+    assert found == [t.id for t in [*written, late, *written, late]]
