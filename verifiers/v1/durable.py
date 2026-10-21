@@ -81,7 +81,7 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from pydantic import BaseModel
 
-from verifiers.v1.task import source_hash
+from verifiers.v1.task import identity_data, source_hash
 from verifiers.v1.trace import LABELS_KEY, Checkpoint, Trace, WireTrace
 
 if TYPE_CHECKING:
@@ -357,7 +357,7 @@ def task_parts(task: Task, framework: Iterable[str] = ()) -> dict[str, str]:
     return {
         "task": f"{cls.__module__}:{cls.__qualname__}",
         "task_code": code_hash(cls, framework),
-        "data": _hash(_dump(task.data)),
+        "data": _hash(identity_data(_dump(task.data))),
         "task_config": _hash(_dump(task.config)),
     }
 

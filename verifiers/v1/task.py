@@ -54,6 +54,34 @@ def task_key(data: Mapping) -> str:
     return hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()
 
 
+def identity_data(data: Mapping) -> dict:
+    """Task wire data in the shape task identity is hashed in: network policy as the
+    `network_allow`/`network_block` it was before it became one config (#2902), and an
+    unset `scoring.network` left out. The same policy keeps the same task key and call
+    fingerprint, so tasks keep their identity (job ids, finished calls) across the change.
+    Identity only: the policy the task runs under is `data` as it is."""
+    out = dict(data)
+    network = out.pop("network", None)
+    if isinstance(network, Mapping):
+        allow, block = list(network.get("allow", ["*"])), list(network.get("block", []))
+        if not allow and block == ["*"]:
+            block = []  # framework-only access: was an empty allowlist
+        out["network_allow"], out["network_block"] = allow, block
+    scoring = out.get("scoring")
+    if (
+        isinstance(scoring, Mapping)
+        and "network" in scoring
+        and scoring["network"] is None
+    ):
+        out["scoring"] = {k: v for k, v in scoring.items() if k != "network"}
+    verifier = out.get("verifier")
+    if isinstance(verifier, Mapping) and isinstance(verifier.get("network"), Mapping):
+        verifier = dict(verifier)
+        verifier["network_allow"] = list(verifier.pop("network").get("allow", ["*"]))
+        out["verifier"] = verifier
+    return out
+
+
 class TaskResources(BaseModel):
     """Optional resource limits for the task."""
 
@@ -184,7 +212,9 @@ class Task(Generic[DataT, StateT, ConfigT]):
     def hash(self) -> str:
         """Content hash of the task's wire data, recorded on the trace as
         ``task.hash``."""
-        return task_key(self.data.model_dump(mode="json", exclude_none=True))
+        return task_key(
+            identity_data(self.data.model_dump(mode="json", exclude_none=True))
+        )
 
     @property
     def key(self) -> str:
