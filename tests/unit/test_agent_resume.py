@@ -616,7 +616,8 @@ async def test_interaction_retry_continues_from_the_latest_checkpoint(model):
     ]
     # Two branches off the first tool result: the failed attempt's and the retry's.
     assert [len(b.nodes) for b in final.branches] == [4, 7]
-    assert all(b.trainable for b in final.branches)
+    # The failed attempt's turns past the checkpoint are left behind: not trained on.
+    assert [b.trainable for b in final.branches] == [False, True]
     (entry,) = final.info["resumes"]
     assert (entry["checkpoint"], entry["cause"]) == ("ckpt-2", "sandbox terminated")
 
@@ -852,7 +853,9 @@ async def test_a_resume_continues_the_same_trace_on_a_branch(model, tmp_path):
     assert (note.message.content, note.parent, note.sampled) == ("and then?", 2, False)
     assert resumed.nodes[7].parent == 6 and resumed.nodes[7].sampled
     branches = resumed.branches
-    assert len(branches) == 2 and all(b.trainable for b in branches)
+    # The earlier run's turns past the checkpoint are left behind: only the history the
+    # rollout went on with trains.
+    assert len(branches) == 2 and [b.trainable for b in branches] == [False, True]
     assert branches[0].nodes[-1] is old_leaf
     assert branches[1].nodes[:3] == prefix
     assert [n.message.role for n in branches[1].nodes] == [

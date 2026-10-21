@@ -1017,7 +1017,10 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         """One root-to-leaf view per graph leaf, with no duplicated node storage.
 
         A compaction attempt is a dangling physical leaf. It is trainable only when
-        the final semantic graph shows that the harness resumed from it.
+        the final semantic graph shows that the harness resumed from it. A leaf a
+        resume left behind (the ended run's turns past the checkpoint it resumed from,
+        `resume`) is not trainable either: the rollout's history is the conversation
+        it went on with.
         """
         by_node = {c.node: c for c in self.calls if c.node is not None}
         accepted_compaction_attempts = {
@@ -1026,6 +1029,15 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
             for link in node.semantic_parents
             if link.type == "compaction"
         }
+        entries = self.info.get(RESUMES_KEY)
+        resumed_past = (
+            max(
+                (int(e.get("nodes") or 0) for e in entries if isinstance(e, Mapping)),
+                default=0,
+            )
+            if isinstance(entries, list)
+            else 0
+        )
         branches: list[Branch] = []
         for i, leaf in enumerate(graph.leaves(self)):
             path: list[int] = []
@@ -1044,7 +1056,9 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
                     nodes=[self.nodes[n] for n in path],
                     calls=[by_node[n] for n in path if n in by_node],
                     trainable=(
-                        not is_compaction_attempt
+                        leaf in accepted_compaction_attempts
+                        if is_compaction_attempt
+                        else leaf >= resumed_past
                         or leaf in accepted_compaction_attempts
                     ),
                     mm_token_type_id_map=self.mm_token_type_id_map,
