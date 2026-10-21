@@ -157,7 +157,8 @@ async def test_each_user_turn_is_a_resumed_run_on_the_live_box(model):
     assert users(last) == ["start", "first", "second"]
     # Graded once, on the end state, with the conversation on the trace.
     assert trace.rewards["wrote_every_request"].value == 1.0
-    assert trace.resumed_from is not None
+    # One trace: each user turn resumed it in place.
+    assert trace.resumed_from is None and len(trace.info["resumes"]) == 2
 
 
 async def test_the_turn_cap_ends_the_conversation(model):
@@ -188,7 +189,7 @@ async def test_a_conversation_cut_mid_turn_continues_from_its_latest_save(model,
     assert trace.ok, trace.errors
     # The finished turns came back from their records; only the cut-off turn ran, and
     # it continued after its saved call, on the box restored from that save.
-    assert trace.resumed_from == failed.id
+    assert trace.id == failed.id
     assert EVENTS == ["restore"]
     assert model.requests and all(
         users(request)[:3] == ["start", "first", "second"] for request in model.requests

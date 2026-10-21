@@ -21,6 +21,7 @@ import verifiers.v1 as vf
 import verifiers.v1.agent as agent_module
 import verifiers.v1.rollout as rollout_module
 from verifiers.v1.dialects.chat import message_to_wire
+from verifiers.v1.durable import StaleTraceError
 from verifiers.v1.harnesses.null.harness import NullHarness
 from verifiers.v1.runtimes import ProgramResult, SubprocessConfig
 from verifiers.v1.runtimes.backends.subprocess import SubprocessBackend
@@ -433,12 +434,13 @@ async def test_checkpoint_resume_round_trip(model):
         "user",
     ]
     assert model.requests[0]["messages"][-1]["content"] == "second"
-    assert reopened.trace.num_turns == 1
+    # The same trace, continued: its earlier turns plus this one.
+    assert reopened.trace.id == loaded.id and reopened.trace.num_turns == 4
     assert type(reopened.task) is NotesTask
     # The box it started from is on the trace, matching its opening conversation.
-    assert [(c.id, c.turns, c.restored) for c in reopened.trace.checkpoints] == [
-        ("ckpt-1", 0, True)
-    ]
+    assert [
+        (c.id, c.turns, c.restored, c.position) for c in reopened.trace.checkpoints
+    ] == [("ckpt-1", 3, False, None), ("ckpt-1", 3, True, 6)]
 
 
 async def test_a_resumed_trace_resumes_again_from_its_start(model):
@@ -494,7 +496,10 @@ async def test_run_continues_a_trace_with_a_note(model):
     trace = await agent.run(resume=reload(interaction.trace), note="and then?")
     assert trace.ok, trace.errors
     assert model.requests[0]["messages"][-1] == {"role": "user", "content": "and then?"}
-    assert trace.task.data.prompt[-1].content == "and then?"
+    assert trace.messages[-2].content == "and then?"
+    # The note is a user node of the trace, off the checkpoint's conversation.
+    (note,) = [n for n in trace.nodes if n.message.content == "and then?"]
+    assert note.message.role == "user" and not note.sampled
     assert trace.assistant_messages[-1].content == "done: and then?"
 
 
@@ -580,7 +585,9 @@ async def test_interaction_retry_continues_from_the_latest_checkpoint(model):
     assert failed[0].is_completed
     assert failed[0].errors[-1].type == "SandboxError"
     final = interaction.trace
-    assert final is not failed[0]
+    # The retry continued the failed attempt's trace in place (`failed_attempts`
+    # keeps a copy of it as it closed).
+    assert final.id == failed[0].id and final is not failed[0]
     assert final.ok, final.errors
     assert [error.type for error in final.errors] == ["SandboxError"]
     # The replacement box came from the checkpoint at call 2 (a.txt written, b.txt
@@ -592,20 +599,26 @@ async def test_interaction_retry_continues_from_the_latest_checkpoint(model):
     assert roles(retried) == ["user", "assistant", "tool", "user"]
     assert retried[-1]["content"] == RETRY_NOTE
     assert [(t is final, c.id) for t, c in saves] == [
-        (False, "ckpt-1"),
-        (False, "ckpt-2"),
+        (True, "ckpt-1"),
+        (True, "ckpt-2"),
         (True, "ckpt-3"),
         (True, "ckpt-4"),
     ]
     assert interaction.latest_checkpoint is saves[-1][1]
-    # The failed attempt's checkpoint inside the reopened conversation is carried at
-    # its place in it, first.
+    # The failed attempt's checkpoints stay where they were taken; the box the retry
+    # started from matches its opening conversation (the first `position` messages).
     assert [(c.id, c.turns, c.restored, c.position) for c in final.checkpoints] == [
-        ("ckpt-1", 0, False, 1),
-        ("ckpt-2", 0, True, None),
-        ("ckpt-3", 0, False, None),
-        ("ckpt-4", 2, False, None),
+        ("ckpt-1", 0, False, None),
+        ("ckpt-2", 1, False, None),
+        ("ckpt-2", 2, True, 4),
+        ("ckpt-3", 2, False, None),
+        ("ckpt-4", 4, False, None),
     ]
+    # Two branches off the first tool result: the failed attempt's and the retry's.
+    assert [len(b.nodes) for b in final.branches] == [4, 7]
+    assert all(b.trainable for b in final.branches)
+    (entry,) = final.info["resumes"]
+    assert (entry["checkpoint"], entry["cause"]) == ("ckpt-2", "sandbox terminated")
 
 
 async def test_a_continuation_links_its_source_and_carries_its_info(model):
@@ -618,16 +631,22 @@ async def test_a_continuation_links_its_source_and_carries_its_info(model):
         await interaction.turn()
     (failed,) = interaction.failed_attempts
     retried = interaction.trace
-    # The retry continues the failed attempt: linked, its info carried over before
-    # any observer saw the replacement.
-    assert failed.resumed_from is None
-    assert retried.resumed_from == failed.id
-    assert retried.info == {"minted": failed.id, "note": {"seat": "lead"}}
+    # The retry continues the failed attempt's very trace: same id, its info kept
+    # (plus a resume entry); the kept attempt is a copy of it as it closed.
+    assert retried.id == failed.id
+    assert failed.resumed_from is None and retried.resumed_from is None
+
+    def own(info: dict) -> dict:
+        return {k: v for k, v in info.items() if k != "resumes"}
+
+    assert own(retried.info) == {"minted": failed.id, "note": {"seat": "lead"}}
     assert retried.info["note"] is not failed.info["note"]
+    assert len(retried.info["resumes"]) == 1 and "resumes" not in failed.info
     resumed = await make(model).run(resume=reload(retried), note="more")
-    assert resumed.resumed_from == retried.id
-    assert resumed.info == retried.info
-    assert "resumed_from" in resumed.to_record()
+    assert resumed.id == retried.id and resumed.resumed_from is None
+    assert own(resumed.info) == own(retried.info)
+    assert len(resumed.info["resumes"]) == 2
+    assert "resumed_from" not in resumed.to_record()
     assert "resumed_from" not in failed.to_record()
 
 
@@ -799,3 +818,61 @@ def test_a_local_task_class_is_not_rebuilt():
     record = vf.TraceTask.of(Local(vf.TaskData(idx=0, prompt="hi")))
     with pytest.raises(ValueError, match="cannot be imported"):
         record.rebuild()
+
+
+async def test_a_resume_continues_the_same_trace_on_a_branch(model, tmp_path):
+    """A resume keeps running on the trace it continues: same id, the re-sent prefix
+    matches the stored nodes (their tokens kept), and the new turns branch off the
+    checkpoint's node, the earlier attempt's later turns staying their own branch."""
+    trace = await make(model, save="per_call").run(task())
+    loaded = reload(trace)
+    assert [n.message.role for n in loaded.nodes] == [
+        "user",
+        "assistant",
+        "tool",
+        "assistant",
+        "tool",
+        "assistant",
+    ]
+    first = loaded.nodes[1]
+    first.token_ids, first.mask, first.logprobs = [7, 8], [False, True], [-0.5]
+    prefix = list(loaded.nodes[:3])
+    old_leaf = loaded.nodes[5]
+    # The last checkpoint ends the first branch: the new one must not move it.
+    end = loaded.checkpoints[-1]
+    held = [m.content for m in loaded.conversation_for(end)]
+    resumed = await make(model).run(resume=loaded, at="ckpt-2", note="and then?")
+    assert resumed.ok, resumed.errors
+    assert end.node == 5 and [m.content for m in resumed.conversation_for(end)] == held
+    assert resumed is loaded and resumed.id == trace.id
+    assert resumed.nodes[:3] == prefix and resumed.nodes[1] is first
+    assert (first.sampled, first.token_ids, first.logprobs) == (True, [7, 8], [-0.5])
+    assert resumed.nodes[5] is old_leaf
+    note = resumed.nodes[6]
+    assert (note.message.content, note.parent, note.sampled) == ("and then?", 2, False)
+    assert resumed.nodes[7].parent == 6 and resumed.nodes[7].sampled
+    branches = resumed.branches
+    assert len(branches) == 2 and all(b.trainable for b in branches)
+    assert branches[0].nodes[-1] is old_leaf
+    assert branches[1].nodes[:3] == prefix
+    assert [n.message.role for n in branches[1].nodes] == [
+        "user",
+        "assistant",
+        "tool",
+        "user",
+        "assistant",
+        "tool",
+        "assistant",
+    ]
+    assert all(n.sampled for n in branches[1].nodes if n.message.role == "assistant")
+    assert resumed.last_reply == "done: and then?"
+    (entry,) = resumed.info["resumes"]
+    assert entry["checkpoint"] == "ckpt-2" and entry["ended"]["ok"]
+    assert "resumed_from" not in resumed.to_record()
+    # A run the resume replaced may not overwrite it in a store.
+    store = vf.TraceDir(tmp_path)
+    store.write(resumed)
+    stale = resumed.model_copy(deep=True)
+    stale.info["resumes"] = []
+    with pytest.raises(StaleTraceError):
+        store.write(stale)

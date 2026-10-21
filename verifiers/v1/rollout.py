@@ -2,7 +2,6 @@
 
 import asyncio
 import contextlib
-import copy
 import logging
 import math
 import time
@@ -47,7 +46,13 @@ from verifiers.v1.runtimes.private_network import tool_vms
 from verifiers.v1.session import RolloutLimits, RolloutSession, hook_boundary
 from verifiers.v1.state import state_cls
 from verifiers.v1.task import Task
-from verifiers.v1.trace import AgentInfo, Checkpoint, SteerRecord, Trace, TraceTask
+from verifiers.v1.trace import (
+    AgentInfo,
+    Checkpoint,
+    SteerRecord,
+    Trace,
+    TraceTask,
+)
 from verifiers.v1.types import Messages, Request, Response, SystemMessage, UserMessage
 from verifiers.v1.utils.artifacts import collect
 from verifiers.v1.utils.decorators import discover_decorated, invoke
@@ -150,6 +155,8 @@ class Rollout:
         resumes: Trace | None = None,
         peers: dict[str, str] | None = None,
         restored: Checkpoint | None = None,
+        start: Checkpoint | None = None,
+        opening: Messages | None = None,
     ) -> None:
         self._on_score = on_score
         self.task = task
@@ -175,37 +182,49 @@ class Rollout:
         self.box_generation = self._box.generation if self._box is not None else 0
         """Which of the owner's boxes this run started on (`Box.replace`)."""
         self._collect_artifacts = collect_artifacts
-        self.trace: Trace = Trace(
-            task=TraceTask.of(task),
-            state=state_cls(type(task))(),
-            # The seat's resolved config, role overrides included — the agent
-            # this trace can be reproduced with.
-            agent=AgentInfo(config=agent_config),
-        )
         self._continues = resumes is not None
         """This run continues a trace: on a box started from a checkpoint, it restores
         the task (`Task.restore`) instead of setting it up."""
         self._resumes_id = resumes.id if resumes is not None else None
-        if resumes is not None:
-            # A continuation (`resume=`, an interaction retry) links the trace it
-            # continues and carries its info, as one session's would.
-            self.trace.resumed_from = resumes.id
-            self.trace.info = copy.deepcopy(resumes.info)
-        if runtime is None and (start := getattr(runtime_config, "checkpoint", None)):
+        position: int | None = None
+        if resumes is None:
+            self.trace: Trace = Trace(
+                task=TraceTask.of(task),
+                state=state_cls(type(task))(),
+                # The seat's resolved config, role overrides included — the agent
+                # this trace can be reproduced with.
+                agent=AgentInfo(config=agent_config),
+            )
+        else:
+            # A continuation (`resume=`, an interaction retry) runs on the very trace
+            # it continues (`Trace.resume`): same id and nodes, its new turns a branch
+            # off the checkpoint's node.
+            if opening is None and isinstance(task.data.prompt, list):
+                opening = task.data.prompt
+            resumes.resume(start, opening)
+            # The trace keeps the task it was first run on; the run's own (its prompt
+            # the conversation it opens on) is `self.task`.
+            resumes.state = state_cls(type(task))()
+            resumes.agent = AgentInfo(config=agent_config)
+            self.trace = resumes
+            position = len(opening) if opening is not None else None
+        self.opening_turns = self.trace.num_turns
+        """The trace's turns as this run opens (a continuation's earlier ones)."""
+        if runtime is None and (origin := getattr(runtime_config, "checkpoint", None)):
             # An owned box starts from its config's checkpoint.
-            restored = Checkpoint(id=start, turns=0, time=time.time())
+            restored = Checkpoint(id=origin, turns=0, time=time.time())
         if restored is not None:
-            if resumes is not None:
-                # The continued trace's earlier checkpoints inside the opening
-                # conversation, so a replay of this trace restores the box wherever a
-                # replay of that one could. First: they are never its latest.
-                self.trace.checkpoints.extend(resumes.carried(restored.id))
-            # The box starts from this checkpoint, matching the opening conversation.
+            # The box starts from this checkpoint, matching the opening conversation
+            # (a continuation's: its first `position` messages, the branch it opens).
             # A borrowed box's (`restored`) keeps the time it was taken at, so it
             # orders among the box's other checkpoints as what it is.
             self.trace.checkpoints.append(
                 restored.model_copy(
-                    update={"turns": 0, "restored": True, "position": None}
+                    update={
+                        "turns": self.opening_turns,
+                        "restored": True,
+                        "position": position,
+                    }
                 )
             )
         self.trace._replay_view = harness.replay_view
@@ -226,6 +245,7 @@ class Rollout:
             ),
             trace_stops=[fn for boundary, fn in stops if boundary is Trace],
             limits=limits,
+            limits_since=(self.opening_turns, len(self.trace.calls)),
             request_interceptors=[
                 fn for boundary, fn in interceptors if boundary is Request
             ],
@@ -579,7 +599,8 @@ class Rollout:
                 async with (
                     boundary(HarnessError, "opening harness session"),
                 ):
-                    harness_data = self.trace.task.data
+                    # The run's task: a continuation's opens on its resumed conversation.
+                    harness_data = self.task.data
                     policy = self._session.network_policy
                     if (
                         self.trace.agent.config.network_notice

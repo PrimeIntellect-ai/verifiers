@@ -380,7 +380,9 @@ class ResumableHarness(Harness[HarnessConfig]):
 
 async def resumed(branch: list, data: TaskData | None = None) -> list:
     harness = ResumableHarness(HarnessConfig(id="resumable"))
-    trace = SimpleNamespace(branches=[SimpleNamespace(messages=branch)])
+    trace = SimpleNamespace(
+        branches=[SimpleNamespace(messages=branch)], current_messages=branch
+    )
     new = [UserMessage(content="continue")]
     await harness.resume(None, trace, None, "", "", {}, data or TaskData(), new)
     return harness.prompt

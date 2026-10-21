@@ -297,9 +297,7 @@ copy_failed=$(
                 "overrides resume() nor supports a Messages prompt for the default "
                 "relaunch-on-the-conversation."
             )
-        branch = drop_unanswered_tool_calls(
-            trace.branches[-1].messages if trace.branches else []
-        )
+        branch = drop_unanswered_tool_calls(trace.current_messages)
         # `resolve_prompt` re-emits `data.system_prompt`; only de-duplicate those
         # system messages when it has something to re-emit. Explicit system
         # messages in a Messages prompt must survive a resumed segment.

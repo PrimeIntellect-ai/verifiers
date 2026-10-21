@@ -254,7 +254,7 @@ async def test_a_failed_call_continues_from_its_latest_checkpoint(model, store):
         EVENTS.clear()
         resumed = await agent.run(task(), key="solve")
         assert resumed.ok, resumed.errors
-        assert resumed.resumed_from == failed.id
+        assert resumed.id == failed.id
         assert FakeBackend.made[-1].source == "ckpt-2"
         assert EVENTS == ["restore"]
         assert roles(model.requests[0]["messages"]) == [
@@ -287,7 +287,7 @@ async def test_an_unfinished_trace_in_someone_elses_store_resumes(model):
     with vf.use_durable(vf.Durable(Partial(partial))):
         resumed = await agent.run(task(), key="solve")
     assert resumed.ok, resumed.errors
-    assert resumed.resumed_from == partial["id"]
+    assert resumed.id == partial["id"]
     assert FakeBackend.made[-1].source == "ckpt-2"
 
 
@@ -357,7 +357,7 @@ async def test_a_driver_that_diverges_continues_live_from_a_turn_end(model, stor
         again, replies = await drive(agent, messages=("first", "changed"))
     assert replies == ["done: first", "done: changed"]
     assert not again.kept
-    assert again.trace.resumed_from == first.trace.id
+    assert again.trace.id == first.trace.id
     sent = model.requests[0]["messages"]
     assert [m["content"] for m in sent if m["role"] == "user"] == ["first", "changed"]
     # It continued on the box as the first turn left it.
@@ -391,7 +391,7 @@ async def test_a_cut_off_exchange_replays_then_continues_at_its_checkpoint(
             assert segment.last_reply == "done: more"
         resumed = exchange.trace
         assert resumed.ok, resumed.errors
-        assert resumed.resumed_from == failed.id
+        assert resumed.id == failed.id
         assert roles(model.requests[0]["messages"]) == [
             "user",
             "assistant",
@@ -436,7 +436,7 @@ async def test_a_failed_finished_exchange_goes_live_instead_of_kept(model, store
     again = exchange.trace
     assert not exchange.kept and not again.kept
     assert again.ok and again.errors == [], again.errors
-    assert again.resumed_from == failed.id
+    assert again.id == failed.id
     assert len(model.requests) == 1 and segment.last_reply == f"done: {RETRY_NOTE}"
     assert FinalizeOnce.finalized == 1
 
@@ -458,7 +458,7 @@ async def test_a_driver_that_raises_leaves_its_failed_trace(model, store):
         async with agent.interaction(task(None), key="talk") as exchange:
             await exchange.turn("hello")
     assert not exchange.kept and exchange.trace.ok
-    assert exchange.trace.resumed_from == failed.id and len(model.requests) == 1
+    assert exchange.trace.id == failed.id and len(model.requests) == 1
 
 
 async def test_a_replaying_exchange_steers_only_when_live(model, store):
@@ -480,10 +480,12 @@ async def test_a_continuation_is_kept_after_a_crash(model, store):
         model.requests.clear()
         first = await agent.run(resume=origin, note="again", key="review")
         assert first.ok, first.errors
-        assert not first.kept and first.resumed_from == origin.id
+        assert not first.kept and first.id == origin.id
         assert first.labels["call"]["key"] == "agent/review"
         assert "resume" in first.labels["call"]["parts"]
         assert len(model.requests) == 1
+        # as a relaunch gets the origin back: its own call's run of the trace
+        origin = await agent.run(task(), key="draft")
         again = await agent.run(resume=origin, note="again", key="review")
     assert again.kept and again.id == first.id
     assert len(model.requests) == 1
@@ -498,11 +500,15 @@ async def test_a_continuation_is_durable_by_its_position_too(model, store):
             return [origin, await agent.run(resume=origin, note="again")]  # agent/1
 
     first = await stages()
-    assert [t.labels["call"]["key"] for t in first] == ["agent/0", "agent/1"]
+    # The continuation ran on the origin's very trace, in place.
+    assert first[0] is first[1] and first[1].labels["call"]["key"] == "agent/1"
     model.requests.clear()
     again = await stages()
     assert all(t.kept for t in again) and model.requests == []
     assert [t.id for t in again] == [t.id for t in first]
+    # Each call gets its own run of the trace back (`Trace.attempt`).
+    assert [t.labels["call"]["key"] for t in again] == ["agent/0", "agent/1"]
+    assert [t.attempts for t in again] == [1, 2]
 
 
 async def test_a_cut_off_continuation_resumes_from_its_own_checkpoint(model, store):
@@ -512,15 +518,24 @@ async def test_a_cut_off_continuation_resumes_from_its_own_checkpoint(model, sto
         assert [c.id for c in origin.checkpoints] == ["ckpt-1", "ckpt-2", "ckpt-3"]
         FakeBackend.doomed["b.txt"] = box_lost
         cut = await agent.run(resume=origin, at=0, note="again", key="review")
-        assert not cut.ok and cut.resumed_from == origin.id
-        # The box it started from (the origin's), then its own per-call saves.
-        assert [c.id for c in cut.checkpoints] == ["ckpt-1", "ckpt-4", "ckpt-5"]
+        assert not cut.ok and cut.id == origin.id
+        # The origin's checkpoints, the box it started from, then its own saves.
+        assert [c.id for c in cut.checkpoints] == [
+            "ckpt-1",
+            "ckpt-2",
+            "ckpt-3",
+            "ckpt-1",
+            "ckpt-4",
+            "ckpt-5",
+        ]
         model.requests.clear()
         EVENTS.clear()
+        # as a relaunch gets the origin back: its own call's run of the trace
+        origin = await agent.run(task(), key="draft")
         resumed = await agent.run(resume=origin, at=0, note="again", key="review")
     assert resumed.ok, resumed.errors
     # Its own trace and latest checkpoint, not the origin's.
-    assert resumed.resumed_from == cut.id
+    assert resumed.id == cut.id
     assert FakeBackend.made[-1].source == "ckpt-5"
     assert EVENTS == ["restore"]
     sent = model.requests[0]["messages"]
@@ -541,11 +556,13 @@ async def test_a_continuation_of_another_origin_runs_fresh(model, store):
         rerun = await agent.run(task(), key="redraft")
         fresh = await agent.run(resume=rerun, note="again", key="review")
         assert not fresh.kept and fresh.id != first.id
-        assert fresh.resumed_from == rerun.id
-        # Another note is another continuation too.
+        assert fresh.id == rerun.id
+        # Another note is another continuation too (of the rerun as its call returned it).
+        rerun = await agent.run(task(), key="redraft")
         noted = await agent.run(resume=rerun, note="other", key="review")
         assert not noted.kept and noted.last_reply == "done: other"
         # The latest one of the key is kept.
+        rerun = await agent.run(task(), key="redraft")
         assert (await agent.run(resume=rerun, note="other", key="review")).kept
 
 
@@ -562,15 +579,19 @@ async def test_an_exchange_continuing_a_trace_replays_after_a_crash(model, store
         origin = one.trace
 
         async def round_two():
+            # As the driver does when run again: round one comes back from its record
+            # (its own run of the trace), and round two continues it.
+            async with agent.interaction(task(None), key="round1") as one:
+                await one.turn("first")
             # The origin ends on the agent's reply: the first turn continues it.
-            async with agent.interaction(resume=origin, key="round2") as two:
+            async with agent.interaction(resume=one.trace, key="round2") as two:
                 replies = [(await two.turn(m)).last_reply for m in ("second", "third")]
             return two, replies
 
         model.requests.clear()
         two, replies = await round_two()
         assert replies == ["done: second", "done: third"]
-        assert two.trace.resumed_from == origin.id and not two.kept
+        assert two.trace.id == origin.id and not two.kept
         sent = model.requests[0]["messages"]
         assert [m["content"] for m in sent if m["role"] == "user"] == [
             "first",
@@ -592,8 +613,10 @@ async def test_a_cut_off_exchange_continuation_resumes_its_own_trace(model, stor
         ) as exchange:
             await exchange.turn()
         cut = exchange.trace
-        assert not cut.ok and cut.resumed_from == origin.id
+        assert not cut.ok and cut.id == origin.id
         model.requests.clear()
+        # as a relaunch gets the origin back: its own call's run of the trace
+        origin = await agent.run(task(), key="draft")
         async with agent.interaction(
             resume=origin, at=0, note="again", key="talk"
         ) as exchange:
@@ -601,7 +624,7 @@ async def test_a_cut_off_exchange_continuation_resumes_its_own_trace(model, stor
             assert segment.last_reply == f"done: {RETRY_NOTE}"
         resumed = exchange.trace
     assert resumed.ok, resumed.errors
-    assert resumed.resumed_from == cut.id
+    assert resumed.id == cut.id
     assert FakeBackend.made[-1].source == "ckpt-5"
     assert roles(model.requests[0]["messages"]) == [
         "user",
@@ -813,26 +836,22 @@ async def cut_twice(agent, messages, progress: bool) -> tuple[list, dict, dict]:
 async def test_a_continuation_cut_before_it_moved_restores_the_box_anywhere(
     model, restorable_boxes, monkeypatch
 ):
-    """The production chain: a continuation minted from a cut-off exchange (its
-    conversation in its prompt, one checkpoint at its end) was cut off before its first
-    model call. Replaying it restores the box before the first turn and between the
-    replayed turns from the checkpoints it carried from the exchange it continued."""
+    """The production chain: a continuation of a cut-off exchange (the same trace,
+    resumed in place) was cut off before its first model call. Replaying it restores
+    the box before the first turn and between the replayed turns from the exchange's
+    own checkpoints, which the trace still holds."""
     monkeypatch.setattr(resume_tests, "reply", tool_each_turn)
     agent = make(model, save="per_call")
     messages = ("first", "second", "third")
     seen, cut, minted = await cut_twice(agent, messages, progress=False)
-    assert minted["nodes"] == [] and minted["resumed_from"] == cut["id"]
-    # The cut exchange's checkpoints inside the minted conversation, at their places
-    # in it, then the one it continues from.
-    assert [
-        (c["id"], c.get("position"), c.get("restored", False))
-        for c in minted["checkpoints"]
-    ] == [
-        ("ckpt-1", 1, False),
-        ("ckpt-2", 5, False),
-        ("ckpt-3", 5, False),
-        ("ckpt-4", None, True),
-    ]
+    # The same trace: the cut exchange's nodes and checkpoints, then where it resumed.
+    assert (
+        minted["id"] == cut["id"]
+        and minted["nodes"][: len(cut["nodes"])] == cut["nodes"]
+    )
+    held = [c["id"] for c in minted["checkpoints"]]
+    assert held[: len(cut["checkpoints"])] == [c["id"] for c in cut["checkpoints"]]
+    assert minted["checkpoints"][-1]["restored"] and len(minted["info"]["resumes"]) == 1
     restorable_boxes.clear()
     model.requests.clear()
     replayed: list = []
@@ -844,7 +863,7 @@ async def test_a_continuation_cut_before_it_moved_restores_the_box_anywhere(
     # on the box as the second turn left it, where the minted trace starts.
     assert restorable_boxes == ["ckpt-1", "ckpt-2", "ckpt-4"]
     assert exchange.live is not None and exchange.trace.ok
-    assert exchange.trace.resumed_from == minted["id"]
+    assert exchange.trace.id == minted["id"]
 
 
 async def test_a_continuation_that_moved_restores_the_box_anywhere(
@@ -855,15 +874,12 @@ async def test_a_continuation_that_moved_restores_the_box_anywhere(
     seen, cut, saved = await cut_twice(
         agent, ("first", "second", "third"), progress=True
     )
-    assert saved["nodes"] and saved["resumed_from"] == cut["id"]
-    assert [(c["id"], c.get("position")) for c in saved["checkpoints"]] == [
-        ("ckpt-1", 1),
-        ("ckpt-2", 5),
-        ("ckpt-3", 5),
-        ("ckpt-4", None),
-        ("ckpt-7", None),
-        ("ckpt-8", None),
-    ]
+    assert (
+        saved["id"] == cut["id"] and saved["nodes"][: len(cut["nodes"])] == cut["nodes"]
+    )
+    held = [c["id"] for c in saved["checkpoints"]]
+    assert held[: len(cut["checkpoints"])] == [c["id"] for c in cut["checkpoints"]]
+    assert held[-2:] == ["ckpt-7", "ckpt-8"]
     restorable_boxes.clear()
     model.requests.clear()
     replayed: list = []
@@ -875,65 +891,11 @@ async def test_a_continuation_that_moved_restores_the_box_anywhere(
     assert restorable_boxes == ["ckpt-1", "ckpt-2", "ckpt-4", "ckpt-8"]
     # Live from the fourth turn only.
     assert [m["messages"][-1]["content"] for m in model.requests] == ["fourth", "ok"]
-    assert exchange.trace.ok and exchange.trace.resumed_from == saved["id"]
-    # The next link of the chain carries what this record carried, and its own.
-    assert [(c.id, c.position) for c in exchange.trace.checkpoints] == [
-        ("ckpt-1", 1),
-        ("ckpt-2", 5),
-        ("ckpt-3", 5),
-        ("ckpt-4", 9),
-        ("ckpt-7", 9),
-        ("ckpt-8", None),
-        ("ckpt-9", None),
-        ("ckpt-10", None),
-    ]
-
-
-async def test_a_record_carrying_nothing_replays_from_the_calls_opening(
-    model, restorable_boxes, monkeypatch
-):
-    """A continuation recorded before checkpoints were carried (no `position`) loads
-    and replays as before; before its first turn the box is the one the call opened
-    on (its origin's checkpoint `at`)."""
-    monkeypatch.setattr(resume_tests, "reply", tool_each_turn)
-    agent = make(model, save="per_call")
-    with vf.use_durable(vf.Durable(Partial())):
-        async with agent.interaction(task(None), key="draft") as draft:
-            await draft.turn("draft")
-            await draft.runtime.write("log.txt", b"drafted")
-            opened_on = await draft.checkpoint()
-    origin = draft.trace
-    messages = ("first", "second")
-    first = Records()
-    with vf.use_durable(vf.Durable(Partial())):
-        await box_reading_driver(agent, messages, [], first, resume=origin)
-    # The second turn's tool-call reply (the call opened on `opened_on`).
-    cut = first.saves[2]
-    assert [c["id"] for c in cut["checkpoints"] if c.get("restored")] == [opened_on.id]
-    second = Records()
-    with vf.use_durable(vf.Durable(Partial(cut))):
-        await box_reading_driver(agent, messages, [], second, resume=origin)
-    [minted] = second.minted
-    # As written before checkpoints were carried: the one it continues from only.
-    old = {
-        **minted,
-        "checkpoints": [c for c in minted["checkpoints"] if "position" not in c],
-    }
-    assert len(old["checkpoints"]) == 1 and old["checkpoints"][0]["restored"]
-    assert vf.WireTrace.model_validate(old).checkpoints[0].position is None
-    restorable_boxes.clear()
-    model.requests.clear()
-    replayed: list = []
-    with vf.use_durable(vf.Durable(Partial(cut, old))):
-        async with agent.interaction(resume=origin, key="talk") as exchange:
-            replayed.append(await read_or_none(exchange.runtime, "log.txt"))
-            await exchange.turn("first")
-            await exchange.turn("second")
-    assert replayed == [b"drafted"]
-    assert restorable_boxes[0] == opened_on.id
-    # The first turn replayed; the second continued live from the cut, as before.
-    assert [m["messages"][-1]["content"] for m in model.requests] == ["second", "ok"]
-    assert exchange.trace.ok and exchange.trace.resumed_from == old["id"]
+    assert exchange.trace.ok and exchange.trace.id == saved["id"]
+    # The same trace again: every checkpoint it held, then the live turn's own.
+    ids = [c.id for c in exchange.trace.checkpoints]
+    assert ids[: len(held)] == held and ids[-2:] == ["ckpt-9", "ckpt-10"]
+    assert len(exchange.trace.info["resumes"]) == 2
 
 
 # -- an episode -----------------------------------------------------------------
@@ -1242,7 +1204,7 @@ async def test_a_crashed_episode_reruns_from_the_top_on_its_traces(
     draft, review = episode.traces
     assert draft.kept and draft.id == writer.id
     assert review.labels["call"]["key"] == "judge/0" and not review.kept
-    assert review.resumed_from == cut.id
+    assert review.id == cut.id
     assert EVENTS == ["restore"]
     assert len(model.requests) == 2
     sent = model.requests[0]["messages"]

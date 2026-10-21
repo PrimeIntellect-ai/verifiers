@@ -82,7 +82,12 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 from pydantic import BaseModel
 
 from verifiers.v1.task import identity_data, source_hash
-from verifiers.v1.trace import LABELS_KEY, Checkpoint, Trace, WireTrace
+from verifiers.v1.trace import (
+    LABELS_KEY,
+    Checkpoint,
+    Trace,
+    WireTrace,
+)
 
 if TYPE_CHECKING:
     from verifiers.v1.agent import Agent
@@ -157,6 +162,8 @@ class Durable:
         if isinstance(self.lookup, TraceSink):
             try:
                 self.lookup.write(trace)
+            except StaleTraceError:
+                raise
             except Exception:
                 logger.warning(
                     "durable: writing trace %s failed", trace.id, exc_info=True
@@ -389,8 +396,13 @@ def call_parts(
 def resume_part(resume: Trace, at: str | int | None, note: str | None) -> str:
     """The fingerprint part of a continuation: the id of the trace it continues (its
     origin), the checkpoint it continues from (`at`, as given) and its `note`. Another
-    origin (an earlier stage run again) or another note runs the continuation fresh."""
-    return _hash({"trace": resume.id, "at": at, "note": note})
+    origin (an earlier stage run again, or a later run of the trace: `Trace.attempts`)
+    or another note runs the continuation fresh. A trace's first run adds no `run`, so
+    the part is as it was before traces were resumed in place."""
+    origin: dict[str, Any] = {"trace": resume.id, "at": at, "note": note}
+    if resume.attempts > 1:
+        origin["run"] = resume.attempts - 1
+    return _hash(origin)
 
 
 def box_parts(
@@ -423,6 +435,11 @@ def box_ref(scope: Mapping[str, Any], key: str, box_fingerprint: str) -> str:
     """The address of durable box `key` in `scope` with `box_fingerprint`: every run on
     the box carries it (`labels["box"]["ref"]`)."""
     return _hash({"scope": scope, "box": key, "fingerprint": box_fingerprint})
+
+
+class StaleTraceError(RuntimeError):
+    """A save of a trace from a run that a later resume of it replaced (a stale
+    attempt, a zombie process): the stored record holds more runs (`Trace.attempts`)."""
 
 
 def refs_of(labels: Mapping[str, Any]) -> list[str]:
@@ -552,31 +569,48 @@ def observe(
 class TraceDir:
     """A directory of traces, one `<id>.json` record each, with a pointer per ref
     (`refs/<ref>.json`): a `TraceLookup` and a `TraceSink` for tests and standalone use.
-    Each write replaces the trace's file atomically and moves the pointers of its refs
-    to it unless they point at a trace that moved later."""
+    The pointer is the call's record: the trace and which of its runs is the call's
+    (`Trace.attempts`), so a call whose trace a later call resumed in place gets its
+    own run back (`Trace.attempt`). Each write replaces the trace's file atomically
+    and moves the pointers of its refs to it unless they point at a trace that moved
+    later. A write holding fewer runs than the stored trace is from a run a later
+    resume replaced, and is refused (`StaleTraceError`)."""
 
     def __init__(self, path: Path | str) -> None:
         self.path = Path(path)
 
     def write(self, trace: Trace) -> None:
+        runs = trace.attempts
+        held = _read(self.path / "runs" / f"{trace.id}.json")
+        if held is not None and held["runs"] > runs:
+            raise StaleTraceError(
+                f"trace {trace.id} holds {held['runs']} runs; this save is from a "
+                f"replaced run ({runs})"
+            )
         _replace(self.path / f"{trace.id}.json", trace.to_record())
+        if runs > 1:
+            _replace(self.path / "runs" / f"{trace.id}.json", {"runs": runs})
         moved = recency(trace)
         for ref in refs_of(trace.labels):
             pointer = self.path / "refs" / f"{ref}.json"
             held = _read(pointer)
             if held is None or held["trace"] == trace.id or held["recency"] <= moved:
-                _replace(pointer, {"trace": trace.id, "recency": moved})
+                _replace(
+                    pointer, {"trace": trace.id, "run": runs - 1, "recency": moved}
+                )
 
     def get(self, ref: str) -> Trace | None:
         held = _read(self.path / "refs" / f"{ref}.json")
         if held is None:
             return None
         try:
-            return WireTrace.model_validate_json(
+            trace = WireTrace.model_validate_json(
                 (self.path / f"{held['trace']}.json").read_bytes()
             )
         except (OSError, ValueError):
             return None
+        run = held.get("run")
+        return trace if run is None else trace.attempt(min(run, trace.attempts - 1))
 
 
 def _replace(path: Path, record: Any) -> None:

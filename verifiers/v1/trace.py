@@ -97,6 +97,8 @@ class Timing(BaseModel):
 
 LABELS_KEY = "labels"
 """The `Trace.info` key holding an env episode's trace labels (`Env.trace_labels`)."""
+RESUMES_KEY = "resumes"
+"""The `Trace.info` key of a trace's resumes (`Trace.resume`), one entry each."""
 
 
 class Error(BaseModel):
@@ -290,6 +292,10 @@ class Checkpoint(BaseModel):
     """A carried checkpoint's place in the conversation the trace opens on: the box
     matches its first `position` messages (`Trace.conversation_for`). None on the
     trace's own checkpoints."""
+    node: int | None = Field(default=None, exclude_if=lambda node: node is None)
+    """The node its conversation ends at, pinned when the trace branches past it
+    (`Trace.resume`): a checkpoint at the end of a branch has no later sampled turn on
+    it to cut at, and `turns` would then cut at the next branch's. None: `turns` cuts."""
 
 
 class Reward(BaseModel):
@@ -599,7 +605,8 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         default=None, exclude_if=lambda resumed_from: resumed_from is None
     )
     """The id of the trace this one continues: a `resume=` source, or the attempt an
-    interaction retry replaced. Its `info` was carried onto this trace at mint."""
+    interaction retry replaced. Its `info` was carried onto this trace at mint. Only
+    on traces recorded before a resume continued the trace in place (`resume`)."""
     info: dict[str, Any] = Field(default_factory=dict)
     """Scratch space for task-specific metadata. `info["labels"]` is reserved for the
     labels an env episode stamps on every trace it mints (`Env.trace_labels`)."""
@@ -714,10 +721,16 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
 
     def conversation_for(self, checkpoint: Checkpoint | None) -> Messages:
         """The conversation `checkpoint`'s box matches (None: the whole current one):
-        the cut at its `turns`, ending at its `position` when it is a carried one."""
+        the cut at its `turns` (or the conversation ending at its pinned `node`), ending
+        at its `position` when it is a carried one."""
         if checkpoint is None:
             return self.conversation_at(None)
-        messages = self.conversation_at(checkpoint.turns)
+        if checkpoint.node is not None:
+            messages = drop_unanswered_tool_calls(
+                [m for m in graph.path(self, checkpoint.node) if m.role != "system"]
+            )
+        else:
+            messages = self.conversation_at(checkpoint.turns)
         if checkpoint.position is not None:
             messages = messages[: checkpoint.position]
         return messages
@@ -736,6 +749,146 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         if any(c.node == node and c.finish_reason == "length" for c in self.calls):
             return messages[:-1]
         return messages
+
+    def resume(
+        self, start: Checkpoint | None, opening: Messages | None = None
+    ) -> dict[str, Any]:
+        """Continue this trace in place from its checkpoint `start` (None: its whole
+        conversation), as a run that opens on `opening` (default: the conversation
+        `start` holds, `conversation_for` less a cut-off reply). Nothing is removed: the
+        harness re-sends the conversation, the graph matches it against these nodes
+        (`graph.prepare_turn`), and the new turns branch off the checkpoint's node, the
+        earlier attempt's later turns staying a branch of their own. `opening`'s
+        messages past that conversation (a `note`, a retry's note and input) are added
+        as user nodes there now, so the trace holds the conversation it opens on before
+        its first new turn. The per-attempt status (errors included) is reset for the
+        new run, and `info["resumes"]` gets an entry with the cause, the checkpoint, the
+        time, the ended attempt's status, errors and labels, and where the new run opens
+        (`head`, the node its conversation ends at, while the trace has `size` nodes).
+        Returns the entry."""
+        conversation = self.without_cut_off_reply(self.conversation_for(start))
+        opening = list(conversation if opening is None else opening)
+        # A checkpoint at the end of the conversation so far has no later sampled turn to
+        # cut at; the new turns may branch elsewhere, so it keeps its conversation's node.
+        end, turns = self._current_end(), self.num_turns
+        for checkpoint in self.checkpoints:
+            if (
+                checkpoint.node is None
+                and checkpoint.turns >= turns
+                and end is not None
+            ):
+                checkpoint.node = end
+        matched = 0
+        while matched < min(len(opening), len(conversation)) and (
+            opening[matched] is conversation[matched]
+            or opening[matched] == conversation[matched]
+        ):
+            matched += 1
+        entry: dict[str, Any] = {
+            "at": time.time(),
+            "checkpoint": start.id if start is not None else None,
+            "cause": self.errors[-1].message if self.errors else None,
+            "nodes": len(self.nodes),
+            "calls": len(self.calls),
+            "extra_usage": len(self.extra_usage),
+            "ended": {
+                "ok": self.ok,
+                "is_completed": self.is_completed,
+                "stop_condition": self.stop_condition,
+                "is_timeout": self.is_timeout,
+                "errors": [error.model_dump(mode="json") for error in self.errors],
+                "timing": self.timing.model_dump(mode="json"),
+                "rewards": {
+                    name: None if reward is None else reward.model_dump(mode="json")
+                    for name, reward in self.rewards.items()
+                },
+                "metrics": dict(self.metrics),
+                "root_reply": self.root_reply,
+            },
+        }
+        if self.labels:
+            entry["ended"]["labels"] = copy.deepcopy(dict(self.labels))
+        last = conversation[matched - 1] if matched else None
+        parent = next(
+            (i for i, node in enumerate(self.nodes) if node.message is last), None
+        )
+        if parent is not None:
+            for message in opening[matched:]:
+                held = next(
+                    (
+                        i
+                        for i, node in enumerate(self.nodes)
+                        if node.parent == parent and node.message == message
+                    ),
+                    None,
+                )
+                if held is None:
+                    self.nodes.append(MessageNode(parent=parent, message=message))
+                    held = len(self.nodes) - 1
+                parent = held
+            self._head_index = {}
+        # Until its first new turn commits, the run's conversation is the branch
+        # ending at its opening (`current_messages`), not the trace's latest one.
+        entry["head"], entry["size"] = parent, len(self.nodes)
+        self.errors = []
+        self.ok = self.is_completed = self.is_timeout = False
+        self.stop_condition = self.root_reply = None
+        self.rewards, self.metrics = {}, {}
+        self.timing = Timing()
+        self._kept = False
+        self.info.setdefault(RESUMES_KEY, []).append(entry)
+        return entry
+
+    @property
+    def attempts(self) -> int:
+        """How many runs the trace holds: one, plus one per resume (`resume`)."""
+        entries = self.info.get(RESUMES_KEY)
+        return 1 + (len(entries) if isinstance(entries, list) else 0)
+
+    def attempt(self, n: int) -> Self:
+        """The trace as its run `n` (0-based, `attempts`) ended: itself for its latest
+        run, else a copy cut where run `n + 1` resumed it (its nodes, calls and
+        checkpoints then) with run `n`'s status, errors and labels from that resume's
+        entry. A durable call that ran an earlier run of the trace gets it back as it
+        returned it (`TraceDir.get`)."""
+        entries = self.info.get(RESUMES_KEY) or []
+        if not 0 <= n <= len(entries):
+            raise ValueError(f"trace {self.id} has {len(entries) + 1} runs; no run {n}")
+        if n == len(entries):
+            return self
+        entry = entries[n]
+        ended = entry["ended"]
+        view = self.model_copy(deep=True)
+        view.nodes = view.nodes[: entry["nodes"]]
+        view.calls = view.calls[: entry["calls"]]
+        view.extra_usage = view.extra_usage[
+            : entry.get("extra_usage", len(view.extra_usage))
+        ]
+        view.checkpoints = [
+            c for c in view.checkpoints if (c.time or 0.0) < entry["at"]
+        ]
+        view.errors = [Error.model_validate(e) for e in ended["errors"]]
+        view.ok, view.is_completed = ended["ok"], ended["is_completed"]
+        view.stop_condition, view.is_timeout = (
+            ended["stop_condition"],
+            ended["is_timeout"],
+        )
+        view.root_reply = ended["root_reply"]
+        view.timing = Timing.model_validate(ended["timing"])
+        view.rewards = {
+            name: None if value is None else Reward.model_validate(value)
+            for name, value in ended["rewards"].items()
+        }
+        view.metrics = dict(ended["metrics"])
+        view.info[RESUMES_KEY] = copy.deepcopy(entries[:n])
+        if not view.info[RESUMES_KEY]:
+            del view.info[RESUMES_KEY]
+        if "labels" in ended:
+            view.info[LABELS_KEY] = copy.deepcopy(ended["labels"])
+        else:
+            view.info.pop(LABELS_KEY, None)
+        view._head_index, view._pending = {}, {}
+        return view
 
     def carried(self, at: str) -> list[Checkpoint]:
         """The checkpoints a continuation of this trace from its checkpoint `at` carries
@@ -784,8 +937,7 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
                     nid = self.nodes[nid].parent
                 messages = [self.nodes[n].message for n in reversed(path)]
             else:
-                branches = self.branches
-                messages = list(branches[-1].messages) if branches else []
+                messages = self.current_messages
         return drop_unanswered_tool_calls(
             [message for message in messages if message.role != "system"]
         )
@@ -949,6 +1101,29 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         """Messages on the final branch."""
         branches = self.branches
         return branches[-1].messages if branches else []
+
+    def _current_end(self) -> int | None:
+        """The node the current conversation ends at (`current_messages`)."""
+        entries = self.info.get(RESUMES_KEY)
+        opened = entries[-1] if isinstance(entries, list) and entries else {}
+        if opened.get("head") is not None and len(self.nodes) == opened.get("size"):
+            return opened["head"]
+        branches = self.branches
+        if not branches or not branches[-1].nodes:
+            return None
+        leaf = branches[-1].nodes[-1]
+        return next((i for i, node in enumerate(self.nodes) if node is leaf), None)
+
+    @property
+    def current_messages(self) -> Messages:
+        """The conversation the run is on: the final branch's messages, or a resumed
+        run's opening conversation (`resume`) before its first new turn adds a node
+        (a checkpoint earlier than the trace's latest branch opens elsewhere)."""
+        entries = self.info.get(RESUMES_KEY)
+        opened = entries[-1] if isinstance(entries, list) and entries else {}
+        if opened.get("head") is not None and len(self.nodes) == opened.get("size"):
+            return graph.path(self, opened["head"])
+        return self.messages
 
     @property
     def last_message(self) -> Message:

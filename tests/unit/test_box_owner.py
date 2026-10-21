@@ -112,9 +112,11 @@ async def test_an_interaction_retry_has_the_owner_restore_the_box_for_every_seat
         assert box.backend.workdir != first_workdir
         assert not first_workdir.exists()  # the lost box was torn down
         assert vf.box_of(box).generation == 1
-        # Its own first checkpoint (after those carried from the failed attempt).
-        start = next(c for c in retried.checkpoints if c.position is None)
-        assert start.restored and start.id == "ckpt-2"
+        # The same trace, continued: the box it restarted on is recorded after the
+        # failed attempt's checkpoints.
+        assert retried.id == failed.id
+        start = next(c for c in retried.checkpoints if c.restored)
+        assert start.id == "ckpt-2"
         assert box.backend.files() == {"a.txt": b"a.txt"}
     assert box.backend.stopped
 
@@ -174,11 +176,12 @@ async def test_two_seats_resume_on_the_box_their_owner_restores(
         box, kept, resumed = await episode()
     assert kept.kept and kept.id == first.id
     assert resumed.ok, resumed.errors
-    assert resumed.resumed_from == failed.id
+    # The cut-off call continued its own trace.
+    assert resumed.id == failed.id and len(resumed.info["resumes"]) == 1
     # The box came back from the latest checkpoint either seat took.
     assert box.backend.source == latest.id
-    start = next(c for c in resumed.checkpoints if c.position is None)
-    assert start.restored and start.id == latest.id
+    start = next(c for c in resumed.checkpoints if c.restored)
+    assert start.id == latest.id
     assert model.requests[0]["messages"][-1]["content"] == RETRY_NOTE
     users = [m["content"] for m in model.requests[0]["messages"] if m["role"] == "user"]
     assert users[0] == "review"
@@ -210,7 +213,7 @@ async def test_a_durable_run_on_an_unrestored_box_runs_fresh(model, store):
         assert not failed.ok and failed.checkpoints
         async with agent.provision(task(), durable=False) as box:
             fresh = await agent.run(task(), runtime=box, key="solve")
-    assert fresh.ok and fresh.resumed_from is None
+    assert fresh.ok and fresh.id != failed.id
 
 
 async def test_a_box_restores_from_where_a_run_started_before_it_saved(
@@ -247,7 +250,7 @@ async def test_a_box_restores_from_where_a_run_started_before_it_saved(
         box, kept, rerun = await episode()
     assert kept.kept
     assert box.backend.source == first.checkpoints[-1].id
-    assert rerun.ok and rerun.resumed_from is None
+    assert rerun.ok and rerun.id != failed.id
 
 
 async def test_a_continuation_on_a_borrowed_box_starts_from_its_latest_checkpoint(
@@ -265,8 +268,8 @@ async def test_a_continuation_on_a_borrowed_box_starts_from_its_latest_checkpoin
         moved = owner.latest
         assert owner.restored.id == "X" and moved.id == first.checkpoints[-1].id
         second = await make(model).run(resume=first, note="again", runtime=box)
-    start = next(c for c in second.checkpoints if c.position is None)
-    assert start.restored and start.turns == 0
+    start = next(c for c in second.checkpoints if c.restored)
+    assert second.id == first.id and start.turns == 3
     assert (start.id, start.time) == (moved.id, moved.time)
 
 
@@ -315,7 +318,7 @@ async def test_a_keyed_box_from_a_checkpoint_comes_back_where_its_runs_left_it(
         async with agent.provision(task(), checkpoint="X", key="box") as box:
             assert box.backend.source == latest.id
             again = await agent.run(task(), runtime=box, key="solve")
-        assert again.ok and again.resumed_from == failed.id
+        assert again.ok and again.id == failed.id
         assert box.backend.files() == FakeBackend.store[latest.id]
         # Another starting checkpoint is another box.
         FakeBackend.store["Y"] = {}
@@ -335,7 +338,7 @@ async def test_a_box_from_a_checkpoint_continues_no_later_checkpoint(model, stor
         assert not failed.ok and failed.checkpoints
         async with agent.provision(task(), checkpoint="X") as box:
             fresh = await agent.run(task(), runtime=box, key="solve")
-    assert fresh.ok and fresh.resumed_from is None
+    assert fresh.ok and fresh.id != failed.id
 
 
 async def test_a_borrowed_retry_whose_box_will_not_start_ends_the_turn(
@@ -360,7 +363,7 @@ async def test_a_borrowed_retry_whose_box_will_not_start_ends_the_turn(
         (failed,) = interaction.failed_attempts
         assert failed.errors[-1].type == "SandboxError"
         trace = interaction.trace
-        assert not trace.ok and trace.resumed_from == failed.id
+        assert not trace.ok and trace.id == failed.id
         assert "would not start" in trace.errors[-1].message
         assert vf.box_of(box).generation == 0
 

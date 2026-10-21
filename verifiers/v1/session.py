@@ -33,7 +33,12 @@ from verifiers.v1.clients import Client, ModelContext
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.errors import HarnessError, RolloutError, TaskError
 from verifiers.v1.harnesses.utils.compaction import bound_tool_message
-from verifiers.v1.trace import InterceptRecord, SteerRecord, Trace
+from verifiers.v1.trace import (
+    InterceptRecord,
+    SteerRecord,
+    Trace,
+    min_new_input_tokens,
+)
 from verifiers.v1.types import (
     AssistantMessage,
     DialectName,
@@ -42,6 +47,7 @@ from verifiers.v1.types import (
     Response,
     ToolCall,
     ToolMessage,
+    Usage,
     UserMessage,
 )
 from verifiers.v1.utils.decorators import invoke
@@ -98,26 +104,60 @@ class RolloutLimits:
     max_output_tokens: int | None = None
     max_total_tokens: int | None = None
 
-    def reached(self, trace: Trace) -> str | None:
-        """The name of the first limit `trace` has reached, or None if within all caps."""
-        if self.max_turns is not None and trace.num_turns >= self.max_turns:
+    def reached(self, trace: Trace, since: tuple[int, int] = (0, 0)) -> str | None:
+        """The name of the first limit `trace` has reached, or None if within all caps.
+        `since` is the trace's turns and model calls before this run (a continuation
+        in place, `Trace.resume`): the caps count this run's alone, as they would on a
+        trace of its own."""
+        turns_before, calls_before = since
+        if (
+            self.max_turns is not None
+            and trace.num_turns - turns_before >= self.max_turns
+        ):
             return "max_turns"
         if (
-            self.max_input_tokens is not None
-            and trace.num_input_tokens >= self.max_input_tokens
+            self.max_input_tokens is None
+            and self.max_output_tokens is None
+            and self.max_total_tokens is None
         ):
+            return None
+        if calls_before:
+            used_input, used_output, used_total = _run_tokens(trace, calls_before)
+        else:
+            used_input = trace.num_input_tokens
+            used_output = trace.num_output_tokens
+            used_total = trace.num_total_tokens
+        if self.max_input_tokens is not None and used_input >= self.max_input_tokens:
             return "max_input_tokens"
-        if (
-            self.max_output_tokens is not None
-            and trace.num_output_tokens >= self.max_output_tokens
-        ):
+        if self.max_output_tokens is not None and used_output >= self.max_output_tokens:
             return "max_output_tokens"
-        if (
-            self.max_total_tokens is not None
-            and trace.num_total_tokens >= self.max_total_tokens
-        ):
+        if self.max_total_tokens is not None and used_total >= self.max_total_tokens:
             return "max_total_tokens"
         return None
+
+
+def _run_tokens(trace: Trace, calls_before: int) -> tuple[int, int, int]:
+    """`trace`'s input, output and total tokens (`Trace.num_input_tokens` and the
+    rest) counting only its model calls from `calls_before` on: what a trace of their
+    own would report, each branch's first such call feeding in its whole prompt."""
+    own = trace.calls[calls_before:]
+    ids = {id(call) for call in own}
+    seen: set[int] = set()
+    used_input = used_output = 0
+    for branch in trace.branches:
+        calls = [call for call in branch.calls if id(call) in ids]
+        for call, increment in min_new_input_tokens(calls):
+            if id(call) not in seen:
+                seen.add(id(call))
+                used_input += increment
+        usage = Usage.aggregate(c.usage for c in calls if c.usage is not None)
+        used_output += usage.completion_tokens if usage is not None else 0
+    usage = Usage.aggregate(c.usage for c in own if c.usage is not None)
+    return (
+        used_input,
+        used_output,
+        used_input + (usage.completion_tokens if usage is not None else 0),
+    )
 
 
 @dataclass
@@ -152,6 +192,9 @@ class RolloutSession:
         default_factory=list
     )
     limits: RolloutLimits = field(default_factory=RolloutLimits)
+    limits_since: tuple[int, int] = (0, 0)
+    """The trace's turns and model calls before this run (a continuation in place):
+    the limits count this run's alone (`RolloutLimits.reached`)."""
     request_interceptors: list[Callable] = field(default_factory=list)
     response_interceptors: list[Callable] = field(default_factory=list)
     on_commit: Callable[[], None] | None = None
@@ -216,14 +259,29 @@ class RolloutSession:
         return self.trace.stop_condition is not None
 
     def queue_steer(
-        self, text: str, *, message_id: str | None = None, sender: str | None = None
+        self,
+        text: str,
+        *,
+        message_id: str | None = None,
+        sender: str | None = None,
+        record: SteerRecord | None = None,
     ) -> dict:
         """Hold a steer for the harness's next inbox fetch (`Rollout.steer`
-        deduplicates message ids first)."""
-        record = SteerRecord(
-            id=message_id, text=text, sender=sender, time=time.time(), delivery="inbox"
-        )
-        self.trace.steers.append(record)
+        deduplicates message ids first). `record`: a steer the trace already holds,
+        delivered again (an interaction retry continuing the trace in place), which
+        lands anew instead of being recorded twice."""
+        if record is not None and any(held is record for held in self.trace.steers):
+            record.delivery, record.call, record.node = "inbox", None, None
+            record.time = time.time()
+        else:
+            record = SteerRecord(
+                id=message_id,
+                text=text,
+                sender=sender,
+                time=time.time(),
+                delivery="inbox",
+            )
+            self.trace.steers.append(record)
         self.inbox.append(record)
         self.trace.notify()
         return {"outcome": "injected", "delivery": "inbox"}
@@ -686,7 +744,7 @@ class RolloutSession:
         call halts the harness (its model call errors out); HarnessSession.turn treats it as clean. A task
         that ends a trajectory from `trace.state` does it with its own `@stop` (run here generically),
         so the interception server holds no opinion about the state's contents."""
-        if (limit := self.limits.reached(self.trace)) is not None:
+        if (limit := self.limits.reached(self.trace, self.limits_since)) is not None:
             self.trace.stop(limit)
             logger.debug("limit %r reached: id=%s", limit, self.trace.id)
             return limit

@@ -36,6 +36,7 @@ def make_trace() -> vf.Trace:
 def make_rollout(trace: vf.Trace, session, time_remaining=None):
     run = FailingSegmentRollout()
     run.trace = trace
+    run.task = SimpleNamespace(data=trace.task.data)
     run._opened = True
     run._closed = False
     run._failed = False
