@@ -272,3 +272,30 @@ def test_finish_refuses_a_gap():
     assembly.apply({"trace": "t", "open": {"id": "t"}, "nodes": [{}]})
     with pytest.raises(RuntimeError, match="assembled 1 nodes"):
         assembly.finish({}, [TraceSummary(id="t", nodes=2, calls=0)])
+
+
+@pytest.mark.asyncio
+async def test_streamer_without_arrays_streams_nodes_without_them():
+    """A host that keeps the training arrays itself (`set_episode_hook`) streams nodes
+    without them, and sends no routing repairs."""
+    traces: list[vf.Trace] = []
+    frames: list[bytes] = []
+
+    async def send(data: dict) -> None:
+        frames.append(pack(data))
+
+    async with DeltaStreamer(lambda: traces, send, keep_arrays=False) as streamer:
+        trace = make_trace()
+        traces.append(trace)
+        streamer.watch(trace)
+        add_turn(trace, "a1")
+        trace.nodes[1].routed_experts = np.arange(6, dtype=np.uint8).reshape(3, 2, 1)
+        await settle()
+        add_turn(trace, "a2")
+        trace.nodes[1].routed_experts = np.zeros((3, 2, 1), dtype=np.uint8)
+        await settle()
+    deltas = [unpack(frame) for frame in frames]
+    nodes = [node for delta in deltas for node in delta.get("nodes", [])]
+    assert len(nodes) == 3
+    assert all("routed_experts" not in node for node in nodes)
+    assert not any("routing_repairs" in delta for delta in deltas)
