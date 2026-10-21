@@ -11,6 +11,7 @@ left behind) never delays another run.
 
 import asyncio
 import fcntl
+import json
 import os
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -36,9 +37,12 @@ class CreationLimiter:
     flock) and sleeps until it, so the aggregate creation rate across every process sharing
     the bucket stays at `per_sec`. The reservation runs off the event loop; the wait does not
     hold the lock. Reservations are never released, so a cancelled waiter still holds its
-    slot; the backlog drains at `per_sec` regardless. With `max_backlog_s`, a create
-    whose slot is further off than that takes none and raises `CreationBacklogFull`,
-    rather than stall behind a backlog."""
+    slot; the backlog drains at `per_sec` regardless. A process that is gone takes its
+    reservations with it: the bucket keeps each process's latest reserved slot and the
+    cursor is the latest of the live ones, so the backlog a killed launch left behind never
+    delays the next launch of the same run (its scope, the stable run label, is the same).
+    With `max_backlog_s`, a create whose slot is further off than that takes none and
+    raises `CreationBacklogFull`, rather than stall behind a backlog."""
 
     def __init__(
         self,
@@ -58,17 +62,22 @@ class CreationLimiter:
             fcntl.flock(f.fileno(), fcntl.LOCK_EX)
             try:
                 f.seek(0)
-                data = f.read().strip()
                 now = time.time()
-                slot = max(now, float(data) if data else 0.0)
+                ends = {
+                    pid: end
+                    for pid, end in _reservations(f.read()).items()
+                    if end > now and _alive(pid)
+                }
+                slot = max([now, *ends.values()])
                 if self.max_backlog_s is not None and slot - now > self.max_backlog_s:
                     raise CreationBacklogFull(
                         f"{self._path.stem} creation backlog of {slot - now:.1f}s "
                         f"exceeds {self.max_backlog_s:g}s"
                     )
+                ends[os.getpid()] = slot + self._interval
                 f.seek(0)
                 f.truncate()
-                f.write(repr(slot + self._interval))
+                f.write(json.dumps({str(pid): end for pid, end in ends.items()}))
                 f.flush()
             finally:
                 fcntl.flock(f.fileno(), fcntl.LOCK_UN)
@@ -84,6 +93,28 @@ class CreationLimiter:
 
     async def __aexit__(self, *exc) -> bool:
         return False
+
+
+def _reservations(data: str) -> dict[int, float]:
+    """A bucket's latest reserved slot end per process. A bare cursor (the format before
+    reservations had owners) has no owner left to wait for."""
+    try:
+        found = json.loads(data) if data.strip() else {}
+    except ValueError:
+        return {}
+    if not isinstance(found, dict):
+        return {}
+    return {int(pid): float(end) for pid, end in found.items()}
+
+
+def _alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
 
 
 def creation_limiter(
