@@ -186,9 +186,20 @@ async def compose_services(
                     }
                 }
             }
-            if {"image", "build"} & authored["services"].get(spec.workspace, {}).keys():
+            main = authored["services"].get(spec.workspace, {})
+            if {"image", "build"} & main.keys():
                 # A template default must not replace an authored image or skip its build.
                 del base["services"][spec.workspace]["image"]
+            elif (
+                not spec.image_override
+                and (
+                    directory / "task" / Path(spec.file).parent / "Dockerfile"
+                ).is_file()
+            ):
+                main = base["services"][spec.workspace]
+                del main["image"]
+                main["build"] = {"context": "${CONTEXT_DIR}"}
+                main["pull_policy"] = "build"
             (directory / "base.json").write_text(json.dumps(base))
             (directory / "env.json").write_text(
                 json.dumps({"services": {spec.workspace: {"environment": environment}}})
