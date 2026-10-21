@@ -803,3 +803,26 @@ async def test_a_cancelled_admission_returns_the_slot_its_gate_thread_took(tmp_p
             break
         await asyncio.sleep(0.05)
     assert gate._held == set()
+
+
+def test_a_waiter_outside_the_window_skips_the_lock_until_its_turn(
+    tmp_path, monkeypatch
+):
+    config = RequestGateConfig(max_concurrent=1, adaptive=False)
+    holder, waiter = ModelGate(tmp_path, "k", "m"), ModelGate(tmp_path, "k", "m")
+    slot = holder.try_admit(config)
+    ticket = waiter.take_ticket()
+    passes = []
+    original = gate_module._locked_state
+    monkeypatch.setattr(
+        gate_module,
+        "_locked_state",
+        lambda fd: (passes.append(fd), original(fd))[1],
+    )
+    waiter._probed = time.monotonic()  # a pass under the lock just ran
+    assert waiter.try_admit(config, ticket) is None
+    assert passes == [], "a full gate is read without the lock"
+    holder.release(slot, config, "ok")
+    assert waiter.try_admit(config, ticket) == 0, (
+        "a free slot is taken once it is the waiter's turn"
+    )
