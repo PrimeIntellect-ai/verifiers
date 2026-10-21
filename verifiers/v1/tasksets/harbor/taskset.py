@@ -31,7 +31,7 @@ import tomllib
 from collections.abc import Callable, Iterator
 from functools import lru_cache
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
@@ -98,6 +98,12 @@ class HarborTaskConfig(TaskConfig):
 
 
 class HarborConfig(TasksetConfig):
+    shared_grading: Literal["open", "declared"] = Field("open", exclude=True)
+    """The network a shared-box verifier grades under. "open" (this branch's default): online,
+    as before verifiers followed Harbor's verifier phase policy (#2909); vendor graders
+    install their tools and reach their judges at grade time (SWE-Marathon, CyberStrike).
+    "declared": Harbor's verifier phase policy (`shared_grading_network`). Left out of the
+    config dump, so it never changes task identity."""
     artifact_max_bytes: int = Field(MAX_ARTIFACT_BYTES, gt=0)
     """Total archive bytes collected from one solver, across all its services."""
     task: HarborTaskConfig = HarborTaskConfig()
@@ -1208,7 +1214,9 @@ def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborD
         idx=idx,
         scoring=ScoringConfig(
             mode="isolated" if verifier is not None else "shared",
-            network=None if verifier is not None else shared_grading_network(parsed),
+            network=None
+            if verifier is not None or harbor_config.shared_grading == "open"
+            else shared_grading_network(parsed),
         ),
         artifact_max_bytes=harbor_config.artifact_max_bytes,
         name=harbor_task.name,

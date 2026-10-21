@@ -8,7 +8,9 @@ import verifiers.v1 as vf
 from verifiers.v1.tasksets.harbor.taskset import HarborConfig, parse_task
 
 
-def task(tmp_path, *, environment=None, agent=None, verifier=None):
+def task(
+    tmp_path, *, environment=None, agent=None, verifier=None, shared_grading="declared"
+):
     def section(name, mode):
         return f"[{name}]\nnetwork_mode = {mode!r}\n" if mode else f"[{name}]\n"
 
@@ -23,7 +25,7 @@ def task(tmp_path, *, environment=None, agent=None, verifier=None):
         + section("agent", agent)
         + section("verifier", verifier)
     )
-    return parse_task(tmp_path, 0, HarborConfig())
+    return parse_task(tmp_path, 0, HarborConfig(shared_grading=shared_grading))
 
 
 def test_an_offline_task_grades_offline(tmp_path):
@@ -47,3 +49,15 @@ def test_a_public_verifier_opens_the_box(tmp_path):
 def test_a_restricted_verifier_beside_a_public_agent_grades_open(tmp_path, caplog):
     assert task(tmp_path, verifier="no-network").scoring.network is None
     assert "cannot restrict a box that started open" in caplog.text
+
+
+def test_shared_grading_stays_online_by_default_and_out_of_identity(tmp_path):
+    # This branch grades shared-box verifiers online unless a run asks for Harbor's policy:
+    # vendor graders install tools and reach their judges at grade time, and every result
+    # so far was graded that way.
+    data = task(
+        tmp_path, environment="no-network", verifier="no-network", shared_grading="open"
+    )
+    assert data.scoring.network is None
+    assert parse_task(tmp_path, 0, HarborConfig()).scoring.network is None
+    assert "shared_grading" not in HarborConfig(shared_grading="declared").model_dump()
