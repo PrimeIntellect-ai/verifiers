@@ -341,10 +341,11 @@ def check_restore(
     guarded = [PurePosixPath(posixpath.normpath(path)) for path in protected]
     for link in links if guarded else ():
         landing = _resolve(link, links)
-        if any(
-            landing.is_relative_to(path) or path.is_relative_to(landing)
-            for path in guarded
-        ):
+        # A link that lands on or inside the grader's files would let the submission
+        # stand in for them. One onto an ancestor (`/`, a fixture tree's link to the
+        # root) names none of them and restores, as Harbor restores every link;
+        # nothing extracts through any link either way.
+        if any(landing.is_relative_to(path) for path in guarded):
             raise RuntimeError(
                 f"artifact symlink {str(link)!r} -> {links[link]!r} reaches the "
                 "grader's own files"

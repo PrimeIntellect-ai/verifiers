@@ -69,8 +69,6 @@ async def test_a_virtualenv_with_links_to_the_image_interpreter_restores() -> No
         [("app/answer", "/tests/expected.json")],
         [("app/answer", "../tests")],
         [("app/answer", "/logs/verifier/reward.txt")],
-        [("app/answer", "/logs")],
-        [("app/answer", "/")],
         # Kernel resolution: `..` applies after the link before it resolved.
         [("app/up", "/usr"), ("app/answer", "up/../tests/expected.json")],
         [("app/a", "b"), ("app/b", "/tests")],
@@ -84,6 +82,20 @@ async def test_a_link_that_lands_on_the_grader_files_is_refused(entries) -> None
             runtime, {"/app": archive(("app/", None), *entries)}, protected=GRADER
         )
     assert commands == []
+
+
+@pytest.mark.parametrize("target", ["/", "/logs", "../.."])
+@pytest.mark.asyncio
+async def test_a_link_onto_an_ancestor_of_the_grader_files_restores(target) -> None:
+    """A fixture tree's link to the root (swe-marathon-100 ext4-image-v5's sample
+    filesystems) names no grader file, and restores as Harbor restores it."""
+    runtime, commands = box()
+    await restore(
+        runtime,
+        {"/app": archive(("app/", None), ("app/root", target))},
+        protected=GRADER,
+    )
+    assert commands
 
 
 @pytest.mark.asyncio
