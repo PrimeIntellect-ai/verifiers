@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import math
 import re
 import tomllib
 from functools import cached_property
@@ -35,10 +36,6 @@ JSON_SUFFIX = (
 )
 
 
-def normalize_choice(choice: str, choices: list[str]) -> float:
-    return choices.index(choice) / (len(choices) - 1)
-
-
 def first_verdicts_object(text: str) -> dict | None:
     """The first balanced JSON object in `text` that carries a `verdicts` key. Scanning for the
     key (not just the first `{`) skips prose and, crucially, an echoed format example — the one
@@ -63,16 +60,45 @@ class Criterion(BaseModel):
     text: str
     weight: CriterionWeight = 1.0
     """The criterion's share of the reward (overridable per name via `weights` in config)."""
-    choices: list[str] = Field(default_factory=lambda: ["no", "yes"], min_length=2)
-    """Allowed answers, ordered **worst → best**: the first scores 0.0, the last 1.0, the rest
-    evenly spaced by rank. Default `["no", "yes"]` is a binary check. Needs >= 2, no duplicates."""
+    choices: list[str] | dict[str, float] = Field(
+        default_factory=lambda: ["no", "yes"], min_length=2
+    )
+    """Allowed answers. A list is ordered **worst → best**: the first scores 0.0, the last 1.0,
+    the rest evenly spaced by rank. A mapping gives each answer its own score, 0.0 to 1.0, in
+    any order; `nan` scores nothing, which leaves the rollout unscored when the criterion
+    carries weight. Default `["no", "yes"]` is a binary check. Needs >= 2, no duplicates."""
 
     @field_validator("choices")
     @classmethod
-    def _check_choices(cls, v: list[str]) -> list[str]:
-        if len(set(v)) != len(v):
+    def _check_choices(
+        cls, v: list[str] | dict[str, float]
+    ) -> list[str] | dict[str, float]:
+        if isinstance(v, list) and len(set(v)) != len(v):
             raise ValueError(f"`choices` has duplicate options: {v}")
+        if isinstance(v, dict) and any(
+            not (math.isnan(score) or 0.0 <= score <= 1.0) for score in v.values()
+        ):
+            raise ValueError(f"`choices` scores must be 0.0 to 1.0 or nan: {v}")
         return v
+
+    def score(self, choice: str) -> float:
+        """The score of `choice`, one of `choices`; `nan` when it scores nothing."""
+        if isinstance(self.choices, dict):
+            return self.choices[choice]
+        return self.choices.index(choice) / (len(self.choices) - 1)
+
+    def render(self) -> str:
+        """The criterion as a prompt line, with its allowed answers."""
+        order = "" if isinstance(self.choices, dict) else ", worst to best"
+        return f"- {self.name}: {self.text} (answer one of{order}: {', '.join(self.choices)})"
+
+
+def weighted_score(scores: dict[str, float], criteria: list[Criterion]) -> float:
+    """The criteria's weighted mean score; `nan` when a weighted criterion scored nothing.
+    Zero-weight criteria never contribute, not even their `nan`."""
+    weighted = [c for c in criteria if c.weight]
+    total = sum(c.weight for c in weighted)
+    return sum(c.weight * scores[c.name] for c in weighted) / total
 
 
 CRITERIA_ADAPTER = TypeAdapter(list[Criterion])
@@ -174,13 +200,36 @@ def score_verdicts(
         )
     scores: dict[str, float] = {}
     for name, answer in answers.items():
-        choices = by_criterion[name].choices
-        if answer not in choices:
+        criterion = by_criterion[name]
+        if answer not in criterion.choices:
             raise ValueError(
-                f"judge answered {answer!r} for '{name}', expected one of {choices}"
+                f"judge answered {answer!r} for '{name}', expected one of "
+                f"{list(criterion.choices)}"
             )
-        scores[name] = normalize_choice(answer, choices)
+        scores[name] = criterion.score(answer)
     return scores
+
+
+def criterion_metrics(
+    prefix: str,
+    verdicts: list[CriterionVerdict],
+    criteria: list[Criterion],
+    scores: dict[str, float],
+) -> dict[str, float]:
+    """Each criterion's score as `<prefix>/<name>`, unless it scored nothing, and for a
+    criterion with scored choices (a mapping) an indicator per choice, `<prefix>/<name>/<choice>`,
+    since several choices can share a score."""
+    answers = {verdict.name: verdict.verdict for verdict in verdicts}
+    metrics: dict[str, float] = {}
+    for criterion in criteria:
+        if not math.isnan(scores[criterion.name]):
+            metrics[f"{prefix}/{criterion.name}"] = scores[criterion.name]
+        if isinstance(criterion.choices, dict):
+            for choice in criterion.choices:
+                metrics[f"{prefix}/{criterion.name}/{choice}"] = float(
+                    answers[criterion.name] == choice
+                )
+    return metrics
 
 
 class RubricJudge(Judge[RubricVerdicts, RubricJudgeConfig]):
@@ -194,9 +243,6 @@ class RubricJudge(Judge[RubricVerdicts, RubricJudgeConfig]):
     async def grade_batch(
         self, task: TaskData, trace: Trace, batch: list[Criterion]
     ) -> dict[str, float]:
-        def render(c: Criterion) -> str:
-            return f"- {c.name}: {c.text} (answer one of, worst to best: {', '.join(c.choices)})"
-
         reference = ""
         if self.config.answer_field:
             answer = getattr(task, self.config.answer_field, None)
@@ -222,7 +268,7 @@ class RubricJudge(Judge[RubricVerdicts, RubricJudgeConfig]):
         fields = {
             "question": judge_question(task, self.config.question_field),
             "response": judge_response(trace, self.config.view),
-            "criteria": "\n".join(render(c) for c in batch),
+            "criteria": "\n".join(c.render() for c in batch),
             "reference": reference,
         }
         if self.config.structured_output:
@@ -238,7 +284,11 @@ class RubricJudge(Judge[RubricVerdicts, RubricJudgeConfig]):
                 )
             verdicts = RubricVerdicts.model_validate(obj).verdicts
         # A malformed verdict is a judge failure and must error the rollout, not score the model.
-        return score_verdicts(verdicts, batch, "the batch's")
+        scores = score_verdicts(verdicts, batch, "the batch's")
+        trace.record_metrics(
+            criterion_metrics(self.reward_name, verdicts, batch, scores)
+        )
+        return scores
 
     async def score(self, task: TaskData, trace: Trace) -> float:
         criteria = self.criteria
@@ -264,12 +314,7 @@ class RubricJudge(Judge[RubricVerdicts, RubricJudgeConfig]):
         by_name: dict[str, float] = {}
         for batch_verdicts in results:
             by_name.update(batch_verdicts)
-        for criterion in criteria:
-            trace.record_metric(
-                f"{self.reward_name}/{criterion.name}", by_name[criterion.name]
-            )
-        total = sum(criterion.weight for criterion in criteria)
-        return sum(c.weight * by_name[c.name] for c in criteria) / total
+        return weighted_score(by_name, criteria)
 
 
 __all__ = [
@@ -278,4 +323,6 @@ __all__ = [
     "RubricJudge",
     "RubricJudgeConfig",
     "RubricVerdicts",
+    "criterion_metrics",
+    "weighted_score",
 ]

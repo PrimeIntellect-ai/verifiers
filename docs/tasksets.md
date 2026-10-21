@@ -325,7 +325,7 @@ When a task's reward is semantic and cannot be checked deterministically, use an
   ```
 
   To make this the default in code, set `judges: vf.Judges = [vf.ReferenceJudgeConfig(name="correct")]` on your `TaskConfig`.
-- **`rubric`** loads a JSON or TOML rubric file from `path` containing a `criteria` list (each with `name`, `text`, optional `weight`, and `choices` ordered from worst to best). It evaluates the full trace by default, records each criterion as a `<judge_name>/<criterion>` metric, and returns their weighted average as the judge's reward.
+- **`rubric`** loads a JSON or TOML rubric file from `path` containing a `criteria` list (each with `name`, `text`, optional `weight`, and `choices`: a list ordered from worst to best, or a mapping from each answer to its score, where `nan` scores nothing). It evaluates the full trace by default, records each criterion as a `<judge_name>/<criterion>` metric (plus a `<judge_name>/<criterion>/<choice>` indicator for a mapping), and returns their weighted average as the judge's reward. A reward that comes out `nan` leaves the rollout unscored: the reward is `None` and the trace fails with `UnscoredError`.
 - **`decision`** queries a decision-model endpoint (defaulting to Clef) across two to ten ordered grading `levels` and returns the probability-weighted level normalized to `[0, 1]`:
 
   ```toml
