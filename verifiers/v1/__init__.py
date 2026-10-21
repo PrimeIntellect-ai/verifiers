@@ -60,6 +60,7 @@ from verifiers.v1.errors import (
     TaskError,
     ToolsetError,
     TunnelError,
+    UnscoredError,
 )
 from verifiers.v1.grading import grade_submission
 from verifiers.v1.graph import MessageNode
@@ -283,6 +284,7 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "ToolsetError",
     "SandboxError",
     "TaskError",
+    "UnscoredError",
     "InterceptionError",
     "TunnelError",
     # clients
