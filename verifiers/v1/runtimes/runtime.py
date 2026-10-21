@@ -24,6 +24,15 @@ from verifiers.v1.runtimes.base import (
 if TYPE_CHECKING:
     from verifiers.v1.trace import Checkpoint, Trace
 
+# An image can point uv at directories only root can write (`ENV UV_PYTHON_INSTALL_DIR=
+# /opt/uv/python`), which fails the bootstrap when it runs as the task's user. Such a
+# setting falls back to uv's per-user default for the bootstrap only.
+_DROP_UNWRITABLE_UV_DIRS = (
+    "for v in UV_PYTHON_INSTALL_DIR UV_PYTHON_BIN_DIR UV_CACHE_DIR UV_TOOL_DIR "
+    'UV_TOOL_BIN_DIR; do eval "d=\\${$v-}"; '
+    '[ -z "$d" ] || { mkdir -p "$d" 2>/dev/null && [ -w "$d" ]; } || unset "$v"; done'
+)
+
 
 @dataclass(frozen=True, eq=False)
 class Runtime:
@@ -199,6 +208,7 @@ class Runtime:
                     tmp = f"{path}.{uuid.uuid4().hex}.tmp"
                     await self.write(tmp, data)
                     command = (
+                        f"{_DROP_UNWRITABLE_UV_DIRS}; "
                         f"mv -f {shlex.quote(tmp)} {shlex.quote(path)} "
                         f"&& {{ {_ENSURE_UV}; }} "
                         f"&& uv sync --script {shlex.quote(path)} -q --no-config "

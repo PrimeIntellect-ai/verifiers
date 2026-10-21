@@ -4,6 +4,7 @@ polled forever, Prime calls repeated through gateway errors, and the longer crea
 wait of a box restored from a checkpoint. No sandbox or model is used."""
 
 import json
+import os
 import sys
 from types import SimpleNamespace
 
@@ -540,3 +541,39 @@ async def test_uv_scripts_keep_their_environment_when_the_image_disables_uv_cach
         await backend.teardown()
     assert str(tmp_path / "uv-cache") in argv[0]
     assert (result.exit_code, result.stdout) == (0, "ready\n")
+
+
+def test_uv_bootstrap_drops_image_uv_dirs_the_task_user_cannot_write(tmp_path):
+    # Task images that set `ENV UV_PYTHON_INSTALL_DIR=/opt/uv/python` (root-owned) failed
+    # the harness bootstrap with "failed to create directory ... Permission denied".
+    import subprocess
+
+    from verifiers.v1.runtimes.runtime import _DROP_UNWRITABLE_UV_DIRS
+
+    if os.geteuid() == 0:
+        pytest.skip("root can write anywhere")
+    blocked = tmp_path / "blocked"
+    blocked.mkdir()
+    blocked.chmod(0o500)
+    env = {
+        "PATH": "/usr/bin:/bin",
+        "UV_PYTHON_INSTALL_DIR": str(blocked / "python"),
+        "UV_TOOL_BIN_DIR": str(blocked),
+        "UV_CACHE_DIR": str(tmp_path / "cache"),
+    }
+    try:
+        shown = subprocess.run(
+            ["sh", "-c", f"{_DROP_UNWRITABLE_UV_DIRS}; env"],
+            env=env,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.splitlines()
+    finally:
+        blocked.chmod(0o700)
+    assert f"UV_CACHE_DIR={tmp_path / 'cache'}" in shown
+    assert not [
+        line
+        for line in shown
+        if line.startswith(("UV_PYTHON_INSTALL_DIR=", "UV_TOOL_BIN_DIR="))
+    ]
