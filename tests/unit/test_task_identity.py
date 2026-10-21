@@ -52,3 +52,25 @@ def test_task_key_and_parts_hash_the_identity_shape():
         and identity_data(dumped)["network_allow"] == []
     )
     assert task_parts(task)["data"]
+
+
+def test_task_data_nested_in_task_data_keeps_its_identity_too():
+    """A QC task records the task it audits: that record reads in its old shape as well."""
+    record = {
+        "name": "t",
+        "network": {"allow": [], "block": ["*"]},
+        "verifier": {"network": {"allow": [], "block": ["*"]}},
+    }
+    old_record = {
+        "name": "t",
+        "network_allow": [],
+        "network_block": [],
+        "verifier": {"network_allow": []},
+    }
+    data = {"name": "qc", "network": {"allow": ["*"], "block": []}, "record": record}
+    assert identity_data(data) == {
+        "name": "qc",
+        "network_allow": ["*"],
+        "network_block": [],
+        "record": old_record,
+    }

@@ -59,8 +59,12 @@ def identity_data(data: Mapping) -> dict:
     `network_allow`/`network_block` it was before it became one config (#2902), and an
     unset `scoring.network` left out. The same policy keeps the same task key and call
     fingerprint, so tasks keep their identity (job ids, finished calls) across the change.
+    Task data nested in it (a QC task's record of the task it audits) is read the same way.
     Identity only: the policy the task runs under is `data` as it is."""
-    out = dict(data)
+    out = {
+        key: value if key in ("verifier", "scoring") else _nested_identity(value)
+        for key, value in data.items()
+    }
     network = out.pop("network", None)
     if isinstance(network, Mapping):
         allow, block = list(network.get("allow", ["*"])), list(network.get("block", []))
@@ -80,6 +84,21 @@ def identity_data(data: Mapping) -> dict:
         verifier["network_allow"] = list(verifier.pop("network").get("allow", ["*"]))
         out["verifier"] = verifier
     return out
+
+
+def _nested_identity(value: Any) -> Any:
+    """`value` with every task-data mapping in it (one whose `network` is a policy) in
+    its identity shape (`identity_data`)."""
+    if isinstance(value, Mapping):
+        if isinstance(value.get("network"), Mapping):
+            return identity_data(value)
+        return {
+            key: item if key in ("verifier", "scoring") else _nested_identity(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_nested_identity(item) for item in value]
+    return value
 
 
 class TaskResources(BaseModel):
