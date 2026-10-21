@@ -185,15 +185,17 @@ def _chain(error: BaseException) -> Iterator[BaseException]:
         current = _leaf(cause) if cause is not None else None
 
 
-def _http_status(error: BaseException) -> int | None:
+def _http_status(error: BaseException, *, text: bool = True) -> int | None:
     """The HTTP status an error carries: its own `status_code`, its httpx response's,
-    or the SDK's `HTTP <status>: ...` message prefix."""
+    or (with `text`) the SDK's `HTTP <status>: ...` message prefix."""
     status = getattr(error, "status_code", None)
     if isinstance(status, int):
         return status
     status = getattr(getattr(error, "response", None), "status_code", None)
     if isinstance(status, int):
         return status
+    if not text:
+        return None
     match = _HTTP_STATUS.search(str(error))
     return int(match.group(1)) if match else None
 
@@ -258,9 +260,10 @@ def _rpc_kind(error: BaseException) -> SandboxErrorKind | None:
     }.get(error.code)
 
 
-def _typed_kind(error: BaseException) -> SandboxErrorKind | None:
+def _typed_kind(error: BaseException, *, text: bool = True) -> SandboxErrorKind | None:
     """The kind one failure's own typed evidence names: a typed `SandboxError`, the
-    SDK's or Python's exception type, an errno, an HTTP status, a Connect code."""
+    SDK's or Python's exception type, an errno, an HTTP status, a Connect code.
+    Without `text`, an HTTP status in the message (the SDK's prefix) does not count."""
     if isinstance(error, SandboxError):
         return error.kind if error.kind != "unknown" else None
     name = type(error).__name__
@@ -277,7 +280,7 @@ def _typed_kind(error: BaseException) -> SandboxErrorKind | None:
         return "missing"
     if isinstance(error, OSError) and error.errno in _ERRNO_KINDS:
         return _ERRNO_KINDS[error.errno]
-    status = _http_status(error)
+    status = _http_status(error, text=text)
     if status is not None and (kind := _status_kind(status)) is not None:
         return kind
     if _is_rpc(error):
@@ -320,6 +323,75 @@ def sandbox_error_kind(
             if (kind := kinds(current)) is not None:
                 return kind
     return default
+
+
+OutageKind = Literal["account", "quota", "io"]
+"""An infrastructure failure, by what it waits for:
+
+- `account`: billing or auth refused (401, 402, 403; a sandbox `account`): nothing
+  passes until someone fixes the account.
+- `quota`: refused for capacity or rate (429; a sandbox `quota`). Retry later.
+- `io`: the provider or platform failed in transit (a 5xx, 408, a dropped connection,
+  a read timeout; a sandbox `io`). Retry."""
+
+
+_INTERCEPTION_TYPES = frozenset({"InterceptionError", "TunnelError"})
+"""The host link to the rollout (the interception server or its tunnel) failed: `io`,
+raised live or recorded, so a record without its cause classifies as the live error."""
+
+
+def outage_kind(error: object) -> OutageKind | None:
+    """The outage `error` is, from typed evidence only (never its message): a
+    `ProviderError`'s status, a `SandboxError`'s kind, an interception or tunnel
+    failure (its cause's outage, else `io`), an untyped exception's type, errno, or
+    HTTP status (`status_code` or its response's), or an error record (`trace.Error`,
+    or an exception carrying one as `.error`, such as a failed call's) by its type and
+    status or kind. None when it is not infrastructure: a broken contract, a full disk,
+    or a task's own failure (`TaskError`), whatever that was raised from."""
+    record = getattr(error, "error", None)
+    if not isinstance(error, BaseException) or (
+        record is not None and not isinstance(error, RolloutError)
+    ):
+        record = record if record is not None else error
+        kind = getattr(record, "kind", None)
+        status = getattr(record, "status_code", None)
+        name = getattr(record, "type", None)
+        if name == "SandboxError" or (name is None and kind is not None):
+            return kind if kind in ("account", "quota", "io") else None
+        if name == "ProviderError" and isinstance(status, int):
+            return _status_outage(status)
+        if name in _INTERCEPTION_TYPES or name in _IO_TYPES:
+            return "io"
+        return None
+    for current in _chain(error):
+        if isinstance(current, TaskError):
+            return None  # the task's own failure, whatever it was raised from
+        if isinstance(current, ProviderError):
+            return _status_outage(current.status_code)
+        if isinstance(current, SandboxError):
+            return current.kind if current.kind in ("account", "quota", "io") else None
+        if type(current).__name__ in _INTERCEPTION_TYPES:
+            # The host link failed: what its cause names (a 401 is `account`), else io.
+            cause = current.__cause__ or current.__context__
+            return (outage_kind(cause) if cause is not None else None) or "io"
+        if isinstance(current, RolloutError):
+            continue  # a harness or toolset failure: its cause says what happened
+        if isinstance(current, (ConnectionError, TimeoutError)):
+            return "io"
+        kind = _typed_kind(current, text=False)
+        if kind in ("account", "quota", "io"):
+            return kind
+    return None
+
+
+def _status_outage(status: int) -> OutageKind | None:
+    if status in _ACCOUNT_STATUSES:
+        return "account"
+    if status == 429:
+        return "quota"
+    if status >= 500 or status == 408:
+        return "io"
+    return None
 
 
 class TaskError(RolloutError):
