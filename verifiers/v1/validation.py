@@ -87,14 +87,29 @@ class ValidationHarness(Harness[ValidationHarnessConfig]):
         solver = runtime
         runtime = runtime.with_user(None)
         if self.config.source is not None:
-            for source in sorted(self.config.source.rglob("*")):
+            modes: list[str] = []
+            for source in [self.config.source, *sorted(self.config.source.rglob("*"))]:
+                relative = source.relative_to(self.config.source).as_posix()
+                target = str(PurePosixPath(self.config.target_dir, relative))
                 if source.is_file():
-                    relative = source.relative_to(self.config.source).as_posix()
-                    await stage_file(
-                        runtime,
-                        str(PurePosixPath(self.config.target_dir, relative)),
-                        source,
-                    )
+                    await stage_file(runtime, target, source)
+                elif not source.is_dir():
+                    continue
+                # Modes as `docker cp` of the directory leaves them (git's: no group
+                # or other write), the target directory's own included: an image that
+                # keeps /solution root-only (0700) still lets the agent run solve.sh.
+                modes += [f"{source.stat().st_mode & 0o7755:o}", target]
+            for start in range(0, len(modes), 400):
+                await runtime.run(
+                    [
+                        "sh",
+                        "-c",
+                        'while [ "$#" -gt 1 ]; do chmod "$1" "$2"; shift 2; done',
+                        "vf",
+                        *modes[start : start + 400],
+                    ],
+                    {},
+                )
         hooks = {"trace": trace, "runtime": runtime, "kind": self.kind}
         await invoke(self.task.validation_before, hooks)
         if self.config.command:

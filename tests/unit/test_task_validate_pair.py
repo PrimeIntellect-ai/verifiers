@@ -71,3 +71,29 @@ async def test_the_reference_runs_as_the_agents_user(tmp_path: Path):
     await harness.launch(None, trace, Box("agent"), None, None, [], None)
     assert ran == [("agent", ["bash", "solve.sh"])]
     assert trace.info["oracle"]["user"] == "agent"
+
+
+async def test_the_staged_reference_is_reachable_by_the_agent(tmp_path: Path):
+    """Staging the reference leaves the modes `docker cp` of its directory would,
+    the target's own included, so an image's root-only /solution (0700) does not
+    keep the agent from running solve.sh."""
+    from types import SimpleNamespace
+
+    from verifiers.v1.runtimes import provision_runtime
+    from verifiers.v1.validation import ValidationHarness, ValidationHarnessConfig
+
+    source = tmp_path / "solution"
+    (source / "lib").mkdir(parents=True)
+    (source / "solve.sh").write_text("true\n")
+    (source / "lib" / "helper.sh").write_text("true\n")
+    (source / "lib" / "helper.sh").chmod(0o775)
+    target = tmp_path / "box-solution"
+    target.mkdir(mode=0o700)
+    harness = ValidationHarness(
+        ValidationHarnessConfig(source=source, target_dir=str(target))
+    )
+    harness.task, harness.kind = task(), "gold"
+    async with provision_runtime(SubprocessConfig()) as box:
+        await harness.launch(None, SimpleNamespace(info={}), box, None, None, [], None)
+    assert target.stat().st_mode & 0o777 == source.stat().st_mode & 0o755
+    assert (target / "lib" / "helper.sh").stat().st_mode & 0o777 == 0o755
