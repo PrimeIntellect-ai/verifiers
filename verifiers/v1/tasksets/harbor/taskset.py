@@ -18,6 +18,7 @@ or tests build definition, then fall back to the agent environment. Unsupported 
 import asyncio
 import hashlib
 import io
+import json
 import logging
 import re
 import shutil
@@ -30,6 +31,7 @@ import tomllib
 from collections.abc import Callable, Iterator
 from functools import lru_cache
 from pathlib import Path, PurePosixPath
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
@@ -64,6 +66,7 @@ logger = logging.getLogger(__name__)
 CACHE = Path.home() / ".cache" / "harbor"
 HARBOR_INSTALL_HINT = "uv sync --python 3.12 --extra harbor"
 REWARD_JSON = "/logs/verifier/reward.json"
+TRAJECTORY = "/logs/agent/trajectory.json"
 GRADER_PATHS = ("/tests", "/logs/verifier")
 """Where a Harbor verifier keeps its tests and writes its reward: grader-owned, so no
 restored submission may link into them."""
@@ -620,6 +623,7 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
     async def run_verifier(
         self, runtime: Runtime, trace: Trace
     ) -> float | dict[str, float]:
+        await self.stage_trajectory(runtime, trace)
         # The reward file is authoritative even when the script exits nonzero.
         result = await self.launch_verifier(runtime, trace)
         await self.record_verifier_output(runtime, trace, result)
@@ -657,6 +661,26 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
             {name: value for name, value in scores.items() if name != key}
         )
         return {key: scores[key]}
+
+    async def stage_trajectory(self, runtime: Runtime, trace: Trace) -> None:
+        """Leave the agent's transcript at Harbor's `/logs/agent/trajectory.json`, as
+        Harbor's agents do, for graders that judge how the agent worked (CyberStrike's
+        process and output-quality judges skip without it). One the agent or image
+        already left there stays."""
+        if not trace.messages:
+            return
+        data = json.dumps(trajectory(trace), ensure_ascii=False).encode()
+        await runtime.write("/tmp/vf-trajectory.json", data)
+        command = (
+            "mkdir -p /logs/agent && "
+            f"{{ test -e {TRAJECTORY} || mv /tmp/vf-trajectory.json {TRAJECTORY}; }} && "
+            f"chmod a+r {TRAJECTORY}; rm -f /tmp/vf-trajectory.json"
+        )
+        result = await runtime.run(["sh", "-c", command], {})
+        if result.exit_code:
+            logger.warning(
+                "staging the agent trajectory failed: %s", result.stderr.strip()
+            )
 
     async def record_verifier_output(
         self, runtime: Runtime, trace: Trace, result: ProgramResult
@@ -1343,3 +1367,38 @@ class HarborTaskset(Taskset[HarborTask, HarborConfig]):
             raise ValueError(f"no harbor tasks found in {root}")
         for idx, task_dir in enumerate(task_dirs):
             yield HarborTask(parse_task(task_dir, idx, self.config), self.config.task)
+
+
+def trajectory(trace: Trace) -> dict[str, Any]:
+    """The trace's final branch as a Harbor (ATIF-style) trajectory: one step per
+    message, its text, and an agent step's tool calls."""
+
+    def text(content: Any) -> str:
+        if content is None or isinstance(content, str):
+            return content or ""
+        parts = []
+        for part in content:
+            part = part if isinstance(part, dict) else part.model_dump()
+            parts.append(part.get("text") or f"[{part.get('type', 'content')}]")
+        return "\n".join(parts)
+
+    sources = {"assistant": "agent"}
+    steps = []
+    for index, message in enumerate(trace.messages, start=1):
+        step: dict[str, Any] = {
+            "step_id": index,
+            "source": sources.get(message.role, message.role),
+            "message": text(message.content),
+        }
+        for call in getattr(message, "tool_calls", None) or []:
+            step.setdefault("tool_calls", []).append(
+                {
+                    "tool_call_id": call.id,
+                    "function_name": call.name,
+                    "arguments": call.arguments,
+                }
+            )
+        if message.role == "tool":
+            step["tool_call_id"] = message.tool_call_id
+        steps.append(step)
+    return {"schema_version": "ATIF-v1.2", "session_id": trace.id, "steps": steps}

@@ -111,3 +111,55 @@ def test_compose_host_configuration_preserves_authored_task(
     assert spec.file == "environment/docker-compose.yaml"
     assert source.read_text() == content
     assert data.model_dump_json() == original
+
+
+class TrajectoryRuntime(FakeRuntime):
+    """Also keeps what grading wrote and the commands it ran."""
+
+    def __init__(self):
+        super().__init__(b"1")
+        self.writes, self.commands = {}, []
+
+    async def write(self, path, data):
+        self.writes[path] = data
+
+    async def run(self, argv, env):
+        self.commands.append(argv)
+        return await super().run(argv, env)
+
+
+async def test_grading_leaves_the_agent_transcript_where_harbor_graders_read_it(
+    monkeypatch,
+):
+    # CyberStrike's process and output-quality judges skip unless they find Harbor's
+    # /logs/agent/trajectory.json, which Harbor's own agents write.
+    import json
+
+    messages = [
+        vf.UserMessage(content="Task Description: audit cJSON"),
+        vf.AssistantMessage(
+            content="Looking.",
+            tool_calls=[vf.ToolCall(id="c1", name="bash", arguments='{"cmd": "ls"}')],
+        ),
+        vf.ToolMessage(tool_call_id="c1", content="cJSON.c"),
+    ]
+    monkeypatch.setattr(vf.Trace, "messages", property(lambda self: messages))
+    task = make_task()
+    runtime = TrajectoryRuntime()
+    assert await task.run_verifier(runtime, make_trace(task)) == {"reward": 1.0}
+    steps = json.loads(runtime.writes["/tmp/vf-trajectory.json"])["steps"]
+    assert [s["source"] for s in steps] == ["user", "agent", "tool"]
+    assert steps[0]["message"] == "Task Description: audit cJSON"
+    assert steps[1]["tool_calls"] == [
+        {"tool_call_id": "c1", "function_name": "bash", "arguments": '{"cmd": "ls"}'}
+    ]
+    staged = next(i for i, a in enumerate(runtime.commands) if "trajectory" in a[-1])
+    assert "test -e /logs/agent/trajectory.json ||" in runtime.commands[staged][-1]
+    assert staged < runtime.commands.index(["bash", "/tests/test.sh"])
+
+
+async def test_grading_a_run_without_a_transcript_writes_no_trajectory():
+    task = make_task()
+    runtime = TrajectoryRuntime()
+    await task.run_verifier(runtime, make_trace(task))
+    assert runtime.writes == {}
