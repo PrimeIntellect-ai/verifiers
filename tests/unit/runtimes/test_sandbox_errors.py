@@ -25,6 +25,7 @@ import verifiers.v1 as vf
 from verifiers.v1.errors import (
     SandboxError,
     error_kind,
+    outage_kind,
     sandbox_error_kind,
 )
 from verifiers.v1.runtimes import PrimeBackend, PrimeConfig
@@ -280,8 +281,7 @@ async def test_a_failed_read_is_typed_by_its_stderr_never_by_the_path(
     runtime, stderr, kind
 ):
     """A path a task names may hold any marker word; only a missing file or a full
-    disk may type a failed read, so no read of a user path becomes an account,
-    quota or io failure."""
+    disk may type a failed read, so no read of a user path becomes an outage."""
 
     async def open_process(*args, **kwargs):
         return FailedProcess(stderr)
@@ -291,6 +291,7 @@ async def test_a_failed_read_is_typed_by_its_stderr_never_by_the_path(
     with pytest.raises(SandboxError) as caught:
         await runtime.bind().read("/app/x", max_bytes=100)
     assert caught.value.kind == kind
+    assert outage_kind(caught.value) is None
 
 
 async def test_a_users_failed_write_is_typed(runtime):
@@ -342,6 +343,8 @@ async def test_live_gateway_and_stream_failures_are_typed(runtime):
     with pytest.raises(SandboxError) as read_dir:
         await runtime.bind().read("/app")
     assert read_dir.value.kind == "unknown"
+    assert outage_kind(read_dir.value) is None
     with pytest.raises(SandboxError) as read_gone:
         await runtime.bind().read("/app/x", max_bytes=100)
     assert read_gone.value.kind == "box_lost"
+    assert outage_kind(read_gone.value) is None
