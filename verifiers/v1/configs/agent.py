@@ -12,12 +12,12 @@ from pydantic import (
 )
 from pydantic_config import BaseConfig
 
-from verifiers.v1.clients import ClientConfig
+from verifiers.v1.configs.client import ClientConfig
+from verifiers.v1.configs.deployment import DeploymentConfig
 from verifiers.v1.configs.harness import HarnessConfig, WireHarnessConfig
 from verifiers.v1.configs.retries import RetryConfig
+from verifiers.v1.configs.runtime import PrimeConfig, RuntimeConfig
 from verifiers.v1.configs.scoring import ScoringConfig
-from verifiers.v1.runtimes import PrimeConfig, RuntimeConfig
-from verifiers.v1.runtimes.deployment import DeploymentConfig
 from verifiers.v1.types import SamplingConfig
 from verifiers.v1.utils.generic import merge_defaults
 
