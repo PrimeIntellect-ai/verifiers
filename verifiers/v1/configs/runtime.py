@@ -241,6 +241,23 @@ class PrimeConfig(NetworkPolicyConfig):
     """Pace sandbox creation to this many per minute, enforced run-wide across every
     env-server worker process (None/<= 0 disables it). (Tunnel creation is limited separately
     — see interception.tunnel.prime.tunnel_limiter.)"""
+    creates_backlog_s: float | None = Field(None, gt=0)
+    """Longest a create may wait for its slot under `creates_per_min` before it fails
+    (a `quota` SandboxError) rather than stall behind the backlog; None waits it out."""
+    create_timeout_s: float | None = Field(None, gt=0)
+    """Seconds the whole provisioning may take (the wait for a creation slot, the create,
+    the boot, the workdir) before it fails (`io`) and the late sandbox is deleted; None
+    leaves each phase its own budget."""
+    outage_budget_s: float = Field(0, ge=0)
+    """Seconds an idempotent platform call (the create, whose every send carries one
+    idempotency key; the boot wait; the workdir's `mkdir -p`; a job poll; an upload or
+    download; the teardown's delete) is held and sent again through a provider outage
+    (an `io` or `quota` failure: a dropped connection, a timeout, a 5xx, a 429) before
+    the error reaches the caller, instead of failing at once. The waits go 1 s doubling
+    to 30 s, with a warning a minute. 0 (the default) sends each call once. No other
+    command is sent again (starting a job or a process: its reply may be lost after it
+    ran). A sandbox that answered once and whose placement the gateway lost fails at
+    once (`box_lost`), never held."""
 
     mounts: dict[str, PrimeVolume] = Field(default_factory=dict)
     """Guest paths mapped to Prime volumes, created if missing before the VM.
