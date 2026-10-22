@@ -92,9 +92,9 @@ class RequestGateConfig(BaseConfig):
     max_backoff: float = Field(60.0, gt=0)
     """Longest wait after a rejection, `Retry-After` included."""
     dir: str | None = None
-    """Directory of the shared gate state (`flock`ed slot files). None = a host-wide
-    directory under the system temp dir; a shared mount widens the scope where `flock`
-    works there."""
+    """Directory of the host's gate daemon (its socket, log and state snapshots). None =
+    a host-wide directory under the system temp dir. Gates are per host: a directory on a
+    shared mount does not share a budget across hosts."""
 
     @model_validator(mode="after")
     def check_bounds(self) -> "RequestGateConfig":

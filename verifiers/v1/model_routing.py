@@ -39,7 +39,7 @@ async def _choose(pool, dialect):
         gates.append((deployment, gate, config))
     while True:
         for deployment, gate, config in gates:
-            slot = gate.try_admit(config)
+            slot = await gate.try_acquire(config)
             if slot is not None:
                 return deployment, RequestPermit(gate, config, slot)
         # Admission, not a telemetry snapshot, makes the choice. Each gate still
