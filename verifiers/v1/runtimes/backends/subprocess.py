@@ -10,10 +10,9 @@ import signal
 import stat
 from collections.abc import AsyncIterator
 from pathlib import Path
-from typing import ClassVar, Literal
+from typing import ClassVar
 
-from pydantic_config import BaseConfig
-
+from verifiers.v1.configs.runtime import SubprocessConfig
 from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes.base import (
     BaseRuntimeInfo,
@@ -30,10 +29,6 @@ _BACKGROUND_STOP_TIMEOUT = 5
 # harmless settings such as PATH, HOME, and cache locations. The explicit `env`
 # argument is merged afterward, so callers can deliberately pass credentials and
 # child processes inherit them. Containers and sandboxes inherit no host environment.
-
-
-class SubprocessConfig(BaseConfig):
-    type: Literal["subprocess"] = "subprocess"
 
 
 class SubprocessRuntimeInfo(SubprocessConfig, BaseRuntimeInfo):

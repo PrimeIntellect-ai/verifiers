@@ -13,33 +13,12 @@ validates every field next to `import_path`. The backend's `SUPPORTS_*` flags an
 a runtime does not declare before provisioning."""
 
 import importlib
-from typing import Any, Literal
+from typing import Literal
 
-from pydantic import ConfigDict, model_validator
-from pydantic_config import BaseConfig
+from pydantic import ConfigDict
 
+from verifiers.v1.configs.runtime import CustomRuntimeConfig
 from verifiers.v1.runtimes.base import BaseRuntimeInfo, RuntimeBackend
-
-
-class CustomRuntimeConfig(BaseConfig):
-    type: Literal["custom"] = "custom"
-    import_path: str
-    """Dotted path to a `RuntimeBackend` subclass, e.g. `my_package.runtime.MyBackend`."""
-
-    @model_validator(mode="wrap")
-    @classmethod
-    def _validate_as_plugin_config(cls, data: Any, handler):
-        """Validate the raw config as the backend's own `config_class`."""
-        if (
-            cls is not CustomRuntimeConfig
-            or not isinstance(data, dict)
-            or "import_path" not in data
-        ):
-            return handler(data)
-        config_class = plugin_config_class(import_backend(data["import_path"]))
-        if config_class is CustomRuntimeConfig:
-            return handler(data)
-        return config_class.model_validate(data)
 
 
 class CustomRuntimeInfo(BaseRuntimeInfo):

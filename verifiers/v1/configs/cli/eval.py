@@ -6,11 +6,10 @@ from uuid import uuid4
 from pydantic import AliasChoices, Field, PrivateAttr, SerializeAsAny, model_validator
 from pydantic_config import BaseConfig
 
-from verifiers.v1.clients import ClientConfig, EvalClientConfig
 from verifiers.v1.configs.cli.env import narrowed_env_annotation, resolve_env_field
-from verifiers.v1.configs.env import EnvConfig
+from verifiers.v1.configs.client import ClientConfig, EvalClientConfig
+from verifiers.v1.configs.env import EnvConfig, SingleAgentEnvConfig
 from verifiers.v1.configs.select import SelectCLIConfig
-from verifiers.v1.envs.single_agent import SingleAgentEnvConfig
 from verifiers.v1.types import SamplingConfig
 
 

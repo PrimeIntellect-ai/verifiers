@@ -5,29 +5,10 @@ configured `url`. The server binds all interfaces (`0.0.0.0`) on the fixed local
 
 import contextlib
 from collections.abc import AsyncIterator
-from typing import ClassVar, Literal
+from typing import ClassVar
 
-from pydantic import Field
-
-from verifiers.v1.interception.tunnel.base import BaseTunnelConfig, Tunnel
-
-
-class CustomTunnelConfig(BaseTunnelConfig):
-    """Bring your own endpoint: the framework opens no tunnel and reaches the interception
-    server at `url`. The interception port is plaintext HTTP (auth'd by the per-rollout
-    secret) — front it with a TLS proxy / firewall on an untrusted network."""
-
-    type: Literal["custom"] = "custom"
-    url: str
-    """Public base URL the server is reached at (no trailing slash) — a pre-started tunnel
-    or reverse proxy's URL, or `http://<host>:<port>` for a direct bind. The model route is
-    `{url}/v1`; the tool-server state channels are `{url}/state` + `/task`."""
-    port: int = Field(ge=1, le=65535)
-    """Fixed local port the interception server binds (on all interfaces) — your tunnel or
-    proxy's target, or the public port for a direct bind."""
-
-    def model_post_init(self, _ctx) -> None:
-        self.url = self.url.rstrip("/")
+from verifiers.v1.configs.interception import CustomTunnelConfig
+from verifiers.v1.interception.tunnel.base import Tunnel
 
 
 class CustomTunnel(Tunnel[CustomTunnelConfig]):
