@@ -9,18 +9,25 @@ import logging
 import math
 import shlex
 import tempfile
+import time
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Any, ClassVar
+from typing import Any, ClassVar, TypeVar
 from urllib.parse import urlsplit
 
 from prime_sandboxes.models import validate_egress_lists
 
 from verifiers.v1.configs.runtime import NetworkPolicyConfig, PrimeConfig
-from verifiers.v1.errors import SandboxError, missing_file_kind, sandbox_error_kind
+from verifiers.v1.errors import (
+    SandboxError,
+    _chain,
+    _http_status,
+    missing_file_kind,
+    sandbox_error_kind,
+)
 from verifiers.v1.runtimes.base import (
     SERVICE_PORT,
     BaseRuntimeInfo,
@@ -29,14 +36,15 @@ from verifiers.v1.runtimes.base import (
     RuntimeProcess,
     parse_gpu,
 )
-from verifiers.v1.runtimes.limiters import creation_limiter
+from verifiers.v1.runtimes.limiters import CreationBacklogFull, creation_limiter
 from verifiers.v1.runtimes.runtime import Runtime
-from verifiers.v1.utils.aio import run_shielded
+from verifiers.v1.utils.aio import cancel_requested, run_shielded
 from verifiers.v1.utils.artifacts import validate_runtime_mounts
 from verifiers.v1.utils.prime import ensure_prime_auth
 from verifiers.v1.utils.scope import run_scope
 
 logger = logging.getLogger(__name__)
+T = TypeVar("T")
 
 EFFECTIVELY_UNBOUNDED_SECONDS = 30 * 24 * 60 * 60
 """Safety deadline for APIs that require a finite bound. Normal execution remains
@@ -58,6 +66,46 @@ _EXPOSE_TAG = "vf-exposed"
 
 
 BASE_LABELS: list[str] = []
+
+HOLD_START_S, HOLD_MAX_S = 1.0, 30.0
+"""Seconds a held call waits before it is sent again (doubling), and the longest wait."""
+NOTICE_S = 60.0
+"""Seconds between two warnings about held calls; the holds between log at debug."""
+NOT_PLACED = "sandbox_not_placed"
+"""The gateway's error code (the `error` field of its 503 body) for a sandbox the routing
+holds no placement for: transient while a sandbox comes up; on one that has answered,
+the sandbox is lost and never routed again."""
+HELD_KINDS = frozenset({"io", "quota"})
+"""Failure kinds an outage hold rides out (`PrimeConfig.outage_budget_s`)."""
+_noticed = 0.0
+
+
+def placement_lost(error: BaseException) -> bool:
+    """Whether a failure (or one it chains) is the gateway's 503 naming `NOT_PLACED`:
+    from its JSON body when it has a response, else its text."""
+    for current in _chain(error):
+        if _http_status(current) != 503:
+            continue
+        response = getattr(current, "response", None)
+        try:
+            body = response.json() if response is not None else None
+        except ValueError:
+            body = None
+        if isinstance(body, dict):
+            if body.get("error") == NOT_PLACED:
+                return True
+        elif NOT_PLACED in str(current):
+            return True
+    return False
+
+
+def _notice(message: str, *args: object) -> None:
+    global _noticed
+    now = time.monotonic()
+    level = logging.WARNING if now - _noticed >= NOTICE_S else logging.DEBUG
+    if level == logging.WARNING:
+        _noticed = now
+    logger.log(level, message, *args)
 
 
 @dataclass
@@ -165,12 +213,50 @@ class PrimeBackend(RuntimeBackend):
         self._expose_network_id: str | None = None
         self._exposed_ports: list[int] = []
         self._expose_lock = asyncio.Lock()
+        self.placed = False
+        """The sandbox has answered: a placement lost from now on is the sandbox lost,
+        not an outage."""
 
     @property
     def published_port(self) -> int:
         # Any port can be exposed, but the public URL reaches only servers bound to
         # 0.0.0.0, which `launch` arranges for a fixed published port.
         return SERVICE_PORT
+
+    async def _held(self, what: str, call: Callable[[], Awaitable[T]]) -> T:
+        """`call()`, an idempotent platform call, held and sent again through an outage
+        for up to `outage_budget_s` (`HOLD_START_S` doubling to `HOLD_MAX_S` between
+        sends) while it fails as `io` or `quota`. A sandbox that answered once and
+        whose placement the gateway has lost (`NOT_PLACED`) is gone at once: a
+        `box_lost` SandboxError, never held. A cancellation the SDK swallowed is never
+        held through."""
+        deadline = time.monotonic() + self.config.outage_budget_s
+        delay = HOLD_START_S
+        while True:
+            try:
+                return await call()
+            except Exception as e:
+                if self.placed and placement_lost(e):
+                    raise SandboxError(
+                        f"prime {what}: sandbox {self.info.id} lost its placement "
+                        f"({NOT_PLACED}): {e}",
+                        kind="box_lost",
+                    ) from e
+                if (
+                    time.monotonic() + delay > deadline
+                    or sandbox_error_kind(e) not in HELD_KINDS
+                    or cancel_requested()
+                ):
+                    raise
+                _notice(
+                    "prime: %s on sandbox %s held %gs through a platform outage: %s",
+                    what,
+                    self.info.id,
+                    delay,
+                    e,
+                )
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, HOLD_MAX_S)
 
     async def start(self) -> None:
         from prime_sandboxes import APIError, CreateSandboxRequest
@@ -211,65 +297,100 @@ class PrimeBackend(RuntimeBackend):
             options["lan_network_id"], options["lan_tags"] = self.lan
         scope = run_scope()
         labels = [*BASE_LABELS, *self.config.labels, scope]
+        # Every send of this create carries one idempotency key: a send repeated after
+        # its reply was lost (the platform may have made the sandbox) gets that sandbox
+        # back instead of a second one nobody would delete.
+        idempotency_key = uuid.uuid4().hex
+
+        # Shielded through the id capture: a cancel that aborts the POST mid-flight
+        # leaves the platform creating a sandbox this side never learned the id of —
+        # teardown() then cannot delete it
+        async def create_and_capture_id():
+            sandbox = await self._client.create(
+                CreateSandboxRequest(
+                    name=self.name,
+                    labels=list(dict.fromkeys(labels)),
+                    idempotency_key=idempotency_key,
+                    **source,
+                    environment_vars=self.env,
+                    **{k: v for k, v in options.items() if v is not None},
+                )
+            )
+            self.info.id = sandbox.id
+            return sandbox
+
+        bound: asyncio.Timeout | None = None
         try:
-            async with (
-                creation_limiter(
-                    (self.config.creates_per_min or 0) / 60,
-                    "prime-sandbox",
-                    scope,
-                )
-                or contextlib.nullcontext()
-            ):
-                for name in dict.fromkeys(m.name for m in self.config.mounts.values()):
-                    try:
-                        await self._client.volumes.create(name)
-                    except APIError as error:
-                        # Create returns 409 when this scoped name already exists,
-                        # including when another runtime creates it concurrently.
-                        if not str(error).startswith("HTTP 409:"):
-                            raise
-
-                # Shielded through the id capture: a cancel that aborts the POST
-                # mid-flight leaves the platform creating a sandbox this side
-                # never learned the id of — teardown() then cannot delete it
-                async def create_and_capture_id():
-                    sandbox = await self._client.create(
-                        CreateSandboxRequest(
-                            name=self.name,
-                            labels=list(dict.fromkeys(labels)),
-                            **source,
-                            environment_vars=self.env,
-                            **{k: v for k, v in options.items() if v is not None},
-                        )
+            # A late sandbox is deleted by teardown(): its id is captured above.
+            async with asyncio.timeout(self.config.create_timeout_s) as bound:
+                async with (
+                    creation_limiter(
+                        (self.config.creates_per_min or 0) / 60,
+                        "prime-sandbox",
+                        scope,
+                        self.config.creates_backlog_s,
                     )
-                    self.info.id = sandbox.id
-                    return sandbox
-
-                sandbox = await run_shielded(create_and_capture_id())
-            # The create response says whether the platform already has the image:
-            # `pending_image_build_id` set means a first-use auto-build is running and the
-            # sandbox stays PENDING until it finishes (`wait_for_creation` gives that phase
-            # its own budget, separate from the normal boot attempts).
-            self.info.image_cached = sandbox.pending_image_build_id is None
-            if not self.info.image_cached:
-                logger.warning(
-                    "prime: image %s isn't cached on the platform - auto-building it "
-                    "(sandbox %s waits for the build; first use of an image can take "
-                    "~10 minutes, later runs start in seconds)",
-                    self.config.image,
-                    self.info.id,
+                    or contextlib.nullcontext()
+                ):
+                    for name in dict.fromkeys(
+                        m.name for m in self.config.mounts.values()
+                    ):
+                        try:
+                            await self._client.volumes.create(name)
+                        except APIError as error:
+                            # Create returns 409 when this scoped name already
+                            # exists, including when another runtime creates it
+                            # concurrently.
+                            if not str(error).startswith("HTTP 409:"):
+                                raise
+                    sandbox = await self._held(
+                        "create", lambda: run_shielded(create_and_capture_id())
+                    )
+                # The create response says whether the platform already has the
+                # image: `pending_image_build_id` set means a first-use auto-build is
+                # running and the sandbox stays PENDING until it finishes
+                # (`wait_for_creation` gives that phase its own budget, separate from
+                # the normal boot attempts).
+                self.info.image_cached = sandbox.pending_image_build_id is None
+                if not self.info.image_cached:
+                    logger.warning(
+                        "prime: image %s isn't cached on the platform - auto-building "
+                        "it (sandbox %s waits for the build; first use of an image can "
+                        "take ~10 minutes, later runs start in seconds)",
+                        self.config.image,
+                        self.info.id,
+                    )
+                await self._held(
+                    "boot",
+                    lambda: self._client.wait_for_creation(
+                        self.info.id, max_attempts=180
+                    ),
                 )
-            await self._client.wait_for_creation(self.info.id, max_attempts=180)
-            logger.info(
-                "prime: sandbox %s up (image=%s)", self.info.id, self.config.image
-            )
-            await self._client.execute_command(
-                self.info.id, f"mkdir -p {shlex.quote(self.config.workdir)}"
-            )
-            await validate_runtime_mounts(self.bind(), [])
+                logger.info(
+                    "prime: sandbox %s up (image=%s)", self.info.id, self.config.image
+                )
+                await self._held(
+                    "workdir",
+                    lambda: self._client.execute_command(
+                        self.info.id, f"mkdir -p {shlex.quote(self.config.workdir)}"
+                    ),
+                )
+                await validate_runtime_mounts(self.bind(), [])
+                self.placed = True
+        except CreationBacklogFull as e:
+            raise SandboxError(
+                f"prime sandbox provisioning failed: {e}", kind="quota"
+            ) from e
         except (
             Exception
         ) as e:  # provisioning failure is one rollout's problem, not the eval's
+            if bound is not None and bound.expired():
+                # The SDK may answer the cancellation with an error of its own.
+                raise SandboxError(
+                    "prime sandbox provisioning failed: no sandbox within "
+                    f"{self.config.create_timeout_s:g}s: {e}",
+                    kind="io",
+                ) from e
             raise SandboxError(
                 f"prime sandbox provisioning failed: {e}", kind=sandbox_error_kind(e)
             ) from e
@@ -340,8 +461,11 @@ class PrimeBackend(RuntimeBackend):
             output_retries = 0
             missing = None
             while True:
-                result = await self._client.get_background_job(
-                    self.info.id, job, timeout=_OUTPUT_DEADLINE_SECONDS
+                result = await self._held(
+                    "job poll",
+                    lambda: self._client.get_background_job(
+                        self.info.id, job, timeout=_OUTPUT_DEADLINE_SECONDS
+                    ),
                 )
                 # Under load the SDK can see a job finish yet miss its output (its bounded
                 # output reads expire while queued) and reports that as `*_error`. The job
@@ -497,7 +621,12 @@ class PrimeBackend(RuntimeBackend):
         try:
             with tempfile.TemporaryDirectory() as directory:
                 download = Path(directory) / "download"
-                await self._client.download_file(self.info.id, target, str(download))
+                await self._held(
+                    "download",
+                    lambda: self._client.download_file(
+                        self.info.id, target, str(download)
+                    ),
+                )
                 return await asyncio.to_thread(download.read_bytes)
         except Exception as e:
             raise SandboxError(
@@ -514,8 +643,11 @@ class PrimeBackend(RuntimeBackend):
         )
         if runtime.user is None:
             try:
-                await self._client.upload_bytes(
-                    self.info.id, target, data, filename=PurePosixPath(target).name
+                await self._held(
+                    "upload",
+                    lambda: self._client.upload_bytes(
+                        self.info.id, target, data, filename=PurePosixPath(target).name
+                    ),
                 )
             except Exception as e:
                 raise SandboxError(
@@ -562,7 +694,8 @@ class PrimeBackend(RuntimeBackend):
         try:
             try:
                 if self.info.id is not None:  # keep info.id available after teardown
-                    await client.delete(self.info.id)
+                    box = self.info.id
+                    await self._held("delete", lambda: client.delete(box))
             except Exception as e:  # noqa: BLE001 - provider teardown is best-effort
                 logger.warning(
                     "prime: failed to delete sandbox %s: %s", self.info.id, e
