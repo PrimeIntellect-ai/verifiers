@@ -236,7 +236,7 @@ def save_artifacts(
                         logger.warning("artifact %r: %s", source, entry["error"])
                         continue
                     with tempfile.TemporaryDirectory(dir=temporary) as unpacked:
-                        tar.extractall(unpacked, filter="data")
+                        tar.extractall(unpacked, filter=_saved_member)
                         for member, path in zip(members, paths, strict=True):
                             if member.isdir():
                                 path.mkdir(parents=True, exist_ok=True)
@@ -499,6 +499,17 @@ def _validate_restore(
     except tarfile.TarError as exc:
         raise RuntimeError(f"unreadable artifact archive for {root!r}: {exc}") from exc
     return {PurePosixPath("/") / path: symlinks.get(path) for path in sorted(members)}
+
+
+def _saved_member(member: tarfile.TarInfo, path: str) -> tarfile.TarInfo | None:
+    """`save_artifacts`' extraction filter: the `data` filter, except that a symlink is
+    saved as written, wherever it points (a virtualenv's `bin/python` names the image's
+    interpreter), as `restore` keeps it. Writing one never follows it, and no member is
+    written through one: `_validate_restore` refuses an archive with a member below a
+    symlink."""
+    if member.issym():
+        return tarfile.tar_filter(member, path)
+    return tarfile.data_filter(member, path)
 
 
 MAX_LINK_DEPTH = 40

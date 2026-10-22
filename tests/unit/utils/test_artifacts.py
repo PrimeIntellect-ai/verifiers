@@ -1,12 +1,14 @@
 """Host-side validation of artifact archives before they restore into a grading box."""
 
 import io
+import json
+import os
 import tarfile
 from types import SimpleNamespace
 
 import pytest
 
-from verifiers.v1.utils.artifacts import _validate_restore, restore
+from verifiers.v1.utils.artifacts import _validate_restore, restore, save_artifacts
 
 GRADER = ("/tests", "/logs/verifier")
 
@@ -61,6 +63,27 @@ async def test_a_virtualenv_with_links_to_the_image_interpreter_restores() -> No
     )
     await restore(runtime, {"/app": venv}, protected=GRADER)
     assert any(command.startswith("tar -xf") for command in commands)
+
+
+def test_a_virtualenv_with_links_to_the_image_interpreter_saves(tmp_path) -> None:
+    """Links that point out of the root (a virtualenv's interpreter) are saved as links,
+    never followed, beside every file of the root."""
+    venv = archive(
+        ("app/", None),
+        ("app/main.py", None),
+        ("app/venv/", None),
+        ("app/venv/bin/", None),
+        ("app/venv/bin/python3", "/usr/bin/python3"),
+        ("app/venv/bin/python", "python3"),
+        ("app/lib", "../usr/lib"),
+    )
+    saved = tmp_path / "artifacts"
+    save_artifacts(saved, {"/app": venv}, [])
+    assert json.loads((saved / "manifest.json").read_text())[0]["status"] == "ok"
+    assert (saved / "app/main.py").read_bytes() == b"ok"
+    assert os.readlink(saved / "app/venv/bin/python3") == "/usr/bin/python3"
+    assert os.readlink(saved / "app/venv/bin/python") == "python3"
+    assert os.readlink(saved / "app/lib") == "../usr/lib"
 
 
 @pytest.mark.parametrize(
