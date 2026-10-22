@@ -108,7 +108,7 @@ if TYPE_CHECKING:
         RuntimeProcess,
     )
     from verifiers.v1.runtimes.compose import ComposeSpec
-    from verifiers.v1.runtimes.deployment import Deployment
+    from verifiers.v1.runtimes.deployment import Deployment, ServicesSpec
     from verifiers.v1.semantic import (
         ACP_SEMANTIC_EDGES_METADATA_KEY,
         ACPInfo,
@@ -288,6 +288,7 @@ _NAME_TO_MODULE = {
     "SamplingMask": "verifiers.v1.types",
     "SandboxError": "verifiers.v1.errors",
     "ScoringConfig": "verifiers.v1.configs.scoring",
+    "ServicesSpec": "verifiers.v1.runtimes.deployment",
     "Segment": "verifiers.v1.agent",
     "SelectCLIConfig": "verifiers.v1.configs.select",
     "SelectConfig": "verifiers.v1.configs.select",
@@ -579,6 +580,7 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "ComposeSpec",
     "Deployment",
     "DeploymentConfig",
+    "ServicesSpec",
     "ScoringConfig",
 ]
 

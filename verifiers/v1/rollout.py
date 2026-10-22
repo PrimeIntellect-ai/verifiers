@@ -395,7 +395,7 @@ class Rollout:
                         services=services,
                         hosts=self.deployment.hosts,
                         # Tool servers on VMs of their own, by server name; an explicit
-                        # `service` names only a Compose service.
+                        # `service` names a task-declared service.
                         placements={
                             name: self.deployment.target(name)
                             for name in self.deployment.tool_vms
