@@ -3,7 +3,6 @@
 import asyncio
 import contextlib
 import logging
-import math
 import time
 from collections.abc import Awaitable, Callable
 from contextlib import AsyncExitStack
@@ -931,17 +930,6 @@ class Rollout:
                         # the metrics read what it handed over and left behind.
                         await self._close_harness()
                         await self._score_harness(runtime, self._metrics_deadline())
-                # A nan reward scores nothing: keep it unscored (None) and drop the
-                # trace. Nothing failed, so it is never retried.
-                unscored = [
-                    name
-                    for name, reward in trace.rewards.items()
-                    if reward is not None and math.isnan(reward.score)
-                ]
-                if unscored:
-                    for name in unscored:
-                        trace.rewards[name] = None
-                    trace.drop(f"reward {', '.join(unscored)} scored nothing (nan)")
                 trace.timing.scoring.end = time.time()
                 trace.notify()
         except Exception as e:  # noqa: BLE001 - finalize boundary records every rollout failure

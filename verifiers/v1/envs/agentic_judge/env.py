@@ -301,12 +301,13 @@ class AgenticJudgeEnv(vf.Env[AgenticJudgeEnvConfig]):
         criteria = self.config.task.criteria()
         scores = score_verdicts(verdicts, criteria, "the rubric's")
         solution.record_metrics(criterion_metrics("judge", verdicts, criteria, scores))
-        if (reason := drop_reason("judge", verdicts, criteria, scores)) is not None:
-            solution.drop(reason)
         if self.config.score.task_weight != 1.0:
             for reward in solution.rewards.values():
                 if reward is not None:
                     reward.weight *= self.config.score.task_weight
+        if (reason := drop_reason("judge", verdicts, criteria)) is not None:
+            solution.drop(reason)
+            return
         solution.record_reward(
             "judge",
             weighted_score(scores, criteria),

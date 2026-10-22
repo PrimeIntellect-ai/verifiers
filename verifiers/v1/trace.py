@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import math
 import time
 import traceback
 import uuid
@@ -717,6 +718,9 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
             self.record_metric(name, value)
 
     def record_reward(self, name: str, value: float, weight: float = 1.0) -> None:
+        """Record a finite reward; a trace that has no reward signal is dropped instead."""
+        if not math.isfinite(value):
+            raise ValueError(f"reward {name!r} must be finite, got {value}")
         reward = Reward(score=float(value), weight=float(weight))
         self.rewards[name] = reward
 

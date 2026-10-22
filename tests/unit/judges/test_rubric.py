@@ -169,28 +169,41 @@ async def test_rubric_reference_answer_optional(tmp_path, fake_judge_model, make
     assert "ZEBRA-GOLD" in fake_judge_model[-1]
 
 
-def test_drop_reason_names_the_answers_that_score_nothing():
-    from verifiers.v1.judges.rubric import (
-        Criterion,
-        CriterionVerdict,
-        drop_reason,
-        score_verdicts,
-    )
+DROP_TOML = (
+    '[[criteria]]\nname = "outcome"\ntext = "t"\n'
+    'choices = { correct = 1.0, incorrect = 0.0 }\ndrop = ["task_defect"]\n'
+)
 
-    outcome = {"correct": 1.0, "incorrect": 0.0, "task_defect": float("nan")}
-    criteria = [
-        Criterion(name="outcome", text="t", choices=outcome),
-        Criterion(name="taste", text="t", weight=0.0, choices=outcome),
-    ]
 
-    def reason(outcome: str, taste: str) -> str | None:
-        verdicts = [
-            CriterionVerdict(name="outcome", reason="r", verdict=outcome),
-            CriterionVerdict(name="taste", reason="r", verdict=taste),
-        ]
-        scores = score_verdicts(verdicts, criteria, "the rubric's")
-        return drop_reason("judge", verdicts, criteria, scores)
+async def test_rubric_drop_answer_drops_the_trace(tmp_path, monkeypatch, make_trace):
+    # A drop answer records no reward and drops the trace with the answer as its reason.
+    async def defect(self, messages, *, trace=None, schema=None, parse=None, **s):
+        v = {"verdicts": [{"name": "outcome", "reason": "r", "verdict": "task_defect"}]}
+        return JudgeResponse(text=json.dumps(v), parsed=None)
 
-    assert reason("task_defect", "correct") == "judge: outcome=task_defect"
-    # a zero-weight criterion never drops the verdict, not even with an answer worth nothing
-    assert reason("incorrect", "task_defect") is None
+    monkeypatch.setattr(Judge, "complete", defect)
+    judge = rubric_judge(tmp_path, body=DROP_TOML, name="q")
+    trace = make_trace()
+    assert await judge.score(trace.task.data, trace) is None
+    assert trace.dropped == "q: outcome=task_defect"
+    assert trace.metrics == {
+        "q/outcome/correct": 0.0,
+        "q/outcome/incorrect": 0.0,
+        "q/outcome/task_defect": 1.0,
+    }
+
+
+def test_rubric_drop_validation(tmp_path):
+    def criteria(body: str):
+        return rubric_judge(
+            tmp_path, body='[[criteria]]\nname = "x"\ntext = "t"\n' + body
+        ).criteria
+
+    with pytest.raises(ValueError, match="finite"):
+        criteria("choices = { a = 1.0, b = nan }\n")
+    with pytest.raises(ValueError, match="both"):
+        criteria('choices = { a = 1.0, b = 0.0 }\ndrop = ["b"]\n')
+    with pytest.raises(ValueError, match="at least 2 answers"):
+        criteria("choices = { a = 1.0 }\n")
+    # one scored answer is enough next to a drop answer
+    assert criteria('choices = { a = 1.0 }\ndrop = ["b"]\n')[0].answers == ["a", "b"]

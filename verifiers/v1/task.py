@@ -14,7 +14,6 @@ import hashlib
 import inspect
 import json
 import logging
-import math
 from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING, Any, ClassVar, Generic, Self
 
@@ -234,15 +233,6 @@ class Task(Generic[DataT, StateT, ConfigT]):
         trace.rewards, trace.metrics, trace.extra_usage = {}, {}, []
         trace.dropped = None
         await self.score(trace)
-        unscored = [
-            name
-            for name, reward in trace.rewards.items()
-            if reward is not None and math.isnan(reward.score)
-        ]
-        if unscored:
-            for name in unscored:
-                trace.rewards[name] = None
-            trace.drop(f"reward {', '.join(unscored)} scored nothing (nan)")
 
     def defer_scoring(self) -> Self:
         """An independent copy whose task signals are deferred.
@@ -336,7 +326,8 @@ class Task(Generic[DataT, StateT, ConfigT]):
                 else:
                     items = [(fn.__name__, result)]
                 for key, value in items:
-                    trace.record_reward(key, value, weight)
+                    if value is not None:
+                        trace.record_reward(key, value, weight)
             judge_results = await invoke_all(
                 [judge.score for judge in judges], available
             )
@@ -347,7 +338,8 @@ class Task(Generic[DataT, StateT, ConfigT]):
                 else:
                     items = [(judge.reward_name, result)]
                 for key, value in items:
-                    trace.record_reward(key, value, judge.config.weight)
+                    if value is not None:
+                        trace.record_reward(key, value, judge.config.weight)
 
     @classmethod
     def data_type(cls) -> type[TaskData]:
