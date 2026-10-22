@@ -22,7 +22,18 @@ class DeepWikiTaskConfig(vf.TaskConfig):
 
 class DeepWikiTaskData(vf.TaskData):
     answer: str
-    """The language the repo is written in (must appear in the model's reply)."""
+    """The language the repo is written in (the model's whole reply, ignoring case)."""
+
+
+def asked_deepwiki(trace: vf.Trace) -> bool:
+    """Whether a `deepwiki_ask_question` call got a result back."""
+    call_ids = {
+        call.id
+        for message in trace.assistant_messages
+        for call in message.tool_calls or []
+        if call.name == "deepwiki_ask_question"
+    }
+    return any(message.tool_call_id in call_ids for message in trace.tool_messages)
 
 
 class DeepWikiTask(vf.Task[DeepWikiTaskData, vf.State, DeepWikiTaskConfig]):
@@ -32,8 +43,10 @@ class DeepWikiTask(vf.Task[DeepWikiTaskData, vf.State, DeepWikiTaskConfig]):
 
     @vf.reward(weight=1.0)
     async def answered(self, trace: vf.Trace) -> float:
-        last = trace.last_reply
-        return float(self.data.answer.lower() in (last or "").lower())
+        # Match the whole reply, not a substring, so listing every language can't pass, and
+        # require the tool this example exists to exercise.
+        reply = trace.last_reply.strip("`*_. \n").lower()
+        return float(asked_deepwiki(trace) and reply == self.data.answer)
 
 
 class DeepWikiConfig(vf.TasksetConfig):
