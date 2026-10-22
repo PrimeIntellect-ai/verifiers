@@ -32,7 +32,8 @@ logger = logging.getLogger(__name__)
 # upgrade older binaries bundled in task images. Prefer pip on
 # Python images, then fall back to the standalone installer (curl/wget), installing curl + CA
 # certs when a bare image has no downloader. Both install paths land in ~/.local/bin, which we
-# prepend to PATH first. (Installing needs network + one of pip / curl / wget / apt-get / apk.)
+# prepend to PATH first. (Installing needs network + one of pip / curl / wget / apt-get / apk;
+# a box with none of them gets the host's static uv instead, see `host_uv`.)
 _INSTALL_CURL = (  # only when the image has no downloader; needs a known package manager
     "{ command -v curl >/dev/null 2>&1 || command -v wget >/dev/null 2>&1; } "
     "|| { apt-get update -qq && apt-get install -y -qq curl ca-certificates; } "

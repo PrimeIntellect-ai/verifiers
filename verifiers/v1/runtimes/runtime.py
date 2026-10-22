@@ -21,6 +21,7 @@ from verifiers.v1.runtimes.base import (
     RuntimeBackend,
     RuntimeProcess,
 )
+from verifiers.v1.runtimes.host_uv import UV_UNAVAILABLE, host_uv_binary, needs_host_uv
 
 if TYPE_CHECKING:
     from verifiers.v1.trace import Checkpoint, Trace
@@ -234,7 +235,7 @@ class Runtime:
                     command = (
                         f"{_DROP_UNWRITABLE_UV_DIRS}; "
                         f"mv -f {shlex.quote(tmp)} {shlex.quote(path)} "
-                        f"&& {{ {_ENSURE_UV}; }} "
+                        f"&& {{ {{ {_ENSURE_UV}; }} || exit {UV_UNAVAILABLE}; }} "
                         f"&& uv sync --script {shlex.quote(path)} -q --no-config "
                         # Managed-only discovery can skip the dependency virtualenv (uv 0.13).
                         # Selection constraints belong to sync; discover the environment it prepared.
@@ -247,10 +248,17 @@ class Runtime:
                     # An image's `UV_NO_CACHE=1` makes uv build the script environment
                     # in a throwaway cache and delete it on exit, so `uv python find`
                     # would return a bare interpreter without the script's dependencies.
-                    result = await self.run(
-                        ["sh", "-c", command],
-                        {**(env or {}), "UV_OFFLINE": "false", "UV_NO_CACHE": "0"},
-                    )
+                    prepare_env = {
+                        **(env or {}),
+                        "UV_OFFLINE": "false",
+                        "UV_NO_CACHE": "0",
+                    }
+                    result = await self.run(["sh", "-c", command], prepare_env)
+                    if needs_host_uv(result.exit_code, uploaded=False):
+                        # A hardened image strips every way to install uv: bring the host's.
+                        await self._upload_host_uv(directory)
+                        await self.write(tmp, data)
+                        result = await self.run(["sh", "-c", command], prepare_env)
                     if result.exit_code != 0:
                         raise RuntimeError(
                             "failed to prepare uv script: "
@@ -277,6 +285,20 @@ class Runtime:
             interpreter,
             path,
         ]
+
+    async def _upload_host_uv(self, directory: str) -> None:
+        """Install the host's static uv as this user's ~/.local/bin/uv, which
+        `_ENSURE_UV` puts first on PATH."""
+        machine = await self.run(["uname", "-m"], {})
+        if machine.exit_code:
+            raise RuntimeError(f"failed to read box architecture: {machine.stderr}")
+        binary = await host_uv_binary(machine.stdout)
+        staged = f"{directory}/uv.{uuid.uuid4().hex}.tmp"
+        await self.write(staged, binary)
+        install = 'mkdir -p "$HOME/.local/bin" && chmod 755 "$1" && mv -f "$1" "$HOME/.local/bin/uv"'
+        result = await self.run(["sh", "-c", install, "sh", staged], {})
+        if result.exit_code:
+            raise RuntimeError(f"failed to install the host's uv: {result.stderr}")
 
     async def run_uv_script(
         self,
