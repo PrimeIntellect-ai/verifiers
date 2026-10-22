@@ -1,6 +1,6 @@
 import asyncio
-from typing import Protocol
 import logging
+from typing import Protocol
 
 import msgpack
 import zmq
