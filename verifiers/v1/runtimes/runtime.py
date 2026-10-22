@@ -34,6 +34,9 @@ _DROP_UNWRITABLE_UV_DIRS = (
     'UV_TOOL_BIN_DIR; do eval "d=\\${$v-}"; '
     '[ -z "$d" ] || { mkdir -p "$d" 2>/dev/null && [ -w "$d" ]; } || unset "$v"; done'
 )
+# The stdlib extension modules a uv script's interpreter must load; one that cannot
+# (it crashes or lacks them) is replaced by a uv-managed Python.
+_SOUND_PYTHON = "import asyncio, ctypes, ssl"
 
 
 @dataclass(frozen=True, eq=False)
@@ -232,16 +235,29 @@ class Runtime:
                 if path not in self.backend.cache.uv_interpreters:
                     tmp = f"{path}.{uuid.uuid4().hex}.tmp"
                     await self.write(tmp, data)
+                    script = shlex.quote(path)
+                    sync = f"uv sync --script {script} -q --no-config"
+                    # Managed-only discovery can skip the dependency virtualenv (uv 0.13).
+                    # Selection constraints belong to sync; discover the environment it prepared.
+                    find = (
+                        "env -u UV_MANAGED_PYTHON -u UV_NO_MANAGED_PYTHON "
+                        f"-u UV_PYTHON_PREFERENCE uv python find --script {script} --no-config"
+                    )
                     command = (
                         f"{_DROP_UNWRITABLE_UV_DIRS}; "
-                        f"mv -f {shlex.quote(tmp)} {shlex.quote(path)} "
+                        f"mv -f {shlex.quote(tmp)} {script} "
                         f"&& {{ {{ {_ENSURE_UV}; }} || exit {UV_UNAVAILABLE}; }} "
-                        f"&& uv sync --script {shlex.quote(path)} -q --no-config "
-                        # Managed-only discovery can skip the dependency virtualenv (uv 0.13).
-                        # Selection constraints belong to sync; discover the environment it prepared.
-                        "&& env -u UV_MANAGED_PYTHON -u UV_NO_MANAGED_PYTHON "
-                        "-u UV_PYTHON_PREFERENCE "
-                        f"uv python find --script {shlex.quote(path)} --no-config"
+                        f'&& {sync} && py=$({find}) && venv="${{py%/bin/*}}" '
+                        # uv takes the image's Python when it satisfies `requires-python`,
+                        # but an image may graft one build's stdlib onto another's binary
+                        # (a `COPY --from=python:3.13` over Debian's python3.13): `import
+                        # ctypes` then segfaults. Such a script runs on uv's own Python.
+                        f'&& {{ "$py" -I -c {shlex.quote(_SOUND_PYTHON)} >/dev/null 2>&1 '
+                        '|| { [ -f "$venv/pyvenv.cfg" ] && rm -rf "$venv" '
+                        "&& env -u UV_NO_MANAGED_PYTHON -u UV_PYTHON_PREFERENCE "
+                        f"UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=automatic {sync} "
+                        f'&& py=$({find}) && "$py" -I -c {shlex.quote(_SOUND_PYTHON)}; }}; }} '
+                        '&& printf "%s\\n" "$py"'
                     )
                     # Bootstrap dependencies before task networking is restricted;
                     # keep task offline settings on the returned program's processes.
