@@ -821,6 +821,17 @@ def test_a_local_task_class_is_not_rebuilt():
         record.rebuild()
 
 
+async def test_another_traces_checkpoint_cuts_at_its_turns(model):
+    """A checkpoint pins a node of the trace that took it; another trace's checkpoint (a box
+    borrowed from another seat's run) cuts this trace at its turns, never at that index."""
+    trace = reload(await make(model, save="per_call").run(task()))
+    own = trace.checkpoints[-1]
+    foreign = own.model_copy(update={"id": "other-run", "node": len(trace.nodes) + 7})
+    assert [m.content for m in trace.conversation_for(foreign)] == [
+        m.content for m in trace.conversation_at(own.turns)
+    ]
+
+
 async def test_a_resume_continues_the_same_trace_on_a_branch(model, tmp_path):
     """A resume keeps running on the trace it continues: same id, the re-sent prefix
     matches the stored nodes (their tokens kept), and the new turns branch off the

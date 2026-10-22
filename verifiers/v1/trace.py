@@ -725,7 +725,13 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         at its `position` when it is a carried one."""
         if checkpoint is None:
             return self.conversation_at(None)
-        if checkpoint.node is not None:
+        # A pinned node is an index into the trace that took the checkpoint: another
+        # trace's checkpoint (a box borrowed from another seat's run) cuts at its turns.
+        own = checkpoint.node is not None and any(
+            c.id == checkpoint.id and c.node == checkpoint.node
+            for c in self.checkpoints
+        )
+        if own and checkpoint.node < len(self.nodes):
             messages = drop_unanswered_tool_calls(
                 [m for m in graph.path(self, checkpoint.node) if m.role != "system"]
             )
