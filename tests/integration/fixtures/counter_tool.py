@@ -35,6 +35,11 @@ class CounterTask(vf.Task[vf.TaskData, CounterState, CounterTaskConfig]):
         return float(self.config.constant_reward or trace.state.count >= 2)
 
 
+def any_response(response: vf.Response) -> bool:
+    """A plugged stop that ends the run on its first model response."""
+    return True
+
+
 class CounterConfig(vf.TasksetConfig):
     task: CounterTaskConfig = CounterTaskConfig()
 

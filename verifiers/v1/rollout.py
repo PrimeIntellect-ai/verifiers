@@ -157,6 +157,9 @@ class Rollout:
             for fn in discover_decorated(task, "intercept")
         ]
         stops = [(hook_boundary(fn, allow_trace=True), fn) for fn in task.hooks("stop")]
+        self._skip_scoring_stops = {
+            fn.__name__ for _, fn in stops if getattr(fn, "stop_skip_scoring", False)
+        }
         execution_policy = runtime_config
         self._session = RolloutSession(
             ctx=ctx,
@@ -722,11 +725,14 @@ class Rollout:
         )
 
     def _scoring_skip_reason(self) -> str | None:
-        """Why the resolved scoring policy skips task scoring for this trace, if it does."""
+        """Why the resolved scoring policy, or the `skip_scoring` stop that ended this trace,
+        skips task scoring for it, if either does."""
         if self._scoring_policy.skip_on_truncated and self.trace.is_truncated:
             return "truncated"
         if self._scoring_policy.skip_on_timeout and self.trace.is_timeout:
             return "timeout"
+        if self.trace.stop_condition in self._skip_scoring_stops:
+            return self.trace.stop_condition
         return None
 
     def _metrics_deadline(self) -> float:
