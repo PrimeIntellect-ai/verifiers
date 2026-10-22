@@ -151,3 +151,16 @@ async def test_nan_reward_drops_the_trace_without_failing_it() -> None:
     assert trace.rewards == {"judge": None}
     assert trace.dropped == "reward judge scored nothing (nan)"
     assert trace.ok and not trace.errors
+
+
+def test_failed_scoring_rolls_back_its_drop() -> None:
+    from verifiers.v1.grading import scoring_transaction
+
+    trace = vf.Trace(
+        agent=vf.AgentInfo(config=vf.AgentConfig()),
+        task=vf.TraceTask(type="HookTask", data=HookData(idx=0, prompt="abc")),
+    )
+    with pytest.raises(RuntimeError), scoring_transaction(trace):
+        trace.drop("judge: outcome=task_defect")
+        raise RuntimeError("the judge failed")
+    assert trace.dropped is None
