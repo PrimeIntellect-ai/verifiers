@@ -222,8 +222,9 @@ class MessageNode(BaseModel):
         if payload is None:
             return None
         return {
-            field.name: _encode_ndarray(getattr(payload, field.name))
+            field.name: _encode_ndarray(value)
             for field in fields(payload)
+            if (value := getattr(payload, field.name)) is not None
         }
 
     @field_validator("sampling_mask", "top_logprobs", mode="before")

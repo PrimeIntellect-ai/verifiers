@@ -260,6 +260,8 @@ def test_sampling_mask_logprobs_attributed_aggregated_and_round_tripped():
 
     mixed = _two_turn_sampling_mask_trace([first, _mask([[40], [41, 7, 8]])])
     assert mixed.branches[-1].sampling_mask.logprobs is None
+    restored = type(mixed).model_validate(mixed.model_dump()).branches[-1].sampling_mask
+    assert restored.logprobs is None
     assert mixed.branches[-1].sampling_mask.ids.tolist() == branch_mask.ids.tolist()
 
     mismatched = _mask([[40], [41, 7, 8]], [0.0, -0.5])
