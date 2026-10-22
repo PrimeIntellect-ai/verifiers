@@ -2,7 +2,7 @@
 
 import asyncio
 import logging
-from contextlib import AsyncExitStack
+from contextlib import AsyncExitStack, asynccontextmanager
 from functools import partial
 
 from verifiers.v1.runtimes.compose import compose_services
@@ -37,13 +37,19 @@ class _ContainerDeployment(_DeploymentStrategy):
         if d.borrowed_runtime is not None:
             raise ValueError("a composed deployment cannot borrow a single target")
         self._services = await d.enter(AsyncExitStack())
-        services, self._stop_main, _ = await self._services.enter_async_context(
+        (
+            services,
+            self._stop_main,
+            host,
+            built_image,
+        ) = await self._services.enter_async_context(
             compose_services(
                 d.backend.config, d.spec, d.env, trust_compose=d.config.trust_compose
             )
         )
         d.target_backends = dict(services)
         d.execution_backend = d.harness_backend = services[d.spec.workspace]
+        self._remote_built_image = built_image if host is not None else None
 
     async def stop_execution(self, d):
         await self._stop_main()
@@ -56,6 +62,22 @@ class _ContainerDeployment(_DeploymentStrategy):
             logger.warning(
                 "solver services teardown failed before grading", exc_info=True
             )
+
+    @asynccontextmanager
+    async def verifier(self, deployment, config, env):
+        if self._remote_built_image is None or config.image != self._remote_built_image:
+            async with super().verifier(deployment, config, env) as backend:
+                yield backend
+            return
+        # Rebuild from trusted task inputs on a fresh host: the solver's Docker tag
+        # is local to its released VM, and its modified container must never travel.
+        async with compose_services(
+            config,
+            deployment.spec,
+            env,
+            trust_compose=deployment.config.trust_compose,
+        ) as (services, _, _, _):
+            yield services[deployment.spec.workspace]
 
 
 class _PrivateNetworkDeployment(_DeploymentStrategy):
