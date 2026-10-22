@@ -39,18 +39,16 @@ from pydantic_core import PydanticSerializationError, from_json, to_json
 from verifiers.v1 import graph
 from verifiers.v1.clients import Client, resolve_client
 from verifiers.v1.clients.base import join_url
-from verifiers.v1.clients.client import RelayReply
 from verifiers.v1.configs.client import (
     BaseClientConfig,
-    TrainClientConfig,
     resolve_api_key,
     resolve_headers,
 )
 from verifiers.v1.configs.interception import InterceptionServerConfig
 from verifiers.v1.dialects import DIALECTS, Dialect
-from verifiers.v1.dialects.base import (
+from verifiers.v1.dialects.policy import (
     PROVIDER_CAPABILITY_POLICY_CODE,
-    is_sse_done_event,
+    mediate,
 )
 from verifiers.v1.errors import (
     ProviderError,
@@ -207,35 +205,6 @@ def _prune_idempotent_requests(session: RolloutSession, now: float) -> None:
         )[:excess]:
             if session.idempotent_requests.get(key) is request:
                 session.idempotent_requests.pop(key)
-
-
-async def _collect_stream(
-    dialect: Dialect, reply: RelayReply
-) -> tuple[Response, bytes]:
-    """Read a relayed provider stream whole: the assembled response and the events to serve
-    for it. Comment-only events (the provider's own keepalives) are dropped; the served
-    stream sends its own."""
-    events = bytearray()
-    parser = dialect.stream_parser()
-    saw_terminal = False
-    try:
-        async for chunk in reply.chunks:
-            if not any(line.startswith(b"data:") for line in chunk.splitlines()):
-                continue
-            events += chunk
-            saw_terminal |= dialect.is_terminal_event(chunk)
-            if parser.on_done is not None and is_sse_done_event(chunk):
-                parser.on_done()
-            parser.feed(chunk)
-        if not saw_terminal:
-            raise ProviderError("upstream stream ended before its terminal event")
-        return parser.finish(), bytes(events)
-    except RolloutError:
-        raise
-    except Exception as e:  # a malformed provider stream
-        raise ProviderError(str(e)) from e
-    finally:
-        await reply.close()
 
 
 async def _buffered_stream(
@@ -470,9 +439,7 @@ class InterceptionServer(Interception):
     ) -> tuple[dict, list[str]]:
         if not session.network_policy.network_restricted:
             return body, []
-        mediated, capabilities = dialect.mediate_external_capabilities(
-            body, session.network_policy
-        )
+        mediated, capabilities = mediate(dialect, body, session.network_policy)
         capabilities = list(dict.fromkeys(capabilities))
         if capabilities:
             logger.warning(
@@ -602,7 +569,6 @@ class InterceptionServer(Interception):
         streaming = dialect.streaming(body)
         # A streamed request is served whole once its turn commits: the eval client's
         # provider stream is read to the end, and the train client generates the response.
-        relay = streaming and not isinstance(session.ctx.client, TrainClientConfig)
         req_hash = await _request_digest(raw)
         # Keep `read()` for aiohttp's size guard, then release its cache and our local
         # alias after parsing so the wire body does not survive model inference.
@@ -658,7 +624,7 @@ class InterceptionServer(Interception):
             return _replay_response(idempotent.response)
 
         try:
-            model_request = dialect.parse_request(body)
+            model_request, setters = dialect.parse_request(body)
         except ValueError as error:
             return _error_response(dialect, str(error), status=400)
         if session.released:
@@ -712,7 +678,14 @@ class InterceptionServer(Interception):
             session.trace.request_rewrites.extend(request_rewrites)
             # A pinned tool result changes the request without a fresh record.
             if stopped is None and model_request != original_request:
-                dialect.rewrite_request(body, original_request, model_request)
+                for before, after, setter in zip(
+                    original_request.messages,
+                    model_request.messages,
+                    setters,
+                    strict=True,
+                ):
+                    if setter is not None and before != after:
+                        setter(after)
         except RolloutError as error:
             return self._fail(session, dialect, error)
         except Exception as error:  # noqa: BLE001 - surface task hook failures
@@ -737,7 +710,7 @@ class InterceptionServer(Interception):
             body, policy_paths = self.mediate_capabilities(session, dialect, body)
             # Restricted mediation can mutate the body without reporting policy paths.
             if request_rewrites or session.network_policy.network_restricted:
-                model_request = dialect.parse_request(body)
+                model_request = dialect.parse_request(body)[0]
             turn = graph.prepare_turn(
                 session.trace, model_request.messages, model_request.tools, dialect.name
             )
@@ -780,23 +753,14 @@ class InterceptionServer(Interception):
                 try:
                     # What actually goes upstream: the native body with the rollout's model +
                     # sampling imposed — recorded raw on the trace, per call.
-                    if relay:
-                        reply = await session.client.relay(
-                            dialect,
-                            body,
-                            headers=upstream_headers,
-                            session_id=session.trace.id,
-                        )
-                        call_response, events = await _collect_stream(dialect, reply)
-                    else:
-                        call_response = await session.client.get_response(
-                            dialect,
-                            body,
-                            session.ctx.sampling,
-                            headers=upstream_headers,
-                            session_id=session.trace.id,
-                            turn=turn,
-                        )
+                    call_response, events = await session.client._complete(
+                        dialect,
+                        body,
+                        session.ctx.sampling,
+                        headers=upstream_headers,
+                        session_id=session.trace.id,
+                        turn=turn,
+                    )
                     logger.debug(
                         "intercept turn: id=%s tools=%d",
                         session.trace.id,
@@ -819,9 +783,7 @@ class InterceptionServer(Interception):
                                 call_response.raw, call_response.message.content or ""
                             )
                             raw_response = call_response.raw
-                            call_response = dialect.parse_response(
-                                dialect.validate_response(raw_response)
-                            )
+                            call_response = dialect.parse_response(raw_response)
                             call_response.raw = raw_response
                     if session.stopped:
                         return _error_response(
