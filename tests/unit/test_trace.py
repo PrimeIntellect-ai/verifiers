@@ -102,6 +102,54 @@ def test_custom_task_state_round_trip(tmp_path):
     assert tr.state.artifacts["/artifact.bin"] == b"\xff\x00\xfe"
 
 
+@pytest.mark.parametrize(
+    "arrays",
+    [
+        {"routed_experts": {"data": "//8=", "shape": [2, 1, 1]}},  # bytes ff ff
+        {"sampling_mask": [[128]]},
+        {"completion_top_ids": [[20]], "completion_top_logprobs": [[-0.5]]},
+        {"sampling_mask": [[1]]},  # ASCII-safe bytes: writes, then fails to reload
+    ],
+    ids=["routed_experts", "sampling_mask", "top_logprobs", "ascii_sampling_mask"],
+)
+def test_saved_episode_omits_raw_training_arrays(tmp_path, arrays):
+    """Raw training arrays stay on the msgpack wire; the saved episode drops them like
+    `Episode.to_record` does, so a train-client eval can save and reload its traces."""
+    from verifiers.v1.clients.train import response_from_generate
+    from verifiers.v1.utils.trace_store import read_episodes
+
+    tr = vf.Trace(
+        agent=vf.AgentInfo(config=vf.AgentConfig()),
+        task=vf.TraceTask(type="MyTask", data=MyTask(idx=0, prompt="q", answer="gold")),
+    )
+    prepare_turn(tr, [UserMessage(content="q")]).commit(
+        response_from_generate(
+            {
+                "content": "a",
+                "finish_reason": "stop",
+                "prompt_ids": [10],
+                "completion_ids": [20],
+                "completion_logprobs": [-0.5],
+                **arrays,
+            },
+            model="test",
+        )
+    )
+
+    write_episode(tmp_path, vf.Episode(task=tr.task, traces=[tr], ok=True))
+    [episode] = read_episodes(tmp_path, vf.Trace[MyTask, vf.State])
+
+    [saved] = episode.traces
+    assert saved.task.data.answer == "gold"
+    assert [m.content for m in saved.branches[0].messages] == ["q", "a"]
+    assert saved.nodes[-1].token_ids == [10, 20]
+    assert saved.nodes[-1].logprobs == [-0.5]
+    for node in saved.nodes:
+        assert node.routed_experts is None
+        assert node.sampling_mask is None
+        assert node.top_logprobs is None
+
+
 @pytest.mark.parametrize("history_type", ["additional_tools", "tool_search_output"])
 def test_wire_trace_round_trip(history_type):
     mcp = {
