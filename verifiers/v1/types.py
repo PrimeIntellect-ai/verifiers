@@ -1,9 +1,8 @@
 import base64
 from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Annotated, Any, Literal
+from typing import TYPE_CHECKING, Annotated, Any, Literal
 
-import numpy as np
 from pydantic import (
     AliasChoices,
     BaseModel,
@@ -12,6 +11,10 @@ from pydantic import (
     model_validator,
 )
 from typing_extensions import TypedDict
+
+# The config tree imports this module, so numpy loads only where arrays are built.
+if TYPE_CHECKING:
+    import numpy as np
 
 
 class TextContentPart(BaseModel):
@@ -231,6 +234,8 @@ class SamplingMask:
         """Build from vLLM's one-list-per-token masks, or from prime-rl's packed CSR
         form: `{"ids", "counts"}`, each a base64 `{data, shape, dtype}` int32 array.
         `logprobs` is packed float32 parallel to the ids (only prime-rl sends it)."""
+        import numpy as np
+
         if logprobs is not None:
             logprobs = _decode_packed(logprobs, np.float32)
         if isinstance(sampling_mask, dict):
@@ -252,7 +257,9 @@ class SamplingMask:
         return cls(ids=ids, counts=counts, logprobs=logprobs)
 
 
-def _decode_packed(packed: dict[str, Any], dtype: type) -> np.ndarray:
+def _decode_packed(packed: dict[str, Any], dtype: type) -> "np.ndarray":
+    import numpy as np
+
     array = np.frombuffer(base64.b64decode(packed["data"]), dtype=packed["dtype"])
     return array.astype(dtype, copy=False)
 
@@ -274,6 +281,8 @@ class TopLogprobs:
     def from_top_logprobs(
         cls, ids: list[list[int]], logprobs: list[list[float]]
     ) -> "TopLogprobs":
+        import numpy as np
+
         if len(ids) != len(logprobs):
             raise ValueError("top ids and logprobs must have one row per token")
         counts = np.fromiter(
