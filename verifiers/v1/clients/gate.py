@@ -84,8 +84,6 @@ POLL_SECONDS = (0.05, 0.2)
 """Jittered interval at which a blocked admission rechecks the shared slots: only the
 first waiter of the process polls (a release in the process wakes it at once); the rest
 wait their turn in arrival order."""
-PROBE_SECONDS = 1.0
-"""Longest a waiting process goes without an admission pass under the lock."""
 STATE_BYTES = 1 << 22
 """Most bytes of a gate's state file read back (its ticket queue included)."""
 WAIT_SMOOTHING = 0.05
@@ -249,8 +247,6 @@ class ModelGate:
         """The process's blocked admissions, oldest first; the head polls."""
         self._stale: set[int] = set()
         """Tickets of waiters whose loop closed, dropped at the next admission."""
-        self._probed = 0.0
-        """When this process last took an admission pass under the lock (`_may_admit`)."""
         self._queue_lock = threading.RLock()
         """Guards `_queue`; reentrant, as a finalizer's release may run inside it."""
 
@@ -364,40 +360,12 @@ class ModelGate:
             state["tickets"] = [t for t in self._live_tickets(state) if t[0] != number]
             state["waiting"] = len(state["tickets"])
 
-    def _may_admit(self, config: RequestGateConfig, ticket: int) -> bool:
-        """Whether `ticket` could be admitted now, read without the lock (a waiter polls
-        often, and a pass under the lock parses and rewrites the whole state while every
-        process on the host waits for it: one pass per poll of every process's head left
-        admission at a few requests a second with thousands waiting and slots free).
-        A state caught mid-write, and every `PROBE_SECONDS`, says yes: what only a pass
-        under the lock prunes (the holders and tickets of processes that are gone) never
-        keeps a waiter out for good."""
-        now = time.monotonic()
-        if now - self._probed >= PROBE_SECONDS or self._state_fd is None:
-            self._probed = now
-            return True
-        try:
-            state = json.loads(os.pread(self._state_fd, STATE_BYTES, 0))
-        except (OSError, ValueError):
-            return True
-        if not isinstance(state, dict):
-            return True
-        cap = self._cap(dict(state), config)
-        limit = self._limit(dict(state), config, cap)
-        tickets = state.get("tickets") if isinstance(state.get("tickets"), list) else []
-        ahead = sum(1 for t in tickets if isinstance(t, list) and t and t[0] < ticket)
-        holders = state.get("holders") if isinstance(state.get("holders"), dict) else {}
-        return len(holders) + ahead < int(limit)
-
     def try_admit(
         self, config: RequestGateConfig, ticket: int | None = None
     ) -> int | None:
         """Take a free slot if fewer than the limit are held host-wide and no older
         ticket waits for it, else None. Without a `ticket` the request is behind every
         waiting one; an admitted ticket leaves the queue."""
-        if ticket is not None and not self._may_admit(config, ticket):
-            self._apply_releases()
-            return None
         try:
             with self._mutex, self._state() as state:
                 cap = self._cap(state, config)
