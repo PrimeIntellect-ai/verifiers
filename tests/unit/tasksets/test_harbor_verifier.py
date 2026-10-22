@@ -6,11 +6,14 @@ import verifiers.v1 as vf
 from verifiers.v1.errors import SandboxError, TaskError
 from verifiers.v1.runtimes import ProgramResult
 from verifiers.v1.tasksets.harbor.taskset import (
+    WITHOUT_SYS_RESOURCE,
     HarborData,
     HarborTask,
     HarborTaskConfig,
     log_tails,
 )
+
+TEST_SH = ["sh", "-c", WITHOUT_SYS_RESOURCE, "vf-verifier", "bash", "/tests/test.sh"]
 
 LOGS = "==> /logs/verifier/pg.log <==\nFATAL: could not start\n\n"
 
@@ -23,7 +26,7 @@ class FakeRuntime:
         self.listing = listing
 
     async def run(self, argv, env):
-        if argv == ["bash", "/tests/test.sh"]:
+        if argv == TEST_SH:
             return ProgramResult(exit_code=3, stdout="ran tests\n", stderr="boom\n")
         if "find /logs/verifier" in argv[-1]:
             if isinstance(self.listing, Exception):
@@ -155,7 +158,7 @@ async def test_grading_leaves_the_agent_transcript_where_harbor_graders_read_it(
     ]
     staged = next(i for i, a in enumerate(runtime.commands) if "trajectory" in a[-1])
     assert "test -e /logs/agent/trajectory.json ||" in runtime.commands[staged][-1]
-    assert staged < runtime.commands.index(["bash", "/tests/test.sh"])
+    assert staged < runtime.commands.index(TEST_SH)
 
 
 async def test_grading_a_run_without_a_transcript_writes_no_trajectory():

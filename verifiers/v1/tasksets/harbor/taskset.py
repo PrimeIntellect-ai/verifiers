@@ -734,7 +734,8 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
         if self.data.verifier_user not in (None, "root", "0"):
             runtime = runtime.with_user(self.data.verifier_user)
         return await runtime.run(
-            ["bash", "/tests/test.sh"], resolve_env(self.scoring.env or {})
+            ["sh", "-c", WITHOUT_SYS_RESOURCE, "vf-verifier", "bash", "/tests/test.sh"],
+            resolve_env(self.scoring.env or {}),
         )
 
     async def read_reward_json(self, runtime: Runtime) -> dict[str, float] | None:
@@ -759,6 +760,19 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
                 "expected an object of finite numeric rewards"
             ) from exc
         return {name: float(value) for name, value in scores.items()}
+
+
+WITHOUT_SYS_RESOURCE = (
+    "setpriv --bounding-set -sys_resource true 2>/dev/null "
+    '&& exec setpriv --bounding-set -sys_resource -- "$@"; exec "$@"'
+)
+"""Run the arguments without CAP_SYS_RESOURCE, as a Docker container's root runs (the
+capability is not in Docker's default set). A grader that caps the code it runs with a
+hard rlimit, then drops to another user through `runuser`/`su` (whose pam_limits resets
+every limit to init's), keeps the cap in Docker; root on a Prime VM holds the capability,
+so the cap was lifted and the grader failed its own sandbox check. Other capabilities
+stay: graders use them (iptables needs CAP_NET_ADMIN). Where the bounding set cannot be
+changed (no setpriv, or not root) the arguments run as they are."""
 
 
 ONEDNN_GUARD = "/tmp/vf-onednn-guard.py"
