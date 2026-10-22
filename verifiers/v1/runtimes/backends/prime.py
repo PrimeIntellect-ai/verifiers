@@ -228,7 +228,7 @@ _PID_NAMESPACE = rf"""
 set -u
 f={_PID_NAMESPACE_FILE}
 REAPER={shlex.quote(_REAPER)}
-p=$(cat "$f" 2>/dev/null) && [ -n "$p" ] && [ -e "/proc/$p/ns/pid" ] && exit 0
+p=$(cat "$f" 2>/dev/null) && [ -n "$p" ] && [ -e "/proc/$p/ns/pid" ] && echo "$p" && exit 0
 command -v unshare >/dev/null 2>&1 && command -v nsenter >/dev/null 2>&1 || {{
   echo "no unshare/nsenter in this image" >&2; exit 3; }}
 rm -f "$f" "$f.parent"
@@ -242,14 +242,15 @@ for i in $(seq 1 100); do
     /proc/[0-9]*/stat 2>/dev/null)
   if [ -n "$c" ] && [ -e "/proc/$c/ns/pid" ] && \
      [ "$(readlink "/proc/$c/ns/pid")" != "$(readlink /proc/self/ns/pid)" ]; then
-    printf '%s\n' "$c" > "$f" && chmod 600 "$f" && exit 0
+    printf '%s\n' "$c" > "$f" && chmod 600 "$f" && echo "$c" && exit 0
   fi
   sleep 0.1
 done
 echo "the PID namespace's init did not start" >&2; exit 1
 """
 """Start the box's PID namespace (`isolate_processes`): `unshare` in a session of its
-own, its forked child the namespace's init, recorded for each command's `nsenter`."""
+own, its forked child the namespace's init, recorded for each command's `nsenter` and
+printed."""
 
 _IMAGE_WORKDIR = (
     "pwd; h=$(awk -F: '$1 == \"root\" {print $6; exit}' /etc/passwd 2>/dev/null); "
@@ -661,6 +662,10 @@ class PrimeBackend(RuntimeBackend):
         asked)."""
         self._pid_namespace = False
         """Whether `isolate_processes` gave this box's commands a PID namespace."""
+        self._namespace_root: str | None = None
+        """The namespace's root as the file gateway reaches it (`/proc/<init>/root`):
+        the namespace has a mount table of its own, and what is mounted there (an agent's
+        `mount --bind` over a directory) is invisible from outside it."""
         self.placed = False
         """The box has answered an exec: a placement lost from now on is the box lost,
         not an outage."""
@@ -1042,6 +1047,8 @@ class PrimeBackend(RuntimeBackend):
             return
         result = await self.run(Runtime(self), ["sh", "-c", _PID_NAMESPACE], {})
         self._pid_namespace = result.exit_code == 0
+        if self._pid_namespace and (init := result.stdout.split()[-1:]):
+            self._namespace_root = f"/proc/{init[0]}/root"
         if not self._pid_namespace:
             logger.warning(
                 "prime: no PID namespace on sandbox %s: %s",
@@ -1058,13 +1065,17 @@ class PrimeBackend(RuntimeBackend):
             return command, user
         inner = shlex.quote(command)
         # Entering a mount namespace moves the working directory to its root: keep the
-        # command's own. The command gets a session of its own inside the namespace, as
-        # a user's does (`_as_user`): one led from outside reads as session 0 there, and
-        # a grader that stops a session it resolved to 0 stops the daemon's group.
+        # command's own, entered again by path inside the namespace. `--wd` alone keeps
+        # the directory as found outside, where the namespace's mounts are not: relative
+        # paths then missed a directory an agent had mounted over that absolute paths
+        # (`Path.cwd()`) saw. The command gets a session of its own inside the namespace,
+        # as a user's does (`_as_user`): one led from outside reads as session 0 there,
+        # and a grader that stops a session it resolved to 0 stops the daemon's group.
         entered = (
             f'p=$(cat {_PID_NAMESPACE_FILE} 2>/dev/null); if [ -n "$p" ] && '
             f'[ -e "/proc/$p/ns/pid" ]; then exec nsenter -t "$p" -p -m --wd="$PWD" '
-            f"-- setsid -w sh -c {inner}; fi; exec sh -c {inner}"
+            f'-- sh -c \'cd -- "$0" 2>/dev/null; exec setsid -w sh -c "$1"\' '
+            f'"$PWD" {inner}; fi; exec sh -c {inner}'
         )
         return entered, None
 
@@ -1462,7 +1473,7 @@ class PrimeBackend(RuntimeBackend):
             "size",
             lambda: self._client.execute_command(
                 self.info.id,
-                f"wc -c < {shlex.quote(target)}",
+                f"wc -c < {shlex.quote(self._gateway(target))}",
                 timeout=_OUTPUT_DEADLINE_SECONDS,
             ),
             **_TRANSFER_RETRIES,
@@ -1473,7 +1484,13 @@ class PrimeBackend(RuntimeBackend):
             raise SandboxError(detail, kind=missing_file_kind(detail, "io"))
         return int(result.stdout.strip())
 
+    def _gateway(self, target: str) -> str:
+        """`target` as the file gateway must name it to reach the file commands see:
+        through the namespace's root once commands run in one (`isolate_processes`)."""
+        return f"{self._namespace_root or ''}{target}"
+
     async def _upload(self, target: str, data: bytes) -> None:
+        target = self._gateway(target)
         await self._held(
             "upload",
             lambda: self._client.upload_bytes(
@@ -1487,6 +1504,7 @@ class PrimeBackend(RuntimeBackend):
         )
 
     async def _download(self, target: str) -> bytes:
+        target = self._gateway(target)
         # The temporary file is removed on every exit, and its byte read stays off the event loop.
         with tempfile.TemporaryDirectory() as directory:
             download = Path(directory) / "download"

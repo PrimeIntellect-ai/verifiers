@@ -295,3 +295,30 @@ async def test_a_file_that_shrinks_while_read_fails_and_leaves_no_parts(
         await runtime.read(str(target))
     assert caught.value.kind == "io"
     assert sorted(p.name for p in tmp_path.iterdir()) == ["large.bin"]
+
+
+async def test_transfers_reach_the_files_the_namespaces_commands_see(
+    runtime, tmp_path, monkeypatch
+):
+    """Once commands run in the box's PID namespace, its own mount table decides what a
+    path is: an agent that bound an empty directory over the workspace's `.audit` hid
+    every file the gateway wrote there from the commands, and the audit tool server
+    never found its config. The gateway goes through the namespace's root."""
+    box = runtime.backend
+    ran = PrimeBackend.run
+
+    async def run(self, runtime, argv, env):
+        if argv[-1] == prime._PID_NAMESPACE:
+            return ProgramResult(0, "779\n", "")
+        return await ran(self, runtime, argv, env)
+
+    monkeypatch.setattr(PrimeBackend, "run", run)
+    await box.isolate_processes()
+    assert box._namespace_root == "/proc/779/root"
+    namespace = tmp_path / "namespace"
+    box._namespace_root = str(namespace)  # the namespace's root, as /proc/779/root is
+    target = tmp_path / "app" / ".audit" / "tool-config.json"
+    await runtime.write(str(target), b"{}")
+    assert (namespace / str(target).lstrip("/")).read_bytes() == b"{}"
+    assert not target.exists()
+    assert await runtime.read(str(target)) == b"{}"
