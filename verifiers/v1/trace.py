@@ -648,7 +648,7 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
             "max_input_tokens",
             "max_output_tokens",
             "max_total_tokens",
-            "length",
+            "max_turn_tokens",
             "compaction_failed",
         ):
             return True

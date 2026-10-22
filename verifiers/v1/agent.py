@@ -575,7 +575,8 @@ class Agent:
             max_input_tokens=config.max_input_tokens,
             max_output_tokens=config.max_output_tokens,
             max_total_tokens=config.max_total_tokens,
-            stop_on_length=config.stop_on_length,
+            max_turn_tokens=config.max_turn_tokens,
+            stop_on_max_turn_tokens=config.stop_on_max_turn_tokens,
         )
         self.timeout = config.timeout
         # Env episode agents replace this with the episode's agent semaphore

@@ -43,7 +43,7 @@ When resolving a sandbox configuration, `TaskData.image` takes precedence over `
 Timeouts and token budgets can be tuned at evaluation time under `env.agent`:
 
 - **Phase timeouts**: set `setup`, `rollout`, `finalize`, or `scoring` under `env.agent.timeout` to override the corresponding `TaskData.timeout` values (any phase left unset falls back to the task's timeout, or runs without a limit if neither is set).
-- **Turn and token budgets**: set `max_turns`, `max_input_tokens`, `max_output_tokens`, or `max_total_tokens` on `env.agent` to cap an entire agent rollout, and `sampling.max_tokens` to cap each individual model response. Rollout token budgets are checked between turns, so the turn that crosses a threshold completes before the rollout stops. Set `stop_on_length` on `env.agent` to also stop the rollout after any response that hits `sampling.max_tokens`.
+- **Turn and token budgets**: set `max_turns`, `max_input_tokens`, `max_output_tokens`, or `max_total_tokens` on `env.agent` to cap an entire agent rollout, and `sampling.max_tokens` to cap each individual model response. Rollout token budgets are checked between turns, so the turn that crosses a threshold completes before the rollout stops. `max_turn_tokens` on `env.agent` is the framework's per-response cap: it lowers `sampling.max_tokens` to its value. Set `stop_on_max_turn_tokens` to also stop the rollout after a response that hits it.
 
 ## Execution users
 

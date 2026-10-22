@@ -66,10 +66,12 @@ class AgentConfig(BaseConfig):
     """Max output tokens per run (None = no limit)."""
     max_total_tokens: int | None = None
     """Max total tokens per run (None = no limit)."""
-    stop_on_length: bool = False
-    """Stop the run when a model response hits its per-turn token cap
-    (`finish_reason="length"`), before the next model call. Harnesses that would
-    otherwise continue (retry, compact, or answer a cut-off tool call) stop as truncated."""
+    max_turn_tokens: int | None = Field(None, gt=0)
+    """Max output tokens per model response (None = no limit). Caps the sampling
+    `max_tokens` the framework sets on every request, whatever the harness asks for."""
+    stop_on_max_turn_tokens: bool = False
+    """Stop the run before the next model call once a response hits `max_turn_tokens`,
+    instead of letting the harness continue (compact, or answer a cut-off tool call)."""
 
     timeout: TimeoutConfig = TimeoutConfig()
     retries: RetryConfig = RetryConfig()
@@ -90,6 +92,12 @@ class AgentConfig(BaseConfig):
         # An unresolved agent carries only overrides across env-server boundaries.
         # resolve_agent fills every field before the config is recorded on a trace.
         return sampling.model_dump(exclude_unset=True) if sampling is not None else None
+
+    @model_validator(mode="after")
+    def _check_turn_token_stop(self) -> "AgentConfig":
+        if self.stop_on_max_turn_tokens and self.max_turn_tokens is None:
+            raise ValueError("stop_on_max_turn_tokens requires max_turn_tokens")
+        return self
 
     @model_validator(mode="before")
     @classmethod
@@ -151,6 +159,11 @@ def resolve_agent(
     defaults = sampling or SamplingConfig()
     overrides = (spec.sampling or SamplingConfig()).model_dump(exclude_unset=True)
     merged = {**defaults.model_dump(), **merge_defaults(defaults, overrides)}
+    if spec.max_turn_tokens is not None:
+        max_tokens = merged.get("max_tokens")
+        merged["max_tokens"] = min(
+            max_tokens or spec.max_turn_tokens, spec.max_turn_tokens
+        )
     return spec.model_copy(
         update={
             "harness": spec.harness if spec.harness is not None else harness,

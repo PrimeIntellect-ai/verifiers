@@ -269,16 +269,33 @@ def test_sampling_mask_from_packed_matches_lists():
         np.testing.assert_array_equal(mask.counts, counts)
 
 
-@pytest.mark.parametrize("stop_on_length", [False, True])
-def test_stop_on_length_limit(stop_on_length):
-    limits = RolloutLimits(stop_on_length=stop_on_length)
+@pytest.mark.parametrize("stop", [False, True])
+def test_max_turn_tokens_limit(stop):
+    limits = RolloutLimits(max_turn_tokens=16, stop_on_max_turn_tokens=stop)
     trace = vf.Trace(
         agent=vf.AgentInfo(config=vf.AgentConfig()),
         task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt=None)),
     )
     trace.calls.append(vf.ModelCall(finish_reason="stop"))
     assert limits.reached(trace) is None
-    trace.calls.append(vf.ModelCall(finish_reason="length"))
-    assert limits.reached(trace) == ("length" if stop_on_length else None)
-    trace.stop("length")
+    # A length finish below the cap ran out of context: not this limit.
+    usage = vf.Usage(prompt_tokens=100, completion_tokens=8)
+    trace.calls.append(vf.ModelCall(finish_reason="length", usage=usage))
+    assert limits.reached(trace) is None
+    usage = vf.Usage(prompt_tokens=100, completion_tokens=16)
+    trace.calls.append(vf.ModelCall(finish_reason="length", usage=usage))
+    assert limits.reached(trace) == ("max_turn_tokens" if stop else None)
+    trace.stop("max_turn_tokens")
     assert trace.is_truncated
+
+
+@pytest.mark.parametrize("max_tokens,expected", [(None, 16), (8, 8), (64, 16)])
+def test_max_turn_tokens_caps_sampling(max_tokens, expected):
+    spec = vf.AgentConfig(max_turn_tokens=16)
+    sampling = vf.SamplingConfig(max_tokens=max_tokens)
+    assert resolve_agent(spec, sampling=sampling).sampling.max_tokens == expected
+
+
+def test_stop_on_max_turn_tokens_requires_the_cap():
+    with pytest.raises(ValueError, match="requires max_turn_tokens"):
+        vf.AgentConfig(stop_on_max_turn_tokens=True)

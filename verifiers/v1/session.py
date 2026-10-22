@@ -88,13 +88,15 @@ class RolloutLimits:
     `max_turns` -> num_turns, `max_input_tokens` -> num_input_tokens, `max_output_tokens` ->
     num_output_tokens, `max_total_tokens` -> num_total_tokens. Token caps are soft by one turn:
     they're checked between turns, so the turn that crosses a cap still completes.
-    `stop_on_length` stops before the turn that follows a length-finished response."""
+    `max_turn_tokens` caps each response (applied through sampling); with
+    `stop_on_max_turn_tokens`, the turn after a response that hit it is refused."""
 
     max_turns: int | None = None
     max_input_tokens: int | None = None
     max_output_tokens: int | None = None
     max_total_tokens: int | None = None
-    stop_on_length: bool = False
+    max_turn_tokens: int | None = None
+    stop_on_max_turn_tokens: bool = False
 
     def reached(self, trace: Trace) -> str | None:
         """The name of the first limit `trace` has reached, or None if within all caps."""
@@ -115,10 +117,18 @@ class RolloutLimits:
             and trace.num_total_tokens >= self.max_total_tokens
         ):
             return "max_total_tokens"
-        if self.stop_on_length:
+        if self.stop_on_max_turn_tokens and self.max_turn_tokens is not None:
             last = next((c for c in reversed(trace.calls) if c.error is None), None)
-            if last is not None and last.finish_reason == "length":
-                return "length"
+            # A length finish below the cap ran out of context, not turn tokens.
+            if (
+                last is not None
+                and last.finish_reason == "length"
+                and (
+                    last.usage is None
+                    or last.usage.completion_tokens >= self.max_turn_tokens
+                )
+            ):
+                return "max_turn_tokens"
         return None
 
 
