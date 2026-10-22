@@ -68,10 +68,9 @@ class AgentConfig(BaseConfig):
     """Max total tokens per run (None = no limit)."""
     max_turn_tokens: int | None = Field(None, gt=0)
     """Max output tokens per model response (None = no limit). Caps the sampling
-    `max_tokens` the framework sets on every request, whatever the harness asks for."""
-    stop_on_max_turn_tokens: bool = False
-    """Stop the run before the next model call once a response hits `max_turn_tokens`,
-    instead of letting the harness continue (compact, or answer a cut-off tool call)."""
+    `max_tokens` the framework sets on every request, whatever the harness asks for,
+    and stops the run once a response hits it. `sampling.max_tokens` alone caps each
+    response without stopping the run."""
 
     timeout: TimeoutConfig = TimeoutConfig()
     retries: RetryConfig = RetryConfig()
@@ -92,12 +91,6 @@ class AgentConfig(BaseConfig):
         # An unresolved agent carries only overrides across env-server boundaries.
         # resolve_agent fills every field before the config is recorded on a trace.
         return sampling.model_dump(exclude_unset=True) if sampling is not None else None
-
-    @model_validator(mode="after")
-    def _check_turn_token_stop(self) -> "AgentConfig":
-        if self.stop_on_max_turn_tokens and self.max_turn_tokens is None:
-            raise ValueError("stop_on_max_turn_tokens requires max_turn_tokens")
-        return self
 
     @model_validator(mode="before")
     @classmethod
