@@ -14,13 +14,12 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Any, ClassVar, Literal
+from typing import Any, ClassVar
 from urllib.parse import urlsplit
 
 from prime_sandboxes.models import validate_egress_lists
-from pydantic import Field, model_validator
 
-from verifiers.v1.configs.runtime import NetworkPolicyConfig
+from verifiers.v1.configs.runtime import NetworkPolicyConfig, PrimeConfig
 from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes.base import (
     BaseRuntimeInfo,
@@ -120,54 +119,6 @@ def set_default_sandbox_lifetime(seconds: float | None) -> None:
     SIGKILL keeps running."""
     global DEFAULT_LIFETIME
     DEFAULT_LIFETIME = seconds
-
-
-class PrimeConfig(NetworkPolicyConfig):
-    type: Literal["prime"] = "prime"
-    image: str = "python:3.11-slim"
-    """Docker image to run. Any pullable ref works: on the first use of an image, the
-    platform auto-builds the VM image that the sandbox needs from it (~10 minutes)
-    and caches the result, so later sandboxes on the same ref start in
-    seconds."""
-    workdir: str | None = None
-    """Working directory override; None uses the task's workdir, or /app."""
-    region: str | None = None
-    """Region to provision in (None = provider-chosen)."""
-    labels: list[str] = Field(default_factory=list)
-    """Labels attached to the sandbox, extending any process-wide base labels (see ``set_base_sandbox_labels``)."""
-    # TaskData.resources uses these units; non-default runtime config values take precedence.
-    cpu: float = 1.0
-    """CPU cores."""
-    memory: float = 2.0
-    """Memory in GB."""
-    gpu: str | None = None
-    """GPU spec, e.g. "A100" or "A100:2" (a bare count = provider-chosen type)."""
-    disk: float = 5.0
-    """Disk in GB. Unused with ``checkpoint``: a sandbox keeps its checkpoint's disk."""
-    checkpoint: str | None = None
-    """A DURABLE filesystem checkpoint to start from instead of ``image`` (see the SDK's
-    ``checkpoint`` and ``wait_for_checkpoint``)."""
-    idle_timeout: float | None = 3600
-    """Seconds of inactivity before the sandbox self-deletes (None disables)."""
-    lifetime: float | None = None
-    """Seconds after which the sandbox is deleted, busy or not. None falls back to the
-    process default (``set_default_sandbox_lifetime``), else no limit."""
-    creates_per_min: int | None = None
-    """Pace sandbox creation to this many per minute, enforced run-wide across every
-    env-server worker process (None/<= 0 disables it). (Tunnel creation is limited separately
-    — see interception.tunnel.prime.tunnel_limiter.)"""
-
-    @model_validator(mode="after")
-    def _validate_egress(self) -> PrimeConfig:
-        if not self.network_restricted:
-            return self
-        if not self.allow:
-            return self
-        validate_egress_lists(
-            None if self.allow == ["*"] else self.allow,
-            self.block or None,
-        )
-        return self
 
 
 class PrimeRuntimeInfo(PrimeConfig, BaseRuntimeInfo):

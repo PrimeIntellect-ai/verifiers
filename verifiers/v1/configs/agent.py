@@ -12,12 +12,12 @@ from pydantic import (
 )
 from pydantic_config import BaseConfig
 
-from verifiers.v1.clients import ClientConfig
+from verifiers.v1.configs.client import ClientConfig
+from verifiers.v1.configs.deployment import DeploymentConfig
 from verifiers.v1.configs.harness import HarnessConfig, WireHarnessConfig
 from verifiers.v1.configs.retries import RetryConfig
+from verifiers.v1.configs.runtime import PrimeConfig, RuntimeConfig
 from verifiers.v1.configs.scoring import ScoringConfig
-from verifiers.v1.runtimes import PrimeConfig, RuntimeConfig
-from verifiers.v1.runtimes.deployment import DeploymentConfig
 from verifiers.v1.types import SamplingConfig
 from verifiers.v1.utils.generic import merge_defaults
 
@@ -66,6 +66,11 @@ class AgentConfig(BaseConfig):
     """Max output tokens per run (None = no limit)."""
     max_total_tokens: int | None = None
     """Max total tokens per run (None = no limit)."""
+    max_turn_tokens: int | None = Field(None, gt=0)
+    """Max output tokens per model response (None = no limit). Caps the sampling
+    `max_tokens` the framework sets on every request, whatever the harness asks for,
+    and stops the run once a response hits it. `sampling.max_tokens` alone caps each
+    response without stopping the run."""
 
     timeout: TimeoutConfig = TimeoutConfig()
     retries: RetryConfig = RetryConfig()
@@ -147,6 +152,11 @@ def resolve_agent(
     defaults = sampling or SamplingConfig()
     overrides = (spec.sampling or SamplingConfig()).model_dump(exclude_unset=True)
     merged = {**defaults.model_dump(), **merge_defaults(defaults, overrides)}
+    if spec.max_turn_tokens is not None:
+        max_tokens = merged.get("max_tokens")
+        merged["max_tokens"] = min(
+            max_tokens or spec.max_turn_tokens, spec.max_turn_tokens
+        )
     return spec.model_copy(
         update={
             "harness": spec.harness if spec.harness is not None else harness,

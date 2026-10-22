@@ -2,29 +2,26 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Annotated
 
-from pydantic import Field, SerializeAsAny
+from pydantic import Field
 
-from verifiers.v1.configs.runtime import NetworkPolicyConfig
-from verifiers.v1.runtimes.backends.custom import (
+from verifiers.v1.configs.runtime import (
     CustomRuntimeConfig,
-    CustomRuntimeInfo,
-    import_backend,
-)
-from verifiers.v1.runtimes.backends.docker import (
-    DockerBackend,
     DockerConfig,
-    DockerRuntimeInfo,
+    NetworkPolicyConfig,
+    PrimeConfig,
+    RuntimeConfig,
+    SubprocessConfig,
 )
+from verifiers.v1.runtimes.backends.custom import CustomRuntimeInfo, import_backend
+from verifiers.v1.runtimes.backends.docker import DockerBackend, DockerRuntimeInfo
 from verifiers.v1.runtimes.backends.prime import (
     PrimeBackend,
-    PrimeConfig,
     PrimeRuntimeInfo,
     set_base_sandbox_labels,
     set_default_sandbox_lifetime,
 )
 from verifiers.v1.runtimes.backends.subprocess import (
     SubprocessBackend,
-    SubprocessConfig,
     SubprocessRuntimeInfo,
 )
 from verifiers.v1.runtimes.base import (
@@ -35,14 +32,6 @@ from verifiers.v1.runtimes.base import (
     register,
 )
 from verifiers.v1.runtimes.runtime import Runtime
-
-# Serialized by the runtime type, so a custom runtime's typed config keeps its fields.
-RuntimeConfig = SerializeAsAny[
-    Annotated[
-        SubprocessConfig | DockerConfig | PrimeConfig | CustomRuntimeConfig,
-        Field(discriminator="type"),
-    ]
-]
 
 RuntimeInfo = Annotated[
     SubprocessRuntimeInfo | DockerRuntimeInfo | PrimeRuntimeInfo | CustomRuntimeInfo,

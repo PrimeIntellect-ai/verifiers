@@ -708,7 +708,11 @@ def resolve_image(
         import yaml
 
         main = yaml.safe_load(compose.read_text())["services"].get("main", {})
-        if main.get("image") or "build" in main:
+        if (
+            main.get("image")
+            or "build" in main
+            or (task_dir / "environment/Dockerfile").is_file()
+        ):
             return None
     section = "verifier.environment" if verifier else "environment"
     dockerfile = "tests/Dockerfile" if verifier else "environment/Dockerfile"

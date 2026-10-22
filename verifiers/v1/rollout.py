@@ -3,6 +3,7 @@
 import asyncio
 import contextlib
 import logging
+import math
 import time
 from collections.abc import Awaitable, Callable
 from contextlib import AsyncExitStack
@@ -19,6 +20,7 @@ from verifiers.v1.errors import (
     SandboxError,
     TaskError,
     ToolsetError,
+    UnscoredError,
     boundary,
 )
 from verifiers.v1.grading import (
@@ -155,6 +157,9 @@ class Rollout:
             for fn in discover_decorated(task, "intercept")
         ]
         stops = [(hook_boundary(fn, allow_trace=True), fn) for fn in task.hooks("stop")]
+        self._skip_scoring_stops = {
+            fn.__name__ for _, fn in stops if getattr(fn, "stop_skip_scoring", False)
+        }
         execution_policy = runtime_config
         self._session = RolloutSession(
             ctx=ctx,
@@ -719,6 +724,17 @@ class Rollout:
             "agent_completed",
         )
 
+    def _scoring_skip_reason(self) -> str | None:
+        """Why the resolved scoring policy, or the `skip_scoring` stop that ended this trace,
+        skips task scoring for it, if either does."""
+        if self._scoring_policy.skip_on_truncated and self.trace.is_truncated:
+            return "truncated"
+        if self._scoring_policy.skip_on_timeout and self.trace.is_timeout:
+            return "timeout"
+        if self.trace.stop_condition in self._skip_scoring_stops:
+            return self.trace.stop_condition
+        return None
+
     def _metrics_deadline(self) -> float:
         """Best-effort metrics get at most 30 seconds, and a tenth of a finite scoring budget."""
         budget = (
@@ -846,7 +862,14 @@ class Rollout:
                         boundary(TaskError, "scoring"),
                     ):
                         # Cross-trace judgement runs later, after the runtime is gone.
-                        if grader is not None:
+                        if skip_reason := self._scoring_skip_reason():
+                            logger.info(
+                                "rollout %s: scoring skipped (%s)",
+                                trace.id,
+                                skip_reason,
+                            )
+                            trace.info["scoring_skipped"] = skip_reason
+                        elif grader is not None:
                             try:
                                 await grade_task(
                                     grader,
@@ -908,6 +931,21 @@ class Rollout:
                         # the metrics read what it handed over and left behind.
                         await self._close_harness()
                         await self._score_harness(runtime, self._metrics_deadline())
+                # A nan reward scores nothing: keep it unscored (None) and fail the
+                # rollout after scoring, so it is never retried as a scoring failure.
+                unscored = [
+                    name
+                    for name, reward in trace.rewards.items()
+                    if reward is not None and math.isnan(reward.score)
+                ]
+                if unscored:
+                    for name in unscored:
+                        trace.rewards[name] = None
+                    self.fail(
+                        UnscoredError(
+                            f"reward {', '.join(unscored)} scored nothing (nan)"
+                        )
+                    )
                 trace.timing.scoring.end = time.time()
                 trace.notify()
         except Exception as e:  # noqa: BLE001 - finalize boundary records every rollout failure
