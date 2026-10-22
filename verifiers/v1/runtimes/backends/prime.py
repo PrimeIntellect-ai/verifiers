@@ -189,14 +189,19 @@ saved gateway. Uses `ip`, else Python's or Perl's route ioctls; with none of the
 the platform's filter is left alone."""
 
 IMAGE_RUN = (
-    '{ m=$(mktemp -d) && mount --bind / "$m" && cp -an "$m/run/." /run/; '
-    'umount "$m"; rmdir "$m"; } >/dev/null 2>&1;'
+    '{ m=$(mktemp -d) && mount --bind / "$m" && '
+    'for d in $(find "$m/run" -mindepth 1 -maxdepth 1 -type d -printf "%f\\n"); do '
+    '[ -e "/run/$d" ] || { mkdir "/run/$d" && mount --bind "$m/run/$d" "/run/$d"; }; done; '
+    'cp -an "$m/run/." /run/; umount "$m"; rmdir "$m"; } >/dev/null 2>&1;'
 )
-"""Copy what the image keeps under /run (a service's socket directory, a checker's
-private work directory, made at build time) into the tmpfs Prime mounts there, as a
-container started from the image would have it: the image's /run is still on the root
-filesystem, under the mount, and a non-recursive bind of / reaches it. Files already
-in the tmpfs are kept; a box without `mount` keeps the empty tmpfs."""
+"""Give back what the image keeps under /run (a service's socket directory, a checker's
+private work directory, made at build time), which the tmpfs Prime mounts there hides,
+as a container started from the image would have it: the image's /run is still on the
+root filesystem, under the mount, and a non-recursive bind of / reaches it. Each of the
+image's directories is bound from the disk, as Docker leaves it, so a checker that
+copies a workspace into its /run directory has the disk's room, not the tmpfs's few
+hundred MB; its other files are copied in. What Prime itself put in the tmpfs is kept;
+a box without `mount` keeps the empty tmpfs."""
 
 _PID_NAMESPACE_FILE = "/run/vf-pid-namespace"
 _REAPER = """
