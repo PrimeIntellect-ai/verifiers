@@ -3,6 +3,7 @@
 import pytest
 
 import verifiers.v1 as vf
+from verifiers.v1.configs.scoring import ScoringConfig
 from verifiers.v1.errors import SandboxError, TaskError
 from verifiers.v1.runtimes import ProgramResult
 from verifiers.v1.tasksets.harbor.taskset import (
@@ -166,3 +167,70 @@ async def test_grading_a_run_without_a_transcript_writes_no_trajectory():
     runtime = TrajectoryRuntime()
     await task.run_verifier(runtime, make_trace(task))
     assert runtime.writes == {}
+
+
+class StagingRuntime(TrajectoryRuntime):
+    async def run(self, argv, env):
+        self.commands.append(argv)
+        return ProgramResult(exit_code=0, stdout="", stderr="")
+
+
+async def test_an_isolated_grader_owns_restored_artifacts_as_harbor_uploads_them(
+    tmp_path,
+):
+    """Harbor uploads a separate verifier's artifacts root-owned under world-writable
+    roots, so a verifier running as its own user can work beside them."""
+    task = HarborTask(
+        HarborData(
+            idx=0,
+            prompt="p",
+            task_dir=str(tmp_path),
+            scoring=ScoringConfig(mode="isolated"),
+            verifier_image="grader:1",
+        )
+    )
+    trace = make_trace(task)
+    (tmp_path / "tests").mkdir()
+    trace.state.artifacts = {
+        "/logs/artifacts": b"tar",
+        "/app/out.txt": b"tar",
+        "/x": None,
+    }
+    runtime = StagingRuntime()
+    await task.stage_verifier(trace, runtime)
+    owned = next(a for a in runtime.commands if a[3:4] == ["vf-artifacts"])
+    assert owned[4:] == ["/logs/artifacts", "/app/out.txt"]
+    assert 'chown -hR 0:0 "$r" && chmod 777 "$r"' in owned[2]
+    assert runtime.commands.index(owned) < len(runtime.commands) - 1  # before the tests
+
+
+async def test_a_shared_grader_leaves_the_agents_files_as_they_are(tmp_path):
+    (tmp_path / "tests").mkdir()
+    task = HarborTask(HarborData(idx=0, prompt="p", task_dir=str(tmp_path)))
+    trace = make_trace(task)
+    trace.state.artifacts = {"/logs/artifacts": b"tar"}
+    runtime = StagingRuntime()
+    await task.stage_verifier(trace, runtime)
+    assert not [a for a in runtime.commands if a[3:4] == ["vf-artifacts"]]
+
+
+async def test_the_verifier_runs_as_its_declared_user():
+    class UserRuntime(FakeRuntime):
+        user = None
+
+        def with_user(self, user, home=None):
+            bound = UserRuntime(self.reward)
+            bound.user = user
+            return bound
+
+        async def run(self, argv, env):
+            if argv == TEST_SH:
+                users.append(self.user)
+            return await super().run(argv, env)
+
+    users = []
+    task = HarborTask(
+        HarborData(idx=0, prompt="p", task_dir="/nonexistent", verifier_user="reliant")
+    )
+    await task.run_verifier(UserRuntime(b"1"), make_trace(task))
+    assert users == ["reliant"]

@@ -572,8 +572,33 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
             for root in trace.state.artifacts
         ):
             raise TaskError("Harbor artifacts cannot restore into /tests")
+        if self.scoring.mode == "isolated":
+            await self.own_restored_artifacts(trace, runtime)
         await self.stage_tests(runtime, wipe=self.data.verifier is not None)
         self.verifier_staged = True
+
+    async def own_restored_artifacts(self, trace: Trace, runtime: Runtime) -> None:
+        """Leave the grader's restored artifacts as Harbor's upload into a separate
+        verifier does: the contents root-owned (`docker compose cp` keeps modes, not
+        owners), and each restored directory, or a restored file's parent, world-writable.
+        It matters to a verifier that runs as its own `[verifier].user`: it may write
+        beside the submission, and the solver's uids, which `restore` carries over, mean
+        nothing in the grader's image."""
+        roots = [root for root, archive in trace.state.artifacts.items() if archive]
+        if not roots:
+            return
+        command = (
+            'for r; do if [ -d "$r" ] && [ ! -L "$r" ]; then '
+            'chown -hR 0:0 "$r" && chmod 777 "$r"; '
+            'else chown -h 0:0 "$r" && d=$(dirname "$r") && '
+            '{ [ "$d" = / ] || chmod 777 "$d"; }; fi || exit 1; done'
+        )
+        result = await runtime.run(["sh", "-c", command, "vf-artifacts", *roots], {})
+        if result.exit_code:
+            raise TaskError(
+                f"owning restored artifacts failed (exit {result.exit_code}): "
+                f"{(result.stderr or result.stdout).strip()[-500:]}"
+            )
 
     async def stage_tests(self, runtime: Runtime, wipe: bool = False) -> None:
         """Use a dedicated verifier image's tests, or stage the task package's tests.
