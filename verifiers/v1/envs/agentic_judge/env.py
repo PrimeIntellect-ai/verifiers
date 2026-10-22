@@ -18,8 +18,10 @@ from verifiers.v1.configs.scoring import resolve_scoring
 from verifiers.v1.judges.rubric import (
     Criterion,
     RubricVerdicts,
+    criterion_metrics,
     load_criteria,
     score_verdicts,
+    weighted_score,
 )
 from verifiers.v1.utils.compile import validate_pairing
 
@@ -45,10 +47,7 @@ SOLVED = Criterion(
 
 
 def _verdict_section(criteria: list[Criterion]) -> str:
-    listing = "\n".join(
-        f"- {c.name}: {c.text} (answer one of, worst to best: {', '.join(c.choices)})"
-        for c in criteria
-    )
+    listing = "\n".join(c.render() for c in criteria)
     return f"""\
 ## Your verdict
 
@@ -300,15 +299,16 @@ class AgenticJudgeEnv(vf.Env[AgenticJudgeEnvConfig]):
         verdicts = RubricVerdicts.model_validate(verdict.info.get("verdict")).verdicts
         criteria = self.config.task.criteria()
         scores = score_verdicts(verdicts, criteria, "the rubric's")
-        for criterion in criteria:
-            solution.record_metric(f"judge/{criterion.name}", scores[criterion.name])
+        solution.record_metrics(criterion_metrics("judge", verdicts, criteria, scores))
         if self.config.score.task_weight != 1.0:
             for reward in solution.rewards.values():
                 if reward is not None:
                     reward.weight *= self.config.score.task_weight
-        total = sum(criterion.weight for criterion in criteria)
-        reward = sum(c.weight * scores[c.name] for c in criteria) / total
-        solution.record_reward("judge", reward, weight=self.config.score.judge_weight)
+        solution.record_reward(
+            "judge",
+            weighted_score(scores, criteria),
+            weight=self.config.score.judge_weight,
+        )
 
     async def run(self, task: vf.Task, agents: vf.Agents) -> None:
         policy = resolve_scoring(task.scoring, self.config.solver.scoring)

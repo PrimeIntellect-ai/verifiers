@@ -36,6 +36,10 @@ class HookTask(vf.Task[HookData]):
     async def single_turn(self, trace: vf.Trace) -> bool:
         return trace.num_turns >= 1
 
+    @vf.stop(skip_scoring=True)
+    async def no_reply(self, trace: vf.Trace) -> bool:
+        return trace.last_reply is None
+
     @vf.reward
     async def lcs(self, trace: vf.Trace) -> float:
         return 0.5
@@ -49,7 +53,7 @@ async def test_config_plugged_fns_merge_and_override(tmp_path) -> None:
     fns = tmp_path / "fns.py"
     fns.write_text(PLUGGED_FNS_PY)
     config = vf.TaskConfig(
-        stops={"single_turn": vf.DecoratedFunctionConfig(fn=f"{fns}:two_turns")},
+        stops={"single_turn": vf.StopFunctionConfig(fn=f"{fns}:two_turns")},
         metrics={"reply_length": vf.DecoratedFunctionConfig(fn=f"{fns}:reply_length")},
         rewards={
             "exact_match": vf.RewardFunctionConfig(fn=f"{fns}:exact_match", weight=0.5),
@@ -70,9 +74,10 @@ async def test_config_plugged_fns_merge_and_override(tmp_path) -> None:
     )
 
     # the plugged `single_turn` replaces the decorated one: no stop after one turn
-    (stop,) = task.hooks("stop")
+    no_reply, stop = task.hooks("stop")
     assert stop.__name__ == "single_turn"
     assert not await stop(trace)
+    assert no_reply.stop_skip_scoring and not stop.stop_skip_scoring
 
     await task.score(trace)
     # `lcs` scored by the plugged marker (config wins the name clash), config weight
@@ -102,3 +107,27 @@ async def test_defer_scoring_defers_only_task_scoring() -> None:
     assert trace.rewards == {}
     await task.score(trace)
     assert set(trace.rewards) == {"fmt", "lcs"}
+
+
+def test_plugged_stops_set_skip_scoring(tmp_path) -> None:
+    fns = tmp_path / "fns.py"
+    fns.write_text(PLUGGED_FNS_PY)
+    data = HookData(idx=0, prompt="abc")
+
+    def skips(stops: dict) -> dict[str, bool]:
+        config = vf.TaskConfig(stops=stops)
+        return {
+            fn.__name__: fn.stop_skip_scoring
+            for fn in HookTask(data, config).hooks("stop")
+        }
+
+    # a fresh plugged stop scores by default; a fn-less entry keeps or overrides the decorator's
+    assert skips({"two": vf.StopFunctionConfig(fn=f"{fns}:two_turns")})["two"] is False
+    assert skips(
+        {"two": vf.StopFunctionConfig(fn=f"{fns}:two_turns", skip_scoring=True)}
+    )["two"]
+    assert skips({"no_reply": vf.StopFunctionConfig()})["no_reply"] is True
+    assert (
+        skips({"no_reply": vf.StopFunctionConfig(skip_scoring=False)})["no_reply"]
+        is False
+    )
