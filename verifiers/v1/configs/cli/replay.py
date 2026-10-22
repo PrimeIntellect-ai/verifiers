@@ -19,15 +19,17 @@ class ReplayConfig(BaseConfig):
     `taskset.task.judges` replace the source run's judges entirely (and new ones
     join); set them via `@ file.toml` / dotted flags."""
     num_traces: int | None = Field(
-        None, validation_alias=AliasChoices("num_traces", "n")
+        None, ge=1, validation_alias=AliasChoices("num_traces", "n")
     )
     """How many saved traces to re-score (None = all)."""
-    num_rescores: int = Field(1, validation_alias=AliasChoices("num_rescores", "r"))
+    num_rescores: int = Field(
+        1, ge=1, validation_alias=AliasChoices("num_rescores", "r")
+    )
     """Re-score each selected trace this many times (e.g. to measure judge variance).
     Named distinctly from eval's `num_rollouts` so the source run's value is
     ignored, not inherited."""
     max_concurrent: int | None = Field(
-        128, validation_alias=AliasChoices("max_concurrent", "c")
+        128, ge=1, validation_alias=AliasChoices("max_concurrent", "c")
     )
     """Max traces re-scored (judge calls) in flight at once."""
     verbose: bool = Field(False, validation_alias=AliasChoices("verbose", "v"))
