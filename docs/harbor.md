@@ -138,6 +138,36 @@ Setting `[verifier].environment_mode = "separate"` grades the task in a fresh co
 
 Because verifiers never builds container images on the fly, a `[verifier.environment]` that relies on `tests/Dockerfile` without a pre-built `docker_image` must be built, pushed to a registry, and referenced via `docker_image` (or `verifier_image`). Setting `ignore_dockerfile = true` falls back to running the verifier inside the solver's image and logs a warning since that diverges from the task's declared verifier environment. Setting `ignore_separate_verifier = true` forces every task back into shared grading inside the solver's container, trading grading isolation for a single sandbox per task.
 
+## Task-declared criteria
+
+A task can ship `tests/criteria.toml`, a list of graded checks that verifiers decides after `test.sh` runs, in the grading box:
+
+```toml
+pass_threshold = 1.0                # optional; the folded score a pass needs
+junit = "/logs/verifier/junit.xml"  # optional; where test.sh writes its JUnit report
+
+[[criteria]]
+id = "keeps_api"
+text = "The existing public API keeps working."
+kind = "test"
+tests = ["tests/test_api.py::test_roundtrip", "api_ok"]  # JUnit tests or reward.json keys
+critical = true
+
+[[criteria]]
+id = "explains_tradeoff"
+text = "The report explains why the cache is invalidated on write."
+kind = "judge"
+evidence = ["/app/REPORT.md", "/app/results.xlsx"]
+weight = 2.0
+conditional = true                  # the judge may answer "not applicable"
+```
+
+- A `test` criterion is met when every named test passed: a JUnit testcase (by `name`, `file.py::name` or a dotted path; a bare name covers all its parametrizations) without a failure, error or skip, or a reward.json value of at least 1. A test missing from the report is unmet. Test criteria need the report: run pytest with `--junitxml`.
+- A `judge` criterion is answered yes or no by the criteria judge, over its evidence files read from the grading box. It may answer not applicable only when `conditional`. Documents, spreadsheets, slides and PDFs (PDF needs `pypdf`) are shown as text; a missing file is shown as missing.
+- The fold: 0 when a critical criterion is unmet, else the weighted mean of the non-critical criteria that apply (1.0 when there are none). `reward` is 1.0 when that score reaches `pass_threshold`, else 0.0. `criteria_score` holds the score itself: set `task.reward_key = "criteria_score"` to train on it. A reward file is optional for these tasks; its own `reward`, if written, is kept as the `verifier_reward` metric.
+- Results: each criterion is a metric, `criteria/<id>` (1.0 met, 0.0 unmet, absent when not applicable; a conditional one also gets `criteria/<id>/<answer>` indicators), and `trace.info["criteria"]` holds the report: `score`, `passed`, `pass_threshold`, `critical_unmet`, and per criterion its `answer`, `tests` statuses and the judge's `probability`.
+- The judge is `taskset.task.criteria_judge`: `id = "decision"` (the default: clef on Prime's evaluations API, one call per criterion plus an applicability call for a conditional one; it sees image evidence) or `id = "rubric"` (a chat model, all criteria in one call or `max_criteria` at a time; text only, so image evidence errors). A judge that fails errors the rollout; it never scores 0.
+
 ## Limitations
 
 verifiers does not yet support every Harbor feature. The main current limitations are:

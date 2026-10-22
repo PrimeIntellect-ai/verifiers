@@ -33,7 +33,14 @@ from functools import lru_cache
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    TypeAdapter,
+    ValidationError,
+    field_validator,
+)
 
 from verifiers.v1 import toolbundles
 from verifiers.v1.configs.agent import TimeoutConfig
@@ -50,6 +57,14 @@ from verifiers.v1.state import State
 from verifiers.v1.task import Task, TaskData, TaskResources, TaskTimeout
 from verifiers.v1.taskset import Taskset
 from verifiers.v1.tasksets.harbor.context_owners import restore_owners
+from verifiers.v1.tasksets.harbor.criteria import (
+    CriteriaJudgeConfig,
+    TaskCriteria,
+    TaskDecisionJudgeConfig,
+    criteria_judge_config,
+    grade_criteria,
+    load_task_criteria,
+)
 from verifiers.v1.tasksets.harbor.entrypoint import restart_services, start_entrypoint
 from verifiers.v1.toolbundles import ToolMount
 from verifiers.v1.trace import Trace
@@ -95,6 +110,16 @@ class HarborTaskConfig(TaskConfig):
     Service images, pinned digests and build inputs remain authored."""
     mcp_servers: list[dict] = Field(default_factory=list)
     """Task-declared connections, bound from HarborData during construction."""
+    criteria_judge: CriteriaJudgeConfig = TaskDecisionJudgeConfig()
+    """The judge that answers a task's `judge` criteria (`tests/criteria.toml`, see
+    `harbor.criteria`): `id = "decision"` (clef on Prime's evaluations API, the default;
+    reads image evidence) or `id = "rubric"` (a chat model on Prime inference; text
+    only)."""
+
+    @field_validator("criteria_judge", mode="before")
+    @classmethod
+    def _criteria_judge(cls, value: object) -> object:
+        return criteria_judge_config(value)
 
 
 class HarborConfig(TasksetConfig):
@@ -240,6 +265,12 @@ class HarborData(TaskData):
     verifier_user: str | None = Field(None, exclude_if=lambda user: user is None)
     """`[verifier].user`: who runs `test.sh`; None (or root) is the box's default user.
     Left out of the dump while unset, like `CollectHook.user`."""
+    criteria: TaskCriteria | None = Field(
+        None, exclude_if=lambda criteria: criteria is None
+    )
+    """`tests/criteria.toml`: the criteria the grader decides and folds into the reward
+    after `test.sh` runs. None grades by the verifier's reward file alone. Left out of
+    the dump while unset, like `verifier_user`."""
 
 
 class HarborTask(Task[HarborData, State, HarborTaskConfig]):
@@ -659,6 +690,8 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
         result = await self.launch_verifier(runtime, trace)
         await self.record_verifier_output(runtime, trace, result)
         scores = await self.read_reward_json(runtime)
+        if self.data.criteria is not None:
+            scores = await self.grade_criteria(runtime, trace, scores)
         if scores is None:
             try:
                 value = (
@@ -692,6 +725,43 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
             {name: value for name, value in scores.items() if name != key}
         )
         return {key: scores[key]}
+
+    async def grade_criteria(
+        self, runtime: Runtime, trace: Trace, scores: dict[str, float] | None
+    ) -> dict[str, float]:
+        """Decide the task's criteria after `test.sh` ran (`harbor.criteria`) and fold
+        them into the reward: `reward` is 1.0 when the folded score reaches the file's
+        `pass_threshold`, else 0.0, and `criteria_score` is the score itself (set
+        `task.reward_key = "criteria_score"` to train on it). A reward file is optional
+        here; its own `reward`, when it writes one, stays as `verifier_reward`."""
+        assert self.data.criteria is not None
+        if scores is None:
+            try:
+                value = await runtime.read(
+                    "/logs/verifier/reward.txt", max_bytes=MAX_REWARD_BYTES
+                )
+                scores = {
+                    "reward": REWARD_SCALAR_ADAPTER.validate_python(
+                        float(value.decode().strip())
+                    )
+                }
+            except (SandboxError, OSError, ValueError):
+                scores = {}
+        report = await grade_criteria(
+            self.data.criteria,
+            runtime,
+            trace,
+            question=self.data.prompt_text,
+            scores=scores,
+            judge=self.config.criteria_judge,
+        )
+        if "reward" in scores:
+            scores["verifier_reward"] = scores.pop("reward")
+        return {
+            **scores,
+            "reward": float(report.passed),
+            "criteria_score": report.score,
+        }
 
     async def stage_trajectory(self, runtime: Runtime, trace: Trace) -> None:
         """Leave the agent's transcript at Harbor's `/logs/agent/trajectory.json`, as
@@ -1293,6 +1363,7 @@ def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborD
         verifier_user=None
         if parsed.verifier.user is None
         else str(parsed.verifier.user),
+        criteria=load_task_criteria(task_dir),
     )
 
 
