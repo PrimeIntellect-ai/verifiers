@@ -192,6 +192,13 @@ def min_new_input_tokens(calls: Iterable[ModelCall]) -> Iterator[tuple[ModelCall
         prev_total = call.usage.total_tokens
 
 
+def _concat(parts: list[list | np.ndarray], dtype: type[np.generic]) -> np.ndarray:
+    """Node streams (lists or arrays) joined into one array of `dtype`."""
+    if not parts:
+        return np.zeros(0, dtype=dtype)
+    return np.concatenate([np.asarray(part, dtype=dtype) for part in parts])
+
+
 class Branch(BaseModel):
     """A root-to-leaf message-graph path; each branch becomes one training sample."""
 
@@ -212,54 +219,41 @@ class Branch(BaseModel):
         return self.nodes[0].tools if self.nodes else []
 
     @property
-    def token_ids(self) -> list[int]:
-        """Training input IDs formed by concatenating node token spans."""
-        tokens: list[int] = []
-        # Extend node spans in bulk to avoid per-token Python work.
-        for node in self.nodes:
-            tokens.extend(node.token_ids)
-        return tokens
+    def token_ids(self) -> np.ndarray:
+        """int32 training input IDs formed by concatenating node token spans."""
+        return _concat([n.token_ids for n in self.nodes], np.int32)
 
     @property
-    def sampled_mask(self) -> list[bool]:
+    def sampled_mask(self) -> np.ndarray:
         """Per-token trainable flag aligned to `token_ids`: True for the model-sampled
         (completion) tokens, False for prompt/template scaffold."""
-        mask: list[bool] = []
-        for node in self.nodes:
-            mask.extend(node.mask)
-        return mask
+        return _concat([n.mask for n in self.nodes], np.bool_)
 
     def spread(
-        self, values: Callable[[MessageNode], list[float] | None]
-    ) -> list[float]:
-        """A per-sampled-token node field widened to `token_ids`: each node's values land on its
-        sampled positions, 0.0 everywhere else. A node holding nothing contributes zeros."""
-        out: list[float] = []
+        self, values: Callable[[MessageNode], list[float] | np.ndarray | None]
+    ) -> np.ndarray:
+        """A per-sampled-token node field widened to `token_ids` (float32): each node's values
+        land on its sampled positions in order, 0.0 everywhere else. A node holding fewer values
+        than sampled tokens reads 0.0 past them; extra values are dropped."""
+        out = np.zeros(sum(len(n.mask) for n in self.nodes), dtype=np.float32)
+        offset = 0
         for node in self.nodes:
-            mask, node_values = node.mask, values(node) or []
-            sampled = sum(mask) if node_values else 0
-            # Bulk-fill the canonical unsampled-prefix/sampled-suffix layout.
-            if not sampled or all(mask[-sampled:]):
-                out += [0.0] * (len(mask) - sampled) + node_values[:sampled]
-                out += [0.0] * max(0, sampled - len(node_values))
-                continue
-            li = 0
-            for is_sampled in mask:
-                if is_sampled:
-                    out.append(node_values[li] if li < len(node_values) else 0.0)
-                    li += 1
-                else:
-                    out.append(0.0)
+            node_values = values(node)
+            if node_values is not None and len(node_values):
+                positions = np.flatnonzero(node.mask)
+                k = min(len(positions), len(node_values))
+                out[offset + positions[:k]] = node_values[:k]
+            offset += len(node.mask)
         return out
 
     @property
-    def logprobs(self) -> list[float]:
+    def logprobs(self) -> np.ndarray:
         """Per-token sampling logprobs aligned to `token_ids` — the node logprobs spread onto
         their sampled positions, 0.0 on every non-sampled token."""
         return self.spread(lambda node: node.logprobs)
 
     @property
-    def advantages(self) -> list[float] | None:
+    def advantages(self) -> np.ndarray | None:
         """Per-token credit aligned to `token_ids`, spread like `logprobs` — or `None` when no node
         on the path was ever assigned any, which a branch of zeros would otherwise be
         indistinguishable from. A partially assigned path spreads, the unassigned nodes reading
@@ -269,60 +263,63 @@ class Branch(BaseModel):
         return self.spread(lambda node: node.advantages)
 
     @property
-    def reference_logprobs(self) -> list[float] | None:
+    def reference_logprobs(self) -> np.ndarray | None:
         """Reference-model logprobs aligned to `token_ids`, or None when unscored."""
         if all(node.reference_logprobs is None for node in self.nodes):
             return None
         return self.spread(lambda node: node.reference_logprobs)
 
     @property
-    def trainer_logprobs(self) -> list[float] | None:
+    def trainer_logprobs(self) -> np.ndarray | None:
         """Trainer-recomputed logprobs aligned to `token_ids`, or None when unannotated."""
         if all(node.trainer_logprobs is None for node in self.nodes):
             return None
         return self.spread(lambda node: node.trainer_logprobs)
 
     @property
-    def entropies(self) -> list[float] | None:
+    def entropies(self) -> np.ndarray | None:
         """Trainer policy entropies aligned to `token_ids`, or None when unannotated."""
         if all(node.entropies is None for node in self.nodes):
             return None
         return self.spread(lambda node: node.entropies)
 
-    def loss_weights(self, name: str) -> list[float] | None:
-        """One named loss-weight stream aligned to `token_ids`, or None when absent."""
+    def loss_weights(self, name: str) -> np.ndarray | None:
+        """One named float32 loss-weight stream aligned to `token_ids`, or None when absent."""
         if all(
             node.loss_weights is None or name not in node.loss_weights
             for node in self.nodes
         ):
             return None
-        weights: list[float] = []
+        parts = []
         for node in self.nodes:
             node_weights = (node.loss_weights or {}).get(name)
             if node_weights is None:
-                weights.extend([0.0] * len(node.token_ids))
+                parts.append(np.zeros(len(node.token_ids), dtype=np.float32))
                 continue
             if len(node_weights) != len(node.token_ids):
                 raise ValueError(
                     f"loss weight stream {name!r} must align with node token_ids: "
                     f"got {len(node_weights)}, expected {len(node.token_ids)}"
                 )
-            weights.extend(node_weights)
-        return weights
+            parts.append(node_weights)
+        return _concat(parts, np.float32)
 
     @property
-    def mm_token_type_ids(self) -> list[int] | None:
-        """Per-token modality markers aligned to `token_ids` (0 = text, 1 = image
+    def mm_token_type_ids(self) -> np.ndarray | None:
+        """Per-token int32 modality markers aligned to `token_ids` (0 = text, 1 = image
         placeholder, 2 = video placeholder); None when none are present."""
         if not self.mm_token_type_id_map:
             return None
-        token_types = [self.mm_token_type_id_map.get(t, 0) for t in self.token_ids]
-        return token_types if any(token_types) else None
+        token_ids = self.token_ids
+        token_types = np.zeros(len(token_ids), dtype=np.int32)
+        for token, token_type in self.mm_token_type_id_map.items():
+            token_types[token_ids == token] = token_type
+        return token_types if token_types.any() else None
 
     @property
     def routed_experts(self) -> np.ndarray | None:
         """uint8 `[tokens, layers, top_k]` routing; partial data returns None."""
-        nodes = [n for n in self.nodes if n.token_ids]
+        nodes = [n for n in self.nodes if len(n.token_ids)]
         if not nodes or any(n.routed_experts is None for n in nodes):
             return None
         merged = np.concatenate([n.routed_experts for n in nodes], axis=0)

@@ -137,7 +137,10 @@ class EnvServer:
         # ships each trace as it changes; the reply below carries only the rest.
         hook = _episode_hook
         async with DeltaStreamer(
-            lambda: slot.traces, send_delta, keep_arrays=hook is None
+            lambda: slot.traces,
+            send_delta,
+            keep_arrays=hook is None,
+            token_arrays=req.token_arrays,
         ) as streamer:
             episode = await self.env.run_slot(
                 slot, ctx, self._gate, on_trace=streamer.watch

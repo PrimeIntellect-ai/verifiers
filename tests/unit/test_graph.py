@@ -561,8 +561,8 @@ def test_unspanned_reconciliation_stops_at_next_message_boundary():
     )
 
     follow_up_node = next(node for node in trace.nodes if node.message == follow_up)
-    assert follow_up_node.token_ids == [4]
-    assert trace.nodes[follow_up_node.parent].token_ids == [2, 3]
+    assert list(follow_up_node.token_ids) == [4]
+    assert list(trace.nodes[follow_up_node.parent].token_ids) == [2, 3]
 
 
 def test_renderer_level_break_forks_by_token_id():
@@ -614,7 +614,7 @@ def test_renderer_level_break_forks_by_token_id():
     first_turn(linear)
     second_turn(linear, [1, 2, 3, 4, 5, 6, 7])
     assert linear.num_branches == 1
-    assert linear.branches[0].token_ids == [1, 2, 3, 4, 5, 6, 7, 8]
+    assert list(linear.branches[0].token_ids) == [1, 2, 3, 4, 5, 6, 7, 8]
 
     # Break: the assistant turn retokenizes (4 -> 99), so prompt_ids diverge at that node.
     broken = vf.Trace(
@@ -624,7 +624,7 @@ def test_renderer_level_break_forks_by_token_id():
     first_turn(broken)
     second_turn(broken, [1, 2, 3, 99, 5, 6, 7])
     assert broken.num_branches == 2
-    assert sorted(b.token_ids for b in broken.branches) == [
+    assert sorted(b.token_ids.tolist() for b in broken.branches) == [
         [1, 2, 3, 4, 5],
         [1, 2, 3, 99, 5, 6, 7, 8],
     ]
@@ -663,10 +663,10 @@ def test_expanded_prompt_is_attributed_while_bridge_uses_logical_tokens():
         )
     )
 
-    assert trace.branches[0].token_ids == [1, 9, 9, 3, 4]
-    assert trace.branches[0].mm_token_type_ids == [0, 1, 1, 0, 0]
-    assert trace.nodes[0].token_ids == [1, 9, 9]
-    assert trace.nodes[0].is_content == [False, True, True]
+    assert list(trace.branches[0].token_ids) == [1, 9, 9, 3, 4]
+    assert list(trace.branches[0].mm_token_type_ids) == [0, 1, 1, 0, 0]
+    assert list(trace.nodes[0].token_ids) == [1, 9, 9]
+    assert list(trace.nodes[0].is_content) == [False, True, True]
     turn = graph.prepare_turn(trace, [user, assistant, vf.UserMessage(content="next")])
     assert turn.previous_renderer_token_ids() == ([1, 9, 3], [4])
 
@@ -711,9 +711,9 @@ def test_expanded_prompt_is_attributed_while_bridge_uses_logical_tokens():
 
     tool_node = trace.nodes[-2]
     assert tool_node.message == tool
-    assert tool_node.token_ids == [5, 6]
+    assert list(tool_node.token_ids) == [5, 6]
     assert tool_node.renderer_token_ids == [5, 6]
-    assert tool_node.is_content == [False, True]
+    assert list(tool_node.is_content) == [False, True]
 
 
 def test_prompt_supplied_assistant_messages_are_not_sampled_turns():

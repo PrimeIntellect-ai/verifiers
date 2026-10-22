@@ -48,6 +48,9 @@ class RunRequest(BaseRequest):
     client: ClientConfig
     model: str
     sampling: SamplingConfig
+    token_arrays: bool = False
+    """Stream nodes' per-token streams (`graph.TOKEN_STREAM_DTYPES`, `loss_weights`) as raw-bytes
+    arrays instead of lists. A server that predates the field ignores it and streams lists."""
 
 
 class RunResponse(BaseResponse):

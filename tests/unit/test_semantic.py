@@ -368,9 +368,9 @@ def test_acp_derives_compaction_attempt_branch_trainability():
     )
 
     assert trace.nodes[3].sampled is True
-    assert trace.nodes[3].mask == [True, True]
-    assert trace.nodes[4].mask == [True, True]
-    assert trace.nodes[6].mask == [True]
+    assert list(trace.nodes[3].mask) == [True, True]
+    assert list(trace.nodes[4].mask) == [True, True]
+    assert list(trace.nodes[6].mask) == [True]
     assert trace.nodes[3].semantic_parents == [
         vf.ParentLink(node=1, type="compaction_attempt")
     ]
@@ -388,8 +388,8 @@ def test_acp_derives_compaction_attempt_branch_trainability():
 
     restored = vf.WireTrace.model_validate_json(trace.model_dump_json())
     assert restored.nodes[3].sampled is True
-    assert restored.nodes[3].mask == [True, True]
-    assert restored.nodes[4].mask == [True, True]
+    assert list(restored.nodes[3].mask) == [True, True]
+    assert list(restored.nodes[4].mask) == [True, True]
     restored_branches = {
         branch.nodes[-1].message.content: branch for branch in restored.branches
     }
