@@ -22,6 +22,8 @@
 
 - **Use bundled skills first**: the `release` skill in `skills/` documents the stable-version release workflow, and the `bump` skill documents how to bump a pinned harness version.
 
+If a repository skill could benefit from an update, suggest the specific change, explain why it would help, and ask the user for approval before making it. Wait for approval before creating, modifying, renaming, or deleting skills, including their supporting files and symlinks. If the user has already explicitly requested or approved the skill change, proceed without asking again. Requests to change code, fix workflows, update documentation, or open a PR do not implicitly authorize skill changes. You may read and follow skills without changing them.
+
 ## Testing
 
 - **Two suites**: `tests/unit` runs one component in isolation; `tests/integration` runs real evals (a live model, real runtimes) per behavior across the harness x runtime grid in `tests/integration/grid.py`. Prefer an integration cell over a unit test; a unit test earns its place by stating one component's intended behavior, not by asserting an implementation detail. To check your own work, write a temporary script instead of committing new tests.
