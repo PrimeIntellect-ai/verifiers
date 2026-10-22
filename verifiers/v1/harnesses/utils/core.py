@@ -333,10 +333,34 @@ TUNNEL_DOWN_RETRY_SECONDS = 5
 
 
 def tunnel_down(error: BaseException) -> bool:
-    if not isinstance(error, APIStatusError):
+    if not isinstance(error, (APIStatusError, httpx.HTTPStatusError)):
         return False
-    content_type = error.response.headers.get("content-type", "")
-    return error.status_code in (404, 502, 503, 504) and "text/html" in content_type
+    response = error.response
+    content_type = response.headers.get("content-type", "")
+    return response.status_code in (404, 502, 503, 504) and "text/html" in content_type
+
+
+async def through_tunnel(request):
+    """Await `request()` (a call to the host's interception server), again while the
+    tunnel is down (`tunnel_down`), for up to `TUNNEL_DOWN_SECONDS`; then exit with the
+    transport-error code. Every request the program makes to the host goes through here:
+    a model turn, the steering inbox, the tool gate."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + TUNNEL_DOWN_SECONDS
+    while True:
+        try:
+            return await request()
+        except (APIStatusError, httpx.HTTPStatusError) as error:
+            if not tunnel_down(error):
+                raise
+            if loop.time() >= deadline:
+                traceback.print_exc()
+                raise SystemExit(MODEL_TRANSPORT_ERROR_EXIT_CODE) from error
+            logging.getLogger(__name__).warning(
+                "host unreachable (HTTP %s from the tunnel); retrying",
+                error.response.status_code,
+            )
+            await asyncio.sleep(TUNNEL_DOWN_RETRY_SECONDS)
 
 
 async def chat(
@@ -347,22 +371,9 @@ async def chat(
     *,
     tool_choice: str | None = None,
 ):
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + TUNNEL_DOWN_SECONDS
-    while True:
-        try:
-            return await _chat(client, model, messages, tools, tool_choice=tool_choice)
-        except APIStatusError as error:
-            if not tunnel_down(error):
-                raise
-            if loop.time() >= deadline:
-                traceback.print_exc()
-                raise SystemExit(MODEL_TRANSPORT_ERROR_EXIT_CODE) from error
-            logging.getLogger(__name__).warning(
-                "model endpoint unreachable (HTTP %s from the tunnel); retrying",
-                error.status_code,
-            )
-            await asyncio.sleep(TUNNEL_DOWN_RETRY_SECONDS)
+    return await through_tunnel(
+        lambda: _chat(client, model, messages, tools, tool_choice=tool_choice)
+    )
 
 
 async def _chat(
@@ -451,17 +462,20 @@ async def gate_tool_call(
         arguments = json.loads(call.function.arguments or "{}")
     except json.JSONDecodeError:
         arguments = call.function.arguments
-    response = await client.post(
-        url,
-        headers={"Authorization": f"Bearer {api_key}"},
-        json={
-            "tool_call_id": call.id,
-            "name": call.function.name,
-            "arguments": arguments,
-        },
-    )
-    response.raise_for_status()
-    decision = response.json()
+
+    async def ask() -> httpx.Response:
+        response = await client.post(
+            url,
+            headers={"Authorization": f"Bearer {api_key}"},
+            json={
+                "tool_call_id": call.id,
+                "name": call.function.name,
+                "arguments": arguments,
+            },
+        )
+        return response.raise_for_status()
+
+    decision = (await through_tunnel(ask)).json()
     if decision["action"] == "stop":
         raise RuntimeError(decision["reason"])
     return decision
@@ -472,7 +486,7 @@ async def read_inbox(client: AsyncOpenAI) -> list[dict]:
     from the interception's inbox for this session (the model bearer keys it). Reading
     acknowledges them: each arrives once, and the program keeps it in its history."""
     try:
-        inbox = await client.get("/inbox", cast_to=object)
+        inbox = await through_tunnel(lambda: client.get("/inbox", cast_to=object))
     except APIConnectionError as error:
         traceback.print_exc()
         raise SystemExit(MODEL_TRANSPORT_ERROR_EXIT_CODE) from error

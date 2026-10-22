@@ -194,3 +194,47 @@ async def test_chat_does_not_retry_an_interception_server_404():
     with pytest.raises(NotFoundError):
         await run_chat(respond)
     assert len(requests) == 1
+
+
+async def test_inbox_and_tool_gate_wait_out_a_tunnel_outage(monkeypatch):
+    """The steering inbox and the tool gate reach the host through the same tunnel as the
+    model, so a tunnel outage is waited out there too."""
+    from types import SimpleNamespace
+
+    from verifiers.v1.harnesses.utils.core import gate_tool_call, read_inbox
+
+    monkeypatch.setattr(
+        "verifiers.v1.harnesses.utils.core.TUNNEL_DOWN_RETRY_SECONDS", 0
+    )
+    seen = {"inbox": 0, "gate": 0}
+
+    async def respond(request: httpx.Request) -> httpx.Response:
+        kind = "inbox" if request.url.path.endswith("/inbox") else "gate"
+        seen[kind] += 1
+        if seen[kind] == 1:
+            return httpx.Response(
+                404,
+                text=TUNNEL_PAGE,
+                headers={"content-type": "text/html"},
+                request=request,
+            )
+        body = {"messages": []} if kind == "inbox" else {"action": "run"}
+        return httpx.Response(200, json=body, request=request)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as http_client:
+        client = AsyncOpenAI(
+            api_key="test",
+            base_url="https://example.test/v1",
+            http_client=http_client,
+            max_retries=0,
+        )
+        assert await read_inbox(client) == []
+        call = SimpleNamespace(
+            id="c1",
+            function=SimpleNamespace(name="bash", arguments='{"command": "ls"}'),
+        )
+        decision = await gate_tool_call(
+            http_client, "https://example.test/gate", "k", call
+        )
+    assert decision == {"action": "run"}
+    assert seen == {"inbox": 2, "gate": 2}
