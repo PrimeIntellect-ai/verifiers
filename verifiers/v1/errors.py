@@ -69,11 +69,6 @@ class TaskError(RolloutError):
     """Task-authored code raised — `setup`, `finalize`, or a `@reward`/`@metric`."""
 
 
-class UnscoredError(RolloutError):
-    """Scoring completed but a reward came out `nan`, e.g. a judge's answer that scores
-    nothing: the rollout carries no reward signal, so consumers drop it like a failure."""
-
-
 class InterceptionError(RolloutError):
     """Communication with the host interception server failed."""
 

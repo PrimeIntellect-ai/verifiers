@@ -20,7 +20,6 @@ from verifiers.v1.errors import (
     SandboxError,
     TaskError,
     ToolsetError,
-    UnscoredError,
     boundary,
 )
 from verifiers.v1.grading import (
@@ -932,8 +931,8 @@ class Rollout:
                         # the metrics read what it handed over and left behind.
                         await self._close_harness()
                         await self._score_harness(runtime, self._metrics_deadline())
-                # A nan reward scores nothing: keep it unscored (None) and fail the
-                # rollout after scoring, so it is never retried as a scoring failure.
+                # A nan reward scores nothing: keep it unscored (None) and drop the
+                # trace. Nothing failed, so it is never retried.
                 unscored = [
                     name
                     for name, reward in trace.rewards.items()
@@ -942,11 +941,7 @@ class Rollout:
                 if unscored:
                     for name in unscored:
                         trace.rewards[name] = None
-                    self.fail(
-                        UnscoredError(
-                            f"reward {', '.join(unscored)} scored nothing (nan)"
-                        )
-                    )
+                    trace.drop(f"reward {', '.join(unscored)} scored nothing (nan)")
                 trace.timing.scoring.end = time.time()
                 trace.notify()
         except Exception as e:  # noqa: BLE001 - finalize boundary records every rollout failure
@@ -988,11 +983,12 @@ class Rollout:
             except Exception:
                 logger.warning("runtime teardown failed", exc_info=True)
         logger.info(
-            "rollout done: id=%s task=%s reward=%.3f turns=%d stop=%s",
+            "rollout done: id=%s task=%s reward=%.3f turns=%d stop=%s%s",
             trace.id,
             self.task.data.idx,
             trace.reward,
             trace.num_turns,
             trace.last_error.type if trace.last_error else trace.stop_condition,
+            f" dropped={trace.dropped!r}" if trace.dropped else "",
         )
         return trace

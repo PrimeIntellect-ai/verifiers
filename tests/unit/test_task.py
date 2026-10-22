@@ -131,3 +131,23 @@ def test_plugged_stops_set_skip_scoring(tmp_path) -> None:
         skips({"no_reply": vf.StopFunctionConfig(skip_scoring=False)})["no_reply"]
         is False
     )
+
+
+class NanTask(vf.Task[HookData]):
+    @vf.reward
+    async def judge(self, trace: vf.Trace) -> float:
+        return float("nan")
+
+
+async def test_nan_reward_drops_the_trace_without_failing_it() -> None:
+    task = NanTask(HookData(idx=0, prompt="abc"))
+    trace = vf.Trace(
+        agent=vf.AgentInfo(config=vf.AgentConfig()),
+        task=vf.TraceTask(type="NanTask", data=task.data),
+        ok=True,
+    )
+
+    await task.rescore(trace)
+    assert trace.rewards == {"judge": None}
+    assert trace.dropped == "reward judge scored nothing (nan)"
+    assert trace.ok and not trace.errors

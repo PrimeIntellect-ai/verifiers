@@ -25,7 +25,7 @@ from verifiers.v1.configs.harness import SkillSource
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.configs.scoring import ScoringConfig
 from verifiers.v1.configs.task import TaskConfig
-from verifiers.v1.errors import TaskError, UnscoredError, boundary
+from verifiers.v1.errors import TaskError, boundary
 from verifiers.v1.state import StateT
 from verifiers.v1.types import Messages, content_text
 from verifiers.v1.utils.artifacts import MAX_ARTIFACT_BYTES, Artifact
@@ -226,12 +226,13 @@ class Task(Generic[DataT, StateT, ConfigT]):
         return None
 
     async def rescore(self, trace: Trace) -> None:
-        """Score a finished trace again, offline: clear its rewards, metrics and judge
-        calls, then run this task's signals that need only the trace."""
+        """Score a finished trace again, offline: clear its rewards, metrics, judge
+        calls and drop, then run this task's signals that need only the trace."""
         if trace.has_error:
             raise ValueError("the rollout errored: its transcript is incomplete")
         trace.info.pop("judge_calls", None)
         trace.rewards, trace.metrics, trace.extra_usage = {}, {}, []
+        trace.dropped = None
         await self.score(trace)
         unscored = [
             name
@@ -241,7 +242,7 @@ class Task(Generic[DataT, StateT, ConfigT]):
         if unscored:
             for name in unscored:
                 trace.rewards[name] = None
-            raise UnscoredError(f"reward {', '.join(unscored)} scored nothing (nan)")
+            trace.drop(f"reward {', '.join(unscored)} scored nothing (nan)")
 
     def defer_scoring(self) -> Self:
         """An independent copy whose task signals are deferred.

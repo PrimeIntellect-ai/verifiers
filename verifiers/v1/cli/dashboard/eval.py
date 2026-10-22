@@ -336,9 +336,10 @@ def Progress(
     # role frozen) falls back to all traces rather than showing nothing.
     scored = [t for t in done_traces if t.agent.trainable] or done_traces
     total = len(slots)
-    # Headline reward = mean over non-errored traces; when any errored, `format_mean` appends
-    # the global avg (errored count as 0) in parens. `err` is the share of episodes that
-    # ended not-ok (a trace errored, or the env's rollout()/score() hook itself failed).
+    # Headline reward = mean over non-errored, non-dropped traces; when any errored,
+    # `format_mean` appends the global avg (errored count as 0) in parens. `err` is the share
+    # of episodes that ended not-ok (a trace errored, or the env's rollout()/score() hook
+    # itself failed); `dropped` the share of policy traces left out of every mean.
     reward = format_mean(scored, lambda t: t.reward)
     err = (
         f"{sum(s.episode is None or not s.episode.ok for s in done) / len(done):.2f}"
@@ -349,6 +350,8 @@ def Progress(
         f"{len(done)}/{total} · {format_time(time.time() - start)} · "
         f"reward {reward} · err {err}"
     )
+    if dropped := sum(t.dropped is not None for t in scored):
+        stats += f" · dropped {dropped / len(scored):.2f}"
     if page is not None:  # overflowing — show which page, and that the arrows page
         stats += f"  (page {page[0]}/{page[1]} ◄ ►)"
     row = Table.grid(expand=True, padding=(0, 1))
