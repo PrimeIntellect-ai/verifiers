@@ -194,7 +194,6 @@ class DockerConfig(NetworkPolicyConfig):
     """Advisory disk request in GB. Docker has no portable per-container size limit, so this is accepted (so a task can declare it without a warning) but not
     enforced."""
 
-
     mounts: dict[str, BindMount] = Field(default_factory=dict)
     """Guest paths mapped to host paths, attached before task setup.
     Read-only mounts include submounts and require Docker Engine/CLI >=25.0 and

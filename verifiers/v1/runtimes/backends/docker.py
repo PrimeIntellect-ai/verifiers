@@ -356,7 +356,11 @@ class DockerBackend(RuntimeBackend):
             bind_options = ["type=bind", f"source={mount.source}", f"target={target}"]
             if mount.read_only:
                 # Refuse kernels that would leave nested mounts writable.
-                bind_options += ["readonly", "bind-recursive=readonly"]
+                bind_options += [
+                    "readonly",
+                    "bind-recursive=readonly",
+                    "bind-propagation=rprivate",
+                ]
             value = io.StringIO()
             csv.writer(value).writerow(bind_options)
             options += ["--mount", value.getvalue().removesuffix("\r\n")]
