@@ -6,10 +6,8 @@ import asyncio
 import logging
 from collections.abc import AsyncIterator, Mapping
 from contextlib import AsyncExitStack, asynccontextmanager
-from typing import Literal
 
-from pydantic_config import BaseConfig
-
+from verifiers.v1.configs.deployment import DeploymentConfig
 from verifiers.v1.runtimes import (
     PrimeConfig,
     Runtime,
@@ -24,13 +22,6 @@ from verifiers.v1.runtimes.compose import ComposeSpec
 from verifiers.v1.utils.aio import run_shielded
 
 logger = logging.getLogger(__name__)
-
-
-class DeploymentConfig(BaseConfig):
-    mode: Literal["colocated"] = "colocated"
-    """Harness and tools share the workspace."""
-    trust_compose: bool = False
-    """Permit task-authored Compose privileges and bind mounts on local Docker."""
 
 
 class _DeploymentStrategy:

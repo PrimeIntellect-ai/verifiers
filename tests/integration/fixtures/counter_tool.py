@@ -21,6 +21,8 @@ class CounterToolset(vf.Toolset[vf.ToolsetConfig, CounterState]):
 
 class CounterTaskConfig(vf.TaskConfig):
     tools: vf.ToolsetConfig = vf.ToolsetConfig()
+    constant_reward: bool = False
+    """Score every rollout 1, so a skipped score (reward 0) stands out."""
 
 
 class CounterTask(vf.Task[vf.TaskData, CounterState, CounterTaskConfig]):
@@ -30,7 +32,12 @@ class CounterTask(vf.Task[vf.TaskData, CounterState, CounterTaskConfig]):
 
     @vf.reward(weight=1.0)
     async def counted(self, trace: vf.Trace) -> float:
-        return float(trace.state.count >= 2)
+        return float(self.config.constant_reward or trace.state.count >= 2)
+
+
+def any_response(response: vf.Response) -> bool:
+    """A plugged stop that ends the run on its first model response."""
+    return True
 
 
 class CounterConfig(vf.TasksetConfig):

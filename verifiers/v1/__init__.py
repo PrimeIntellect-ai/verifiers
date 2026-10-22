@@ -1,209 +1,390 @@
+"""The verifiers v1 API, imported as `import verifiers.v1 as vf`.
+
+Names resolve on first access (PEP 562), so importing one module, such as the
+config tree a trainer validates against, loads only that module's dependencies
+and not the whole runtime.
+"""
+
+import importlib
 import logging as _logging
+from typing import TYPE_CHECKING
 
-from pydantic_config import BaseConfig
+if TYPE_CHECKING:
+    from pydantic_config import BaseConfig
 
-from verifiers.v1.acp import ACPConfig, ACPHarness, ACPTurn
-from verifiers.v1.agent import Agent, Agents, Interaction, Segment, make_agent
-from verifiers.v1.clients import (
-    BaseClientConfig,
-    Client,
-    ClientConfig,
-    EvalClientConfig,
-    ModelContext,
-    TrainClientConfig,
-    resolve_client,
-)
-from verifiers.v1.configs.agent import AgentConfig
-from verifiers.v1.configs.cli.env import (
-    narrowed_env_annotation,
-    resolve_env_field,
-)
-from verifiers.v1.configs.env import EnvConfig, SharedEnvConfig, default_agent_harness
-from verifiers.v1.configs.harness import HarnessConfig
-from verifiers.v1.configs.judge import JudgeConfig, Judges
-from verifiers.v1.configs.retries import RetryConfig, RetryRule
-from verifiers.v1.configs.select import SelectCLIConfig, SelectConfig, TaskMatchConfig
-from verifiers.v1.configs.serve import (
-    ElasticPoolConfig,
-    ServeConfig,
-    StaticPoolConfig,
-    pool_serve_kwargs,
-)
-from verifiers.v1.configs.task import (
-    DecoratedFunctionConfig,
-    RewardFunctionConfig,
-    TaskConfig,
-)
-from verifiers.v1.configs.taskset import SharedTasksetConfig, TasksetConfig
-from verifiers.v1.env import Env
-from verifiers.v1.envs.single_agent import SingleAgentEnv, SingleAgentEnvConfig
-from verifiers.v1.episode import (
-    EnvInfo,
-    Episode,
-    EvalRunInfo,
-    EvalWorkInfo,
-    GroupInfo,
-    PolicySpan,
-    RunInfo,
-    TrainRunInfo,
-    TrainWorkInfo,
-    WireEpisode,
-    WorkInfo,
-)
-from verifiers.v1.errors import (
-    EnvError,
-    HarnessError,
-    InterceptionError,
-    ProviderError,
-    RolloutError,
-    SandboxError,
-    TaskError,
-    ToolsetError,
-    TunnelError,
-)
-from verifiers.v1.grading import grade_submission
-from verifiers.v1.graph import MessageNode
-from verifiers.v1.harness import Harness, HarnessSession
-from verifiers.v1.judge import Judge, JudgeResponse, JudgeView
-from verifiers.v1.judges import (
-    Criterion,
-    DecisionJudge,
-    DecisionJudgeConfig,
-    ReferenceJudge,
-    ReferenceJudgeConfig,
-    RubricJudge,
-    RubricJudgeConfig,
-)
-from verifiers.v1.mcp import (
-    SharedToolsetConfig,
-    Toolset,
-    ToolsetConfig,
-)
-from verifiers.v1.runtimes import (
-    CustomRuntimeConfig,
-    DockerConfig,
-    NetworkPolicyConfig,
-    PrimeConfig,
-    ProgramResult,
-    Runtime,
-    RuntimeConfig,
-    RuntimeInfo,
-    RuntimeProcess,
-    SubprocessConfig,
-)
-from verifiers.v1.semantic import (
-    ACP_SEMANTIC_EDGES_METADATA_KEY,
-    ACPInfo,
-    ParentLink,
-    SemanticEdge,
-    SemanticEdgeSet,
-)
-from verifiers.v1.state import State, StateT
-from verifiers.v1.task import Task, TaskData, TaskResources, TaskTimeout, WireTaskData
-from verifiers.v1.taskset import Taskset
-from verifiers.v1.trace import (
-    TRACE_VERSION,
-    AgentInfo,
-    AgentSpan,
-    Branch,
-    Error,
-    InterceptRecord,
-    ModelCall,
-    PolicyEvent,
-    Reward,
-    TimeSpan,
-    TimeSplit,
-    Timing,
-    Trace,
-    TraceTask,
-    VersionInfo,
-    WireTrace,
-)
-from verifiers.v1.types import (
-    ID,
-    AssistantMessage,
-    ContentPart,
-    ImageUrlContentPart,
-    ImageUrlSource,
-    Message,
-    MessageContent,
-    Messages,
-    NodeSegment,
-    PayloadSegment,
-    Request,
-    Response,
-    Sampling,
-    SamplingConfig,
-    SamplingMask,
-    SystemMessage,
-    TextContentPart,
-    Tool,
-    ToolCall,
-    ToolMessage,
-    TopLogprobs,
-    TurnTokens,
-    Usage,
-    UserMessage,
-)
-from verifiers.v1.utils.artifacts import (
-    ARTIFACTS_DIR,
-    Artifact,
-    collect,
-    restore,
-)
-from verifiers.v1.utils.decorators import (
-    intercept,
-    metric,
-    reward,
-    stop,
-    tool,
-)
-from verifiers.v1.utils.generic import merge_defaults
-from verifiers.v1.utils.git import (
-    PATCH_CAP_BYTES as PATCH_CAP_BYTES,
-)
-from verifiers.v1.utils.git import (
-    capture_patch as capture_patch,
-)
-from verifiers.v1.utils.git import (
-    resolve_head as resolve_head,
-)
-from verifiers.v1.utils.loaders import (
-    default_harness_id,
-    env_config_type,
-    environment_class,
-    harness_config_type,
-    import_environment,
-    import_harness,
-    import_judge,
-    import_taskset,
-    judge_config_type,
-    load_environment,
-    load_harness,
-    load_judge,
-    load_taskset,
-    resolve_env_config,
-    task_type,
-    taskset_config_type,
-)
-from verifiers.v1.utils.score import (
-    compare_stdout_results as compare_stdout_results,
-)
-from verifiers.v1.utils.score import (
-    extract_boxed_answer as extract_boxed_answer,
-)
-from verifiers.v1.utils.score import (
-    parse_judge_choice as parse_judge_choice,
-)
-from verifiers.v1.utils.score import (
-    parse_pytest_outcomes as parse_pytest_outcomes,
-)
-from verifiers.v1.utils.score import (
-    read_answer_file_or_last_reply as read_answer_file_or_last_reply,
-)
-from verifiers.v1.utils.score import (
-    verify_boxed_math_answer as verify_boxed_math_answer,
-)
+    from verifiers.v1.acp import ACPConfig, ACPHarness, ACPTurn
+    from verifiers.v1.agent import Agent, Agents, Interaction, Segment, make_agent
+    from verifiers.v1.clients import Client, ModelContext, resolve_client
+    from verifiers.v1.configs.agent import AgentConfig
+    from verifiers.v1.configs.cli.env import narrowed_env_annotation, resolve_env_field
+    from verifiers.v1.configs.client import (
+        BaseClientConfig,
+        ClientConfig,
+        EvalClientConfig,
+        TrainClientConfig,
+    )
+    from verifiers.v1.configs.deployment import DeploymentConfig
+    from verifiers.v1.configs.env import (
+        EnvConfig,
+        SharedEnvConfig,
+        SingleAgentEnvConfig,
+        default_agent_harness,
+    )
+    from verifiers.v1.configs.harness import HarnessConfig
+    from verifiers.v1.configs.judge import JudgeConfig, Judges
+    from verifiers.v1.configs.retries import RetryConfig, RetryRule
+    from verifiers.v1.configs.runtime import (
+        CustomRuntimeConfig,
+        DockerConfig,
+        NetworkPolicyConfig,
+        PrimeConfig,
+        RuntimeConfig,
+        SubprocessConfig,
+    )
+    from verifiers.v1.configs.scoring import ScoringConfig
+    from verifiers.v1.configs.select import (
+        SelectCLIConfig,
+        SelectConfig,
+        TaskMatchConfig,
+    )
+    from verifiers.v1.configs.serve import (
+        ElasticPoolConfig,
+        ServeConfig,
+        StaticPoolConfig,
+        pool_serve_kwargs,
+    )
+    from verifiers.v1.configs.task import (
+        DecoratedFunctionConfig,
+        RewardFunctionConfig,
+        StopFunctionConfig,
+        TaskConfig,
+    )
+    from verifiers.v1.configs.taskset import SharedTasksetConfig, TasksetConfig
+    from verifiers.v1.env import Env
+    from verifiers.v1.envs.single_agent import SingleAgentEnv
+    from verifiers.v1.episode import (
+        EnvInfo,
+        Episode,
+        EvalRunInfo,
+        EvalWorkInfo,
+        GroupInfo,
+        PolicySpan,
+        RunInfo,
+        TrainRunInfo,
+        TrainWorkInfo,
+        WireEpisode,
+        WorkInfo,
+    )
+    from verifiers.v1.errors import (
+        EnvError,
+        HarnessError,
+        InterceptionError,
+        ProviderError,
+        RolloutError,
+        SandboxError,
+        TaskError,
+        ToolsetError,
+        TunnelError,
+        UnscoredError,
+    )
+    from verifiers.v1.grading import grade_submission
+    from verifiers.v1.graph import MessageNode
+    from verifiers.v1.harness import Harness, HarnessSession
+    from verifiers.v1.judge import Judge, JudgeResponse, JudgeView
+    from verifiers.v1.judges import (
+        Criterion,
+        DecisionJudge,
+        DecisionJudgeConfig,
+        ReferenceJudge,
+        ReferenceJudgeConfig,
+        RubricJudge,
+        RubricJudgeConfig,
+    )
+    from verifiers.v1.mcp import SharedToolsetConfig, Toolset, ToolsetConfig
+    from verifiers.v1.runtimes import (
+        ProgramResult,
+        Runtime,
+        RuntimeInfo,
+        RuntimeProcess,
+    )
+    from verifiers.v1.runtimes.compose import ComposeSpec
+    from verifiers.v1.runtimes.deployment import Deployment
+    from verifiers.v1.semantic import (
+        ACP_SEMANTIC_EDGES_METADATA_KEY,
+        ACPInfo,
+        ParentLink,
+        SemanticEdge,
+        SemanticEdgeSet,
+    )
+    from verifiers.v1.state import State, StateT
+    from verifiers.v1.task import (
+        Task,
+        TaskData,
+        TaskResources,
+        TaskTimeout,
+        WireTaskData,
+    )
+    from verifiers.v1.taskset import Taskset
+    from verifiers.v1.trace import (
+        TRACE_VERSION,
+        AgentInfo,
+        AgentSpan,
+        Branch,
+        Error,
+        InterceptRecord,
+        ModelCall,
+        PolicyEvent,
+        Reward,
+        TimeSpan,
+        TimeSplit,
+        Timing,
+        Trace,
+        TraceTask,
+        VersionInfo,
+        WireTrace,
+    )
+    from verifiers.v1.types import (
+        ID,
+        AssistantMessage,
+        ContentPart,
+        ImageUrlContentPart,
+        ImageUrlSource,
+        Message,
+        MessageContent,
+        Messages,
+        NodeSegment,
+        PayloadSegment,
+        Request,
+        Response,
+        Sampling,
+        SamplingConfig,
+        SamplingMask,
+        SystemMessage,
+        TextContentPart,
+        Tool,
+        ToolCall,
+        ToolMessage,
+        TopLogprobs,
+        TurnTokens,
+        Usage,
+        UserMessage,
+    )
+    from verifiers.v1.utils.artifacts import ARTIFACTS_DIR, Artifact, collect, restore
+    from verifiers.v1.utils.decorators import intercept, metric, reward, stop, tool
+    from verifiers.v1.utils.generic import merge_defaults
+    from verifiers.v1.utils.git import PATCH_CAP_BYTES, capture_patch, resolve_head
+    from verifiers.v1.utils.loaders import (
+        default_harness_id,
+        env_config_type,
+        environment_class,
+        harness_config_type,
+        import_environment,
+        import_harness,
+        import_judge,
+        import_taskset,
+        judge_config_type,
+        load_environment,
+        load_harness,
+        load_judge,
+        load_taskset,
+        resolve_env_config,
+        task_type,
+        taskset_config_type,
+    )
+    from verifiers.v1.utils.score import (
+        compare_stdout_results,
+        extract_boxed_answer,
+        parse_judge_choice,
+        parse_pytest_outcomes,
+        read_answer_file_or_last_reply,
+        verify_boxed_math_answer,
+    )
+
+_NAME_TO_MODULE = {
+    "ACPConfig": "verifiers.v1.acp",
+    "ACPHarness": "verifiers.v1.acp",
+    "ACPInfo": "verifiers.v1.semantic",
+    "ACPTurn": "verifiers.v1.acp",
+    "ACP_SEMANTIC_EDGES_METADATA_KEY": "verifiers.v1.semantic",
+    "ARTIFACTS_DIR": "verifiers.v1.utils.artifacts",
+    "Agent": "verifiers.v1.agent",
+    "AgentConfig": "verifiers.v1.configs.agent",
+    "AgentInfo": "verifiers.v1.trace",
+    "AgentSpan": "verifiers.v1.trace",
+    "Agents": "verifiers.v1.agent",
+    "Artifact": "verifiers.v1.utils.artifacts",
+    "AssistantMessage": "verifiers.v1.types",
+    "BaseClientConfig": "verifiers.v1.configs.client",
+    "BaseConfig": "pydantic_config",
+    "Branch": "verifiers.v1.trace",
+    "Client": "verifiers.v1.clients",
+    "ClientConfig": "verifiers.v1.configs.client",
+    "ComposeSpec": "verifiers.v1.runtimes.compose",
+    "ContentPart": "verifiers.v1.types",
+    "Criterion": "verifiers.v1.judges",
+    "CustomRuntimeConfig": "verifiers.v1.configs.runtime",
+    "DecisionJudge": "verifiers.v1.judges",
+    "DecisionJudgeConfig": "verifiers.v1.judges",
+    "DecoratedFunctionConfig": "verifiers.v1.configs.task",
+    "Deployment": "verifiers.v1.runtimes.deployment",
+    "DeploymentConfig": "verifiers.v1.configs.deployment",
+    "DockerConfig": "verifiers.v1.configs.runtime",
+    "ElasticPoolConfig": "verifiers.v1.configs.serve",
+    "Env": "verifiers.v1.env",
+    "EnvConfig": "verifiers.v1.configs.env",
+    "EnvError": "verifiers.v1.errors",
+    "EnvInfo": "verifiers.v1.episode",
+    "Episode": "verifiers.v1.episode",
+    "Error": "verifiers.v1.trace",
+    "EvalClientConfig": "verifiers.v1.configs.client",
+    "EvalRunInfo": "verifiers.v1.episode",
+    "EvalWorkInfo": "verifiers.v1.episode",
+    "GroupInfo": "verifiers.v1.episode",
+    "Harness": "verifiers.v1.harness",
+    "HarnessConfig": "verifiers.v1.configs.harness",
+    "HarnessError": "verifiers.v1.errors",
+    "HarnessSession": "verifiers.v1.harness",
+    "ID": "verifiers.v1.types",
+    "ImageUrlContentPart": "verifiers.v1.types",
+    "ImageUrlSource": "verifiers.v1.types",
+    "Interaction": "verifiers.v1.agent",
+    "InterceptRecord": "verifiers.v1.trace",
+    "InterceptionError": "verifiers.v1.errors",
+    "Judge": "verifiers.v1.judge",
+    "JudgeConfig": "verifiers.v1.configs.judge",
+    "JudgeResponse": "verifiers.v1.judge",
+    "JudgeView": "verifiers.v1.judge",
+    "Judges": "verifiers.v1.configs.judge",
+    "Message": "verifiers.v1.types",
+    "MessageContent": "verifiers.v1.types",
+    "MessageNode": "verifiers.v1.graph",
+    "Messages": "verifiers.v1.types",
+    "ModelCall": "verifiers.v1.trace",
+    "ModelContext": "verifiers.v1.clients",
+    "NetworkPolicyConfig": "verifiers.v1.configs.runtime",
+    "NodeSegment": "verifiers.v1.types",
+    "PATCH_CAP_BYTES": "verifiers.v1.utils.git",
+    "ParentLink": "verifiers.v1.semantic",
+    "PayloadSegment": "verifiers.v1.types",
+    "PolicyEvent": "verifiers.v1.trace",
+    "PolicySpan": "verifiers.v1.episode",
+    "PrimeConfig": "verifiers.v1.configs.runtime",
+    "ProgramResult": "verifiers.v1.runtimes",
+    "ProviderError": "verifiers.v1.errors",
+    "ReferenceJudge": "verifiers.v1.judges",
+    "ReferenceJudgeConfig": "verifiers.v1.judges",
+    "Request": "verifiers.v1.types",
+    "Response": "verifiers.v1.types",
+    "RetryConfig": "verifiers.v1.configs.retries",
+    "RetryRule": "verifiers.v1.configs.retries",
+    "Reward": "verifiers.v1.trace",
+    "RewardFunctionConfig": "verifiers.v1.configs.task",
+    "RolloutError": "verifiers.v1.errors",
+    "RubricJudge": "verifiers.v1.judges",
+    "RubricJudgeConfig": "verifiers.v1.judges",
+    "RunInfo": "verifiers.v1.episode",
+    "Runtime": "verifiers.v1.runtimes",
+    "RuntimeConfig": "verifiers.v1.configs.runtime",
+    "RuntimeInfo": "verifiers.v1.runtimes",
+    "RuntimeProcess": "verifiers.v1.runtimes",
+    "Sampling": "verifiers.v1.types",
+    "SamplingConfig": "verifiers.v1.types",
+    "SamplingMask": "verifiers.v1.types",
+    "SandboxError": "verifiers.v1.errors",
+    "ScoringConfig": "verifiers.v1.configs.scoring",
+    "Segment": "verifiers.v1.agent",
+    "SelectCLIConfig": "verifiers.v1.configs.select",
+    "SelectConfig": "verifiers.v1.configs.select",
+    "SemanticEdge": "verifiers.v1.semantic",
+    "SemanticEdgeSet": "verifiers.v1.semantic",
+    "ServeConfig": "verifiers.v1.configs.serve",
+    "SharedEnvConfig": "verifiers.v1.configs.env",
+    "SharedTasksetConfig": "verifiers.v1.configs.taskset",
+    "SharedToolsetConfig": "verifiers.v1.mcp",
+    "SingleAgentEnv": "verifiers.v1.envs.single_agent",
+    "SingleAgentEnvConfig": "verifiers.v1.configs.env",
+    "State": "verifiers.v1.state",
+    "StateT": "verifiers.v1.state",
+    "StaticPoolConfig": "verifiers.v1.configs.serve",
+    "StopFunctionConfig": "verifiers.v1.configs.task",
+    "SubprocessConfig": "verifiers.v1.configs.runtime",
+    "SystemMessage": "verifiers.v1.types",
+    "TRACE_VERSION": "verifiers.v1.trace",
+    "Task": "verifiers.v1.task",
+    "TaskConfig": "verifiers.v1.configs.task",
+    "TaskData": "verifiers.v1.task",
+    "TaskError": "verifiers.v1.errors",
+    "TaskMatchConfig": "verifiers.v1.configs.select",
+    "TaskResources": "verifiers.v1.task",
+    "TaskTimeout": "verifiers.v1.task",
+    "Taskset": "verifiers.v1.taskset",
+    "TasksetConfig": "verifiers.v1.configs.taskset",
+    "TextContentPart": "verifiers.v1.types",
+    "TimeSpan": "verifiers.v1.trace",
+    "TimeSplit": "verifiers.v1.trace",
+    "Timing": "verifiers.v1.trace",
+    "Tool": "verifiers.v1.types",
+    "ToolCall": "verifiers.v1.types",
+    "ToolMessage": "verifiers.v1.types",
+    "Toolset": "verifiers.v1.mcp",
+    "ToolsetConfig": "verifiers.v1.mcp",
+    "ToolsetError": "verifiers.v1.errors",
+    "TopLogprobs": "verifiers.v1.types",
+    "Trace": "verifiers.v1.trace",
+    "TraceTask": "verifiers.v1.trace",
+    "TrainClientConfig": "verifiers.v1.configs.client",
+    "TrainRunInfo": "verifiers.v1.episode",
+    "TrainWorkInfo": "verifiers.v1.episode",
+    "TunnelError": "verifiers.v1.errors",
+    "TurnTokens": "verifiers.v1.types",
+    "UnscoredError": "verifiers.v1.errors",
+    "Usage": "verifiers.v1.types",
+    "UserMessage": "verifiers.v1.types",
+    "VersionInfo": "verifiers.v1.trace",
+    "WireEpisode": "verifiers.v1.episode",
+    "WireTaskData": "verifiers.v1.task",
+    "WireTrace": "verifiers.v1.trace",
+    "WorkInfo": "verifiers.v1.episode",
+    "capture_patch": "verifiers.v1.utils.git",
+    "collect": "verifiers.v1.utils.artifacts",
+    "compare_stdout_results": "verifiers.v1.utils.score",
+    "default_agent_harness": "verifiers.v1.configs.env",
+    "default_harness_id": "verifiers.v1.utils.loaders",
+    "env_config_type": "verifiers.v1.utils.loaders",
+    "environment_class": "verifiers.v1.utils.loaders",
+    "extract_boxed_answer": "verifiers.v1.utils.score",
+    "grade_submission": "verifiers.v1.grading",
+    "harness_config_type": "verifiers.v1.utils.loaders",
+    "import_environment": "verifiers.v1.utils.loaders",
+    "import_harness": "verifiers.v1.utils.loaders",
+    "import_judge": "verifiers.v1.utils.loaders",
+    "import_taskset": "verifiers.v1.utils.loaders",
+    "intercept": "verifiers.v1.utils.decorators",
+    "judge_config_type": "verifiers.v1.utils.loaders",
+    "load_environment": "verifiers.v1.utils.loaders",
+    "load_harness": "verifiers.v1.utils.loaders",
+    "load_judge": "verifiers.v1.utils.loaders",
+    "load_taskset": "verifiers.v1.utils.loaders",
+    "make_agent": "verifiers.v1.agent",
+    "merge_defaults": "verifiers.v1.utils.generic",
+    "metric": "verifiers.v1.utils.decorators",
+    "narrowed_env_annotation": "verifiers.v1.configs.cli.env",
+    "parse_judge_choice": "verifiers.v1.utils.score",
+    "parse_pytest_outcomes": "verifiers.v1.utils.score",
+    "pool_serve_kwargs": "verifiers.v1.configs.serve",
+    "read_answer_file_or_last_reply": "verifiers.v1.utils.score",
+    "resolve_client": "verifiers.v1.clients",
+    "resolve_env_config": "verifiers.v1.utils.loaders",
+    "resolve_env_field": "verifiers.v1.configs.cli.env",
+    "resolve_head": "verifiers.v1.utils.git",
+    "restore": "verifiers.v1.utils.artifacts",
+    "reward": "verifiers.v1.utils.decorators",
+    "stop": "verifiers.v1.utils.decorators",
+    "task_type": "verifiers.v1.utils.loaders",
+    "taskset_config_type": "verifiers.v1.utils.loaders",
+    "tool": "verifiers.v1.utils.decorators",
+    "verify_boxed_math_answer": "verifiers.v1.utils.score",
+}
 
 __all__ = [  # noqa: RUF022 - grouped by public API area
     # types
@@ -287,6 +468,7 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "ToolsetError",
     "SandboxError",
     "TaskError",
+    "UnscoredError",
     "InterceptionError",
     "TunnelError",
     # clients
@@ -306,6 +488,7 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "SharedTasksetConfig",
     "DecoratedFunctionConfig",
     "RewardFunctionConfig",
+    "StopFunctionConfig",
     "BaseConfig",
     "Harness",
     "HarnessSession",
@@ -398,25 +581,28 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     # the user channel
     "Interaction",
     "Segment",
+    # deployment and scoring
+    "ComposeSpec",
+    "Deployment",
+    "DeploymentConfig",
+    "ScoringConfig",
 ]
+
+
+def __getattr__(name: str):
+    module = _NAME_TO_MODULE.get(name)
+    if module is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    value = getattr(importlib.import_module(module), name)
+    globals()[name] = value
+    return value
+
+
+def __dir__() -> list[str]:
+    return sorted(set(globals()) | set(_NAME_TO_MODULE))
+
 
 # The library logs via stdlib logging (per-module `getLogger(__name__)`), but is
 # silent until an app opts in: a NullHandler on the package root absorbs records
 # so nothing is emitted (and no "no handler" warning) unless handlers are added.
 _logging.getLogger(__name__).addHandler(_logging.NullHandler())
-
-from verifiers.v1.runtimes.compose import ComposeSpec
-from verifiers.v1.runtimes.deployment import (
-    Deployment,
-    DeploymentConfig,
-)
-
-__all__ += [
-    "ComposeSpec",
-    "Deployment",
-    "DeploymentConfig",
-]
-
-from verifiers.v1.configs.scoring import ScoringConfig
-
-__all__ += ["ScoringConfig"]

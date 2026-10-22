@@ -14,11 +14,19 @@ class DecoratedFunctionConfig(BaseConfig):
     fn: str | None = None
     """Import path to the function: `pkg.module.function`, `pkg.module:function`,
     or `path/to/file.py:function`. Unset keeps the task's decorated method with the
-    entry's name and only overrides its metadata (priority, weight)."""
+    entry's name and only overrides its metadata (priority, weight, skip_scoring)."""
 
     priority: int | None = None
     """Execution order, like the decorator's — higher runs first, ties break by name.
     Unset keeps the replaced method's priority (0 for a fresh function)."""
+
+
+class StopFunctionConfig(DecoratedFunctionConfig):
+    """A plugged function standing in for a `@vf.stop` task method."""
+
+    skip_scoring: bool | None = None
+    """Skip task scoring for a trace this stop ends: it keeps no rewards, so its reward
+    is 0. Unset keeps the replaced method's setting (false for a fresh function)."""
 
 
 class RewardFunctionConfig(DecoratedFunctionConfig):
@@ -39,7 +47,7 @@ class TaskConfig(BaseConfig):
     judges: Judges = Field(default_factory=list)
     """Judge plugins run after task rewards, set through `--env.taskset.task.judges`."""
 
-    stops: dict[str, DecoratedFunctionConfig] = Field(default_factory=dict)
+    stops: dict[str, StopFunctionConfig] = Field(default_factory=dict)
     """Typed `Request`, `Response`, or `Trace` stop predicates plugged by name and
     merged with the task's `@vf.stop` methods (a plugged function replaces a
     decorated one with the same name)."""
