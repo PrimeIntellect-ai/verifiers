@@ -56,3 +56,16 @@ When `mode="isolated"`, verifiers restores the task's collected artifacts into a
 - `agent.scoring.env` merges over `TaskData.scoring.env` in both `shared` and `isolated` modes, resolving `${VAR}` and `${VAR:-default}` templates from the host environment when scoring starts.
 - `agent.scoring.network` sets the task's network policy while scoring runs, replacing `TaskData.scoring.network`; see [network policies](runtimes.md#network-policies).
 - `agent.scoring.retries` configures `RetryConfig` for isolated scoring (defaulting to `max_retries = 2`), reusing the completed submission in a fresh scoring environment whenever a retryable error occurs. Shared scoring is not retried.
+
+### Skip scoring for cut-off runs
+
+A truncated or timed-out run is often not worth grading. Set `agent.scoring.skip_on_truncated` to skip task scoring when `Trace.is_truncated` is true (a turn or token cap, or a length-finished response). Set `agent.scoring.skip_on_timeout` to skip it when a stage deadline expired before scoring (`Trace.is_timeout`). A skipped trace keeps no task rewards, metrics, or judge scores, so its reward is 0. `trace.info["scoring_skipped"]` records the reason (`"truncated"` or `"timeout"`). Task finalization and harness metrics still run.
+
+```toml
+[env.agent]
+max_turns = 10
+
+[env.agent.scoring]
+skip_on_truncated = true
+skip_on_timeout = true
+```

@@ -721,6 +721,14 @@ class Rollout:
             "agent_completed",
         )
 
+    def _scoring_skip_reason(self) -> str | None:
+        """Why the resolved scoring policy skips task scoring for this trace, if it does."""
+        if self._scoring_policy.skip_on_truncated and self.trace.is_truncated:
+            return "truncated"
+        if self._scoring_policy.skip_on_timeout and self.trace.is_timeout:
+            return "timeout"
+        return None
+
     def _metrics_deadline(self) -> float:
         """Best-effort metrics get at most 30 seconds, and a tenth of a finite scoring budget."""
         budget = (
@@ -848,7 +856,14 @@ class Rollout:
                         boundary(TaskError, "scoring"),
                     ):
                         # Cross-trace judgement runs later, after the runtime is gone.
-                        if grader is not None:
+                        if skip_reason := self._scoring_skip_reason():
+                            logger.info(
+                                "rollout %s: scoring skipped (%s)",
+                                trace.id,
+                                skip_reason,
+                            )
+                            trace.info["scoring_skipped"] = skip_reason
+                        elif grader is not None:
                             try:
                                 await grade_task(
                                     grader,
