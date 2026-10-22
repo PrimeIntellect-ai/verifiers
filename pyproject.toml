@@ -49,7 +49,7 @@ dependencies = [
     "prime-pydantic-config[toml]>=0.4.3",
     "loguru>=0.7.0",
     "tomli-w>=1.0.0",
-    "renderers[multimodal]>=0.1.12",
+    "renderers[multimodal]>=0.1.13.dev16",
     "typing_extensions>=4.12.2",
     "mcp==2.0.0",
 ]
