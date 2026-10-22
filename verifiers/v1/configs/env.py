@@ -13,9 +13,12 @@ from verifiers.v1.configs.agent import (
     merge_agent_defaults,
 )
 from verifiers.v1.configs.harness import HarnessConfig
+from verifiers.v1.configs.interception import (
+    ElasticInterceptionPoolConfig,
+    InterceptionConfig,
+)
 from verifiers.v1.configs.retries import RetryConfig
 from verifiers.v1.configs.taskset import SharedTasksetConfig, TasksetConfig
-from verifiers.v1.interception import ElasticInterceptionPoolConfig, InterceptionConfig
 from verifiers.v1.types import ID
 
 
@@ -146,6 +149,14 @@ class EnvConfig(SharedEnvConfig):
                     "instance is the role's author default (CLI overrides "
                     "deep-merge onto it, and the seat plays under the field's name)"
                 )
+
+
+class SingleAgentEnvConfig(EnvConfig):
+    """`SingleAgentEnv`'s config: the one `agent` seat over the seed taskset."""
+
+    agent: AgentConfig = AgentConfig()
+    """The one seat — the policy under evaluation/training; pin
+    `--env.agent.harness.*` to choose its program or runtime."""
 
 
 def default_agent_harness(taskset_id: str) -> HarnessConfig:

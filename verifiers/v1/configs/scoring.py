@@ -6,8 +6,7 @@ from pydantic import SerializationInfo, field_serializer
 from pydantic_config import BaseConfig
 
 from verifiers.v1.configs.retries import RetryConfig
-from verifiers.v1.configs.runtime import NetworkPolicyConfig
-from verifiers.v1.runtimes import RuntimeConfig
+from verifiers.v1.configs.runtime import NetworkPolicyConfig, RuntimeConfig
 from verifiers.v1.utils.generic import merge_defaults
 
 

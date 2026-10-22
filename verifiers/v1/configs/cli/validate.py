@@ -7,10 +7,10 @@ from pydantic import AliasChoices, Field, SerializeAsAny, model_validator
 from pydantic_config import BaseConfig
 
 from verifiers.v1.configs.cli.eval import RunConfig
+from verifiers.v1.configs.deployment import DeploymentConfig
+from verifiers.v1.configs.runtime import PrimeConfig, RuntimeConfig
 from verifiers.v1.configs.select import SelectCLIConfig
 from verifiers.v1.configs.taskset import TasksetConfig
-from verifiers.v1.runtimes import PrimeConfig, RuntimeConfig
-from verifiers.v1.runtimes.deployment import DeploymentConfig
 
 
 class CheckTimeoutConfig(BaseConfig):
