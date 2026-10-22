@@ -152,4 +152,4 @@ def test_failed_scoring_rolls_back_its_drop() -> None:
     with pytest.raises(RuntimeError), scoring_transaction(trace):
         trace.drop("judge: outcome=task_defect")
         raise RuntimeError("the judge failed")
-    assert trace.dropped is None
+    assert not trace.is_dropped

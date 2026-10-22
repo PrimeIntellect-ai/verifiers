@@ -350,7 +350,7 @@ def Progress(
         f"{len(done)}/{total} · {format_time(time.time() - start)} · "
         f"reward {reward} · err {err}"
     )
-    if dropped := sum(t.dropped is not None for t in scored):
+    if dropped := sum(t.is_dropped for t in scored):
         stats += f" · dropped {dropped / len(scored):.2f}"
     if page is not None:  # overflowing — show which page, and that the arrows page
         stats += f"  (page {page[0]}/{page[1]} ◄ ►)"

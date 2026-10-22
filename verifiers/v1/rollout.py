@@ -977,6 +977,6 @@ class Rollout:
             trace.reward,
             trace.num_turns,
             trace.last_error.type if trace.last_error else trace.stop_condition,
-            f" dropped={trace.dropped!r}" if trace.dropped else "",
+            f" dropped={trace.dropped!r}" if trace.is_dropped else "",
         )
         return trace

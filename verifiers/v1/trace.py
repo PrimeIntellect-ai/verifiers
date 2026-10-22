@@ -504,6 +504,10 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     def has_error(self) -> bool:
         return not self.ok
 
+    @property
+    def is_dropped(self) -> bool:
+        return self.dropped is not None
+
     @computed_field
     @property
     def num_input_tokens(self) -> int:

@@ -61,7 +61,7 @@ def format_mean(
     ones (error-corrected). When some errored, also append the global mean — over *all*
     completed, an errored trace's value counting as 0 — in parens, so both the error-corrected
     and the raw mean are visible. "—" when nothing has completed (or all errored or dropped)."""
-    traces = [t for t in traces if t.dropped is None]
+    traces = [t for t in traces if not t.is_dropped]
     if not traces:
         return "—"
     clean = [t for t in traces if not t.has_error]
