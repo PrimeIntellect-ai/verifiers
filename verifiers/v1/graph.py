@@ -25,7 +25,7 @@ import hashlib
 import json
 import time
 from dataclasses import dataclass, fields
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Annotated, Any
 
 import numpy as np
 from pydantic import (
@@ -37,7 +37,7 @@ from pydantic import (
     field_serializer,
     field_validator,
 )
-from pydantic.json_schema import SkipJsonSchema
+from pydantic.json_schema import SkipJsonSchema, WithJsonSchema
 from renderers.base import RenderedTokens
 
 from verifiers.v1.semantic import ParentLink
@@ -74,6 +74,53 @@ def _encode_ndarray(arr: np.ndarray) -> dict:
 def _decode_ndarray(d: dict) -> np.ndarray:
     """Reverse :func:`_encode_ndarray`."""
     return np.frombuffer(d["data"], dtype=np.dtype(d["dtype"])).reshape(d["shape"])
+
+
+TOKEN_STREAM_DTYPES: dict[str, type[np.generic]] = {
+    "token_ids": np.int32,
+    "mask": np.bool_,
+    "is_content": np.bool_,
+    "logprobs": np.float32,
+    "advantages": np.float32,
+    "reference_logprobs": np.float32,
+    "trainer_logprobs": np.float32,
+    "entropies": np.float32,
+}
+"""A node's per-token streams and their dtypes. Validation (the wire, a JSON record) makes each a
+numpy array of its dtype; only the env server, which builds nodes unvalidated while it extends a
+rollout, holds lists. One list entry per token is a Python object the cyclic garbage collector
+walks and the msgpack wire packs one by one; an array is one object it skips and raw bytes on the
+wire, so a process holding many long episodes (an RL orchestrator) keeps full collections short,
+its heap ~5x smaller and its decode cheap."""
+
+IntStream = Annotated[
+    np.ndarray, WithJsonSchema({"type": "array", "items": {"type": "integer"}})
+]
+BoolStream = Annotated[
+    np.ndarray, WithJsonSchema({"type": "array", "items": {"type": "boolean"}})
+]
+FloatStream = Annotated[
+    np.ndarray, WithJsonSchema({"type": "array", "items": {"type": "number"}})
+]
+"""Token stream field types. Typed as arrays alone: a `list[int] | np.ndarray` union makes
+pydantic try the list branch element by element on every array it validates."""
+
+FLOAT_STREAMS = frozenset(
+    {"logprobs", "advantages", "reference_logprobs", "trainer_logprobs", "entropies"}
+)
+
+
+def as_list(values: list | np.ndarray) -> list:
+    """A token stream as a list, whichever form the node holds it in."""
+    return values.tolist() if isinstance(values, np.ndarray) else values
+
+
+def same_tokens(a: list | np.ndarray, b: list | np.ndarray) -> bool:
+    """Two token spans are equal, whichever form each is in (`list == ndarray` compares
+    elementwise)."""
+    if isinstance(a, np.ndarray) or isinstance(b, np.ndarray):
+        return len(a) == len(b) and bool(np.array_equal(a, b))
+    return a == b
 
 
 RECORD_FLOAT_DECIMALS = 4
@@ -114,7 +161,7 @@ class MessageNode(BaseModel):
     delta between consecutive sampled nodes is that turn's harness + inference wall-clock.
     Reused prefix nodes keep the stamp from the turn that first created them. Serialized, so
     a dump re-validated from wire/disk keeps the original times."""
-    token_ids: list[int] = Field(default_factory=list)
+    token_ids: IntStream = Field(default_factory=list)
     """This message's delta contribution to the cumulative token sequence: its leading
     template scaffold + its own tokens — for an assistant, the generation-prompt scaffold
     followed by the sampled completion. Concatenated along a path, these reproduce the exact
@@ -123,11 +170,11 @@ class MessageNode(BaseModel):
     """Logical renderer tokens retained only while extending a live rollout.
     None means they are identical to `token_ids`; an empty list is a real empty slice."""
 
-    mask: list[bool] = Field(default_factory=list)
+    mask: BoolStream = Field(default_factory=list)
     """Per-token, parallel to `token_ids`: True for trainable, model-sampled tokens (only an
     assistant node's completion span); False for template scaffold and every input-message
     token."""
-    is_content: list[bool] = Field(default_factory=list)
+    is_content: BoolStream = Field(default_factory=list)
     """Per-token, parallel to `token_ids` (when populated): True for message-body tokens (the
     renderer's content), False for template scaffold (role-tag openers/closers, inter-turn
     separators, tool-response wraps, the generation prompt). Populated from the renderer's
@@ -136,24 +183,24 @@ class MessageNode(BaseModel):
     `mask`: `mask` is "did the model sample this?" (assistant completion only); `is_content`
     is "is this caller/model body vs scaffold?" — meaningful on every role, so observation
     weighting (prime-rl `echo`) can train a tool/user message's *body* without its scaffold."""
-    logprobs: list[float] = Field(default_factory=list)
+    logprobs: FloatStream = Field(default_factory=list)
     """Sampling logprobs for the sampled tokens — length equals the number of True entries in
     `mask`; empty for input messages."""
-    advantages: list[float] | None = None
+    advantages: FloatStream | None = None
     """Per-token credit over the sampled tokens, same layout as `logprobs`. `None` until a
     consumer's RL algorithm assigns it, which is not the same as a credit of zero: a group whose
     rewards were all equal is assigned zeros and carries no gradient, while an unassigned node was
     never scored at all."""
-    reference_logprobs: list[float] | None = None
+    reference_logprobs: FloatStream | None = None
     """Reference-model logprobs over the sampled tokens, in the same compact layout as
     `logprobs`. None means no reference model scored this node."""
-    trainer_logprobs: list[float] | None = None
+    trainer_logprobs: FloatStream | None = None
     """Trainer-recomputed logprobs over the sampled tokens, in the same compact layout as
     `logprobs`. None means no trainer forward annotated this node."""
-    entropies: list[float] | None = None
+    entropies: FloatStream | None = None
     """Trainer policy entropies over the sampled tokens, in the same compact layout as
     `logprobs`. None means no trainer forward annotated this node."""
-    loss_weights: dict[str, list[float]] | None = None
+    loss_weights: dict[str, FloatStream] | None = None
     """Named loss-weight streams aligned to `token_ids`, consumer-stamped."""
     routed_experts: SkipJsonSchema[np.ndarray | None] = None
     """This node's slice of the MoE expert-routing array — uint8 `[len(token_ids), layers,
@@ -185,21 +232,66 @@ class MessageNode(BaseModel):
             else self.renderer_token_ids
         )
 
-    @field_serializer(
-        "logprobs",
-        "advantages",
-        "reference_logprobs",
-        "trainer_logprobs",
-        "entropies",
-        when_used="json",
-    )
-    def serialize_record_floats(
-        self, values: list[float] | None, info: FieldSerializationInfo
-    ) -> list[float] | None:
-        decimals = (info.context or {}).get("float_decimals", RECORD_FLOAT_DECIMALS)
-        if values is None or decimals is None:
-            return values
-        return [round(value, decimals) for value in values]
+    @field_serializer(*TOKEN_STREAM_DTYPES)
+    def serialize_token_stream(
+        self, values: list | np.ndarray | None, info: FieldSerializationInfo
+    ) -> list | dict | None:
+        """JSON records: lists, float streams rounded to `float_decimals`. The msgpack wire
+        (`mode="python"` with `token_arrays` in the context): a raw-bytes `__nd__` dict. Other
+        python dumps: a list, the shape every dump had before arrays."""
+        if values is None:
+            return None
+        context = info.context or {}
+        if info.mode_is_json():
+            values = as_list(values)
+            decimals = context.get("float_decimals", RECORD_FLOAT_DECIMALS)
+            if info.field_name not in FLOAT_STREAMS or decimals is None:
+                return values
+            return [round(value, decimals) for value in values]
+        if context.get("token_arrays"):
+            return _encode_ndarray(
+                np.asarray(values, dtype=TOKEN_STREAM_DTYPES[info.field_name])
+            )
+        return as_list(values)
+
+    @field_validator(*TOKEN_STREAM_DTYPES, mode="before")
+    @classmethod
+    def deserialize_token_stream(cls, value: Any, info: ValidationInfo) -> Any:
+        """Lists, `__nd__` dicts and arrays all become arrays of the stream's dtype."""
+        if value is None:
+            return None
+        if isinstance(value, dict) and value.get("__nd__"):
+            value = _decode_ndarray(value)
+        return np.asarray(value, dtype=TOKEN_STREAM_DTYPES[info.field_name])
+
+    @field_serializer("loss_weights")
+    def serialize_loss_weights(
+        self, streams: dict[str, list | np.ndarray] | None, info: FieldSerializationInfo
+    ) -> dict | None:
+        """Each named stream like a token stream: lists in JSON, `__nd__` on the array wire."""
+        if streams is None:
+            return None
+        if info.mode_is_json():
+            return {name: as_list(values) for name, values in streams.items()}
+        if (info.context or {}).get("token_arrays"):
+            return {
+                name: _encode_ndarray(np.asarray(values, dtype=np.float32))
+                for name, values in streams.items()
+            }
+        return {name: as_list(values) for name, values in streams.items()}
+
+    @field_validator("loss_weights", mode="before")
+    @classmethod
+    def deserialize_loss_weights(cls, value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+        return {
+            name: np.asarray(
+                _decode_ndarray(values) if isinstance(values, dict) else values,
+                dtype=np.float32,
+            )
+            for name, values in value.items()
+        }
 
     @field_serializer("routed_experts")
     def serialize_ndarray_field(self, arr: np.ndarray | None) -> dict | None:
@@ -425,10 +517,12 @@ def _matching_node(
     indexed = _head_index(trace, dialect).get(key)
     if (
         indexed is not None
-        and (token_ids is None or trace.nodes[indexed].token_ids == token_ids)
+        and (
+            token_ids is None or same_tokens(trace.nodes[indexed].token_ids, token_ids)
+        )
         and (
             renderer_token_ids is None
-            or trace.nodes[indexed].logical_ids == renderer_token_ids
+            or same_tokens(trace.nodes[indexed].logical_ids, renderer_token_ids)
         )
     ):
         return indexed
@@ -439,8 +533,11 @@ def _matching_node(
             continue
         node = trace.nodes[node_id]
         if (
-            (token_ids is None or node.token_ids == token_ids)
-            and (renderer_token_ids is None or node.logical_ids == renderer_token_ids)
+            (token_ids is None or same_tokens(node.token_ids, token_ids))
+            and (
+                renderer_token_ids is None
+                or same_tokens(node.logical_ids, renderer_token_ids)
+            )
             and _node_key(trace, node.parent, node.message, node.tools, dialect=dialect)
             == key
         ):
@@ -491,13 +588,17 @@ def _matching_prefix_node(
         node_id
         for node_id in candidates
         if start + len(trace.nodes[node_id].token_ids) <= stop
-        and prompt_ids[start : start + len(trace.nodes[node_id].token_ids)]
-        == trace.nodes[node_id].token_ids
+        and same_tokens(
+            prompt_ids[start : start + len(trace.nodes[node_id].token_ids)],
+            trace.nodes[node_id].token_ids,
+        )
         and renderer_start + len(trace.nodes[node_id].logical_ids) <= renderer_stop
-        and renderer_prompt_ids[
-            renderer_start : renderer_start + len(trace.nodes[node_id].logical_ids)
-        ]
-        == trace.nodes[node_id].logical_ids
+        and same_tokens(
+            renderer_prompt_ids[
+                renderer_start : renderer_start + len(trace.nodes[node_id].logical_ids)
+            ],
+            trace.nodes[node_id].logical_ids,
+        )
     ]
     return max(
         matches, key=lambda node_id: len(trace.nodes[node_id].token_ids), default=None
@@ -547,8 +648,8 @@ class PendingTurn:
         renderer_prompt_ids: list[int] = []
         for nid in self.prefix_node_ids[:-1]:
             node = self.trace.nodes[nid]
-            renderer_prompt_ids.extend(node.logical_ids)
-        last_ids = last.logical_ids
+            renderer_prompt_ids.extend(as_list(node.logical_ids))
+        last_ids = as_list(last.logical_ids)
         renderer_prompt_ids.extend(last_ids[:-num_sampled])
         completion_ids = last_ids[-num_sampled:]
         if not renderer_prompt_ids or not completion_ids:
@@ -688,7 +789,7 @@ def _replace_placeholder_routing_row(
     # placeholder, attempt to fix up below.
     node_with_placeholder = None
     for nid in reversed(prefix_node_ids):
-        if trace.nodes[nid].token_ids:
+        if len(trace.nodes[nid].token_ids):
             node_with_placeholder = trace.nodes[nid]
             break
     if node_with_placeholder is None or not node_with_placeholder.sampled:
@@ -874,12 +975,13 @@ def _commit_turn(turn: PendingTurn, response: Response) -> int:
         for nid in prefix:
             node = trace.nodes[nid]
             node_renderer_ids = node.logical_ids
-            if (
-                prompt_ids[off : off + len(node.token_ids)] != node.token_ids
-                or renderer_prompt_ids[
+            if not same_tokens(
+                prompt_ids[off : off + len(node.token_ids)], node.token_ids
+            ) or not same_tokens(
+                renderer_prompt_ids[
                     renderer_off : renderer_off + len(node_renderer_ids)
-                ]
-                != node_renderer_ids
+                ],
+                node_renderer_ids,
             ):
                 break
             off += len(node.token_ids)

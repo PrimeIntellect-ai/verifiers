@@ -113,9 +113,12 @@ class DeltaStreamer:
         self,
         traces: Callable[[], Iterable[Trace]],
         send: Callable[[dict], Awaitable[None]],
+        token_arrays: bool = False,
     ) -> None:
         self.traces = traces
         self.send = send
+        self.token_arrays = token_arrays
+        """Stream nodes' per-token streams as raw-bytes arrays (`RunRequest.token_arrays`)."""
         self.cursors: dict[str, TraceCursor] = {}
         self._scheduled: asyncio.Handle | None = None
         self._flushes: set[asyncio.Task] = set()
@@ -224,7 +227,14 @@ class DeltaStreamer:
                 items = getattr(trace, field)
                 sent = cursor.sent[field]
                 if len(items) > sent:
-                    delta[field] = [dump(item) for item in items[sent:]]
+                    context = (
+                        {"token_arrays": True}
+                        if field == "nodes" and self.token_arrays
+                        else None
+                    )
+                    delta[field] = [
+                        dump(item, context=context) for item in items[sent:]
+                    ]
                     cursor.sent[field] = len(items)
                     if field == "nodes":
                         cursor.links.extend(
