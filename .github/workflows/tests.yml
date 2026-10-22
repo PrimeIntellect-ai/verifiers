@@ -78,6 +78,7 @@ jobs:
     timeout-minutes: 60
     strategy:
       fail-fast: false
+      max-parallel: 16
       matrix:
         include:
           - behavior: Single-Turn

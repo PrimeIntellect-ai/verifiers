@@ -33,7 +33,7 @@ dependencies = [
     "math-verify>=0.8.0",
     "openai>=2.54.0,<3.0.0",
     "prime-tunnel>=0.1.14",
-    "prime-sandboxes>=0.4.7",
+    "prime-sandboxes>=0.5.0",
     "prime-runs>=0.1.4",
     "pydantic>=2.12.3",
     "rich>=11.0.0",
@@ -49,7 +49,7 @@ dependencies = [
     "prime-pydantic-config[toml]>=0.4.3",
     "loguru>=0.7.0",
     "tomli-w>=1.0.0",
-    "renderers[multimodal]>=0.1.12",
+    "renderers[multimodal]>=0.1.13.dev16",
     "typing_extensions>=4.12.2",
     "mcp==2.0.0",
 ]

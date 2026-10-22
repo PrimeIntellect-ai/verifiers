@@ -1,12 +1,12 @@
-"""Shared configuration for execution-time network policy."""
+"""Runtime provider configs and the execution-time network policy they share."""
 
 from fnmatch import fnmatchcase
 from glob import has_magic
 from itertools import product
-from typing import Self
+from typing import Annotated, Any, Literal, Self
 from urllib.parse import SplitResult, urlsplit
 
-from pydantic import Field, model_validator
+from pydantic import Field, SerializeAsAny, model_validator
 from pydantic_config import BaseConfig
 
 
@@ -130,3 +130,131 @@ class NetworkPolicyConfig(BaseConfig):
             allow = list(dict.fromkeys(intersection))
         block = list(dict.fromkeys([*block, *self.block]))
         return type(self).model_validate({**values, "allow": allow, "block": block})
+
+
+class SubprocessConfig(BaseConfig):
+    type: Literal["subprocess"] = "subprocess"
+
+
+class DockerConfig(NetworkPolicyConfig):
+    type: Literal["docker"] = "docker"
+    image: str = "python:3.11-slim"
+    workdir: str | None = None
+    """Working directory override; None preserves the image's working directory."""
+    # TaskData.resources uses these units; non-default runtime config values take precedence.
+    cpu: float | None = None
+    """Pin the container to this many CPU cores. None = unlimited."""
+    memory: float | None = None
+    """Hard memory limit in GB. None = unlimited."""
+    gpu: str | None = None
+    """GPU spec, e.g. "A100" or "2". Docker exposes that many GPUs (needs the nvidia
+    container toolkit) and checks requested types with nvidia-smi. None = none."""
+    disk: float | None = None
+    """Advisory disk request in GB. Docker has no portable per-container size limit, so this is accepted (so a task can declare it without a warning) but not
+    enforced."""
+
+
+class PrimeConfig(NetworkPolicyConfig):
+    type: Literal["prime"] = "prime"
+    image: str = "python:3.11-slim"
+    """Docker image to run. Any pullable ref works: on the first use of an image, the
+    platform auto-builds the VM image that the sandbox needs from it (~10 minutes)
+    and caches the result, so later sandboxes on the same ref start in
+    seconds."""
+    workdir: str | None = None
+    """Working directory override. None discovers the image directory, using /
+    when Prime defaults to root's home. Explicit task/config directories win.
+    """
+    region: str | None = None
+    """Region to provision in (None = provider-chosen)."""
+    labels: list[str] = Field(default_factory=list)
+    """Labels attached to the sandbox, extending any process-wide base labels (see ``set_base_sandbox_labels``)."""
+    # TaskData.resources uses these units; non-default runtime config values take precedence.
+    cpu: float = 1.0
+    """CPU cores."""
+    memory: float = 2.0
+    """Memory in GB."""
+    gpu: str | None = None
+    """GPU spec, e.g. "A100" or "A100:2" (a bare count = provider-chosen type)."""
+    disk: float = 5.0
+    """Disk in GB. Unused with ``checkpoint``: a sandbox keeps its checkpoint's disk."""
+    checkpoint: str | None = None
+    """A DURABLE filesystem checkpoint to start from instead of ``image`` (see the SDK's
+    ``checkpoint`` and ``wait_for_checkpoint``)."""
+    idle_timeout: float | None = 3600
+    """Seconds of inactivity before the sandbox self-deletes (None disables)."""
+    transfer_timeout: int = Field(600, gt=0)
+    """Seconds one upload or download request may take (the SDK's default is 300). A
+    file larger than one request part (128 MiB) takes one request per part. Many
+    concurrent transfers share the gateway's bandwidth: 512 MB requests have taken over
+    600 s while twenty boxes transferred at once."""
+    creates_per_min: int | None = None
+    """Pace sandbox creation to this many per minute, enforced run-wide across every
+    env-server worker process (None/<= 0 disables it). (Tunnel creation is limited separately
+    — see interception.tunnel.prime.tunnel_limiter.)"""
+    creates_backlog_s: float | None = Field(None, gt=0)
+    """Longest a create may wait for its slot under `creates_per_min` before it fails
+    (a `quota` SandboxError) rather than stall behind the backlog; None waits it out."""
+    create_timeout_s: float | None = Field(None, gt=0)
+    """Seconds the whole provisioning may take (the wait for a creation slot, the create,
+    the boot, the workdir) before it fails (`io`) and the late box is deleted; None
+    leaves each phase its own budget."""
+    outage_budget_s: float = Field(0, ge=0)
+    """Seconds an idempotent platform call (the create, whose every send carries one
+    idempotency key so a repeat never makes a second box; the boot wait, a job poll, an
+    upload or download, the teardown's delete) is held and sent again through a provider outage (an `io` or
+    `quota` failure: no route to the box, the API or file gateway dropping connections,
+    a 5xx, a 429) before the error reaches the caller: minutes-long outages are ridden
+    out instead of failing after a few tries. The waits go 1 s doubling to 30 s, with a
+    warning a minute. 0 (the default) keeps the few quick tries alone. A command is never
+    sent again (its reply may be lost after it ran), and a box whose placement is lost
+    is gone at once (`box_lost`), never held."""
+
+    @model_validator(mode="after")
+    def _validate_egress(self) -> Self:
+        if not self.network_restricted:
+            return self
+        if not self.allow:
+            return self
+        from prime_sandboxes.models import validate_egress_lists
+
+        validate_egress_lists(
+            None if self.allow == ["*"] else self.allow,
+            self.block or None,
+        )
+        return self
+
+
+class CustomRuntimeConfig(BaseConfig):
+    type: Literal["custom"] = "custom"
+    import_path: str
+    """Dotted path to a `RuntimeBackend` subclass, e.g. `my_package.runtime.MyBackend`."""
+
+    @model_validator(mode="wrap")
+    @classmethod
+    def _validate_as_plugin_config(cls, data: Any, handler):
+        """Validate the raw config as the backend's own `config_class`."""
+        if (
+            cls is not CustomRuntimeConfig
+            or not isinstance(data, dict)
+            or "import_path" not in data
+        ):
+            return handler(data)
+        from verifiers.v1.runtimes.backends.custom import (
+            import_backend,
+            plugin_config_class,
+        )
+
+        config_class = plugin_config_class(import_backend(data["import_path"]))
+        if config_class is CustomRuntimeConfig:
+            return handler(data)
+        return config_class.model_validate(data)
+
+
+# Serialized by the runtime type, so a custom runtime's typed config keeps its fields.
+RuntimeConfig = SerializeAsAny[
+    Annotated[
+        SubprocessConfig | DockerConfig | PrimeConfig | CustomRuntimeConfig,
+        Field(discriminator="type"),
+    ]
+]

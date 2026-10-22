@@ -97,12 +97,15 @@ class RolloutLimits:
     a @stop — and becomes the trace's stop condition. Each caps a trace computed property:
     `max_turns` -> num_turns, `max_input_tokens` -> num_input_tokens, `max_output_tokens` ->
     num_output_tokens, `max_total_tokens` -> num_total_tokens. Token caps are soft by one turn:
-    they're checked between turns, so the turn that crosses a cap still completes."""
+    they're checked between turns, so the turn that crosses a cap still completes.
+    `max_turn_tokens` caps each response (applied through sampling) and refuses the turn
+    after a response that hit it."""
 
     max_turns: int | None = None
     max_input_tokens: int | None = None
     max_output_tokens: int | None = None
     max_total_tokens: int | None = None
+    max_turn_tokens: int | None = None
 
     def reached(self, trace: Trace, since: tuple[int, int] = (0, 0)) -> str | None:
         """The name of the first limit `trace` has reached, or None if within all caps.
@@ -119,6 +122,7 @@ class RolloutLimits:
             self.max_input_tokens is None
             and self.max_output_tokens is None
             and self.max_total_tokens is None
+            and self.max_turn_tokens is None
         ):
             return None
         if calls_before:
@@ -133,6 +137,18 @@ class RolloutLimits:
             return "max_output_tokens"
         if self.max_total_tokens is not None and used_total >= self.max_total_tokens:
             return "max_total_tokens"
+        if self.max_turn_tokens is not None:
+            last = next((c for c in reversed(trace.calls) if c.error is None), None)
+            # A length finish below the cap ran out of context, not turn tokens.
+            if (
+                last is not None
+                and last.finish_reason == "length"
+                and (
+                    last.usage is None
+                    or last.usage.completion_tokens >= self.max_turn_tokens
+                )
+            ):
+                return "max_turn_tokens"
         return None
 
 

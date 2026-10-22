@@ -6,18 +6,9 @@ eval is exactly this env (one `agent` seat, one nameless trace per episode).
 """
 
 from verifiers.v1.agent import Agents
-from verifiers.v1.configs.agent import AgentConfig
-from verifiers.v1.configs.env import EnvConfig
+from verifiers.v1.configs.env import SingleAgentEnvConfig
 from verifiers.v1.env import Env
 from verifiers.v1.task import Task
-
-
-class SingleAgentEnvConfig(EnvConfig):
-    """`SingleAgentEnv`'s config: the one `agent` seat over the seed taskset."""
-
-    agent: AgentConfig = AgentConfig()
-    """The one seat — the policy under evaluation/training; pin
-    `--env.agent.harness.*` to choose its program or runtime."""
 
 
 class SingleAgentEnv(Env[SingleAgentEnvConfig]):

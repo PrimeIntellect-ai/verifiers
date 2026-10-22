@@ -21,15 +21,15 @@ exclude-newer = "0001-01-01T00:00:00Z" # This has no effect and is included for 
 exclude-newer-span = "P7D"
 
 [options.exclude-newer-package]
-certifi = false
-harbor = "2026-10-08T00:00:00Z"
 prime-pydantic-config = false
-prime-runs = false
-prime-sandboxes = false
-prime-tunnel = false
-renderers = false
-ruff = "2026-07-28T00:00:00Z"
+harbor = "2026-10-08T00:00:00Z"
 ty = "2026-07-28T00:00:00Z"
+ruff = "2026-07-28T00:00:00Z"
+prime-runs = false
+prime-tunnel = false
+certifi = false
+prime-sandboxes = false
+renderers = false
 
 [[package]]
 name = "aiofile"
@@ -3313,7 +3313,7 @@ wheels = [
 
 [[package]]
 name = "prime-sandboxes"
-version = "0.4.7"
+version = "0.5.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiofiles" },
@@ -3325,9 +3325,9 @@ dependencies = [
     { name = "pyqwest" },
     { name = "tenacity" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/ac/63/95f7b0e0e99566c0889125e5eca90bfc1beaafa8de4d2e6d3d8367bebe06/prime_sandboxes-0.4.7.tar.gz", hash = "sha256:72382facabe083b5f9618bfcc057cf1b0211fe103d66cad06d0310567b416adb", size = 150626, upload-time = "2026-10-18T21:44:11.863Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/e1/87/634781f00347fea92d04341aa75d9fc1ff3d3068f6def6ad691faa7e0ea6/prime_sandboxes-0.5.0.tar.gz", hash = "sha256:c64a63ad33bf6363af2fa5375ec052c00f7938feb7bdc82b914e013c50b7f468", size = 157237, upload-time = "2026-10-20T17:29:53.505Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/17/4a/7b6c90fb950ce5d9d4e8e2493fd461e2abd78595a0c49526d02b68440794/prime_sandboxes-0.4.7-py3-none-any.whl", hash = "sha256:309600da3ee596ce36ed75a7b0956d7883f3e4fc385f026e80c9df887ea1a948", size = 81661, upload-time = "2026-10-18T21:44:10.272Z" },
+    { url = "https://files.pythonhosted.org/packages/1f/cd/7879c0831d9becd58f59869d39ae979b64b1304a8ef0302c9ae800a07eb0/prime_sandboxes-0.5.0-py3-none-any.whl", hash = "sha256:ebdfbfccacb8da2c156fa649f769506800e65d34b6ce102c2f0cbba675fdb64a", size = 84916, upload-time = "2026-10-20T17:29:51.692Z" },
 ]
 
 [[package]]
@@ -4351,7 +4351,7 @@ wheels = [
 
 [[package]]
 name = "renderers"
-version = "0.1.12"
+version = "0.1.13.dev16"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "jinja2" },
@@ -4362,9 +4362,9 @@ dependencies = [
     { name = "prime-pydantic-config" },
     { name = "tiktoken" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/06/e3/4fd849811630c1df226f5501bec9f043c328594b3925bd2640fa29b17ba1/renderers-0.1.12.tar.gz", hash = "sha256:0e688605163cf891cfa3afa3ed5895dbb29360279bcf52ef1d893c74079df9e4", size = 437149, upload-time = "2026-10-12T20:42:31.173Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/10/3f/fba59bc00ee0e253558e47dd6167a02396062b275c7ab7f95cc26052f861/renderers-0.1.13.dev16.tar.gz", hash = "sha256:eefc783cac5df82246e1b869274e8c27d674dcd96b726c94588518ac3a5e0015", size = 464982, upload-time = "2026-10-22T08:43:36.593Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/1f/34/6b652ef2cece3b2356f11a78bb31a1d52eacad35b37c534401e1a607298c/renderers-0.1.12-py3-none-any.whl", hash = "sha256:023edfc5c17583d4b9824a1a822027d2f1d63be0d8e197137a2145e0f786f37d", size = 250440, upload-time = "2026-10-12T20:42:29.437Z" },
+    { url = "https://files.pythonhosted.org/packages/20/56/30a6d1cfef093e39825e84eaa0eab6e398b87e73b67b26da2ae2fb50e425/renderers-0.1.13.dev16-py3-none-any.whl", hash = "sha256:5235376f1b702853a5b0432ece7f120056040ee452c9b54016c5eb2a4c36a707", size = 266345, upload-time = "2026-10-22T08:43:35.243Z" },
 ]
 
 [package.optional-dependencies]

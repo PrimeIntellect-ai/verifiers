@@ -6,8 +6,7 @@ from pydantic import SerializationInfo, field_serializer
 from pydantic_config import BaseConfig
 
 from verifiers.v1.configs.retries import RetryConfig
-from verifiers.v1.configs.runtime import NetworkPolicyConfig
-from verifiers.v1.runtimes import RuntimeConfig
+from verifiers.v1.configs.runtime import NetworkPolicyConfig, RuntimeConfig
 from verifiers.v1.utils.generic import merge_defaults
 
 
@@ -25,6 +24,12 @@ class ScoringConfig(BaseConfig):
     combined with the runtime's own rules the same way. None keeps the default: isolated
     scoring runs under `TaskData.network`, shared scoring keeps the agent phase's network,
     and Harbor's shared grading lifts the policy."""
+    skip_on_truncated: bool = False
+    """Skip task scoring for a truncated trace (`Trace.is_truncated`): it keeps no
+    rewards, so its reward is 0."""
+    skip_on_timeout: bool = False
+    """Skip task scoring for a trace whose stage deadline expired before scoring
+    (`Trace.is_timeout`): it keeps no rewards, so its reward is 0."""
 
     @field_serializer("runtime")
     def serialize_runtime(

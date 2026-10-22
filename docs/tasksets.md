@@ -447,7 +447,7 @@ reply_length = { fn = "my_hooks.py:reply_length", priority = 10 }
 exact_match = { fn = "my_hooks.py:exact_match", weight = 0.5 }
 ```
 
-Plugged hooks merge with the task's decorated `@vf.stop`, `@vf.metric`, and `@vf.reward` methods; a plugged hook replaces a decorated method with the same name, making it easy to swap out an existing signal (such as `single_turn` above). Rewards accept a `weight` and every hook accepts a `priority`, while any omitted fields preserve the replaced method's existing settings.
+Plugged hooks merge with the task's decorated `@vf.stop`, `@vf.metric`, and `@vf.reward` methods; a plugged hook replaces a decorated method with the same name, making it easy to swap out an existing signal (such as `single_turn` above). Rewards accept a `weight`, stops accept `skip_scoring`, and every hook accepts a `priority`, while any omitted fields preserve the replaced method's existing settings.
 
 Leaving `fn` out keeps the task's own decorated method and overrides only its metadata — for example, turning an existing zero-weight reward into an active training signal:
 
@@ -463,6 +463,8 @@ Decorate a task method with `@vf.stop` (synchronous or async) and return `True` 
 - `vf.Request` — before the outgoing request is sent to the model provider.
 - `vf.Response` — while the model's response is buffered, before it is returned to the harness.
 - `vf.Trace` — before each model call, inspecting the trace accumulated so far.
+
+A stop ends the run, but the task still scores it. Pass `@vf.stop(skip_scoring=True)` (or set `skip_scoring = true` on a plugged stop) to skip task scoring for a trace that this stop ends. The trace then keeps no task rewards, metrics, or judge scores, so its reward is 0. `trace.info["scoring_skipped"]` records the stop's name. Task finalization and harness metrics still run, as with `agent.scoring.skip_on_truncated` (see [the agent](agent.md)).
 
 When you want to inspect or rewrite traffic in flight without ending the rollout, use `@vf.intercept` on a method taking `vf.Request` or `vf.Response` (plus optional `trace`). Return a modified copy of the same type to replace the payload, or `None` to leave it untouched:
 

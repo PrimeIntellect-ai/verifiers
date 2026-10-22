@@ -3,13 +3,14 @@ import shlex
 from typing import Literal
 
 from pydantic import Field, NonNegativeInt, PositiveInt, field_validator
-from pydantic_config import BaseConfig
 
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig, skill_destination
 from verifiers.v1.harness import Harness
 from verifiers.v1.harnesses.utils.launch import (
     CHAT_PROGRAM_SOURCE,
+    CompactionConfig,
+    compaction_args,
     launch_chat_program,
 )
 from verifiers.v1.runtimes import ProgramResult, Runtime
@@ -52,14 +53,6 @@ def skill_card_fields(card: str, folder: str) -> tuple[str, str]:
             key, _, value = line.partition(":")
             fields[key.strip()] = value.strip().strip("\"'")
     return fields.get("name") or folder, fields.get("description", "")
-
-
-class CompactionConfig(BaseConfig):
-    """Context compaction policy for the bash agent loop."""
-
-    summarize_at_tokens: PositiveInt | None = None
-    """Compact at this token count. When unset, compact when 16k tokens remain below the
-    model context window when the provider advertises it."""
 
 
 class BashHarnessConfig(HarnessConfig):
@@ -197,11 +190,7 @@ class BashHarness(Harness[BashHarnessConfig]):
         ]
         if tool_interception_url:
             args.append(f"--tool-interception-url={tool_interception_url}")
-        if self.config.compaction is not None:
-            args.append("--compaction")
-            threshold = self.config.compaction.summarize_at_tokens
-            if threshold is not None:
-                args.append(f"--summarize-at-tokens={threshold}")
+        args += compaction_args(self.config.compaction)
         if self.config.edit:
             args.append("--edit")
         if self.config.search:

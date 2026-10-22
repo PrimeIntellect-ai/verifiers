@@ -18,14 +18,13 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Any, ClassVar, Literal, TypeVar
+from typing import Any, ClassVar, TypeVar
 from urllib.parse import urlsplit
 
 from prime_sandboxes import APIError
 from prime_sandboxes.models import validate_egress_lists
-from pydantic import Field, model_validator
 
-from verifiers.v1.configs.runtime import NetworkPolicyConfig
+from verifiers.v1.configs.runtime import NetworkPolicyConfig, PrimeConfig
 from verifiers.v1.errors import (
     SandboxError,
     SandboxErrorKind,
@@ -538,75 +537,6 @@ def run_labels() -> list[str]:
     """The labels every Prime sandbox and tunnel this process opens carries, whatever its
     config adds: the base labels and the run scope. ``runtimes.sweep`` deletes by them."""
     return list(dict.fromkeys([*BASE_LABELS, run_scope()]))
-
-
-class PrimeConfig(NetworkPolicyConfig):
-    type: Literal["prime"] = "prime"
-    image: str = "python:3.11-slim"
-    """Docker image to run. Any pullable ref works: on the first use of an image, the
-    platform auto-builds the VM image that the sandbox needs from it (~10 minutes)
-    and caches the result, so later sandboxes on the same ref start in
-    seconds."""
-    workdir: str | None = None
-    """Working directory override. None discovers the image directory, using /
-    when Prime defaults to root's home. Explicit task/config directories win.
-    """
-    region: str | None = None
-    """Region to provision in (None = provider-chosen)."""
-    labels: list[str] = Field(default_factory=list)
-    """Labels attached to the sandbox, extending any process-wide base labels (see ``set_base_sandbox_labels``)."""
-    # TaskData.resources uses these units; non-default runtime config values take precedence.
-    cpu: float = 1.0
-    """CPU cores."""
-    memory: float = 2.0
-    """Memory in GB."""
-    gpu: str | None = None
-    """GPU spec, e.g. "A100" or "A100:2" (a bare count = provider-chosen type)."""
-    disk: float = 5.0
-    """Disk in GB. Unused with ``checkpoint``: a sandbox keeps its checkpoint's disk."""
-    checkpoint: str | None = None
-    """A DURABLE filesystem checkpoint to start from instead of ``image`` (see the SDK's
-    ``checkpoint`` and ``wait_for_checkpoint``)."""
-    idle_timeout: float | None = 3600
-    """Seconds of inactivity before the sandbox self-deletes (None disables)."""
-    transfer_timeout: int = Field(600, gt=0)
-    """Seconds one upload or download request may take (the SDK's default is 300). A
-    file larger than one request part (128 MiB) takes one request per part. Many
-    concurrent transfers share the gateway's bandwidth: 512 MB requests have taken over
-    600 s while twenty boxes transferred at once."""
-    creates_per_min: int | None = None
-    """Pace sandbox creation to this many per minute, enforced run-wide across every
-    env-server worker process (None/<= 0 disables it). (Tunnel creation is limited separately
-    — see interception.tunnel.prime.tunnel_limiter.)"""
-    creates_backlog_s: float | None = Field(None, gt=0)
-    """Longest a create may wait for its slot under `creates_per_min` before it fails
-    (a `quota` SandboxError) rather than stall behind the backlog; None waits it out."""
-    create_timeout_s: float | None = Field(None, gt=0)
-    """Seconds the whole provisioning may take (the wait for a creation slot, the create,
-    the boot, the workdir) before it fails (`io`) and the late box is deleted; None
-    leaves each phase its own budget."""
-    outage_budget_s: float = Field(0, ge=0)
-    """Seconds an idempotent platform call (the create, whose every send carries one
-    idempotency key so a repeat never makes a second box; the boot wait, a job poll, an
-    upload or download, the teardown's delete) is held and sent again through a provider outage (an `io` or
-    `quota` failure: no route to the box, the API or file gateway dropping connections,
-    a 5xx, a 429) before the error reaches the caller: minutes-long outages are ridden
-    out instead of failing after a few tries. The waits go 1 s doubling to 30 s, with a
-    warning a minute. 0 (the default) keeps the few quick tries alone. A command is never
-    sent again (its reply may be lost after it ran), and a box whose placement is lost
-    is gone at once (`box_lost`), never held."""
-
-    @model_validator(mode="after")
-    def _validate_egress(self) -> PrimeConfig:
-        if not self.network_restricted:
-            return self
-        if not self.allow:
-            return self
-        validate_egress_lists(
-            None if self.allow == ["*"] else self.allow,
-            self.block or None,
-        )
-        return self
 
 
 class PrimeRuntimeInfo(PrimeConfig, BaseRuntimeInfo):

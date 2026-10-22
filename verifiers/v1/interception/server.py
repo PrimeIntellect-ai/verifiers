@@ -30,7 +30,6 @@ import traceback
 from collections.abc import AsyncIterator, Awaitable, Collection, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import Literal
 
 import httpx
 from aiohttp import web
@@ -49,6 +48,7 @@ from verifiers.v1.configs.client import (
     resolve_api_key,
     resolve_headers,
 )
+from verifiers.v1.configs.interception import InterceptionServerConfig
 from verifiers.v1.dialects import DIALECTS, Dialect
 from verifiers.v1.dialects.base import (
     PROVIDER_CAPABILITY_POLICY_CODE,
@@ -60,13 +60,8 @@ from verifiers.v1.errors import (
     TaskError,
     model_error,
 )
-from verifiers.v1.interception.base import BaseInterceptionConfig, Interception, Slot
-from verifiers.v1.interception.tunnel import (
-    PrimeTunnelConfig,
-    Tunnel,
-    TunnelConfig,
-    make_tunnel,
-)
+from verifiers.v1.interception.base import Interception, Slot
+from verifiers.v1.interception.tunnel import Tunnel, make_tunnel
 from verifiers.v1.semantic import ACPInfo, extract_acp_info
 from verifiers.v1.session import (
     IdempotentRequest,
@@ -439,17 +434,6 @@ async def _buffered_stream(
             task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await task
-
-
-class InterceptionServerConfig(BaseInterceptionConfig):
-    """A single interception server shared by every rollout, reached (when any consumer is
-    remote) via its `tunnel` — the shape that supports a bring-your-own endpoint
-    (`tunnel.type custom`)."""
-
-    type: Literal["server"] = "server"
-    tunnel: TunnelConfig = PrimeTunnelConfig()
-    """How remote consumers reach the server: `prime` (a framework-minted prime_tunnel) or
-    `custom` (a pre-started tunnel / reverse proxy / direct bind you provide)."""
 
 
 class InterceptionServer(Interception):

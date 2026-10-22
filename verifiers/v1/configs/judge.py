@@ -7,7 +7,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field, FiniteFloat, SerializeAsAny
 
-from verifiers.v1.clients import BaseClientConfig
+from verifiers.v1.configs.client import BaseClientConfig
 from verifiers.v1.types import ID, SamplingConfig
 
 

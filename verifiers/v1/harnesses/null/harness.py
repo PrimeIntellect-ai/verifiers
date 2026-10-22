@@ -5,6 +5,8 @@ from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.harness import Harness
 from verifiers.v1.harnesses.utils.launch import (
     CHAT_PROGRAM_SOURCE,
+    CompactionConfig,
+    compaction_args,
     launch_chat_program,
 )
 from verifiers.v1.runtimes import ProgramResult, Runtime
@@ -14,6 +16,10 @@ from verifiers.v1.trace import Trace
 
 class NullHarnessConfig(HarnessConfig):
     dialect: Literal["chat_completions"] = "chat_completions"
+    compaction: CompactionConfig | None = None
+    """Context compaction, off by default. Set it (e.g. an empty `[compaction]` table for
+    auto thresholds, or `summarize_at_tokens`) to summarize the conversation and continue
+    instead of ending the run when the context window fills."""
 
 
 class NullHarness(Harness[NullHarnessConfig]):
@@ -41,6 +47,9 @@ class NullHarness(Harness[NullHarnessConfig]):
         tool_interception_url: str | None = None,
     ) -> ProgramResult:
         system_prompt, prompt = self.resolve_prompt(data)
+        args = compaction_args(self.config.compaction)
+        if tool_interception_url:
+            args.append(f"--tool-interception-url={tool_interception_url}")
         return await launch_chat_program(
             CHAT_PROGRAM_SOURCE,
             self.config,
@@ -52,7 +61,5 @@ class NullHarness(Harness[NullHarnessConfig]):
             mcp_urls,
             system_prompt,
             prompt,
-            extra_args=[f"--tool-interception-url={tool_interception_url}"]
-            if tool_interception_url
-            else (),
+            extra_args=args,
         )
