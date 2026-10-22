@@ -9,6 +9,7 @@ from verifiers.v1.configs.agent import resolve_agent
 from verifiers.v1.dialects.chat import ChatDialect
 from verifiers.v1.dialects.responses import ResponsesDialect, fold_assistant
 from verifiers.v1.graph import MessageNode, prepare_turn
+from verifiers.v1.session import RolloutLimits
 from verifiers.v1.types import AssistantMessage, UserMessage
 from verifiers.v1.utils.trace_store import write_episode
 
@@ -266,3 +267,18 @@ def test_sampling_mask_from_packed_matches_lists():
     ):
         np.testing.assert_array_equal(mask.ids, ids)
         np.testing.assert_array_equal(mask.counts, counts)
+
+
+@pytest.mark.parametrize("stop_on_length", [False, True])
+def test_stop_on_length_limit(stop_on_length):
+    limits = RolloutLimits(stop_on_length=stop_on_length)
+    trace = vf.Trace(
+        agent=vf.AgentInfo(config=vf.AgentConfig()),
+        task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt=None)),
+    )
+    trace.calls.append(vf.ModelCall(finish_reason="stop"))
+    assert limits.reached(trace) is None
+    trace.calls.append(vf.ModelCall(finish_reason="length"))
+    assert limits.reached(trace) == ("length" if stop_on_length else None)
+    trace.stop("length")
+    assert trace.is_truncated

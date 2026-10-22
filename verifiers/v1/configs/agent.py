@@ -66,6 +66,10 @@ class AgentConfig(BaseConfig):
     """Max output tokens per run (None = no limit)."""
     max_total_tokens: int | None = None
     """Max total tokens per run (None = no limit)."""
+    stop_on_length: bool = False
+    """Stop the run when a model response hits its per-turn token cap
+    (`finish_reason="length"`), before the next model call. Harnesses that would
+    otherwise continue (retry, compact, or answer a cut-off tool call) stop as truncated."""
 
     timeout: TimeoutConfig = TimeoutConfig()
     retries: RetryConfig = RetryConfig()
