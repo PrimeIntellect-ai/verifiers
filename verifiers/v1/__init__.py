@@ -56,6 +56,7 @@ if TYPE_CHECKING:
     from verifiers.v1.configs.task import (
         DecoratedFunctionConfig,
         RewardFunctionConfig,
+        StopFunctionConfig,
         TaskConfig,
     )
     from verifiers.v1.configs.taskset import SharedTasksetConfig, TasksetConfig
@@ -301,6 +302,7 @@ _NAME_TO_MODULE = {
     "State": "verifiers.v1.state",
     "StateT": "verifiers.v1.state",
     "StaticPoolConfig": "verifiers.v1.configs.serve",
+    "StopFunctionConfig": "verifiers.v1.configs.task",
     "SubprocessConfig": "verifiers.v1.configs.runtime",
     "SystemMessage": "verifiers.v1.types",
     "TRACE_VERSION": "verifiers.v1.trace",
@@ -480,6 +482,7 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "SharedTasksetConfig",
     "DecoratedFunctionConfig",
     "RewardFunctionConfig",
+    "StopFunctionConfig",
     "BaseConfig",
     "Harness",
     "HarnessSession",
