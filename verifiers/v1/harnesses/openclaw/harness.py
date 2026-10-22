@@ -161,7 +161,6 @@ class OpenClawHarness(ACPHarness[OpenClawHarnessConfig]):
             label="OpenClaw",
             shell=("bash", "-o", "pipefail", "-c"),
         )
-        await super().setup(runtime)
 
     async def _in_catalog(self, runtime: Runtime, model: str, state_dir: str) -> bool:
         """Whether OpenClaw's model catalog knows `model`, checked once per model."""

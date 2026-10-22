@@ -29,14 +29,18 @@ import time
 import urllib.request
 from contextlib import AsyncExitStack
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING
 from urllib.parse import urlsplit
 
 from openai import AsyncOpenAI
 
 if TYPE_CHECKING:
     # The harness bundles this module into the generated script before execution.
-    from verifiers.v1.harnesses.utils.mcp import call_mcp, connect_mcp  # noqa: TC004
+    from verifiers.v1.harnesses.utils.core import (  # noqa: TC004
+        initial_messages,
+        run_chat_loop,
+    )
+    from verifiers.v1.harnesses.utils.mcp import connect_mcp  # noqa: TC004
 
 BROWSER_TOOL_TIMEOUT = 3600
 """Matches the bash harness's command timeout."""
@@ -173,20 +177,6 @@ def run_browser(code: str, env: dict[str, str]) -> str:
         return f"error: {e}"
 
 
-async def chat(
-    client: AsyncOpenAI,
-    model: str,
-    messages: list[dict[str, Any]],
-    tools: list[dict[str, Any]],
-):
-    completion = await client.chat.completions.create(
-        model=model,
-        messages=cast(Any, messages),
-        tools=cast(Any, tools or None),
-    )
-    return completion.choices[0].message
-
-
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--base-url", required=True)
@@ -204,12 +194,7 @@ def parse_args() -> argparse.Namespace:
 
 async def main() -> None:
     args = parse_args()
-    initial = []
-    if args.initial_messages_file:
-        path = Path(args.initial_messages_file)
-        payload = path.read_bytes()
-        path.unlink()
-        initial = json.loads(payload)
+    messages = initial_messages(args)
     state_dir = Path(args.state_dir)
     state_dir.mkdir(parents=True, exist_ok=True)
     endpoint = (
@@ -228,59 +213,22 @@ async def main() -> None:
     tools = [BROWSER_TOOL]
     reserved = {"browser"}
     async with AsyncExitStack() as mcp_stack:
+        await mcp_stack.enter_async_context(client)
         mcp_tools, dispatch, servers = await connect_mcp(config, mcp_stack, reserved)
         tools += mcp_tools
-        messages = (
-            [{"role": "system", "content": args.system_prompt}]
-            if args.system_prompt
-            else []
-        )
-        if initial:
-            messages.extend(initial)
-        elif args.prompt:
-            messages.append({"role": "user", "content": args.prompt})
-        while True:
-            message = await chat(client, args.model, messages, tools)
-            messages.append(message.model_dump(exclude_none=True))
-            if not message.tool_calls:
-                break
-            for call in message.tool_calls:
-                name = call.function.name
-                try:
-                    tool_args = json.loads(call.function.arguments or "{}")
-                except json.JSONDecodeError as e:
-                    messages.append(
-                        {
-                            "role": "tool",
-                            "tool_call_id": call.id,
-                            "content": f"error: invalid JSON in tool arguments ({e}); resend the call with valid JSON",
-                        }
-                    )
-                    continue
-                # Valid JSON can still be a non-object (`[]`, `42`, `null`); the `.get(...)` calls
-                # below assume a dict, so reject anything else as a tool error rather than crashing.
-                if not isinstance(tool_args, dict):
-                    messages.append(
-                        {
-                            "role": "tool",
-                            "tool_call_id": call.id,
-                            "content": f"error: tool arguments must be a JSON object, got {type(tool_args).__name__}; resend as an object",
-                        }
-                    )
-                    continue
-                if name in dispatch:
-                    content = await call_mcp(servers, dispatch, name, tool_args)
-                elif name == "browser":
-                    content = await asyncio.to_thread(
-                        run_browser,
-                        tool_args.get("code", ""),
-                        browser_env,
-                    )
-                else:
-                    content = f"error: unknown tool {name!r}"
-                messages.append(
-                    {"role": "tool", "tool_call_id": call.id, "content": content}
+        await run_chat_loop(
+            args,
+            client,
+            tools,
+            messages,
+            {
+                "browser": lambda values: run_browser(
+                    values.get("code", ""), browser_env
                 )
+            },
+            dispatch,
+            servers,
+        )
 
 
 if __name__ == "__main__":
