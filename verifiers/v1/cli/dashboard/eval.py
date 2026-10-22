@@ -50,6 +50,7 @@ _STYLE = {
     "finalize": "magenta",
     "scoring": "blue",
     "success": "green",
+    "dropped": "grey62",
     "error": "red",
 }
 _MARK_LABEL = {
@@ -61,6 +62,7 @@ _MARK_LABEL = {
     "finalize": "finalize",
     "scoring": "scoring",
     "success": "success",
+    "dropped": "dropped",
     "error": "error",
 }
 _MARK_WIDTH = max(len(label) for label in _MARK_LABEL.values())
@@ -602,14 +604,22 @@ def Rows(
             for t in slot.traces:
                 label = f"{base} agent={t.agent.name}"
                 if slot.done:  # fully scored — reward is final
-                    state = "error" if t.has_error else "success"
-                    # A trace that recorded nothing shows no reward: a judge or
-                    # modeled-user seat's `reward=0.00` would read as a score.
-                    result = (
-                        t.last_error.type
-                        if t.has_error and t.last_error
-                        else (f"reward={t.reward:.2f}" if t.rewards else "")
+                    state = (
+                        "error"
+                        if t.has_error
+                        else "dropped"
+                        if t.is_dropped
+                        else "success"
                     )
+                    # A trace that recorded nothing shows no reward: a judge or
+                    # modeled-user seat's `reward=0.00` would read as a score, and
+                    # a dropped trace's reward counts nowhere, so it shows its reason.
+                    if t.has_error:
+                        result = t.last_error.type if t.last_error else ""
+                    elif t.is_dropped:
+                        result = t.dropped
+                    else:
+                        result = f"reward={t.reward:.2f}" if t.rewards else ""
                     if t.has_error:
                         stop = ""  # error shown instead
                     else:
