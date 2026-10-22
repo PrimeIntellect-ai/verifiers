@@ -222,8 +222,9 @@ class MessageNode(BaseModel):
         if payload is None:
             return None
         return {
-            field.name: _encode_ndarray(getattr(payload, field.name))
+            field.name: _encode_ndarray(value)
             for field in fields(payload)
+            if (value := getattr(payload, field.name)) is not None
         }
 
     @field_validator("sampling_mask", "top_logprobs", mode="before")
@@ -754,8 +755,10 @@ def _attribute_sampling_mask(
     if payload is None:
         return
     node = trace.nodes[assistant_id]
-    if len(payload.counts) != sum(node.mask) or int(payload.counts.sum()) != len(
-        payload.ids
+    if (
+        len(payload.counts) != sum(node.mask)
+        or int(payload.counts.sum()) != len(payload.ids)
+        or (payload.logprobs is not None and len(payload.logprobs) != len(payload.ids))
     ):
         return
     node.sampling_mask = payload
