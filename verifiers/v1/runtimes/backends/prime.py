@@ -227,7 +227,8 @@ _PID_NAMESPACE = rf"""
 set -u
 f={_PID_NAMESPACE_FILE}
 REAPER={shlex.quote(_REAPER)}
-p=$(cat "$f" 2>/dev/null) && [ -n "$p" ] && [ -e "/proc/$p/ns/pid" ] && echo "$p" && exit 0
+p=$(cat "$f" 2>/dev/null) && [ -n "$p" ] && [ -e "/proc/$p/ns/pid" ] && \
+  [ "$(readlink "/proc/$p/ns/pid")" != "$(readlink /proc/self/ns/pid)" ] && echo "$p" && exit 0
 command -v unshare >/dev/null 2>&1 && command -v nsenter >/dev/null 2>&1 || {{
   echo "no unshare/nsenter in this image" >&2; exit 3; }}
 rm -f "$f" "$f.parent"
