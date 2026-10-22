@@ -167,3 +167,30 @@ async def test_rubric_reference_answer_optional(tmp_path, fake_judge_model, make
     await rubric_judge(tmp_path, answer_field="answer").score(t.task.data, t)
     assert "Reference solution" in fake_judge_model[-1]
     assert "ZEBRA-GOLD" in fake_judge_model[-1]
+
+
+def test_drop_reason_names_the_answers_that_score_nothing():
+    from verifiers.v1.judges.rubric import (
+        Criterion,
+        CriterionVerdict,
+        drop_reason,
+        score_verdicts,
+    )
+
+    outcome = {"correct": 1.0, "incorrect": 0.0, "task_defect": float("nan")}
+    criteria = [
+        Criterion(name="outcome", text="t", choices=outcome),
+        Criterion(name="taste", text="t", weight=0.0, choices=outcome),
+    ]
+
+    def reason(outcome: str, taste: str) -> str | None:
+        verdicts = [
+            CriterionVerdict(name="outcome", reason="r", verdict=outcome),
+            CriterionVerdict(name="taste", reason="r", verdict=taste),
+        ]
+        scores = score_verdicts(verdicts, criteria, "the rubric's")
+        return drop_reason("judge", verdicts, criteria, scores)
+
+    assert reason("task_defect", "correct") == "judge: outcome=task_defect"
+    # a zero-weight criterion never drops the verdict, not even with an answer worth nothing
+    assert reason("incorrect", "task_defect") is None

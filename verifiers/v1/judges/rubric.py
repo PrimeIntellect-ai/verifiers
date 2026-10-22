@@ -230,6 +230,23 @@ def criterion_metrics(
     return metrics
 
 
+def drop_reason(
+    prefix: str,
+    verdicts: list[CriterionVerdict],
+    criteria: list[Criterion],
+    scores: dict[str, float],
+) -> str | None:
+    """`<prefix>: <name>=<answer>, ...` for each weighted criterion that scored nothing, the
+    answers that leave the verdict unscored; None when the verdict scored."""
+    answers = {verdict.name: verdict.verdict for verdict in verdicts}
+    unscored = [
+        f"{criterion.name}={answers[criterion.name]}"
+        for criterion in criteria
+        if criterion.weight and math.isnan(scores[criterion.name])
+    ]
+    return f"{prefix}: {', '.join(unscored)}" if unscored else None
+
+
 class RubricJudge(Judge[RubricVerdicts, RubricJudgeConfig]):
     prompt = RUBRIC_PROMPT
     schema = RubricVerdicts
