@@ -763,6 +763,7 @@ class Rollout:
             return self.trace
         self._closed = True
         trace = self.trace
+        skip_reason = self._scoring_skip_reason()
         runtime = self.runtime
         try:
             if trace.timing.agent.start and not trace.timing.agent.end:
@@ -862,7 +863,7 @@ class Rollout:
                         boundary(TaskError, "scoring"),
                     ):
                         # Cross-trace judgement runs later, after the runtime is gone.
-                        if skip_reason := self._scoring_skip_reason():
+                        if skip_reason := skip_reason or self._scoring_skip_reason():
                             logger.info(
                                 "rollout %s: scoring skipped (%s)",
                                 trace.id,
