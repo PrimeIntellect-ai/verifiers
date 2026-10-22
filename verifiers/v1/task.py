@@ -54,6 +54,14 @@ def task_key(data: Mapping) -> str:
     return hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()
 
 
+_SCORING_DEFAULTS = {
+    "network": None,
+    "skip_on_timeout": False,
+    "skip_on_truncated": False,
+}
+"""Scoring fields left out of task identity at these values (`identity_data`)."""
+
+
 def identity_data(data: Mapping) -> dict:
     """Task wire data in the shape task identity is hashed in: network policy as the
     `network_allow`/`network_block` it was before it became one config (#2902), and an
@@ -72,12 +80,14 @@ def identity_data(data: Mapping) -> dict:
             block = []  # framework-only access: was an empty allowlist
         out["network_allow"], out["network_block"] = allow, block
     scoring = out.get("scoring")
-    if (
-        isinstance(scoring, Mapping)
-        and "network" in scoring
-        and scoring["network"] is None
-    ):
-        out["scoring"] = {k: v for k, v in scoring.items() if k != "network"}
+    if isinstance(scoring, Mapping):
+        # Scoring fields added after a task's identity was first hashed count only when
+        # set: at their defaults the task keeps the key and call fingerprints it had.
+        out["scoring"] = {
+            k: v
+            for k, v in scoring.items()
+            if not (k in _SCORING_DEFAULTS and v == _SCORING_DEFAULTS[k])
+        }
     verifier = out.get("verifier")
     if isinstance(verifier, Mapping) and isinstance(verifier.get("network"), Mapping):
         verifier = dict(verifier)
