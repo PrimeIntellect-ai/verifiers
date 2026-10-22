@@ -108,3 +108,89 @@ async def test_chat_preserves_streamed_reasoning(interruption):
             "text": "Plan: call ls",
         }
     ]
+
+
+TUNNEL_PAGE = (
+    "<html><body><h1>404</h1><p>Tunnel not found or no longer active.</p></body></html>"
+)
+
+
+def completion_stream(request: httpx.Request) -> httpx.Response:
+    events = [chunk("Plan: "), chunk("call ls", "stop")]
+    content = "".join(f"data: {json.dumps(event)}\n\n" for event in events)
+    return httpx.Response(
+        200,
+        content=(content + "data: [DONE]\n\n").encode(),
+        headers={"content-type": "text/event-stream"},
+        request=request,
+    )
+
+
+async def run_chat(respond, max_retries: int = 0):
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as http_client:
+        client = AsyncOpenAI(
+            api_key="test",
+            base_url="https://example.test/v1",
+            http_client=http_client,
+            max_retries=max_retries,
+        )
+        return await chat(client, "test-model", [], [])
+
+
+async def test_chat_waits_out_a_tunnel_outage(monkeypatch):
+    """The tunnel service's own HTML page (the tunnel is down) is retried until the
+    interception server answers again."""
+    monkeypatch.setattr(
+        "verifiers.v1.harnesses.utils.core.TUNNEL_DOWN_RETRY_SECONDS", 0
+    )
+    requests = []
+
+    async def respond(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if len(requests) <= 2:
+            return httpx.Response(
+                404,
+                text=TUNNEL_PAGE,
+                headers={"content-type": "text/html"},
+                request=request,
+            )
+        return completion_stream(request)
+
+    completion = await run_chat(respond)
+    assert len(requests) == 3
+    assert completion.choices[0].message.reasoning == "Plan: call ls"
+
+
+async def test_chat_gives_up_on_a_lasting_tunnel_outage(monkeypatch):
+    monkeypatch.setattr(
+        "verifiers.v1.harnesses.utils.core.TUNNEL_DOWN_RETRY_SECONDS", 0
+    )
+    monkeypatch.setattr("verifiers.v1.harnesses.utils.core.TUNNEL_DOWN_SECONDS", 0)
+
+    async def respond(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            404,
+            text=TUNNEL_PAGE,
+            headers={"content-type": "text/html"},
+            request=request,
+        )
+
+    with pytest.raises(SystemExit) as raised:
+        await run_chat(respond)
+    assert raised.value.code == 97
+
+
+async def test_chat_does_not_retry_an_interception_server_404():
+    from openai import NotFoundError
+
+    requests = []
+
+    async def respond(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            404, json={"error": {"message": "no such model"}}, request=request
+        )
+
+    with pytest.raises(NotFoundError):
+        await run_chat(respond)
+    assert len(requests) == 1

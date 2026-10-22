@@ -324,6 +324,21 @@ def _accumulate_streamed_message(accumulated: dict, delta: dict) -> None:
             reasoning_details.append(dict(detail))
 
 
+# While a tunnel to the host is down (the tunnel service dropped it; the host restarts
+# frpc within about a minute) the tunnel service itself answers for the host with an HTML
+# page, such as a 404 "Tunnel not found". The interception server never answers in HTML,
+# so such a response means the request never reached it: wait the outage out.
+TUNNEL_DOWN_SECONDS = 300
+TUNNEL_DOWN_RETRY_SECONDS = 5
+
+
+def tunnel_down(error: BaseException) -> bool:
+    if not isinstance(error, APIStatusError):
+        return False
+    content_type = error.response.headers.get("content-type", "")
+    return error.status_code in (404, 502, 503, 504) and "text/html" in content_type
+
+
 async def chat(
     client: AsyncOpenAI,
     model: str,
@@ -331,6 +346,32 @@ async def chat(
     tools: list[dict],
     *,
     tool_choice: str | None = None,
+):
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + TUNNEL_DOWN_SECONDS
+    while True:
+        try:
+            return await _chat(client, model, messages, tools, tool_choice=tool_choice)
+        except APIStatusError as error:
+            if not tunnel_down(error):
+                raise
+            if loop.time() >= deadline:
+                traceback.print_exc()
+                raise SystemExit(MODEL_TRANSPORT_ERROR_EXIT_CODE) from error
+            logging.getLogger(__name__).warning(
+                "model endpoint unreachable (HTTP %s from the tunnel); retrying",
+                error.status_code,
+            )
+            await asyncio.sleep(TUNNEL_DOWN_RETRY_SECONDS)
+
+
+async def _chat(
+    client: AsyncOpenAI,
+    model: str,
+    messages: list[dict],
+    tools: list[dict],
+    *,
+    tool_choice: str | None,
 ):
     kwargs = {"model": model, "messages": messages}
     if tools:
