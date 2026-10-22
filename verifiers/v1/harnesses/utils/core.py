@@ -20,7 +20,7 @@ from openai import (
     omit,
 )
 from openai.lib.streaming.chat import AsyncChatCompletionStream
-from pydantic import AnyHttpUrl
+from pydantic import AnyHttpUrl, ValidationError
 from tenacity import (
     AsyncRetrying,
     before_sleep_log,
@@ -162,7 +162,10 @@ def run_search(
         if network_block:
             filtered = []
             for result in organic:
-                url = AnyHttpUrl(result.get("link", ""))
+                try:
+                    url = AnyHttpUrl(result.get("link", ""))
+                except ValidationError:
+                    continue
                 if not any(
                     network_rule_matches(
                         rule,
