@@ -131,3 +131,25 @@ def test_plugged_stops_set_skip_scoring(tmp_path) -> None:
         skips({"no_reply": vf.StopFunctionConfig(skip_scoring=False)})["no_reply"]
         is False
     )
+
+
+def test_a_nan_reward_is_an_error() -> None:
+    trace = vf.Trace(
+        agent=vf.AgentInfo(config=vf.AgentConfig()),
+        task=vf.TraceTask(type="HookTask", data=HookData(idx=0, prompt="abc")),
+    )
+    with pytest.raises(ValueError, match="must be finite"):
+        trace.record_reward("judge", float("nan"))
+
+
+def test_failed_scoring_rolls_back_its_drop() -> None:
+    from verifiers.v1.grading import scoring_transaction
+
+    trace = vf.Trace(
+        agent=vf.AgentInfo(config=vf.AgentConfig()),
+        task=vf.TraceTask(type="HookTask", data=HookData(idx=0, prompt="abc")),
+    )
+    with pytest.raises(RuntimeError), scoring_transaction(trace):
+        trace.drop("judge: outcome=task_defect")
+        raise RuntimeError("the judge failed")
+    assert not trace.is_dropped

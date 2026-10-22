@@ -14,7 +14,6 @@ import hashlib
 import inspect
 import json
 import logging
-import math
 from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING, Any, ClassVar, Generic, Self
 
@@ -25,7 +24,7 @@ from verifiers.v1.configs.harness import SkillSource
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.configs.scoring import ScoringConfig
 from verifiers.v1.configs.task import TaskConfig
-from verifiers.v1.errors import TaskError, UnscoredError, boundary
+from verifiers.v1.errors import TaskError, boundary
 from verifiers.v1.state import StateT
 from verifiers.v1.types import Messages, content_text
 from verifiers.v1.utils.artifacts import MAX_ARTIFACT_BYTES, Artifact
@@ -226,22 +225,14 @@ class Task(Generic[DataT, StateT, ConfigT]):
         return None
 
     async def rescore(self, trace: Trace) -> None:
-        """Score a finished trace again, offline: clear its rewards, metrics and judge
-        calls, then run this task's signals that need only the trace."""
+        """Score a finished trace again, offline: clear its rewards, metrics, judge
+        calls and drop, then run this task's signals that need only the trace."""
         if trace.has_error:
             raise ValueError("the rollout errored: its transcript is incomplete")
         trace.info.pop("judge_calls", None)
         trace.rewards, trace.metrics, trace.extra_usage = {}, {}, []
+        trace.dropped = None
         await self.score(trace)
-        unscored = [
-            name
-            for name, reward in trace.rewards.items()
-            if reward is not None and math.isnan(reward.score)
-        ]
-        if unscored:
-            for name in unscored:
-                trace.rewards[name] = None
-            raise UnscoredError(f"reward {', '.join(unscored)} scored nothing (nan)")
 
     def defer_scoring(self) -> Self:
         """An independent copy whose task signals are deferred.
@@ -335,7 +326,8 @@ class Task(Generic[DataT, StateT, ConfigT]):
                 else:
                     items = [(fn.__name__, result)]
                 for key, value in items:
-                    trace.record_reward(key, value, weight)
+                    if value is not None:
+                        trace.record_reward(key, value, weight)
             judge_results = await invoke_all(
                 [judge.score for judge in judges], available
             )
@@ -346,7 +338,8 @@ class Task(Generic[DataT, StateT, ConfigT]):
                 else:
                     items = [(judge.reward_name, result)]
                 for key, value in items:
-                    trace.record_reward(key, value, judge.config.weight)
+                    if value is not None:
+                        trace.record_reward(key, value, judge.config.weight)
 
     @classmethod
     def data_type(cls) -> type[TaskData]:
