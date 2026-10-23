@@ -50,9 +50,6 @@ _OUTPUT_DEADLINE_SECONDS = 300
 _OUTPUT_RETRIES = 10
 """Re-reads of a finished job's output that the SDK still failed to fetch, before the
 exec is reported as failed."""
-_PUBLIC_DOMAIN = "sandbox-v2-prod.pinfra.io"
-"""Domain of the public URLs `https://<port>-<sandbox-id>.<domain>` that a LAN network's
-`internet` rule publishes ports at."""
 _EXPOSE_TAG = "vf-exposed"
 
 
@@ -395,7 +392,14 @@ class PrimeBackend(RuntimeBackend):
                 except Exception as e:
                     raise SandboxError(f"prime expose port {port} failed: {e}") from e
                 self._exposed_ports = ports
-        return f"https://{port}-{self.info.id}.{_PUBLIC_DOMAIN}"
+        # The platform publishes the port on the domain of the sandbox's own gateway,
+        # `https://gateway.<domain>`, as `https://<port>-<sandbox-id>.<domain>`.
+        try:
+            auth = await self._client._auth_cache.get_or_refresh(self.info.id)
+        except Exception as e:
+            raise SandboxError(f"prime expose port {port} failed: {e}") from e
+        gateway = urlsplit(auth["gateway_url"]).hostname or ""
+        return f"https://{port}-{self.info.id}.{gateway.removeprefix('gateway.')}"
 
     async def run_background(
         self, runtime: Runtime, argv: list[str], env: dict[str, str], log: str
