@@ -72,6 +72,23 @@ def test_window_alone_keeps_opencode_default_threshold():
     assert "compaction" not in s
 
 
+def test_provider_output_cap_bounds_output():
+    s = settings(
+        compaction={
+            "context_window": 1048576,
+            "summarize_at_tokens": 917504,
+            "max_output_tokens": 131072,
+        }
+    )
+    assert s["providers"]["intercept"]["models"]["model"]["limit"] == {
+        "context": 1048576,
+        "output": 131072,
+    }
+    assert s["compaction"] == {"buffer": 131072}
+    with pytest.raises(ValidationError):
+        OpenCodeCompactionConfig(context_window=1000, max_output_tokens=2000)
+
+
 def test_no_compaction_config_gives_no_window():
     s = settings()
     assert s["providers"]["intercept"]["models"]["model"] == {"modelID": "m"}

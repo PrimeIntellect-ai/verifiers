@@ -40,6 +40,10 @@ class OpenCodeCompactionConfig(BaseConfig):
     summarize_at_tokens: PositiveInt | None = None
     """Compact once the conversation reaches this many tokens; must be below
     `context_window`. When unset, OpenCode compacts max(10%, 16k) tokens below it."""
+    max_output_tokens: PositiveInt | None = None
+    """The provider's largest completion (OpenCode's `limit.output`). Unset, the window:
+    a request may then ask for more than a provider serving a smaller output limit
+    accepts (Nemotron 3.5 Super: a 1,048,576 window, 131,072 output)."""
 
     @model_validator(mode="after")
     def _below_window(self) -> "OpenCodeCompactionConfig":
@@ -48,6 +52,11 @@ class OpenCodeCompactionConfig(BaseConfig):
             and self.summarize_at_tokens >= self.context_window
         ):
             raise ValueError("summarize_at_tokens must be below context_window")
+        if (
+            self.max_output_tokens is not None
+            and self.max_output_tokens > self.context_window
+        ):
+            raise ValueError("max_output_tokens must not exceed context_window")
         return self
 
 
@@ -120,10 +129,10 @@ class OpenCodeHarness(ACPHarness[OpenCodeHarnessConfig]):
         if compaction is not None:
             # OpenCode caps each request's output at `limit.output`, 32,000 tokens when
             # unset, and at the room left in the window: with the window as the output
-            # limit, only the window bounds it.
+            # limit, only the window bounds it; a provider's own output cap bounds it too.
             model["limit"] = {
                 "context": compaction.context_window,
-                "output": compaction.context_window,
+                "output": compaction.max_output_tokens or compaction.context_window,
             }
         settings = {
             "model": "intercept/model",
