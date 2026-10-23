@@ -42,6 +42,20 @@ class ClientTimeoutConfig(BaseConfig):
     """Time to acquire a connection from the pool."""
 
 
+class RequestGateConfig(BaseConfig):
+    """A cap on concurrent requests per model, shared by every process on the host that
+    sends to the same endpoint with the same API key (see `request_gate`)."""
+
+    max_concurrent: int = Field(ge=1)
+    """Most requests in flight at once, per model. Processes joining a live gate share
+    its cap (the largest configured), and an operator can move it live (`vf-gate`)."""
+    dir: str | None = None
+    """Directory of the host's gate daemon (its socket, log and state snapshots); it must
+    be your own, mode 0700. None = `$XDG_RUNTIME_DIR/verifiers-request-gates`, else
+    `~/.cache/verifiers/request-gates/<hostname>`. Gates are per host: a directory on a
+    shared mount does not share a budget across hosts."""
+
+
 class BaseClientConfig(BaseConfig):
     """An OpenAI-compatible endpoint. The API key is read from an env var."""
 
