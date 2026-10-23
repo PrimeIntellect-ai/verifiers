@@ -376,10 +376,15 @@ class PrimeBackend(RuntimeBackend):
                 ]
                 try:
                     if self._expose_network_id is None:
-                        network = await self._client.create_lan_network(
-                            f"{self.name}-exposed", rules=rules
-                        )
-                        self._expose_network_id = network.id
+                        # Shielded through the id capture, as in `start()`: a cancel
+                        # mid-POST would leave a network teardown cannot delete.
+                        async def create_and_capture_id() -> None:
+                            network = await self._client.create_lan_network(
+                                f"{self.name}-exposed", rules=rules
+                            )
+                            self._expose_network_id = network.id
+
+                        await run_shielded(create_and_capture_id())
                     else:
                         await self._client.set_lan_rules(self._expose_network_id, rules)
                     # Joins (an idempotent PUT, so a retry re-adds a failed join) and
