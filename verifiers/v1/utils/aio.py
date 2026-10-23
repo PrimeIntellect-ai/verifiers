@@ -29,3 +29,12 @@ async def run_shielded(coro: Awaitable[T]) -> T:
     if cancelled is not None:
         raise cancelled from (None if task.cancelled() else task.exception())
     return task.result()
+
+
+def cancel_requested() -> bool:
+    """Whether the current task holds a cancellation no handler has answered. A library
+    may swallow one (connectrpc turns a CancelledError inside a request into a
+    `ConnectError`), and a retry loop would otherwise send the call again while the
+    run is ending."""
+    task = asyncio.current_task()
+    return task is not None and task.cancelling() > 0

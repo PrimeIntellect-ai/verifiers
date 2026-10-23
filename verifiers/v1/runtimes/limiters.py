@@ -20,17 +20,30 @@ from verifiers.v1.utils.paths import CACHE_DIR
 LIMITER_DIR = CACHE_DIR / "limiter"
 
 
+class CreationBacklogFull(TimeoutError):
+    """A create would wait longer than its limiter's `max_backlog_s` for a slot."""
+
+
 class CreationLimiter:
     """An async leaky bucket shared across processes via a lock file: each `async with`
     reserves the next `1/per_sec`-spaced slot (advancing the on-disk cursor under an exclusive
     flock) and sleeps until it, so the aggregate creation rate across every process sharing
     the bucket stays at `per_sec`. The reservation runs off the event loop; the wait does not
     hold the lock. Reservations are never released, so a cancelled waiter still holds its
-    slot; the backlog drains at `per_sec` regardless."""
+    slot; the backlog drains at `per_sec` regardless. With `max_backlog_s`, a create
+    whose slot is further off than that takes none and raises `CreationBacklogFull`,
+    rather than stall behind a backlog."""
 
-    def __init__(self, name: str, scope: str, per_sec: float) -> None:
+    def __init__(
+        self,
+        name: str,
+        scope: str,
+        per_sec: float,
+        max_backlog_s: float | None = None,
+    ) -> None:
         self._interval = 1 / per_sec
         self._path = LIMITER_DIR / f"{name}-{scope.replace('/', '--')}.bucket"
+        self.max_backlog_s = max_backlog_s
 
     def _reserve(self) -> float:
         os.makedirs(LIMITER_DIR, exist_ok=True)
@@ -42,6 +55,11 @@ class CreationLimiter:
                 data = f.read().strip()
                 now = time.time()
                 slot = max(now, float(data) if data else 0.0)
+                if self.max_backlog_s is not None and slot - now > self.max_backlog_s:
+                    raise CreationBacklogFull(
+                        f"{self._path.stem} creation backlog of {slot - now:.1f}s "
+                        f"exceeds {self.max_backlog_s:g}s"
+                    )
                 f.seek(0)
                 f.truncate()
                 f.write(repr(slot + self._interval))
@@ -61,11 +79,15 @@ class CreationLimiter:
 
 
 def creation_limiter(
-    per_sec: float | None, name: str, scope: str
+    per_sec: float | None,
+    name: str,
+    scope: str,
+    max_backlog_s: float | None = None,
 ) -> CreationLimiter | None:
     """A limiter pacing `name`'s creation to `per_sec`/s within `scope` (None/<= 0
-    disables). All callers (and processes) sharing a name and scope share one bucket, so
-    use one rate per name."""
+    disables), a create waiting at most `max_backlog_s` for its slot (None: as long as
+    the backlog takes). All callers (and processes) sharing a name and scope share one
+    bucket, so use one rate per name."""
     if not per_sec or per_sec <= 0:
         return None
-    return CreationLimiter(name, scope, per_sec)
+    return CreationLimiter(name, scope, per_sec, max_backlog_s)
