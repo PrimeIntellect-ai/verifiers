@@ -410,7 +410,15 @@ class InterceptionServer(Interception):
 
         async def handler(request: web.Request) -> web.StreamResponse:
             try:
-                response = await self.handle_request(request, dialect)
+                session = self.sessions.get(dialect.secret(request.headers))
+                if session is None or session.ctx.model_pool is None:
+                    response = await self.handle_request(request, dialect)
+                else:  # bind the session to a deployment of its pool first
+                    from verifiers.v1.model_routing import request_binding
+
+                    session.adopt(asyncio.current_task())
+                    async with request_binding(session, dialect, self._client):
+                        response = await self.handle_request(request, dialect)
             except BaseException:
                 _finish_idempotent_attempt(request, None)
                 raise
@@ -560,6 +568,7 @@ class InterceptionServer(Interception):
             ModelCall(
                 node=node,
                 model=request.get("model") if request is not None else None,
+                deployment=session.deployment,
                 sampling=sampling,
                 endpoint=dialect.upstream_path,
                 finish_reason=finish_reason,

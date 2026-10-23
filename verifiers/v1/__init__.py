@@ -32,6 +32,7 @@ if TYPE_CHECKING:
     )
     from verifiers.v1.configs.harness import HarnessConfig
     from verifiers.v1.configs.judge import JudgeConfig, Judges
+    from verifiers.v1.configs.model_pool import ModelDeployment, ModelPoolConfig
     from verifiers.v1.configs.retries import RetryConfig, RetryRule
     from verifiers.v1.configs.runtime import (
         CustomRuntimeConfig,
@@ -249,6 +250,8 @@ _NAME_TO_MODULE = {
     "InterceptionError": "verifiers.v1.errors",
     "Judge": "verifiers.v1.judge",
     "JudgeConfig": "verifiers.v1.configs.judge",
+    "ModelDeployment": "verifiers.v1.configs.model_pool",
+    "ModelPoolConfig": "verifiers.v1.configs.model_pool",
     "JudgeResponse": "verifiers.v1.judge",
     "JudgeView": "verifiers.v1.judge",
     "Judges": "verifiers.v1.configs.judge",
@@ -514,6 +517,8 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "pool_serve_kwargs",
     "RetryConfig",
     "RetryRule",
+    "ModelDeployment",
+    "ModelPoolConfig",
     # agent
     "Agent",
     "Agents",

@@ -548,9 +548,9 @@ class Agent:
     ) -> None:
         from verifiers.v1.utils.loaders import harness_config_type, load_harness
 
-        if config.model is None:
+        if config.model is None and config.model_pool is None:
             raise ValueError(
-                "AgentConfig.model is unset; an Agent needs a pinned model "
+                "AgentConfig.model is unset; an Agent needs a pinned model or a model_pool "
                 "(inside an env the run's own model fills it in)"
             )
         # Resolve the unpinned identity fields into the config: it is the agent's
@@ -566,6 +566,7 @@ class Agent:
             model=config.model,
             client=config.client or EvalClientConfig(),
             sampling=config.sampling,
+            model_pool=config.model_pool,
         )
         self._closed = False
         self.runtime_config: RuntimeConfig = config.runtime

@@ -71,6 +71,7 @@ import threading
 import time
 import weakref
 from collections.abc import AsyncIterator, Callable
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any, Literal, cast
 
@@ -620,14 +621,46 @@ def model_gate(directory: Path, key: str, model: str) -> ModelGate:
         return gate
 
 
-def gate_key(url: httpx.URL, credential: str, model: str) -> str:
+def gate_key(
+    url: httpx.URL, credential: str, model: str, scope: str | None = None
+) -> str:
     """The gate a request belongs to: one per endpoint origin, credential and model, since
-    providers limit per key and model. The credential is only hashed."""
+    providers limit per key and model, and `scope` if set. The credential is only hashed."""
     # Anthropic sends the bare key, OpenAI the same key as a Bearer credential: one gate.
     if credential and not any(char.isspace() for char in credential):
         credential = f"Bearer {credential}"
     origin = f"{url.scheme}://{url.host}:{url.port or ''}"
-    return hashlib.sha256(f"{origin}\n{credential}\n{model}".encode()).hexdigest()[:16]
+    identity = f"{origin}\n{credential}\n{model}"
+    if scope is not None:
+        identity += f"\n{scope}"
+    return hashlib.sha256(identity.encode()).hexdigest()[:16]
+
+
+class RequestPermit:
+    """A slot already admitted (a model pool's choice of deployment), handed to the first
+    upstream request through that gate so choosing and admitting are one step."""
+
+    def __init__(self, gate: ModelGate, slot: int) -> None:
+        self.gate, self.slot = gate, slot
+        self.used = False
+
+    def take(self, gate: ModelGate) -> int | None:
+        if not self.used and gate is self.gate:
+            self.used = True
+            return self.slot
+        return None
+
+    def close(self) -> None:
+        """Return the slot if no request took it."""
+        if not self.used:
+            self.used = True
+            self.gate.release(self.slot)
+
+
+reserved_permit: ContextVar[RequestPermit | None] = ContextVar(
+    "reserved_permit", default=None
+)
+"""The permit the next gated request in this context takes instead of waiting."""
 
 
 def request_model(request: httpx.Request) -> str | None:
@@ -693,7 +726,7 @@ class GatedAsyncClient(httpx.AsyncClient):
         self.gate_dir = gate_dir(gate)
 
     async def _gate(self, request: httpx.Request, model: str) -> ModelGate:
-        key = gate_key(request.url, _credential(request), model)
+        key = gate_key(request.url, _credential(request), model, self.gate_config.scope)
         gate = _GATES.get((self.gate_dir, key))
         if gate is None:  # its first use may start the daemon: off the event loop
             gate = await asyncio.to_thread(model_gate, self.gate_dir, key, model)
@@ -709,7 +742,10 @@ class GatedAsyncClient(httpx.AsyncClient):
         config = self.gate_config
         rejections = 0
         while True:
-            slot = await gate.acquire(config)
+            permit = reserved_permit.get()
+            slot = permit.take(gate) if permit is not None else None
+            if slot is None:
+                slot = await gate.acquire(config)
             try:
                 response = await super().send(request, stream=stream, **kwargs)
             except BaseException:

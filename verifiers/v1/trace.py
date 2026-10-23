@@ -160,6 +160,9 @@ class ModelCall(BaseModel):
     """Index into `Trace.nodes` of the assistant node this call committed."""
     model: str | None = None
     """The model requested from the provider."""
+    deployment: str | None = Field(None, exclude_if=lambda value: value is None)
+    """The model pool deployment that served the call (`ModelDeployment.id`; None
+    without a pool)."""
     sampling: Sampling | None = None
     """The call's effective sampling settings (may differ from trace-level sampling)."""
     endpoint: str | None = None
