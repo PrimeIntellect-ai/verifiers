@@ -50,10 +50,12 @@ if TYPE_CHECKING:
     from verifiers.v1.configs.model_pool import ModelDeployment, ModelPoolConfig
     from verifiers.v1.configs.retries import RetryConfig, RetryRule
     from verifiers.v1.configs.runtime import (
+        BindMount,
         CustomRuntimeConfig,
         DockerConfig,
         NetworkPolicyConfig,
         PrimeConfig,
+        PrimeVolume,
         RuntimeConfig,
         SubprocessConfig,
     )
@@ -275,6 +277,7 @@ _NAME_TO_MODULE = {
     "AssistantMessage": "verifiers.v1.types",
     "BaseClientConfig": "verifiers.v1.configs.client",
     "BaseConfig": "pydantic_config",
+    "BindMount": "verifiers.v1.configs.runtime",
     "Box": "verifiers.v1.box",
     "Branch": "verifiers.v1.trace",
     "CONVERSATION_KEY": "verifiers.v1.conversation",
@@ -344,6 +347,7 @@ _NAME_TO_MODULE = {
     "PolicyEvent": "verifiers.v1.trace",
     "PolicySpan": "verifiers.v1.episode",
     "PrimeConfig": "verifiers.v1.configs.runtime",
+    "PrimeVolume": "verifiers.v1.configs.runtime",
     "ProbeCheck": "verifiers.v1.probe",
     "ProbeReport": "verifiers.v1.probe",
     "ProgramResult": "verifiers.v1.runtimes",
@@ -605,9 +609,11 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "ProgramResult",
     "SubprocessConfig",
     "DockerConfig",
+    "BindMount",
     "CustomRuntimeConfig",
     "NetworkPolicyConfig",
     "PrimeConfig",
+    "PrimeVolume",
     "Env",
     "SingleAgentEnv",
     "EnvConfig",

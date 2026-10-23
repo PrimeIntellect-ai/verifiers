@@ -118,11 +118,9 @@ class GEPAAdapter:
 
 def _episode_score(episode: Episode) -> float:
     """A candidate's score on one episode: the mean reward of the episode's scored
-    traces. Seats that recorded no rewards (a reward-less judge) and dropped traces
-    don't dilute the signal; an episode with no scored traces scores 0."""
-    scored = [
-        trace.reward
-        for trace in episode.traces
-        if trace.rewards and not trace.is_dropped
-    ]
+    traces. Seats that recorded no rewards (a reward-less judge) don't dilute the
+    signal; an episode with no scored traces scores 0."""
+    if any(trace.is_dropped for trace in episode.traces):
+        raise ValueError("GEPA cannot score an episode containing dropped traces")
+    scored = [trace.reward for trace in episode.traces if trace.rewards]
     return sum(scored) / len(scored) if scored else 0.0
