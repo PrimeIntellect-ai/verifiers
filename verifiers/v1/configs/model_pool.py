@@ -1,5 +1,7 @@
 """Eligible model deployments for one native agent session."""
 
+from typing import Literal
+
 from pydantic import Field, model_validator
 from pydantic_config import BaseConfig
 
@@ -25,6 +27,10 @@ class ModelDeployment(BaseConfig):
 
 class ModelPoolConfig(BaseConfig):
     deployments: list[ModelDeployment] = Field(min_length=1)
+    order: Literal["shuffle", "priority"] = "shuffle"
+    """How a session picks its deployment: "shuffle" spreads sessions over every
+    deployment with room; "priority" takes the first in `deployments` whose gate admits,
+    so later ones take only the overflow of a full or rejecting (backed-off) gate."""
 
     @model_validator(mode="after")
     def checked(self):

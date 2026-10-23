@@ -21,7 +21,8 @@ MODEL_BINDING = "model_binding"
 
 async def _choose(pool, dialect):
     eligible = list(pool.deployments)
-    random.shuffle(eligible)
+    if pool.order == "shuffle":
+        random.shuffle(eligible)
     gates = []
     for deployment in eligible:
         client = deployment.client
