@@ -44,6 +44,8 @@ def make_rollout(trace: vf.Trace, session, time_remaining=None):
     run._borrowed_runtime = None
     run.runtime = None
     run._agent_time_remaining = time_remaining
+    run._agent_time_spent = 0.0
+    run._segment_start = None
     run._timeouts = RolloutTimeouts()
     run._harness_session = session
     run.deployment = SimpleNamespace(run=lambda turn: turn)

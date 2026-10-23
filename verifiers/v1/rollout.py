@@ -170,7 +170,20 @@ class Rollout:
         self._deployment_config = agent_config.deployment
         self._has_user = has_user
         self._timeouts = timeouts
-        self._agent_time_remaining = self._timeouts.agent
+        # The agent seconds spent before this run: a resume continues the budget of the
+        # checkpoint it starts from (`Checkpoint.agent_time`), so a restarted process
+        # neither refills it nor charges the time it was down.
+        if resumes is None:
+            self._agent_time_spent = 0.0
+        else:
+            source = start if start is not None else (resumes.checkpoints or [None])[-1]
+            self._agent_time_spent = (source.agent_time if source else None) or 0.0
+        self._segment_start: float | None = None
+        self._agent_time_remaining = (
+            None
+            if self._timeouts.agent is None
+            else max(0.0, self._timeouts.agent - self._agent_time_spent)
+        )
         self._shared_tools = shared_tools or {}
         self._interception = interception
         self.runtime = runtime
@@ -223,6 +236,7 @@ class Rollout:
                         "turns": self.opening_turns,
                         "restored": True,
                         "position": position,
+                        "agent_time": self._agent_time_spent,
                     }
                 )
             )
@@ -755,6 +769,16 @@ class Rollout:
         self.trace.notify()
         return not self._session.stopped
 
+    def agent_time_spent(self) -> float:
+        """The agent seconds this rollout has spent, its predecessors' included: the
+        finished segments, and the running one so far."""
+        running = (
+            0.0
+            if self._segment_start is None
+            else asyncio.get_running_loop().time() - self._segment_start
+        )
+        return self._agent_time_spent + running
+
     async def checkpoint(self, turns: int | None = None) -> Checkpoint:
         """Checkpoint the box this rollout owns and record it on the trace, matching
         the conversation at `turns` (default: the turns completed now; the rule is on
@@ -775,7 +799,9 @@ class Rollout:
             checkpoint_id = (await self._box.checkpoint()).id
         else:
             checkpoint_id = await runtime.backend.checkpoint()
-        return self.trace.record_checkpoint(checkpoint_id, turns)
+        return self.trace.record_checkpoint(
+            checkpoint_id, turns, agent_time=self.agent_time_spent()
+        )
 
     async def save_call(self, response: Response) -> None:
         """Save the exchange as of this model response, before the harness receives it:
@@ -916,7 +942,7 @@ class Rollout:
         root_reply_before = trace.root_reply
         trace.root_reply = None
         loop = asyncio.get_running_loop()
-        segment_start = loop.time()
+        segment_start = self._segment_start = loop.time()
         self.deadline_at = (
             None
             if self._agent_time_remaining is None
@@ -969,9 +995,12 @@ class Rollout:
             self._session.on_turn_input = None
             if trace.num_turns == turns_before:
                 trace.root_reply = root_reply_before
+            elapsed = loop.time() - segment_start
+            self._agent_time_spent += elapsed
+            self._segment_start = None
             if self._agent_time_remaining is not None:
                 self._agent_time_remaining = max(
-                    0.0, self._agent_time_remaining - (loop.time() - segment_start)
+                    0.0, self._agent_time_remaining - elapsed
                 )
             self.deadline_at = None
         # A harness that completes cleanly after a failed model call handled it (e.g. it

@@ -293,6 +293,13 @@ class Checkpoint(BaseModel):
     """A carried checkpoint's place in the conversation the trace opens on: the box
     matches its first `position` messages (`Trace.conversation_for`). None on the
     trace's own checkpoints."""
+    agent_time: float | None = Field(
+        default=None, exclude_if=lambda agent_time: agent_time is None
+    )
+    """The agent seconds the run had spent when it was taken: a run resumed from it
+    has the rest of its agent budget (`RolloutTimeouts.agent`), never a fresh one, and
+    time with no run alive (a crashed or restarted process) is not counted. None on
+    records written before it existed (a resume from one gets the whole budget)."""
     node: int | None = Field(default=None, exclude_if=lambda node: node is None)
     """The node its conversation ends at, pinned when the trace branches past it
     (`Trace.resume`): a checkpoint at the end of a branch has no later sampled turn on
@@ -690,14 +697,19 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         return super().__deepcopy__(memo)
 
     def record_checkpoint(
-        self, checkpoint_id: str, turns: int | None = None
+        self,
+        checkpoint_id: str,
+        turns: int | None = None,
+        agent_time: float | None = None,
     ) -> Checkpoint:
         """Record a checkpoint of the run's box, matching the conversation at `turns`
-        (default: the turns completed now). Returns the record."""
+        (default: the turns completed now), taken after `agent_time` agent seconds.
+        Returns the record."""
         checkpoint = Checkpoint(
             id=checkpoint_id,
             turns=self.num_turns if turns is None else turns,
             time=time.time(),
+            agent_time=agent_time,
         )
         self.checkpoints.append(checkpoint)
         self.notify()

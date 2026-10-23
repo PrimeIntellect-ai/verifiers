@@ -443,6 +443,41 @@ async def test_checkpoint_resume_round_trip(model):
     ] == [("ckpt-1", 3, False, None), ("ckpt-1", 3, True, 6)]
 
 
+class SlowHarness(ScriptHarness):
+    """Takes half a second before each segment's work."""
+
+    async def launch(self, *args, **kwargs) -> ProgramResult:
+        import asyncio
+
+        await asyncio.sleep(0.5)
+        return await super().launch(*args, **kwargs)
+
+
+async def test_a_resume_has_only_the_rest_of_its_agent_budget(model):
+    """A checkpoint records the agent time spent; a run resumed from it times out on
+    what is left of the budget, not on a fresh one."""
+    agent = make(model, timeout={"rollout": 1.0})
+    async with agent.interaction(task(prompt=None)) as interaction:
+        await interaction.turn("first")
+        checkpoint = await interaction.checkpoint()
+    assert checkpoint.agent_time is not None and 0.0 < checkpoint.agent_time < 1.0
+    loaded = reload(interaction.trace)
+    assert loaded.checkpoints[-1].agent_time == checkpoint.agent_time
+    # As if the earlier run had used most of its budget before it was checkpointed.
+    loaded.checkpoints[-1].agent_time = 0.9
+
+    slow = make(model, harness=SlowHarness, timeout={"rollout": 1.0})
+    async with slow.interaction(resume=loaded) as reopened:
+        await reopened.turn("second")
+    assert reopened.trace.stop_condition == "agent_timeout"
+
+    # With the budget left, the same slow segment finishes.
+    fresh = reload(interaction.trace)
+    async with slow.interaction(resume=fresh) as reopened:
+        segment = await reopened.turn("second")
+    assert reopened.trace.ok and segment.last_reply == "done: second"
+
+
 async def test_a_resumed_trace_resumes_again_from_its_start(model):
     agent = make(model)
     async with agent.interaction(task()) as interaction:
