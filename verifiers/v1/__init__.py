@@ -81,6 +81,7 @@ if TYPE_CHECKING:
         EnvError,
         HarnessError,
         InterceptionError,
+        OutageKind,
         ProviderError,
         RolloutError,
         SandboxError,
@@ -88,6 +89,7 @@ if TYPE_CHECKING:
         TaskError,
         ToolsetError,
         TunnelError,
+        outage_kind,
     )
     from verifiers.v1.grading import grade_submission
     from verifiers.v1.graph import MessageNode
@@ -263,6 +265,7 @@ _NAME_TO_MODULE = {
     "ModelCall": "verifiers.v1.trace",
     "ModelContext": "verifiers.v1.clients",
     "NetworkPolicyConfig": "verifiers.v1.configs.runtime",
+    "OutageKind": "verifiers.v1.errors",
     "PATCH_CAP_BYTES": "verifiers.v1.utils.git",
     "ParentLink": "verifiers.v1.semantic",
     "PolicyEvent": "verifiers.v1.trace",
@@ -369,6 +372,7 @@ _NAME_TO_MODULE = {
     "merge_defaults": "verifiers.v1.utils.generic",
     "metric": "verifiers.v1.utils.decorators",
     "narrowed_env_annotation": "verifiers.v1.configs.cli.env",
+    "outage_kind": "verifiers.v1.errors",
     "parse_judge_choice": "verifiers.v1.utils.score",
     "parse_pytest_outcomes": "verifiers.v1.utils.score",
     "pool_serve_kwargs": "verifiers.v1.configs.serve",
@@ -469,6 +473,8 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "TaskError",
     "InterceptionError",
     "TunnelError",
+    "OutageKind",
+    "outage_kind",
     # clients
     "Client",
     "BaseClientConfig",
