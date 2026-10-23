@@ -42,18 +42,52 @@ class ClientTimeoutConfig(BaseConfig):
     """Time to acquire a connection from the pool."""
 
 
+REJECTION_STATUSES = frozenset({429, 529})
+"""Provider statuses that mean "too much load from you": 429 (rate or concurrency limit)
+and 529 (Anthropic's overloaded)."""
+
+
 class RequestGateConfig(BaseConfig):
     """A cap on concurrent requests per model, shared by every process on the host that
-    sends to the same endpoint with the same API key (see `request_gate`)."""
+    sends to the same endpoint with the same API key (see `request_gate`). With
+    `adaptive`, the limit drops on provider rejections (429/529) and climbs back to
+    `max_concurrent` over `recover_seconds`; `max_concurrent` is never exceeded."""
 
     max_concurrent: int = Field(ge=1)
     """Most requests in flight at once, per model. Processes joining a live gate share
     its cap (the largest configured), and an operator can move it live (`vf-gate`)."""
+    min_concurrent: int = Field(1, ge=1)
+    """Lowest limit the adaptive gate shrinks to."""
+    adaptive: bool = True
+    """Lower the limit on 429/529 and let it climb back; off, the limit stays at the cap
+    (for a provider that queues past its throughput instead of answering 429)."""
+    decrease_factor: float = Field(0.75, gt=0, lt=1)
+    """Factor applied to the limit on a rejection."""
+    decrease_cooldown: float = Field(2.0, ge=0)
+    """Seconds after a decrease in which further rejections do not decrease again: one
+    burst of rejections is one signal."""
+    recover_seconds: float = Field(60.0, gt=0)
+    """Seconds in which a lowered limit climbs back to the cap, in a straight line from
+    the decrease, whatever the traffic."""
+    max_rejections: int = Field(10, ge=0)
+    """Rejections absorbed per request: each returns its permit, waits, then queues
+    again. The next one reaches the caller (the harness SDK may retry it). 0 absorbs
+    none and leaves every 429 to the harness, as without a gate."""
+    backoff: float = Field(1.0, gt=0)
+    """Base wait in seconds after a rejection without `Retry-After`; doubles per rejection."""
+    max_backoff: float = Field(60.0, gt=0)
+    """Longest wait after a rejection, `Retry-After` included."""
     dir: str | None = None
     """Directory of the host's gate daemon (its socket, log and state snapshots); it must
     be your own, mode 0700. None = `$XDG_RUNTIME_DIR/verifiers-request-gates`, else
     `~/.cache/verifiers/request-gates/<hostname>`. Gates are per host: a directory on a
     shared mount does not share a budget across hosts."""
+
+    @model_validator(mode="after")
+    def check_bounds(self) -> "RequestGateConfig":
+        if self.min_concurrent > self.max_concurrent:
+            raise ValueError("min_concurrent exceeds max_concurrent")
+        return self
 
 
 class BaseClientConfig(BaseConfig):

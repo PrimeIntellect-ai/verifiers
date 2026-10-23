@@ -77,7 +77,9 @@ To cap concurrent requests per model across every process on the host (env-serve
 max_concurrent = 32
 ```
 
-`uv run vf-gate` shows each gate's cap and its requests in flight and waiting; `uv run vf-gate --resize 48 --model M` changes the cap of running gates until no process uses them.
+By default the gate is adaptive: a 429 or 529 from the provider lowers the gate's limit by a quarter (at most once every 2 seconds), and the limit climbs back to `max_concurrent` over the next 60 seconds. The refused request waits (`Retry-After`, else exponential backoff) and queues again, up to `max_rejections = 10` times. Set `adaptive = false` for a provider that queues requests instead of refusing them.
+
+`uv run vf-gate` shows each gate's cap, current limit, refusals and requests in flight and waiting; `uv run vf-gate --resize 48 --model M` changes the cap of running gates until no process uses them.
 
 ## Sampling settings
 
