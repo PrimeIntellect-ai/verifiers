@@ -70,6 +70,15 @@ read = 300
 
 Unlike static `client.headers` (which are written into the saved resolved config), `headers_from_env` reads environment variables when the client starts and overrides any matching static headers. HTTP timeouts are in seconds: `connect` defaults to `30`, while `read`, `write`, and `pool` have no limit by default. Because `read` only bounds the interval between received chunks rather than the total duration of a response, use agent stage timeouts to cap a full rollout.
 
+To cap concurrent requests per model across every process on the host (env-server workers and concurrent runs alike), set `client.request_gate`. Requests beyond the cap wait in one first-come, first-served queue per endpoint, API key and model:
+
+```toml
+[client.request_gate]
+max_concurrent = 32
+```
+
+`uv run vf-gate` shows each gate's cap and its requests in flight and waiting; `uv run vf-gate --resize 48 --model M` changes the cap of running gates until no process uses them.
+
 ## Sampling settings
 
 Shared generation parameters go under `[sampling]`, with per-agent overrides under `[env.<agent>.sampling]`. Overrides merge field by field, so setting an agent's `temperature` preserves the shared token limit and provider options (pass `None` in Python or `null` in JSON to clear an inherited field).

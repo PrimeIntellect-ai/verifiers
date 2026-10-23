@@ -152,6 +152,7 @@ vf-validate = "verifiers.v1.cli.validate:main"
 vf-debug = "verifiers.v1.cli.debug:main"
 vf-replay = "verifiers.v1.cli.replay:main"
 vf-gepa = "verifiers.v1.cli.gepa:main"
+vf-gate = "verifiers.v1.cli.gate:main"
 
 # hatchling configuration
 [tool.hatch.version]

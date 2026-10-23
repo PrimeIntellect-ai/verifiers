@@ -21,9 +21,16 @@ VERSION_SEGMENT = re.compile(r"v\d+")
 
 
 def build_async_httpx(config: BaseClientConfig) -> httpx.AsyncClient:
-    return httpx.AsyncClient(
-        timeout=httpx.Timeout(**config.timeout.model_dump()), limits=DEFAULT_LIMITS
-    )
+    """The HTTP client every model request to `config`'s endpoint is sent with; a
+    `GatedAsyncClient` when `config.request_gate` is set."""
+    timeout = httpx.Timeout(**config.timeout.model_dump())
+    if config.request_gate is not None:
+        from verifiers.v1.request_gate import GatedAsyncClient
+
+        return GatedAsyncClient(
+            config.request_gate, timeout=timeout, limits=DEFAULT_LIMITS
+        )
+    return httpx.AsyncClient(timeout=timeout, limits=DEFAULT_LIMITS)
 
 
 def build_async_openai(config: BaseClientConfig) -> AsyncOpenAI:
