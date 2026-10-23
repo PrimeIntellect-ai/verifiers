@@ -60,7 +60,7 @@ if TYPE_CHECKING:
     from verifiers.v1.trace import Trace
 
 
-def _encode_ndarray(arr: np.ndarray) -> dict:
+def encode_ndarray(arr: np.ndarray) -> dict:
     """A numpy array as a msgpack-safe dict (dtype + shape + raw bytes). The bytes ride the
     env-server wire natively via msgpack's `bin` type — no base64 — so the response must be
     packed from `model_dump(mode="python")` (`mode="json"` would coerce the bytes to str)."""
@@ -73,8 +73,8 @@ def _encode_ndarray(arr: np.ndarray) -> dict:
     }
 
 
-def _decode_ndarray(d: dict) -> np.ndarray:
-    """Reverse :func:`_encode_ndarray`."""
+def decode_ndarray(d: dict) -> np.ndarray:
+    """Reverse :func:`encode_ndarray`."""
     return np.frombuffer(d["data"], dtype=np.dtype(d["dtype"])).reshape(d["shape"])
 
 
@@ -108,7 +108,7 @@ def _token_stream(dtype: type[np.generic], item_type: str):
 
     def validate(value: Any) -> np.ndarray:
         if isinstance(value, dict) and value.get("__nd__"):
-            value = _decode_ndarray(value)
+            value = decode_ndarray(value)
         return np.asarray(value, dtype=dtype)
 
     return Annotated[
@@ -149,7 +149,7 @@ def _serialize_stream(
             return values
         return [round(value, decimals) for value in values]
     if context.get("token_arrays"):
-        return _encode_ndarray(np.asarray(values))
+        return encode_ndarray(np.asarray(values))
     return as_list(values)
 
 
@@ -280,7 +280,7 @@ class MessageNode(BaseModel):
     @field_serializer("routed_experts")
     def serialize_ndarray_field(self, arr: np.ndarray | None) -> dict | None:
         """Integer array -> raw-bytes `__nd__` dict so it rides the wire (numpy can't JSON)."""
-        return None if arr is None else _encode_ndarray(arr)
+        return None if arr is None else encode_ndarray(arr)
 
     @field_validator("routed_experts", mode="before")
     @classmethod
@@ -288,7 +288,7 @@ class MessageNode(BaseModel):
         if value is None or isinstance(value, np.ndarray):
             return value
         if isinstance(value, dict) and value.get("__nd__"):
-            return _decode_ndarray(value)
+            return decode_ndarray(value)
         raise TypeError(f"cannot build ndarray field from {type(value).__name__}")
 
     @field_serializer("sampling_mask", "top_logprobs")
@@ -298,7 +298,7 @@ class MessageNode(BaseModel):
         if payload is None:
             return None
         return {
-            field.name: _encode_ndarray(getattr(payload, field.name))
+            field.name: encode_ndarray(getattr(payload, field.name))
             for field in fields(payload)
         }
 
@@ -311,7 +311,7 @@ class MessageNode(BaseModel):
         if value is None or isinstance(value, kind):
             return value
         if isinstance(value, dict):
-            return kind(**{key: _decode_ndarray(array) for key, array in value.items()})
+            return kind(**{key: decode_ndarray(array) for key, array in value.items()})
         raise TypeError(f"cannot build {kind.__name__} from {type(value).__name__}")
 
 
