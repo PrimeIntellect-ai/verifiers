@@ -455,6 +455,14 @@ class Task(Generic[DataT, StateT, ConfigT]):
                     if value is not None:
                         trace.record_reward(key, value, judge.config.weight)
 
+    def record_refusal(self, trace: Trace) -> None:
+        """Score a submission the task refused at `finalize` (`SubmissionRefused`): each
+        reward signal it would have scored records 0, at its weight."""
+        for fn in self.hooks("reward"):
+            trace.record_reward(fn.__name__, 0.0, getattr(fn, "_vf_weight", 1.0))
+        for judge in self.plugged_judges():
+            trace.record_reward(judge.reward_name, 0.0, judge.config.weight)
+
     @classmethod
     def data_type(cls) -> type[TaskData]:
         return concrete_type(cls, TaskData) or TaskData

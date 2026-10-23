@@ -138,8 +138,10 @@ async def test_compose_scoring(
         trace = await agent.run(task)
     assert all(backend._host_backend.stopped for backend in SOLVERS.pop(trace.id, []))
     if mode == "isolated" and collect_fails:
-        assert not trace.ok
-        assert "collect hook failed" in str(trace.errors)
+        # The sidecar's check refuses every time: the submission scores 0, ungraded.
+        assert trace.ok and not trace.errors
+        assert "collect hook refused" in trace.info["submission_refused"]
+        assert trace.reward == 0
         assert "solver_released_before_grading" not in trace.info
     elif scoring_timeout:
         assert trace.ok and trace.is_timeout and not trace.errors

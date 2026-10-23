@@ -456,6 +456,13 @@ class TaskError(RolloutError):
     """Task-authored code raised — `setup`, `finalize`, or a `@reward`/`@metric`."""
 
 
+class SubmissionRefused(TaskError):
+    """The task's own check refused the agent's submission at `finalize` (a collect
+    hook that rejects what the agent left: a forbidden build script, a stray cache in
+    the source tree). An agent failure, not a failed rollout: the rollout scores the
+    task's rewards 0 without grading, and records the refusal on the trace."""
+
+
 class InterceptionError(RolloutError):
     """Communication with the host interception server failed."""
 

@@ -21,6 +21,7 @@ from verifiers.v1.errors import (
     ProviderError,
     RolloutError,
     SandboxError,
+    SubmissionRefused,
     TaskError,
     ToolsetError,
     boundary,
@@ -1126,22 +1127,34 @@ class Rollout:
                 scoring_elapsed = 0.0
                 metrics_done = False
                 finalize_phase = "task finalization"
+                refused: SubmissionRefused | None = None
                 try:
                     async with (
                         asyncio.timeout_at(finalize_deadline),
                         boundary(TaskError, "task finalize"),
                     ):
-                        await invoke(
-                            self.task.finalize,
-                            {
-                                "trace": trace,
-                                "runtime": runtime,
-                                "deployment": self.deployment,
-                            },
-                        )
+                        try:
+                            await invoke(
+                                self.task.finalize,
+                                {
+                                    "trace": trace,
+                                    "runtime": runtime,
+                                    "deployment": self.deployment,
+                                },
+                            )
+                        except SubmissionRefused as e:
+                            # The task rejected the submission: nothing is collected or
+                            # graded, and its rewards score 0 below.
+                            refused = e
+                            trace.info["submission_refused"] = str(e)
+                            logger.info(
+                                "rollout %s: submission refused: %s", trace.id, e
+                            )
                         if (
-                            self._collect_artifacts or grader is not None
-                        ) and not trace.state.artifacts:
+                            refused is None
+                            and (self._collect_artifacts or grader is not None)
+                            and not trace.state.artifacts
+                        ):
                             finalize_phase = "submission collection"
                             trace.state.artifacts = await collect(
                                 runtime,
@@ -1162,19 +1175,31 @@ class Rollout:
                         if finalize_deadline is not None:
                             finalize_deadline += loop.time() - interlude_started
                         finalize_phase = "service finalization"
-                        async with (
-                            asyncio.timeout_at(finalize_deadline),
-                            boundary(TaskError, "task finalize"),
-                        ):
-                            await self._cleanup_harness(runtime)
-                            await self.deployment.stop_execution()
-                            await self.task.finalize_services(
-                                trace,
-                                {
-                                    name: self.deployment.target(name)
-                                    for name in self.deployment.target_backends
-                                },
-                            )
+                        # A refused submission is not graded, so its services are not
+                        # collected for a grader.
+                        if refused is None:
+                            async with (
+                                asyncio.timeout_at(finalize_deadline),
+                                boundary(TaskError, "task finalize"),
+                            ):
+                                await self._cleanup_harness(runtime)
+                                await self.deployment.stop_execution()
+                                try:
+                                    await self.task.finalize_services(
+                                        trace,
+                                        {
+                                            name: self.deployment.target(name)
+                                            for name in self.deployment.target_backends
+                                        },
+                                    )
+                                except SubmissionRefused as e:
+                                    refused = e
+                                    trace.info["submission_refused"] = str(e)
+                                    logger.info(
+                                        "rollout %s: submission refused: %s",
+                                        trace.id,
+                                        e,
+                                    )
                 except TimeoutError:
                     self.timeout("finalize")
                     if isolated:
@@ -1210,6 +1235,8 @@ class Rollout:
                                 skip_reason,
                             )
                             trace.info["scoring_skipped"] = skip_reason
+                        elif refused is not None:
+                            self.task.record_refusal(trace)
                         elif grader is not None:
                             try:
                                 await grade_task(

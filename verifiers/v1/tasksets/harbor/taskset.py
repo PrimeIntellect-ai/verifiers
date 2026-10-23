@@ -49,7 +49,7 @@ from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.configs.scoring import ScoringConfig
 from verifiers.v1.configs.task import TaskConfig
 from verifiers.v1.configs.taskset import TasksetConfig
-from verifiers.v1.errors import SandboxError, TaskError
+from verifiers.v1.errors import SandboxError, SubmissionRefused, TaskError
 from verifiers.v1.runtimes import ProgramResult, Runtime, RuntimeConfig
 from verifiers.v1.runtimes.compose import ComposeSpec
 from verifiers.v1.runtimes.deployment import Deployment
@@ -558,21 +558,26 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
             target = runtimes[hook.service]
             if hook.user not in (None, "root", "0"):
                 target = target.with_user(hook.user)
-            try:
-                result = await asyncio.wait_for(
-                    target.run(["sh", "-c", hook.command], {}),
-                    hook.timeout_sec,
-                )
-            except TimeoutError as exc:
-                raise RuntimeError(
-                    f"collect hook timed out after {hook.timeout_sec}s: {hook.command}"
-                ) from exc
-            if result.exit_code:
-                detail = (result.stderr or result.stdout).strip()[-500:]
-                raise RuntimeError(
-                    f"collect hook failed (exit {result.exit_code}): "
-                    f"{hook.command}\n{detail}"
-                )
+            result = await self.run_collect_hook(target, hook)
+            if not result.exit_code:
+                continue
+            detail = (result.stderr or result.stdout).strip()[-500:]
+            if 0 < result.exit_code < 126:
+                # The hook ran and its check failed. A verdict on the submission holds
+                # when the same check runs again; a fault of the moment (a file changed
+                # while a hook's tar read it) does not, and stays a retryable failure.
+                again = await self.run_collect_hook(target, hook)
+                if again.exit_code == result.exit_code:
+                    raise SubmissionRefused(
+                        f"collect hook refused the submission (exit {result.exit_code}, "
+                        f"twice): {hook.command}\n{detail}"
+                    )
+                if not again.exit_code:
+                    continue
+            raise RuntimeError(
+                f"collect hook failed (exit {result.exit_code}): "
+                f"{hook.command}\n{detail}"
+            )
         for service, source_runtime in runtimes.items():
             used = sum(len(data or b"") for data in trace.state.artifacts.values())
             collected = await collect(
@@ -596,6 +601,24 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
                         f"artifact {str(source)!r} overlaps another service's"
                     )
             trace.state.artifacts.update(collected)
+
+    @staticmethod
+    async def run_collect_hook(target: Runtime, hook):
+        """One run of a collect hook; its own exit status, or a `RuntimeError` when it
+        outlives its timeout (a stuck hook says nothing about the submission)."""
+        try:
+            return await asyncio.wait_for(
+                target.run(["sh", "-c", hook.command], {}),
+                hook.timeout_sec,
+            )
+        except TimeoutError as exc:
+            raise RuntimeError(
+                f"collect hook timed out after {hook.timeout_sec}s: {hook.command}"
+            ) from exc
+
+    def record_refusal(self, trace: Trace) -> None:
+        """The verifier's reward key scores 0, as `solved` records it."""
+        trace.record_reward(self.config.reward_key, 0.0, 1.0)
 
     async def stage_verifier(self, trace: Trace, runtime: Runtime) -> None:
         if self.scoring.mode == "isolated" and any(
