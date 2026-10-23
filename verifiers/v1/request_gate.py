@@ -4,6 +4,11 @@ Providers limit concurrent requests per API key and model (Prime Inference answe
 `429 Too many concurrent requests for this model (limit: 32)`). A gate is one such budget:
 an (endpoint, API key, model) with a cap, `RequestGateConfig.max_concurrent`.
 
+Every model request a rollout makes, nested agents and judges included, leaves through an
+`httpx.AsyncClient` from `clients.base.build_async_httpx`. With `BaseClientConfig.request_gate`
+set, that client is a `GatedAsyncClient`, and each request first takes a permit of the gate
+for its (endpoint, API key, model). A streamed response holds its permit until it is closed.
+
 Admission is decided by one daemon per gate directory and host (`request_gate_daemon`),
 which holds every gate's slots and queue in memory. The first process to use the directory
 starts it (under `daemon.lock`); every process keeps one unix-socket connection to it, so
@@ -53,8 +58,13 @@ import subprocess
 import sys
 import threading
 import time
+import weakref
+from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 from typing import Any, Literal, cast
+
+import httpx
+from pydantic_core import from_json
 
 from verifiers.v1.configs.client import RequestGateConfig
 from verifiers.v1.request_gate_daemon import check_private, open_private, peer_uid
@@ -586,3 +596,94 @@ def model_gate(directory: Path, key: str, model: str) -> ModelGate:
         if gate is None:
             gate = _GATES[(directory, key)] = ModelGate(directory, key, model)
         return gate
+
+
+def gate_key(url: httpx.URL, credential: str, model: str) -> str:
+    """The gate a request belongs to: one per endpoint origin, credential and model, since
+    providers limit per key and model. The credential is only hashed."""
+    # Anthropic sends the bare key, OpenAI the same key as a Bearer credential: one gate.
+    if credential and not any(char.isspace() for char in credential):
+        credential = f"Bearer {credential}"
+    origin = f"{url.scheme}://{url.host}:{url.port or ''}"
+    return hashlib.sha256(f"{origin}\n{credential}\n{model}".encode()).hexdigest()[:16]
+
+
+def request_model(request: httpx.Request) -> str | None:
+    """The model a request asks for: its JSON body's `model`."""
+    if request.method != "POST":
+        return None
+    try:
+        body = from_json(request.content)
+    except (httpx.RequestNotRead, ValueError):
+        return None
+    model = body.get("model") if isinstance(body, dict) else None
+    return model if isinstance(model, str) else None
+
+
+def _credential(request: httpx.Request) -> str:
+    headers = request.headers
+    return headers.get("authorization") or headers.get("x-api-key") or ""
+
+
+class _ReleasingStream(httpx.AsyncByteStream):
+    """A streamed body that returns its permit when closed (or collected unclosed)."""
+
+    def __init__(self, inner: httpx.AsyncByteStream, release: Callable[[], None]):
+        self._inner = inner
+        self._release = release
+
+    async def __aiter__(self) -> AsyncIterator[bytes]:
+        async for chunk in self._inner:
+            yield chunk
+
+    async def aclose(self) -> None:
+        try:
+            await self._inner.aclose()
+        finally:
+            self._release()
+
+
+class GatedAsyncClient(httpx.AsyncClient):
+    """An `httpx.AsyncClient` whose model requests pass the request gate (module doc).
+    Requests that name no model pass straight through."""
+
+    def __init__(self, gate: RequestGateConfig, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.gate_config = gate
+        self.gate_dir = gate_dir(gate)
+
+    async def _gate(self, request: httpx.Request, model: str) -> ModelGate:
+        key = gate_key(request.url, _credential(request), model)
+        gate = _GATES.get((self.gate_dir, key))
+        if gate is None:  # its first use may start the daemon: off the event loop
+            gate = await asyncio.to_thread(model_gate, self.gate_dir, key, model)
+        return gate
+
+    async def send(
+        self, request: httpx.Request, *, stream: bool = False, **kwargs: Any
+    ) -> httpx.Response:
+        model = request_model(request)
+        if model is None:
+            return await super().send(request, stream=stream, **kwargs)
+        gate = await self._gate(request, model)
+        slot = await gate.acquire(self.gate_config)
+        try:
+            response = await super().send(request, stream=stream, **kwargs)
+        except BaseException:
+            gate.release(slot)
+            raise
+        if not stream:
+            gate.release(slot)
+            return response
+        done = False
+
+        def release_once() -> None:
+            nonlocal done
+            if not done:
+                done = True
+                gate.release(slot)
+
+        assert isinstance(response.stream, httpx.AsyncByteStream)
+        response.stream = _ReleasingStream(response.stream, release_once)
+        weakref.finalize(response, release_once)
+        return response

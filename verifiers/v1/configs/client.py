@@ -67,6 +67,12 @@ class BaseClientConfig(BaseConfig):
     """Header names mapped to environment variables, resolved when building a client.
     Set environment values override static headers."""
     timeout: ClientTimeoutConfig = ClientTimeoutConfig()
+    request_gate: RequestGateConfig | None = Field(
+        None, exclude_if=lambda gate: gate is None
+    )
+    """A host-wide cap on concurrent requests per model for every request sent through
+    this endpoint config (harness turns, nested agents, judges). None = no gate, and
+    left out of a saved config, so traces stay readable by verifiers without the field."""
 
     @model_validator(mode="after")
     def apply_prime_config(self) -> "BaseClientConfig":
