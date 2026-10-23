@@ -56,6 +56,9 @@ class RequestGateConfig(BaseConfig):
     max_concurrent: int = Field(ge=1)
     """Most requests in flight at once, per model. Processes joining a live gate share
     its cap (the largest configured), and an operator can move it live (`vf-gate`)."""
+    scope: str | None = None
+    """A deployment identity within one endpoint and key, so deployments behind the same
+    URL and key keep separate budgets (a model pool sets it to the deployment `id`)."""
     min_concurrent: int = Field(1, ge=1)
     """Lowest limit the adaptive gate shrinks to."""
     adaptive: bool = True

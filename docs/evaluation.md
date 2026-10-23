@@ -81,6 +81,16 @@ By default the gate is adaptive: a 429 or 529 from the provider lowers the gate'
 
 `uv run vf-gate` shows each gate's cap, current limit, refusals and requests in flight and waiting; `uv run vf-gate --resize 48 --model M` changes the cap of running gates until no process uses them.
 
+To spread an agent's rollouts over several deployments, give the agent a `model_pool` in place of `model` and `client`. Each deployment names its model and endpoint, and its `request_gate` is its capacity. A rollout binds at its first model request to a deployment with a free slot (tried in random order) and keeps it; the trace records the deployment of every call (`calls[].deployment`). Set `same_model = true` to require that every deployment serves the same model:
+
+```toml
+[env.solver.model_pool]
+deployments = [
+  { id = "ds-a", model = "internal/deepseek-v4", client = { base_url = "http://ds-a/v1", request_gate = { max_concurrent = 64 } } },
+  { id = "ds-b", model = "internal/deepseek-v4", client = { base_url = "http://ds-b/v1", request_gate = { max_concurrent = 32 } } },
+]
+```
+
 ## Sampling settings
 
 Shared generation parameters go under `[sampling]`, with per-agent overrides under `[env.<agent>.sampling]`. Overrides merge field by field, so setting an agent's `temperature` preserves the shared token limit and provider options (pass `None` in Python or `null` in JSON to clear an inherited field).

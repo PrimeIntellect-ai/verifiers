@@ -154,6 +154,10 @@ class ReplayResponse:
 class RolloutSession:
     ctx: ModelContext
     trace: Trace
+    model_lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False)
+    """Held while a pooled session binds to a deployment."""
+    deployment: str | None = field(default=None, init=False)
+    """The model pool deployment this session is bound to (None: no pool, or not yet)."""
     network_policy: NetworkPolicyConfig = field(default_factory=NetworkPolicyConfig)
     """The resolved execution policy, including task-level restrictions."""
     trace_stops: list[Callable[..., Awaitable[bool] | bool]] = field(

@@ -9,6 +9,7 @@ from verifiers.v1.configs.client import (
     ClientConfig,
     TrainClientConfig,
 )
+from verifiers.v1.configs.model_pool import ModelPoolConfig
 from verifiers.v1.dialects import Dialect
 from verifiers.v1.graph import PendingTurn
 from verifiers.v1.types import Response, Sampling, SamplingConfig
@@ -87,3 +88,6 @@ class ModelContext:
     model: str
     client: ClientConfig
     sampling: Sampling = field(default_factory=Sampling)
+    model_pool: ModelPoolConfig | None = None
+    """Deployments to bind to at the first model request (`model_routing`); until then
+    `model` / `client` are the first deployment's."""

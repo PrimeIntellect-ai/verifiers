@@ -15,6 +15,7 @@ from pydantic_config import BaseConfig
 from verifiers.v1.configs.client import ClientConfig
 from verifiers.v1.configs.deployment import DeploymentConfig
 from verifiers.v1.configs.harness import HarnessConfig, WireHarnessConfig
+from verifiers.v1.configs.model_pool import ModelPoolConfig
 from verifiers.v1.configs.retries import RetryConfig
 from verifiers.v1.configs.runtime import PrimeConfig, RuntimeConfig
 from verifiers.v1.configs.scoring import ScoringConfig
@@ -55,6 +56,12 @@ class AgentConfig(BaseConfig):
     """Model id (None = the run's model, i.e. the policy under evaluation/training)."""
     client: ClientConfig | None = None
     """Endpoint override (None = the run's client)."""
+    model_pool: ModelPoolConfig | None = Field(
+        None, exclude_if=lambda pool: pool is None
+    )
+    """Deployments to spread sessions over, in place of `model` / `client`: each session
+    binds at its first model request to a deployment whose request gate has room, and
+    keeps it (`model_routing`). None = no pool."""
     sampling: SamplingConfig | None = None
     """Sampling values merged onto the run's sampling."""
 
@@ -157,6 +164,10 @@ def resolve_agent(
         merged["max_tokens"] = min(
             max_tokens or spec.max_turn_tokens, spec.max_turn_tokens
         )
+    if spec.model_pool is not None and spec.model is None:
+        # Until a session binds, the pool's first deployment stands in for the model.
+        first = spec.model_pool.deployments[0]
+        model, client = first.model, first.client
     return spec.model_copy(
         update={
             "harness": spec.harness if spec.harness is not None else harness,
