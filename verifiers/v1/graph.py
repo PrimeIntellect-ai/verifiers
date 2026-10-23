@@ -44,6 +44,7 @@ from verifiers.v1.semantic import ParentLink
 from verifiers.v1.types import (
     AssistantMessage,
     DialectName,
+    InputAudioContentPart,
     Message,
     Response,
     SamplingMask,
@@ -271,6 +272,9 @@ def message_hash(message: Message) -> str:
             add(part.type)
             if isinstance(part, TextContentPart):
                 add(part.text)
+            elif isinstance(part, InputAudioContentPart):
+                add(part.input_audio.format)
+                add(part.input_audio.data)
             else:
                 add(part.image_url.url)
     else:
