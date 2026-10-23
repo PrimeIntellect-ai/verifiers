@@ -156,7 +156,7 @@ def response_from_generate(
         model=model,
         message=AssistantMessage(
             content=result.get("content") or None,
-            reasoning_content=result.get("reasoning_content"),
+            reasoning_content=result.get("reasoning_content") or None,
             tool_calls=tool_calls,
         ),
         finish_reason=finish,
