@@ -708,28 +708,37 @@ def _replace_placeholder_routing_row(
     )
 
 
+def _decode_routed_experts(payload: Any) -> tuple[np.ndarray, int] | None:
+    """Decode a `generate` routing sidecar into its array and the sequence position of its
+    first row. Raises on a malformed payload, so callers decode before touching the graph."""
+    if payload is None:
+        return None
+    raw = binascii.a2b_base64(payload["data"])
+    arr = np.frombuffer(raw, dtype=np.dtype(payload.get("dtype", "uint8"))).reshape(
+        payload["shape"]
+    )
+    return arr, int(payload.get("start", 0) or 0)
+
+
 def _attribute_routed_experts(
     trace: Trace,
     prefix_node_ids: list[int],
     new_node_ids: list[int],
     path_len: int,
-    payload: Any,
+    routed_experts: tuple[np.ndarray, int] | None,
 ) -> None:
-    """Attach each new node's slice of this turn's MoE expert-routing array. The `generate`
-    payload's array covers the turn's prompt+completion from `payload["start"]` (0 = from token
-    0); the nodes created this turn tile sequence positions `[path_len:]` in creation order, so
+    """Attach each new node's slice of this turn's MoE expert-routing array. The decoded
+    array covers the turn's prompt+completion from its `start` position (0 = from token 0);
+    the nodes created this turn tile sequence positions `[path_len:]` in creation order, so
     we hand each node `arr[off : off+len(node.token_ids)]` and advance. Reused-prefix nodes keep
     the routing attributed when they were first created, except for the one position this turn
     corrects (see `_replace_placeholder_routing_row`). A node whose slice falls outside the
     array (a `start` past `path_len`, e.g. an unexpected prefix-cache delta) is left unset — the
     branch then reports no routing rather than misaligning."""
-    if payload is None:
+    if routed_experts is None:
         return
-    raw = binascii.a2b_base64(payload["data"])
-    arr = np.frombuffer(raw, dtype=np.dtype(payload.get("dtype", "uint8"))).reshape(
-        payload["shape"]
-    )
-    off = path_len - int(payload.get("start", 0) or 0)
+    arr, start = routed_experts
+    off = path_len - start
     _replace_placeholder_routing_row(trace, prefix_node_ids, arr, off)
     needed = off + sum(len(trace.nodes[nid].token_ids) for nid in new_node_ids)
     for nid in new_node_ids:
@@ -830,21 +839,27 @@ def _project_prompt_attribution(
     return projected_spans, projected_is_content
 
 
-def _attribute_top_logprobs(
-    trace: Trace, assistant_id: int, payload: TopLogprobs | None
-) -> None:
-    """Attach a completion-aligned top-k sampling head to the assistant node."""
+def _check_top_logprobs(payload: TopLogprobs | None, num_sampled: int) -> None:
+    """Reject a top-k sampling head that does not cover every sampled completion token."""
     if payload is None:
         return
-    node = trace.nodes[assistant_id]
     if (
-        len(payload.counts) != sum(node.mask)
+        len(payload.counts) != num_sampled
         or (payload.counts < 0).any()
         or int(payload.counts.sum()) != len(payload.ids)
         or len(payload.ids) != len(payload.logprobs)
     ):
         raise ValueError("Top logprobs must align with every sampled node token")
-    node.top_logprobs = payload
+
+
+def _attribute_top_logprobs(
+    trace: Trace, assistant_id: int, payload: TopLogprobs | None
+) -> None:
+    """Attach a top-k sampling head, already checked by `_check_top_logprobs`, to the
+    assistant node."""
+    if payload is None:
+        return
+    trace.nodes[assistant_id].top_logprobs = payload
 
 
 def _commit_turn(turn: PendingTurn, response: Response) -> int:
@@ -862,6 +877,14 @@ def _commit_turn(turn: PendingTurn, response: Response) -> int:
     )
     renderer_spans = tokens.message_spans if tokens else None
     renderer_is_content = tokens.is_content if tokens else None
+    # A rejected response must leave the graph as it was: otherwise its nodes stay behind as a
+    # trainable branch, next to the one a retry of the same request adds. Decode and check the
+    # training sidecars now, before any node is appended or prefix routing row is rewritten.
+    routed_experts = _decode_routed_experts(tokens.routed_experts if tokens else None)
+    _check_top_logprobs(
+        tokens.top_logprobs if tokens else None,
+        len(tokens.completion_ids) if tokens else 0,
+    )
     _head_index(trace, turn.dialect)
 
     prefix = turn.prefix_node_ids
@@ -1036,9 +1059,7 @@ def _commit_turn(turn: PendingTurn, response: Response) -> int:
     # Attribute this turn's expert-routing array onto the nodes created this turn (new input
     # nodes in creation order, then the assistant node), each getting the routing for its tokens.
     # The prefix goes in too, so the position the previous turn could only pad can be corrected.
-    _attribute_routed_experts(
-        trace, prefix, new_node_ids, path_len, tokens.routed_experts if tokens else None
-    )
+    _attribute_routed_experts(trace, prefix, new_node_ids, path_len, routed_experts)
 
     # Sampling masks are completion-aligned, so only the sampled node carries them.
     _attribute_sampling_mask(
