@@ -13,6 +13,7 @@ import asyncio
 import hashlib
 import io
 import tarfile
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Literal
 
@@ -109,8 +110,12 @@ def context_digest(context: Path) -> str:
     return digest.hexdigest()
 
 
+Upload = Callable[[str], Awaitable[None]]
+"""Puts a gzipped tar of a build context to the presigned URL it is given."""
+
+
 async def push_image(
-    context: Path,
+    context: Path | Upload,
     name: str,
     tag: str,
     *,
@@ -122,15 +127,21 @@ async def push_image(
     registry and wait until its VM artifact is bootable. A tag already built is reused
     and one building is waited for; a failed build is pushed again (`attempts` in
     all), since a build that fetches material can fail on a transient download.
-    `dockerfile` is relative to `context`, whose .dockerignore the build applies.
-    `timeout` bounds each attempt's wait."""
+    `context` is a local directory, or an `Upload` that puts the build context where
+    it already is (a VM that built what the image ships). `dockerfile` is relative to
+    the context, whose .dockerignore the build applies. `timeout` bounds each
+    attempt's wait."""
     from prime_sandboxes import AsyncImageClient
     from prime_sandboxes.models import BuildImageRequest, ImageVisibility
 
     if len(tag) > MAX_TAG:
         raise ValueError(f"image tag {tag!r} is longer than {MAX_TAG} characters")
-    if not (context / dockerfile).is_file():
-        raise ValueError(f"{context / dockerfile} is not a file")
+    if isinstance(context, Path):
+        if not (context / dockerfile).is_file():
+            raise ValueError(f"{context / dockerfile} is not a file")
+        upload = _upload_directory(context)
+    else:
+        upload = context
     loop = asyncio.get_running_loop()
     async with AsyncImageClient() as client:
         image = await find_image(client, name, tag)
@@ -145,7 +156,7 @@ async def push_image(
                         team_id=configured_team_id(),
                         visibility=ImageVisibility.PRIVATE,
                     ),
-                    context,
+                    upload,
                 )
                 image = None
             deadline = loop.time() + timeout
@@ -165,19 +176,26 @@ async def push_image(
     )
 
 
-async def _upload_build(client, request, context: Path) -> None:
-    import httpx
-
+async def _upload_build(client, request, upload: Upload) -> None:
     build = await client.initiate_build(request)
-    archive = await asyncio.to_thread(_pack, context)
-    async with httpx.AsyncClient(timeout=600) as http:
-        response = await http.put(
-            build.upload_url,
-            content=archive,
-            headers={"Content-Type": "application/octet-stream"},
-        )
-        response.raise_for_status()
+    await upload(build.upload_url)
     await client.start_build(build.build_id)
+
+
+def _upload_directory(context: Path) -> Upload:
+    async def upload(url: str) -> None:
+        import httpx
+
+        archive = await asyncio.to_thread(_pack, context)
+        async with httpx.AsyncClient(timeout=600) as http:
+            response = await http.put(
+                url,
+                content=archive,
+                headers={"Content-Type": "application/octet-stream"},
+            )
+            response.raise_for_status()
+
+    return upload
 
 
 def _pack(context: Path) -> bytes:

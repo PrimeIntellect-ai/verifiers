@@ -244,10 +244,11 @@ class HarborData(TaskData):
     """`[[tools]]` bundles (`verifiers.v1.toolbundles`): setup installs, seeds and
     starts their servers, and a collect hook dumps each one's end state."""
     compose_host_image: str | None = None
-    """Provider VM image hosting a Compose task's Docker daemon. Docker is installed
-    when the image lacks it, and `docker save` archives it ships in
-    /opt/verifiers/compose-images/ load before the services start. None uses a
-    stock image."""
+    """Provider VM image hosting a Compose task's Docker daemon, from `task.toml`'s
+    `[metadata.prime_compose] host_image`. Docker is installed when the image lacks it,
+    and `docker save` archives it ships in /opt/verifiers/compose-images/ load before
+    the services start (`compose.prepare_host_image` makes one). None uses a stock
+    image."""
     verifier_image: str | None = None
     """Pullable image for a separate verifier, containing the complete `/tests` suite.
     None keeps the solver image and stages the task package's tests."""
@@ -1324,6 +1325,15 @@ def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborD
             "provider's boxes do not run); load it with a taskset that boots it, such as "
             "sft-gen's `sft-gen-kernel-harbor`"
         )
+    compose_host = ((meta or {}).get("prime_compose") or {}).get("host_image")
+    if (
+        compose_host is not None
+        and not (environment_dir / "docker-compose.yaml").is_file()
+    ):
+        raise ValueError(
+            f"{task_dir.name}: [metadata.prime_compose] names a host image, but the task "
+            "has no environment/docker-compose.yaml"
+        )
     authors = (
         [Author(name=author.name, email=author.email) for author in task.authors]
         if task
@@ -1378,6 +1388,7 @@ def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborD
         **environment.model_dump(include={"env", "healthcheck"}, mode="json"),
         mcp_servers=mcp_servers,
         tools=tools,
+        compose_host_image=compose_host,
         verifier_image=verifier_image,
         verifier_env=parsed.verifier.env,
         artifacts=artifacts,

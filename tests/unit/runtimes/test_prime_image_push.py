@@ -168,3 +168,14 @@ def test_the_digest_follows_the_context(context):
     assert context_digest(context) == before
     (context / "src" / "app.py").write_text("print(2)\n")
     assert context_digest(context) != before
+
+
+async def test_an_upload_puts_the_context_from_where_it_is(registry):
+    fake = registry(FakeRegistry(["COMPLETED"]))
+    urls = []
+
+    async def upload(url):
+        urls.append(url)
+
+    assert (await push_image(upload, "world", "v1")).status == "COMPLETED"
+    assert urls == ["https://up"] and fake.uploads == [] and fake.started == ["b1"]

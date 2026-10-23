@@ -86,6 +86,9 @@ LOAD_IMAGES = (
 # end: the cause (an unhealthy dependency, a failed build step) follows the progress
 # lines, and `up` also prints every build's log.
 ERROR_TAIL = 16 * 2**10
+# A failed `up` adds this much of each failed service's own log: why a dependency did not
+# start (a config error, a permission denied) is in its output, not Compose's.
+SERVICE_LOG_TAIL = 4 * 2**10
 
 
 @dataclass(frozen=True)
@@ -162,9 +165,20 @@ def compose_service_errors(resolved: Mapping) -> list[str]:
 
 
 def output_tail(result: ProgramResult, limit: int = ERROR_TAIL) -> str:
-    """The end of a command's stderr and stdout, at most `limit` characters."""
-    output = "\n".join(text for text in (result.stderr, result.stdout) if text.strip())
+    """The end of a command's stdout then stderr, at most `limit` characters: Compose
+    prints build logs to stdout and its failure to stderr, so the cause comes last."""
+    output = "\n".join(text for text in (result.stdout, result.stderr) if text.strip())
     return output if len(output) <= limit else "..." + output[-limit:]
+
+
+def environment_digest(spec: ComposeSpec) -> str | None:
+    """A digest of the directory holding the task's Compose file and build inputs,
+    recorded in a prepared host image so a changed environment does not run on it."""
+    from verifiers.v1.runtimes.prime_images import context_digest
+
+    if spec.file is None:
+        return None
+    return context_digest(Path(spec.directory) / Path(spec.file).parent)
 
 
 @asynccontextmanager
@@ -239,11 +253,52 @@ async def compose_services(
                 "Compose project %s removal failed: %s %s", project[-1], e, detail
             )
 
+    async def failed_service_logs() -> str:
+        """The log tail of each service that is not running, or is unhealthy."""
+        listed = await run_host(
+            *compose_argv,
+            "ps",
+            "--all",
+            "--format",
+            "{{.Service}} {{.State}} {{.Health}}",
+        )
+        logs = []
+        for line in listed.stdout.splitlines():
+            service, state, *health = line.split()
+            if state == "running" and health[:1] != ["unhealthy"]:
+                continue
+            log = await run_host(
+                *compose_argv,
+                "--ansi",
+                "never",
+                "logs",
+                "--no-color",
+                "--no-log-prefix",
+                "--tail",
+                "100",
+                service,
+            )
+            # A service that never started (one waiting on the failed one) logged nothing.
+            if text := output_tail(log, SERVICE_LOG_TAIL):
+                status = ", ".join([state, *health[:1]])
+                logs.append(f"{service} ({status}) logs:\n{text}")
+        return "\n".join(logs)
+
     async def compose(*args: str, timeout: float | None = None) -> str:
         async with asyncio.timeout(timeout):
             result = await run_host(*compose_argv, *args)
         if result.exit_code:
-            raise SandboxError(f"Compose {args[0]} failed: {output_tail(result)}")
+            message = f"Compose {args[0]} failed: {output_tail(result)}"
+            if args[0] == "up":
+                try:
+                    async with asyncio.timeout(60):
+                        if logs := await failed_service_logs():
+                            message += f"\n{logs}"
+                except Exception:  # the up failure is the error to raise
+                    logger.warning(
+                        "reading failed Compose services' logs failed", exc_info=True
+                    )
+            raise SandboxError(message)
         return result.stdout
 
     try:
@@ -340,6 +395,13 @@ async def compose_services(
                         prepared.get("services"), dict
                     ):
                         raise SandboxError("Invalid prepared Compose image manifest")
+                    if (source := prepared.get("source")) is not None and (
+                        source != environment_digest(spec)
+                    ):
+                        raise SandboxError(
+                            f"host image {spec.host_image} was prepared from another "
+                            "version of the task's environment; prepare it again"
+                        )
                     prepared_images = prepared["services"]
                     for service, image in prepared_images.items():
                         if not isinstance(image, str) or not image.startswith(
@@ -553,6 +615,86 @@ async def provision_vm_host(
                 f"Loading host images failed: {loaded.stderr or loaded.stdout}"
             )
         yield host
+
+
+PREPARE_DIR = "/tmp/vf-prepare"
+PUT_FILE = (
+    "import os, sys, urllib.request as u\n"
+    "with open(sys.argv[2], 'rb') as f:\n"
+    "    u.urlopen(u.Request(sys.argv[1], data=f, method='PUT', headers={\n"
+    "        'Content-Type': 'application/octet-stream',\n"
+    "        'Content-Length': str(os.path.getsize(sys.argv[2]))}), timeout=3600)\n"
+)
+
+
+async def prepare_host_image(
+    config: RuntimeConfig,
+    spec: ComposeSpec,
+    name: str,
+    tag: str,
+    *,
+    timeout: float = 3600,
+):
+    """Build `spec`'s services once on a provider VM and push a Compose host image that
+    ships them, so a deployment naming it (`ComposeSpec.host_image`) loads its services
+    from the image (`COMPOSE_IMAGES`) instead of pulling and building them on every
+    boot. The image also has Docker installed. The services must first come up healthy
+    in `config`'s runtime, as they would in a rollout; the image holds exactly the
+    images they ran. Returns the pushed `PrimeImage` (`ref` is the host image)."""
+    from verifiers.v1.runtimes.prime_images import push_image
+
+    if isinstance(config, DockerConfig):
+        raise TypeError("a Compose host image is prepared on a provider VM")
+    async with compose_services(config, spec, {}, setup_timeout=timeout) as (
+        backends,
+        _,
+        host,
+        _,
+    ):
+        assert host is not None
+        manifest = {
+            service: f"vf-prepared/{service}:{tag}".lower() for service in backends
+        }
+        tags = " && ".join(
+            "docker tag \"$(docker inspect --format '{{.Image}}' "
+            f'{shlex.quote(backend._container or "")})" {shlex.quote(manifest[service])}'
+            for service, backend in backends.items()
+        )
+        dockerfile = (
+            f"FROM {VM_HOST['image']}\n"
+            f"RUN {INSTALL_DOCKER} && rm -rf /var/lib/apt/lists/*\n"
+            f"COPY images.tar manifest.json {COMPOSE_IMAGES}/\n"
+        )
+        listing = json.dumps(
+            {"version": 1, "services": manifest, "source": environment_digest(spec)}
+        )
+        context = f"{PREPARE_DIR}/context"
+        script = (
+            f"set -e; rm -rf {PREPARE_DIR}; mkdir -p {context}; {tags}; "
+            f"docker save -o {context}/images.tar "
+            + " ".join(shlex.quote(image) for image in manifest.values())
+            + f"; printf %s {shlex.quote(listing)} > {context}/manifest.json"
+            f"; printf %s {shlex.quote(dockerfile)} > {context}/Dockerfile"
+            # The saved layers are uncompressed; a fast gzip halves the upload.
+            f"; tar -C {context} -cf - . | gzip -1 > {PREPARE_DIR}/context.tar.gz"
+        )
+        runtime = host.bind()
+        packed = await runtime.run(["sh", "-c", script], {})
+        if packed.exit_code:
+            raise SandboxError(
+                f"packing the Compose images failed: {output_tail(packed)}"
+            )
+
+        async def upload(url: str) -> None:
+            put = await runtime.run(
+                ["python3", "-c", PUT_FILE, url, f"{PREPARE_DIR}/context.tar.gz"], {}
+            )
+            if put.exit_code:
+                raise SandboxError(
+                    f"uploading the Compose host image failed: {output_tail(put)}"
+                )
+
+        return await push_image(upload, name, tag, timeout=timeout)
 
 
 def pack_directory(directory: Path) -> bytes:

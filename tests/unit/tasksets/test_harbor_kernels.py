@@ -175,3 +175,22 @@ def test_unset_users_leave_the_task_data_dump_as_it_was():
     named = data.model_copy(update={"verifier_user": "grader"})
     assert named.model_dump(mode="json")["verifier_user"] == "grader"
     assert harbor.HarborData.model_validate(dumped) == data
+
+
+def test_a_compose_task_declares_its_host_image(tmp_path, monkeypatch):
+    task = tmp_path / "stack"
+    (task / "tests").mkdir(parents=True)
+    (task / "tests/test.sh").write_text("exit 0\n")
+    (task / "instruction.md").write_text("Do it.")
+    toml = '[metadata.prime_compose]\nhost_image = "prime/team/stack:p-1"\n'
+    (task / "task.toml").write_text(toml)
+    monkeypatch.setattr(harbor, "dataset_dir", lambda config: tmp_path)
+    with pytest.raises(ValueError, match="docker-compose"):
+        list(harbor.HarborTaskset(harbor.HarborConfig()))
+    (task / "environment").mkdir()
+    (task / "environment/docker-compose.yaml").write_text(
+        "services:\n  main:\n    image: python:3.11-slim\n"
+    )
+    [loaded] = list(harbor.HarborTaskset(harbor.HarborConfig()))
+    assert loaded.data.compose_host_image == "prime/team/stack:p-1"
+    assert loaded.deployment_spec().host_image == "prime/team/stack:p-1"

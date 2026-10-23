@@ -61,16 +61,20 @@ def test_output_tail_keeps_the_end():
     result = ProgramResult(1, "", "progress\n" * 10_000 + "container db is unhealthy")
     tail = output_tail(result, limit=100)
     assert len(tail) == 103 and tail.endswith("container db is unhealthy")
-    assert output_tail(ProgramResult(1, "out", "err")) == "err\nout"
+    # the failure (stderr) comes after a long build log (stdout)
+    build = ProgramResult(1, "#7 DONE\n" * 10_000, "service main failed to start")
+    assert output_tail(build, limit=100).endswith("service main failed to start")
 
 
 class FakeDocker:
     """The Docker CLI as Compose deployment calls it: `config` resolves the authored
     services, `up` fails after a long log."""
 
-    def __init__(self, services, log):
+    def __init__(self, services, log, states="", service_logs=None):
         self.services = services
         self.log = log
+        self.states = states
+        self.service_logs = service_logs or {}
         self.overlay = None
 
     async def __call__(self, *argv, env=None, input=None):
@@ -82,6 +86,10 @@ class FakeDocker:
             files = [argv[i + 1] for i, a in enumerate(argv) if a == "-f"]
             self.overlay = json.loads(Path(files[-1]).read_text())
             return ProgramResult(1, "", self.log)
+        if "ps" in argv and "--all" in argv and "{{.Service}} {{.State}}" in argv[-1]:
+            return ProgramResult(0, self.states, "")
+        if "logs" in argv:
+            return ProgramResult(0, self.service_logs.get(argv[-1], ""), "")
         return ProgramResult(0, "", "")
 
 
@@ -91,10 +99,10 @@ def _task(tmp_path, compose):
     return ComposeSpec(str(tmp_path))
 
 
-async def _up(monkeypatch, tmp_path, compose, services, log="done"):
+async def _up(monkeypatch, tmp_path, compose, services, log="done", **docker_state):
     from verifiers.v1.runtimes import compose as module
 
-    docker = FakeDocker(services, log)
+    docker = FakeDocker(services, log, **docker_state)
     monkeypatch.setattr(module, "cli", docker)
     with pytest.raises(SandboxError) as raised:
         async with module.compose_services(
@@ -168,3 +176,24 @@ async def test_a_service_naming_the_image_it_builds_is_built(monkeypatch, tmp_pa
     assert overlay["main"]["pull_policy"] == "build"
     assert "pull_policy" not in overlay.get("db", {})
     assert "pull_policy" not in overlay.get("cache", {})
+
+
+async def test_up_failure_carries_the_failed_services_logs(monkeypatch, tmp_path):
+    _, error = await _up(
+        monkeypatch,
+        tmp_path,
+        "services:\n  main:\n    image: app\n",
+        {"main": {"image": "app"}},
+        "dependency failed to start: container db exited (1)",
+        states="main created \ndb exited \nchat running healthy\ncache running unhealthy\n",
+        service_logs={
+            "db": "initdb: could not open /docker-entrypoint-initdb.d/init.sql: Permission denied",
+            "chat": "serving",
+            "cache": "ready? no",
+        },
+    )
+    assert "container db exited (1)" in error
+    assert "db (exited) logs:" in error and "Permission denied" in error
+    assert "cache (running, unhealthy) logs:" in error
+    tail = error.split("container db exited (1)")[1]
+    assert "chat" not in tail and "main" not in tail
