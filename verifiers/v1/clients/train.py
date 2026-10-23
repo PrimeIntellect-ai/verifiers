@@ -9,6 +9,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Any, ClassVar, TypeVar
 
+import numpy as np
 from openai import OpenAIError
 from renderers import OverlongPromptError, RenderedTokens, Renderer, RendererConfig
 from renderers.base import ToolCallParseStatus, is_multimodal
@@ -131,8 +132,11 @@ def response_from_generate(
         # TODO: we need a better way for renderers to expose this
         and getattr(tc, "status", None) != ToolCallParseStatus.UNKNOWN_TOOL
     ] or None
-    prompt_ids = result.get("prompt_ids") or []
-    completion_ids = result.get("completion_ids") or []
+    # The renderer tokenizes into lists; the turn's streams hold one array each from here on.
+    prompt_ids = np.asarray(result.get("prompt_ids") or (), dtype=np.int32)
+    completion_ids = np.asarray(result.get("completion_ids") or (), dtype=np.int32)
+    renderer_prompt_ids = result.get("renderer_prompt_ids")
+    completion_logprobs = result.get("completion_logprobs")
     # Per-message token spans (the renderer's attribution) let the trace graph store each
     # message's tokens once; carried transiently on TurnTokens and consumed by turn.commit().
     attribution = result.get("prompt_attribution")
@@ -167,16 +171,22 @@ def response_from_generate(
         usage=Usage(
             prompt_tokens=len(prompt_ids), completion_tokens=len(completion_ids)
         ),
-        # generate() returns owned, typed lists. Skip revalidation here to avoid copying
-        # million-token contexts synchronously on the event loop.
+        # The streams are already typed arrays, so skip revalidation.
         tokens=TurnTokens.model_construct(
             prompt_ids=prompt_ids,
-            renderer_prompt_ids=result.get("renderer_prompt_ids"),
+            renderer_prompt_ids=np.asarray(renderer_prompt_ids, dtype=np.int32)
+            if renderer_prompt_ids is not None
+            else None,
             bridged=bridged_turn is not None,
             completion_ids=completion_ids,
-            completion_logprobs=result.get("completion_logprobs") or [],
+            completion_logprobs=np.asarray(
+                () if completion_logprobs is None else completion_logprobs,
+                dtype=np.float32,
+            ),
             message_spans=message_spans,
-            is_content=attribution.is_content if attribution is not None else None,
+            is_content=np.asarray(attribution.is_content, dtype=np.bool_)
+            if attribution is not None and attribution.is_content is not None
+            else None,
             mm_placeholders=mm_placeholders,
             mm_token_type_id_map=mm_token_type_id_map,
             routed_experts=result.get("routed_experts"),

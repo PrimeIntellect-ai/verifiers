@@ -298,14 +298,16 @@ class TurnTokens(BaseModel):
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    prompt_ids: list[int] = Field(default_factory=list)
+    # Token streams are numpy arrays (int32 ids, float32 logprobs); a list also works, and the
+    # turn's commit makes it one. Typed loosely because this module imports without numpy.
+    prompt_ids: Any = Field(default_factory=list)
     """Effective prompt IDs evaluated by the model, after multimodal expansion."""
-    completion_ids: list[int] = Field(default_factory=list)
-    completion_logprobs: list[float] = Field(default_factory=list)
+    completion_ids: Any = Field(default_factory=list)
+    completion_logprobs: Any = Field(default_factory=list)
 
     # Transient graph-construction metadata, consumed by the turn's commit and excluded
     # from serialized responses.
-    renderer_prompt_ids: list[int] | None = Field(default=None, exclude=True)
+    renderer_prompt_ids: Any = Field(default=None, exclude=True)
     """Logical renderer IDs before multimodal expansion, retained for bridge extension."""
     bridged: bool = Field(default=False, exclude=True)
     """Whether the renderer constructed this prompt by extending a stored prefix."""
@@ -314,7 +316,7 @@ class TurnTokens(BaseModel):
     message_spans: list[tuple[int, int] | None] | None = Field(
         default=None, exclude=True
     )
-    is_content: list[bool] | None = Field(default=None, exclude=True)
+    is_content: Any = Field(default=None, exclude=True)
     # Authoritative effective-prompt ranges returned by vLLM, flattened across modalities.
     mm_placeholders: list[tuple[int, int]] | None = Field(default=None, exclude=True)
     # Transient carrier (excluded): the renderer's special-token id -> modality marker map,

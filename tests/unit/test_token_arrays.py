@@ -2,7 +2,7 @@ import random
 
 import numpy as np
 
-from verifiers.v1.graph import TOKEN_STREAM_DTYPES, MessageNode
+from verifiers.v1.graph import MessageNode
 from verifiers.v1.serve.delta import dump, pack, unpack
 from verifiers.v1.trace import Branch
 from verifiers.v1.types import AssistantMessage, UserMessage
@@ -21,11 +21,20 @@ def test_validated_streams_are_typed_arrays():
         advantages=[0.5, 0.5],
         loss_weights={"rl": [0.0, 1.0, 1.0]},
     )
-    for name, dtype in TOKEN_STREAM_DTYPES.items():
+    dtypes = {
+        "token_ids": np.int32,
+        "mask": np.bool_,
+        "is_content": np.bool_,
+        "logprobs": np.float32,
+        "advantages": np.float32,
+    }
+    for name, dtype in dtypes.items():
         value = getattr(node, name)
-        if value is not None:
-            assert isinstance(value, np.ndarray) and value.dtype == dtype, name
+        assert isinstance(value, np.ndarray) and value.dtype == dtype, name
     assert node.loss_weights["rl"].dtype == np.float32
+    # Defaults are typed arrays too.
+    bare = assistant()
+    assert bare.token_ids.dtype == np.int32 and bare.logprobs.dtype == np.float32
 
 
 def test_token_arrays_wire_round_trip():
@@ -108,3 +117,42 @@ def test_spread_matches_the_list_implementation():
         assert got.dtype == np.float32 and np.array_equal(got, expected)
         assert branch.token_ids.dtype == np.int32
         assert len(branch.token_ids) == len(branch.sampled_mask) == len(got)
+
+
+def test_committed_nodes_own_typed_arrays():
+    """The env server builds nodes unvalidated: each still holds typed arrays, owns them (a view
+    would retain the turn's full-context prompt) and keeps no copy of identical renderer ids."""
+    import verifiers.v1 as vf
+    from verifiers.v1 import graph
+    from verifiers.v1.types import Response, TurnTokens
+
+    trace = vf.Trace(
+        agent=vf.AgentInfo(config=vf.AgentConfig()),
+        task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt="x")),
+    )
+    graph.prepare_turn(trace, [UserMessage(content="u")]).commit(
+        Response(
+            id="a",
+            created=0,
+            model="t",
+            message=AssistantMessage(content="a"),
+            finish_reason="stop",
+            tokens=TurnTokens(
+                prompt_ids=np.arange(10, 14, dtype=np.int32),
+                completion_ids=np.asarray([20, 21], dtype=np.int32),
+                completion_logprobs=np.asarray([-0.5, -0.25], dtype=np.float32),
+                message_spans=[(0, 3)],
+                is_content=np.asarray([False, True, True, False]),
+            ),
+        )
+    )
+    user, reply = trace.nodes
+    assert user.token_ids.tolist() == [10, 11, 12]
+    assert reply.token_ids.tolist() == [13, 20, 21]
+    assert reply.mask.tolist() == [False, True, True]
+    assert reply.logprobs.tolist() == [-0.5, -0.25]
+    for node in (user, reply):
+        assert node.token_ids.dtype == np.int32 and node.token_ids.base is None
+        assert node.mask.dtype == node.is_content.dtype == np.bool_
+        assert node.logprobs.dtype == np.float32
+        assert node.renderer_token_ids is None

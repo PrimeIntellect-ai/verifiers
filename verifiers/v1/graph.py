@@ -24,12 +24,14 @@ import binascii
 import hashlib
 import json
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, fields
 from typing import TYPE_CHECKING, Annotated, Any
 
 import numpy as np
 from pydantic import (
     BaseModel,
+    BeforeValidator,
     ConfigDict,
     Field,
     FieldSerializationInfo,
@@ -76,59 +78,83 @@ def _decode_ndarray(d: dict) -> np.ndarray:
     return np.frombuffer(d["data"], dtype=np.dtype(d["dtype"])).reshape(d["shape"])
 
 
-TOKEN_STREAM_DTYPES: dict[str, type[np.generic]] = {
-    "token_ids": np.int32,
-    "mask": np.bool_,
-    "is_content": np.bool_,
-    "logprobs": np.float32,
-    "advantages": np.float32,
-    "reference_logprobs": np.float32,
-    "trainer_logprobs": np.float32,
-    "entropies": np.float32,
-}
-"""A node's per-token streams and their dtypes. Validation (the wire, a JSON record) makes each a
-numpy array of its dtype; only the env server, which builds nodes unvalidated while it extends a
-rollout, holds lists. One list entry per token is a Python object the cyclic garbage collector
-walks and the msgpack wire packs one by one; an array is one object it skips and raw bytes on the
-wire, so a process holding many long episodes (an RL orchestrator) keeps full collections short,
-its heap ~5x smaller and its decode cheap."""
-
-IntStream = Annotated[
-    np.ndarray, WithJsonSchema({"type": "array", "items": {"type": "integer"}})
-]
-BoolStream = Annotated[
-    np.ndarray, WithJsonSchema({"type": "array", "items": {"type": "boolean"}})
-]
-FloatStream = Annotated[
-    np.ndarray, WithJsonSchema({"type": "array", "items": {"type": "number"}})
-]
-"""Token stream field types. Typed as arrays alone: a `list[int] | np.ndarray` union makes
-pydantic try the list branch element by element on every array it validates."""
-
-FLOAT_STREAMS = frozenset(
-    {"logprobs", "advantages", "reference_logprobs", "trainer_logprobs", "entropies"}
-)
-
-
-def as_list(values: list | np.ndarray) -> list:
-    """A token stream as a list, whichever form the node holds it in."""
-    return values.tolist() if isinstance(values, np.ndarray) else values
-
-
-def same_tokens(a: list | np.ndarray, b: list | np.ndarray) -> bool:
-    """Two token spans are equal, whichever form each is in (`list == ndarray` compares
-    elementwise)."""
-    if isinstance(a, np.ndarray) or isinstance(b, np.ndarray):
-        return len(a) == len(b) and bool(np.array_equal(a, b))
-    return a == b
-
-
 RECORD_FLOAT_DECIMALS = 4
 """Default precision of per-token float streams in JSON records (`to_record`). Full-precision
 digits are noise to every record reader and the least compressible bytes of a trace; four
 decimals leave a logprob within 1e-4 of what the trainer saw. `to_record(float_decimals=...)`
 overrides it per dump (`None` keeps every digit). The msgpack wire (`mode="python"`) keeps
 full precision — training never reads the record."""
+
+
+def as_list(values: list | np.ndarray) -> list:
+    """A token stream as a list, whichever form it is in."""
+    return values.tolist() if isinstance(values, np.ndarray) else values
+
+
+def same_tokens(a: list | np.ndarray, b: list | np.ndarray) -> bool:
+    """Two token spans are equal (`==` on an array compares elementwise)."""
+    return len(a) == len(b) and bool(np.array_equal(a, b))
+
+
+def _token_stream(dtype: type[np.generic], item_type: str):
+    """The field type of a per-token stream: a numpy array of `dtype`.
+
+    One list entry per token is a Python object the cyclic garbage collector walks and the
+    msgpack wire packs one by one; an array is one object it skips and raw bytes on the wire, so
+    a process holding many long episodes (an RL orchestrator) keeps full collections short.
+    Validation takes a list, an array or an `__nd__` dict; `MessageNode.serialize_token_stream`
+    writes it back. Typed as an array alone, because a `list[int] | np.ndarray` union makes
+    pydantic try the list branch element by element on every array it validates."""
+
+    def validate(value: Any) -> np.ndarray:
+        if isinstance(value, dict) and value.get("__nd__"):
+            value = _decode_ndarray(value)
+        return np.asarray(value, dtype=dtype)
+
+    return Annotated[
+        np.ndarray,
+        BeforeValidator(validate),
+        WithJsonSchema({"type": "array", "items": {"type": item_type}}),
+    ]
+
+
+IntStream = _token_stream(np.int32, "integer")
+"""Token ids: int32."""
+BoolStream = _token_stream(np.bool_, "boolean")
+"""Per-token flags: bool."""
+FloatStream = _token_stream(np.float32, "number")
+"""Per-token values (logprobs, advantages, loss weights): float32."""
+
+ROUNDED_STREAMS = (
+    "logprobs",
+    "advantages",
+    "reference_logprobs",
+    "trainer_logprobs",
+    "entropies",
+)
+"""Float streams a JSON record rounds to `float_decimals`. Loss weights stay exact: a 1/T
+weight would round to zero."""
+
+
+def _serialize_stream(
+    values: list | np.ndarray, info: FieldSerializationInfo, rounded: bool
+) -> list | dict:
+    """JSON records: a list. Python dumps: a list too, unless the context sets `token_arrays`,
+    when the msgpack wire carries a raw-bytes `__nd__` dict."""
+    context = info.context or {}
+    if info.mode_is_json():
+        values = as_list(values)
+        decimals = context.get("float_decimals", RECORD_FLOAT_DECIMALS)
+        if not rounded or decimals is None:
+            return values
+        return [round(value, decimals) for value in values]
+    if context.get("token_arrays"):
+        return _encode_ndarray(np.asarray(values))
+    return as_list(values)
+
+
+def _empty(dtype: type[np.generic]) -> Callable[[], np.ndarray]:
+    return lambda: np.zeros(0, dtype=dtype)
 
 
 class MessageNode(BaseModel):
@@ -161,20 +187,20 @@ class MessageNode(BaseModel):
     delta between consecutive sampled nodes is that turn's harness + inference wall-clock.
     Reused prefix nodes keep the stamp from the turn that first created them. Serialized, so
     a dump re-validated from wire/disk keeps the original times."""
-    token_ids: IntStream = Field(default_factory=list)
+    token_ids: IntStream = Field(default_factory=_empty(np.int32))
     """This message's delta contribution to the cumulative token sequence: its leading
     template scaffold + its own tokens — for an assistant, the generation-prompt scaffold
     followed by the sampled completion. Concatenated along a path, these reproduce the exact
     `prompt_ids + completion_ids` the model saw."""
-    renderer_token_ids: list[int] | None = Field(default=None, exclude=True)
+    renderer_token_ids: IntStream | None = Field(default=None, exclude=True)
     """Logical renderer tokens retained only while extending a live rollout.
-    None means they are identical to `token_ids`; an empty list is a real empty slice."""
+    None means they are identical to `token_ids`; an empty array is a real empty slice."""
 
-    mask: BoolStream = Field(default_factory=list)
+    mask: BoolStream = Field(default_factory=_empty(np.bool_))
     """Per-token, parallel to `token_ids`: True for trainable, model-sampled tokens (only an
     assistant node's completion span); False for template scaffold and every input-message
     token."""
-    is_content: BoolStream = Field(default_factory=list)
+    is_content: BoolStream = Field(default_factory=_empty(np.bool_))
     """Per-token, parallel to `token_ids` (when populated): True for message-body tokens (the
     renderer's content), False for template scaffold (role-tag openers/closers, inter-turn
     separators, tool-response wraps, the generation prompt). Populated from the renderer's
@@ -183,7 +209,7 @@ class MessageNode(BaseModel):
     `mask`: `mask` is "did the model sample this?" (assistant completion only); `is_content`
     is "is this caller/model body vs scaffold?" — meaningful on every role, so observation
     weighting (prime-rl `echo`) can train a tool/user message's *body* without its scaffold."""
-    logprobs: FloatStream = Field(default_factory=list)
+    logprobs: FloatStream = Field(default_factory=_empty(np.float32))
     """Sampling logprobs for the sampled tokens — length equals the number of True entries in
     `mask`; empty for input messages."""
     advantages: FloatStream | None = None
@@ -225,72 +251,30 @@ class MessageNode(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     @property
-    def logical_ids(self) -> list[int]:
+    def logical_ids(self) -> np.ndarray:
         return (
             self.token_ids
             if self.renderer_token_ids is None
             else self.renderer_token_ids
         )
 
-    @field_serializer(*TOKEN_STREAM_DTYPES)
+    @field_serializer("token_ids", "mask", "is_content", *ROUNDED_STREAMS)
     def serialize_token_stream(
         self, values: list | np.ndarray | None, info: FieldSerializationInfo
     ) -> list | dict | None:
-        """JSON records: lists, float streams rounded to `float_decimals`. The msgpack wire
-        (`mode="python"` with `token_arrays` in the context): a raw-bytes `__nd__` dict. Other
-        python dumps: a list, the shape every dump had before arrays."""
         if values is None:
             return None
-        context = info.context or {}
-        if info.mode_is_json():
-            values = as_list(values)
-            decimals = context.get("float_decimals", RECORD_FLOAT_DECIMALS)
-            if info.field_name not in FLOAT_STREAMS or decimals is None:
-                return values
-            return [round(value, decimals) for value in values]
-        if context.get("token_arrays"):
-            return _encode_ndarray(
-                np.asarray(values, dtype=TOKEN_STREAM_DTYPES[info.field_name])
-            )
-        return as_list(values)
-
-    @field_validator(*TOKEN_STREAM_DTYPES, mode="before")
-    @classmethod
-    def deserialize_token_stream(cls, value: Any, info: ValidationInfo) -> Any:
-        """Lists, `__nd__` dicts and arrays all become arrays of the stream's dtype."""
-        if value is None:
-            return None
-        if isinstance(value, dict) and value.get("__nd__"):
-            value = _decode_ndarray(value)
-        return np.asarray(value, dtype=TOKEN_STREAM_DTYPES[info.field_name])
+        return _serialize_stream(values, info, info.field_name in ROUNDED_STREAMS)
 
     @field_serializer("loss_weights")
     def serialize_loss_weights(
         self, streams: dict[str, list | np.ndarray] | None, info: FieldSerializationInfo
     ) -> dict | None:
-        """Each named stream like a token stream: lists in JSON, `__nd__` on the array wire."""
         if streams is None:
             return None
-        if info.mode_is_json():
-            return {name: as_list(values) for name, values in streams.items()}
-        if (info.context or {}).get("token_arrays"):
-            return {
-                name: _encode_ndarray(np.asarray(values, dtype=np.float32))
-                for name, values in streams.items()
-            }
-        return {name: as_list(values) for name, values in streams.items()}
-
-    @field_validator("loss_weights", mode="before")
-    @classmethod
-    def deserialize_loss_weights(cls, value: Any) -> Any:
-        if not isinstance(value, dict):
-            return value
         return {
-            name: np.asarray(
-                _decode_ndarray(values) if isinstance(values, dict) else values,
-                dtype=np.float32,
-            )
-            for name, values in value.items()
+            name: _serialize_stream(values, info, rounded=False)
+            for name, values in streams.items()
         }
 
     @field_serializer("routed_experts")
@@ -641,20 +625,17 @@ class PendingTurn:
         last = self.trace.nodes[self.prefix_node_ids[-1]]
         if not last.sampled:
             return None
-        num_sampled = sum(last.mask)
+        num_sampled = int(np.count_nonzero(last.mask))
         if not num_sampled:
             return None
 
-        renderer_prompt_ids: list[int] = []
-        for nid in self.prefix_node_ids[:-1]:
-            node = self.trace.nodes[nid]
-            renderer_prompt_ids.extend(as_list(node.logical_ids))
-        last_ids = as_list(last.logical_ids)
-        renderer_prompt_ids.extend(last_ids[:-num_sampled])
-        completion_ids = last_ids[-num_sampled:]
-        if not renderer_prompt_ids or not completion_ids:
+        # The renderer bridges over lists, so the stream converts once here.
+        ids = np.concatenate(
+            [self.trace.nodes[nid].logical_ids for nid in self.prefix_node_ids]
+        )
+        if len(ids) <= num_sampled:
             return None
-        return renderer_prompt_ids, completion_ids
+        return ids[:-num_sampled].tolist(), ids[-num_sampled:].tolist()
 
     def prompt_message_spans(
         self, tail_attribution: RenderedTokens
@@ -855,56 +836,52 @@ def _attribute_sampling_mask(
     if payload is None:
         return
     node = trace.nodes[assistant_id]
-    if len(payload.counts) != sum(node.mask) or int(payload.counts.sum()) != len(
-        payload.ids
-    ):
+    if len(payload.counts) != np.count_nonzero(node.mask) or int(
+        payload.counts.sum()
+    ) != len(payload.ids):
         return
     node.sampling_mask = payload
 
 
 def _project_prompt_attribution(
-    renderer_prompt_ids: list[int],
-    prompt_ids: list[int],
+    renderer_prompt_ids: np.ndarray,
+    prompt_ids: np.ndarray,
     mm_token_type_id_map: dict[int, int],
     mm_placeholders: list[tuple[int, int]] | None,
     message_spans: list[tuple[int, int] | None] | None,
-    is_content: list[bool] | None,
-) -> tuple[list[tuple[int, int] | None] | None, list[bool] | None]:
+    is_content: np.ndarray | None,
+) -> tuple[list[tuple[int, int] | None] | None, np.ndarray | None]:
     """Project logical attribution using vLLM's multimodal placeholder ranges."""
-    if renderer_prompt_ids == prompt_ids:
+    if renderer_prompt_ids is prompt_ids or same_tokens(
+        renderer_prompt_ids, prompt_ids
+    ):
         return message_spans, is_content
     if not mm_token_type_id_map or mm_placeholders is None:
         raise ValueError(
             "cannot align renderer and vLLM prompt tokens without multimodal placeholders"
         )
 
-    offsets = [0]
-    prompt_offset = 0
-    placeholder_index = 0
-    for token_id in renderer_prompt_ids:
-        if token_id in mm_token_type_id_map:
-            if placeholder_index >= len(mm_placeholders):
-                raise ValueError(
-                    "vLLM multimodal placeholders do not align with renderer prompt"
-                )
-            offset, length = mm_placeholders[placeholder_index]
-            if offset != prompt_offset or length < 1:
-                raise ValueError(
-                    "vLLM multimodal placeholders do not align with renderer prompt"
-                )
-            prompt_offset += length
-            placeholder_index += 1
-        else:
-            if (
-                prompt_offset >= len(prompt_ids)
-                or prompt_ids[prompt_offset] != token_id
-            ):
-                raise ValueError(
-                    "renderer prompt does not align with vLLM prompt tokens"
-                )
-            prompt_offset += 1
-        offsets.append(prompt_offset)
-    if prompt_offset != len(prompt_ids) or placeholder_index != len(mm_placeholders):
+    # Each logical token covers one prompt token, or one placeholder's whole range.
+    is_mm = np.isin(renderer_prompt_ids, list(mm_token_type_id_map))
+    placeholders = np.asarray(mm_placeholders, dtype=np.int64).reshape(-1, 2)
+    if np.count_nonzero(is_mm) > len(placeholders):
+        raise ValueError(
+            "vLLM multimodal placeholders do not align with renderer prompt"
+        )
+    if np.count_nonzero(is_mm) < len(placeholders):
+        raise ValueError("renderer prompt does not align with vLLM prompt tokens")
+    lengths = np.ones(len(renderer_prompt_ids), dtype=np.int64)
+    lengths[is_mm] = placeholders[:, 1]
+    offsets = np.concatenate([[0], np.cumsum(lengths)])
+    if (placeholders[:, 1] < 1).any() or not np.array_equal(
+        placeholders[:, 0], offsets[:-1][is_mm]
+    ):
+        raise ValueError(
+            "vLLM multimodal placeholders do not align with renderer prompt"
+        )
+    if offsets[-1] != len(prompt_ids) or not np.array_equal(
+        prompt_ids[offsets[:-1][~is_mm]], renderer_prompt_ids[~is_mm]
+    ):
         raise ValueError("renderer prompt does not align with vLLM prompt tokens")
 
     projected_spans = None
@@ -917,17 +894,15 @@ def _project_prompt_attribution(
             start, end = span
             if not 0 <= start <= end <= len(renderer_prompt_ids):
                 raise ValueError("message span exceeds renderer prompt tokens")
-            projected_spans.append((offsets[start], offsets[end]))
+            projected_spans.append((int(offsets[start]), int(offsets[end])))
 
     projected_is_content = is_content
-    if is_content:
+    if is_content is not None and len(is_content):
         if len(is_content) != len(renderer_prompt_ids):
             raise ValueError(
                 "content attribution does not match renderer prompt tokens"
             )
-        projected_is_content = []
-        for index, value in enumerate(is_content):
-            projected_is_content.extend([value] * (offsets[index + 1] - offsets[index]))
+        projected_is_content = np.repeat(is_content, lengths)
     return projected_spans, projected_is_content
 
 
@@ -939,7 +914,7 @@ def _attribute_top_logprobs(
         return
     node = trace.nodes[assistant_id]
     if (
-        len(payload.counts) != sum(node.mask)
+        len(payload.counts) != np.count_nonzero(node.mask)
         or (payload.counts < 0).any()
         or int(payload.counts.sum()) != len(payload.ids)
         or len(payload.ids) != len(payload.logprobs)
@@ -955,14 +930,21 @@ def _commit_turn(turn: PendingTurn, response: Response) -> int:
     # Constant per renderer, so re-stamping every turn is idempotent.
     if tokens is not None and tokens.mm_token_type_id_map:
         trace.mm_token_type_id_map = tokens.mm_token_type_id_map
-    prompt_ids = tokens.prompt_ids if tokens else []
+    prompt_ids = np.asarray(tokens.prompt_ids if tokens else (), dtype=np.int32)
+    # Logical renderer ids differ from `prompt_ids` only after multimodal expansion; otherwise
+    # the nodes keep none and read `token_ids` (`MessageNode.logical_ids`).
     renderer_prompt_ids = (
-        tokens.renderer_prompt_ids
+        np.asarray(tokens.renderer_prompt_ids, dtype=np.int32)
         if tokens and tokens.renderer_prompt_ids is not None
         else prompt_ids
     )
+    expanded = renderer_prompt_ids is not prompt_ids
     renderer_spans = tokens.message_spans if tokens else None
-    renderer_is_content = tokens.is_content if tokens else None
+    renderer_is_content = (
+        np.asarray(tokens.is_content, dtype=np.bool_)
+        if tokens and tokens.is_content is not None
+        else None
+    )
     _head_index(trace, turn.dialect)
 
     prefix = turn.prefix_node_ids
@@ -1082,7 +1064,8 @@ def _commit_turn(turn: PendingTurn, response: Response) -> int:
         start = path_len if cursor is None else cursor
         span = spans[i] if spans and i < len(spans) else None
         end = span[1] if span else start
-        node_tokens = prompt_ids[start:end]
+        # Each node copies its slice: a view would retain the turn's full-context array.
+        node_tokens = prompt_ids[start:end].copy()
         renderer_start = (
             renderer_path_len if renderer_cursor is None else renderer_cursor
         )
@@ -1096,9 +1079,15 @@ def _commit_turn(turn: PendingTurn, response: Response) -> int:
                 tools=turn.tools if parent is None else [],
                 message=msg,
                 token_ids=node_tokens,
-                renderer_token_ids=renderer_prompt_ids[renderer_start:renderer_end],
-                mask=[False] * len(node_tokens),
-                is_content=is_content[start:end] if has_is_content else [],
+                renderer_token_ids=renderer_prompt_ids[
+                    renderer_start:renderer_end
+                ].copy()
+                if expanded
+                else None,
+                mask=np.zeros(len(node_tokens), dtype=np.bool_),
+                is_content=is_content[start:end].copy()
+                if has_is_content
+                else np.zeros(0, dtype=np.bool_),
             )
         )
         parent = len(trace.nodes) - 1
@@ -1107,27 +1096,31 @@ def _commit_turn(turn: PendingTurn, response: Response) -> int:
         cursor = end
         renderer_cursor = renderer_end
 
-    comp_ids = tokens.completion_ids if tokens else []
+    comp_ids = np.asarray(tokens.completion_ids if tokens else (), dtype=np.int32)
     gen_start = path_len if cursor is None else cursor
     gen_prompt = prompt_ids[gen_start:]
     renderer_gen_start = (
         renderer_path_len if renderer_cursor is None else renderer_cursor
     )
     renderer_gen_prompt = renderer_prompt_ids[renderer_gen_start:]
+    sampled = np.arange(len(gen_prompt) + len(comp_ids)) >= len(gen_prompt)
     trace.nodes.append(
         MessageNode.model_construct(
             parent=parent,
             tools=turn.tools if parent is None else [],
             message=response.message,
             sampled=True,
-            token_ids=[*gen_prompt, *comp_ids],
-            renderer_token_ids=[*renderer_gen_prompt, *comp_ids],
-            mask=[False] * len(gen_prompt) + [True] * len(comp_ids),
-            is_content=([False] * len(gen_prompt) + [True] * len(comp_ids))
-            if has_is_content
-            else [],
-            # TurnTokens is discarded after commit, so transfer its logprobs without copying.
-            logprobs=tokens.completion_logprobs if tokens else [],
+            token_ids=np.concatenate([gen_prompt, comp_ids]),
+            renderer_token_ids=np.concatenate([renderer_gen_prompt, comp_ids])
+            if expanded
+            else None,
+            mask=sampled,
+            is_content=sampled.copy() if has_is_content else np.zeros(0, np.bool_),
+            # TurnTokens is discarded after commit, so its completion-sized logprobs move
+            # onto the node without a copy.
+            logprobs=np.asarray(
+                tokens.completion_logprobs if tokens else (), dtype=np.float32
+            ),
             weight_versions=tokens.weight_versions if tokens else None,
         )
     )

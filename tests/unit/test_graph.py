@@ -459,7 +459,7 @@ def test_parallel_commit_reconciles_only_token_identical_prefixes():
     )
 
     roots = [node for node in trace.nodes if node.parent is None]
-    assert [node.token_ids for node in roots] == [[1, 2], [1, 99]]
+    assert [node.token_ids.tolist() for node in roots] == [[1, 2], [1, 99]]
     assert trace.num_branches == 3
 
 
@@ -504,7 +504,7 @@ def test_parallel_commit_reconciles_unspanned_assistant_tokens():
     )
 
     assert trace.num_branches == 1
-    assert [node.token_ids for node in trace.nodes] == [[1], [2, 3], [4], [5]]
+    assert [node.token_ids.tolist() for node in trace.nodes] == [[1], [2, 3], [4], [5]]
 
 
 def test_unspanned_reconciliation_stops_at_next_message_boundary():
@@ -637,11 +637,11 @@ def test_expanded_prompt_is_attributed_while_bridge_uses_logical_tokens():
     )
     user = vf.UserMessage(content="image")
     assistant = vf.AssistantMessage(content="looked")
-    assert graph.MessageNode(message=user, token_ids=[9]).logical_ids == [9]
+    assert graph.MessageNode(message=user, token_ids=[9]).logical_ids.tolist() == [9]
     assert (
         graph.MessageNode(
             message=user, token_ids=[9], renderer_token_ids=[]
-        ).logical_ids
+        ).logical_ids.tolist()
         == []
     )
     graph.prepare_turn(trace, [user]).commit(
@@ -712,7 +712,7 @@ def test_expanded_prompt_is_attributed_while_bridge_uses_logical_tokens():
     tool_node = trace.nodes[-2]
     assert tool_node.message == tool
     assert list(tool_node.token_ids) == [5, 6]
-    assert tool_node.renderer_token_ids == [5, 6]
+    assert tool_node.renderer_token_ids.tolist() == [5, 6]
     assert list(tool_node.is_content) == [False, True]
 
 
