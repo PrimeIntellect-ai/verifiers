@@ -74,6 +74,10 @@ SCALAR_FIELDS = (
 """Re-sent whole whenever their dumped value changes."""
 
 
+TRAINING_ARRAY_FIELDS = frozenset({"routed_experts", "sampling_mask", "top_logprobs"})
+"""Node fields holding per-token training arrays; streamed only while `keep_arrays`."""
+
+
 def pack(payload: Any) -> bytes:
     return msgpack.packb(payload, default=msgpack_encoder, use_bin_type=True)
 
@@ -114,9 +118,12 @@ class DeltaStreamer:
         self,
         traces: Callable[[], Iterable[Trace]],
         send: Callable[[dict], Awaitable[None]],
+        keep_arrays: bool = True,
     ) -> None:
         self.traces = traces
         self.send = send
+        self.keep_arrays = keep_arrays
+        """Stream nodes' training arrays; off when the host keeps them (`set_episode_hook`)."""
         self.cursors: dict[str, TraceCursor] = {}
         self._scheduled: asyncio.Handle | None = None
         self._flushes: set[asyncio.Task] = set()
@@ -181,6 +188,8 @@ class DeltaStreamer:
         Record every node's current row on the cursor. `sent_nodes` is the pre-flush
         count, so a node first sent in this delta is never reported as a repair.
         """
+        if not self.keep_arrays:
+            return
         repairs: dict[int, dict] = {}
         for index, node in enumerate(trace.nodes):
             if node.routed_experts is None:
@@ -225,7 +234,14 @@ class DeltaStreamer:
                 items = getattr(trace, field)
                 sent = cursor.sent[field]
                 if len(items) > sent:
-                    delta[field] = [dump(item) for item in items[sent:]]
+                    exclude = (
+                        TRAINING_ARRAY_FIELDS
+                        if field == "nodes" and not self.keep_arrays
+                        else None
+                    )
+                    delta[field] = [
+                        dump(item, exclude=exclude) for item in items[sent:]
+                    ]
                     cursor.sent[field] = len(items)
                     if field == "nodes":
                         cursor.links.extend(

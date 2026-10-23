@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from typing import Protocol
 
 import msgpack
 import zmq
@@ -8,6 +9,7 @@ import zmq.asyncio
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.client import ClientConfig
 from verifiers.v1.configs.env import EnvConfig
+from verifiers.v1.episode import Episode
 from verifiers.v1.serve.delta import DeltaStreamer, TraceSummary, dump, pack
 from verifiers.v1.serve.encoding import msgpack_encoder
 from verifiers.v1.serve.types import (
@@ -23,6 +25,29 @@ from verifiers.v1.types import SamplingConfig
 from verifiers.v1.utils.loaders import load_environment
 
 logger = logging.getLogger(__name__)
+
+
+class EpisodeHook(Protocol):
+    """Takes finished episodes' per-token training arrays (routing rows, sampling masks,
+    top-k heads) before the episodes leave the worker."""
+
+    def keep(self, episode: Episode, sampling: SamplingConfig) -> None:
+        """Keep the episode's arrays; may leave references to them in `trace.info`.
+        Runs off the event loop, before the episode's final flush."""
+
+    def discard(self, episode: Episode) -> None:
+        """Free what `keep` kept for an episode that was not delivered."""
+
+
+_episode_hook: EpisodeHook | None = None
+
+
+def set_episode_hook(hook: EpisodeHook | None) -> None:
+    """Install a hook that keeps finished episodes' training arrays. Every episode it
+    keeps is either delivered in its run's reply or handed back to `discard`. While a
+    hook is set, the streamed nodes carry no training arrays."""
+    global _episode_hook
+    _episode_hook = hook
 
 
 class EnvServer:
@@ -52,6 +77,8 @@ class EnvServer:
         self._gate = asyncio.Semaphore(max_concurrent) if max_concurrent else None
         # In-flight run tasks by wire request_id, so a `cancel` can abort them
         self._running: dict[str, asyncio.Task] = {}
+        # Episodes the hook kept, by run request, until their reply is sent.
+        self._kept: dict[bytes, tuple[EpisodeHook, Episode]] = {}
         self.ctx = zmq.asyncio.Context()
         self.frontend = self.ctx.socket(zmq.ROUTER)
         self.frontend.setsockopt(zmq.ROUTER_MANDATORY, 1)
@@ -108,10 +135,25 @@ class EnvServer:
         # The gate spans requests: `--max-concurrent` bounds this worker's episodes
         # in flight the same way the in-process eval's semaphore does. The streamer
         # ships each trace as it changes; the reply below carries only the rest.
-        async with DeltaStreamer(lambda: slot.traces, send_delta) as streamer:
+        hook = _episode_hook
+        async with DeltaStreamer(
+            lambda: slot.traces, send_delta, keep_arrays=hook is None
+        ) as streamer:
             episode = await self.env.run_slot(
                 slot, ctx, self._gate, on_trace=streamer.watch
             )
+            if hook is not None:
+                # Before the final flush, so what the hook writes to the traces streams.
+                keeping = asyncio.ensure_future(
+                    asyncio.to_thread(hook.keep, episode, ctx.sampling)
+                )
+                try:
+                    await asyncio.shield(keeping)
+                except asyncio.CancelledError:
+                    # The thread finishes regardless; this episode is never delivered.
+                    keeping.add_done_callback(lambda _: hook.discard(episode))
+                    raise
+                self._kept[request_id] = (hook, episode)
         return RunResponse(
             head=dump(episode, exclude={"traces"}),
             traces=[
@@ -173,12 +215,17 @@ class EnvServer:
                 ).model_dump(),
                 use_bin_type=True,
             )
+        delivered = False
         try:
             await self.frontend.send_multipart(
                 [client_id, request_id, b"reply", data], copy=False
             )
+            delivered = response.success
         except zmq.ZMQError as e:
             logger.warning("failed to send response: %s", e)
+        if (kept := self._kept.pop(request_id, None)) is not None and not delivered:
+            hook, episode = kept
+            hook.discard(episode)
 
     async def run(self) -> None:
         logger.info(
