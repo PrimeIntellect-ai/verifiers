@@ -82,6 +82,10 @@ LOAD_IMAGES = (
     f'for f in {COMPOSE_IMAGES}/*.tar; do [ -e "$f" ] || continue; '
     'docker load -q -i "$f" && rm -f "$f" || exit 1; done'
 )
+# A failed Compose command's error keeps this many characters of its output, from the
+# end: the cause (an unhealthy dependency, a failed build step) follows the progress
+# lines, and `up` also prints every build's log.
+ERROR_TAIL = 16 * 2**10
 
 
 @dataclass(frozen=True)
@@ -105,6 +109,62 @@ class ComposeSpec:
     registry_mirrors: tuple[str, ...] = ()
     """Registry mirrors for the provider VM's Docker daemon; local Docker uses its
     own daemon configuration."""
+
+
+def compose_file_errors(authored: Mapping) -> list[str]:
+    """What Compose deployment refuses in a Compose file as written (parsed YAML), so a
+    task or environment builder can check one before building it; empty when none."""
+    errors = []
+    for kind in ("volumes", "networks"):
+        if any(
+            value and (value.get("name") or value.get("external"))
+            for value in (authored.get(kind) or {}).values()
+        ):
+            errors.append(f"Compose {kind} must use project-scoped names")
+    for name, service in (authored.get("services") or {}).items():
+        if service.get("container_name"):
+            errors.append(
+                f"service {name}: remove container_name so Compose can name each "
+                "rollout's services"
+            )
+    return errors
+
+
+def compose_service_errors(resolved: Mapping) -> list[str]:
+    """What Compose deployment refuses in the services of `docker compose config
+    --format json` output (interpolated and merged); empty when none."""
+    errors = []
+    for name, service in resolved.get("services", {}).items():
+        if service.get("network_mode") == "host":
+            errors.append(
+                f"service {name}: Compose requires an isolated service network"
+            )
+        if service.get("gpus") or (
+            service.get("deploy", {})
+            .get("resources", {})
+            .get("reservations", {})
+            .get("devices")
+        ):
+            errors.append(f"service {name}: Compose currently supports CPU tasks")
+        if service.get("scale", 1) != 1 or (
+            service.get("deploy", {}).get("replicas", 1) != 1
+        ):
+            errors.append(f"service {name}: Compose requires one container per service")
+        if any(
+            port.get("published") not in (None, "", 0, "0")
+            for port in service.get("ports", [])
+        ):
+            errors.append(
+                f"service {name}: Compose ports must use dynamically assigned host "
+                'ports (publish the container port only, e.g. `- "80"`)'
+            )
+    return errors
+
+
+def output_tail(result: ProgramResult, limit: int = ERROR_TAIL) -> str:
+    """The end of a command's stderr and stdout, at most `limit` characters."""
+    output = "\n".join(text for text in (result.stderr, result.stdout) if text.strip())
+    return output if len(output) <= limit else "..." + output[-limit:]
 
 
 @asynccontextmanager
@@ -181,9 +241,7 @@ async def compose_services(
         async with asyncio.timeout(timeout):
             result = await run_host(*compose_argv, *args)
         if result.exit_code:
-            raise SandboxError(
-                f"Compose {args[0]} failed: {result.stderr or result.stdout}"
-            )
+            raise SandboxError(f"Compose {args[0]} failed: {output_tail(result)}")
         return result.stdout
 
     try:
@@ -208,19 +266,8 @@ async def compose_services(
             )
             if clash := sorted(spec.services.keys() & authored["services"].keys()):
                 raise SandboxError(f"Compose services {clash} are declared twice")
-            for kind in ("volumes", "networks"):
-                if any(
-                    value and (value.get("name") or value.get("external"))
-                    for value in authored.get(kind, {}).values()
-                ):
-                    raise SandboxError(f"Compose {kind} must use project-scoped names")
-            if any(
-                service.get("container_name")
-                for service in authored["services"].values()
-            ):
-                raise SandboxError(
-                    "Remove container_name so Compose can name each rollout's services"
-                )
+            if errors := compose_file_errors(authored):
+                raise SandboxError("; ".join(errors))
             base = {
                 "services": {
                     spec.workspace: {
@@ -354,27 +401,8 @@ async def compose_services(
             # Validate authored services after interpolation, before adding our own.
             resolved = json.loads(await compose("config", "--format", "json"))
             services = resolved["services"]
-            for service in services.values():
-                if service.get("network_mode") == "host":
-                    raise SandboxError("Compose requires an isolated service network")
-                if service.get("gpus") or (
-                    service.get("deploy", {})
-                    .get("resources", {})
-                    .get("reservations", {})
-                    .get("devices")
-                ):
-                    raise SandboxError("Compose currently supports CPU tasks")
-                if service.get("scale", 1) != 1 or (
-                    service.get("deploy", {}).get("replicas", 1) != 1
-                ):
-                    raise SandboxError("Compose requires one container per service")
-                if any(
-                    port.get("published") not in (None, "", 0, "0")
-                    for port in service.get("ports", [])
-                ):
-                    raise SandboxError(
-                        "Compose ports must use dynamically assigned host ports"
-                    )
+            if errors := compose_service_errors(resolved):
+                raise SandboxError("; ".join(errors))
             # Compose rejects cycles, so this ends at the owner of main's network.
             owner = spec.workspace
             while (mode := services[owner].get("network_mode", "")).startswith(
@@ -401,7 +429,18 @@ async def compose_services(
                 publish["ports"] = [f"127.0.0.1::{SERVICE_PORT}"]
                 if sys.platform != "linux":
                     publish["extra_hosts"] = {"host.docker.internal": "host-gateway"}
-            if prepared_images is not None:
+            if prepared_images is None:
+                # Harbor builds every service with a build section before `up`;
+                # Compose's own default would pull a published image of the name a
+                # service gives, skipping its build.
+                for name, service in services.items():
+                    if {"image", "build"} <= service.keys() and not service.get(
+                        "pull_policy"
+                    ):
+                        overlay["services"].setdefault(name, {})["pull_policy"] = (
+                            "build"
+                        )
+            else:
                 if prepared_images.keys() != services.keys():
                     raise SandboxError(
                         "Prepared Compose image services do not match this deployment"
