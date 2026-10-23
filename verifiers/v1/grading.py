@@ -31,14 +31,16 @@ _SCORING_INFO_KEYS = ("judge_calls", "scoring_diagnostics")
 @contextmanager
 def scoring_transaction(trace: Trace):
     """Discard partial shared scores when a required scoring callback fails."""
-    saved = copy.deepcopy((trace.state, trace.rewards, trace.metrics, trace.info))
+    saved = copy.deepcopy(
+        (trace.state, trace.rewards, trace.metrics, trace.info, trace.dropped)
+    )
     try:
         yield
     except BaseException:
         retained = {
             key: trace.info[key] for key in _SCORING_INFO_KEYS if key in trace.info
         }
-        trace.state, trace.rewards, trace.metrics, trace.info = saved
+        trace.state, trace.rewards, trace.metrics, trace.info, trace.dropped = saved
         trace.info.update(retained)
         raise
 
@@ -174,10 +176,11 @@ async def grade_task(
                         }
                     )
                 # Cleanup failure must not discard an authoritative completed score.
-                trace.state, trace.rewards, trace.metrics = (
+                trace.state, trace.rewards, trace.metrics, trace.dropped = (
                     result.state,
                     result.rewards,
                     result.metrics,
+                    result.dropped,
                 )
                 trace.info = result.info
                 try:

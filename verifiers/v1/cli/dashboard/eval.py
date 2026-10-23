@@ -50,6 +50,7 @@ _STYLE = {
     "finalize": "magenta",
     "scoring": "blue",
     "success": "green",
+    "dropped": "grey62",
     "error": "red",
 }
 _MARK_LABEL = {
@@ -61,6 +62,7 @@ _MARK_LABEL = {
     "finalize": "finalize",
     "scoring": "scoring",
     "success": "success",
+    "dropped": "dropped",
     "error": "error",
 }
 _MARK_WIDTH = max(len(label) for label in _MARK_LABEL.values())
@@ -336,9 +338,10 @@ def Progress(
     # role frozen) falls back to all traces rather than showing nothing.
     scored = [t for t in done_traces if t.agent.trainable] or done_traces
     total = len(slots)
-    # Headline reward = mean over non-errored traces; when any errored, `format_mean` appends
-    # the global avg (errored count as 0) in parens. `err` is the share of episodes that
-    # ended not-ok (a trace errored, or the env's rollout()/score() hook itself failed).
+    # Headline reward = mean over non-errored, non-dropped traces; when any errored,
+    # `format_mean` appends the global avg (errored count as 0) in parens. `err` is the share
+    # of episodes that ended not-ok (a trace errored, or the env's rollout()/score() hook
+    # itself failed); `dropped` the share of policy traces left out of every mean.
     reward = format_mean(scored, lambda t: t.reward)
     err = (
         f"{sum(s.episode is None or not s.episode.ok for s in done) / len(done):.2f}"
@@ -349,6 +352,8 @@ def Progress(
         f"{len(done)}/{total} · {format_time(time.time() - start)} · "
         f"reward {reward} · err {err}"
     )
+    if dropped := sum(t.is_dropped for t in scored):
+        stats += f" · dropped {dropped / len(scored):.2f}"
     if page is not None:  # overflowing — show which page, and that the arrows page
         stats += f"  (page {page[0]}/{page[1]} ◄ ►)"
     row = Table.grid(expand=True, padding=(0, 1))
@@ -599,14 +604,22 @@ def Rows(
             for t in slot.traces:
                 label = f"{base} agent={t.agent.name}"
                 if slot.done:  # fully scored — reward is final
-                    state = "error" if t.has_error else "success"
-                    # A trace that recorded nothing shows no reward: a judge or
-                    # modeled-user seat's `reward=0.00` would read as a score.
-                    result = (
-                        t.last_error.type
-                        if t.has_error and t.last_error
-                        else (f"reward={t.reward:.2f}" if t.rewards else "")
+                    state = (
+                        "error"
+                        if t.has_error
+                        else "dropped"
+                        if t.is_dropped
+                        else "success"
                     )
+                    # A trace that recorded nothing shows no reward: a judge or
+                    # modeled-user seat's `reward=0.00` would read as a score, and
+                    # a dropped trace's reward counts nowhere, so it shows its reason.
+                    if t.has_error:
+                        result = t.last_error.type if t.last_error else ""
+                    elif t.is_dropped:
+                        result = t.dropped
+                    else:
+                        result = f"reward={t.reward:.2f}" if t.rewards else ""
                     if t.has_error:
                         stop = ""  # error shown instead
                     else:
