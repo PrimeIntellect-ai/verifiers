@@ -362,3 +362,16 @@ def test_max_turn_tokens_caps_sampling(max_tokens, expected):
     spec = vf.AgentConfig(max_turn_tokens=16)
     sampling = vf.SamplingConfig(max_tokens=max_tokens)
     assert resolve_agent(spec, sampling=sampling).sampling.max_tokens == expected
+
+
+def test_a_resumed_run_starts_undropped_and_its_earlier_run_keeps_its_drop(
+    make_trace,
+):
+    trace = make_trace()
+    trace.ok = trace.is_completed = True
+    trace.record_reward("judge", 0.5)
+    trace.drop("judge: outcome=task_defect")
+    trace.resume(None)
+    assert trace.dropped is None and trace.rewards == {}
+    assert trace.attempt(0).dropped == "judge: outcome=task_defect"
+    assert trace.attempt(1).dropped is None

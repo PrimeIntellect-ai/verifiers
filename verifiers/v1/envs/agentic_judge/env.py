@@ -20,6 +20,7 @@ from verifiers.v1.judges.rubric import (
     RubricVerdicts,
     checked_criteria,
     criterion_metrics,
+    drop_reason,
     load_criteria,
     score_verdicts,
     weighted_score,
@@ -365,6 +366,9 @@ class AgenticJudgeEnv(vf.Env[AgenticJudgeEnvConfig]):
             for reward in solution.rewards.values():
                 if reward is not None:
                     reward.weight *= self.config.score.task_weight
+        if (reason := drop_reason("judge", verdicts, criteria)) is not None:
+            solution.drop(reason)
+            return
         solution.record_reward(
             "judge",
             weighted_score(scores, criteria),

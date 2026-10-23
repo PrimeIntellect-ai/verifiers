@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import importlib
+import math
 import sys
 import time
 import traceback
@@ -628,6 +629,9 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     """Whether a stage deadline (setup, agent, finalize, or scoring) expired."""
     errors: list[Error] = Field(default_factory=list)
     """Every error captured across attempts, oldest to newest."""
+    dropped: str | None = None
+    """Why consumers leave this trace out of reward means and training batches; `None`
+    keeps it. Independent of `ok`: a trace that completed cleanly can be dropped."""
     timing: Timing = Field(default_factory=Timing)
 
     _head_index: dict = PrivateAttr(default_factory=dict)
@@ -809,6 +813,7 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
                     for name, reward in self.rewards.items()
                 },
                 "metrics": dict(self.metrics),
+                "dropped": self.dropped,
                 "root_reply": self.root_reply,
             },
         }
@@ -839,7 +844,7 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         self.errors = []
         self.ok = self.is_completed = self.is_timeout = False
         self.stop_condition = self.root_reply = None
-        self.rewards, self.metrics = {}, {}
+        self.rewards, self.metrics, self.dropped = {}, {}, None
         self.timing = Timing()
         self._kept = False
         self.info.setdefault(RESUMES_KEY, []).append(entry)
@@ -886,6 +891,7 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
             for name, value in ended["rewards"].items()
         }
         view.metrics = dict(ended["metrics"])
+        view.dropped = ended.get("dropped")
         view.info[RESUMES_KEY] = copy.deepcopy(entries[:n])
         if not view.info[RESUMES_KEY]:
             del view.info[RESUMES_KEY]
@@ -982,6 +988,10 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     @property
     def has_error(self) -> bool:
         return not self.ok
+
+    @property
+    def is_dropped(self) -> bool:
+        return self.dropped is not None
 
     @computed_field
     @property
@@ -1234,6 +1244,9 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
             self.record_metric(name, value)
 
     def record_reward(self, name: str, value: float, weight: float = 1.0) -> None:
+        """Record a finite reward; a trace that has no reward signal is dropped instead."""
+        if not math.isfinite(value):
+            raise ValueError(f"reward {name!r} must be finite, got {value}")
         reward = Reward(score=float(value), weight=float(weight))
         self.rewards[name] = reward
 
@@ -1266,6 +1279,12 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         self.is_completed = True
         if override or self.stop_condition is None:
             self.stop_condition = condition
+
+    def drop(self, reason: str) -> None:
+        """Leave the trace out of reward means and training batches. The first reason
+        wins."""
+        if self.dropped is None:
+            self.dropped = reason
 
     def split_agent_time(self) -> None:
         """Split the agent span into model and harness time."""

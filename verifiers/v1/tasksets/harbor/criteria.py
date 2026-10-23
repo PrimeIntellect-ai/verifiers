@@ -38,7 +38,6 @@ rollout errors instead of scoring 0.
 import asyncio
 import base64
 import io
-import math
 import re
 import tomllib
 import xml.etree.ElementTree as ET
@@ -57,6 +56,7 @@ from verifiers.v1.judges.rubric import (
     RubricJudge,
     RubricJudgeConfig,
     criterion_metrics,
+    score_verdicts,
 )
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.trace import Trace
@@ -65,7 +65,6 @@ CRITERIA_FILE = "tests/criteria.toml"
 """Where a Harbor task declares its criteria, relative to the task directory."""
 METRIC_PREFIX = "criteria"
 YES, NO, NOT_APPLICABLE = "yes", "no", "not applicable"
-CONDITIONAL_CHOICES = {NO: 0.0, YES: 1.0, NOT_APPLICABLE: math.nan}
 MAX_EVIDENCE_BYTES = 20 * 1024 * 1024
 """The largest evidence file read from the grading box."""
 MAX_EVIDENCE_CHARS = 100_000
@@ -141,7 +140,9 @@ class TaskCriterion(BaseModel):
 
     def rubric(self) -> Criterion:
         """The criterion as the rubric judge grades it: yes/no, plus not applicable when
-        conditional (which scores nothing)."""
+        conditional. Not applicable is a `drop` answer only in that it scores nothing:
+        criteria are graded with `RubricJudge.grade`, which drops no trace, and `fold`
+        leaves the criterion out."""
         text = self.text
         if self.evidence:
             text += f" [evidence: {', '.join(self.evidence)}]"
@@ -149,7 +150,8 @@ class TaskCriterion(BaseModel):
             name=self.id,
             text=text,
             weight=self.weight,
-            choices=dict(CONDITIONAL_CHOICES) if self.conditional else [NO, YES],
+            choices=[NO, YES],
+            drop=[NOT_APPLICABLE] if self.conditional else [],
         )
 
 
@@ -313,15 +315,17 @@ async def grade_criteria(
     # The rubric judge records its own criteria's metrics as it grades.
     recorded = judged if isinstance(judge, TaskRubricJudgeConfig) else []
     rest = [c for c in criteria.criteria if c not in recorded]
+    verdicts = [
+        CriterionVerdict(name=c.id, reason="", verdict=results[c.id].answer)
+        for c in rest
+    ]
+    rubric = [c.rubric() for c in rest]
     trace.record_metrics(
         criterion_metrics(
             METRIC_PREFIX,
-            [
-                CriterionVerdict(name=c.id, reason="", verdict=results[c.id].answer)
-                for c in rest
-            ],
-            [c.rubric() for c in rest],
-            {c.id: c.rubric().score(results[c.id].answer) for c in rest},
+            verdicts,
+            rubric,
+            score_verdicts(verdicts, rubric, "the criteria's"),
         )
     )
     trace.info["criteria"] = report.model_dump(mode="json")
@@ -572,7 +576,7 @@ async def judge_rubric(
     k = config.max_criteria or len(criteria)
     batches = [criteria[i : i + k] for i in range(0, len(criteria), k)]
 
-    async def grade(batch: list[TaskCriterion]) -> dict[str, float]:
+    async def grade(batch: list[TaskCriterion]) -> list[CriterionVerdict]:
         paths = list(dict.fromkeys(p for c in batch for p in c.evidence))
         return await judge.grade(
             question=question,
@@ -581,15 +585,12 @@ async def judge_rubric(
             trace=trace,
         )
 
-    scores: dict[str, float] = {}
-    for result in await asyncio.gather(*(grade(b) for b in batches)):
-        scores.update(result)
-    results = {}
-    for criterion in criteria:
-        score = scores[criterion.id]
-        answer = NOT_APPLICABLE if math.isnan(score) else YES if score else NO
-        results[criterion.id] = judged_result(criterion, answer)
-    return results
+    answers = {
+        verdict.name: verdict.verdict
+        for verdicts in await asyncio.gather(*(grade(b) for b in batches))
+        for verdict in verdicts
+    }
+    return {c.id: judged_result(c, answers[c.id]) for c in criteria}
 
 
 async def judge_decisions(

@@ -135,7 +135,6 @@ if TYPE_CHECKING:
         TaskError,
         ToolsetError,
         TunnelError,
-        UnscoredError,
         outage_kind,
     )
     from verifiers.v1.grading import grade_submission
@@ -427,7 +426,6 @@ _NAME_TO_MODULE = {
     "TrainWorkInfo": "verifiers.v1.episode",
     "TunnelError": "verifiers.v1.errors",
     "TurnTokens": "verifiers.v1.types",
-    "UnscoredError": "verifiers.v1.errors",
     "Usage": "verifiers.v1.types",
     "User": "verifiers.v1.conversation",
     "UserMessage": "verifiers.v1.types",
@@ -572,7 +570,6 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "ToolsetError",
     "SandboxError",
     "TaskError",
-    "UnscoredError",
     "InterceptionError",
     "TunnelError",
     # clients

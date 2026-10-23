@@ -3,7 +3,6 @@
 import asyncio
 import contextlib
 import logging
-import math
 import time
 from collections.abc import Awaitable, Callable
 from contextlib import AsyncExitStack
@@ -24,7 +23,6 @@ from verifiers.v1.errors import (
     SandboxError,
     TaskError,
     ToolsetError,
-    UnscoredError,
     boundary,
 )
 from verifiers.v1.grading import (
@@ -1105,6 +1103,7 @@ class Rollout:
         self._closed = True
         steering.unregister(self)
         trace = self.trace
+        skip_reason = self._scoring_skip_reason()
         runtime = self.runtime
         try:
             if trace.timing.agent.start and not trace.timing.agent.end:
@@ -1204,7 +1203,7 @@ class Rollout:
                         boundary(TaskError, "scoring"),
                     ):
                         # Cross-trace judgement runs later, after the runtime is gone.
-                        if skip_reason := self._scoring_skip_reason():
+                        if skip_reason := skip_reason or self._scoring_skip_reason():
                             logger.info(
                                 "rollout %s: scoring skipped (%s)",
                                 trace.id,
@@ -1273,21 +1272,6 @@ class Rollout:
                         # the metrics read what it handed over and left behind.
                         await self._close_harness()
                         await self._score_harness(runtime, self._metrics_deadline())
-                # A nan reward scores nothing: keep it unscored (None) and fail the
-                # rollout after scoring, so it is never retried as a scoring failure.
-                unscored = [
-                    name
-                    for name, reward in trace.rewards.items()
-                    if reward is not None and math.isnan(reward.score)
-                ]
-                if unscored:
-                    for name in unscored:
-                        trace.rewards[name] = None
-                    self.fail(
-                        UnscoredError(
-                            f"reward {', '.join(unscored)} scored nothing (nan)"
-                        )
-                    )
                 trace.timing.scoring.end = time.time()
                 trace.notify()
         except Exception as e:  # noqa: BLE001 - finalize boundary records every rollout failure
@@ -1333,11 +1317,12 @@ class Rollout:
             except Exception:
                 logger.warning("runtime teardown failed", exc_info=True)
         logger.info(
-            "rollout done: id=%s task=%s reward=%.3f turns=%d stop=%s",
+            "rollout done: id=%s task=%s reward=%.3f turns=%d stop=%s%s",
             trace.id,
             self.task.data.idx,
             trace.reward,
             trace.num_turns,
             trace.last_error.type if trace.last_error else trace.stop_condition,
+            f" dropped={trace.dropped!r}" if trace.is_dropped else "",
         )
         return trace

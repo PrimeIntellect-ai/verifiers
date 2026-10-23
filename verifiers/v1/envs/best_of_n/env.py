@@ -36,9 +36,14 @@ class BestOfNEnv(vf.Env[BestOfNEnvConfig]):
         share; a degenerate all-equal rollout marks every sibling); `pass_at_n` —
         whether any sibling reached the threshold — is a rollout-level fact,
         recorded identically on every sibling so flat consumers see it without
-        reconstructing the group."""
-        top = max(t.reward for t in episode.traces)
+        reconstructing the group. A dropped sibling's reward counts for nothing."""
+        kept = [t for t in episode.traces if not t.is_dropped]
+        if not kept:
+            return
+        top = max(t.reward for t in kept)
         solved = float(top >= self.config.threshold)
         for trace in episode.traces:
-            trace.record_metric("best", float(trace.reward == top))
+            trace.record_metric(
+                "best", float(not trace.is_dropped and trace.reward == top)
+            )
             trace.record_metric("pass_at_n", solved)

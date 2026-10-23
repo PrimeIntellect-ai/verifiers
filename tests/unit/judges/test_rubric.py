@@ -187,8 +187,51 @@ async def test_rubric_grades_given_text_against_inline_criteria(fake_judge_model
         vf.Criterion(name="is_polite", text="The response is polite."),
     ]
     judge = vf.RubricJudge(vf.RubricJudgeConfig(criteria=criteria))
-    scores = await judge.grade(
+    verdicts = await judge.grade(
         question="Where?", response="Paris, thanks.", criteria=judge.criteria
     )
-    assert scores == {"mentions_paris": 1.0, "is_polite": 0.0}
+    assert {v.name: v.verdict for v in verdicts} == {
+        "mentions_paris": "yes",
+        "is_polite": "no",
+    }
     assert len(fake_judge_model) == 1
+
+
+DROP_TOML = (
+    '[[criteria]]\nname = "outcome"\ntext = "t"\n'
+    'choices = { correct = 1.0, incorrect = 0.0 }\ndrop = ["task_defect"]\n'
+)
+
+
+async def test_rubric_drop_answer_drops_the_trace(tmp_path, monkeypatch, make_trace):
+    # A drop answer records no reward and drops the trace with the answer as its reason.
+    async def defect(self, messages, *, trace=None, schema=None, parse=None, **s):
+        v = {"verdicts": [{"name": "outcome", "reason": "r", "verdict": "task_defect"}]}
+        return JudgeResponse(text=json.dumps(v), parsed=None)
+
+    monkeypatch.setattr(Judge, "complete", defect)
+    judge = rubric_judge(tmp_path, body=DROP_TOML, name="q")
+    trace = make_trace()
+    assert await judge.score(trace.task.data, trace) is None
+    assert trace.dropped == "q: outcome=task_defect"
+    assert trace.metrics == {
+        "q/outcome/correct": 0.0,
+        "q/outcome/incorrect": 0.0,
+        "q/outcome/task_defect": 1.0,
+    }
+
+
+def test_rubric_drop_validation(tmp_path):
+    def criteria(body: str):
+        return rubric_judge(
+            tmp_path, body='[[criteria]]\nname = "x"\ntext = "t"\n' + body
+        ).criteria
+
+    with pytest.raises(ValueError, match="finite"):
+        criteria("choices = { a = 1.0, b = nan }\n")
+    with pytest.raises(ValueError, match="both"):
+        criteria('choices = { a = 1.0, b = 0.0 }\ndrop = ["b"]\n')
+    with pytest.raises(ValueError, match="at least 2 answers"):
+        criteria("choices = { a = 1.0 }\n")
+    # one scored answer is enough next to a drop answer
+    assert criteria('choices = { a = 1.0 }\ndrop = ["b"]\n')[0].answers == ["a", "b"]
