@@ -28,6 +28,7 @@ from verifiers.v1.types import (
     SamplingMask,
     Tool,
     ToolCall,
+    TopLogprobs,
     TurnTokens,
     Usage,
     WeightVersionSpan,
@@ -185,21 +186,22 @@ def response_from_generate(
             weight_versions=[WeightVersionSpan(**span) for span in spans]
             if (spans := result.get("weight_versions"))
             else None,
+            top_logprobs=(
+                TopLogprobs.from_top_logprobs(
+                    result["completion_top_ids"], result["completion_top_logprobs"]
+                )
+                if result.get("completion_top_ids") is not None
+                else None
+            ),
         ),
     )
 
 
 def _is_valid_incremental_tail(messages: list[dict[str, Any]]) -> bool:
-    """Renderer bridges may extend sampled assistant turns with tool calls and/or a new user."""
-    if not messages:
-        return False
-    roles = []
-    for message in messages:
-        role = message.get("role")
-        roles.append(role if isinstance(role, str) else None)
-    if roles[-1] == "user":
-        return all(role == "tool" for role in roles[:-1])
-    return all(role == "tool" for role in roles)
+    """Let the renderer extend append-only tool results and user messages."""
+    return bool(messages) and all(
+        message.get("role") in ("tool", "user") for message in messages
+    )
 
 
 def _has_multimodal_content(messages) -> bool:

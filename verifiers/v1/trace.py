@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import math
 import time
 import traceback
 import uuid
@@ -31,6 +32,7 @@ from verifiers.v1.types import (
     SamplingMask,
     Tool,
     ToolMessage,
+    TopLogprobs,
     Usage,
     content_text,
 )
@@ -44,6 +46,7 @@ EXCLUDE_FIELDS: dict = {
         "__all__": {
             "routed_experts",
             "sampling_mask",
+            "top_logprobs",
         }
     }
 }
@@ -348,6 +351,24 @@ class Branch(BaseModel):
         return SamplingMask(ids=ids, counts=np.concatenate(counts_parts))
 
     @property
+    def top_logprobs(self) -> TopLogprobs | None:
+        """Top-k sampling heads aligned to this branch's token ids."""
+        heads = [n.top_logprobs for n in self.nodes if n.top_logprobs is not None]
+        if not heads:
+            return None
+        counts = []
+        for node in self.nodes:
+            rows = np.zeros(len(node.mask), dtype=np.int32)
+            if node.top_logprobs is not None:
+                rows[np.nonzero(node.mask)[0]] = node.top_logprobs.counts
+            counts.append(rows)
+        return TopLogprobs(
+            ids=np.concatenate([head.ids for head in heads]),
+            logprobs=np.concatenate([head.logprobs for head in heads]),
+            counts=np.concatenate(counts),
+        )
+
+    @property
     def usage(self) -> Usage | None:
         return Usage.aggregate(c.usage for c in self.calls if c.usage is not None)
 
@@ -429,6 +450,9 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     """Whether a stage deadline (setup, agent, finalize, or scoring) expired."""
     errors: list[Error] = Field(default_factory=list)
     """Every error captured across attempts, oldest to newest."""
+    dropped: str | None = None
+    """Why consumers leave this trace out of reward means and training batches; `None`
+    keeps it. Independent of `ok`: a trace that completed cleanly can be dropped."""
     timing: Timing = Field(default_factory=Timing)
 
     _head_index: dict = PrivateAttr(default_factory=dict)
@@ -479,6 +503,10 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     @property
     def has_error(self) -> bool:
         return not self.ok
+
+    @property
+    def is_dropped(self) -> bool:
+        return self.dropped is not None
 
     @computed_field
     @property
@@ -628,6 +656,7 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
             "max_input_tokens",
             "max_output_tokens",
             "max_total_tokens",
+            "max_turn_tokens",
             "compaction_failed",
         ):
             return True
@@ -693,6 +722,9 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
             self.record_metric(name, value)
 
     def record_reward(self, name: str, value: float, weight: float = 1.0) -> None:
+        """Record a finite reward; a trace that has no reward signal is dropped instead."""
+        if not math.isfinite(value):
+            raise ValueError(f"reward {name!r} must be finite, got {value}")
         reward = Reward(score=float(value), weight=float(weight))
         self.rewards[name] = reward
 
@@ -725,6 +757,12 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         self.is_completed = True
         if override or self.stop_condition is None:
             self.stop_condition = condition
+
+    def drop(self, reason: str) -> None:
+        """Leave the trace out of reward means and training batches. The first reason
+        wins."""
+        if self.dropped is None:
+            self.dropped = reason
 
     def split_agent_time(self) -> None:
         """Split the agent span into model and harness time."""

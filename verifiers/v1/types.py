@@ -1,9 +1,8 @@
 import base64
 from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Annotated, Any, Literal
+from typing import TYPE_CHECKING, Annotated, Any, Literal
 
-import numpy as np
 from pydantic import (
     AliasChoices,
     BaseModel,
@@ -12,6 +11,10 @@ from pydantic import (
     model_validator,
 )
 from typing_extensions import TypedDict
+
+# The config tree imports this module, so numpy loads only where arrays are built.
+if TYPE_CHECKING:
+    import numpy as np
 
 
 class TextContentPart(BaseModel):
@@ -226,6 +229,8 @@ class SamplingMask:
     ) -> "SamplingMask":
         """Build from vLLM's one-list-per-token masks, or from prime-rl's packed CSR
         form: `{"ids", "counts"}`, each a base64 `{data, shape, dtype}` int32 array."""
+        import numpy as np
+
         if isinstance(sampling_mask, dict):
             return cls(
                 ids=_decode_packed(sampling_mask["ids"], np.int32),
@@ -244,9 +249,48 @@ class SamplingMask:
         return cls(ids=ids, counts=counts)
 
 
-def _decode_packed(packed: dict[str, Any], dtype: type) -> np.ndarray:
+def _decode_packed(packed: dict[str, Any], dtype: type) -> "np.ndarray":
+    import numpy as np
+
     array = np.frombuffer(base64.b64decode(packed["data"]), dtype=packed["dtype"])
     return array.astype(dtype, copy=False)
+
+
+@dataclass
+class TopLogprobs:
+    """Top-k sampling head stored as flat `ids`, `logprobs` and `counts` arrays.
+
+    Each row holds one completion token's top-k sampler candidates in descending
+    probability order, independent of the sampled action. Row boundaries come from
+    `counts`; `ids` and `logprobs` share the same flat layout.
+    """
+
+    ids: Any
+    logprobs: Any
+    counts: Any
+
+    @classmethod
+    def from_top_logprobs(
+        cls, ids: list[list[int]], logprobs: list[list[float]]
+    ) -> "TopLogprobs":
+        import numpy as np
+
+        if len(ids) != len(logprobs):
+            raise ValueError("top ids and logprobs must have one row per token")
+        counts = np.fromiter(
+            (len(row) for row in ids),
+            dtype=np.int32,
+            count=len(ids),
+        )
+        if any(len(ids[i]) != len(logprobs[i]) for i in range(len(ids))):
+            raise ValueError("top ids and logprobs rows must be the same length")
+        return cls(
+            ids=np.fromiter((token for row in ids for token in row), dtype=np.int32),
+            logprobs=np.fromiter(
+                (p for row in logprobs for p in row), dtype=np.float32
+            ),
+            counts=counts,
+        )
 
 
 class TurnTokens(BaseModel):
@@ -287,6 +331,10 @@ class TurnTokens(BaseModel):
     # Transient carrier (excluded): the engine's weight-version spans over the completion,
     # attributed to the assistant node by the turn's `commit`, then dropped.
     weight_versions: list[WeightVersionSpan] | None = Field(default=None, exclude=True)
+
+    # Transient carrier (excluded): per-completion-token top-k sampling heads,
+    # attributed to the assistant node by the turn's `commit`, then dropped.
+    top_logprobs: TopLogprobs | None = Field(default=None, exclude=True)
 
 
 class Response(BaseModel):
