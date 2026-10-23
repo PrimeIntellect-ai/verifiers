@@ -1,5 +1,5 @@
 from verifiers.v1.dialects.anthropic import AnthropicDialect
-from verifiers.v1.dialects.base import Dialect, StreamParser
+from verifiers.v1.dialects.base import Dialect
 from verifiers.v1.dialects.chat import (
     FINISH_REASONS,
     ChatDialect,
@@ -19,7 +19,6 @@ __all__ = [
     "ChatDialect",
     "Dialect",
     "ResponsesDialect",
-    "StreamParser",
     "parse_message",
     "parse_tools",
 ]

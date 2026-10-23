@@ -1,7 +1,7 @@
 """Client interfaces for model inference and relay."""
 
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 
 from verifiers.v1.configs.client import (
@@ -13,23 +13,10 @@ from verifiers.v1.dialects import Dialect
 from verifiers.v1.graph import PendingTurn
 from verifiers.v1.types import Response, Sampling, SamplingConfig
 
-SESSION_ID_HEADER = "X-Session-ID"
-"""Per-rollout routing header (the trace id, same value every turn), so a session-affinity
-router pins a rollout's turns to one engine and its growing prefix stays KV-cached."""
-
-
-@dataclass
-class RelayReply:
-    """A relayed upstream response: content type, complete SSE events, and connection cleanup."""
-
-    content_type: str
-    chunks: AsyncIterator[bytes]
-    close: Callable[[], Awaitable[None]]
-
 
 class Client(ABC):
     @abstractmethod
-    async def get_response(
+    async def _complete(
         self,
         dialect: Dialect,
         body: dict,
@@ -37,23 +24,12 @@ class Client(ABC):
         session_id: str | None = None,
         turn: PendingTurn | None = None,
         headers: Mapping[str, str] | None = None,
-    ) -> Response:
-        """Run one completion -> a vf `Response`. `body` is the final effective native
-        request after overrides and policy mediation: the eval client forwards it unchanged,
-        while the train client renders it to token ids using the resolved `sampling` config.
-        `session_id` is the rollout's trace id (sent as `SESSION_ID_HEADER`); `turn` is the
-        graph-resolved prompt prefix, used by train clients for renderer bridging."""
+    ) -> tuple[Response, bytes | None]:
+        """Complete an effective native request, retaining provider SSE for atomic replay.
 
-    async def relay(
-        self,
-        dialect: Dialect,
-        body: dict,
-        session_id: str | None = None,
-        headers: Mapping[str, str] | None = None,
-    ) -> RelayReply:
-        """Stream a response for the final effective `body`, relaying the provider's bytes.
-        Only the relay (eval) client supports it; the renderer generates and cannot stream."""
-        raise NotImplementedError(f"{type(self).__name__} does not support streaming")
+        Eval forwards the request; training renders its graph-resolved prompt to tokens.
+        The response always carries native JSON; generated responses have no provider SSE.
+        """
 
     async def relay_aux(
         self,

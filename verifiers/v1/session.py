@@ -330,7 +330,7 @@ class RolloutSession:
                             )
                         if isinstance(after, ToolMessage):
                             after = ToolMessage.model_validate(
-                                bound_tool_message(after.model_dump())
+                                bound_tool_message(dict(after))
                             )
                             result.messages[position] = after
                         if isinstance(before, ToolMessage) and (
