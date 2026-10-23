@@ -32,6 +32,7 @@ from verifiers.v1.runtimes.base import (
 from verifiers.v1.runtimes.limiters import creation_limiter
 from verifiers.v1.runtimes.runtime import Runtime
 from verifiers.v1.utils.aio import run_shielded
+from verifiers.v1.utils.artifacts import validate_runtime_mounts
 from verifiers.v1.utils.prime import ensure_prime_auth
 from verifiers.v1.utils.scope import run_scope
 
@@ -172,7 +173,7 @@ class PrimeBackend(RuntimeBackend):
         return SERVICE_PORT
 
     async def start(self) -> None:
-        from prime_sandboxes import CreateSandboxRequest
+        from prime_sandboxes import APIError, CreateSandboxRequest
 
         self._client = _lease_client()
         # Map the resources onto prime's API (minutes, split GPU; memory/disk are already
@@ -194,6 +195,11 @@ class PrimeBackend(RuntimeBackend):
             "gpu_type": gpu_type,
             "region": self.config.region,
         }
+        if self.config.mounts:
+            options["volumes"] = [
+                {"mount_path": target, **mount.model_dump()}
+                for target, mount in self.config.mounts.items()
+            ]
         if self.config.checkpoint:
             source = {"checkpoint_id": self.config.checkpoint}
         else:
@@ -214,6 +220,15 @@ class PrimeBackend(RuntimeBackend):
                 )
                 or contextlib.nullcontext()
             ):
+                for name in dict.fromkeys(m.name for m in self.config.mounts.values()):
+                    try:
+                        await self._client.volumes.create(name)
+                    except APIError as error:
+                        # Create returns 409 when this scoped name already exists,
+                        # including when another runtime creates it concurrently.
+                        if not str(error).startswith("HTTP 409:"):
+                            raise
+
                 # Shielded through the id capture: a cancel that aborts the POST
                 # mid-flight leaves the platform creating a sandbox this side
                 # never learned the id of — teardown() then cannot delete it
@@ -251,6 +266,7 @@ class PrimeBackend(RuntimeBackend):
             await self._client.execute_command(
                 self.info.id, f"mkdir -p {shlex.quote(self.config.workdir)}"
             )
+            await validate_runtime_mounts(self.bind(), [])
         except (
             Exception
         ) as e:  # provisioning failure is one rollout's problem, not the eval's
