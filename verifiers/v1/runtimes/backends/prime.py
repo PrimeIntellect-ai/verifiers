@@ -20,7 +20,7 @@ from urllib.parse import urlsplit
 from prime_sandboxes.models import validate_egress_lists
 
 from verifiers.v1.configs.runtime import NetworkPolicyConfig, PrimeConfig
-from verifiers.v1.errors import SandboxError
+from verifiers.v1.errors import SandboxError, missing_file_kind, sandbox_error_kind
 from verifiers.v1.runtimes.base import (
     SERVICE_PORT,
     BaseRuntimeInfo,
@@ -270,7 +270,9 @@ class PrimeBackend(RuntimeBackend):
         except (
             Exception
         ) as e:  # provisioning failure is one rollout's problem, not the eval's
-            raise SandboxError(f"prime sandbox provisioning failed: {e}") from e
+            raise SandboxError(
+                f"prime sandbox provisioning failed: {e}", kind=sandbox_error_kind(e)
+            ) from e
 
     async def prepare_execution(
         self, routes: list[str] | None, network: NetworkPolicyConfig | None = None
@@ -306,12 +308,15 @@ class PrimeBackend(RuntimeBackend):
             except TimeoutError as e:
                 raise SandboxError(
                     "prime egress policy was not applied within 60s on sandbox "
-                    f"{self.info.id}; refusing to start the agent unrestricted"
+                    f"{self.info.id}; refusing to start the agent unrestricted",
+                    kind="io",
                 ) from e
         except SandboxError:
             raise
         except Exception as e:
-            raise SandboxError(f"prime egress policy failed: {e}") from e
+            raise SandboxError(
+                f"prime egress policy failed: {e}", kind=sandbox_error_kind(e)
+            ) from e
         logger.info(
             "prime: egress policy applied on sandbox %s (allow=%s block=%s)",
             self.info.id,
@@ -353,11 +358,13 @@ class PrimeBackend(RuntimeBackend):
         except (
             Exception
         ) as e:  # a sandbox/API failure is one rollout's problem, not the eval's
-            raise SandboxError(f"prime exec failed: {e}") from e
+            raise SandboxError(
+                f"prime exec failed: {e}", kind=sandbox_error_kind(e, "exec")
+            ) from e
         if missing is not None:
-            raise SandboxError(f"prime exec output unavailable: {missing}")
+            raise SandboxError(f"prime exec output unavailable: {missing}", kind="io")
         if result.exit_code is None:
-            raise SandboxError("prime exec completed without an exit code")
+            raise SandboxError("prime exec completed without an exit code", kind="exec")
         return ProgramResult(
             exit_code=result.exit_code,
             stdout=result.stdout or "",
@@ -376,7 +383,10 @@ class PrimeBackend(RuntimeBackend):
                 user=runtime.user,
             )
         except Exception as e:
-            raise SandboxError(f"prime streaming process failed to start: {e}") from e
+            raise SandboxError(
+                f"prime streaming process failed to start: {e}",
+                kind=sandbox_error_kind(e, "exec"),
+            ) from e
         return PrimeProcess(process)
 
     async def expose(self, port: int) -> str:
@@ -427,7 +437,10 @@ class PrimeBackend(RuntimeBackend):
                 user=runtime.user,
             )
         except Exception as e:
-            raise SandboxError(f"prime background launch failed: {e}") from e
+            raise SandboxError(
+                f"prime background launch failed: {e}",
+                kind=sandbox_error_kind(e, "exec"),
+            ) from e
 
     async def read(
         self, runtime: Runtime, path: str, max_bytes: int | None = None
@@ -460,10 +473,20 @@ class PrimeBackend(RuntimeBackend):
                         async for chunk in process.stderr:
                             stderr = (stderr + chunk)[-500:]
                         if await process.wait():
-                            raise SandboxError(stderr.decode(errors="replace").strip())
+                            detail = stderr.decode(errors="replace").strip()
+                            raise SandboxError(
+                                detail, kind=missing_file_kind(detail, "unknown")
+                            )
                         return data.getvalue()
             except Exception as exc:
-                raise SandboxError(f"read {path!r}: {exc}") from exc
+                # The box's own failures keep their kind: stderr names user paths, which
+                # the message markers must not read.
+                kind = (
+                    exc.kind
+                    if isinstance(exc, SandboxError)
+                    else sandbox_error_kind(exc, "io")
+                )
+                raise SandboxError(f"read {path!r}: {exc}", kind=kind) from exc
         # Avoid background-job log limits and base64 overhead by downloading binary data directly.
         # The temporary file is removed on every exit, and its byte read stays off the event loop.
         target = (
@@ -477,7 +500,9 @@ class PrimeBackend(RuntimeBackend):
                 await self._client.download_file(self.info.id, target, str(download))
                 return await asyncio.to_thread(download.read_bytes)
         except Exception as e:
-            raise SandboxError(f"read {path!r}: {e}") from e
+            raise SandboxError(
+                f"read {path!r}: {e}", kind=sandbox_error_kind(e, "io")
+            ) from e
 
     async def write(self, runtime: Runtime, path: str, data: bytes) -> None:
         # The gateway creates missing parents and uploads binary data without command-line
@@ -493,7 +518,9 @@ class PrimeBackend(RuntimeBackend):
                     self.info.id, target, data, filename=PurePosixPath(target).name
                 )
             except Exception as e:
-                raise SandboxError(f"write {path!r}: {e}") from e
+                raise SandboxError(
+                    f"write {path!r}: {e}", kind=sandbox_error_kind(e, "io")
+                ) from e
             return
         # Uploads act as the default user: stage the bytes, then copy them in as the user.
         root = runtime.with_user(None)
@@ -506,7 +533,10 @@ class PrimeBackend(RuntimeBackend):
         finally:
             await root.run(["rm", "-f", staged], {})
         if result.exit_code != 0:
-            raise SandboxError(f"write {path!r}: {result.stderr.strip()[-500:]}")
+            detail = result.stderr.strip()[-500:]
+            raise SandboxError(
+                f"write {path!r}: {detail}", kind=missing_file_kind(detail, "unknown")
+            )
 
     def cleanup(self) -> None:
         # Synchronous atexit backstop (the async client can't run once the loop is gone): delete
