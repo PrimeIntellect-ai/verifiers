@@ -1,6 +1,6 @@
 """`vf-gate`: show the host's request gates (`verifiers.v1.request_gate`), or resize them live.
 
-    uv run vf-gate                          # each gate: cap, in flight, waiting, ...
+    uv run vf-gate                          # each gate: cap, limit, in flight, ...
     uv run vf-gate --resize 48 --model M    # move the cap of M's live gates to 48
 
 A raise admits waiting requests at once; a lower sheds nothing and admits no one until
@@ -19,6 +19,8 @@ from verifiers.v1.configs.cli.gate import GateConfig
 COLUMNS = {
     "model": "model",
     "max_concurrent": "cap",
+    "limit": "limit",
+    "rejections": "429s",
     "in_flight": "in_flight",
     "waiting": "waiting",
     "admitted": "admitted",

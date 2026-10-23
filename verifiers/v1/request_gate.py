@@ -30,9 +30,18 @@ first. `resize` (or `vf-gate --resize`) moves the cap of live gates and holds it
 every config until the gate's users are gone: a raise takes effect at once, a lower sheds
 nothing and admits no one until fewer than the new cap are in flight.
 
+The cap is never exceeded. Under it, with `adaptive`, a 429/529 lowers the limit by
+`decrease_factor` (at most once per `decrease_cooldown`), and the limit climbs back to the
+cap in a straight line over `recover_seconds` from that decrease, whatever the traffic: a
+burst of rejections slows the gate for a minute, never for hours. A raise of the cap
+restarts the limit at the new cap; a lower keeps a lowered limit already below it. The
+adaptive fields of the latest admitting config apply. A rejected request returns its
+permit, waits for `Retry-After` (else exponential backoff) and queues again, up to
+`max_rejections` times; after that the provider's response reaches the caller unchanged.
+
 Every process using a gate holds a shared `flock` on its users file; the first one in,
-finding no other user, starts the gate's state afresh, so what an earlier run was set to
-does not carry over to the next. The daemon writes each gate's state to
+finding no other user, starts the gate's state afresh, so what an earlier run learned or
+was set to does not carry over to the next. The daemon writes each gate's state to
 `<gate>.state.json` about once a second for dashboards (with requests in flight and waiting
 by process); `gate_states` and `resize` ask the daemon.
 
@@ -45,6 +54,7 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import contextlib
+import email.utils
 import fcntl
 import hashlib
 import itertools
@@ -52,6 +62,7 @@ import json
 import logging
 import os
 import queue
+import random
 import re
 import socket
 import subprocess
@@ -66,7 +77,7 @@ from typing import Any, Literal, cast
 import httpx
 from pydantic_core import from_json
 
-from verifiers.v1.configs.client import RequestGateConfig
+from verifiers.v1.configs.client import REJECTION_STATUSES, RequestGateConfig
 from verifiers.v1.request_gate_daemon import check_private, open_private, peer_uid
 from verifiers.v1.utils.paths import CACHE_DIR
 
@@ -108,7 +119,16 @@ def _slug(model: str) -> str:
 
 def _wire(config: RequestGateConfig) -> dict[str, Any]:
     """What the daemon needs of a config (`request_gate_daemon.Cfg`)."""
-    return {"max_concurrent": config.max_concurrent}
+    return config.model_dump(
+        include={
+            "max_concurrent",
+            "min_concurrent",
+            "adaptive",
+            "decrease_factor",
+            "decrease_cooldown",
+            "recover_seconds",
+        }
+    )
 
 
 def _encode(message: list[Any]) -> bytes:
@@ -339,7 +359,7 @@ class _Connection:
             if isinstance(pending, _Admission):
                 pending.resolve(message[3])
             else:  # given up meanwhile (a timed-out call): return it
-                self.send(["release", message[2], message[3]])
+                self.send(["release", message[2], message[3], False])
         elif kind == "deny" and isinstance(pending, _Admission):
             pending.resolve(None)
         elif kind == "reply" and isinstance(pending, _Call):
@@ -482,13 +502,14 @@ class ModelGate:
                 self.release(slot)
             raise
 
-    def release(self, slot: int) -> None:
-        """Return `slot`. Never blocks and takes no lock: safe from a finalizer."""
+    def release(self, slot: int, rejected: bool = False) -> None:
+        """Return `slot`; `rejected` if the provider refused its request (429/529), which
+        feeds the adaptive limit. Never blocks and takes no lock: safe from a finalizer."""
         try:
             self._held.remove(slot)
         except KeyError:
             return
-        self._conn.send(["release", self.name, slot])
+        self._conn.send(["release", self.name, slot, rejected])
 
     def state(self) -> dict[str, Any]:
         """The gate's current state, as the daemon holds it."""
@@ -537,7 +558,7 @@ def _ask(directory: Path, message: list[Any]) -> Any:
 
 def gate_states(directory: Path, model: str | None = None) -> list[dict[str, Any]]:
     """The gates under `directory` (only `model`'s, if given): each one's model, cap
-    (`max_concurrent`), `in_flight`, `waiting`, counters, and `updated`. With no daemon
+    (`max_concurrent`), current `limit`, `rejections`, `in_flight`, `waiting`, counters, and `updated`. With no daemon
     running there (no process uses the directory), the gates of the last run as its
     daemon last wrote them, `updated` telling when."""
     states = _ask(directory, ["states", model])
@@ -562,7 +583,8 @@ def resize(
 ) -> list[dict[str, Any]]:
     """Set the shared cap of the live gates under `directory` (only `model`'s, if given)
     to `max_concurrent`, for every process using them; returns their states as
-    `gate_states` does. It holds against every config until the gate's users are gone:
+    `gate_states` does. A raise restarts the adaptive limit at the new cap, a lower keeps
+    a learned limit already below it. It holds against every config until the gate's users are gone:
     the next run starts from its own config. With no daemon running there, no gate is
     live: nothing to resize."""
     if max_concurrent < 1:
@@ -620,6 +642,24 @@ def request_model(request: httpx.Request) -> str | None:
     return model if isinstance(model, str) else None
 
 
+def retry_after(response: httpx.Response) -> float | None:
+    """Seconds the provider asked to wait: `retry-after-ms`, else `Retry-After` as
+    seconds or an HTTP date."""
+    headers = response.headers
+    with contextlib.suppress(ValueError):
+        if (ms := headers.get("retry-after-ms")) is not None:
+            return max(0.0, float(ms) / 1000)
+    value = headers.get("retry-after")
+    if value is None:
+        return None
+    with contextlib.suppress(ValueError):
+        return max(0.0, float(value))
+    with contextlib.suppress(TypeError, ValueError):
+        when = email.utils.parsedate_to_datetime(value)
+        return max(0.0, when.timestamp() - time.time())
+    return None
+
+
 def _credential(request: httpx.Request) -> str:
     headers = request.headers
     return headers.get("authorization") or headers.get("x-api-key") or ""
@@ -666,14 +706,40 @@ class GatedAsyncClient(httpx.AsyncClient):
         if model is None:
             return await super().send(request, stream=stream, **kwargs)
         gate = await self._gate(request, model)
-        slot = await gate.acquire(self.gate_config)
-        try:
-            response = await super().send(request, stream=stream, **kwargs)
-        except BaseException:
-            gate.release(slot)
-            raise
+        config = self.gate_config
+        rejections = 0
+        while True:
+            slot = await gate.acquire(config)
+            try:
+                response = await super().send(request, stream=stream, **kwargs)
+            except BaseException:
+                gate.release(slot)
+                raise
+            rejected = response.status_code in REJECTION_STATUSES
+            if not rejected or rejections >= config.max_rejections:
+                break
+            hinted = retry_after(response)
+            try:
+                await response.aclose()
+            finally:  # a cancel or error while closing must not keep the permit
+                gate.release(slot, rejected=True)
+            if hinted is not None:
+                wait = min(hinted, config.max_backoff)
+            else:
+                wait = min(config.backoff * 2**rejections, config.max_backoff)
+                wait *= random.uniform(0.5, 1.0)
+            rejections += 1
+            logger.info(
+                "request gate %s: upstream %d, retry %d/%d in %.1fs",
+                model,
+                response.status_code,
+                rejections,
+                config.max_rejections,
+                wait,
+            )
+            await asyncio.sleep(wait)
         if not stream:
-            gate.release(slot)
+            gate.release(slot, rejected)
             return response
         done = False
 
@@ -681,7 +747,7 @@ class GatedAsyncClient(httpx.AsyncClient):
             nonlocal done
             if not done:
                 done = True
-                gate.release(slot)
+                gate.release(slot, rejected)
 
         assert isinstance(response.stream, httpx.AsyncByteStream)
         response.stream = _ReleasingStream(response.stream, release_once)

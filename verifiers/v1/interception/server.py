@@ -41,6 +41,7 @@ from verifiers.v1.clients import Client, resolve_client
 from verifiers.v1.clients.base import join_url
 from verifiers.v1.clients.client import RelayReply
 from verifiers.v1.configs.client import (
+    REJECTION_STATUSES,
     BaseClientConfig,
     TrainClientConfig,
     resolve_api_key,
@@ -114,6 +115,21 @@ def _error_response(dialect: Dialect, message: str, *, status: int) -> web.Respo
     return web.json_response(
         dialect.error_body(message, status_code=status), status=status
     )
+
+
+def _model_error_response(
+    session: RolloutSession, dialect: Dialect, error: RolloutError
+) -> web.Response:
+    """A failed model call relayed with the provider's status, so the harness SDK retries
+    5xx/429 and not 4xx; except a 429/529 the session's request gate already retried
+    (`RequestGateConfig.max_rejections`), which is marked `x-should-retry: false` (the
+    OpenAI and Anthropic SDKs honour it) so the SDK does not retry it again."""
+    status = getattr(error, "status_code", 502)
+    response = _error_response(dialect, str(error), status=status)
+    gate = session.ctx.client.request_gate
+    if gate is not None and gate.max_rejections > 0 and status in REJECTION_STATUSES:
+        response.headers["x-should-retry"] = "false"
+    return response
 
 
 def _completion_response(completion: dict | None) -> web.Response:
@@ -850,9 +866,7 @@ class InterceptionServer(Interception):
                         type(e).__name__,
                         e,
                     )
-                    return _error_response(
-                        dialect, str(e), status=getattr(e, "status_code", 502)
-                    )
+                    return _model_error_response(session, dialect, e)
                 except Exception as e:  # noqa: BLE001 - surface as an API error
                     error = e
                     logger.warning(
@@ -918,9 +932,7 @@ class InterceptionServer(Interception):
                 type(e).__name__,
                 e,
             )
-            return _error_response(
-                dialect, str(e), status=getattr(e, "status_code", 502)
-            )
+            return _model_error_response(session, dialect, e)
         except Exception as e:  # noqa: BLE001 - surface auxiliary relay failures
             logger.warning("aux call failed: id=%s %s", session.trace.id, e)
             return _error_response(dialect, str(e), status=502)

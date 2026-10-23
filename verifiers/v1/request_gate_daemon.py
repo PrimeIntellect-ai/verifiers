@@ -1,10 +1,10 @@
 """The request gates' admission daemon: one process per gate directory and host.
 
 `request_gate` starts it on first use (`python -I -S request_gate_daemon.py DIR SOCKET`).
-It holds every gate of the directory in memory (cap, admitted slots, the FIFO queue of
-waiting requests) and serves the host's processes over a unix socket, one connection per
-process. A process that dies closes its connection, and its slots and queued requests go
-with it. The daemon exits once no process has been connected for `IDLE_SECONDS`.
+It holds every gate of the directory in memory (cap, adaptive limit, admitted slots, the
+FIFO queue of waiting requests) and serves the host's processes over a unix socket, one
+connection per process. A process that dies closes its connection, and its slots and
+queued requests go with it. The daemon exits once no process has been connected for `IDLE_SECONDS`.
 
 Standard library only, so it starts in tens of milliseconds and imports nothing of the
 caller's environment. It serves only its own user: the directory must be the user's own
@@ -18,7 +18,7 @@ client -> daemon
     ["admit", gate, rid, cfg, mode, since]  mode "try": a slot now or ["deny"]; "wait":
                                             queue, ["grant"] when admitted
     ["cancel", gate, rid]                   leave the queue
-    ["release", gate, slot]
+    ["release", gate, slot, rejected]       `rejected`: the provider refused it (429/529)
     ["hold", gate, slot]                    a slot held across a daemon restart
     ["state", rid, gate]                    -> ["reply", rid, state]
     ["states", rid, model]                  -> ["reply", rid, [summary, ...]]
@@ -26,8 +26,9 @@ client -> daemon
 daemon -> client
     ["grant", rid, gate, slot] / ["deny", rid] / ["reply", rid, value]
 
-`cfg` is the admitting config's `{"max_concurrent": n}`. Admission semantics are
-documented in `request_gate`.
+`cfg` is the admitting config's `max_concurrent`, `min_concurrent`, `adaptive`,
+`decrease_factor`, `decrease_cooldown` and `recover_seconds`, by name. Admission semantics
+are documented in `request_gate`.
 """
 
 from __future__ import annotations
@@ -60,6 +61,8 @@ MAX_LINE = 1 << 20
 """Longest message accepted; a connection that sends more without a newline is closed."""
 WAIT_SMOOTHING = 0.05
 """Weight of the newest admission in the gate's moving average wait."""
+LOWERED_POLL = 0.05
+"""Recheck interval while a lowered limit, climbing back, holds waiters."""
 GATE_NAME = re.compile(r"[A-Za-z0-9_-][A-Za-z0-9._-]{0,127}")
 """What a gate name may be: it names files in the directory."""
 
@@ -98,10 +101,15 @@ def peer_uid(sock: Any) -> int:
 class Cfg:
     """What the daemon uses of an admitting `RequestGateConfig`."""
 
-    __slots__ = ("cap",)
+    __slots__ = ("adaptive", "cap", "cooldown", "factor", "floor", "recover")
 
     def __init__(self, raw: dict[str, Any]) -> None:
         self.cap = int(raw["max_concurrent"])
+        self.floor = int(raw.get("min_concurrent", 1))
+        self.adaptive = bool(raw.get("adaptive", False))
+        self.factor = float(raw.get("decrease_factor", 0.75))
+        self.cooldown = float(raw.get("decrease_cooldown", 2.0))
+        self.recover = float(raw.get("recover_seconds", 60.0))
 
 
 class Ticket:
@@ -118,12 +126,18 @@ class Gate:
         self.model: str | None = None
         self.grants_from = grants_from
         """No admission before this time (`REGISTER_SECONDS` after a restart)."""
+        self.timer: asyncio.TimerHandle | None = None
         self.reset()
 
     def reset(self) -> None:
         self.cap = 0
         self.resized = False
-        self.admitted = 0
+        self.cfg: Cfg | None = None
+        """The latest admitting config: its adaptive fields drive the limit's readout and
+        a rejection's decrease."""
+        self.lowered: float | None = None
+        self.decreased_at = 0.0
+        self.rejections = self.admitted = 0
         self.wait_seconds: float | None = None
         self.holders: set[tuple[Conn, int]] = set()
         """(connection, slot) pairs: two processes re-registering one slot id after a
@@ -139,13 +153,28 @@ class Gate:
 
     def take_cap(self, cfg: Cfg) -> int:
         """The shared cap: the largest admitting config's, unless `resize` set one."""
+        self.cfg = cfg
         if not self.cap or (cfg.cap > self.cap and not self.resized):
             self.cap = cfg.cap
         return self.cap
 
     def limit(self, cfg: Cfg) -> int:
         """How many may be in flight now."""
-        return self.cap
+        return int(self.adaptive_limit(cfg, time.time()))
+
+    def adaptive_limit(self, cfg: Cfg, now: float) -> float:
+        """The cap, or, under `adaptive`, a lowered limit climbing back to it in a straight
+        line over `recover` seconds from its decrease."""
+        cap = self.cap
+        if not cfg.adaptive or self.lowered is None:
+            return float(cap)
+        since = now - self.decreased_at
+        if since >= cfg.recover:
+            self.lowered = None
+            return float(cap)
+        return clamp(
+            self.lowered + (cap - self.lowered) * since / cfg.recover, cfg, cap
+        )
 
     def open_for_grants(self) -> bool:
         return time.time() >= self.grants_from
@@ -248,6 +277,11 @@ class Gate:
                 queue.popleft()
                 continue
             if len(self.holders) >= self.limit(head.cfg):
+                held = len(self.holders)
+                if self.lowered is not None and held < self.cap and self.timer is None:
+                    # the limit climbs back with no release to say so: look again soon
+                    loop = asyncio.get_running_loop()
+                    self.timer = loop.call_later(LOWERED_POLL, self.recheck)
                 break
             queue.popleft()
             head.dead = True
@@ -255,11 +289,33 @@ class Gate:
             head.conn.tickets.pop((self.name, head.rid), None)
             self.grant(head.conn, head.rid, max(0.0, now - head.since))
 
-    def release(self, conn: Conn, slot: int) -> None:
+    def recheck(self) -> None:
+        self.timer = None
+        self.pump()
+
+    def release(self, conn: Conn, slot: int, rejected: bool) -> None:
         if self.free_slot(conn, slot):
+            if rejected:
+                self.reject()
             self.pump()
 
+    def reject(self) -> None:
+        """The provider refused a request: under `adaptive`, lower the limit by `factor`,
+        at most once per `cooldown` (one burst of refusals is one signal)."""
+        self.rejections += 1
+        cfg, now = self.cfg, time.time()
+        if cfg is None or not cfg.adaptive or now - self.decreased_at < cfg.cooldown:
+            return
+        limit = self.adaptive_limit(cfg, now)
+        self.lowered = clamp(limit * cfg.factor, cfg, self.cap)
+        self.decreased_at = now
+        log(
+            f"{self.model}: provider refused a request, limit {limit:.0f} -> {self.lowered:.0f}"
+        )
+
     def resize(self, cap: int) -> None:
+        if cap > self.cap:  # a raise restarts the limit at the new cap
+            self.lowered = None
         self.cap = cap
         self.resized = True
         self.changed = True
@@ -269,9 +325,15 @@ class Gate:
 
     def summary(self) -> dict[str, Any]:
         """The gate as `request_gate.gate_states` reports it."""
+        cap = self.cap or None
+        limit = cap
+        if cap is not None and self.cfg is not None:
+            limit = int(self.adaptive_limit(self.cfg, time.time()))
         return {
             "model": self.model,
-            "max_concurrent": self.cap or None,
+            "max_concurrent": cap,
+            "limit": limit,
+            "rejections": self.rejections,
             "in_flight": len(self.holders),
             "waiting": self.waiting,
             "admitted": self.admitted,
@@ -295,6 +357,11 @@ class Gate:
         state["waiting_by_pid"] = waiting
         state["daemon_pid"] = os.getpid()
         return state
+
+
+def clamp(limit: float, cfg: Cfg, cap: int) -> float:
+    """`limit` within `[min_concurrent, cap]`; the cap wins over a higher floor."""
+    return min(max(float(limit), cfg.floor), cap)
 
 
 def log(message: str) -> None:
@@ -416,7 +483,7 @@ class Daemon:
                 self.gate(name).enqueue(conn, rid, Cfg(cfg), since)
         elif kind == "release":
             if (gate := self.gates.get(message[1])) is not None:
-                gate.release(conn, message[2])
+                gate.release(conn, message[2], bool(message[3]))
         elif kind == "cancel":
             if (gate := self.gates.get(message[1])) is not None:
                 gate.cancel(conn, message[2])
@@ -484,7 +551,7 @@ class Daemon:
         while True:
             await asyncio.sleep(SNAPSHOT_SECONDS)
             for gate in list(self.gates.values()):
-                if gate.changed and gate.cap:
+                if (gate.changed or gate.lowered is not None) and gate.cap:
                     gate.changed = False
                     with contextlib.suppress(OSError):
                         self.write_snapshot(gate)
