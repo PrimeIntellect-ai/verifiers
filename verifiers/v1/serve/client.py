@@ -197,15 +197,13 @@ class EnvClient:
         sampling: SamplingConfig,
         task_data: dict,
         on_delta: Callable[[dict], None] | None = None,
-        token_arrays: bool = False,
     ) -> WireEpisode:
         """Run one rollout; return its episode record — flat traces (typed
         `Trace[WireTaskData]`) plus the shared stamp. The server takes the task
         itself (`task_data`, its dumped `TaskData`). The traces stream in as the
         rollout runs, one delta per turn or phase change (`serve.delta`); `on_delta`
         sees each as it lands, so a caller can relay or persist the stream. The
-        episode returned is assembled from the same deltas. `token_arrays` asks the server to
-        stream per-token node streams as raw-bytes arrays (`RunRequest.token_arrays`)."""
+        episode returned is assembled from the same deltas."""
         assembly = EpisodeAssembly()
 
         def apply(delta: dict) -> None:
@@ -219,7 +217,6 @@ class EnvClient:
                 client=client,
                 model=model,
                 sampling=sampling,
-                token_arrays=token_arrays,
             ),
             RunResponse,
             on_delta=apply,

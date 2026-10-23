@@ -48,10 +48,6 @@ class RunRequest(BaseRequest):
     client: ClientConfig
     model: str
     sampling: SamplingConfig
-    token_arrays: bool = False
-    """Stream nodes' per-token streams (the `graph.IntStream` / `BoolStream` / `FloatStream`
-    fields) as raw-bytes arrays instead of lists. A server that predates the field ignores it
-    and streams lists."""
 
 
 class RunResponse(BaseResponse):

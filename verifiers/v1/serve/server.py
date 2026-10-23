@@ -108,9 +108,7 @@ class EnvServer:
         # The gate spans requests: `--max-concurrent` bounds this worker's episodes
         # in flight the same way the in-process eval's semaphore does. The streamer
         # ships each trace as it changes; the reply below carries only the rest.
-        async with DeltaStreamer(
-            lambda: slot.traces, send_delta, token_arrays=req.token_arrays
-        ) as streamer:
+        async with DeltaStreamer(lambda: slot.traces, send_delta) as streamer:
             episode = await self.env.run_slot(
                 slot, ctx, self._gate, on_trace=streamer.watch
             )
