@@ -270,6 +270,30 @@ def test_reasoning_content_participates_in_graph_prefix_matching():
     assert len(tool_call_nodes) == 2
 
 
+def _replayed_trace(replay_view, sampled, replayed, dialect=None):
+    """One tool turn sampled as `sampled` and re-sent as `replayed` on the next turn."""
+    trace = vf.Trace(
+        agent=vf.AgentInfo(config=vf.AgentConfig()),
+        task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt="go")),
+    )
+    trace._replay_view = replay_view
+    user = vf.UserMessage(content="go")
+    call = vf.ToolCall(id="call_0", name="lookup", arguments="{}")
+    graph.prepare_turn(trace, [user], dialect=dialect).commit(
+        _response(vf.AssistantMessage(tool_calls=[call], **sampled))
+    )
+    graph.prepare_turn(
+        trace,
+        [
+            user,
+            vf.AssistantMessage(tool_calls=[call], **replayed),
+            vf.ToolMessage(content="result", tool_call_id="call_0"),
+        ],
+        dialect=dialect,
+    ).commit(_response(vf.AssistantMessage(content="done")))
+    return trace
+
+
 @pytest.mark.parametrize(
     "view,sampled,replayed",
     [
@@ -281,32 +305,59 @@ def test_reasoning_content_participates_in_graph_prefix_matching():
         ),
         (strip_text, {"content": "Calling it.\n\n"}, {"content": "Calling it."}),
         (strip_text, {"content": None}, {"reasoning_content": " "}),
+        (
+            strip_text,
+            {"content": "\n\n"},
+            {
+                "reasoning_content": " ",
+                "provider_state": [{"type": "thinking", "thinking": " "}],
+            },
+        ),
     ],
 )
 def test_replay_view_matches_cosmetically_rewritten_turns(view, sampled, replayed):
-    def run(replay_view):
-        trace = vf.Trace(
-            agent=vf.AgentInfo(config=vf.AgentConfig()),
-            task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt="go")),
-        )
-        trace._replay_view = replay_view
-        user = vf.UserMessage(content="go")
-        call = vf.ToolCall(id="call_0", name="lookup", arguments="{}")
-        graph.prepare_turn(trace, [user]).commit(
-            _response(vf.AssistantMessage(tool_calls=[call], **sampled))
-        )
-        graph.prepare_turn(
-            trace,
-            [
-                user,
-                vf.AssistantMessage(tool_calls=[call], **replayed),
-                vf.ToolMessage(content="result", tool_call_id="call_0"),
-            ],
-        ).commit(_response(vf.AssistantMessage(content="done")))
-        return trace
+    assert _replayed_trace(None, sampled, replayed).num_branches == 2
+    trace = _replayed_trace(lambda message, _: view(message), sampled, replayed)
+    assert trace.num_branches == 1
 
-    assert run(None).num_branches == 2
-    assert run(view).num_branches == 1
+
+@pytest.mark.parametrize(
+    "dialect,branches", [("chat_completions", 1), ("responses", 2)]
+)
+def test_replay_view_receives_the_request_dialect(dialect, branches):
+    def view(message, dialect):
+        return drop_blank_text(message) if dialect == "chat_completions" else message
+
+    trace = _replayed_trace(view, {"content": "\n\n"}, {"content": None}, dialect)
+    assert trace.num_branches == branches
+
+
+def test_overlapping_requests_keep_their_own_dialect():
+    trace = vf.Trace(
+        agent=vf.AgentInfo(config=vf.AgentConfig()),
+        task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt="go")),
+    )
+    trace._replay_view = lambda message, dialect: (
+        drop_blank_text(message) if dialect == "chat_completions" else message
+    )
+    user = vf.UserMessage(content="go")
+    call = vf.ToolCall(id="call_0", name="lookup", arguments="{}")
+    graph.prepare_turn(trace, [user], dialect="chat_completions").commit(
+        _response(vf.AssistantMessage(content="\n\n", tool_calls=[call]))
+    )
+    replay = [
+        user,
+        vf.AssistantMessage(tool_calls=[call]),
+        vf.ToolMessage(content="result", tool_call_id="call_0"),
+    ]
+    chat = graph.prepare_turn(trace, replay, dialect="chat_completions")
+    responses = graph.prepare_turn(trace, replay, dialect="responses")
+    responses.commit(_response(vf.AssistantMessage(content="other")))
+    done = chat.commit(_response(vf.AssistantMessage(content="done")))
+
+    assert chat.prefix_node_ids == [0, 1]
+    assert responses.prefix_node_ids == [0]
+    assert graph.path(trace, done)[1] == trace.nodes[1].message
 
 
 @pytest.mark.parametrize("same_tools", [False, True])
@@ -408,7 +459,7 @@ def test_parallel_commit_reconciles_only_token_identical_prefixes():
     )
 
     roots = [node for node in trace.nodes if node.parent is None]
-    assert [node.token_ids for node in roots] == [[1, 2], [1, 99]]
+    assert [node.token_ids.tolist() for node in roots] == [[1, 2], [1, 99]]
     assert trace.num_branches == 3
 
 
@@ -453,7 +504,7 @@ def test_parallel_commit_reconciles_unspanned_assistant_tokens():
     )
 
     assert trace.num_branches == 1
-    assert [node.token_ids for node in trace.nodes] == [[1], [2, 3], [4], [5]]
+    assert [node.token_ids.tolist() for node in trace.nodes] == [[1], [2, 3], [4], [5]]
 
 
 def test_unspanned_reconciliation_stops_at_next_message_boundary():
@@ -510,8 +561,8 @@ def test_unspanned_reconciliation_stops_at_next_message_boundary():
     )
 
     follow_up_node = next(node for node in trace.nodes if node.message == follow_up)
-    assert follow_up_node.token_ids == [4]
-    assert trace.nodes[follow_up_node.parent].token_ids == [2, 3]
+    assert list(follow_up_node.token_ids) == [4]
+    assert list(trace.nodes[follow_up_node.parent].token_ids) == [2, 3]
 
 
 def test_renderer_level_break_forks_by_token_id():
@@ -563,7 +614,7 @@ def test_renderer_level_break_forks_by_token_id():
     first_turn(linear)
     second_turn(linear, [1, 2, 3, 4, 5, 6, 7])
     assert linear.num_branches == 1
-    assert linear.branches[0].token_ids == [1, 2, 3, 4, 5, 6, 7, 8]
+    assert list(linear.branches[0].token_ids) == [1, 2, 3, 4, 5, 6, 7, 8]
 
     # Break: the assistant turn retokenizes (4 -> 99), so prompt_ids diverge at that node.
     broken = vf.Trace(
@@ -573,7 +624,7 @@ def test_renderer_level_break_forks_by_token_id():
     first_turn(broken)
     second_turn(broken, [1, 2, 3, 99, 5, 6, 7])
     assert broken.num_branches == 2
-    assert sorted(b.token_ids for b in broken.branches) == [
+    assert sorted(b.token_ids.tolist() for b in broken.branches) == [
         [1, 2, 3, 4, 5],
         [1, 2, 3, 99, 5, 6, 7, 8],
     ]
@@ -586,11 +637,11 @@ def test_expanded_prompt_is_attributed_while_bridge_uses_logical_tokens():
     )
     user = vf.UserMessage(content="image")
     assistant = vf.AssistantMessage(content="looked")
-    assert graph.MessageNode(message=user, token_ids=[9]).logical_ids == [9]
+    assert graph.MessageNode(message=user, token_ids=[9]).logical_ids.tolist() == [9]
     assert (
         graph.MessageNode(
             message=user, token_ids=[9], renderer_token_ids=[]
-        ).logical_ids
+        ).logical_ids.tolist()
         == []
     )
     graph.prepare_turn(trace, [user]).commit(
@@ -612,10 +663,10 @@ def test_expanded_prompt_is_attributed_while_bridge_uses_logical_tokens():
         )
     )
 
-    assert trace.branches[0].token_ids == [1, 9, 9, 3, 4]
-    assert trace.branches[0].mm_token_type_ids == [0, 1, 1, 0, 0]
-    assert trace.nodes[0].token_ids == [1, 9, 9]
-    assert trace.nodes[0].is_content == [False, True, True]
+    assert list(trace.branches[0].token_ids) == [1, 9, 9, 3, 4]
+    assert list(trace.branches[0].mm_token_type_ids) == [0, 1, 1, 0, 0]
+    assert list(trace.nodes[0].token_ids) == [1, 9, 9]
+    assert list(trace.nodes[0].is_content) == [False, True, True]
     turn = graph.prepare_turn(trace, [user, assistant, vf.UserMessage(content="next")])
     assert turn.previous_renderer_token_ids() == ([1, 9, 3], [4])
 
@@ -660,9 +711,9 @@ def test_expanded_prompt_is_attributed_while_bridge_uses_logical_tokens():
 
     tool_node = trace.nodes[-2]
     assert tool_node.message == tool
-    assert tool_node.token_ids == [5, 6]
-    assert tool_node.renderer_token_ids == [5, 6]
-    assert tool_node.is_content == [False, True]
+    assert list(tool_node.token_ids) == [5, 6]
+    assert tool_node.renderer_token_ids.tolist() == [5, 6]
+    assert list(tool_node.is_content) == [False, True]
 
 
 def test_prompt_supplied_assistant_messages_are_not_sampled_turns():

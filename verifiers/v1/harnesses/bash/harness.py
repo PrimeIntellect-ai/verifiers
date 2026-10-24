@@ -1,13 +1,13 @@
 import os
-
-from pydantic import PositiveInt
-from pydantic_config import BaseConfig
+from typing import Literal
 
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.harness import Harness
 from verifiers.v1.harnesses.utils.launch import (
     CHAT_PROGRAM_SOURCE,
+    CompactionConfig,
+    compaction_args,
     launch_chat_program,
 )
 from verifiers.v1.runtimes import ProgramResult, Runtime
@@ -29,15 +29,8 @@ SEARCH_PROMPT = (
 )
 
 
-class CompactionConfig(BaseConfig):
-    """Context compaction policy for the bash agent loop."""
-
-    summarize_at_tokens: PositiveInt | None = None
-    """Compact at this token count. When unset, compact when 16k tokens remain below the
-    model context window when the provider advertises it."""
-
-
 class BashHarnessConfig(HarnessConfig):
+    dialect: Literal["chat_completions"] = "chat_completions"
     edit: bool = True
     """Offer the local `edit` tool (single-occurrence string replacement in a file) alongside
     `bash`. On by default; set `--env.agent.harness.edit false` for a bash-only agent."""
@@ -97,11 +90,7 @@ class BashHarness(Harness[BashHarnessConfig]):
         args = ["--bash"]
         if tool_interception_url:
             args.append(f"--tool-interception-url={tool_interception_url}")
-        if self.config.compaction is not None:
-            args.append("--compaction")
-            threshold = self.config.compaction.summarize_at_tokens
-            if threshold is not None:
-                args.append(f"--summarize-at-tokens={threshold}")
+        args += compaction_args(self.config.compaction)
         if self.config.edit:
             args.append("--edit")
         if self.config.search:

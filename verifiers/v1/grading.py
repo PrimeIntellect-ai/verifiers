@@ -9,10 +9,11 @@ from pathlib import PurePosixPath
 from verifiers.v1.configs.scoring import ScoringConfig
 from verifiers.v1.errors import TaskError, boundary
 from verifiers.v1.runtimes import (
+    NetworkPolicyConfig,
     PrimeConfig,
     Runtime,
     RuntimeConfig,
-    SubprocessConfig,
+    backend_cls,
 )
 from verifiers.v1.task import Task
 from verifiers.v1.trace import Error, Trace
@@ -23,20 +24,24 @@ from verifiers.v1.utils.env import resolve_env
 from verifiers.v1.utils.retries import RetryState, backoff
 
 logger = logging.getLogger(__name__)
+_SCORING_INFO_KEYS = ("judge_calls", "scoring_diagnostics")
+"""Accounting and diagnostics survive failed scoring attempts, unlike partial scores."""
 
 
 @contextmanager
 def scoring_transaction(trace: Trace):
     """Discard partial shared scores when a required scoring callback fails."""
-    saved = copy.deepcopy((trace.state, trace.rewards, trace.metrics, trace.info))
+    saved = copy.deepcopy(
+        (trace.state, trace.rewards, trace.metrics, trace.info, trace.dropped)
+    )
     try:
         yield
     except BaseException:
-        # Failed judges still consume tokens and calls; retain their accounting.
-        judge_calls = trace.info.get("judge_calls")
-        trace.state, trace.rewards, trace.metrics, trace.info = saved
-        if judge_calls is not None:
-            trace.info["judge_calls"] = judge_calls
+        retained = {
+            key: trace.info[key] for key in _SCORING_INFO_KEYS if key in trace.info
+        }
+        trace.state, trace.rewards, trace.metrics, trace.info, trace.dropped = saved
+        trace.info.update(retained)
         raise
 
 
@@ -54,11 +59,16 @@ def verifier_runtime(
         image=task.data.image or getattr(solver_runtime.config, "image", None),
         workdir=task.data.workdir or getattr(solver_runtime.config, "workdir", None),
     )
+    if policy.network is not None:
+        task = task.with_data(network=policy.network)
     config = resolve_runtime_config(source, task)
     if policy.runtime is not None and "image" in policy.runtime.model_fields_set:
         config = config.model_copy(update={"image": policy.runtime.image})
-    if isinstance(config, SubprocessConfig):
-        raise TaskError("isolated verification requires an isolated filesystem")
+    if not backend_cls(config).SUPPORTS_TASK_IMAGES:
+        raise TaskError(
+            f"isolated verification requires an isolated filesystem; the "
+            f"{config.type} runtime cannot run images"
+        )
     relative = [
         a.source
         for a in task.data.artifacts
@@ -71,6 +81,21 @@ def verifier_runtime(
             f"cannot restore relative artifacts {relative!r} from {solver_dir} into {grader_dir}; use matching workdirs or absolute paths"
         )
     return config
+
+
+def scoring_network(
+    base: RuntimeConfig, network: NetworkPolicyConfig
+) -> NetworkPolicyConfig:
+    """`network` as the task's policy while scoring, combined with the runtime's own
+    rules the way `TaskData.network` is."""
+    if isinstance(base, NetworkPolicyConfig):
+        return base.with_task_network_policy(network)
+    if network.network_restricted:
+        raise TaskError(
+            f"scoring requires a network policy, but the {base.type} runtime does not "
+            "support one"
+        )
+    return network
 
 
 def bind_scoring_env(runtime: Runtime, policy: ScoringConfig) -> Runtime:
@@ -140,16 +165,22 @@ async def grade_task(
                         if on_score is not None:
                             await on_score(result, runtime)
                 finally:
-                    # Model-backed judges are billed even when an attempt fails.
-                    # Preserve their accounting without committing partial rewards/state.
+                    # Preserve failed attempts' evidence and accounting without
+                    # committing partial rewards/state.
                     trace.extra_usage = result.extra_usage
-                    if "judge_calls" in result.info:
-                        trace.info["judge_calls"] = result.info["judge_calls"]
+                    trace.info.update(
+                        {
+                            key: result.info[key]
+                            for key in _SCORING_INFO_KEYS
+                            if key in result.info
+                        }
+                    )
                 # Cleanup failure must not discard an authoritative completed score.
-                trace.state, trace.rewards, trace.metrics = (
+                trace.state, trace.rewards, trace.metrics, trace.dropped = (
                     result.state,
                     result.rewards,
                     result.metrics,
+                    result.dropped,
                 )
                 trace.info = result.info
                 try:
@@ -181,6 +212,9 @@ async def grade_submission(
 
     The caller finalizes the submission and collects artifacts into the trace first.
     Uses the task's grader, scoring policy, and timeouts, including retry behavior.
+    As in a rollout, the verifier derives from the agent's runtime config on the trace
+    (`trace.agent.config.runtime`), not from the solver's resolved one, so the solver
+    task's requirements, such as its network policy, don't carry over.
     """
     from verifiers.v1.runtimes.deployment import Deployment
 
@@ -188,7 +222,7 @@ async def grade_submission(
     if policy.mode != "isolated":
         raise ValueError("grade_submission requires isolated scoring")
     grader = task.grading_task(runtime, scoring=policy)
-    config = verifier_runtime(grader, runtime, runtime.config, policy)
+    config = verifier_runtime(grader, runtime, trace.agent.config.runtime, policy)
     deployment = Deployment(
         runtime.backend, borrowed_runtime=runtime, env=dict(runtime.env)
     )

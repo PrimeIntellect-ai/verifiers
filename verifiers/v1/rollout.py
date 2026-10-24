@@ -24,6 +24,7 @@ from verifiers.v1.errors import (
 from verifiers.v1.grading import (
     bind_scoring_env,
     grade_task,
+    scoring_network,
     scoring_transaction,
     verifier_runtime,
 )
@@ -31,11 +32,11 @@ from verifiers.v1.harness import Harness, HarnessSession
 from verifiers.v1.interception import Interception, serve_interception
 from verifiers.v1.mcp import SharedToolServer, serve_tools
 from verifiers.v1.runtimes import (
-    ModalConfig,
     Runtime,
     RuntimeConfig,
     make_backend,
 )
+from verifiers.v1.runtimes.private_network import tool_vms
 from verifiers.v1.session import RolloutLimits, RolloutSession, hook_boundary
 from verifiers.v1.state import state_cls
 from verifiers.v1.task import Task
@@ -154,15 +155,15 @@ class Rollout:
             for fn in discover_decorated(task, "intercept")
         ]
         stops = [(hook_boundary(fn, allow_trace=True), fn) for fn in task.hooks("stop")]
+        self._skip_scoring_stops = {
+            fn.__name__ for _, fn in stops if getattr(fn, "stop_skip_scoring", False)
+        }
         execution_policy = runtime_config
         self._session = RolloutSession(
             ctx=ctx,
             trace=self.trace,
             network_policy=(
-                NetworkPolicyConfig(allow=[])
-                if isinstance(execution_policy, ModalConfig)
-                and not execution_policy.network_access
-                else execution_policy
+                execution_policy
                 if isinstance(execution_policy, NetworkPolicyConfig)
                 else NetworkPolicyConfig()
             ),
@@ -290,8 +291,18 @@ class Rollout:
                         "task.prompt, or drive the run through agent.interaction() and open "
                         "it with the first turn(message)"
                     )
+                async with boundary(ToolsetError, "building tool servers"):
+                    toolsets = self.task.toolsets(self.task.config)
+                spec = self.task.deployment_spec()
                 self.deployment = runtime.backend.deploy(
-                    spec=self.task.deployment_spec(),
+                    spec=spec,
+                    # Tool servers on Prime VMs of their own boot with the workspace.
+                    tool_vms=tool_vms(
+                        toolsets,
+                        runtime.backend.config,
+                        composed=spec is not None,
+                        borrowed=self._borrowed_runtime is not None,
+                    ),
                     env=runtime.env,
                     config=self._deployment_config,
                     borrowed_runtime=self._borrowed_runtime,
@@ -344,8 +355,6 @@ class Rollout:
                         runtime, self.task.data.agent_user
                     )
                     await self.harness.setup(self._agent_runtime)
-                async with boundary(ToolsetError, "building tool servers"):
-                    toolsets = self.task.toolsets(self.task.config)
                 # `base_url` is the interception server's reachable URL for this rollout.
                 # The harness reaches the model at `{base_url}/v1`; tool servers reach this
                 # rollout's `/state` + `/task` at `base_url` — it's universally reachable
@@ -382,17 +391,27 @@ class Rollout:
                         state_route=self.trace.id,
                         state_base=base_url,
                         services=services,
+                        hosts=self.deployment.hosts,
+                        # Tool servers on VMs of their own, by server name; an explicit
+                        # `service` names only a Compose service.
+                        placements={
+                            name: self.deployment.target(name)
+                            for name in self.deployment.tool_vms
+                        },
                     )
                 )
                 # Setup and service provisioning are complete. Apply the runtime's
                 # execution policy while preserving the framework routes the agent uses.
-                # Compose service names resolve inside the deployment, not as egress.
+                # Service hosts resolve inside the deployment (Compose names, LAN
+                # names), not as egress.
+                internal = {*services, *self.deployment.hosts.values()}
                 await self.deployment.prepare_execution(
                     [
                         url
                         for url in [self._endpoint, *self._urls.values()]
-                        if urlsplit(url).hostname not in services
-                    ]
+                        if urlsplit(url).hostname not in internal
+                    ],
+                    state_route=f"{base_url.rstrip('/')}/state",
                 )
                 async with (
                     boundary(HarnessError, "opening harness session"),
@@ -565,8 +584,9 @@ class Rollout:
             else segment_start + max(0.0, self._agent_time_remaining)
         )
         # Prefer an intercepted model/tool error to the harness exit it caused.
+        deadline = asyncio.timeout_at(self.deadline_at)
         try:
-            async with asyncio.timeout_at(self.deadline_at):
+            async with deadline:
                 assert self._harness_session is not None
                 if messages is not None and self._session.request_interceptors:
                     prepared, rewrites = await self._session.prepare_users(
@@ -590,6 +610,12 @@ class Rollout:
             return False
         except Exception as e:  # noqa: BLE001 - harness boundary records every rollout failure
             if self._session.stopped:
+                return False
+            # A runtime can report the cancellation the deadline caused as its own
+            # error (Prime's SDK raises one for a cancelled request); the expired
+            # deadline is still the outcome.
+            if deadline.expired():
+                self.timeout("agent")
                 return False
             real = self._session.error
             if real is not None and isinstance(e, RolloutError):
@@ -696,6 +722,17 @@ class Rollout:
             "agent_completed",
         )
 
+    def _scoring_skip_reason(self) -> str | None:
+        """Why the resolved scoring policy, or the `skip_scoring` stop that ended this trace,
+        skips task scoring for it, if either does."""
+        if self._scoring_policy.skip_on_truncated and self.trace.is_truncated:
+            return "truncated"
+        if self._scoring_policy.skip_on_timeout and self.trace.is_timeout:
+            return "timeout"
+        if self.trace.stop_condition in self._skip_scoring_stops:
+            return self.trace.stop_condition
+        return None
+
     def _metrics_deadline(self) -> float:
         """Best-effort metrics get at most 30 seconds, and a tenth of a finite scoring budget."""
         budget = (
@@ -724,6 +761,7 @@ class Rollout:
             return self.trace
         self._closed = True
         trace = self.trace
+        skip_reason = self._scoring_skip_reason()
         runtime = self.runtime
         try:
             if trace.timing.agent.start and not trace.timing.agent.end:
@@ -823,7 +861,14 @@ class Rollout:
                         boundary(TaskError, "scoring"),
                     ):
                         # Cross-trace judgement runs later, after the runtime is gone.
-                        if grader is not None:
+                        if skip_reason := skip_reason or self._scoring_skip_reason():
+                            logger.info(
+                                "rollout %s: scoring skipped (%s)",
+                                trace.id,
+                                skip_reason,
+                            )
+                            trace.info["scoring_skipped"] = skip_reason
+                        elif grader is not None:
                             try:
                                 await grade_task(
                                     grader,
@@ -861,6 +906,13 @@ class Rollout:
                                             "runtime": scoring_runtime,
                                         },
                                     )
+                                    if self._scoring_policy.network is not None:
+                                        await scoring_runtime.set_network(
+                                            scoring_network(
+                                                self.trace.agent.config.runtime,
+                                                self._scoring_policy.network,
+                                            )
+                                        )
                                 await self._scoring_task.score(
                                     trace, scoring_runtime, self.deployment
                                 )
@@ -919,11 +971,12 @@ class Rollout:
             except Exception:
                 logger.warning("runtime teardown failed", exc_info=True)
         logger.info(
-            "rollout done: id=%s task=%s reward=%.3f turns=%d stop=%s",
+            "rollout done: id=%s task=%s reward=%.3f turns=%d stop=%s%s",
             trace.id,
             self.task.data.idx,
             trace.reward,
             trace.num_turns,
             trace.last_error.type if trace.last_error else trace.stop_condition,
+            f" dropped={trace.dropped!r}" if trace.is_dropped else "",
         )
         return trace

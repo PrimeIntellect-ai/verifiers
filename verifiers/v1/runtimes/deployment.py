@@ -4,13 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from contextlib import AsyncExitStack, asynccontextmanager
-from typing import Literal
 
-from pydantic_config import BaseConfig
-
+from verifiers.v1.configs.deployment import DeploymentConfig
 from verifiers.v1.runtimes import (
+    PrimeConfig,
     Runtime,
     RuntimeBackend,
     RuntimeConfig,
@@ -25,13 +24,6 @@ from verifiers.v1.utils.aio import run_shielded
 logger = logging.getLogger(__name__)
 
 
-class DeploymentConfig(BaseConfig):
-    mode: Literal["colocated"] = "colocated"
-    """Harness and tools share the workspace."""
-    trust_compose: bool = False
-    """Permit task-authored Compose privileges and bind mounts on local Docker."""
-
-
 class _DeploymentStrategy:
     """Placement, connectivity and lifecycle hooks for one deployment attempt."""
 
@@ -39,12 +31,9 @@ class _DeploymentStrategy:
         raise NotImplementedError
 
     async def prepare_execution(
-        self, deployment: Deployment, routes: list[str]
+        self, deployment: Deployment, routes: list[str], state_route: str | None = None
     ) -> None:
         await deployment.harness_backend.prepare_execution(routes)
-
-    async def prepare_grading(self, deployment: Deployment) -> None:
-        await deployment.execution_backend.prepare_execution(None)
 
     async def stop_execution(self, deployment: Deployment) -> None:
         return
@@ -76,19 +65,26 @@ class Deployment:
         backend: RuntimeBackend,
         *,
         spec: ComposeSpec | None = None,
+        tool_vms: Mapping[str, PrimeConfig] | None = None,
         env: dict[str, str] | None = None,
         config: DeploymentConfig | None = None,
         borrowed_runtime: Runtime | None = None,
     ):
         self.backend = backend
         self.spec = spec
+        self.tool_vms = dict(tool_vms or {})
+        """Tool servers on Prime runtimes of their own, by server name, which join the
+        workspace over the rollout's private network."""
         self.env = dict(env or {})
         self.config = config or DeploymentConfig()
         self.borrowed_runtime = borrowed_runtime
         from verifiers.v1.runtimes.strategies import _deployment_strategy
 
-        self._strategy = _deployment_strategy(self.config, backend.config, spec)
+        self._strategy = _deployment_strategy(self.config, backend, spec, self.tool_vms)
         self.target_backends: dict[str, RuntimeBackend] = {}
+        self.hosts: dict[str, str] = {}
+        """The hostname the workspace reaches a named target by, where it is not the
+        target's name (a tool server VM's LAN name)."""
         self.harness_backend: RuntimeBackend | None = None
         self.execution_backend: RuntimeBackend | None = None
         self._stack = AsyncExitStack()
@@ -178,11 +174,12 @@ class Deployment:
     async def stop_execution(self) -> None:
         await self._strategy.stop_execution(self)
 
-    async def prepare_execution(self, routes: list[str]) -> None:
-        await self._strategy.prepare_execution(self, routes)
-
-    async def prepare_grading(self) -> None:
-        await self._strategy.prepare_grading(self)
+    async def prepare_execution(
+        self, routes: list[str], *, state_route: str | None = None
+    ) -> None:
+        """Apply each target's execution policy: the harness's keeps `routes`, and a tool
+        server's own VM keeps only `state_route`, its state channel."""
+        await self._strategy.prepare_execution(self, routes, state_route)
 
     async def close(self) -> None:
         async def release():

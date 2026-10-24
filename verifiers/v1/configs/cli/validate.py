@@ -7,9 +7,10 @@ from pydantic import AliasChoices, Field, SerializeAsAny, model_validator
 from pydantic_config import BaseConfig
 
 from verifiers.v1.configs.cli.eval import RunConfig
+from verifiers.v1.configs.deployment import DeploymentConfig
+from verifiers.v1.configs.runtime import PrimeConfig, RuntimeConfig
 from verifiers.v1.configs.select import SelectCLIConfig
 from verifiers.v1.configs.taskset import TasksetConfig
-from verifiers.v1.runtimes import PrimeConfig, RuntimeConfig
 
 
 class CheckTimeoutConfig(BaseConfig):
@@ -30,6 +31,8 @@ class ValidateConfig(BaseConfig):
     `select.limit`, `-s` sets `select.shuffle`)."""
     runtime: RuntimeConfig = PrimeConfig()
     """Where each task's validation hooks run."""
+    deployment: DeploymentConfig = DeploymentConfig()
+    """Task service deployment, including local Compose trust."""
     timeout: CheckTimeoutConfig = CheckTimeoutConfig()
     only_setup: bool = False
     """Run only the setup check: `Task.setup`."""

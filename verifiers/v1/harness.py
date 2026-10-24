@@ -8,7 +8,7 @@ from collections.abc import Mapping
 from typing import TYPE_CHECKING, ClassVar, Generic, TypeVar
 
 from verifiers.v1.clients import ModelContext
-from verifiers.v1.configs.harness import HarnessConfig, skill_destination
+from verifiers.v1.configs.harness import DialectName, HarnessConfig, skill_destination
 from verifiers.v1.errors import (
     MODEL_TRANSPORT_ERROR_EXIT_CODE,
     HarnessError,
@@ -67,8 +67,9 @@ class Harness(ABC, Generic[ConfigT]):
     def __init__(self, config: ConfigT) -> None:
         self.config = config
 
-    def replay_view(self, message: Message) -> Message:
-        """`message` as this harness re-sends it on later requests. Override only for
+    def replay_view(self, message: Message, dialect: DialectName | None) -> Message:
+        """`message` as this harness re-sends it on later requests over `dialect` (None
+        before the first intercepted request). Override only for
         deterministic cosmetic rewrites (e.g. dropped whitespace-only text), never for
         content changes, so a replayed turn matches the turn it came from in the trace
         graph instead of forking it."""

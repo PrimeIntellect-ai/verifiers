@@ -1,10 +1,10 @@
 """A task's network policy holds during execution, and the model is told about it: the
 agent runs an egress probe under each policy the task data declares
-(network-policy-v1), with the agent's `network_notice` on or off, across every harness
+(network-policy), with the agent's `network_notice` on or off, across every harness
 on prime."""
 
 import pytest
-from grid import grid
+from grid import assert_one_branch, grid
 
 from verifiers.v1.utils.loaders import harness_class
 
@@ -37,12 +37,10 @@ def prompt_text(trace) -> str:
 
 
 @pytest.mark.parametrize("notice", [True, False], ids=["notice-on", "notice-off"])
-@pytest.mark.parametrize(
-    "harness,harness_runtime", grid(runtimes=["prime"]), indirect=True
-)
+@pytest.mark.parametrize("harness,harness_runtime", grid(), indirect=True)
 async def test_network_policy(run, harness, harness_runtime, notice):
     episodes = await run(
-        "network-policy-v1",
+        "network-policy",
         harness=harness,
         runtime=harness_runtime,
         num_tasks=len(NOTICES),
@@ -54,12 +52,7 @@ async def test_network_policy(run, harness, harness_runtime, notice):
     assert set(by_name) == set(NOTICES)
     for name, episode in by_name.items():
         [trace] = episode.traces
-        # mini-swe-agent only acts through tool calls: it drops a tool-less reply
-        # (the probe output as a final answer) from its history, so the trace forks
-        # by design. Recheck on version bumps:
-        # https://github.com/SWE-agent/mini-swe-agent/blob/v2.4.6/src/minisweagent/agents/default.py#L114
-        if harness.id != "mini-swe-agent":
-            assert trace.num_branches == 1
+        assert_one_branch(trace, harness, forks=("mini-swe-agent", "openclaw"))
         assert trace.ok, [error.message for error in trace.errors]
         prompt = prompt_text(trace)
         if notice and NOTICES[name]:

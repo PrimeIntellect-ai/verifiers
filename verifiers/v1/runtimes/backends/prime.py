@@ -11,17 +11,18 @@ import shlex
 import tempfile
 import uuid
 from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Any, ClassVar, Literal
+from typing import Any, ClassVar
 from urllib.parse import urlsplit
 
 from prime_sandboxes.models import validate_egress_lists
-from pydantic import Field, model_validator
 
-from verifiers.v1.configs.runtime import NetworkPolicyConfig
+from verifiers.v1.configs.runtime import NetworkPolicyConfig, PrimeConfig
 from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes.base import (
+    SERVICE_PORT,
     BaseRuntimeInfo,
     ProgramResult,
     RuntimeBackend,
@@ -31,6 +32,7 @@ from verifiers.v1.runtimes.base import (
 from verifiers.v1.runtimes.limiters import creation_limiter
 from verifiers.v1.runtimes.runtime import Runtime
 from verifiers.v1.utils.aio import run_shielded
+from verifiers.v1.utils.artifacts import validate_runtime_mounts
 from verifiers.v1.utils.prime import ensure_prime_auth
 from verifiers.v1.utils.scope import run_scope
 
@@ -49,6 +51,10 @@ _OUTPUT_DEADLINE_SECONDS = 300
 _OUTPUT_RETRIES = 10
 """Re-reads of a finished job's output that the SDK still failed to fetch, before the
 exec is reported as failed."""
+_PUBLIC_DOMAIN = "sandbox-v2-prod.pinfra.io"
+"""Domain of the public URLs `https://<port>-<sandbox-id>.<domain>` that a LAN network's
+`internet` rule publishes ports at."""
+_EXPOSE_TAG = "vf-exposed"
 
 
 BASE_LABELS: list[str] = []
@@ -68,6 +74,40 @@ class _SharedClient:
 _shared_clients: dict[asyncio.AbstractEventLoop, _SharedClient] = {}
 
 
+def _lease_client() -> Any:
+    from prime_sandboxes import AsyncSandboxClient
+
+    loop = asyncio.get_running_loop()
+    shared = _shared_clients.get(loop)
+    if shared is None:
+        shared = _shared_clients[loop] = _SharedClient(
+            AsyncSandboxClient(background_job_output_concurrency=_OUTPUT_READS)
+        )
+    shared.leases += 1
+    return shared.client
+
+
+async def _release_client(client: Any) -> None:
+    loop = asyncio.get_running_loop()
+    shared = _shared_clients[loop]
+    shared.leases -= 1
+    if not shared.leases:  # the last lease on this loop closes the client
+        del _shared_clients[loop]
+        with contextlib.suppress(Exception):
+            await client.aclose()
+
+
+@asynccontextmanager
+async def leased_client() -> AsyncIterator[Any]:
+    """This event loop's shared client, for calls that belong to no one sandbox, such as
+    LAN networks."""
+    client = _lease_client()
+    try:
+        yield client
+    finally:
+        await _release_client(client)
+
+
 def set_base_sandbox_labels(labels: list[str]) -> None:
     """Set process-wide base labels attached to every Prime sandbox, extended by each
     runtime's ``PrimeConfig.labels``. Call it in the process that creates the sandboxes
@@ -75,51 +115,6 @@ def set_base_sandbox_labels(labels: list[str]) -> None:
     name so every sandbox of a run is findable on the platform."""
     global BASE_LABELS
     BASE_LABELS = list(labels)
-
-
-class PrimeConfig(NetworkPolicyConfig):
-    type: Literal["prime"] = "prime"
-    image: str = "python:3.11-slim"
-    """Docker image to run. Any pullable ref works: on the first use of an image, the
-    platform auto-builds the VM image that the sandbox needs from it (~10 minutes)
-    and caches the result, so later sandboxes on the same ref start in
-    seconds."""
-    workdir: str | None = None
-    """Working directory override; None uses the task's workdir, or /app."""
-    region: str | None = None
-    """Region to provision in (None = provider-chosen)."""
-    labels: list[str] = Field(default_factory=list)
-    """Labels attached to the sandbox, extending any process-wide base labels (see ``set_base_sandbox_labels``)."""
-    # TaskData.resources uses these units; non-default runtime config values take precedence.
-    cpu: float = 1.0
-    """CPU cores."""
-    memory: float = 2.0
-    """Memory in GB."""
-    gpu: str | None = None
-    """GPU spec, e.g. "A100" or "A100:2" (a bare count = provider-chosen type)."""
-    disk: float = 5.0
-    """Disk in GB. Unused with ``checkpoint``: a sandbox keeps its checkpoint's disk."""
-    checkpoint: str | None = None
-    """A DURABLE filesystem checkpoint to start from instead of ``image`` (see the SDK's
-    ``checkpoint`` and ``wait_for_checkpoint``)."""
-    idle_timeout: float | None = 3600
-    """Seconds of inactivity before the sandbox self-deletes (None disables)."""
-    creates_per_min: int | None = None
-    """Pace sandbox creation to this many per minute, enforced run-wide across every
-    env-server worker process (None/<= 0 disables it). (Tunnel creation is limited separately
-    — see interception.tunnel.prime.tunnel_limiter.)"""
-
-    @model_validator(mode="after")
-    def _validate_egress(self) -> PrimeConfig:
-        if not self.network_restricted:
-            return self
-        if not self.allow:
-            return self
-        validate_egress_lists(
-            None if self.allow == ["*"] else self.allow,
-            self.block or None,
-        )
-        return self
 
 
 class PrimeRuntimeInfo(PrimeConfig, BaseRuntimeInfo):
@@ -151,9 +146,10 @@ class PrimeProcess(RuntimeProcess):
 
 
 class PrimeBackend(RuntimeBackend):
-    supports_user: ClassVar[bool] = True
-    supports_expose: ClassVar[bool] = False
-    is_local: ClassVar[bool] = False
+    SUPPORTS_TASK_IMAGES: ClassVar[bool] = True
+    SUPPORTS_COMPOSE: ClassVar[bool] = True
+    SUPPORTS_USER_SWITCHING: ClassVar[bool] = True
+    SUPPORTS_PORT_EXPOSURE: ClassVar[bool] = True
 
     def __init__(self, config: PrimeConfig, name: str | None = None) -> None:
         ensure_prime_auth()
@@ -161,22 +157,25 @@ class PrimeBackend(RuntimeBackend):
         self.config = config.model_copy(update={"workdir": config.workdir or "/app"})
         self.info = PrimeRuntimeInfo(**self.config.model_dump())
         self._client = None
+        # A LAN network (id, tags) to join as the sandbox boots: prime-sandboxes joins it
+        # once it is running, within `wait_for_creation` on the creating client.
+        self.lan: tuple[str, list[str]] | None = None
+        # Exposure state: a LAN network created on the first `expose`, separate from
+        # `lan`, and the ports its `internet` rule publishes.
+        self._expose_network_id: str | None = None
+        self._exposed_ports: list[int] = []
+        self._expose_lock = asyncio.Lock()
 
     @property
-    def supports_live_processes(self) -> bool:
-        return True
+    def published_port(self) -> int:
+        # Any port can be exposed, but the public URL reaches only servers bound to
+        # 0.0.0.0, which `launch` arranges for a fixed published port.
+        return SERVICE_PORT
 
     async def start(self) -> None:
-        from prime_sandboxes import AsyncSandboxClient, CreateSandboxRequest
+        from prime_sandboxes import APIError, CreateSandboxRequest
 
-        loop = asyncio.get_running_loop()
-        shared = _shared_clients.get(loop)
-        if shared is None:
-            shared = _shared_clients[loop] = _SharedClient(
-                AsyncSandboxClient(background_job_output_concurrency=_OUTPUT_READS)
-            )
-        shared.leases += 1
-        self._client = shared.client
+        self._client = _lease_client()
         # Map the resources onto prime's API (minutes, split GPU; memory/disk are already
         # GB). gpu_type/region are only sent when set (else provider-chosen).
         gpu_type, gpu_count = parse_gpu(self.config.gpu)
@@ -196,6 +195,11 @@ class PrimeBackend(RuntimeBackend):
             "gpu_type": gpu_type,
             "region": self.config.region,
         }
+        if self.config.mounts:
+            options["volumes"] = [
+                {"mount_path": target, **mount.model_dump()}
+                for target, mount in self.config.mounts.items()
+            ]
         if self.config.checkpoint:
             source = {"checkpoint_id": self.config.checkpoint}
         else:
@@ -203,6 +207,8 @@ class PrimeBackend(RuntimeBackend):
                 "docker_image": self.config.image,
                 "disk_size_gb": self.config.disk,
             }
+        if self.lan is not None:
+            options["lan_network_id"], options["lan_tags"] = self.lan
         scope = run_scope()
         labels = [*BASE_LABELS, *self.config.labels, scope]
         try:
@@ -214,6 +220,15 @@ class PrimeBackend(RuntimeBackend):
                 )
                 or contextlib.nullcontext()
             ):
+                for name in dict.fromkeys(m.name for m in self.config.mounts.values()):
+                    try:
+                        await self._client.volumes.create(name)
+                    except APIError as error:
+                        # Create returns 409 when this scoped name already exists,
+                        # including when another runtime creates it concurrently.
+                        if not str(error).startswith("HTTP 409:"):
+                            raise
+
                 # Shielded through the id capture: a cancel that aborts the POST
                 # mid-flight leaves the platform creating a sandbox this side
                 # never learned the id of — teardown() then cannot delete it
@@ -251,15 +266,20 @@ class PrimeBackend(RuntimeBackend):
             await self._client.execute_command(
                 self.info.id, f"mkdir -p {shlex.quote(self.config.workdir)}"
             )
+            await validate_runtime_mounts(self.bind(), [])
         except (
             Exception
         ) as e:  # provisioning failure is one rollout's problem, not the eval's
             raise SandboxError(f"prime sandbox provisioning failed: {e}") from e
 
-    async def prepare_execution(self, routes: list[str] | None) -> None:
-        """Apply the host policy after setup and wait until the platform enforces it."""
+    async def prepare_execution(
+        self, routes: list[str] | None, network: NetworkPolicyConfig | None = None
+    ) -> None:
+        """Apply the host policy, or `network`, after setup and wait until the platform
+        enforces it."""
         if not self.network_restricted:
             return
+        config = network or self.config
         try:
             if routes is None:
                 policy = {"allow": ["*"]}
@@ -269,10 +289,10 @@ class PrimeBackend(RuntimeBackend):
                         h for h in (urlsplit(route).hostname for route in routes) if h
                     )
                 )
-                if self.config.allow == ["*"]:
-                    policy = {"deny": self.config.block}
+                if config.allow == ["*"]:
+                    policy = {"deny": config.block}
                 else:
-                    entries = list(dict.fromkeys([*hosts, *self.config.allow]))
+                    entries = list(dict.fromkeys([*hosts, *config.allow]))
                     validate_egress_lists(entries, None)
                     policy = {"allow": entries} if entries else {"deny": ["*"]}
             status = await self._client.set_network(self.info.id, **policy)
@@ -299,7 +319,7 @@ class PrimeBackend(RuntimeBackend):
             policy.get("deny"),
         )
 
-    async def _run(
+    async def run(
         self, runtime: Runtime, argv: list[str], env: dict[str, str]
     ) -> ProgramResult:
         try:
@@ -344,7 +364,7 @@ class PrimeBackend(RuntimeBackend):
             stderr=result.stderr or "",
         )
 
-    async def _open_process(
+    async def exec(
         self, runtime: Runtime, argv: list[str], env: dict[str, str]
     ) -> RuntimeProcess:
         try:
@@ -356,19 +376,48 @@ class PrimeBackend(RuntimeBackend):
                 user=runtime.user,
             )
         except Exception as e:
-            raise SandboxError(f"prime live process failed to start: {e}") from e
+            raise SandboxError(f"prime streaming process failed to start: {e}") from e
         return PrimeProcess(process)
 
     async def expose(self, port: int) -> str:
-        raise SandboxError(
-            "Prime VM sandboxes do not support port exposure; colocate the service "
-            "with its consumer, or use a docker or modal service runtime"
-        )
+        """Publish `port` through a LAN network whose `internet` rule exposes it on this
+        sandbox. The URL has no Prime authentication."""
+        from prime_sandboxes import LanRule
 
-    async def _run_background(
+        async with self._expose_lock:
+            if port not in self._exposed_ports:
+                ports = [*self._exposed_ports, port]
+                rules = [
+                    LanRule(from_="internet", to=f"tag:{_EXPOSE_TAG}", ports=ports)
+                ]
+                try:
+                    if self._expose_network_id is None:
+                        # Shielded through the id capture, as in `start()`: a cancel
+                        # mid-POST would leave a network teardown cannot delete.
+                        async def create_and_capture_id() -> None:
+                            network = await self._client.create_lan_network(
+                                f"{self.name}-exposed", rules=rules
+                            )
+                            self._expose_network_id = network.id
+
+                        await run_shielded(create_and_capture_id())
+                    else:
+                        await self._client.set_lan_rules(self._expose_network_id, rules)
+                    # Joins (an idempotent PUT, so a retry re-adds a failed join) and
+                    # waits until the platform has pushed the membership and rules.
+                    await self._client._join_lan(
+                        self._expose_network_id, self.info.id, [_EXPOSE_TAG]
+                    )
+                except Exception as e:
+                    raise SandboxError(f"prime expose port {port} failed: {e}") from e
+                self._exposed_ports = ports
+        return f"https://{port}-{self.info.id}.{_PUBLIC_DOMAIN}"
+
+    async def run_background(
         self, runtime: Runtime, argv: list[str], env: dict[str, str], log: str
     ) -> None:
-        command = f"exec {shlex.join(argv)} > {shlex.quote(log)} 2>&1"
+        # A server-owned job runs without a client stream for its whole life.
+        command = f"exec {shlex.join(argv)} > {shlex.quote(log)} 2>&1 < /dev/null"
         try:
             await self._client.start_background_job(
                 self.info.id,
@@ -380,7 +429,7 @@ class PrimeBackend(RuntimeBackend):
         except Exception as e:
             raise SandboxError(f"prime background launch failed: {e}") from e
 
-    async def _read(
+    async def read(
         self, runtime: Runtime, path: str, max_bytes: int | None = None
     ) -> bytes:
         # The file API acts as the default user; a user view reads through exec.
@@ -430,7 +479,7 @@ class PrimeBackend(RuntimeBackend):
         except Exception as e:
             raise SandboxError(f"read {path!r}: {e}") from e
 
-    async def _write(self, runtime: Runtime, path: str, data: bytes) -> None:
+    async def write(self, runtime: Runtime, path: str, data: bytes) -> None:
         # The gateway creates missing parents and uploads binary data without command-line
         # limits. Resolve relative paths here because uploads do not use this runtime's workdir.
         target = (
@@ -467,8 +516,12 @@ class PrimeBackend(RuntimeBackend):
             from prime_sandboxes import SandboxClient
             from prime_sandboxes.core import APIClient
 
+            client = SandboxClient(APIClient())
             with contextlib.suppress(Exception):
-                SandboxClient(APIClient()).delete(self.info.id)
+                client.delete(self.info.id)
+            if self._expose_network_id is not None:
+                with contextlib.suppress(Exception):
+                    client.delete_lan_network(self._expose_network_id)
 
     async def teardown(self) -> None:
         # Best-effort, idempotent teardown: delete the sandbox (the costly resource). Runs via
@@ -477,15 +530,22 @@ class PrimeBackend(RuntimeBackend):
         if client is None:
             return
         try:
-            if self.info.id is not None:  # keep info.id available after teardown
-                await client.delete(self.info.id)
-        except Exception as e:  # noqa: BLE001 - provider teardown is best-effort
-            logger.warning("prime: failed to delete sandbox %s: %s", self.info.id, e)
+            try:
+                if self.info.id is not None:  # keep info.id available after teardown
+                    await client.delete(self.info.id)
+            except Exception as e:  # noqa: BLE001 - provider teardown is best-effort
+                logger.warning(
+                    "prime: failed to delete sandbox %s: %s", self.info.id, e
+                )
+            if self._expose_network_id is not None:
+                try:
+                    await client.delete_lan_network(self._expose_network_id)
+                    self._expose_network_id = None
+                except Exception as e:  # noqa: BLE001 - provider teardown is best-effort
+                    logger.warning(
+                        "prime: failed to delete LAN network %s: %s",
+                        self._expose_network_id,
+                        e,
+                    )
         finally:
-            loop = asyncio.get_running_loop()
-            shared = _shared_clients[loop]
-            shared.leases -= 1
-            if not shared.leases:  # last runtime on this loop closes the client
-                del _shared_clients[loop]
-                with contextlib.suppress(Exception):
-                    await client.aclose()
+            await _release_client(client)

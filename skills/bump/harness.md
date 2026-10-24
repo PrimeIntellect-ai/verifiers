@@ -18,9 +18,11 @@ Update each pin to a released upstream version. Bump one harness per PR.
 
 Some harnesses override `Harness.replay_view`. The override declares the
 cosmetic rewrite that the upstream client applies when it replays an earlier
-assistant turn, such as dropping whitespace-only text. The trace graph applies
-the view when it matches a replayed turn to its sampled node. If the view is
-wrong, the trace forks.
+assistant turn, such as dropping whitespace-only text. The view receives the
+dialect the harness speaks (`chat_completions`, `responses` or
+`anthropic_messages`), because a client can rewrite differently per wire
+format. The trace graph applies the view when it matches a replayed turn to its
+sampled node. If the view is wrong, the trace forks.
 
 Each override has a comment with a link to the upstream source line at the
 pinned tag. For each link:
@@ -34,9 +36,9 @@ view in `verifiers/v1/harnesses/utils/replay.py`. A view may only normalize
 cosmetic differences. If the program now changes what the model sees, such as
 dropping a turn, do not hide it with a view. That is a real branch.
 
-The integration tests also exempt some harnesses from the branch check, with a
-link to the upstream reason (for example mini-swe-agent in
-`tests/integration/test_agent_user.py`). Recheck those links the same way.
+Some integration tests let a harness fork by design. `FORKS` in
+`tests/integration/grid.py` links the upstream reason for each one. Recheck those
+links the same way.
 
 Closed-source programs (claude-code) have no source link. Verify them with the
 tests in step 3.
@@ -51,7 +53,8 @@ uv run pytest tests/integration -n 8 -m "<harness_mark> and prime"
 # e.g. -m "claude_code and prime"
 ```
 
-The tests assert `trace.num_branches == 1`. If a cell forks, dump its trace and
+The tests assert `trace.num_branches == 1`. `test_multi_turn.py` also runs
+every other `dialect` the harness config can select. If a cell forks, dump its trace and
 compare the sampled node with its unsampled sibling under the same parent. The
 difference is the new replay rewrite. Fix it as in step 2.
 
