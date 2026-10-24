@@ -1,10 +1,18 @@
 import base64
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, NotRequired
 
 import numpy as np
-from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, field_serializer
+from pydantic import (
+    BaseModel,
+    BeforeValidator,
+    ConfigDict,
+    Field,
+    StrictInt,
+    StrictStr,
+    field_serializer,
+)
 from pydantic.json_schema import WithJsonSchema
 from typing_extensions import TypedDict
 
@@ -243,12 +251,26 @@ class Usage(BaseModel):
         return self.input_tokens + self.completion_tokens
 
 
-class RoutedExperts(TypedDict):
-    """Base64 uint8 `[tokens, layers, top_k]` routing and its prompt offset."""
+class RoutedExpertWeights(TypedDict):
+    """Base64 little-endian FP32 coefficients; shares the outer routing shape/start."""
 
     data: Any
-    shape: list[int]
-    start: int
+    dtype: StrictStr
+
+
+class RoutedExperts(TypedDict):
+    """Prime HTTP routing payload; absent weights preserves legacy ID-only behavior.
+
+    Strict metadata types prevent Pydantic coercion from hiding malformed shapes or
+    versions. Graph ingress also validates construct-only train-client responses.
+    """
+
+    data: Any
+    shape: list[StrictInt]
+    start: NotRequired[StrictInt]
+    dtype: NotRequired[StrictStr]
+    format_version: NotRequired[StrictInt]
+    weights: NotRequired[RoutedExpertWeights]
 
 
 class WeightVersionSpan(BaseModel):

@@ -2,6 +2,7 @@
 
 import json
 
+import numpy as np
 import pytest
 
 import verifiers.v1 as vf
@@ -20,6 +21,26 @@ class MyTask(vf.TaskData):
 
 class MyState(vf.State):
     score: int = 0
+
+
+@pytest.mark.parametrize(
+    "sampled,mask", [(False, [False, False]), (True, [True]), (True, [True, False])]
+)
+def test_full_routing_invalid_row_requires_sampled_terminal_mask(sampled, mask):
+    node = MessageNode(
+        message=AssistantMessage(content="a"),
+        sampled=sampled,
+        token_ids=[1, 2],
+        mask=mask,
+        routed_experts=vf.RoutingData(
+            np.zeros((2, 1, 1), dtype="uint8"),
+            np.zeros((2, 1, 1), dtype="<f4"),
+            np.array([True, False]),
+        ),
+    )
+    restored = MessageNode.model_validate(node.model_dump(mode="python"))
+    with pytest.raises(ValueError, match="sampled terminal"):
+        _ = vf.Branch(index=0, nodes=[restored]).routed_experts
 
 
 @pytest.mark.parametrize(

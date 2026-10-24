@@ -103,6 +103,7 @@ if TYPE_CHECKING:
         RubricJudgeConfig,
     )
     from verifiers.v1.mcp import SharedToolsetConfig, Toolset, ToolsetConfig
+    from verifiers.v1.routing import RoutingData
     from verifiers.v1.runtimes import (
         ProgramResult,
         Runtime,
@@ -277,6 +278,7 @@ _NAME_TO_MODULE = {
     "Reward": "verifiers.v1.trace",
     "RewardFunctionConfig": "verifiers.v1.configs.task",
     "RolloutError": "verifiers.v1.errors",
+    "RoutingData": "verifiers.v1.routing",
     "RubricJudge": "verifiers.v1.judges",
     "RubricJudgeConfig": "verifiers.v1.judges",
     "RunInfo": "verifiers.v1.episode",
@@ -440,6 +442,7 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "Branch",
     "TurnTokens",
     "SamplingMask",
+    "RoutingData",
     "TopLogprobs",
     "Timing",
     "TimeSpan",
