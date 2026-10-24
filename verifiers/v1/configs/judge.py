@@ -7,8 +7,9 @@ from typing import Any
 
 from pydantic import BaseModel, FiniteFloat, SerializeAsAny
 
-from verifiers.v1.clients import BaseClientConfig
-from verifiers.v1.types import ID, SamplingConfig
+from verifiers.v1.configs.client import BaseClientConfig
+from verifiers.v1.configs.harness import ID
+from verifiers.v1.configs.sampling import SamplingConfig
 
 
 class JudgeConfig(BaseClientConfig):
@@ -17,7 +18,7 @@ class JudgeConfig(BaseClientConfig):
     name: str = ""
     """Reward key override for a plugged judge."""
     weight: FiniteFloat = 1.0
-    model: str = "openai/gpt-5.6-luna"
+    model: str = "openai/gpt-6-luna"
     sampling: SamplingConfig = SamplingConfig()
     prompt: Path | None = None
     """File whose text overrides the judge's default prompt template."""

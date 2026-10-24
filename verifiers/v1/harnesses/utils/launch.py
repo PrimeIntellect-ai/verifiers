@@ -3,6 +3,9 @@ import json
 from collections.abc import Sequence
 from types import ModuleType
 
+from pydantic import PositiveInt
+from pydantic_config import BaseConfig
+
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.dialects.chat import message_to_wire
@@ -30,6 +33,24 @@ CHAT_PROGRAM = (
     "# ///\n"
 )
 CHAT_PROGRAM_SOURCE = bundle_program(CHAT_PROGRAM, mcp, compaction, core)
+
+
+class CompactionConfig(BaseConfig):
+    """Context compaction policy for the shared chat program."""
+
+    summarize_at_tokens: PositiveInt | None = None
+    """Compact at this token count. When unset, compact when 16k tokens remain below the
+    model context window when the provider advertises it."""
+
+
+def compaction_args(compaction: CompactionConfig | None) -> list[str]:
+    """Chat-program flags for a compaction policy; `None` leaves compaction off."""
+    if compaction is None:
+        return []
+    args = ["--compaction"]
+    if compaction.summarize_at_tokens is not None:
+        args.append(f"--summarize-at-tokens={compaction.summarize_at_tokens}")
+    return args
 
 
 async def launch_chat_program(
@@ -81,6 +102,6 @@ async def launch_chat_program(
     program = await runtime.prepare_uv_script(
         source, config.resolved_env, activate=activate
     )
-    return await runtime.run_program(
+    return await runtime.run(
         [*program, *args], env if env is not None else {**config.resolved_env}
     )

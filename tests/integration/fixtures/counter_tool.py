@@ -1,0 +1,68 @@
+"""Task-scoped counter tool with typed rollout state."""
+
+import verifiers.v1 as vf
+
+TARGET = 3
+
+
+class CounterState(vf.State):
+    count: int = 0
+
+
+class CounterToolset(vf.Toolset[vf.ToolsetConfig, CounterState]):
+    TOOL_PREFIX = "counter"
+
+    @vf.tool
+    def bump(self) -> str:
+        """Increment the shared counter and return its new value."""
+        self.state.count += 1
+        return f"count={self.state.count}"
+
+
+class CounterTaskConfig(vf.TaskConfig):
+    tools: vf.ToolsetConfig = vf.ToolsetConfig()
+    constant_reward: bool = False
+    """Score every rollout 1, so a skipped score (reward 0) stands out."""
+
+
+class CounterTask(vf.Task[vf.TaskData, CounterState, CounterTaskConfig]):
+    @classmethod
+    def toolsets(cls, config: CounterTaskConfig) -> list[vf.Toolset]:
+        return [CounterToolset(config.tools)]
+
+    @vf.reward(weight=1.0)
+    async def counted(self, trace: vf.Trace) -> float:
+        return float(self.config.constant_reward or trace.state.count >= 2)
+
+
+def any_response(response: vf.Response) -> bool:
+    """A plugged stop that ends the run on its first model response."""
+    return True
+
+
+class CounterConfig(vf.TasksetConfig):
+    task: CounterTaskConfig = CounterTaskConfig()
+
+
+class CounterTaskset(vf.Taskset[CounterTask, CounterConfig]):
+    def load(self) -> list[CounterTask]:
+        return [
+            CounterTask(
+                vf.TaskData(
+                    idx=0,
+                    prompt=(
+                        f"Call the `bump` tool from the `counter` MCP server {TARGET} times, "
+                        "one call per turn — wait for each result before the next. After the "
+                        "last result, reply with <answer>done</answer>."
+                    ),
+                ),
+                self.config.task,
+            )
+        ]
+
+
+__all__ = ["CounterTaskset"]
+
+
+if __name__ == "__main__":
+    CounterToolset.run()

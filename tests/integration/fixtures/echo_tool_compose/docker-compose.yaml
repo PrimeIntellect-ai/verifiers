@@ -1,0 +1,7 @@
+# echo-tool with its tool server placed in a Compose service: the server runs in
+# `tools`, beside the workspace (`main`, the runtime's image), and the harness reaches it
+# over the Compose network by the service's name.
+services:
+  tools:
+    image: python:3.11-slim
+    command: [sleep, infinity]

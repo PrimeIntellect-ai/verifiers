@@ -1,10 +1,71 @@
-from collections.abc import Iterable
+import base64
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from typing import Annotated, Any, Literal
 
 import numpy as np
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, field_serializer
+from pydantic.json_schema import WithJsonSchema
 from typing_extensions import TypedDict
+
+
+def encode_ndarray(arr: np.ndarray) -> dict:
+    """A numpy array as a msgpack-safe dict (dtype + shape + raw bytes). The bytes ride the
+    env-server wire natively via msgpack's `bin` type — no base64 — so the response must be
+    packed from `model_dump(mode="python")` (`mode="json"` would coerce the bytes to str)."""
+    arr = np.ascontiguousarray(arr)
+    return {
+        "__nd__": True,
+        "dtype": str(arr.dtype),
+        "shape": list(arr.shape),
+        "data": arr.tobytes(),
+    }
+
+
+def decode_ndarray(d: dict) -> np.ndarray:
+    """Reverse :func:`encode_ndarray`."""
+    return np.frombuffer(d["data"], dtype=np.dtype(d["dtype"])).reshape(d["shape"])
+
+
+def as_list(values: list | np.ndarray) -> list:
+    """A token stream as a list, whichever form it is in."""
+    return values.tolist() if isinstance(values, np.ndarray) else values
+
+
+def _token_stream(dtype: type[np.generic], item_type: str):
+    """The field type of a per-token stream: a numpy array of `dtype`.
+
+    One list entry per token is a Python object the cyclic garbage collector walks and the
+    msgpack wire packs one by one; an array is one object it skips and raw bytes on the wire, so
+    a process holding many long episodes (an RL orchestrator) keeps full collections short.
+    Validation takes a list, an array or an `__nd__` dict; the models that hold streams
+    serialize them (`graph.MessageNode.serialize_token_stream`). Typed as an array alone,
+    because a `list[int] | np.ndarray` union makes pydantic try the list branch element by
+    element on every array it validates."""
+
+    def validate(value: Any) -> np.ndarray:
+        if isinstance(value, dict) and value.get("__nd__"):
+            value = decode_ndarray(value)
+        return np.asarray(value, dtype=dtype)
+
+    return Annotated[
+        np.ndarray,
+        BeforeValidator(validate),
+        WithJsonSchema({"type": "array", "items": {"type": item_type}}),
+    ]
+
+
+IntStream = _token_stream(np.int32, "integer")
+"""Token ids: int32."""
+BoolStream = _token_stream(np.bool_, "boolean")
+"""Per-token flags: bool."""
+FloatStream = _token_stream(np.float32, "number")
+"""Per-token values (logprobs, advantages, loss weights): float32."""
+
+
+def empty_stream(dtype: type[np.generic]) -> Callable[[], np.ndarray]:
+    """A `default_factory` for an empty stream of `dtype`."""
+    return lambda: np.zeros(0, dtype=dtype)
 
 
 class TextContentPart(BaseModel):
@@ -190,6 +251,14 @@ class RoutedExperts(TypedDict):
     start: int
 
 
+class WeightVersionSpan(BaseModel):
+    """Completion tokens `[start, end)` were sampled by the engine weights labelled `version`."""
+
+    version: str
+    start: int
+    end: int
+
+
 @dataclass
 class SamplingMask:
     """Sampling masks stored as flat int32 `ids` and `counts` arrays.
@@ -202,7 +271,16 @@ class SamplingMask:
     counts: Any
 
     @classmethod
-    def from_sampling_mask(cls, sampling_mask: list[list[int]]) -> "SamplingMask":
+    def from_sampling_mask(
+        cls, sampling_mask: list[list[int]] | dict[str, Any]
+    ) -> "SamplingMask":
+        """Build from vLLM's one-list-per-token masks, or from prime-rl's packed CSR
+        form: `{"ids", "counts"}`, each a base64 `{data, shape, dtype}` int32 array."""
+        if isinstance(sampling_mask, dict):
+            return cls(
+                ids=_decode_packed(sampling_mask["ids"], np.int32),
+                counts=_decode_packed(sampling_mask["counts"], np.int32),
+            )
         counts = np.fromiter(
             (len(row) for row in sampling_mask),
             dtype=np.int32,
@@ -216,19 +294,59 @@ class SamplingMask:
         return cls(ids=ids, counts=counts)
 
 
+def _decode_packed(packed: dict[str, Any], dtype: type) -> np.ndarray:
+    array = np.frombuffer(base64.b64decode(packed["data"]), dtype=packed["dtype"])
+    return array.astype(dtype, copy=False)
+
+
+@dataclass
+class TopLogprobs:
+    """Top-k sampling head stored as flat `ids`, `logprobs` and `counts` arrays.
+
+    Each row holds one completion token's top-k sampler candidates in descending
+    probability order, independent of the sampled action. Row boundaries come from
+    `counts`; `ids` and `logprobs` share the same flat layout.
+    """
+
+    ids: Any
+    logprobs: Any
+    counts: Any
+
+    @classmethod
+    def from_top_logprobs(
+        cls, ids: list[list[int]], logprobs: list[list[float]]
+    ) -> "TopLogprobs":
+        if len(ids) != len(logprobs):
+            raise ValueError("top ids and logprobs must have one row per token")
+        counts = np.fromiter(
+            (len(row) for row in ids),
+            dtype=np.int32,
+            count=len(ids),
+        )
+        if any(len(ids[i]) != len(logprobs[i]) for i in range(len(ids))):
+            raise ValueError("top ids and logprobs rows must be the same length")
+        return cls(
+            ids=np.fromiter((token for row in ids for token in row), dtype=np.int32),
+            logprobs=np.fromiter(
+                (p for row in logprobs for p in row), dtype=np.float32
+            ),
+            counts=counts,
+        )
+
+
 class TurnTokens(BaseModel):
     """Training tokens from renderer tokenization or provider-returned token IDs."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    prompt_ids: list[int] = Field(default_factory=list)
+    prompt_ids: IntStream = Field(default_factory=empty_stream(np.int32))
     """Effective prompt IDs evaluated by the model, after multimodal expansion."""
-    completion_ids: list[int] = Field(default_factory=list)
-    completion_logprobs: list[float] = Field(default_factory=list)
+    completion_ids: IntStream = Field(default_factory=empty_stream(np.int32))
+    completion_logprobs: FloatStream = Field(default_factory=empty_stream(np.float32))
 
     # Transient graph-construction metadata, consumed by the turn's commit and excluded
     # from serialized responses.
-    renderer_prompt_ids: list[int] | None = Field(default=None, exclude=True)
+    renderer_prompt_ids: IntStream | None = Field(default=None, exclude=True)
     """Logical renderer IDs before multimodal expansion, retained for bridge extension."""
     bridged: bool = Field(default=False, exclude=True)
     """Whether the renderer constructed this prompt by extending a stored prefix."""
@@ -237,7 +355,7 @@ class TurnTokens(BaseModel):
     message_spans: list[tuple[int, int] | None] | None = Field(
         default=None, exclude=True
     )
-    is_content: list[bool] | None = Field(default=None, exclude=True)
+    is_content: BoolStream | None = Field(default=None, exclude=True)
     # Authoritative effective-prompt ranges returned by vLLM, flattened across modalities.
     mm_placeholders: list[tuple[int, int]] | None = Field(default=None, exclude=True)
     # Transient carrier (excluded): the renderer's special-token id -> modality marker map,
@@ -251,6 +369,17 @@ class TurnTokens(BaseModel):
     # Transient carrier (excluded): per-completion-token sampling masks,
     # attributed to the assistant node by the turn's `commit`, then dropped.
     sampling_mask: SamplingMask | None = Field(default=None, exclude=True)
+    # Transient carrier (excluded): the engine's weight-version spans over the completion,
+    # attributed to the assistant node by the turn's `commit`, then dropped.
+    weight_versions: list[WeightVersionSpan] | None = Field(default=None, exclude=True)
+
+    # Transient carrier (excluded): per-completion-token top-k sampling heads,
+    # attributed to the assistant node by the turn's `commit`, then dropped.
+    top_logprobs: TopLogprobs | None = Field(default=None, exclude=True)
+
+    @field_serializer("prompt_ids", "completion_ids", "completion_logprobs")
+    def serialize_stream(self, values: list | np.ndarray) -> list:
+        return as_list(values)
 
 
 class Response(BaseModel):
@@ -263,34 +392,3 @@ class Response(BaseModel):
     tokens: TurnTokens | None = None
     raw: dict | None = Field(default=None, exclude=True, repr=False)
     """Full native response object returned to the program; excluded from traces."""
-
-
-class SamplingConfig(BaseModel):
-    """Typed sampling knobs; provider-specific keys pass through (extra='allow')."""
-
-    model_config = ConfigDict(extra="allow")
-    temperature: float | None = None
-    top_p: float | None = None
-    reasoning_effort: str | None = None
-    max_tokens: int | None = Field(
-        None, validation_alias=AliasChoices("max_tokens", "max_completion_tokens")
-    )
-
-    def wire_args(self) -> dict[str, Any]:
-        """Flatten OpenAI-style ``extra_body`` before building a provider request."""
-        args = self.model_dump(exclude_none=True)
-        extra_body = {
-            key: value
-            for key, value in (args.pop("extra_body", None) or {}).items()
-            if value is not None
-        }
-        if "max_tokens" in args:
-            extra_body.pop("max_completion_tokens", None)
-        return {**extra_body, **args}
-
-
-Sampling = SamplingConfig
-
-
-ID = str
-"""Plugin id: the name of an installed package exporting the plugin."""

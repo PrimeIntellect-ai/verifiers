@@ -11,7 +11,7 @@ import sys
 import sysconfig
 import tempfile
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass, field
 from functools import cache
 from importlib.metadata import PathDistribution, distribution, packages_distributions
@@ -31,7 +31,8 @@ from verifiers.v1.mcp.server import (
 )
 from verifiers.v1.runtimes import (
     Runtime,
-    provision_runtime,
+    backend_cls,
+    provision_backend,
 )
 from verifiers.v1.runtimes.base import _ENSURE_UV
 from verifiers.v1.state import State
@@ -234,45 +235,76 @@ async def _cached_package(src: Path) -> tuple[str, bytes]:
             del _PACKAGE_BUILD_STATES[key]
 
 
-async def _install_in_sandbox(server: ServerBase, runtime: Runtime) -> str:
+async def _install_in_sandbox(server: ServerBase, agent_runtime: Runtime) -> str:
+    # Install as root; the agent user only runs the server.
+    runtime = (
+        agent_runtime if agent_runtime.user is None else agent_runtime.with_user(None)
+    )
     # Prime VMs mount /tmp as a small tmpfs, while the runtime workdir lives on
     # the VM's root disk. Keep source, build scratch space, and uv's cache on the
     # durable runtime filesystem so ordinary dependency installs cannot exhaust
     # the tmpfs.
-    workdir = str(PurePosixPath(runtime.config.workdir))
+    # Every runtime runs commands in its working directory; not every config names it.
+    located = await runtime.run(["pwd"], {})
+    workdir = located.stdout.strip()
+    if located.exit_code or not workdir:
+        raise ToolsetError(
+            f"server {server.server_name!r}: cannot locate the runtime's working "
+            f"directory: {located.stderr.strip()}"
+        )
     root = str(PurePosixPath(workdir) / ".vf-src")
     temp = str(PurePosixPath(workdir) / ".vf-tmp")
     cache = str(PurePosixPath(workdir) / ".vf-uv-cache")
     venv = str(PurePosixPath(workdir) / ".vf-venv")
+    python_dir = str(PurePosixPath(workdir) / ".vf-python")
     root_q, temp_q, cache_q, venv_q = map(shlex.quote, (root, temp, cache, venv))
     # Colocated servers and borrowed views install into one physical environment.
     # Serialize its mutations and only remember sources after a successful install.
-    async with runtime._mcp_install_lock:
+    async with runtime.backend.cache.mcp_lock:
         sources = dict.fromkeys((_package_dir(ServerBase), _package_dir(type(server))))
-        pending = [source for source in sources if source not in runtime._mcp_sources]
-        if not pending:
-            return f"{venv}/bin/python"
-        setup = (
-            f"set -e; mkdir -p {root_q} {temp_q} {cache_q}; "
-            f"export TMPDIR={temp_q} UV_CACHE_DIR={cache_q}; "
-            'export PATH="$HOME/.local/bin:$PATH"; '
-        )
-        if not runtime._mcp_sources:
-            # Failed installs can leave the venv behind; retain it when retrying.
-            setup += f"{_ENSURE_UV}; uv venv --allow-existing {venv_q}; "
-        # Drain remote writes and installs before cancellation releases the lock.
-        for source in pending:
-            name, data = await _cached_package(Path(source))
-            remote = f"{root}/{name}"
-            await run_shielded(runtime.write(remote, data))
-            setup += f"uv pip install --python {venv_q} {shlex.quote(remote)}; "
-        result = await run_shielded(runtime.run(["sh", "-c", setup], {}))
-        if result.exit_code != 0:
-            raise ToolsetError(
-                f"server {server.server_name!r} install failed in runtime: "
-                f"{(result.stderr or result.stdout).strip()[-2000:]}"
+        pending = [
+            source
+            for source in sources
+            if source not in runtime.backend.cache.mcp_sources
+        ]
+        if pending:
+            setup = (
+                f"set -e; mkdir -p {root_q} {temp_q} {cache_q}; "
+                f"export TMPDIR={temp_q} UV_CACHE_DIR={cache_q}; "
+                'export PATH="$HOME/.local/bin:$PATH"; '
             )
-        runtime._mcp_sources.update(pending)
+            if agent_runtime.user is not None:
+                setup += f"export UV_PYTHON_INSTALL_DIR={shlex.quote(python_dir)}; "
+            if not runtime.backend.cache.mcp_sources:
+                # Failed installs can leave the venv behind; retain it when retrying.
+                setup += f"{_ENSURE_UV}; uv venv --allow-existing {venv_q}; "
+            # Drain remote writes and installs before cancellation releases the lock.
+            for source in pending:
+                name, data = await _cached_package(Path(source))
+                remote = f"{root}/{name}"
+                await run_shielded(runtime.write(remote, data))
+                setup += f"uv pip install --python {venv_q} {shlex.quote(remote)}; "
+            result = await run_shielded(runtime.run(["sh", "-c", setup], {}))
+            if result.exit_code != 0:
+                raise ToolsetError(
+                    f"server {server.server_name!r} install failed in runtime: "
+                    f"{(result.stderr or result.stdout).strip()[-2000:]}"
+                )
+            runtime.backend.cache.mcp_sources.update(pending)
+        if agent_runtime.user is not None:
+            # Root's uv lives in its home; copy it into the venv, open to the agent.
+            python_q = shlex.quote(python_dir)
+            share = (
+                'set -e; export PATH="$HOME/.local/bin:$PATH"; '
+                f'cp "$(command -v uv)" {venv_q}/bin/uv; chmod -R a+rX {venv_q}; '
+                f"[ ! -d {python_q} ] || chmod -R a+rX {python_q}"
+            )
+            result = await run_shielded(runtime.run(["sh", "-c", share], {}))
+            if result.exit_code != 0:
+                raise ToolsetError(
+                    f"server {server.server_name!r} could not be shared with "
+                    f"{agent_runtime.user!r}: {(result.stderr or result.stdout).strip()[-2000:]}"
+                )
     return f"{venv}/bin/python"
 
 
@@ -303,6 +335,7 @@ async def serve_in_runtime(
     runtime: Runtime,
     *,
     exposed: bool,
+    listen_all: bool = False,
     state_url: str | None = None,
     state_secret: str = "",
 ) -> int:
@@ -323,7 +356,7 @@ async def serve_in_runtime(
         # Keep provider temp files in the runtime workdir so cleanup removes them.
         assert runtime.info.id is not None
         env["TMPDIR"] = runtime.info.id
-    if exposed and runtime.published_port is not None:
+    if listen_all or (exposed and runtime.published_port is not None):
         env["MCP_HOST"] = "0.0.0.0"
     fixed = runtime.published_port if exposed else None
     port_file = None
@@ -338,12 +371,18 @@ async def serve_in_runtime(
     command = [python, "-m", type(server).__module__]
     if runtime.type != "subprocess":
         # Providers may invoke uv after the install shell exits, so preserve its PATH.
+        path = "$HOME/.local/bin:$PATH"
+        if runtime.user is not None:
+            path = f"{PurePosixPath(python).parent}:{path}"
         command = [
             "sh",
             "-c",
-            f'export PATH="$HOME/.local/bin:$PATH"; exec {shlex.join(command)}',
+            f'export PATH="{path}"; exec {shlex.join(command)}',
         ]
     log = f"vf_tool_{server.server_name}.log"
+    if runtime.user is not None:
+        # The agent user may not be able to write the workdir.
+        log = f"/tmp/vf_tool_{server.server_name}-{uuid.uuid4().hex[:8]}.log"
     await runtime.run_background(command, env, log)
     if fixed is not None:
         port = fixed
@@ -364,7 +403,11 @@ async def serve_in_runtime(
 
 @contextlib.asynccontextmanager
 async def reachable_url(
-    service: Runtime, port: int, *, colocated: bool, consumer_is_local: bool
+    service_runtime: Runtime,
+    port: int,
+    *,
+    colocated: bool,
+    consumer_is_local: bool,
 ) -> AsyncIterator[str]:
     """Yield the URL a consumer uses to reach the server at (`service`, `port`), over two
     primitives: `Runtime.expose` (publish a port out of a sandbox) and a host `Tunnel` (reach
@@ -378,8 +421,8 @@ async def reachable_url(
     if colocated:
         yield f"http://127.0.0.1:{port}"
         return
-    url = await service.expose(port)
-    if service.is_local and not consumer_is_local:
+    url = await service_runtime.expose(port)
+    if service_runtime.is_local and not consumer_is_local:
         async with PrimeTunnel().expose(urlsplit(url).port or 80) as public:
             yield public
     else:
@@ -400,9 +443,48 @@ async def _serve(
     *,
     state_secret: str = "",
     state_base: str | None = None,
+    services: Mapping[str, Runtime] | None = None,
+    hosts: Mapping[str, str] | None = None,
+    placements: Mapping[str, Runtime] | None = None,
 ):
     cfg = server.config
     colocated = getattr(cfg, "colocated", False)
+    service = getattr(cfg, "service", None)
+    own_vm = (placements or {}).get(server.server_name)
+    if service is not None or own_vm is not None:
+        # The harness reaches the server over the deployment's network: a Compose
+        # service by its name, a VM of its own by its LAN name.
+        if own_vm is not None:
+            runtime = own_vm
+            host = (hosts or {})[server.server_name]
+        elif services is None or service not in services:
+            raise ToolsetError(
+                f"server {server.server_name!r} runs in service {service!r}, "
+                "which needs a task whose Compose services define it"
+            )
+        else:
+            runtime = services[service]
+            host = (hosts or {}).get(service, service)
+        if runtime.is_local:
+            # A local service cannot reach the host-loopback state channel.
+            raise ToolsetError(
+                f"server {server.server_name!r} runs in Compose service {service!r}, "
+                "which needs Compose on a remote runtime such as Prime"
+            )
+        port = await serve_in_runtime(
+            server,
+            runtime,
+            exposed=False,
+            listen_all=True,
+            state_url=(
+                runtime.host_url(f"{state_base.rstrip('/')}/state")
+                if state_base
+                else None
+            ),
+            state_secret=state_secret,
+        )
+        yield _ServedServer(f"http://{host}:{port}/mcp", runtime)
+        return
     async with contextlib.AsyncExitStack() as stack:
         # Colocated servers inherit the harness cut. A separately provisioned filtered
         # server has neither that lifecycle nor a published port after isolation;
@@ -413,14 +495,22 @@ async def _serve(
             and not (colocated and harness_runtime is not None)
         ):
             raise ToolsetError(
-                "Runtime network policies are supported on the harness runtime; "
-                f"server {server.server_name!r} must be colocated or use an "
-                "unrestricted runtime"
+                f"server {server.server_name!r} restricts its runtime's network, which "
+                "needs the server colocated with the harness, or on a Prime runtime "
+                "of its own beside a Prime workspace without Compose services (it then "
+                "joins the rollout's private network)"
             )
         if colocated and harness_runtime is not None:
             runtime = harness_runtime
+        elif not backend_cls(cfg.runtime).SUPPORTS_PORT_EXPOSURE:
+            raise ToolsetError(
+                f"server {server.server_name!r} runs in its own runtime, but the "
+                f"{cfg.runtime.type} runtime cannot expose a port; colocate it with the "
+                "harness or use a supported runtime"
+            )
         else:
-            runtime = await stack.enter_async_context(provision_runtime(cfg.runtime))
+            backend = await stack.enter_async_context(provision_backend(cfg.runtime))
+            runtime = backend.bind()
         # Only consumers outside the server runtime need its fixed published port. Colocated tools
         # use independent OS-assigned ports, avoiding clashes on the runtime's service port.
         exposed = runtime is not harness_runtime
@@ -468,6 +558,9 @@ async def serve(
     *,
     state_secret: str = "",
     state_base: str | None = None,
+    services: Mapping[str, Runtime] | None = None,
+    hosts: Mapping[str, str] | None = None,
+    placements: Mapping[str, Runtime] | None = None,
 ):
     """Serve one MCP server and yield the URL visible to its consumer."""
     async with _serve(
@@ -476,6 +569,9 @@ async def serve(
         harness_is_local,
         state_secret=state_secret,
         state_base=state_base,
+        services=services,
+        hosts=hosts,
+        placements=placements,
     ) as served:
         yield served.url
 
@@ -583,6 +679,9 @@ async def serve_tools(
     state_secret: str = "",
     state_route: str = "",
     state_base: str | None = None,
+    services: Mapping[str, Runtime] | None = None,
+    hosts: Mapping[str, str] | None = None,
+    placements: Mapping[str, Runtime] | None = None,
 ):
     """Bring up a rollout's tool servers and yield `{name: url}` the harness reaches: the
     task-scoped `toolsets` are launched by `serve` (placement off each one's `config`; the
@@ -623,6 +722,9 @@ async def serve_tools(
                         harness_runtime,
                         state_secret=state_secret,
                         state_base=state_base,
+                        services=services,
+                        hosts=hosts,
+                        placements=placements,
                     )
                 )
                 logger.info("tool server '%s': %s", name, urls[name])

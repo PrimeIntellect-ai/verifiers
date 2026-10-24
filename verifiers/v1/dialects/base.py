@@ -22,12 +22,14 @@ from typing import Any, ClassVar, Generic, TypeVar
 from pydantic import AnyHttpUrl, BaseModel, ValidationError
 from pydantic_core import from_json
 
+from verifiers.v1.configs.harness import DialectName
 from verifiers.v1.configs.runtime import (
     NetworkPolicyConfig,
     intersect_network_hosts,
     parse_network_rule,
 )
-from verifiers.v1.types import Request, Response, Sampling, SamplingConfig
+from verifiers.v1.configs.sampling import Sampling, SamplingConfig
+from verifiers.v1.types import Request, Response
 
 RespT = TypeVar("RespT", bound=BaseModel)
 RawRequest = dict[str, Any]
@@ -263,6 +265,9 @@ class Dialect(ABC, Generic[RespT]):
     rewriting them. Implement a `Dialect` + register it in `dialects.DIALECTS` and a harness
     speaking that format works end-to-end."""
 
+    name: ClassVar[DialectName]
+    """The wire format's name, passed to `Harness.replay_view`."""
+
     sampling_fields: ClassVar[frozenset[str]] = frozenset()
     """Request keys that are call settings — what shapes generation given the same
     conversation: decoding knobs, budgets/stops, reasoning effort, output contract.
@@ -307,7 +312,7 @@ class Dialect(ABC, Generic[RespT]):
         client ends on an earlier event (e.g. Responses' `response.completed`) overrides this."""
         return is_sse_done_event(chunk)
 
-    def error_body(self, message: str) -> dict:
+    def error_body(self, message: str, *, status_code: int = 400) -> dict:
         """An error payload in this format's error shape (OpenAI by default)."""
         return {"error": {"message": message, "type": "invalid_request_error"}}
 
@@ -318,7 +323,7 @@ class Dialect(ABC, Generic[RespT]):
         # Don't terminate an empty event; some SSE clients try to JSON-decode it.
         return b": keepalive\n"
 
-    def stream_error(self, error: dict) -> bytes:
+    def stream_error(self, error: dict, *, status_code: int | None = None) -> bytes:
         """An `error_body` as an SSE event, for a failure after the stream is committed.
         OpenAI SDKs raise on any event carrying `error`."""
         return b"data: " + json.dumps(error).encode() + b"\n\n"

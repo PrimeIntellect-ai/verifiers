@@ -118,7 +118,8 @@ class MCPConnection:
         caller = asyncio.current_task()
         assert caller is not None
         # Stack cleanup can follow cancellation while awaiting a model or local tool.
-        if abort or caller.cancelling():
+        # Task.cancelling() is 3.11+; harness programs may run on 3.10.
+        if abort or getattr(caller, "cancelling", lambda: 0)():
             cancel_scope.cancel()
         else:
             task.cancel()
