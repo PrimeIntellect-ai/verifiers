@@ -133,6 +133,9 @@ async def test_env_id_best_of_n_judge(run):
     for judge in judges:
         ranking = judge.info["ranking"]
         assert set(ranking["scores"]) == {t.id for t in attempts}
-        assert sorted(ranking["attempts"]) == ["A", "B"]
+        assert len(ranking["attempts"]) == len(attempts)
+        assert all(
+            len(label) == 3 and int(label, 16) >= 0 for label in ranking["attempts"]
+        )
     # Two attempts' rank scores always sum to one: 1 + 0, or 0.5 + 0.5 when tied.
     assert sum(t.rewards["judge"].score for t in attempts) == 1.0

@@ -9,11 +9,11 @@ score averaged across them.
 """
 
 import asyncio
+import hashlib
 import json
 import random
 import shlex
 import statistics
-import string
 import uuid
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -332,12 +332,11 @@ class BestOfNJudgeEnv(BestOfNEnv, vf.Env[BestOfNJudgeEnvConfig]):
 
 
 def _labels(count: int) -> list[str]:
-    """Spreadsheet-column labels — A..Z, AA, AB, ... — for shuffled attempts."""
-    labels = []
-    for index in range(1, count + 1):
-        label = ""
-        while index:
-            index, rest = divmod(index - 1, 26)
-            label = string.ascii_uppercase[rest] + label
-        labels.append(label)
-    return labels
+    """Fresh short hashes, unique within one judge's presentation."""
+    width = 3
+    while count > 16**width:
+        width += 1
+    labels: set[str] = set()
+    while len(labels) < count:
+        labels.add(hashlib.sha256(uuid.uuid4().bytes).hexdigest()[:width])
+    return list(labels)
