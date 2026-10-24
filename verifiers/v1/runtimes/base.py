@@ -43,8 +43,11 @@ _DOWNLOAD_UV = (
     "{ command -v curl >/dev/null 2>&1 && curl -LsSf https://astral.sh/uv/install.sh | sh; } "
     "|| { command -v wget >/dev/null 2>&1 && wget -qO- https://astral.sh/uv/install.sh | sh; }"
 )
+FALLBACK_BIN = "/tmp/.verifiers/bin"
+"""Where the host's uv goes when the user cannot write `$HOME/.local/bin` (a home whose
+`.local` a root step created first); on PATH right after it."""
 _ENSURE_UV = (
-    'export PATH="$HOME/.local/bin:$PATH" UV_INSTALL_DIR="$HOME/.local/bin"; '
+    f'export PATH="$HOME/.local/bin:{FALLBACK_BIN}:$PATH" UV_INSTALL_DIR="$HOME/.local/bin"; '
     "uv_supports_scripts() { "
     "uv sync --help 2>/dev/null | grep -q -- '--script' "
     "&& uv python find --help 2>/dev/null | grep -q -- '--script'; }; "

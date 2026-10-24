@@ -59,7 +59,7 @@ class HardenedBox:
         if argv == ["uname", "-m"]:
             return ProgramResult(0, "x86_64\n", "")
         script = argv[2]
-        if "/.local/bin/uv" in script:
+        if 'mv -f "$1"' in script:
             self.uv = self.files.pop(argv[-1])
             return ProgramResult(0, "", "")
         self.prepares += 1
@@ -99,3 +99,49 @@ async def test_a_box_that_still_fails_with_the_hosts_uv_reports_it(monkeypatch):
     with pytest.raises(RuntimeError, match="apt-get: not found"):
         await Runtime(box).prepare_uv_script("print(1)\n")  # type: ignore[arg-type]
     assert box.prepares == 2  # one retry, no loop
+
+
+async def test_the_hosts_uv_goes_to_the_fallback_when_home_local_is_not_writable(
+    monkeypatch, tmp_path
+):
+    """A home whose `.local` a root step created first: the install script puts uv in
+    `FALLBACK_BIN` (on PATH right after ~/.local/bin) instead of failing."""
+    import asyncio
+    import os
+    import subprocess
+    from pathlib import Path
+
+    async def binary(machine):
+        return b"static uv"
+
+    fallback = tmp_path / "fallback-bin"
+    monkeypatch.setattr("verifiers.v1.runtimes.runtime.host_uv_binary", binary)
+    monkeypatch.setattr("verifiers.v1.runtimes.runtime.FALLBACK_BIN", str(fallback))
+    home = tmp_path / "home"
+    (home / ".local").mkdir(parents=True)
+    (home / ".local").chmod(0o555)
+
+    class LocalBox:
+        cache = RuntimeCache()
+
+        async def write(self, runtime, path, data):
+            target = Path(path)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            await asyncio.to_thread(target.write_bytes, data)
+
+        async def run(self, runtime, argv, env):
+            if argv == ["uname", "-m"]:
+                return ProgramResult(0, "x86_64\n", "")
+            done = await asyncio.to_thread(
+                subprocess.run,
+                argv,
+                env={"HOME": str(home), "PATH": os.environ["PATH"]},
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            return ProgramResult(done.returncode, done.stdout, done.stderr)
+
+    await Runtime(LocalBox())._upload_host_uv(str(tmp_path / "scripts"))  # type: ignore[arg-type]
+    assert (fallback / "uv").read_bytes() == b"static uv"
+    assert not (home / ".local" / "bin").exists()

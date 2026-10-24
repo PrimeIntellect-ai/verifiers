@@ -17,6 +17,7 @@ from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes.base import (
     _ENSURE_UV,
     _INSTALL_CURL,
+    FALLBACK_BIN,
     ProgramResult,
     RuntimeBackend,
     RuntimeProcess,
@@ -288,7 +289,7 @@ class Runtime:
             return [interpreter, path]
         venv = str(PurePosixPath(interpreter).parent.parent)
         command = (
-            'export VIRTUAL_ENV="$1" PATH="${1}/bin:$HOME/.local/bin:$PATH" '
+            f'export VIRTUAL_ENV="$1" PATH="${{1}}/bin:$HOME/.local/bin:{FALLBACK_BIN}:$PATH" '
             'UV_INSTALL_DIR="$HOME/.local/bin" UV_RUN_RECURSION_DEPTH=1; '
             'shift; exec "$@"'
         )
@@ -304,14 +305,21 @@ class Runtime:
 
     async def _upload_host_uv(self, directory: str) -> None:
         """Install the host's static uv as this user's ~/.local/bin/uv, which
-        `_ENSURE_UV` puts first on PATH."""
+        `_ENSURE_UV` puts first on PATH, or in `FALLBACK_BIN` (next on PATH) when the
+        user cannot write ~/.local/bin."""
         machine = await self.run(["uname", "-m"], {})
         if machine.exit_code:
             raise RuntimeError(f"failed to read box architecture: {machine.stderr}")
         binary = await host_uv_binary(machine.stdout)
         staged = f"{directory}/uv.{uuid.uuid4().hex}.tmp"
         await self.write(staged, binary)
-        install = 'mkdir -p "$HOME/.local/bin" && chmod 755 "$1" && mv -f "$1" "$HOME/.local/bin/uv"'
+        install = (
+            'chmod 755 "$1" && for d in "$HOME/.local/bin" ' + FALLBACK_BIN + "; do "
+            'mkdir -p "$d" 2>/dev/null && [ -w "$d" ] && mv -f "$1" "$d/uv" && exit 0; done; '
+            'echo "neither $HOME/.local/bin nor '
+            + FALLBACK_BIN
+            + ' is writable" >&2; exit 1'
+        )
         result = await self.run(["sh", "-c", install, "sh", staged], {})
         if result.exit_code:
             raise RuntimeError(f"failed to install the host's uv: {result.stderr}")
