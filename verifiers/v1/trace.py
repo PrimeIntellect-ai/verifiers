@@ -17,6 +17,7 @@ if TYPE_CHECKING:
 
 from verifiers.v1 import graph
 from verifiers.v1.configs.agent import AgentConfig, WireAgentConfig
+from verifiers.v1.configs.sampling import Sampling
 from verifiers.v1.errors import ProviderError, stop_condition
 from verifiers.v1.graph import RECORD_FLOAT_DECIMALS, MessageNode
 from verifiers.v1.runtimes import RuntimeInfo
@@ -35,7 +36,6 @@ from verifiers.v1.types import (
     Usage,
     content_text,
 )
-from verifiers.v1.configs.sampling import Sampling
 
 TRACE_VERSION = 1
 """Current version of the trace schema."""

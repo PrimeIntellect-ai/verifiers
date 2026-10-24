@@ -14,12 +14,12 @@ from verifiers.v1.configs.client import (
     resolve_api_key,
     resolve_headers,
 )
+from verifiers.v1.configs.sampling import SamplingConfig
 from verifiers.v1.dialects import Dialect
 from verifiers.v1.errors import model_error
 from verifiers.v1.graph import PendingTurn
 from verifiers.v1.semantic import ACP_EXTENSION_HEADERS
 from verifiers.v1.types import Response
-from verifiers.v1.configs.sampling import SamplingConfig
 
 # These fields describe the localhost request, its original bytes, or its connection. HTTPX
 # rebuilds the provider request from JSON; endpoint configuration and provider auth apply last.

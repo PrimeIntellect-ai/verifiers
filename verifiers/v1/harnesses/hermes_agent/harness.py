@@ -6,7 +6,7 @@ from typing import Literal
 
 from verifiers.v1.acp import ACPConfig, ACPHarness
 from verifiers.v1.clients import ModelContext
-from verifiers.v1.configs.harness import HarnessConfig, PinnedVersion
+from verifiers.v1.configs.harness import DialectName, HarnessConfig, PinnedVersion
 from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
 from verifiers.v1.harnesses.utils.replay import strip_text
 from verifiers.v1.runtimes import Runtime
@@ -14,7 +14,6 @@ from verifiers.v1.runtimes.base import _ENSURE_UV
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
 from verifiers.v1.types import Message
-from verifiers.v1.configs.harness import DialectName
 
 PROGRAM_SOURCE = (Path(__file__).resolve().parent / "program.py").read_text()
 HERMES_DIR = "/var/tmp/vf-hermes-agent-{version}"

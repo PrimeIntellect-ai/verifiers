@@ -30,7 +30,7 @@ if TYPE_CHECKING:
         SingleAgentEnvConfig,
         default_agent_harness,
     )
-    from verifiers.v1.configs.harness import HarnessConfig
+    from verifiers.v1.configs.harness import ID, HarnessConfig
     from verifiers.v1.configs.judge import JudgeConfig, Judges
     from verifiers.v1.configs.retries import RetryConfig, RetryRule
     from verifiers.v1.configs.runtime import (
@@ -41,6 +41,7 @@ if TYPE_CHECKING:
         RuntimeConfig,
         SubprocessConfig,
     )
+    from verifiers.v1.configs.sampling import Sampling, SamplingConfig
     from verifiers.v1.configs.scoring import ScoringConfig
     from verifiers.v1.configs.select import (
         SelectCLIConfig,
@@ -163,8 +164,6 @@ if TYPE_CHECKING:
         Usage,
         UserMessage,
     )
-    from verifiers.v1.configs.harness import ID
-    from verifiers.v1.configs.sampling import Sampling, SamplingConfig
     from verifiers.v1.utils.artifacts import ARTIFACTS_DIR, Artifact, collect, restore
     from verifiers.v1.utils.decorators import intercept, metric, reward, stop, tool
     from verifiers.v1.utils.generic import merge_defaults

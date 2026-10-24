@@ -12,14 +12,13 @@ from verifiers.v1.configs.agent import (
     agent_config_fields,
     merge_agent_defaults,
 )
-from verifiers.v1.configs.harness import HarnessConfig
+from verifiers.v1.configs.harness import ID, HarnessConfig
 from verifiers.v1.configs.interception import (
     ElasticInterceptionPoolConfig,
     InterceptionConfig,
 )
 from verifiers.v1.configs.retries import RetryConfig
 from verifiers.v1.configs.taskset import SharedTasksetConfig, TasksetConfig
-from verifiers.v1.configs.harness import ID
 
 
 class TimeoutConfig(BaseConfig):

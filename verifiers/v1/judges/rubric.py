@@ -11,11 +11,11 @@ from typing import Annotated, cast
 
 from pydantic import BaseModel, Field, TypeAdapter, field_validator, model_validator
 
+from verifiers.v1.configs.harness import ID
 from verifiers.v1.configs.judge import JudgeConfig
 from verifiers.v1.judge import Judge, JudgeView, judge_question, judge_response
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
-from verifiers.v1.configs.harness import ID
 
 CriterionWeight = Annotated[float, Field(ge=0, allow_inf_nan=False)]
 

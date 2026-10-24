@@ -22,14 +22,14 @@ from typing import Any, ClassVar, Generic, TypeVar
 from pydantic import AnyHttpUrl, BaseModel, ValidationError
 from pydantic_core import from_json
 
+from verifiers.v1.configs.harness import DialectName
 from verifiers.v1.configs.runtime import (
     NetworkPolicyConfig,
     intersect_network_hosts,
     parse_network_rule,
 )
-from verifiers.v1.types import Request, Response
-from verifiers.v1.configs.harness import DialectName
 from verifiers.v1.configs.sampling import Sampling, SamplingConfig
+from verifiers.v1.types import Request, Response
 
 RespT = TypeVar("RespT", bound=BaseModel)
 RawRequest = dict[str, Any]

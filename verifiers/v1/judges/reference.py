@@ -9,6 +9,7 @@ from typing import cast
 
 from pydantic import model_validator
 
+from verifiers.v1.configs.harness import ID
 from verifiers.v1.configs.judge import JudgeConfig
 from verifiers.v1.judge import (
     Judge,
@@ -20,7 +21,6 @@ from verifiers.v1.judge import (
 )
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
-from verifiers.v1.configs.harness import ID
 
 REFERENCE_PROMPT = (Path(__file__).resolve().parent / "reference.txt").read_text(
     encoding="utf-8"

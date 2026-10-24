@@ -40,6 +40,7 @@ from pydantic import (
 from pydantic.json_schema import SkipJsonSchema
 from renderers.base import RenderedTokens
 
+from verifiers.v1.configs.harness import DialectName
 from verifiers.v1.semantic import ParentLink
 from verifiers.v1.types import (
     AssistantMessage,
@@ -59,7 +60,6 @@ from verifiers.v1.types import (
     empty_stream,
     encode_ndarray,
 )
-from verifiers.v1.configs.harness import DialectName
 
 if TYPE_CHECKING:
     from verifiers.v1.trace import Trace

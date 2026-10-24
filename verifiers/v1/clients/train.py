@@ -17,6 +17,7 @@ from renderers.base import ToolCallParseStatus, is_multimodal
 from verifiers.v1.clients.base import build_async_openai
 from verifiers.v1.clients.client import SESSION_ID_HEADER, Client
 from verifiers.v1.configs.client import TrainClientConfig
+from verifiers.v1.configs.sampling import SamplingConfig
 from verifiers.v1.dialects import FINISH_REASONS, ChatDialect, Dialect
 from verifiers.v1.dialects.chat import message_to_wire
 from verifiers.v1.errors import ProviderError, model_error
@@ -33,7 +34,6 @@ from verifiers.v1.types import (
     Usage,
     WeightVersionSpan,
 )
-from verifiers.v1.configs.sampling import SamplingConfig
 
 logger = logging.getLogger(__name__)
 

@@ -7,7 +7,12 @@ from pathlib import Path
 
 from verifiers.v1.acp import ACPConfig, ACPHarness
 from verifiers.v1.clients import ModelContext
-from verifiers.v1.configs.harness import HarnessConfig, PinnedVersion, skill_destination
+from verifiers.v1.configs.harness import (
+    DialectName,
+    HarnessConfig,
+    PinnedVersion,
+    skill_destination,
+)
 from verifiers.v1.harnesses.node import NODE_BIN_DIR, ensure_node
 from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
 from verifiers.v1.harnesses.utils.replay import drop_blank_text
@@ -15,7 +20,6 @@ from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
 from verifiers.v1.types import Message
-from verifiers.v1.configs.harness import DialectName
 
 logger = logging.getLogger(__name__)
 
