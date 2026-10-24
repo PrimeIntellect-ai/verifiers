@@ -18,6 +18,7 @@ from openai.types.chat import ChatCompletion
 from openai.types.chat.chat_completion import Choice
 
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
+from verifiers.v1.configs.sampling import Sampling, SamplingConfig
 from verifiers.v1.dialects.base import (
     Dialect,
     RawRequest,
@@ -33,8 +34,6 @@ from verifiers.v1.types import (
     Messages,
     Request,
     Response,
-    Sampling,
-    SamplingConfig,
     SystemMessage,
     Tool,
     ToolCall,
