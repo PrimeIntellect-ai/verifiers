@@ -11,6 +11,7 @@ from verifiers.v1 import graph
 from verifiers.v1.clients.train import response_from_generate
 from verifiers.v1.harnesses.utils.replay import drop_blank_text, strip_text
 from verifiers.v1.routing import RoutingData
+from verifiers.v1.serve.delta import DeltaStreamer, EpisodeAssembly, pack, unpack
 from verifiers.v1.types import TurnTokens
 
 
@@ -112,6 +113,14 @@ def test_full_routing_train_response_graph_and_msgpack_round_trip(rows, completi
             if len(node.token_ids):
                 with pytest.raises(ValueError):
                     getattr(node.routed_experts, name).flags.writeable = True
+    # The served path streams the same trace as deltas.
+    assembly = EpisodeAssembly()
+    for _, delta, _ in DeltaStreamer(lambda: [trace], None).diff():
+        assembly.apply(unpack(pack(delta)))
+    served = assembly.traces[trace.id]
+    served.pop("pending")
+    served_data = vf.Trace.model_validate(served).branches[0].routed_experts
+    assert served_data.weights.tobytes() == data.weights.tobytes()
 
 
 @pytest.mark.parametrize(

@@ -183,7 +183,8 @@ class DeltaStreamer:
         """
         repairs: dict[int, dict] = {}
         for index, node in enumerate(trace.nodes):
-            if node.routed_experts is None:
+            # Full captures are single-turn and immutable, so they are never repaired.
+            if not isinstance(node.routed_experts, np.ndarray):
                 continue
             row = encode_ndarray(node.routed_experts[-1:])
             packed = pack(row)
