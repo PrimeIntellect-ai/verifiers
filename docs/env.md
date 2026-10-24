@@ -6,6 +6,7 @@ If your taskset package does not export a custom `Env` and you don't specify `--
 
 - `best-of-n` (`BestOfNEnv`): runs `n` independent attempts on the same task, marks which attempt achieved the highest reward (`best`), and records whether any attempt crossed a success threshold (`pass_at_n`), which is useful for rejection sampling and pass@k evaluation.
 - `agentic-judge` (`AgenticJudgeEnv`): runs a solver agent first, then a judge agent to evaluate the result. The solver's `ScoringConfig` (`--env.solver.scoring.mode shared|isolated`) selects the workspace used for both task scoring and agentic judging.
+- `best-of-n-judge` (`BestOfNJudgeEnv`): runs `n` attempts like `best-of-n`, then gives `--env.judges` independent judge agents each a fresh container holding every attempt's trace and collected artifacts under shuffled labels, and has them rank the attempts best to worst. Each attempt's `judge` reward is its rank score (the share of other attempts it beats, ties counting half) averaged across the judges.
 - `user-sim` (`UserSimEnv`): models the user as a second agent and runs a turn-by-turn conversation between the user simulator and the assistant.
 
 ## Custom control flow
