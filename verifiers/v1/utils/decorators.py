@@ -83,12 +83,18 @@ def tool(func: F | None = None, name: str | None = None) -> F | Callable[[F], F]
 
 
 @overload
-def stop(func: F, priority: int = 0) -> F: ...
+def stop(func: F, priority: int = 0, skip_scoring: bool = False) -> F: ...
 @overload
-def stop(func: None = None, priority: int = 0) -> Callable[[F], F]: ...
-def stop(func: F | None = None, priority: int = 0) -> F | Callable[[F], F]:
-    """Stop when a typed `Request`, `Response`, or `Trace` predicate returns true."""
-    decorator = mark("stop", stop_priority=priority)
+def stop(
+    func: None = None, priority: int = 0, skip_scoring: bool = False
+) -> Callable[[F], F]: ...
+def stop(
+    func: F | None = None, priority: int = 0, skip_scoring: bool = False
+) -> F | Callable[[F], F]:
+    """Stop when a typed `Request`, `Response`, or `Trace` predicate returns true. With
+    `skip_scoring`, a trace this stop ends skips task scoring: it keeps no rewards, so
+    its reward is 0."""
+    decorator = mark("stop", stop_priority=priority, stop_skip_scoring=skip_scoring)
     return decorator if func is None else decorator(func)
 
 

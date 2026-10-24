@@ -15,6 +15,8 @@ from __future__ import annotations
 import array
 import asyncio
 import contextlib
+import csv
+import io
 import json
 import logging
 import os
@@ -28,10 +30,10 @@ import tempfile
 import uuid
 from collections.abc import AsyncIterator
 from pathlib import PurePosixPath
-from typing import TYPE_CHECKING, ClassVar, Literal
+from typing import TYPE_CHECKING, ClassVar
 from urllib.parse import urlsplit
 
-from verifiers.v1.configs.runtime import NetworkPolicyConfig
+from verifiers.v1.configs.runtime import DockerConfig, NetworkPolicyConfig
 from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes.backends.subprocess import SubprocessProcess
 from verifiers.v1.runtimes.base import (
@@ -45,6 +47,7 @@ from verifiers.v1.runtimes.base import (
 from verifiers.v1.runtimes.egress import EgressProxy, NetworkPolicy, is_loopback_host
 from verifiers.v1.runtimes.runtime import Runtime
 from verifiers.v1.utils.aio import run_shielded
+from verifiers.v1.utils.artifacts import validate_runtime_mounts
 from verifiers.v1.utils.scope import run_scope
 
 logger = logging.getLogger(__name__)
@@ -64,24 +67,6 @@ listener.bind(("127.0.0.1", 0))
 listener.listen()
 control.sendmsg([b"listener"], [(socket.SOL_SOCKET, socket.SCM_RIGHTS, array.array("i", [listener.fileno()]))])
 """
-
-
-class DockerConfig(NetworkPolicyConfig):
-    type: Literal["docker"] = "docker"
-    image: str = "python:3.11-slim"
-    workdir: str | None = None
-    """Working directory override; None uses the task's workdir, or /app."""
-    # TaskData.resources uses these units; non-default runtime config values take precedence.
-    cpu: float | None = None
-    """Pin the container to this many CPU cores. None = unlimited."""
-    memory: float | None = None
-    """Hard memory limit in GB. None = unlimited."""
-    gpu: str | None = None
-    """GPU spec, e.g. "A100" or "2". Docker exposes that many GPUs (needs the nvidia
-    container toolkit) and checks requested types with nvidia-smi. None = none."""
-    disk: float | None = None
-    """Advisory disk request in GB. Docker has no portable per-container size limit, so this is accepted (so a task can declare it without a warning) but not
-    enforced."""
 
 
 class DockerRuntimeInfo(DockerConfig, BaseRuntimeInfo):
@@ -267,6 +252,8 @@ class DockerBackend(RuntimeBackend):
     ) -> AsyncIterator[DockerBackend]:
         """Borrow a Compose service container; its caller owns creation and removal.
         `service_url` is the host URL of a local workspace's published service port."""
+        if getattr(config, "mounts", {}):
+            raise ValueError("Cannot attach runtime mounts to an existing container")
         backend = cls(config, host_backend=host_backend)
         backend._container = container
         backend.info.borrowed = True  # cleanup never removes a borrowed container
@@ -365,6 +352,18 @@ class DockerBackend(RuntimeBackend):
             for key, value in self.env.items()
             for arg in ("--env", f"{key}={value}")
         ]
+        for target, mount in getattr(self.config, "mounts", {}).items():
+            bind_options = ["type=bind", f"source={mount.source}", f"target={target}"]
+            if mount.read_only:
+                # Refuse kernels that would leave nested mounts writable.
+                bind_options += [
+                    "readonly",
+                    "bind-recursive=readonly",
+                    "bind-propagation=rprivate",
+                ]
+            value = io.StringIO()
+            csv.writer(value).writerow(bind_options)
+            options += ["--mount", value.getvalue().removesuffix("\r\n")]
         run = await cli(
             "docker",
             "run",
@@ -432,6 +431,7 @@ class DockerBackend(RuntimeBackend):
         )
         if made.exit_code != 0:
             raise SandboxError(f"docker workdir setup failed: {made.stderr.strip()}")
+        await validate_runtime_mounts(self.bind(), [])
         published = await cli("docker", "port", self._container, f"{SERVICE_PORT}/tcp")
         host_port = (published.stdout.split() or [""])[0].rpartition(":")[2]
         if published.exit_code != 0 or not host_port.isdigit():

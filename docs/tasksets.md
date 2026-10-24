@@ -325,7 +325,7 @@ When a task's reward is semantic and cannot be checked deterministically, use an
   ```
 
   To make this the default in code, set `judges: vf.Judges = [vf.ReferenceJudgeConfig(name="correct")]` on your `TaskConfig`.
-- **`rubric`** loads a JSON or TOML rubric file from `path` containing a `criteria` list (each with `name`, `text`, optional `weight`, and `choices` ordered from worst to best). It evaluates the full trace by default, records each criterion as a `<judge_name>/<criterion>` metric, and returns their weighted average as the judge's reward.
+- **`rubric`** loads a JSON or TOML rubric file from `path` containing a `criteria` list (each with `name`, `text`, optional `weight`, `choices`: a list ordered from worst to best, or a mapping from each answer to its finite score, and optional `drop`: answers that drop the trace instead of scoring it). It evaluates the full trace by default, records each criterion as a `<judge_name>/<criterion>` metric (plus a `<judge_name>/<criterion>/<answer>` indicator for a mapping or drop answers), and returns their weighted average as the judge's reward. A `drop` answer records no reward and drops the trace (`Trace.dropped`, e.g. `rubric: outcome=task_defect`), so it counts in no reward mean or training batch.
 - **`decision`** queries a decision-model endpoint (defaulting to Clef) across two to ten ordered grading `levels` and returns the probability-weighted level normalized to `[0, 1]`:
 
   ```toml
@@ -411,7 +411,7 @@ reply_length = { fn = "my_hooks.py:reply_length", priority = 10 }
 exact_match = { fn = "my_hooks.py:exact_match", weight = 0.5 }
 ```
 
-Plugged hooks merge with the task's decorated `@vf.stop`, `@vf.metric`, and `@vf.reward` methods; a plugged hook replaces a decorated method with the same name, making it easy to swap out an existing signal (such as `single_turn` above). Rewards accept a `weight` and every hook accepts a `priority`, while any omitted fields preserve the replaced method's existing settings.
+Plugged hooks merge with the task's decorated `@vf.stop`, `@vf.metric`, and `@vf.reward` methods; a plugged hook replaces a decorated method with the same name, making it easy to swap out an existing signal (such as `single_turn` above). Rewards accept a `weight`, stops accept `skip_scoring`, and every hook accepts a `priority`, while any omitted fields preserve the replaced method's existing settings.
 
 Leaving `fn` out keeps the task's own decorated method and overrides only its metadata — for example, turning an existing zero-weight reward into an active training signal:
 
@@ -427,6 +427,8 @@ Decorate a task method with `@vf.stop` (synchronous or async) and return `True` 
 - `vf.Request` — before the outgoing request is sent to the model provider.
 - `vf.Response` — while the model's response is buffered, before it is returned to the harness.
 - `vf.Trace` — before each model call, inspecting the trace accumulated so far.
+
+A stop ends the run, but the task still scores it. Pass `@vf.stop(skip_scoring=True)` (or set `skip_scoring = true` on a plugged stop) to skip task scoring for a trace that this stop ends. The trace then keeps no task rewards, metrics, or judge scores, so its reward is 0. `trace.info["scoring_skipped"]` records the stop's name. Task finalization and harness metrics still run, as with `agent.scoring.skip_on_truncated` (see [the agent](agent.md)).
 
 When you want to inspect or rewrite traffic in flight without ending the rollout, use `@vf.intercept` on a method taking `vf.Request` or `vf.Response` (plus optional `trace`). Return a modified copy of the same type to replace the payload, or `None` to leave it untouched:
 

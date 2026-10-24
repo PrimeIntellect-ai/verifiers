@@ -160,7 +160,11 @@ async def run_replay(config: ReplayConfig, source: Path, out: Path) -> list[Trac
                 )
                 try:
                     await task.rescore(trace)
-                    st.state, st.detail = "scored", f"reward {trace.reward:.3f}"
+                    st.state, st.detail = (
+                        ("dropped", trace.dropped)
+                        if trace.is_dropped
+                        else ("scored", f"reward {trace.reward:.3f}")
+                    )
                 except Exception as exc:
                     st.state, st.detail = "error", type(exc).__name__
                     trace.record_error(exc)
