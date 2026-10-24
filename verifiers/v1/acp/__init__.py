@@ -13,7 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
-from verifiers.v1.errors import HarnessError, InterceptionError
+from verifiers.v1.errors import HarnessError, InterceptionError, ProviderError
 from verifiers.v1.harness import Harness, HarnessSession
 from verifiers.v1.runtimes import ProgramResult, Runtime, RuntimeProcess
 from verifiers.v1.semantic import (
@@ -165,6 +165,21 @@ def _packet(value: JsonObject) -> bytes:
 def _turn_result(response: JsonObject) -> ACPTurn:
     value = response.get("result")
     return ACPTurn.model_validate(value)
+
+
+def _raise_failed_model_call(trace: Trace, calls_before: int) -> None:
+    """A turn the agent cancelled because its last model call failed (OpenCode ends the
+    turn `cancelled` once the provider error reaches it, the interception's retries spent)
+    is that provider failure, never an ending to grade: raised as the call's
+    `ProviderError`, so the rollout retries from its checkpoint instead of scoring 0."""
+    calls = trace.calls[calls_before:]
+    if not calls or calls[-1].error is None or calls[-1].error.type != "ProviderError":
+        return
+    error = calls[-1].error
+    raise ProviderError(
+        f"the agent cancelled its turn after a failed model call: {error.message}",
+        status_code=error.status_code or 502,
+    )
 
 
 def _require_model_turn(trace: Trace, calls_before: int, result: ProgramResult) -> None:
@@ -376,6 +391,8 @@ class ACPHarnessSession(HarnessSession):
         harness = cast(ACPHarness, self.harness)
         harness._consume_protocol_metadata(self.trace, turn.response_metadata)
         harness.acp_turn_result(self.trace, turn)
+        if turn.stop_reason == "cancelled":
+            _raise_failed_model_call(self.trace, calls_before)
         if condition := _STOP_CONDITIONS.get(turn.stop_reason or ""):
             self.trace.stop(condition)
         result = ProgramResult(exit_code=0, stdout=turn.reply, stderr="")
