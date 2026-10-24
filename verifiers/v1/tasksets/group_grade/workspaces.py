@@ -154,7 +154,9 @@ class Workspaces(vf.Toolset[WorkspacesConfig, GradeState]):
         """Run a shell command in candidate `label`'s own box: its filesystem exactly as
         the candidate left it when it finished, in the task's working directory, with
         the network blocked. The first call for a candidate restores its box (10-30 s);
-        later calls reuse it, so changes persist. A command is killed after 600 s (exit
+        later calls reuse it, so changes persist while it stays open. At most a few
+        boxes stay open: a box closed to make room is restored fresh on its next call.
+        A command is killed after 600 s (exit
         code 124). Returns the exit code and the output (head and tail beyond 8000
         characters)."""
         if label not in self.checkpoints:
@@ -182,6 +184,9 @@ class Workspaces(vf.Toolset[WorkspacesConfig, GradeState]):
             return f"timed out after {COMMAND_SECONDS} s"
         finally:
             await self.release(label)
+            # Written when the command ends, so the latest call to finish carries
+            # every restore so far.
+            self.state.restores = list(self.restores)
         output = cut(
             result.stdout + (f"\n[stderr]\n{result.stderr}" if result.stderr else "")
         )
