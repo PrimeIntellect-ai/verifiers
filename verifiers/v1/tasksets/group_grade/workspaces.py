@@ -6,7 +6,7 @@ import contextlib
 import inspect
 import logging
 import time
-from collections import OrderedDict
+from collections import Counter, OrderedDict
 from typing import ClassVar
 
 from pydantic import ConfigDict, Field
@@ -28,7 +28,8 @@ COMMAND_SECONDS = 600
 
 class WorkspacesConfig(vf.ToolsetConfig):
     max_open: int = 4
-    """Candidate boxes open at once; opening one more closes the least recently used."""
+    """Candidate boxes open at once; opening one more closes the least recently used
+    idle one, or waits while every open box is running a command."""
     inner: dict = Field(default_factory=dict)
     """The graded taskset's config, set by `GroupGradeTask`."""
 
@@ -88,7 +89,10 @@ class Workspaces(vf.Toolset[WorkspacesConfig, GradeState]):
         self.boxes: OrderedDict[str, tuple[Runtime, contextlib.AsyncExitStack]] = (
             OrderedDict()
         )
-        self.locks: dict[str, asyncio.Lock] = {}
+        # Guards the cache; commands run outside it. A box with a running command
+        # (`busy`) is never evicted.
+        self.cache = asyncio.Condition()
+        self.busy: Counter[str] = Counter()
         self.restores: list[float] = []
         self.staged: dict[str, bytes] = {}
         self._exit_stack.push_async_callback(self.close_all)
@@ -107,29 +111,43 @@ class Workspaces(vf.Toolset[WorkspacesConfig, GradeState]):
         self.boxes.clear()
 
     async def open(self, label: str) -> Runtime:
-        async with self.locks.setdefault(label, asyncio.Lock()):
-            if label in self.boxes:
-                self.boxes.move_to_end(label)
-                return self.boxes[label][0]
-            while len(self.boxes) >= self.config.max_open:
-                _, (_, stack) = self.boxes.popitem(last=False)
+        """`label`'s box, restored if needed and marked busy until `release`."""
+        async with self.cache:
+            while label not in self.boxes:
+                if len(self.boxes) < self.config.max_open:
+                    self.boxes[label] = await self.restore(label)
+                    break
+                idle = next((k for k in self.boxes if not self.busy[k]), None)
+                if idle is None:
+                    await self.cache.wait()
+                    continue
+                _, stack = self.boxes.pop(idle)
                 await stack.aclose()
-            config = self.box.model_copy(update={"checkpoint": self.checkpoints[label]})
-            started = time.monotonic()
-            stack = contextlib.AsyncExitStack()
-            try:
-                runtime = await stack.enter_async_context(
-                    provision_runtime(config, env=dict(self.task.runtime_env()))
-                )
-                for path, content in self.staged.items():
-                    await runtime.write(path, content)
-                await runtime.backend.prepare_execution([])
-            except BaseException:
-                await stack.aclose()
-                raise
-            self.restores.append(time.monotonic() - started)
-            self.boxes[label] = (runtime, stack)
-            return runtime
+            self.boxes.move_to_end(label)
+            self.busy[label] += 1
+            return self.boxes[label][0]
+
+    async def release(self, label: str) -> None:
+        async with self.cache:
+            self.busy[label] -= 1
+            self.cache.notify_all()
+
+    async def restore(self, label: str) -> tuple[Runtime, contextlib.AsyncExitStack]:
+        config = self.box.model_copy(update={"checkpoint": self.checkpoints[label]})
+        started = time.monotonic()
+        stack = contextlib.AsyncExitStack()
+        try:
+            runtime = await stack.enter_async_context(
+                provision_runtime(config, env=dict(self.task.runtime_env()))
+            )
+            for path, content in self.staged.items():
+                await runtime.write(path, content)
+            await runtime.backend.prepare_execution([])
+        except BaseException:
+            await stack.aclose()
+            raise
+        self.restores.append(time.monotonic() - started)
+        return runtime, stack
 
     @vf.tool
     async def candidate_shell(self, label: str, command: str) -> str:
@@ -156,6 +174,8 @@ class Workspaces(vf.Toolset[WorkspacesConfig, GradeState]):
                 result = await runtime.run(["sh", "-c", command], {})
         except TimeoutError:
             return f"timed out after {COMMAND_SECONDS} s"
+        finally:
+            await self.release(label)
         output = cut(
             result.stdout + (f"\n[stderr]\n{result.stderr}" if result.stderr else "")
         )
