@@ -134,6 +134,7 @@ async def test_env_id_best_of_n_judge(run):
         ranking = judge.info["ranking"]
         assert set(ranking["scores"]) == {t.id for t in attempts}
         assert len(ranking["attempts"]) == len(attempts)
+        assert ranking["presentation_order"] == list(ranking["attempts"])
         assert all(
             len(label) == 3 and int(label, 16) >= 0 for label in ranking["attempts"]
         )
