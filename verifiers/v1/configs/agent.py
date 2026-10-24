@@ -54,9 +54,10 @@ class AgentConfig(BaseConfig):
     model: str | None = None
     """Model id (None = the run's model, i.e. the policy under evaluation/training)."""
     client: ClientConfig | None = None
-    """Endpoint override (None = the run's client)."""
+    """Endpoint override (None = the run's client, with the run's sampling)."""
     sampling: SamplingConfig | None = None
-    """Sampling values merged onto the run's sampling."""
+    """Sampling values merged onto the run's sampling. A seat with its own `client`
+    does not inherit the run's sampling: it uses only these values."""
 
     max_turns: int | None = None
     """Max model turns per run (None = no limit)."""
@@ -148,8 +149,14 @@ def resolve_agent(
 ) -> AgentConfig:
     """`spec` with what it leaves unset filled from the run's defaults; its own
     sampling values merge over the run's. The one place a seat's identity resolves,
-    for configured agent roles."""
-    defaults = sampling or SamplingConfig()
+    for configured agent roles.
+
+    The run's sampling belongs to the run's client: it can carry endpoint-specific
+    keys (e.g. vLLM's `top_k`) that another provider rejects. A seat that pins its
+    own `client` therefore starts from empty sampling."""
+    defaults = (
+        sampling if sampling is not None and spec.client is None else SamplingConfig()
+    )
     overrides = (spec.sampling or SamplingConfig()).model_dump(exclude_unset=True)
     merged = {**defaults.model_dump(), **merge_defaults(defaults, overrides)}
     if spec.max_turn_tokens is not None:
