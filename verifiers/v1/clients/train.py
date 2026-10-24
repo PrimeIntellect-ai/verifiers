@@ -391,7 +391,13 @@ class TrainClient(Client):
         prompt_ids: list[int] | None = None
         prompt_attribution: RenderedTokens | None = None
         model = body["model"]
-        sampling_params = sampling.model_dump(exclude_none=True)
+        # Neutral defaults stop vLLM from applying the model's generation_config
+        # top_k/min_p, so the sampled distribution is the one the trainer replays.
+        sampling_params = {
+            "top_k": -1,
+            "min_p": 0.0,
+            **sampling.model_dump(exclude_none=True),
+        }
         chat_template_kwargs = sampling_params.pop("chat_template_kwargs", None)
         cache_salt = sampling_params.pop("cache_salt", None)
         pool = ElasticRendererPool(
