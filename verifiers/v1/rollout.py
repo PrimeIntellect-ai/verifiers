@@ -135,6 +135,7 @@ class Rollout:
         self.runtime = runtime
         self._borrowed_runtime = runtime
         self._collect_artifacts = collect_artifacts
+        self._checkpoint_on_finish = agent_config.checkpoint_on_finish
         self.trace: Trace = Trace(
             task=TraceTask(
                 type=type(task).__name__,
@@ -742,6 +743,24 @@ class Rollout:
         )
         return asyncio.get_running_loop().time() + budget
 
+    async def _checkpoint(self, runtime: Runtime) -> None:
+        """Checkpoint the finished agent's box and wait until it is restorable, before
+        scoring can stop the box. Records its id and the seconds from request to
+        restorable; a runtime without checkpoints or a failed checkpoint records
+        nothing."""
+        started = time.time()
+        try:
+            checkpoint_id = await runtime.backend.checkpoint()
+        except NotImplementedError:
+            return
+        except Exception:
+            logger.warning(
+                "checkpoint failed (rollout %s)", self.trace.id, exc_info=True
+            )
+            return
+        self.trace.info["checkpoint"] = checkpoint_id
+        self.trace.info["checkpoint_seconds"] = time.time() - started
+
     async def close(self) -> Trace:
         """Finish the rollout: task `finalize` and per-rollout scoring (skipped when the
         run already failed, but a stopped run is complete and scores its partial
@@ -772,6 +791,8 @@ class Rollout:
             if not self._failed and self._opened:
                 assert runtime is not None
                 assert self.deployment is not None
+                if self._checkpoint_on_finish:
+                    await self._checkpoint(runtime)
                 grader = self._grader
                 isolated = self._scoring_policy.mode == "isolated"
                 loop = asyncio.get_running_loop()

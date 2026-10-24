@@ -120,6 +120,7 @@ if TYPE_CHECKING:
     )
     from verifiers.v1.state import State, StateT
     from verifiers.v1.task import (
+        Privileged,
         Task,
         TaskData,
         TaskResources,
@@ -266,6 +267,7 @@ _NAME_TO_MODULE = {
     "PolicySpan": "verifiers.v1.episode",
     "PrimeConfig": "verifiers.v1.configs.runtime",
     "PrimeVolume": "verifiers.v1.configs.runtime",
+    "Privileged": "verifiers.v1.task",
     "ProgramResult": "verifiers.v1.runtimes",
     "ProviderError": "verifiers.v1.errors",
     "ReferenceJudge": "verifiers.v1.judges",
@@ -406,6 +408,7 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     # task / trace / state
     "Task",
     "TaskData",
+    "Privileged",
     "WireTaskData",
     "TaskResources",
     "TaskTimeout",

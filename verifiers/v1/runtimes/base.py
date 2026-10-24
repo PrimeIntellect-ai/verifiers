@@ -240,6 +240,11 @@ class RuntimeBackend(ABC):
         source of truth for teardown: usable from the atexit backstop where async machinery
         is dead, and run off the event loop by `stop` on the normal path. Default no-op."""
 
+    async def checkpoint(self) -> str:
+        """Snapshot the box's filesystem and return the snapshot's id once a box can
+        be restored from it (`PrimeConfig.checkpoint`)."""
+        raise NotImplementedError(f"{type(self).__name__} has no checkpoints")
+
     @abstractmethod
     async def exec(
         self, runtime: Runtime, argv: list[str], env: dict[str, str]

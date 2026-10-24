@@ -319,6 +319,19 @@ class PrimeBackend(RuntimeBackend):
             policy.get("deny"),
         )
 
+    async def checkpoint(self) -> str:
+        try:
+            checkpoint = await self._client.checkpoint(self.info.id)
+        except Exception as e:
+            raise SandboxError(f"prime checkpoint failed: {e}") from e
+        try:
+            await self._client.wait_for_checkpoint(checkpoint.id)
+        except Exception as e:
+            raise SandboxError(
+                f"prime checkpoint {checkpoint.id} did not become durable: {e}"
+            ) from e
+        return checkpoint.id
+
     async def run(
         self, runtime: Runtime, argv: list[str], env: dict[str, str]
     ) -> ProgramResult:

@@ -59,6 +59,11 @@ class AgentConfig(BaseConfig):
     """Sampling values merged onto the run's sampling. A seat with its own `client`
     does not inherit the run's sampling: it uses only these values."""
 
+    checkpoint_on_finish: bool = False
+    """Checkpoint the box's filesystem when the agent finishes, before finalize and
+    scoring touch it; the id lands in `trace.info["checkpoint"]` once restorable.
+    Runtimes without checkpoints (only prime has them) record nothing."""
+
     max_turns: int | None = None
     """Max model turns per run (None = no limit)."""
     max_input_tokens: int | None = None
