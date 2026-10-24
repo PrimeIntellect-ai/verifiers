@@ -1,9 +1,39 @@
+import asyncio
+import hashlib
+import os
+import urllib.request
+import uuid
+from pathlib import Path
+
 from verifiers.v1.harnesses.utils.install import ensure_installed
 from verifiers.v1.runtimes import Runtime
 
 NODE_DIR = "/var/tmp/vf-node"
 NODE_BIN_DIR = f"{NODE_DIR}/bin"
 NODE_VERSION = "22.19.0"
+NODE_SHA256 = {
+    "x64": "d36e56998220085782c0ca965f9d51b7726335aed2f5fc7321c6c0ad233aa96d",
+    "arm64": "d32817b937219b8f131a28546035183d79e7fd17a86e38ccb8772901a7cd9009",
+}
+"""Digests of the pinned linux tarballs, from nodejs.org's SHASUMS256.txt."""
+_ARCHES = {"x86_64": "x64", "amd64": "x64", "aarch64": "arm64", "arm64": "arm64"}
+_lock = asyncio.Lock()
+
+# A hardened image strips every way to fetch Node (no curl, no apt-get, not Alpine): the
+# host uploads the pinned tarball and the box only unpacks it.
+CAN_FETCH = (
+    "[ -x /var/tmp/vf-node/bin/node ] || [ -f /etc/alpine-release ] "
+    "|| command -v curl >/dev/null 2>&1 || command -v apt-get >/dev/null 2>&1"
+)
+UNPACK = r"""
+set -e
+node=/var/tmp/vf-node
+rm -rf "$node"
+mkdir -p "$node"
+tar -xzf "$VF_NODE_TARBALL" -C "$node" --strip-components=1
+rm -f "$VF_NODE_TARBALL"
+"$node/bin/node" -e 'const [a,b]=process.versions.node.split(".").map(Number); process.exit(a>22 || a===22 && b>=19 ? 0 : 1)'
+"""
 
 INSTALL = r"""
 set -e
@@ -78,8 +108,59 @@ node_ok || { echo "ACP adapters require Node.js 22.19 or newer" >&2; exit 1; }
 """
 
 
+def _cache_path(arch: str) -> Path:
+    base = os.environ.get("XDG_CACHE_HOME") or str(Path.home() / ".cache")
+    return (
+        Path(base) / "verifiers" / "node" / NODE_VERSION / f"node-linux-{arch}.tar.gz"
+    )
+
+
+def _download(arch: str) -> bytes:
+    url = f"https://nodejs.org/dist/v{NODE_VERSION}/node-v{NODE_VERSION}-linux-{arch}.tar.gz"
+    with urllib.request.urlopen(url, timeout=300) as response:
+        data = response.read()
+    digest = hashlib.sha256(data).hexdigest()
+    if digest != NODE_SHA256[arch]:
+        raise RuntimeError(f"{url}: sha256 {digest}, expected {NODE_SHA256[arch]}")
+    return data
+
+
+async def host_node_tarball(machine: str) -> bytes:
+    """The pinned Node tarball for a box whose `uname -m` is `machine`, from the host
+    cache, downloading it on first use."""
+    arch = _ARCHES.get(machine.strip().lower())
+    if arch is None:
+        raise RuntimeError(f"no Node.js build for box architecture {machine!r}")
+    path = _cache_path(arch)
+    async with _lock:
+        if not path.is_file():
+            data = await asyncio.to_thread(_download, arch)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            partial = path.with_name(f"{path.name}.{os.getpid()}.partial")
+            partial.write_bytes(data)
+            partial.replace(path)
+        return await asyncio.to_thread(path.read_bytes)
+
+
 async def ensure_node(runtime: Runtime) -> None:
-    """Install the shared Node runtime used by ACP adapter harnesses."""
+    """Install the shared Node runtime used by ACP adapter harnesses: fetched by the box,
+    or, when the box has no way to fetch it, uploaded from the host."""
+    probe = await runtime.run(["sh", "-c", CAN_FETCH], {})
+    if probe.exit_code != 0:
+        machine = await runtime.run(["uname", "-m"], {})
+        if machine.exit_code:
+            raise RuntimeError(f"failed to read box architecture: {machine.stderr}")
+        tarball = f"{NODE_DIR}.{uuid.uuid4().hex}.tar.gz"
+        await runtime.write(tarball, await host_node_tarball(machine.stdout))
+        await ensure_installed(
+            runtime,
+            directory=NODE_DIR,
+            lock=f"{NODE_DIR}.install.lock",
+            install=UNPACK,
+            env={"VF_NODE_TARBALL": tarball},
+            label="Node.js (from the host)",
+        )
+        return
     # The install replaces NODE_DIR wholesale, so the lock lives beside it.
     await ensure_installed(
         runtime,
