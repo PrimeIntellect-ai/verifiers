@@ -1,13 +1,18 @@
-"""proposer_solver: a proposer invents a verified math problem; n solvers race it.
+"""proposer_solver: a proposer invents a math problem; n solvers race it.
 
 The task-generation recipe env. The "proposer" seat plays the dataset (a topic
 seed), uses its tools to CONSTRUCT and verify a hard integer-answer problem, and
 ends with a JSON contract. The env mints a typed `SolveTask` from that trace and
 fans it out to `--env.n` independent runs of the "solver" seat. Each solve is judged by the minted
-task's own reward (exact final integer, against the proposer's verified answer);
+task's own reward (exact final integer, against the proposer's claimed answer);
 the proposer is judged by what its problem DOES to the solvers — `learnability`
 peaks when half of them crack it (4p(1-p), the automatic-curriculum signal) — plus
 a `solve_rate` metric.
+
+The claimed answer is never executed, so `finalize` cross-checks it against the
+solvers: when every solver that disagrees lands on the SAME other integer, the
+label is rejected — the proposer earns no `learnability` and the episode's solver
+rollouts leave the training set instead of training toward an unconfirmed label.
 
 Seats are deliberately heterogeneous: point the proposer at a code-running harness
 in a real sandbox and keep the solvers on a cheap tool-less chat loop —
@@ -52,7 +57,8 @@ class ProposeTask(vf.Task[SeedData]):
 
 class SolveData(vf.TaskData):
     answer: str
-    """The proposer's verified answer — the minted task's ground truth."""
+    """The proposer's claimed answer — the minted task's ground truth, trusted
+    only while the solvers don't unanimously contradict it (`finalize`)."""
 
 
 def _loads_contract(chunk: str) -> object:
@@ -73,6 +79,13 @@ def _loads_contract(chunk: str) -> object:
             chunk,
         )
         return json.loads(fixed)
+
+
+def _final_integer(reply: str) -> str | None:
+    """The reply's final integer as a canonical string (``correct``'s grading
+    parse), or None when the reply carries no number at all."""
+    numbers = re.findall(r"-?\d+", reply.replace(",", ""))
+    return numbers[-1] if numbers else None
 
 
 class SolveTask(vf.Task[SolveData]):
@@ -117,8 +130,8 @@ class SolveTask(vf.Task[SolveData]):
 
     @vf.reward
     async def correct(self, trace: vf.Trace) -> float:
-        numbers = re.findall(r"-?\d+", (trace.last_reply or "").replace(",", ""))
-        return 1.0 if numbers and numbers[-1] == self.data.answer else 0.0
+        parsed = _final_integer(trace.last_reply or "")
+        return 1.0 if parsed is not None and parsed == self.data.answer else 0.0
 
 
 class ProposerSolverEnvConfig(vf.EnvConfig):
@@ -160,12 +173,37 @@ class ProposerSolverEnv(vf.Env[ProposerSolverEnvConfig]):
     async def finalize(self, task: vf.Task, episode: vf.Episode) -> None:
         """The proposer is judged by what its problem DOES to the solvers:
         `learnability` — the curriculum signal — is 1.0 when half of them crack
-        the problem, 0 when it's trivial or impossible for them (4p(1-p))."""
+        the problem, 0 when it's trivial or impossible for them (4p(1-p)).
+
+        The contract answer is never executed, so it is ground truth only while
+        the solvers don't unanimously contradict it: when every solver that
+        disagrees with the label lands on the SAME other integer (a false label,
+        or an ambiguous problem with one dominant misreading), the label is
+        rejected — `learnability` is 0 and the episode's solver rollouts leave
+        the training set. Solvers that DISAGREE with each other confirm the
+        label: their split is the difficulty signal the reward is paying for."""
         rate = self._solve_rate(episode.traces)
+        solvers = [t for t in episode.traces if t.agent.name == "solver"]
+        labels = {
+            t.task.data.answer for t in solvers if isinstance(t.task.data, SolveData)
+        }
+        label = next(iter(labels)) if len(labels) == 1 else None
+        contradictions = {
+            parsed
+            for t in solvers
+            if (parsed := _final_integer(t.last_reply or "")) is not None
+            and parsed != label
+        }
+        rejected = label is not None and len(contradictions) == 1
         for trace in episode.traces:
             if trace.agent.name == "proposer":
                 trace.record_metric("solve_rate", rate)
-                trace.record_reward("learnability", 4.0 * rate * (1.0 - rate))
+                trace.record_metric("label_confirmed", 0.0 if rejected else 1.0)
+                trace.record_reward(
+                    "learnability", 0.0 if rejected else 4.0 * rate * (1.0 - rate)
+                )
+            elif rejected and trace.agent.name == "solver":
+                trace.agent.trainable = False
 
 
 class ProposerSolverTaskset(vf.Taskset[ProposeTask, vf.TasksetConfig]):
