@@ -12,7 +12,7 @@ be inspected in that box, restored on demand, through the `candidate_shell` tool
 `grade_prompt.md`. The grader writes `/grade/verdict.json`; `finalize` validates it into
 `trace.info["group_verdict"]`.
 
-The boxes are framework-only (`network_allow=[]`): the grader's harness reaches its
+The boxes are framework-only (`network.allow=[]`): the grader's harness reaches its
 model and tools through the interception routes, and nothing else is reachable.
 """
 
@@ -26,6 +26,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, SerializeAsAny, model_validator
 
 import verifiers.v1 as vf
+from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.envs.agentic_judge.env import JudgeTaskConfig, TextSource
 from verifiers.v1.tasksets.group_grade.workspaces import (
     GradeState,
@@ -234,7 +235,9 @@ class GroupGradeData(vf.TaskData):
     `advantages`: it sees no rewards and ranks every candidate (`from_traces` marks
     them all passing), optionally with margins."""
     workdir: str | None = GRADE_DIR
-    network_allow: list[str] = Field(default_factory=list)
+    network: NetworkPolicyConfig = Field(
+        default_factory=lambda: NetworkPolicyConfig(allow=[])
+    )
     """Framework-only: the grader reaches its model and nothing else."""
 
     @classmethod
