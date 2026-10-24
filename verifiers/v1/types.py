@@ -39,8 +39,9 @@ def _token_stream(dtype: type[np.generic], item_type: str):
     msgpack wire packs one by one; an array is one object it skips and raw bytes on the wire, so
     a process holding many long episodes (an RL orchestrator) keeps full collections short.
     Validation takes a list, an array or an `__nd__` dict; the models that hold streams
-    serialize them (`graph.MessageNode.serialize_token_stream`). Typed as an array alone, because a `list[int] | np.ndarray` union makes
-    pydantic try the list branch element by element on every array it validates."""
+    serialize them (`graph.MessageNode.serialize_token_stream`). Typed as an array alone,
+    because a `list[int] | np.ndarray` union makes pydantic try the list branch element by
+    element on every array it validates."""
 
     def validate(value: Any) -> np.ndarray:
         if isinstance(value, dict) and value.get("__nd__"):
