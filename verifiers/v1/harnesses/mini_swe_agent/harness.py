@@ -2,6 +2,8 @@ import json
 from pathlib import Path
 from typing import Literal
 
+from pydantic import PositiveInt
+
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig, PinnedVersion
 from verifiers.v1.harness import Harness
@@ -16,6 +18,11 @@ class MiniSWEAgentHarnessConfig(HarnessConfig):
     dialect: Literal["chat_completions"] = "chat_completions"
     version: PinnedVersion = "2.4.6"
     """mini-swe-agent release to install, pinned for reproducibility."""
+    command_timeout: PositiveInt = 86400
+    """Seconds one shell command may run before mini-swe-agent stops it and tells the
+    model it timed out. The default leaves the rollout timeout in charge; a shorter one
+    keeps a command that never returns (a server started in the foreground) from holding
+    the rollout until then."""
 
 
 class MiniSWEAgentHarness(Harness[MiniSWEAgentHarnessConfig]):
@@ -53,9 +60,8 @@ class MiniSWEAgentHarness(Harness[MiniSWEAgentHarnessConfig]):
             "mini",
             "-c",
             "agent.cost_limit=0",
-            # Effectively unlimited; Verifiers owns the rollout timeout.
             "-c",
-            "environment.timeout=86400",
+            f"environment.timeout={self.config.command_timeout}",
             "-c",
             "model.cost_tracking=ignore_errors",
             "-c",
