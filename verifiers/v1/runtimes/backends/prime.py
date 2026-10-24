@@ -22,6 +22,7 @@ from prime_sandboxes.models import validate_egress_lists
 from verifiers.v1.configs.runtime import NetworkPolicyConfig, PrimeConfig
 from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes.base import (
+    SERVICE_PORT,
     BaseRuntimeInfo,
     ProgramResult,
     RuntimeBackend,
@@ -31,6 +32,7 @@ from verifiers.v1.runtimes.base import (
 from verifiers.v1.runtimes.limiters import creation_limiter
 from verifiers.v1.runtimes.runtime import Runtime
 from verifiers.v1.utils.aio import run_shielded
+from verifiers.v1.utils.artifacts import validate_runtime_mounts
 from verifiers.v1.utils.prime import ensure_prime_auth
 from verifiers.v1.utils.scope import run_scope
 
@@ -49,6 +51,10 @@ _OUTPUT_DEADLINE_SECONDS = 300
 _OUTPUT_RETRIES = 10
 """Re-reads of a finished job's output that the SDK still failed to fetch, before the
 exec is reported as failed."""
+_PUBLIC_DOMAIN = "sandbox-v2-prod.pinfra.io"
+"""Domain of the public URLs `https://<port>-<sandbox-id>.<domain>` that a LAN network's
+`internet` rule publishes ports at."""
+_EXPOSE_TAG = "vf-exposed"
 
 
 BASE_LABELS: list[str] = []
@@ -143,6 +149,7 @@ class PrimeBackend(RuntimeBackend):
     SUPPORTS_TASK_IMAGES: ClassVar[bool] = True
     SUPPORTS_COMPOSE: ClassVar[bool] = True
     SUPPORTS_USER_SWITCHING: ClassVar[bool] = True
+    SUPPORTS_PORT_EXPOSURE: ClassVar[bool] = True
 
     def __init__(self, config: PrimeConfig, name: str | None = None) -> None:
         ensure_prime_auth()
@@ -153,9 +160,20 @@ class PrimeBackend(RuntimeBackend):
         # A LAN network (id, tags) to join as the sandbox boots: prime-sandboxes joins it
         # once it is running, within `wait_for_creation` on the creating client.
         self.lan: tuple[str, list[str]] | None = None
+        # Exposure state: a LAN network created on the first `expose`, separate from
+        # `lan`, and the ports its `internet` rule publishes.
+        self._expose_network_id: str | None = None
+        self._exposed_ports: list[int] = []
+        self._expose_lock = asyncio.Lock()
+
+    @property
+    def published_port(self) -> int:
+        # Any port can be exposed, but the public URL reaches only servers bound to
+        # 0.0.0.0, which `launch` arranges for a fixed published port.
+        return SERVICE_PORT
 
     async def start(self) -> None:
-        from prime_sandboxes import CreateSandboxRequest
+        from prime_sandboxes import APIError, CreateSandboxRequest
 
         self._client = _lease_client()
         # Map the resources onto prime's API (minutes, split GPU; memory/disk are already
@@ -177,6 +195,11 @@ class PrimeBackend(RuntimeBackend):
             "gpu_type": gpu_type,
             "region": self.config.region,
         }
+        if self.config.mounts:
+            options["volumes"] = [
+                {"mount_path": target, **mount.model_dump()}
+                for target, mount in self.config.mounts.items()
+            ]
         if self.config.checkpoint:
             source = {"checkpoint_id": self.config.checkpoint}
         else:
@@ -197,6 +220,15 @@ class PrimeBackend(RuntimeBackend):
                 )
                 or contextlib.nullcontext()
             ):
+                for name in dict.fromkeys(m.name for m in self.config.mounts.values()):
+                    try:
+                        await self._client.volumes.create(name)
+                    except APIError as error:
+                        # Create returns 409 when this scoped name already exists,
+                        # including when another runtime creates it concurrently.
+                        if not str(error).startswith("HTTP 409:"):
+                            raise
+
                 # Shielded through the id capture: a cancel that aborts the POST
                 # mid-flight leaves the platform creating a sandbox this side
                 # never learned the id of — teardown() then cannot delete it
@@ -234,6 +266,7 @@ class PrimeBackend(RuntimeBackend):
             await self._client.execute_command(
                 self.info.id, f"mkdir -p {shlex.quote(self.config.workdir)}"
             )
+            await validate_runtime_mounts(self.bind(), [])
         except (
             Exception
         ) as e:  # provisioning failure is one rollout's problem, not the eval's
@@ -364,10 +397,38 @@ class PrimeBackend(RuntimeBackend):
         return PrimeProcess(process)
 
     async def expose(self, port: int) -> str:
-        raise SandboxError(
-            "the prime runtime cannot expose a port; colocate the service with its "
-            "consumer"
-        )
+        """Publish `port` through a LAN network whose `internet` rule exposes it on this
+        sandbox. The URL has no Prime authentication."""
+        from prime_sandboxes import LanRule
+
+        async with self._expose_lock:
+            if port not in self._exposed_ports:
+                ports = [*self._exposed_ports, port]
+                rules = [
+                    LanRule(from_="internet", to=f"tag:{_EXPOSE_TAG}", ports=ports)
+                ]
+                try:
+                    if self._expose_network_id is None:
+                        # Shielded through the id capture, as in `start()`: a cancel
+                        # mid-POST would leave a network teardown cannot delete.
+                        async def create_and_capture_id() -> None:
+                            network = await self._client.create_lan_network(
+                                f"{self.name}-exposed", rules=rules
+                            )
+                            self._expose_network_id = network.id
+
+                        await run_shielded(create_and_capture_id())
+                    else:
+                        await self._client.set_lan_rules(self._expose_network_id, rules)
+                    # Joins (an idempotent PUT, so a retry re-adds a failed join) and
+                    # waits until the platform has pushed the membership and rules.
+                    await self._client._join_lan(
+                        self._expose_network_id, self.info.id, [_EXPOSE_TAG]
+                    )
+                except Exception as e:
+                    raise SandboxError(f"prime expose port {port} failed: {e}") from e
+                self._exposed_ports = ports
+        return f"https://{port}-{self.info.id}.{_PUBLIC_DOMAIN}"
 
     async def run_background(
         self, runtime: Runtime, argv: list[str], env: dict[str, str], log: str
@@ -472,8 +533,12 @@ class PrimeBackend(RuntimeBackend):
             from prime_sandboxes import SandboxClient
             from prime_sandboxes.core import APIClient
 
+            client = SandboxClient(APIClient())
             with contextlib.suppress(Exception):
-                SandboxClient(APIClient()).delete(self.info.id)
+                client.delete(self.info.id)
+            if self._expose_network_id is not None:
+                with contextlib.suppress(Exception):
+                    client.delete_lan_network(self._expose_network_id)
 
     async def teardown(self) -> None:
         # Best-effort, idempotent teardown: delete the sandbox (the costly resource). Runs via
@@ -482,9 +547,22 @@ class PrimeBackend(RuntimeBackend):
         if client is None:
             return
         try:
-            if self.info.id is not None:  # keep info.id available after teardown
-                await client.delete(self.info.id)
-        except Exception as e:  # noqa: BLE001 - provider teardown is best-effort
-            logger.warning("prime: failed to delete sandbox %s: %s", self.info.id, e)
+            try:
+                if self.info.id is not None:  # keep info.id available after teardown
+                    await client.delete(self.info.id)
+            except Exception as e:  # noqa: BLE001 - provider teardown is best-effort
+                logger.warning(
+                    "prime: failed to delete sandbox %s: %s", self.info.id, e
+                )
+            if self._expose_network_id is not None:
+                try:
+                    await client.delete_lan_network(self._expose_network_id)
+                    self._expose_network_id = None
+                except Exception as e:  # noqa: BLE001 - provider teardown is best-effort
+                    logger.warning(
+                        "prime: failed to delete LAN network %s: %s",
+                        self._expose_network_id,
+                        e,
+                    )
         finally:
             await _release_client(client)

@@ -15,6 +15,7 @@ from anthropic.types import Message as AnthropicMessage
 from anthropic.types import Usage as AnthropicUsage
 
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
+from verifiers.v1.configs.sampling import Sampling, SamplingConfig
 from verifiers.v1.dialects.base import (
     Dialect,
     RawRequest,
@@ -34,8 +35,6 @@ from verifiers.v1.types import (
     Messages,
     Request,
     Response,
-    Sampling,
-    SamplingConfig,
     SystemMessage,
     TextContentPart,
     Tool,
