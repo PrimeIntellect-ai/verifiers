@@ -166,7 +166,6 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
             },
             label="prime-agent",
         )
-        await super().setup(runtime)
 
     async def prepare_acp(
         self,

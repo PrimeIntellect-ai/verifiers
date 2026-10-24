@@ -3,30 +3,51 @@
 import asyncio
 import contextlib
 import json
+import logging
 from abc import abstractmethod
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any, TypeAlias, TypeVar, cast
 
+import httpx
+from acp import (
+    PROTOCOL_VERSION,
+    Client,
+    RequestError,
+    connect_to_agent,
+    image_block,
+    text_block,
+)
+from acp.client import ClientSideConnection
+from acp.helpers import ContentBlock
+from acp.schema import (
+    AgentCapabilities,
+    AgentMessageChunk,
+    AllowedOutcome,
+    ClientCapabilities,
+    DeniedOutcome,
+    HttpHeader,
+    HttpMcpServer,
+    PermissionOption,
+    PromptResponse,
+    RequestPermissionResponse,
+    TextContentBlock,
+    ToolCallUpdate,
+)
 from pydantic import BaseModel, ConfigDict, Field
 
+from verifiers.v1.acp.transport import ProcessTransport
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.errors import HarnessError, InterceptionError
 from verifiers.v1.harness import Harness, HarnessSession
 from verifiers.v1.runtimes import ProgramResult, Runtime, RuntimeProcess
-from verifiers.v1.semantic import (
-    ACP_SEMANTIC_EDGES_METADATA_KEY,
-    SemanticEdgeSet,
-)
+from verifiers.v1.semantic import ACP_SEMANTIC_EDGES_METADATA_KEY, SemanticEdgeSet
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
 from verifiers.v1.types import Messages
 from verifiers.v1.utils.aio import run_shielded
 
-ACP_SOURCE = (Path(__file__).resolve().parent / "runner.py").read_text()
-MAX_PACKET_BYTES = 128 * 1024 * 1024
 _STOP_CONDITIONS = {
     "max_tokens": "max_output_tokens",
     "max_turn_requests": "max_turns",
@@ -36,6 +57,7 @@ _STOP_CONDITIONS = {
 
 __all__ = ["ACPConfig", "ACPHarness", "ACPTurn"]
 
+logger = logging.getLogger(__name__)
 ConfigT = TypeVar("ConfigT", bound=HarnessConfig)
 JsonValue: TypeAlias = (
     str | int | float | bool | None | list["JsonValue"] | dict[str, "JsonValue"]
@@ -70,11 +92,6 @@ class ACPConfig:
 class ACPHarness(Harness[ConfigT]):
     """Harness backed by one live ACP process and native session per rollout."""
 
-    async def setup(self, runtime: Runtime) -> None:
-        await runtime.prepare_uv_script(
-            ACP_SOURCE, {**self.config.resolved_env, "UV_FROZEN": "false"}
-        )
-
     def acp_turn_result(self, trace: Trace, result: ACPTurn) -> None:
         """Consume the typed result of one ACP prompt."""
 
@@ -94,9 +111,8 @@ class ACPHarness(Harness[ConfigT]):
     async def gate_tools(
         self, config: ACPConfig, runtime: Runtime, url: str, secret: str
     ) -> None:
-        """Configure the agent to ask before every tool call, so each request reaches the
-        runner's gate (`/tool` at `url`, keyed by `secret`). A harness that advertises
-        `SUPPORTS_TOOL_INTERCEPTION` implements this with the agent's own config."""
+        """Configure the agent to gate every tool through ACP permissions or its native
+        hooks. `url` is the `/tool` endpoint as reached from the agent's runtime."""
 
     @abstractmethod
     async def prepare_acp(
@@ -126,7 +142,9 @@ class ACPHarness(Harness[ConfigT]):
             ctx, trace, runtime, endpoint, secret, mcp_urls, data
         )
         if tool_interception_url is not None:
-            await self.gate_tools(config, runtime, tool_interception_url, secret)
+            await self.gate_tools(
+                config, runtime, runtime.host_url(tool_interception_url), secret
+            )
         return ACPHarnessSession(
             self,
             ctx,
@@ -155,53 +173,37 @@ class ACPHarness(Harness[ConfigT]):
         )
 
 
-def _packet(value: JsonObject) -> bytes:
-    data = json.dumps(value, ensure_ascii=False).encode()
-    if len(data) > MAX_PACKET_BYTES:
-        raise ValueError(f"ACP session packet is too large: {len(data)} bytes")
-    return len(data).to_bytes(8, "big") + data
+def user_content_blocks(contents: list, supports_images: bool) -> list[ContentBlock]:
+    """Render one user turn's ordered VF contents as ACP prompt blocks."""
+    blocks: list[ContentBlock] = []
+    for index, content in enumerate(contents):
+        if index:
+            blocks.append(text_block("\n\n"))
+        content = content or ""
+        parts: list[dict[str, Any]] = (
+            [{"type": "text", "text": content}] if isinstance(content, str) else content
+        )
+        for part in parts:
+            if part["type"] == "text":
+                blocks.append(text_block(part["text"]))
+                continue
+            if not supports_images:
+                raise ValueError("ACP agent does not support image prompts")
+            url = part["image_url"]["url"]
+            metadata, separator, data = url.partition(",")
+            media_type, *parameters = metadata.removeprefix("data:").split(";")
+            if (
+                not separator
+                or not metadata.startswith("data:image/")
+                or not any(value.lower() == "base64" for value in parameters)
+            ):
+                raise ValueError("ACP image prompts require base64 data:image URLs")
+            blocks.append(image_block(data, media_type))
+    return blocks
 
 
-def _turn_result(response: JsonObject) -> ACPTurn:
-    value = response.get("result")
-    return ACPTurn.model_validate(value)
-
-
-def _require_model_turn(trace: Trace, calls_before: int, result: ProgramResult) -> None:
-    if (
-        result.exit_code
-        or trace.stop_condition is not None
-        or any(call.node is not None for call in trace.calls[calls_before:])
-    ):
-        return
-    detail = (result.stderr or result.stdout).strip()[-500:] or "<no output>"
-    raise RuntimeError("ACP agent completed without committing a model turn: " + detail)
-
-
-class _PacketReader:
-    def __init__(self, source: AsyncIterator[bytes]) -> None:
-        self._source = source.__aiter__()
-        self._buffer = bytearray()
-
-    async def _readexactly(self, size: int) -> bytes:
-        while len(self._buffer) < size:
-            try:
-                self._buffer.extend(await anext(self._source))
-            except StopAsyncIteration as e:
-                raise EOFError("ACP process closed its stdout") from e
-        data = bytes(self._buffer[:size])
-        del self._buffer[:size]
-        return data
-
-    async def read(self) -> JsonObject:
-        size = int.from_bytes(await self._readexactly(8), "big")
-        if size > MAX_PACKET_BYTES:
-            raise ValueError(f"ACP session packet is too large: {size} bytes")
-        return json.loads((await self._readexactly(size)).decode())
-
-
-class ACPHarnessSession(HarnessSession):
-    """A live ACP process, connection, and native session for one rollout."""
+class ACPHarnessSession(HarnessSession, Client):
+    """Own the process, SDK connection, native session, and callbacks for a rollout."""
 
     def __init__(
         self,
@@ -229,75 +231,82 @@ class ACPHarnessSession(HarnessSession):
         )
         self.config = config
         self._process: RuntimeProcess | None = None
-        self._reader: _PacketReader | None = None
+        self._connection: ClientSideConnection | None = None
+        self._capabilities: AgentCapabilities | None = None
+        self._session_id: str | None = None
+        self._is_new = True
+        self._supports_steering = False
+        self._turn = ACPTurn(reply="")
+        self._message_id: str | None = None
+        self._prompt_task: asyncio.Task[PromptResponse] | None = None
+        self._gate: httpx.AsyncClient | None = None
         self._stderr_tail = bytearray()
         self._stderr_task: asyncio.Task[None] | None = None
         self._lock = asyncio.Lock()
-        self._write_lock = asyncio.Lock()
-        self._responses: dict[int, asyncio.Future] = {}
-        self._request_id = 0
-        self._response_task: asyncio.Task | None = None
 
     async def _start(self) -> None:
         self._stderr_tail.clear()
-        program = await self.runtime.prepare_uv_script(
-            ACP_SOURCE,
-            {**self.config.env, "UV_FROZEN": "false"},
-            activate=False,
+        cwd = await self.runtime.run(["pwd", "-P"], {})
+        if cwd.exit_code:
+            raise RuntimeError(f"ACP working directory lookup failed: {cwd.stderr}")
+        self._process = await self.runtime.exec(self.config.command, self.config.env)
+        self._stderr_task = asyncio.create_task(
+            self._drain_stderr(self._process.stderr)
         )
-        process = await self.runtime.exec(program, self.config.env)
-        self._process = process
-        self._reader = _PacketReader(process.stdout)
-        self._response_task = asyncio.create_task(self._read_responses(self._reader))
-        self._stderr_task = asyncio.create_task(self._drain_stderr(process.stderr))
-
-    async def _read_responses(self, reader: _PacketReader) -> None:
-        try:
-            while True:
-                response = await reader.read()
-                future = self._responses.get(response.get("id"))
-                if future is not None and not future.done():
-                    future.set_result(response)
-        except BaseException as error:  # noqa: BLE001 - settle callers on disconnect or shutdown
-            for future in self._responses.values():
-                if not future.done():
-                    future.set_exception(
-                        RuntimeError(f"ACP connection closed: {error}")
-                    )
-
-    async def _request(self, operation: str, **payload: Any) -> JsonObject:
-        process = self._process
-        if process is None or self._response_task is None or self._response_task.done():
-            raise RuntimeError("ACP process is not running")
-        self._request_id += 1
-        request_id = self._request_id
-        future = asyncio.get_running_loop().create_future()
-        self._responses[request_id] = future
-        try:
-            async with self._write_lock:
-                await process.write(
-                    _packet({"id": request_id, "operation": operation, **payload})
+        self._connection = connect_to_agent(self, ProcessTransport(self._process))
+        if self.tool_interception_url is not None:
+            self._gate = httpx.AsyncClient(
+                headers={"Authorization": f"Bearer {self.secret}"},
+                timeout=httpx.Timeout(120, connect=5),
+            )
+        initialized = await self._connection.initialize(
+            protocol_version=PROTOCOL_VERSION,
+            client_capabilities=ClientCapabilities.model_validate(
+                self.config.client_capabilities or {}
+            ),
+        )
+        self._capabilities = initialized.agent_capabilities
+        self._supports_steering = (initialized.field_meta or {}).get(
+            "steering", {}
+        ).get("supported") is True
+        headers = self.harness.config.resolve_mcp_headers(self.mcp_urls)
+        metadata: dict[str, Any] = self.config.session_meta or {}
+        session = await self._connection.new_session(
+            cwd=cwd.stdout.removesuffix("\n"),
+            mcp_servers=[
+                HttpMcpServer(
+                    type="http",
+                    name=name,
+                    url=url,
+                    headers=[
+                        HttpHeader(name=key, value=value)
+                        for key, value in headers.get(name, {}).items()
+                    ],
                 )
-            return await future
-        finally:
-            self._responses.pop(request_id, None)
-            if not future.done():
-                future.cancel()
+                for name, url in self.mcp_urls.items()
+            ],
+            **metadata,
+        )
+        self._session_id = session.session_id
+        self._is_new = True
 
     async def steer(self, message: str, *, message_id: str | None = None) -> dict:
         if self._closed:
             raise RuntimeError("ACP session is closed")
         if not isinstance(message, str) or not message.strip():
             raise ValueError("steering requires a nonempty user message")
-        if self._process is None:
+        if self._connection is None or self._session_id is None:
             return {"outcome": "promptRequired", "reason": "noRunningTurn"}
-        response = await self._request("steer", message=message, message_id=message_id)
-        if not response.get("ok"):
-            raise RuntimeError(response.get("error") or "ACP steering failed")
-        result = response.get("result")
-        if not isinstance(result, dict):
-            raise TypeError("invalid ACP steering receipt")
-        return result
+        if not self._supports_steering:
+            raise NotImplementedError("ACP agent does not advertise steering support")
+        params = {
+            "sessionId": self._session_id,
+            "prompt": [{"type": "text", "text": message}],
+            "_meta": {"steering": {"idleBehavior": "promptRequired"}},
+        }
+        if message_id is not None:
+            params["messageId"] = message_id
+        return await self._connection.ext_method("session/steering", params)
 
     async def _drain_stderr(self, stream: AsyncIterator[bytes]) -> None:
         async for chunk in stream:
@@ -305,8 +314,71 @@ class ACPHarnessSession(HarnessSession):
             if len(self._stderr_tail) > 4000:
                 del self._stderr_tail[:-4000]
 
-    def _stderr(self) -> str:
-        return self._stderr_tail.decode(errors="replace").strip()
+    async def session_update(self, session_id: str, update: Any, **kwargs: Any) -> None:
+        metadata = dict(kwargs)
+        if isinstance(field_meta := getattr(update, "field_meta", None), dict):
+            metadata.update(field_meta)
+        if metadata:
+            self._turn.update_metadata.append(metadata)
+        if isinstance(update, AgentMessageChunk) and isinstance(
+            update.content, TextContentBlock
+        ):
+            message_id = getattr(update, "message_id", None)
+            if message_id is not None and message_id != self._message_id:
+                self._turn.reply = ""
+                self._message_id = message_id
+            self._turn.reply += update.content.text
+
+    async def request_permission(
+        self,
+        session_id: str,
+        tool_call: ToolCallUpdate,
+        options: list[PermissionOption],
+        **kwargs: Any,
+    ) -> RequestPermissionResponse:
+        """Deny rejects one call; stop cancels the turn while retaining its partial reply."""
+        decision = "allow"
+        if self._gate is not None:
+            assert self.tool_interception_url is not None
+            tool_call_id, arguments = tool_call.tool_call_id, tool_call.raw_input
+            try:
+                # pi-acp wraps extension confirmations in a separate UI permission call.
+                if (
+                    tool_call_id.startswith("pi-ui-")
+                    and isinstance(arguments, dict)
+                    and arguments.get("method") == "confirm"
+                ):
+                    tool_call_id, arguments = (
+                        arguments["title"],
+                        json.loads(arguments["message"]),
+                    )
+                response = await self._gate.post(
+                    self.tool_interception_url,
+                    json={"tool_call_id": tool_call_id, "arguments": arguments},
+                )
+                response.raise_for_status()
+                decision = response.json()["action"]
+            except Exception as error:  # noqa: BLE001 - an unreachable gate lets nothing run
+                logger.warning("Tool gate denied %s: %s", tool_call_id, error)
+                decision = "deny"
+        if decision == "stop":
+            self._turn.stop_reason = "cancelled"
+            if self._prompt_task is not None:
+                self._prompt_task.cancel()
+            return RequestPermissionResponse(outcome=DeniedOutcome(outcome="cancelled"))
+        kinds = (
+            ("allow_once", "allow_always")
+            if decision == "allow"
+            else ("reject_once", "reject_always")
+        )
+        option = next(
+            (item for kind in kinds for item in options if item.kind == kind), None
+        )
+        return RequestPermissionResponse(
+            outcome=AllowedOutcome(outcome="selected", option_id=option.option_id)
+            if option
+            else DeniedOutcome(outcome="cancelled")
+        )
 
     async def _run(self, messages: Messages | None) -> ProgramResult:
         prompt = self.config.prompt if messages is None else messages
@@ -316,7 +388,7 @@ class ACPHarnessSession(HarnessSession):
             not prompt or any(message.role != "user" for message in prompt)
         ):
             raise ValueError("an ACP turn must contain user messages only")
-        user_contents = (
+        contents = (
             [prompt]
             if isinstance(prompt, str)
             else [
@@ -324,111 +396,147 @@ class ACPHarnessSession(HarnessSession):
                 for message in prompt
             ]
         )
-        config = {
-            "command": self.config.command,
-            "user_contents": user_contents,
-            "mcp_urls": self.mcp_urls,
-            "mcp_headers": self.harness.config.resolve_mcp_headers(self.mcp_urls),
-            "system_prompt": self.config.system_prompt or "",
-            "session_meta": self.config.session_meta or {},
-            "client_capabilities": self.config.client_capabilities or {},
-            "tool_interception": {
-                "url": self.tool_interception_url,
-                "secret": self.secret,
-            }
-            if self.tool_interception_url
-            else None,
-        }
         async with self._lock:
             if self._closed:
                 raise HarnessError(
                     f"harness {self.harness.config.id!r} session is already closed"
                 )
-            if self._process is None:
-                await self._start()
-            assert self._process is not None
-            assert self._reader is not None
+            self._turn = ACPTurn(reply="")
+            self._message_id = None
             calls_before = len(self.trace.calls)
             try:
-                response = await self._request("prompt", config=config)
-            except BaseException:
-                await run_shielded(self._stop(graceful=False))
-                raise
-        turn = _turn_result(response)
-        self.trace.root_reply = turn.reply.strip()
-        self.trace.info["acp_stop_reason"] = turn.stop_reason
-        if not response.get("ok"):
-            detail = response.get("error") or "ACP session request failed"
-            if stderr := self._stderr():
-                detail = f"{detail}\n\nACP process stderr:\n{stderr}"
-            error_data = response.get("error_data")
-            if (
-                isinstance(error_data, dict)
-                and error_data.get("kind") == "model_transport"
+                if self._process is None:
+                    await self._start()
+                    self._turn = ACPTurn(reply="")
+                    self._message_id = None
+                assert self._connection is not None
+                assert self._session_id is not None
+                capabilities = (
+                    self._capabilities and self._capabilities.prompt_capabilities
+                )
+                blocks = user_content_blocks(
+                    contents, bool(capabilities and capabilities.image)
+                )
+                if self._is_new and self.config.system_prompt:
+                    blocks.insert(
+                        0,
+                        text_block(
+                            f"(system)\n{self.config.system_prompt}\n\n[user]\n"
+                        ),
+                    )
+                if not blocks:
+                    raise ValueError("ACP prompt has no content")
+                self._prompt_task = asyncio.create_task(
+                    self._connection.prompt(session_id=self._session_id, prompt=blocks)
+                )
+                try:
+                    response = await self._prompt_task
+                    self._turn.stop_reason = response.stop_reason
+                    self._turn.response_metadata = dict(response.field_meta or {})
+                except asyncio.CancelledError:
+                    # A gate stop is a completed partial turn; external cancellation tears down.
+                    task = asyncio.current_task()
+                    if self._turn.stop_reason != "cancelled" or (
+                        task is not None and task.cancelling()
+                    ):
+                        raise
+                    await self._connection.cancel(session_id=self._session_id)
+                finally:
+                    self._prompt_task = None
+                self._is_new = False
+            except BaseException as error:
+                self.trace.root_reply = self._turn.reply.strip()
+                self.trace.info["acp_stop_reason"] = self._turn.stop_reason
+                # Request and prompt-validation failures leave the native session available
+                # for reuse and session/close metadata. Failed startup or I/O cannot do so.
+                if (
+                    self._session_id is None
+                    or not isinstance(error, Exception)
+                    or isinstance(error, (ConnectionError, OSError))
+                ):
+                    await run_shielded(self._stop(graceful=False))
+                if not isinstance(error, Exception):
+                    raise
+                error_data = (
+                    error.data
+                    if isinstance(error, RequestError) and isinstance(error.data, dict)
+                    else {}
+                )
+                detail = error_data.get("details") or str(error)
+                if stderr := self._stderr_tail.decode(errors="replace").strip():
+                    detail = f"{detail}\n\nACP process stderr:\n{stderr}"
+                if error_data.get("kind") == "model_transport":
+                    raise InterceptionError(detail) from error
+                raise RuntimeError(detail) from error
+            turn = self._turn.model_copy(deep=True)
+            self.trace.root_reply = turn.reply.strip()
+            self.trace.info["acp_stop_reason"] = turn.stop_reason
+            harness = cast(ACPHarness, self.harness)
+            harness._consume_protocol_metadata(self.trace, turn.response_metadata)
+            harness.acp_turn_result(self.trace, turn)
+            if condition := _STOP_CONDITIONS.get(turn.stop_reason or ""):
+                self.trace.stop(condition)
+            if self.trace.stop_condition is None and not any(
+                call.node is not None for call in self.trace.calls[calls_before:]
             ):
-                raise InterceptionError(detail)
-            raise RuntimeError(detail)
-        harness = cast(ACPHarness, self.harness)
-        harness._consume_protocol_metadata(self.trace, turn.response_metadata)
-        harness.acp_turn_result(self.trace, turn)
-        if condition := _STOP_CONDITIONS.get(turn.stop_reason or ""):
-            self.trace.stop(condition)
-        result = ProgramResult(exit_code=0, stdout=turn.reply, stderr="")
-        _require_model_turn(self.trace, calls_before, result)
-        return result
+                detail = turn.reply.strip()[-500:] or "<no output>"
+                raise RuntimeError(
+                    "ACP agent completed without committing a model turn: " + detail
+                )
+            return ProgramResult(exit_code=0, stdout=turn.reply, stderr="")
 
     async def _stop(self, *, graceful: bool) -> dict[str, Any]:
-        process = self._process
-        response_task = self._response_task
+        process, self._process = self._process, None
+        connection, self._connection = self._connection, None
+        gate = self._gate
         stderr_task, self._stderr_task = self._stderr_task, None
-        if process is None:
-            return {}
+        session_id, self._session_id = self._session_id, None
         response_metadata: dict[str, Any] = {}
         try:
-            if graceful:
-                with contextlib.suppress(BaseException):
-                    response = await asyncio.wait_for(
-                        self._request("shutdown"), timeout=10
-                    )
-                    result = response.get("result")
-                    if response.get("ok") and isinstance(result, dict):
-                        metadata = result.get("response_metadata")
-                        if isinstance(metadata, dict):
-                            response_metadata = metadata
-            for timeout, stop in (
-                (10 if graceful else 0.1, None),
-                (5, process.terminate),
-                (5, process.kill),
-            ):
-                if stop is not None:
-                    with contextlib.suppress(BaseException):
+            if connection is not None:
+                capabilities = (
+                    self._capabilities and self._capabilities.session_capabilities
+                )
+                if (
+                    graceful
+                    and session_id
+                    and capabilities
+                    and capabilities.close is not None
+                ):
+                    with contextlib.suppress(Exception):
+                        response = await asyncio.wait_for(
+                            connection.close_session(session_id=session_id), timeout=10
+                        )
+                        if response is not None:
+                            response_metadata = dict(response.field_meta or {})
+                with contextlib.suppress(Exception):
+                    # SDK shutdown flushes queued writes; a stalled runtime must not
+                    # prevent process termination.
+                    await asyncio.wait_for(connection.close(), timeout=5)
+            if process is not None:
+                for stop in (process.terminate, process.kill):
+                    with contextlib.suppress(Exception):
                         await stop()
-                try:
-                    await asyncio.wait_for(process.wait(), timeout)
-                    break
-                except TimeoutError:
-                    continue
+                    try:
+                        await asyncio.wait_for(process.wait(), timeout=5)
+                        break
+                    except TimeoutError:
+                        continue
         finally:
-            self._process = None
-            self._reader = None
-            self._response_task = None
-            if response_task is not None:
-                response_task.cancel()
-                with contextlib.suppress(BaseException):
-                    await response_task
             if stderr_task is not None:
                 if not stderr_task.done():
                     stderr_task.cancel()
                 with contextlib.suppress(BaseException):
                     await stderr_task
+            if gate is not None:
+                self._gate = None
+                await gate.aclose()
         return response_metadata
 
     async def close(self) -> None:
         if self._closed:
             return
-        # Publish closure before waiting for the process lock. A turn that
-        # already passed HarnessSession.turn()'s fast check rechecks under the
-        # same lock in _run(), so it cannot restart after teardown.
+        # Publish closure before taking the turn lock, so queued turns cannot restart it.
         await super().close()
 
         async def close_process() -> None:

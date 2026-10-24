@@ -101,7 +101,6 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
             },
             label="codex",
         )
-        await super().setup(runtime)
 
     async def prepare_acp(
         self,
