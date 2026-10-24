@@ -57,10 +57,11 @@ def format_override(value: object) -> str:
 def format_mean(
     traces: list[Trace], value: Callable[[Trace], float], digits: int = 2
 ) -> str:
-    """Mean of `value` over completed `traces`: the mean over the non-errored ones
-    (error-corrected). When some errored, also append the global mean — over *all* completed,
-    an errored trace's value counting as 0 — in parens, so both the error-corrected and the raw
-    mean are visible. "—" when nothing has completed (or all errored)."""
+    """Mean of `value` over completed, non-dropped `traces`: the mean over the non-errored
+    ones (error-corrected). When some errored, also append the global mean — over *all*
+    completed, an errored trace's value counting as 0 — in parens, so both the error-corrected
+    and the raw mean are visible. "—" when nothing has completed (or all errored or dropped)."""
+    traces = [t for t in traces if not t.is_dropped]
     if not traces:
         return "—"
     clean = [t for t in traces if not t.has_error]
