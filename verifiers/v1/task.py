@@ -242,10 +242,18 @@ class Task(Generic[DataT, StateT, ConfigT]):
         if extra:
             files["task_data.json"] = json.dumps(extra, indent=2).encode()
         if self.config.judges:
-            judges = [
-                {"config": judge.config.model_dump(mode="json"), "prompt": judge.prompt}
-                for judge in self.plugged_judges()
-            ]
+            from verifiers.v1.judges.rubric import RubricJudge
+
+            judges = []
+            for judge in self.plugged_judges():
+                entry = {
+                    "config": judge.config.model_dump(mode="json"),
+                    "prompt": judge.prompt,
+                }
+                if isinstance(judge, RubricJudge):
+                    # The config holds only a host-local path to the criteria.
+                    entry["criteria"] = [c.render() for c in judge.criteria]
+                judges.append(entry)
             files["judges.json"] = json.dumps(judges, indent=2).encode()
         sources = []
         for fn in [*self.hooks("reward"), *self.hooks("metric")]:
