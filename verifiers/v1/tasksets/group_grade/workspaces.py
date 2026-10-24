@@ -27,7 +27,7 @@ COMMAND_SECONDS = 600
 
 
 class WorkspacesConfig(vf.ToolsetConfig):
-    max_open: int = 4
+    max_open: int = Field(default=4, ge=1)
     """Candidate boxes open at once; opening one more closes the least recently used
     idle one, or waits while every open box is running a command."""
     inner: dict = Field(default_factory=dict)
@@ -154,8 +154,9 @@ class Workspaces(vf.Toolset[WorkspacesConfig, GradeState]):
         """Run a shell command in candidate `label`'s own box: its filesystem exactly as
         the candidate left it when it finished, in the task's working directory, with
         the network blocked. The first call for a candidate restores its box (10-30 s);
-        later calls reuse it, so changes persist. Returns the exit code and the output
-        (head and tail beyond 8000 characters)."""
+        later calls reuse it, so changes persist. A command is killed after 600 s (exit
+        code 124). Returns the exit code and the output (head and tail beyond 8000
+        characters)."""
         if label not in self.checkpoints:
             return f"unknown candidate {label!r}; labels: {', '.join(self.checkpoints)}"
         if self.checkpoints[label] is None:
@@ -170,8 +171,13 @@ class Workspaces(vf.Toolset[WorkspacesConfig, GradeState]):
             # One server per rollout: its own list is the whole truth.
             self.state.restores = list(self.restores)
         try:
-            async with asyncio.timeout(COMMAND_SECONDS):
-                result = await runtime.run(["sh", "-c", command], {})
+            # `timeout` kills the command's process group in the box, so a later call
+            # never sees it still changing files; the local timeout is a backstop.
+            async with asyncio.timeout(COMMAND_SECONDS + 60):
+                result = await runtime.run(
+                    ["timeout", "-k", "5", str(COMMAND_SECONDS), "sh", "-c", command],
+                    {},
+                )
         except TimeoutError:
             return f"timed out after {COMMAND_SECONDS} s"
         finally:
