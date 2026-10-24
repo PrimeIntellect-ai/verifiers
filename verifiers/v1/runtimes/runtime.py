@@ -33,7 +33,13 @@ if TYPE_CHECKING:
 _DROP_UNWRITABLE_UV_DIRS = (
     "for v in UV_PYTHON_INSTALL_DIR UV_PYTHON_BIN_DIR UV_CACHE_DIR UV_TOOL_DIR "
     'UV_TOOL_BIN_DIR; do eval "d=\\${$v-}"; '
-    '[ -z "$d" ] || { mkdir -p "$d" 2>/dev/null && [ -w "$d" ]; } || unset "$v"; done'
+    '[ -z "$d" ] || { mkdir -p "$d" 2>/dev/null && [ -w "$d" ]; } || unset "$v"; done; '
+    # A home whose .cache/.local a root step created first (an image with ENV HOME set
+    # for root too): uv's default cache and Python dirs there cannot be made, so use /tmp.
+    '[ -n "${UV_CACHE_DIR-}" ] || { d="${XDG_CACHE_HOME:-$HOME/.cache}/uv"; '
+    'mkdir -p "$d" 2>/dev/null && [ -w "$d" ]; } || export UV_CACHE_DIR=/tmp/.verifiers/uv/cache; '
+    '[ -n "${UV_PYTHON_INSTALL_DIR-}" ] || { d="${XDG_DATA_HOME:-$HOME/.local/share}/uv/python"; '
+    'mkdir -p "$d" 2>/dev/null && [ -w "$d" ]; } || export UV_PYTHON_INSTALL_DIR=/tmp/.verifiers/uv/python'
 )
 # The stdlib extension modules a uv script's interpreter must load; one that cannot
 # (it crashes or lacks them) is replaced by a uv-managed Python.

@@ -145,3 +145,32 @@ async def test_the_hosts_uv_goes_to_the_fallback_when_home_local_is_not_writable
     await Runtime(LocalBox())._upload_host_uv(str(tmp_path / "scripts"))  # type: ignore[arg-type]
     assert (fallback / "uv").read_bytes() == b"static uv"
     assert not (home / ".local" / "bin").exists()
+
+
+def test_uvs_default_dirs_move_to_tmp_when_home_cache_and_local_are_not_writable(
+    tmp_path,
+):
+    """A root step made ~/.cache and ~/.local first: uv's cache and Python dirs go to /tmp;
+    a writable home keeps uv's defaults."""
+    import os
+    import subprocess
+
+    from verifiers.v1.runtimes.runtime import _DROP_UNWRITABLE_UV_DIRS
+
+    def dirs(home):
+        script = (
+            _DROP_UNWRITABLE_UV_DIRS
+            + '; echo "${UV_CACHE_DIR-unset} ${UV_PYTHON_INSTALL_DIR-unset}"'
+        )
+        env = {"HOME": str(home), "PATH": os.environ["PATH"]}
+        return subprocess.run(
+            ["sh", "-c", script], env=env, capture_output=True, text=True, check=True
+        ).stdout.split()
+
+    locked = tmp_path / "locked"
+    for sub in (".cache", ".local"):
+        (locked / sub).mkdir(parents=True)
+        (locked / sub).chmod(0o555)
+    assert dirs(locked) == ["/tmp/.verifiers/uv/cache", "/tmp/.verifiers/uv/python"]
+    (tmp_path / "open").mkdir()
+    assert dirs(tmp_path / "open") == ["unset", "unset"]

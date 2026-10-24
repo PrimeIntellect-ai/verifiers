@@ -142,31 +142,39 @@ async def host_node_tarball(machine: str) -> bytes:
         return await asyncio.to_thread(path.read_bytes)
 
 
-async def ensure_node(runtime: Runtime) -> None:
-    """Install the shared Node runtime used by ACP adapter harnesses: fetched by the box,
-    or, when the box has no way to fetch it, uploaded from the host."""
-    probe = await runtime.run(["sh", "-c", CAN_FETCH], {})
-    if probe.exit_code != 0:
-        machine = await runtime.run(["uname", "-m"], {})
-        if machine.exit_code:
-            raise RuntimeError(f"failed to read box architecture: {machine.stderr}")
-        tarball = f"{NODE_DIR}.{uuid.uuid4().hex}.tar.gz"
-        await runtime.write(tarball, await host_node_tarball(machine.stdout))
-        await ensure_installed(
-            runtime,
-            directory=NODE_DIR,
-            lock=f"{NODE_DIR}.install.lock",
-            install=UNPACK,
-            env={"VF_NODE_TARBALL": tarball},
-            label="Node.js (from the host)",
-        )
-        return
-    # The install replaces NODE_DIR wholesale, so the lock lives beside it.
+async def _from_host(runtime: Runtime) -> None:
+    machine = await runtime.run(["uname", "-m"], {})
+    if machine.exit_code:
+        raise RuntimeError(f"failed to read box architecture: {machine.stderr}")
+    tarball = f"{NODE_DIR}.{uuid.uuid4().hex}.tar.gz"
+    await runtime.write(tarball, await host_node_tarball(machine.stdout))
     await ensure_installed(
         runtime,
         directory=NODE_DIR,
         lock=f"{NODE_DIR}.install.lock",
-        install=INSTALL,
-        env={"VF_NODE_VERSION": NODE_VERSION},
-        label="Node.js",
+        install=UNPACK,
+        env={"VF_NODE_TARBALL": tarball},
+        label="Node.js (from the host)",
     )
+
+
+async def ensure_node(runtime: Runtime) -> None:
+    """Install the shared Node runtime used by ACP adapter harnesses: fetched by the box,
+    or uploaded from the host when the box has no way to fetch it or its own install
+    fails (an image whose apt-get is there but its dpkg is broken)."""
+    probe = await runtime.run(["sh", "-c", CAN_FETCH], {})
+    if probe.exit_code != 0:
+        await _from_host(runtime)
+        return
+    # The install replaces NODE_DIR wholesale, so the lock lives beside it.
+    try:
+        await ensure_installed(
+            runtime,
+            directory=NODE_DIR,
+            lock=f"{NODE_DIR}.install.lock",
+            install=INSTALL,
+            env={"VF_NODE_VERSION": NODE_VERSION},
+            label="Node.js",
+        )
+    except RuntimeError:
+        await _from_host(runtime)

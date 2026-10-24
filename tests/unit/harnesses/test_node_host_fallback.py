@@ -58,3 +58,24 @@ async def test_a_box_that_can_fetch_node_installs_it_itself(monkeypatch):
 def test_the_pinned_tarballs_have_digests():
     assert set(node.NODE_SHA256) == {"x64", "arm64"}
     assert node._ARCHES["x86_64"] == "x64" and node._ARCHES["aarch64"] == "arm64"
+
+
+async def test_a_box_whose_own_install_fails_falls_back_to_the_hosts_node(monkeypatch):
+    """apt-get is there but dpkg is broken: the box's install fails, the host's tarball goes in."""
+    installs = []
+
+    async def tarball(machine):
+        return b"node tarball"
+
+    async def installed(runtime, **kwargs):
+        installs.append(kwargs["install"])
+        if kwargs["install"] == node.INSTALL:
+            raise RuntimeError(
+                "Node.js install failed: dpkg returned an error code (1)"
+            )
+
+    monkeypatch.setattr(node, "host_node_tarball", tarball)
+    monkeypatch.setattr(node, "ensure_installed", installed)
+    box = Box(can_fetch=True)
+    await node.ensure_node(box)  # type: ignore[arg-type]
+    assert installs == [node.INSTALL, node.UNPACK] and len(box.written) == 1
