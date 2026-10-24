@@ -11,6 +11,7 @@ import pytest
 import verifiers.v1 as vf
 from verifiers.v1.envs.agentic_judge.env import VERDICT_FILE
 from verifiers.v1.envs.best_of_n_judge.env import (
+    _SHUFFLE,
     BestOfNJudgeEnv,
     Ranking,
     RankTask,
@@ -69,6 +70,7 @@ class OracleJudge:
             task=vf.TraceTask(type="RankTask", data=task.data),
         )
         await task.finalize(trace, VerdictBox(verdict))
+        assert trace.info["ranking"]["presentation_order"] == list(task.labels)
         trace.ok = True
         return trace
 
@@ -119,16 +121,22 @@ def test_construction_refuses_impossible_judges(tmp_path) -> None:
         make_env(n=1)
 
 
-async def test_run_averages_the_ensemble_and_weighs_the_task(make_trace):
+async def test_run_averages_the_ensemble_and_weighs_the_task(make_trace, monkeypatch):
     env = make_env(judges=2, score={"task_weight": 0.5, "judge_weight": 2.0})
     attempts = [attempt(make_trace, r) for r in (1.0, 0.0, 1.0)]
+    presentations = [attempts[::-1], attempts[1:] + attempts[:1]]
+    orders = iter(presentations)
+    monkeypatch.setattr(_SHUFFLE, "sample", lambda population, k: next(orders))
     judge = OracleJudge()
     agents = SimpleNamespace(agent=ReplayAgent(attempts), judge=judge)
     await env.run(vf.Task(vf.TaskData(prompt="go")), agents)
 
     assert len(judge.tasks) == 2
-    for task in judge.tasks:
-        assert sorted(task.labels) == ["A", "B", "C"]
+    for task, order in zip(judge.tasks, presentations, strict=True):
+        assert len(task.labels) == len(attempts)
+        assert all(len(label) == 3 and int(label, 16) >= 0 for label in task.labels)
+        assert {trace.id for trace in task.labels.values()} == {t.id for t in attempts}
+        assert list(task.labels.values()) == order
     for trace in attempts:
         assert trace.metrics["task_reward"] in (0.0, 1.0)
         assert trace.rewards["correct"].weight == 0.5

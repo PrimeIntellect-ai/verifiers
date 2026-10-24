@@ -9,11 +9,11 @@ score averaged across them.
 """
 
 import asyncio
+import hashlib
 import json
 import random
 import shlex
 import statistics
-import string
 import uuid
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -30,6 +30,7 @@ from verifiers.v1.runtimes import backend_cls
 from verifiers.v1.utils.artifacts import _validate_restore
 
 ATTEMPTS_DIR = "/tmp/attempts"
+MANIFEST_FILE = f"{ATTEMPTS_DIR}/manifest.json"
 # Shuffles stay independent of the global `random`, which tasksets may seed.
 _SHUFFLE = random.SystemRandom()
 
@@ -52,7 +53,8 @@ WORKSPACE_NOTE = f"""\
 ## Your workspace
 
 This is a fresh sandbox from the task's image; no attempt ran in it. Each attempt
-has its own directory, `{ATTEMPTS_DIR}/<label>/`, labelled in random order:
+has its own directory, `{ATTEMPTS_DIR}/<label>/`. Read `{MANIFEST_FILE}` for the
+shuffled presentation order and inspect attempts in that order:
 
 - `trace.json`: the attempt's observable trace record (JSON: messages, tool
   calls, and its `info` artifacts), written by the harness — not the attempt. It
@@ -146,6 +148,7 @@ class RankTask(vf.Task):
             for source, archive in attempt.state.artifacts.items():
                 _validate_restore(source, archive)
         await runtime.run(["rm", "-rf", ATTEMPTS_DIR, VERDICT_FILE], env={})
+        await runtime.write(MANIFEST_FILE, json.dumps(list(self.labels)).encode())
         for label, attempt in self.labels.items():
             root = f"{ATTEMPTS_DIR}/{label}"
             await runtime.write(f"{root}/trace.json", self.record(attempt))
@@ -180,6 +183,7 @@ class RankTask(vf.Task):
         ranking.check(list(self.labels))
         trace.info["ranking"] = {
             "attempts": {label: attempt.id for label, attempt in self.labels.items()},
+            "presentation_order": list(self.labels),
             **ranking.model_dump(),
             "scores": {
                 self.labels[label].id: score
@@ -296,8 +300,18 @@ class BestOfNJudgeEnv(BestOfNEnv, vf.Env[BestOfNJudgeEnvConfig]):
         """One judge's rank scores, keyed by attempt trace id."""
         shuffled = _SHUFFLE.sample(attempts, len(attempts))
         labels = dict(zip(_labels(len(shuffled)), shuffled))
+        verdict = await agents.judge.run(self.make_rank_task(task, labels))
+        if not verdict.ok:
+            raise RuntimeError(
+                "best-of-n judge failed: "
+                + "; ".join(error.message for error in verdict.errors)
+            )
+        return verdict.info["ranking"]["scores"]
+
+    def make_rank_task(self, task: vf.Task, labels: dict[str, vf.Trace]) -> RankTask:
+        """Override to customize judge evidence or a RankTask subclass's setup."""
         data = task.data
-        rank_task = RankTask(
+        return RankTask(
             vf.TaskData(
                 idx=data.idx,
                 prompt=self.config.task.build_prompt(data, list(labels)),
@@ -308,13 +322,6 @@ class BestOfNJudgeEnv(BestOfNEnv, vf.Env[BestOfNJudgeEnvConfig]):
             ),
             labels,
         )
-        verdict = await agents.judge.run(rank_task)
-        if not verdict.ok:
-            raise RuntimeError(
-                "best-of-n judge failed: "
-                + "; ".join(error.message for error in verdict.errors)
-            )
-        return verdict.info["ranking"]["scores"]
 
     async def finalize(self, task: vf.Task, episode: vf.Episode) -> None:
         """best-of-n's sibling metrics over the attempts alone: `best` marks the
@@ -332,12 +339,11 @@ class BestOfNJudgeEnv(BestOfNEnv, vf.Env[BestOfNJudgeEnvConfig]):
 
 
 def _labels(count: int) -> list[str]:
-    """Spreadsheet-column labels — A..Z, AA, AB, ... — for shuffled attempts."""
-    labels = []
-    for index in range(1, count + 1):
-        label = ""
-        while index:
-            index, rest = divmod(index - 1, 26)
-            label = string.ascii_uppercase[rest] + label
-        labels.append(label)
-    return labels
+    """Fresh short hashes, unique within one judge's presentation."""
+    width = 3
+    while count > 16**width:
+        width += 1
+    labels: set[str] = set()
+    while len(labels) < count:
+        labels.add(hashlib.sha256(uuid.uuid4().bytes).hexdigest()[:width])
+    return list(labels)
