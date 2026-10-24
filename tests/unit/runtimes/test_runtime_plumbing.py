@@ -331,6 +331,26 @@ async def test_a_restored_box_gets_the_longer_creation_wait(
     assert prime._RESTORE_WAIT_ATTEMPTS > prime._BOOT_WAIT_ATTEMPTS
 
 
+async def test_a_long_create_timeout_lets_the_boot_wait_as_long(monkeypatch):
+    """A box that may queue for capacity (a GPU VM) gets the creation budget it was given:
+    a 30 min create_timeout_s waits ~30 min for the boot, not the default ~355 s; a short
+    one never shortens the default."""
+    monkeypatch.setattr(prime, "ensure_prime_auth", lambda: None)
+    monkeypatch.setattr(prime_sandboxes, "AsyncSandboxClient", CreatingClient)
+    waits = []
+    for timeout in (1800.0, 60.0):
+        runtime = PrimeBackend(PrimeConfig(create_timeout_s=timeout))
+        await runtime.start()
+        waits += runtime._client.waits
+        await runtime.teardown()
+    assert (
+        waits[0]
+        == int(1800 / prime._SECONDS_PER_WAIT_ATTEMPT)
+        > prime._BOOT_WAIT_ATTEMPTS
+    )
+    assert waits[1] == prime._BOOT_WAIT_ATTEMPTS
+
+
 # --- a borrowed box's deleted uv script is prepared again -----------------------------
 
 
@@ -568,8 +588,11 @@ def test_uv_bootstrap_drops_image_uv_dirs_the_task_user_cannot_write(tmp_path):
     blocked = tmp_path / "blocked"
     blocked.mkdir()
     blocked.chmod(0o500)
+    home = tmp_path / "home"
+    home.mkdir()
     env = {
         "PATH": "/usr/bin:/bin",
+        "HOME": str(home),  # a writable home keeps uv's defaults (no /tmp fallback)
         "UV_PYTHON_INSTALL_DIR": str(blocked / "python"),
         "UV_TOOL_BIN_DIR": str(blocked),
         "UV_CACHE_DIR": str(tmp_path / "cache"),

@@ -79,6 +79,8 @@ moment between the job's output closing and its exit file appearing is never one
 
 _BOOT_WAIT_ATTEMPTS = 180
 """Creation-wait budget for a box booting from its image, in the SDK's polls (~355 s)."""
+_SECONDS_PER_WAIT_ATTEMPT = 355 / 180
+"""About how long one of the SDK's creation polls takes (`_BOOT_WAIT_ATTEMPTS` is ~355 s)."""
 _RESTORE_WAIT_ATTEMPTS = 420
 """Creation-wait budget for a box restored from a checkpoint (~14 min): a restore
 copies the checkpoint's data first, and a large box's takes longer than a boot."""
@@ -872,13 +874,18 @@ class PrimeBackend(RuntimeBackend):
         (a run on the box deleted it) never passes the probe: the directory is made
         again from / and the wait runs once more."""
 
-        def wait() -> Any:
-            return self._client.wait_for_creation(
-                self.info.id,
-                max_attempts=_RESTORE_WAIT_ATTEMPTS
-                if self.config.checkpoint
-                else _BOOT_WAIT_ATTEMPTS,
+        attempts = (
+            _RESTORE_WAIT_ATTEMPTS if self.config.checkpoint else _BOOT_WAIT_ATTEMPTS
+        )
+        if self.config.create_timeout_s:
+            # A box that may queue for capacity (a GPU VM) waits as long as the creation
+            # may take, not only the default boot budget.
+            attempts = max(
+                attempts, int(self.config.create_timeout_s / _SECONDS_PER_WAIT_ATTEMPT)
             )
+
+        def wait() -> Any:
+            return self._client.wait_for_creation(self.info.id, max_attempts=attempts)
 
         try:
             await self._held("boot", wait, attempts=1)
