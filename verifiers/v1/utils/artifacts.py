@@ -413,10 +413,16 @@ async def _tar_out(runtime: Runtime, artifact: Artifact, budget: int) -> bytes:
     excludes = " ".join(f"--exclude={shlex.quote(p)}" for p in artifact.exclude)
     try:
         # macOS tar otherwise adds AppleDouble sidecars next to a directory root.
+        # GNU tar exits 1 when a file changed while it was read (a service the agent left
+        # running keeps writing its data dir); the archive is still complete, holding
+        # each file as it was read, so that counts as collected. Its fatal errors exit 2.
+        # Other tars (busybox, bsdtar) use 1 for every error, so only GNU's is let through.
         size = await _run(
             runtime,
             f"COPYFILE_DISABLE=1 tar -cf {shlex.quote(path)} -C / {excludes} -- "
-            f"{shlex.quote(artifact.source.lstrip('/'))} && wc -c < {shlex.quote(path)}",
+            f"{shlex.quote(artifact.source.lstrip('/'))}; rc=$?; "
+            "if [ $rc -eq 1 ] && tar --version 2>/dev/null | grep -q 'GNU tar'; then rc=0; fi; "
+            f"[ $rc -eq 0 ] && wc -c < {shlex.quote(path)}",
             f"collect artifact {artifact.source!r}",
         )
         # An archive over the budget is the submission's size, not a transfer fault:

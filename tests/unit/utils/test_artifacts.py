@@ -222,3 +222,70 @@ async def test_a_root_the_run_left_nothing_in_is_kept_for_the_grader() -> None:
     runtime, commands = box()
     await restore(runtime, {"/logs/artifacts": None})
     assert commands == ["mkdir -p -- /app /logs/artifacts"]
+
+
+def _fake_tar_box(tmp_path, version: str):
+    """A box whose `tar` archives for real, then exits 1 as GNU tar does when a file
+    changed while it was read; `tar --version` answers `version`."""
+    import asyncio
+    import shutil
+    import subprocess
+    from pathlib import Path
+
+    real = shutil.which("tar")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake = bin_dir / "tar"
+    fake.write_text(
+        "#!/bin/sh\n"
+        f'if [ "$1" = --version ]; then echo "{version}"; exit 0; fi\n'
+        f'{real} "$@" || exit 2\n'
+        'echo "tar: app/data: file changed as we read" >&2; exit 1\n'
+    )
+    fake.chmod(0o755)
+    env = {"PATH": f"{bin_dir}:{os.environ['PATH']}"}
+
+    async def run(argv, _env):
+        done = await asyncio.to_thread(
+            subprocess.run, argv, env=env, capture_output=True, text=True, check=False
+        )
+        return SimpleNamespace(
+            exit_code=done.returncode, stdout=done.stdout, stderr=done.stderr
+        )
+
+    async def read(path, max_bytes=None):
+        return await asyncio.to_thread(Path(path).read_bytes)
+
+    return SimpleNamespace(
+        config=SimpleNamespace(type="docker", workdir="/app"), run=run, read=read
+    )
+
+
+@pytest.mark.asyncio
+async def test_gnu_tars_file_changed_warning_still_collects_the_archive(
+    tmp_path,
+) -> None:
+    """A service the agent left running keeps writing its data dir: GNU tar warns that
+    a file changed as it read it (exit 1), and the archive it wrote is collected."""
+    from verifiers.v1.utils.artifacts import Artifact, _tar_out
+
+    source = tmp_path / "app"
+    source.mkdir()
+    (source / "data").write_text("live")
+    runtime = _fake_tar_box(tmp_path, "tar (GNU tar) 1.34")
+    collected = await _tar_out(runtime, Artifact(source=str(source)), budget=10_000_000)  # type: ignore[arg-type]
+    with tarfile.open(fileobj=io.BytesIO(collected)) as tar:
+        assert any(name.endswith("app/data") for name in tar.getnames())
+
+
+@pytest.mark.asyncio
+async def test_another_tars_exit_1_still_fails_the_collection(tmp_path) -> None:
+    """busybox and bsdtar exit 1 on any error, so only GNU tar's warning is let through."""
+    from verifiers.v1.utils.artifacts import Artifact, _tar_out
+
+    source = tmp_path / "app"
+    source.mkdir()
+    (source / "data").write_text("live")
+    runtime = _fake_tar_box(tmp_path, "tar (busybox) 1.36")
+    with pytest.raises(RuntimeError, match="file changed as we read"):
+        await _tar_out(runtime, Artifact(source=str(source)), budget=10_000_000)  # type: ignore[arg-type]
