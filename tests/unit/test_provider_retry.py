@@ -114,6 +114,16 @@ class Provider:
         }
         stream = web.StreamResponse(headers={"Content-Type": "text/event-stream"})
         await stream.prepare(request)
+        if failure == "slow":
+            # a long generation: each event comes well inside the read timeout, the
+            # whole turn takes longer than it
+            for _ in range(3):
+                await stream.write(
+                    b'data: {"id": "scripted", "object": "chat.completion.chunk", '
+                    b'"created": 0, "model": "scripted", "choices": [{"index": 0, '
+                    b'"delta": {"reasoning_content": "."}, "finish_reason": null}]}\n\n'
+                )
+                await asyncio.sleep(0.2)
         await stream.write(f"data: {json.dumps(chunk)}\n\n".encode())
         if failure == "truncate":
             assert request.transport is not None
@@ -460,3 +470,27 @@ async def test_an_error_event_inside_a_stream_is_retried_in_place():
     error = trace.calls[0].error
     assert error is not None and "Service error. Please retry shortly." in error.message
     assert_committed_once(trace, sampled=1)
+
+
+async def test_a_non_streaming_call_streams_from_the_provider():
+    """A harness asking for a plain JSON completion: the provider is asked to stream
+    (with usage), and the harness gets the assembled completion."""
+    async with Provider("ok", "ok", "ok") as provider:
+        agent = make(provider, ScriptHarness)
+        trace = await agent.run(task())
+    assert trace.ok, trace.errors
+    assert all(r.get("stream") is True for r in provider.requests)
+    assert all(r["stream_options"]["include_usage"] for r in provider.requests)
+    assert_committed_once(trace, sampled=3)
+
+
+async def test_a_long_generation_is_not_abandoned_by_the_read_timeout():
+    """A turn that takes longer than the read timeout, streaming all along: it completes
+    in one exchange instead of timing out and being sent again (the abandoned one would
+    keep running at the provider, holding a concurrent slot)."""
+    async with Provider("slow", "ok", "ok") as provider:
+        agent = make(provider, ScriptHarness, timeout={"read": 0.3})
+        trace = await agent.run(task())
+    assert trace.ok, trace.errors
+    assert len(provider.requests) == 3
+    assert all(call.error is None for call in trace.calls)

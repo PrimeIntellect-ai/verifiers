@@ -300,6 +300,46 @@ def _stream_error(chunk: bytes) -> str | None:
     return None
 
 
+def _streams_upstream(dialect: Dialect, client_config: object) -> bool:
+    """Whether a non-streaming request is sent upstream as a stream (`_as_streaming`):
+    a chat completion through an eval client; a train client generates the response."""
+    return dialect.name == "chat_completions" and not isinstance(
+        client_config, TrainClientConfig
+    )
+
+
+def _as_streaming(upstream: dict | EncodedBody) -> dict:
+    """The request body asking the provider to stream, with usage in the last event."""
+    body = dict(
+        from_json(upstream.data) if isinstance(upstream, EncodedBody) else upstream
+    )
+    body["stream"] = True
+    body["stream_options"] = {
+        **(body.get("stream_options") or {}),
+        "include_usage": True,
+    }
+    return body
+
+
+async def _collect_completion(dialect: Dialect, reply: RelayReply) -> Response:
+    """A provider that answered a streaming request with a plain JSON completion: parsed as
+    the eval client parses one, a malformed body a transient 502."""
+    try:
+        data = b"".join([chunk async for chunk in reply.chunks])
+    finally:
+        await reply.close()
+    try:
+        raw = from_json(data)
+        response = dialect.parse_response(dialect.validate_response(raw))
+    except (ValueError, ValidationError) as e:
+        error = ProviderError(
+            f"malformed upstream response: {type(e).__name__}: {e}", status_code=502
+        )
+        raise error from e
+    response.raw = raw
+    return response
+
+
 async def _collect_stream(
     dialect: Dialect, reply: RelayReply
 ) -> tuple[Response, bytes]:
@@ -972,6 +1012,22 @@ class InterceptionServer(Interception):
                     session_id=ctx.session_id or session.trace.id,
                 )
                 response, events = await _collect_stream(dialect, reply)
+            elif _streams_upstream(dialect, ctx.client):
+                # A non-streaming request still streams from the provider: bytes keep
+                # arriving through a long generation, which a client read timeout would
+                # otherwise abandon (the provider keeps generating it, holding one of the
+                # key's concurrent slots). The client gets the assembled completion.
+                reply = await client.relay(
+                    dialect,
+                    client.hold(_as_streaming(upstream)),
+                    headers=upstream_headers,
+                    session_id=ctx.session_id or session.trace.id,
+                )
+                if "text/event-stream" in (reply.content_type or ""):
+                    response, _ = await _collect_stream(dialect, reply)
+                else:
+                    response = await _collect_completion(dialect, reply)
+                events = None
             else:
                 response = await client.get_response(
                     dialect,
