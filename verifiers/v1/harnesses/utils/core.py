@@ -23,8 +23,10 @@ from openai.lib.streaming.chat import AsyncChatCompletionStream
 from tenacity import (
     AsyncRetrying,
     before_sleep_log,
+    retry_if_exception,
     retry_if_exception_type,
     stop_after_attempt,
+    stop_after_delay,
     wait_random_exponential,
 )
 
@@ -329,6 +331,15 @@ async def _read_chat_completion(raw_stream):
         return completion
 
 
+def _unanswered(error: BaseException) -> bool:
+    if isinstance(error, httpx.HTTPStatusError):
+        status = error.response.status_code
+        return "x-verifiers-interception" not in error.response.headers and (
+            status in (404, 408, 429) or status >= 500
+        )
+    return isinstance(error, httpx.TransportError)
+
+
 async def gate_tool_call(
     client: httpx.AsyncClient, url: str, api_key: str, call
 ) -> dict:
@@ -338,16 +349,31 @@ async def gate_tool_call(
         arguments = json.loads(call.function.arguments or "{}")
     except json.JSONDecodeError:
         arguments = call.function.arguments
-    response = await client.post(
-        url,
-        headers={"Authorization": f"Bearer {api_key}"},
-        json={
-            "tool_call_id": call.id,
-            "name": call.function.name,
-            "arguments": arguments,
-        },
-    )
-    response.raise_for_status()
+    payload = {
+        "tool_call_id": call.id,
+        "name": call.function.name,
+        "arguments": arguments,
+    }
+    # Retry what a tunnel or proxy dropped or answered (the rollout stamps its own
+    # answers), marked so the rollout answers a repeat with its first verdict.
+    async for attempt in AsyncRetrying(
+        retry=retry_if_exception(_unanswered),
+        stop=stop_after_delay(300),
+        wait=wait_random_exponential(multiplier=0.5, max=10.0),
+        reraise=True,
+    ):
+        with attempt:
+            response = await client.post(
+                url,
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "x-stainless-retry-count": str(
+                        attempt.retry_state.attempt_number - 1
+                    ),
+                },
+                json=payload,
+            )
+            response.raise_for_status()
     decision = response.json()
     if decision["action"] == "stop":
         raise RuntimeError(decision["reason"])
