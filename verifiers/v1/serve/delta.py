@@ -46,6 +46,7 @@ HEADER_FIELDS = ("version", "id", "verifiers", "task")
 LIST_FIELDS = (
     "nodes",
     "calls",
+    "payload",
     "errors",
     "extra_usage",
     "request_rewrites",

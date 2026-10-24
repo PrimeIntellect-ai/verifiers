@@ -25,6 +25,7 @@ from verifiers.v1.graph import PendingTurn
 from verifiers.v1.types import (
     AssistantMessage,
     FinishReason,
+    PayloadSegment,
     Response,
     SamplingMask,
     Tool,
@@ -192,6 +193,9 @@ def response_from_generate(
             routed_experts=result.get("routed_experts"),
             sampling_mask=SamplingMask.from_sampling_mask(mask)
             if (mask := result.get("sampling_mask"))
+            else None,
+            payload=[PayloadSegment(**segment) for segment in segments]
+            if (segments := result.get("payload"))
             else None,
             weight_versions=[WeightVersionSpan(**span) for span in spans]
             if (spans := result.get("weight_versions"))
