@@ -21,6 +21,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+LIVE_TUNNELS: set["TunnelClient"] = set()
+"""The tunnels this process holds open, which `runtimes.sweep` never deletes."""
+
 
 class TunnelLogHandler(logging.Handler):
     """Forward tunnel warnings and errors to this module's logger — and, when the app
@@ -99,22 +102,25 @@ class PrimeTunnel(Tunnel[PrimeTunnelConfig]):
         """Bridge the host `port` to a public URL via prime_tunnel (frpc). Tunnel creation
         is network-bound and rate-capped (512/min, run-wide via the shared
         `tunnel_limiter`), so transient failures are retried; a terminal one raises
-        `TunnelError`. While held, frpc is restarted if the tunnel goes down. The tunnel is
-        torn down on exit."""
+        `TunnelError`. While held, frpc is restarted if the tunnel goes down. The tunnel
+        carries the run labels (`run_labels`), so a crashed run's tunnels can be swept
+        (`runtimes.sweep`), and is torn down on exit."""
         from prime_tunnel import Tunnel as TunnelClient
 
         from verifiers.v1.errors import TunnelError
+        from verifiers.v1.runtimes.backends.prime import run_labels
         from verifiers.v1.utils.retries import retrying
 
         label = f"host tunnel (port {port})"
         try:
             async for attempt in retrying(retries=3, label=label):
                 with attempt:
-                    client = TunnelClient(local_port=port)
+                    client = TunnelClient(local_port=port, labels=run_labels())
                     async with tunnel_limiter():
                         url = str(await client.start()).rstrip("/")
         except Exception as e:
             raise TunnelError(f"{label} failed: {e}") from e
+        LIVE_TUNNELS.add(client)
         watch = asyncio.create_task(_watch(client, url))
 
         async def close() -> None:
@@ -125,6 +131,7 @@ class PrimeTunnel(Tunnel[PrimeTunnelConfig]):
         try:
             yield url
         finally:
+            LIVE_TUNNELS.discard(client)
             # Run the stop to completion even under cancellation (`run_shielded` re-raises
             # the cancellation after); tunnel-stop failures are best-effort.
             with contextlib.suppress(Exception):

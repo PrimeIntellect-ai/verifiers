@@ -117,6 +117,12 @@ def set_base_sandbox_labels(labels: list[str]) -> None:
     BASE_LABELS = list(labels)
 
 
+def run_labels() -> list[str]:
+    """The labels every Prime sandbox and tunnel this process opens carries, whatever its
+    config adds: the base labels and the run scope. ``runtimes.sweep`` deletes by them."""
+    return list(dict.fromkeys([*BASE_LABELS, run_scope()]))
+
+
 class PrimeRuntimeInfo(PrimeConfig, BaseRuntimeInfo):
     image_cached: bool | None = None
     """Whether the platform already had the image at create (None until then). False means
