@@ -252,7 +252,9 @@ class Task(Generic[DataT, StateT, ConfigT]):
                 }
                 if isinstance(judge, RubricJudge):
                     # The config holds only a host-local path to the criteria.
-                    entry["criteria"] = [c.render() for c in judge.criteria]
+                    entry["criteria"] = [
+                        c.model_dump(mode="json") for c in judge.criteria
+                    ]
                 judges.append(entry)
             files["judges.json"] = json.dumps(judges, indent=2).encode()
         sources = []
