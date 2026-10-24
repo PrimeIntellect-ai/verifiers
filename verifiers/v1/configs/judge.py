@@ -8,7 +8,7 @@ from typing import Any
 from pydantic import BaseModel, FiniteFloat, SerializeAsAny
 
 from verifiers.v1.configs.client import BaseClientConfig
-from verifiers.v1.types import ID, SamplingConfig
+from verifiers.v1.configs.types import ID, SamplingConfig
 
 
 class JudgeConfig(BaseClientConfig):

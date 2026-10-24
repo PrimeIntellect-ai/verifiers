@@ -10,7 +10,7 @@ from verifiers.v1.configs.cli.env import narrowed_env_annotation, resolve_env_fi
 from verifiers.v1.configs.client import ClientConfig, EvalClientConfig
 from verifiers.v1.configs.env import EnvConfig, SingleAgentEnvConfig
 from verifiers.v1.configs.select import SelectCLIConfig
-from verifiers.v1.types import SamplingConfig
+from verifiers.v1.configs.types import SamplingConfig
 
 
 def default_run_name(env: EnvConfig, model: str) -> str:

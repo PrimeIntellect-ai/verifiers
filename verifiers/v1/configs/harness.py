@@ -9,7 +9,7 @@ from typing import Annotated, Literal
 from pydantic import ConfigDict, Field, FiniteFloat
 from pydantic_config import BaseConfig
 
-from verifiers.v1.types import ID, DialectName
+from verifiers.v1.configs.types import ID, DialectName
 
 PinnedVersion = Annotated[str, Field(pattern=r"^[A-Za-z0-9._+-]+$")]
 """A release/tag a harness pins its program install to."""

@@ -24,14 +24,12 @@ import binascii
 import hashlib
 import json
 import time
-from collections.abc import Callable
 from dataclasses import dataclass, fields
-from typing import TYPE_CHECKING, Annotated, Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 from pydantic import (
     BaseModel,
-    BeforeValidator,
     ConfigDict,
     Field,
     FieldSerializationInfo,
@@ -39,12 +37,15 @@ from pydantic import (
     field_serializer,
     field_validator,
 )
-from pydantic.json_schema import SkipJsonSchema, WithJsonSchema
+from pydantic.json_schema import SkipJsonSchema
 from renderers.base import RenderedTokens
 
 from verifiers.v1.semantic import ParentLink
 from verifiers.v1.types import (
     AssistantMessage,
+    BoolStream,
+    FloatStream,
+    IntStream,
     DialectName,
     Message,
     Response,
@@ -54,28 +55,14 @@ from verifiers.v1.types import (
     ToolMessage,
     TopLogprobs,
     WeightVersionSpan,
+    as_list,
+    decode_ndarray,
+    empty_stream,
+    encode_ndarray,
 )
 
 if TYPE_CHECKING:
     from verifiers.v1.trace import Trace
-
-
-def encode_ndarray(arr: np.ndarray) -> dict:
-    """A numpy array as a msgpack-safe dict (dtype + shape + raw bytes). The bytes ride the
-    env-server wire natively via msgpack's `bin` type — no base64 — so the response must be
-    packed from `model_dump(mode="python")` (`mode="json"` would coerce the bytes to str)."""
-    arr = np.ascontiguousarray(arr)
-    return {
-        "__nd__": True,
-        "dtype": str(arr.dtype),
-        "shape": list(arr.shape),
-        "data": arr.tobytes(),
-    }
-
-
-def decode_ndarray(d: dict) -> np.ndarray:
-    """Reverse :func:`encode_ndarray`."""
-    return np.frombuffer(d["data"], dtype=np.dtype(d["dtype"])).reshape(d["shape"])
 
 
 RECORD_FLOAT_DECIMALS = 4
@@ -86,44 +73,10 @@ overrides it per dump (`None` keeps every digit). The msgpack wire (`mode="pytho
 full precision — training never reads the record."""
 
 
-def as_list(values: list | np.ndarray) -> list:
-    """A token stream as a list, whichever form it is in."""
-    return values.tolist() if isinstance(values, np.ndarray) else values
-
-
 def same_tokens(a: list | np.ndarray, b: list | np.ndarray) -> bool:
     """Two token spans are equal (`==` on an array compares elementwise)."""
     return len(a) == len(b) and bool(np.array_equal(a, b))
 
-
-def _token_stream(dtype: type[np.generic], item_type: str):
-    """The field type of a per-token stream: a numpy array of `dtype`.
-
-    One list entry per token is a Python object the cyclic garbage collector walks and the
-    msgpack wire packs one by one; an array is one object it skips and raw bytes on the wire, so
-    a process holding many long episodes (an RL orchestrator) keeps full collections short.
-    Validation takes a list, an array or an `__nd__` dict; `MessageNode.serialize_token_stream`
-    writes it back. Typed as an array alone, because a `list[int] | np.ndarray` union makes
-    pydantic try the list branch element by element on every array it validates."""
-
-    def validate(value: Any) -> np.ndarray:
-        if isinstance(value, dict) and value.get("__nd__"):
-            value = decode_ndarray(value)
-        return np.asarray(value, dtype=dtype)
-
-    return Annotated[
-        np.ndarray,
-        BeforeValidator(validate),
-        WithJsonSchema({"type": "array", "items": {"type": item_type}}),
-    ]
-
-
-IntStream = _token_stream(np.int32, "integer")
-"""Token ids: int32."""
-BoolStream = _token_stream(np.bool_, "boolean")
-"""Per-token flags: bool."""
-FloatStream = _token_stream(np.float32, "number")
-"""Per-token values (logprobs, advantages, loss weights): float32."""
 
 ROUNDED_STREAMS = (
     "logprobs",
@@ -151,10 +104,6 @@ def _serialize_stream(
     if context.get("token_arrays"):
         return encode_ndarray(np.asarray(values))
     return as_list(values)
-
-
-def _empty(dtype: type[np.generic]) -> Callable[[], np.ndarray]:
-    return lambda: np.zeros(0, dtype=dtype)
 
 
 class MessageNode(BaseModel):
@@ -187,7 +136,7 @@ class MessageNode(BaseModel):
     delta between consecutive sampled nodes is that turn's harness + inference wall-clock.
     Reused prefix nodes keep the stamp from the turn that first created them. Serialized, so
     a dump re-validated from wire/disk keeps the original times."""
-    token_ids: IntStream = Field(default_factory=_empty(np.int32))
+    token_ids: IntStream = Field(default_factory=empty_stream(np.int32))
     """This message's delta contribution to the cumulative token sequence: its leading
     template scaffold + its own tokens — for an assistant, the generation-prompt scaffold
     followed by the sampled completion. Concatenated along a path, these reproduce the exact
@@ -196,11 +145,11 @@ class MessageNode(BaseModel):
     """Logical renderer tokens retained only while extending a live rollout.
     None means they are identical to `token_ids`; an empty array is a real empty slice."""
 
-    mask: BoolStream = Field(default_factory=_empty(np.bool_))
+    mask: BoolStream = Field(default_factory=empty_stream(np.bool_))
     """Per-token, parallel to `token_ids`: True for trainable, model-sampled tokens (only an
     assistant node's completion span); False for template scaffold and every input-message
     token."""
-    is_content: BoolStream = Field(default_factory=_empty(np.bool_))
+    is_content: BoolStream = Field(default_factory=empty_stream(np.bool_))
     """Per-token, parallel to `token_ids` (when populated): True for message-body tokens (the
     renderer's content), False for template scaffold (role-tag openers/closers, inter-turn
     separators, tool-response wraps, the generation prompt). Populated from the renderer's
@@ -209,7 +158,7 @@ class MessageNode(BaseModel):
     `mask`: `mask` is "did the model sample this?" (assistant completion only); `is_content`
     is "is this caller/model body vs scaffold?" — meaningful on every role, so observation
     weighting (prime-rl `echo`) can train a tool/user message's *body* without its scaffold."""
-    logprobs: FloatStream = Field(default_factory=_empty(np.float32))
+    logprobs: FloatStream = Field(default_factory=empty_stream(np.float32))
     """Sampling logprobs for the sampled tokens — length equals the number of True entries in
     `mask`; empty for input messages."""
     advantages: FloatStream | None = None
