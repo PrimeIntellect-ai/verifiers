@@ -89,6 +89,21 @@ class Provider:
                 "<arg_key>command</arg_key><arg_value>ls</arg_value></tool_call>",
             }
             completion["choices"][0]["finish_reason"] = "stop"
+        if failure == "dropped":
+            # the provider generated the model's tool call but sent none of it: no
+            # content, no tool_calls, its usage counting the output past the reasoning
+            completion["choices"][0]["message"] = {
+                "role": "assistant",
+                "content": "",
+                "reasoning_content": "Let me list the files.",
+            }
+            completion["choices"][0]["finish_reason"] = "stop"
+            completion["usage"] = {
+                "prompt_tokens": 20,
+                "completion_tokens": 85,
+                "total_tokens": 105,
+                "completion_tokens_details": {"reasoning_tokens": 6},
+            }
         if not body.get("stream"):
             return web.json_response(completion)
         message = completion["choices"][0]["message"]
@@ -138,6 +153,9 @@ class Provider:
             await stream.write(f"data: {json.dumps(error)}\n\n".encode())
             await stream.write(b"data: [DONE]\n\n")
             return stream
+        if usage := completion.get("usage"):
+            usage_chunk = {**chunk, "choices": [], "usage": usage}
+            await stream.write(f"data: {json.dumps(usage_chunk)}\n\n".encode())
         await stream.write(b"data: [DONE]\n\n")
         return stream
 
@@ -300,6 +318,23 @@ async def test_an_empty_turn_with_tool_call_markup_in_its_reasoning_is_retried(h
     assert trace.ok, trace.errors
     assert trace.calls[0].node is None
     assert trace.calls[0].error is not None and trace.calls[0].error.status_code == 502
+    assert len(provider.requests) == (4 if harness is ScriptHarness else 2)
+
+
+@pytest.mark.parametrize(
+    "harness", [ScriptHarness, StreamHarness], ids=["json", "stream"]
+)
+async def test_an_empty_turn_whose_usage_counts_unsent_output_is_retried(harness):
+    """A reply with no content and no tool calls whose usage counts output past its
+    reasoning (the provider generated the tool call and sent none of it) is a provider
+    failure, retried in place, not an empty final turn that ends the run."""
+    async with Provider("dropped", "ok", "ok", "ok") as provider:
+        agent = make(provider, harness)
+        trace = await agent.run(task())
+    assert trace.ok, trace.errors
+    assert trace.calls[0].node is None
+    assert trace.calls[0].error is not None and trace.calls[0].error.status_code == 502
+    assert "never arrived" in trace.calls[0].error.message
     assert len(provider.requests) == (4 if harness is ScriptHarness else 2)
 
 

@@ -154,21 +154,36 @@ LEAKED_TOOL_CALL = "<tool_call>"
 """Raw tool-call markup a provider's parser left in a reply's reasoning."""
 
 
+DROPPED_OUTPUT_TOKENS = 8
+"""Completion tokens past the reasoning that an empty reply may account for (end-of-turn
+markers); more means the provider generated output it did not send."""
+
+
 def _check_tool_call_leak(response: Response) -> None:
     """Raise a transient `ProviderError` for a reply with no content and no tool calls
-    whose reasoning holds raw tool-call markup: the provider failed to parse the model's
-    tool calls, and the empty turn would otherwise end the harness's run."""
+    whose tool calls the provider failed to parse: raw tool-call markup left in its
+    reasoning, or output its usage counts past the reasoning that never arrived (GLM 5.3
+    on Prime, 2026-10-24: a stream ending `stop` with no tool call while its usage counts
+    ~80 tokens past the reasoning, the call the reasoning announced). The empty turn would
+    otherwise end the harness's run."""
     message = response.message
-    if (
-        not (message.content or "").strip()
-        and not message.tool_calls
-        and LEAKED_TOOL_CALL in (message.reasoning_content or "")
-    ):
+    if (message.content or "").strip() or message.tool_calls:
+        return
+    if LEAKED_TOOL_CALL in (message.reasoning_content or ""):
         raise model_error(
             "malformed upstream response: an empty turn whose reasoning holds "
             "unparsed tool-call markup",
             status_code=502,
         )
+    usage = response.usage
+    if usage is not None and usage.reasoning_tokens is not None:
+        dropped = usage.completion_tokens - usage.reasoning_tokens
+        if dropped > DROPPED_OUTPUT_TOKENS:
+            raise model_error(
+                f"malformed upstream response: an empty turn whose usage counts "
+                f"{dropped} completion tokens past its reasoning that never arrived",
+                status_code=502,
+            )
 
 
 def _error_response(
