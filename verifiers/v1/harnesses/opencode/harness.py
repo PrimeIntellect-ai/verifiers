@@ -12,7 +12,8 @@ from verifiers.v1.harnesses.utils.replay import drop_blank_text
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
-from verifiers.v1.types import DialectName, Message
+from verifiers.v1.types import Message
+from verifiers.v1.configs.harness import DialectName
 
 OPENCODE_DIR = "/var/tmp/vf-opencode"
 STATE_ROOT = "/tmp/vf-opencode-runs"

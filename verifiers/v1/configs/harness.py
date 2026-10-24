@@ -9,7 +9,12 @@ from typing import Annotated, Literal
 from pydantic import ConfigDict, Field, FiniteFloat
 from pydantic_config import BaseConfig
 
-from verifiers.v1.configs.types import ID, DialectName
+ID = str
+"""Plugin id: the name of an installed package exporting the plugin."""
+
+DialectName = Literal["chat_completions", "responses", "anthropic_messages"]
+"""A model API wire format: a `Dialect.name`, and the values of the harness `dialect`
+setting."""
 
 PinnedVersion = Annotated[str, Field(pattern=r"^[A-Za-z0-9._+-]+$")]
 """A release/tag a harness pins its program install to."""

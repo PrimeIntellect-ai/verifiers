@@ -1,13 +1,8 @@
-"""The plain types the config tree shares with the runtime. `verifiers.v1.types` re-exports
-them; config modules import them from here, so the config tree loads without numpy."""
+"""Sampling knobs for model requests."""
 
-from typing import Any, Literal
+from typing import Any
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
-
-DialectName = Literal["chat_completions", "responses", "anthropic_messages"]
-"""A model API wire format: a `Dialect.name`, and the values of the harness `dialect`
-setting."""
 
 
 class SamplingConfig(BaseModel):
@@ -38,7 +33,3 @@ class SamplingConfig(BaseModel):
 
 
 Sampling = SamplingConfig
-
-
-ID = str
-"""Plugin id: the name of an installed package exporting the plugin."""

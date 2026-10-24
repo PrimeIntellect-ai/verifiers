@@ -27,13 +27,9 @@ from verifiers.v1.configs.runtime import (
     intersect_network_hosts,
     parse_network_rule,
 )
-from verifiers.v1.types import (
-    DialectName,
-    Request,
-    Response,
-    Sampling,
-    SamplingConfig,
-)
+from verifiers.v1.types import Request, Response
+from verifiers.v1.configs.harness import DialectName
+from verifiers.v1.configs.sampling import Sampling, SamplingConfig
 
 RespT = TypeVar("RespT", bound=BaseModel)
 RawRequest = dict[str, Any]

@@ -34,7 +34,7 @@ from verifiers.v1.serve.types import (
     RunRequest,
     RunResponse,
 )
-from verifiers.v1.types import SamplingConfig
+from verifiers.v1.configs.sampling import SamplingConfig
 
 logger = logging.getLogger(__name__)
 

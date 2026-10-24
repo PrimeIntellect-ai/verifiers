@@ -19,7 +19,7 @@ from verifiers.v1.serve.types import (
     RunResponse,
 )
 from verifiers.v1.task import Task
-from verifiers.v1.types import SamplingConfig
+from verifiers.v1.configs.sampling import SamplingConfig
 from verifiers.v1.utils.loaders import load_environment
 
 logger = logging.getLogger(__name__)

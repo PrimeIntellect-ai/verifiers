@@ -35,7 +35,6 @@ from verifiers.v1.harnesses.utils.compaction import bound_tool_message
 from verifiers.v1.trace import InterceptRecord, Trace
 from verifiers.v1.types import (
     AssistantMessage,
-    DialectName,
     Messages,
     Request,
     Response,
@@ -43,6 +42,7 @@ from verifiers.v1.types import (
     ToolMessage,
     UserMessage,
 )
+from verifiers.v1.configs.harness import DialectName
 from verifiers.v1.utils.decorators import invoke
 
 logger = logging.getLogger(__name__)

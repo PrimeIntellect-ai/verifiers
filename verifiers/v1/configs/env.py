@@ -19,7 +19,7 @@ from verifiers.v1.configs.interception import (
 )
 from verifiers.v1.configs.retries import RetryConfig
 from verifiers.v1.configs.taskset import SharedTasksetConfig, TasksetConfig
-from verifiers.v1.configs.types import ID
+from verifiers.v1.configs.harness import ID
 
 
 class TimeoutConfig(BaseConfig):

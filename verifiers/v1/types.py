@@ -8,12 +8,6 @@ from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, field_serial
 from pydantic.json_schema import WithJsonSchema
 from typing_extensions import TypedDict
 
-# Re-exported: the config tree imports these from `configs.types` to load without numpy.
-from verifiers.v1.configs.types import ID as ID
-from verifiers.v1.configs.types import DialectName as DialectName
-from verifiers.v1.configs.types import Sampling as Sampling
-from verifiers.v1.configs.types import SamplingConfig as SamplingConfig
-
 
 def encode_ndarray(arr: np.ndarray) -> dict:
     """A numpy array as a msgpack-safe dict (dtype + shape + raw bytes). The bytes ride the

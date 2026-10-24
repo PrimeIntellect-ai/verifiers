@@ -33,8 +33,6 @@ from verifiers.v1.types import (
     Messages,
     Request,
     Response,
-    Sampling,
-    SamplingConfig,
     SystemMessage,
     Tool,
     ToolCall,
@@ -43,6 +41,7 @@ from verifiers.v1.types import (
     UserMessage,
     content_to_parts,
 )
+from verifiers.v1.configs.sampling import Sampling, SamplingConfig
 
 
 class ModdedChoice(Choice):

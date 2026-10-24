@@ -19,7 +19,7 @@ from verifiers.v1.configs.cli.eval import RunConfig, default_run_name
 from verifiers.v1.configs.env import EnvConfig
 from verifiers.v1.configs.select import SelectCLIConfig
 from verifiers.v1.envs.single_agent import SingleAgentEnvConfig
-from verifiers.v1.types import SamplingConfig
+from verifiers.v1.configs.sampling import SamplingConfig
 
 
 class GEPAConfig(BaseConfig):

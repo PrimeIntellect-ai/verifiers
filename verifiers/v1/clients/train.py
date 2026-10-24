@@ -25,7 +25,6 @@ from verifiers.v1.types import (
     AssistantMessage,
     FinishReason,
     Response,
-    SamplingConfig,
     SamplingMask,
     Tool,
     ToolCall,
@@ -34,6 +33,7 @@ from verifiers.v1.types import (
     Usage,
     WeightVersionSpan,
 )
+from verifiers.v1.configs.sampling import SamplingConfig
 
 logger = logging.getLogger(__name__)
 

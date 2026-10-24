@@ -18,7 +18,8 @@ from verifiers.v1.errors import (
 )
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.task import TaskData
-from verifiers.v1.types import DialectName, Message, Messages
+from verifiers.v1.types import Message, Messages
+from verifiers.v1.configs.harness import DialectName
 from verifiers.v1.utils.decorators import (
     discover_decorated,
     invoke_all,

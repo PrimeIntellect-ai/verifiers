@@ -4,7 +4,7 @@ harness's own values, and parses the same shape back for the trace."""
 import pytest
 
 from verifiers.v1.dialects import AnthropicDialect, ChatDialect, ResponsesDialect
-from verifiers.v1.types import SamplingConfig
+from verifiers.v1.configs.sampling import SamplingConfig
 
 SAMPLING = SamplingConfig(temperature=0.3, top_p=0.9, reasoning_effort="low")
 

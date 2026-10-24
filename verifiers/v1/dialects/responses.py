@@ -38,8 +38,6 @@ from verifiers.v1.types import (
     Messages,
     Request,
     Response,
-    Sampling,
-    SamplingConfig,
     SystemMessage,
     TextContentPart,
     Tool,
@@ -48,6 +46,7 @@ from verifiers.v1.types import (
     Usage,
     UserMessage,
 )
+from verifiers.v1.configs.sampling import Sampling, SamplingConfig
 
 # The placeholder response a committed stream's keepalives carry until its turn is ready:
 # schema-valid, so strictly validating clients accept the events that carry it.

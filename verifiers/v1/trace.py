@@ -28,7 +28,6 @@ from verifiers.v1.types import (
     FinishReason,
     Message,
     Messages,
-    Sampling,
     SamplingMask,
     Tool,
     ToolMessage,
@@ -36,6 +35,7 @@ from verifiers.v1.types import (
     Usage,
     content_text,
 )
+from verifiers.v1.configs.sampling import Sampling
 
 TRACE_VERSION = 1
 """Current version of the trace schema."""

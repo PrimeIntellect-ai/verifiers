@@ -18,7 +18,7 @@ from verifiers.v1.configs.harness import HarnessConfig, WireHarnessConfig
 from verifiers.v1.configs.retries import RetryConfig
 from verifiers.v1.configs.runtime import PrimeConfig, RuntimeConfig
 from verifiers.v1.configs.scoring import ScoringConfig
-from verifiers.v1.configs.types import SamplingConfig
+from verifiers.v1.configs.sampling import SamplingConfig
 from verifiers.v1.utils.generic import merge_defaults
 
 

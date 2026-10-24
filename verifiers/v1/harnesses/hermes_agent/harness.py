@@ -13,7 +13,8 @@ from verifiers.v1.runtimes import Runtime
 from verifiers.v1.runtimes.base import _ENSURE_UV
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
-from verifiers.v1.types import DialectName, Message
+from verifiers.v1.types import Message
+from verifiers.v1.configs.harness import DialectName
 
 PROGRAM_SOURCE = (Path(__file__).resolve().parent / "program.py").read_text()
 HERMES_DIR = "/var/tmp/vf-hermes-agent-{version}"

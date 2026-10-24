@@ -16,7 +16,8 @@ from verifiers.v1.judge import (
 )
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
-from verifiers.v1.types import ID, Usage
+from verifiers.v1.types import Usage
+from verifiers.v1.configs.harness import ID
 
 
 class DecisionJudgeConfig(JudgeConfig):

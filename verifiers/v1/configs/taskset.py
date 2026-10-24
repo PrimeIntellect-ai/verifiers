@@ -6,7 +6,7 @@ from pydantic import SerializeAsAny
 from pydantic_config import BaseConfig
 
 from verifiers.v1.configs.task import TaskConfig
-from verifiers.v1.configs.types import ID
+from verifiers.v1.configs.harness import ID
 
 
 class SharedTasksetConfig(BaseConfig):

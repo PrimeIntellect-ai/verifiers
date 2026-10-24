@@ -46,7 +46,6 @@ from verifiers.v1.types import (
     BoolStream,
     FloatStream,
     IntStream,
-    DialectName,
     Message,
     Response,
     SamplingMask,
@@ -60,6 +59,7 @@ from verifiers.v1.types import (
     empty_stream,
     encode_ndarray,
 )
+from verifiers.v1.configs.harness import DialectName
 
 if TYPE_CHECKING:
     from verifiers.v1.trace import Trace

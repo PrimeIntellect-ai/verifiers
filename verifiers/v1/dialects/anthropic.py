@@ -34,8 +34,6 @@ from verifiers.v1.types import (
     Messages,
     Request,
     Response,
-    Sampling,
-    SamplingConfig,
     SystemMessage,
     TextContentPart,
     Tool,
@@ -44,6 +42,7 @@ from verifiers.v1.types import (
     Usage,
     UserMessage,
 )
+from verifiers.v1.configs.sampling import Sampling, SamplingConfig
 
 # Anthropic stop_reason -> vf finish_reason.
 STOP_REASONS: dict[str, FinishReason] = {

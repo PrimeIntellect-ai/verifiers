@@ -143,7 +143,6 @@ if TYPE_CHECKING:
         WireTrace,
     )
     from verifiers.v1.types import (
-        ID,
         AssistantMessage,
         ContentPart,
         ImageUrlContentPart,
@@ -153,8 +152,6 @@ if TYPE_CHECKING:
         Messages,
         Request,
         Response,
-        Sampling,
-        SamplingConfig,
         SamplingMask,
         SystemMessage,
         TextContentPart,
@@ -166,6 +163,8 @@ if TYPE_CHECKING:
         Usage,
         UserMessage,
     )
+    from verifiers.v1.configs.harness import ID
+    from verifiers.v1.configs.sampling import Sampling, SamplingConfig
     from verifiers.v1.utils.artifacts import ARTIFACTS_DIR, Artifact, collect, restore
     from verifiers.v1.utils.decorators import intercept, metric, reward, stop, tool
     from verifiers.v1.utils.generic import merge_defaults
@@ -241,7 +240,7 @@ _NAME_TO_MODULE = {
     "HarnessConfig": "verifiers.v1.configs.harness",
     "HarnessError": "verifiers.v1.errors",
     "HarnessSession": "verifiers.v1.harness",
-    "ID": "verifiers.v1.types",
+    "ID": "verifiers.v1.configs.harness",
     "ImageUrlContentPart": "verifiers.v1.types",
     "ImageUrlSource": "verifiers.v1.types",
     "Interaction": "verifiers.v1.agent",
@@ -282,8 +281,8 @@ _NAME_TO_MODULE = {
     "RuntimeConfig": "verifiers.v1.configs.runtime",
     "RuntimeInfo": "verifiers.v1.runtimes",
     "RuntimeProcess": "verifiers.v1.runtimes",
-    "Sampling": "verifiers.v1.types",
-    "SamplingConfig": "verifiers.v1.types",
+    "Sampling": "verifiers.v1.configs.sampling",
+    "SamplingConfig": "verifiers.v1.configs.sampling",
     "SamplingMask": "verifiers.v1.types",
     "SandboxError": "verifiers.v1.errors",
     "ScoringConfig": "verifiers.v1.configs.scoring",

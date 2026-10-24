@@ -20,7 +20,7 @@ from verifiers.v1.clients import EvalClientConfig, ModelContext
 from verifiers.v1.configs.cli.eval import EvalConfig
 from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.episode import Episode
-from verifiers.v1.types import SamplingConfig
+from verifiers.v1.configs.sampling import SamplingConfig
 from verifiers.v1.utils.loaders import harness_config_type, load_environment
 
 CI_MODEL = "internal/deepseek-v4.1-flash"
