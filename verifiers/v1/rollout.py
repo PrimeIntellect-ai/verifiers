@@ -743,20 +743,23 @@ class Rollout:
         )
         return asyncio.get_running_loop().time() + budget
 
-    async def _checkpoint(self, runtime: Runtime) -> Awaitable[str] | None:
-        """Cut a filesystem checkpoint of the finished agent's box; None when the
-        runtime has none or the request fails. `close` records its id and the
-        seconds from request to restorable."""
-        self._checkpoint_started = time.time()
+    async def _checkpoint(self, runtime: Runtime) -> None:
+        """Checkpoint the finished agent's box and wait until it is restorable, before
+        scoring can stop the box. Records its id and the seconds from request to
+        restorable; a runtime without checkpoints or a failed checkpoint records
+        nothing."""
+        started = time.time()
         try:
-            return await runtime.backend.checkpoint()
+            checkpoint_id = await runtime.backend.checkpoint()
         except NotImplementedError:
-            return None
+            return
         except Exception:
             logger.warning(
                 "checkpoint failed (rollout %s)", self.trace.id, exc_info=True
             )
-            return None
+            return
+        self.trace.info["checkpoint"] = checkpoint_id
+        self.trace.info["checkpoint_seconds"] = time.time() - started
 
     async def close(self) -> Trace:
         """Finish the rollout: task `finalize` and per-rollout scoring (skipped when the
@@ -779,7 +782,6 @@ class Rollout:
         trace = self.trace
         skip_reason = self._scoring_skip_reason()
         runtime = self.runtime
-        checkpoint: Awaitable[str] | None = None
         try:
             if trace.timing.agent.start and not trace.timing.agent.end:
                 trace.timing.agent.end = time.time()
@@ -790,7 +792,7 @@ class Rollout:
                 assert runtime is not None
                 assert self.deployment is not None
                 if self._checkpoint_on_finish:
-                    checkpoint = await self._checkpoint(runtime)
+                    await self._checkpoint(runtime)
                 grader = self._grader
                 isolated = self._scoring_policy.mode == "isolated"
                 loop = asyncio.get_running_loop()
@@ -959,16 +961,6 @@ class Rollout:
                     await self._harness_session.close()
             with contextlib.suppress(Exception):
                 await self._stack.aclose()
-            if checkpoint is not None:
-                try:
-                    trace.info["checkpoint"] = await checkpoint
-                    trace.info["checkpoint_seconds"] = (
-                        time.time() - self._checkpoint_started
-                    )
-                except Exception:
-                    logger.warning(
-                        "checkpoint failed (rollout %s)", trace.id, exc_info=True
-                    )
             trace.is_completed = True
             trace.ok = not self._failed
             now = time.time()
