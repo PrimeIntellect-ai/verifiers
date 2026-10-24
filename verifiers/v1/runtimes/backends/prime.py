@@ -58,6 +58,7 @@ _EXPOSE_TAG = "vf-exposed"
 
 
 BASE_LABELS: list[str] = []
+DEFAULT_LIFETIME: float | None = None
 
 
 @dataclass
@@ -115,6 +116,15 @@ def set_base_sandbox_labels(labels: list[str]) -> None:
     name so every sandbox of a run is findable on the platform."""
     global BASE_LABELS
     BASE_LABELS = list(labels)
+
+
+def set_default_sandbox_lifetime(seconds: float | None) -> None:
+    """Set the process-wide lifetime of Prime sandboxes whose ``PrimeConfig.lifetime`` is
+    unset. Call it in the process that creates the sandboxes, like
+    ``set_base_sandbox_labels`` — e.g. a trainer bounds how long a sandbox it leaks on
+    SIGKILL keeps running."""
+    global DEFAULT_LIFETIME
+    DEFAULT_LIFETIME = seconds
 
 
 class PrimeRuntimeInfo(PrimeConfig, BaseRuntimeInfo):
@@ -186,11 +196,23 @@ class PrimeBackend(RuntimeBackend):
             if self.config.idle_timeout is not None
             else None
         )
+        lifetime = (
+            self.config.lifetime
+            if self.config.lifetime is not None
+            else DEFAULT_LIFETIME
+        )
+        # -1 is the platform's "no limit"
+        lifetime_minutes = (
+            max(1, math.ceil(lifetime / 60)) if lifetime is not None else -1
+        )
+        if lifetime_minutes > 0 and idle_minutes is not None:
+            # The platform rejects an idle timeout above the lifetime.
+            idle_minutes = min(idle_minutes, lifetime_minutes)
         options = {
             "cpu_cores": self.config.cpu,
             "memory_gb": self.config.memory,
             "gpu_count": gpu_count,
-            "timeout_minutes": -1,
+            "timeout_minutes": lifetime_minutes,
             "idle_timeout_minutes": idle_minutes,
             "gpu_type": gpu_type,
             "region": self.config.region,
