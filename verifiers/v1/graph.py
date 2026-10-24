@@ -798,7 +798,8 @@ def _attribute_payload(
     # (node, request lo, request hi, node start)
     spans: list[tuple[int, int, int, int]] = []
     last = next(
-        (nid for nid in reversed(prefix_node_ids) if trace.nodes[nid].token_ids), None
+        (nid for nid in reversed(prefix_node_ids) if len(trace.nodes[nid].token_ids)),
+        None,
     )
     if last is not None and trace.nodes[last].sampled:
         spans.append(

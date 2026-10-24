@@ -324,8 +324,6 @@ class PayloadSegment(BaseModel):
         start, end = max(self.pos, lo), min(self.end, hi)
         if start >= end:
             return None
-        import numpy as np
-
         row_bytes = np.dtype(self.dtype).itemsize * int(np.prod(self.shape))
         return self.model_copy(
             update={
