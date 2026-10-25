@@ -3,6 +3,7 @@ the episode the worker finished with."""
 
 import asyncio
 import copy
+import json
 
 import numpy as np
 import pytest
@@ -306,3 +307,39 @@ def test_a_replaced_preview_is_sent_and_an_unchanged_one_is_not() -> None:
     trace.preview(key, [UserMessage(content="next result")])
     [(_, delta, _)] = streamer.diff()
     assert [m["content"] for m in delta["pending"]] == ["next result"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("token_arrays", [False, True])
+async def test_token_streams_ride_as_lists_unless_the_consumer_packs_arrays(
+    token_arrays,
+):
+    """A consumer that writes JSON (a trace log) gets lists, empty streams included; the
+    msgpack wire asks for raw-bytes arrays."""
+    traces: list[vf.Trace] = []
+    deltas: list[dict] = []
+
+    async def send(data: dict) -> None:
+        deltas.append(data)
+
+    async with DeltaStreamer(
+        lambda: traces, send, token_arrays=token_arrays
+    ) as streamer:
+        trace = make_trace()
+        traces.append(trace)
+        streamer.watch(trace)
+        add_turn(trace, "a1")
+        await settle()
+        traces = [trace]
+    nodes = [node for delta in deltas for node in delta.get("nodes", [])]
+    assert len(nodes) == 2  # the user node's streams are empty
+    for node in nodes:
+        assert isinstance(node["token_ids"], dict) is token_arrays
+    if not token_arrays:
+        # Each delta is one JSON line, as a trace log writes it, and folds back.
+        assembly = EpisodeAssembly()
+        for delta in deltas:
+            assembly.apply(json.loads(json.dumps(delta)))
+        restored = vf.WireTrace.model_validate(assembly.traces[trace.id])
+        assert list(restored.nodes[1].token_ids) == [1, 2, 3]
+        assert list(restored.nodes[0].token_ids) == []
