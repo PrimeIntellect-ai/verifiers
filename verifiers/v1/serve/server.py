@@ -209,12 +209,8 @@ class EnvServer:
         except Exception as e:
             # Encoding failures must also reply so clients don't wait indefinitely.
             logger.warning("response encoding failed: %s", e, exc_info=True)
-            data = msgpack.packb(
-                BaseResponse(
-                    success=False, error=f"{type(e).__name__}: {e}"
-                ).model_dump(),
-                use_bin_type=True,
-            )
+            response = BaseResponse(success=False, error=f"{type(e).__name__}: {e}")
+            data = msgpack.packb(response.model_dump(), use_bin_type=True)
         delivered = False
         try:
             await self.frontend.send_multipart(
