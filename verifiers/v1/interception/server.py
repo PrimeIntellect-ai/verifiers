@@ -162,9 +162,13 @@ run with an empty reply counts at most 3 (Nemotron 3.5: 143 such endings, none p
 
 
 UNSENT_TAIL_TOKENS = 16
-"""Completion tokens a reply with text and no tool call may leave unaccounted for, its
-text counted at 2 characters a token (more tokens than it is): more means the provider
-generated a tool call after the text and sent none of it."""
+"""Completion tokens a reply with text and no tool call may leave unaccounted for: more
+means the provider generated a tool call after the text and sent none of it. The text is
+counted at 3.5 characters a token when short (a sentence announcing the next step, the
+shape the dropped calls take) and at 2 when long (a final summary's markdown and code
+pack more characters into a token)."""
+
+SHORT_TEXT_CHARS = 300
 
 
 def _check_unsent_tail(response: Response, content: str) -> None:
@@ -176,8 +180,11 @@ def _check_unsent_tail(response: Response, content: str) -> None:
     usage = response.usage
     if usage is None or usage.reasoning_tokens is None:
         return
+    per_token = 3.5 if len(content) <= SHORT_TEXT_CHARS else 2
     unsent = (
-        usage.completion_tokens - usage.reasoning_tokens - math.ceil(len(content) / 2)
+        usage.completion_tokens
+        - usage.reasoning_tokens
+        - math.ceil(len(content) / per_token)
     )
     if unsent > UNSENT_TAIL_TOKENS:
         raise model_error(

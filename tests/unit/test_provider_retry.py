@@ -113,8 +113,8 @@ class Provider:
             completion["choices"][0]["finish_reason"] = "stop"
             completion["usage"] = {
                 "prompt_tokens": 20,
-                "completion_tokens": 62,
-                "total_tokens": 82,
+                "completion_tokens": 40,
+                "total_tokens": 60,
                 "completion_tokens_details": {"reasoning_tokens": 0},
             }
         if failure == "summary":
