@@ -9,12 +9,12 @@ score averaged across them.
 """
 
 import asyncio
-import json
 import random
 import shlex
 import statistics
 import uuid
 
+import orjson
 from pydantic import BaseModel, ConfigDict, Field
 
 import verifiers.v1 as vf
@@ -136,7 +136,7 @@ class RankTask(vf.Task):
         for node in record["nodes"]:
             node["message"].pop("reasoning_content", None)
             node["message"].pop("provider_state", None)
-        return json.dumps(vf.json_safe_record(record)).encode()
+        return orjson.dumps(record, option=orjson.OPT_SERIALIZE_NUMPY)
 
     async def setup(self, trace: vf.Trace, runtime: vf.Runtime) -> None:
         # Archive bytes are the attempts': confine every member to its declared

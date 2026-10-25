@@ -6,10 +6,10 @@ The judge has its own non-training trace and writes rubric verdicts to a file.
 """
 
 import copy
-import json
 import re
 from pathlib import Path
 
+import orjson
 from pydantic import FiniteFloat
 
 import verifiers.v1 as vf
@@ -147,7 +147,7 @@ class JudgeTask(vf.Task):
                 message = node["message"]
                 message.pop("reasoning_content", None)
                 message.pop("provider_state", None)
-        files = {TRACE_FILE: json.dumps(vf.json_safe_record(record)).encode()}
+        files = {TRACE_FILE: orjson.dumps(record, option=orjson.OPT_SERIALIZE_NUMPY)}
         template = config.build_prompt()
         body = _render(template, prompt=solved.prompt_text)
         if "{prompt}" not in template:

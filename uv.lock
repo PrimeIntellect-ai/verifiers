@@ -21,15 +21,15 @@ exclude-newer = "0001-01-01T00:00:00Z" # This has no effect and is included for 
 exclude-newer-span = "P7D"
 
 [options.exclude-newer-package]
-prime-pydantic-config = false
-harbor = "2026-10-08T00:00:00Z"
-ty = "2026-07-28T00:00:00Z"
-ruff = "2026-07-28T00:00:00Z"
-prime-runs = false
-prime-tunnel = false
 certifi = false
+harbor = "2026-10-08T00:00:00Z"
+prime-pydantic-config = false
+prime-runs = false
 prime-sandboxes = false
+prime-tunnel = false
 renderers = false
+ruff = "2026-07-28T00:00:00Z"
+ty = "2026-07-28T00:00:00Z"
 
 [[package]]
 name = "aiofile"
@@ -5187,6 +5187,7 @@ dependencies = [
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
     { name = "numpy", version = "2.5.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "openai" },
+    { name = "orjson" },
     { name = "prime-pydantic-config", extra = ["toml"] },
     { name = "prime-runs" },
     { name = "prime-sandboxes" },
