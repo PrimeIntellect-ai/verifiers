@@ -5,7 +5,7 @@ them at construction where the pairing is statically decidable."""
 import logging
 from collections.abc import Collection
 
-from verifiers.v1.configs.runtime import NetworkPolicyConfig
+from verifiers.v1.configs.runtime import NetworkPolicyConfig, PrimeConfig
 from verifiers.v1.harness import Harness
 from verifiers.v1.runtimes import (
     RuntimeConfig,
@@ -34,6 +34,14 @@ def resolve_runtime_config(
                 f"{config.type} runtime cannot run images; use a supported runtime"
             )
         updates["image"] = task.data.image
+    if task.data.checkpoint is not None:
+        if not isinstance(config, PrimeConfig):
+            raise ValueError(
+                f"task {task.data.idx!r} starts from checkpoint "
+                f"{task.data.checkpoint!r}, but the {config.type} runtime cannot "
+                "start from a checkpoint; use the prime runtime"
+            )
+        updates["checkpoint"] = task.data.checkpoint
     workdir_spec = type(config).model_fields.get("workdir")
     if (
         task.data.workdir is not None

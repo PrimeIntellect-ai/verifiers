@@ -41,6 +41,8 @@ Harbor is a task-format adapter: its tasks work directly under `SingleAgentEnv`,
 
 For standard single-container tasks, verifiers requires a pullable container image rather than building Dockerfiles on the fly (Compose tasks can build service images inside the sandbox; see [Deployment and services](runtimes.md#deployment-and-services)). To prepare images for your tasks, build each Dockerfile with Docker, push it to a registry, and set the resulting image reference on the task data.
 
+A single-container task can instead start from a Prime checkpoint: `checkpoint_id = "..."` under `[environment]` in `task.toml` (a key Harbor itself ignores). The solver's box and a separate verifier's fresh box both restore it instead of pulling an image (a verifier with an image of its own uses that), so a task built once in a box and checkpointed needs no registry. `cpus`, `memory_mb`, timeouts and task file uploads apply as usual; a checkpoint that is gone fails the rollout as `checkpoint_missing`. Compose tasks cannot name one.
+
 You can override each task's `image` and `verifier_image` in `load()` using `task.with_data(...)`, which returns a copy of the task with only the specified fields updated:
 
 ```python

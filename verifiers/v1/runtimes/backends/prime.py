@@ -864,6 +864,11 @@ class PrimeBackend(RuntimeBackend):
                 # found, deleted or deleting: it cannot restore this checkpoint. A 404 once the
                 # box exists (a box reaped while booting) is about the box.
                 kind = "checkpoint_missing"
+                raise SandboxError(
+                    f"prime sandbox provisioning failed: checkpoint "
+                    f"{self.config.checkpoint} is gone (deleted or expired): {e}",
+                    kind=kind,
+                ) from e
             raise SandboxError(
                 f"prime sandbox provisioning failed: {e}", kind=kind
             ) from e

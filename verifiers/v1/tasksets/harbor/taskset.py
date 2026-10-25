@@ -969,6 +969,8 @@ def verifier_box_data(data: HarborData) -> HarborData:
             "image": data.verifier_image
             if data.verifier_image is not None
             else data.image,
+            # A grader with an image of its own does not start from the solver's world.
+            "checkpoint": None if data.verifier_image is not None else data.checkpoint,
             "workdir": data.workdir if fresh else verifier.workdir,
             "resources": data.resources if fresh else sized,
             "upload_environment": data.upload_environment
@@ -1266,9 +1268,19 @@ def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborD
     # Harbor ignores the `[[tools]]` table; each bundle compiles to an MCP server
     # entry, a collect hook that dumps its end state before the authored hooks (in
     # the service it runs in), and that dump as a declared artifact.
-    tools = toolbundles.parse_mounts(
-        task_dir, tomllib.loads((task_dir / "task.toml").read_text()).get("tools")
-    )
+    raw = tomllib.loads((task_dir / "task.toml").read_text())
+    tools = toolbundles.parse_mounts(task_dir, raw.get("tools"))
+    # Harbor's own model ignores the key: `harbor run` builds or pulls as before.
+    checkpoint = (raw.get("environment") or {}).get("checkpoint_id")
+    if checkpoint is not None and (
+        not isinstance(checkpoint, str)
+        or not checkpoint
+        or (task_dir / "environment" / "docker-compose.yaml").is_file()
+    ):
+        raise ValueError(
+            f"{task_dir.name}: [environment] checkpoint_id must be a checkpoint id, "
+            "for a task without environment/docker-compose.yaml"
+        )
     mcp_servers = [server.model_dump(mode="json") for server in environment.mcp_servers]
     if clash := {m.bundle for m in tools} & {server["name"] for server in mcp_servers}:
         raise ValueError(
@@ -1388,6 +1400,7 @@ def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborD
         **environment.model_dump(include={"env", "healthcheck"}, mode="json"),
         mcp_servers=mcp_servers,
         tools=tools,
+        checkpoint=checkpoint,
         compose_host_image=compose_host,
         verifier_image=verifier_image,
         verifier_env=parsed.verifier.env,

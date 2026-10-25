@@ -277,6 +277,8 @@ async def test_prime_restore_of_a_gone_checkpoint_is_checkpoint_missing(
         await restoring.start()
     await restoring.teardown()
     assert (caught.value.kind == "checkpoint_missing") is missing
+    if missing:  # the error names the checkpoint, to find which task holds it
+        assert "ck-gone" in str(caught.value)
 
     fresh = PrimeBackend(PrimeConfig())
     with pytest.raises(SandboxError) as caught:

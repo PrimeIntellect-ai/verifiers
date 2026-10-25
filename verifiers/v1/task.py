@@ -162,6 +162,11 @@ class TaskData(BaseModel):
 
     image: str | None = None
     """Optional Docker image to use for the task. Only relevant for tasks that run in a container."""
+    checkpoint: str | None = None
+    """A provider checkpoint (a Prime checkpoint id) the task's box starts from instead
+    of `image`: the solver's box, and an isolated grader's fresh box unless the grader
+    has an image of its own. Resources and timeouts still apply. A run resuming a trace
+    starts from the trace's own later checkpoint instead."""
     workdir: str | None = None
     """Optional working directory to use for the task. Only relevant for tasks that run in a container."""
     agent_user: str | None = None
