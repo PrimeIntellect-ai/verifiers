@@ -147,7 +147,7 @@ class JudgeTask(vf.Task):
                 message = node["message"]
                 message.pop("reasoning_content", None)
                 message.pop("provider_state", None)
-        files = {TRACE_FILE: json.dumps(record).encode()}
+        files = {TRACE_FILE: json.dumps(vf.json_safe_record(record)).encode()}
         template = config.build_prompt()
         body = _render(template, prompt=solved.prompt_text)
         if "{prompt}" not in template:

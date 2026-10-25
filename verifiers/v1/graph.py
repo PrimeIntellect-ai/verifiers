@@ -88,22 +88,64 @@ ROUNDED_STREAMS = (
 """Float streams a JSON record rounds to `float_decimals`. Loss weights stay exact: a 1/T
 weight would round to zero."""
 
+RECORD_STREAMS = ("token_ids", "mask", "is_content", *ROUNDED_STREAMS, "loss_weights")
+"""Per-token node fields a JSON record (`to_record`) carries as numpy arrays — `loss_weights`
+as a dict of them — so an encoder writes each stream in one pass instead of element by
+element."""
+
+
+def round_stream(values: list | np.ndarray, decimals: int) -> np.ndarray:
+    """A float stream rounded to `decimals`, in float64."""
+    return np.round(np.asarray(values, dtype=np.float64), decimals)
+
+
+def _record_array(values: list | np.ndarray, decimals: int | None) -> np.ndarray:
+    """A stream as a record array: C-contiguous, which numpy-aware encoders require. Floats
+    widen to float64 so they print the digits a list of Python floats does — float32 would
+    print its own shortest form."""
+    array = np.asarray(values)
+    if array.dtype.kind == "f":
+        if decimals is not None:
+            return round_stream(array, decimals)
+        return array.astype(np.float64)
+    return np.ascontiguousarray(array)
+
 
 def _serialize_stream(
     values: list | np.ndarray, info: FieldSerializationInfo, rounded: bool
 ) -> list | dict:
-    """JSON records: a list. Python dumps: a list too, unless the context sets `token_arrays`,
+    """JSON dumps: a list. Python dumps: a list too, unless the context sets `token_arrays`,
     when the msgpack wire carries a raw-bytes `__nd__` dict."""
     context = info.context or {}
     if info.mode_is_json():
-        values = as_list(values)
         decimals = context.get("float_decimals", RECORD_FLOAT_DECIMALS)
         if not rounded or decimals is None:
-            return values
-        return [round(value, decimals) for value in values]
+            return as_list(values)
+        return round_stream(values, decimals).tolist()
     if context.get("token_arrays"):
         return encode_ndarray(np.asarray(values))
     return as_list(values)
+
+
+def json_safe_record(record: dict[str, Any]) -> dict[str, Any]:
+    """A `to_record` record (an episode's or a trace's) with its stream arrays as lists, for
+    encoders without numpy support such as the stdlib `json`. The input stays as it was."""
+    if "nodes" not in record:
+        return {
+            **record,
+            "traces": [json_safe_record(trace) for trace in record.get("traces") or []],
+        }
+    nodes = []
+    for node in record["nodes"]:
+        node = dict(node)
+        for name in RECORD_STREAMS:
+            value = node.get(name)
+            if isinstance(value, np.ndarray):
+                node[name] = value.tolist()
+            elif isinstance(value, dict):
+                node[name] = {key: array.tolist() for key, array in value.items()}
+        nodes.append(node)
+    return {**record, "nodes": nodes}
 
 
 class MessageNode(BaseModel):
@@ -206,6 +248,30 @@ class MessageNode(BaseModel):
             if self.renderer_token_ids is None
             else self.renderer_token_ids
         )
+
+    def record(
+        self, dumped: dict[str, Any], float_decimals: int | None, exclude_none: bool
+    ) -> dict[str, Any]:
+        """This node's JSON record: `dumped` (its JSON dump without `RECORD_STREAMS`) joined
+        with the streams as record arrays, in field order. Float streams in
+        `ROUNDED_STREAMS` are rounded to `float_decimals` (`None` keeps every digit)."""
+        record = dict(dumped)
+        for name in RECORD_STREAMS:
+            values = getattr(self, name)
+            if values is None:
+                if not exclude_none:
+                    record[name] = None
+            elif name == "loss_weights":
+                record[name] = {
+                    key: _record_array(stream, None) for key, stream in values.items()
+                }
+            else:
+                decimals = float_decimals if name in ROUNDED_STREAMS else None
+                record[name] = _record_array(values, decimals)
+        ordered = {
+            name: record[name] for name in type(self).model_fields if name in record
+        }
+        return ordered | record
 
     @field_serializer("token_ids", "mask", "is_content", *ROUNDED_STREAMS)
     def serialize_token_stream(

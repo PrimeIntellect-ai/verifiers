@@ -2,14 +2,16 @@
 
 import json
 
+import numpy as np
 import pytest
 
 import verifiers.v1 as vf
 from verifiers.v1.configs.agent import resolve_agent
 from verifiers.v1.dialects.chat import ChatDialect
 from verifiers.v1.dialects.responses import ResponsesDialect, fold_assistant
-from verifiers.v1.graph import MessageNode, prepare_turn
+from verifiers.v1.graph import MessageNode, prepare_turn, round_stream
 from verifiers.v1.session import RolloutLimits
+from verifiers.v1.trace import EXCLUDE_FIELDS
 from verifiers.v1.types import AssistantMessage, UserMessage
 from verifiers.v1.utils.trace_store import write_episode
 
@@ -71,6 +73,68 @@ def test_bare_trace_round_trip(sampling):
         assert rt.reward == 0.0 and rt.errors == []
         assert rt.agent.config == tr.agent.config
         assert rt.agent.config.sampling.model_dump() == resolved.sampling.model_dump()
+
+
+def _streamed_trace() -> vf.Trace:
+    return vf.Trace(
+        agent=vf.AgentInfo(config=vf.AgentConfig()),
+        task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt="q")),
+        nodes=[
+            MessageNode(
+                message=UserMessage(content="q"),
+                token_ids=[1, 2, 3],
+                is_content=[False, True, True],
+            ),
+            MessageNode(
+                parent=0,
+                message=AssistantMessage(content="a"),
+                sampled=True,
+                token_ids=[4, 5, 6],
+                mask=[False, True, True],
+                logprobs=[-0.123456, -1.00005],
+                advantages=[0.333333, 0.333333],
+                loss_weights={"policy": [0.0, 1 / 3, 1 / 3]},
+            ),
+        ],
+    )
+
+
+@pytest.mark.parametrize("float_decimals", [4, None])
+def test_record_streams_are_arrays_with_json_dump_content(float_decimals):
+    tr = _streamed_trace()
+    episode = vf.Episode(task=tr.task, traces=[tr], ok=True)
+    context = {"float_decimals": float_decimals}
+    cases = [
+        (
+            tr.to_record(float_decimals),
+            tr.model_dump(mode="json", exclude=EXCLUDE_FIELDS, context=context),
+        ),
+        (
+            episode.to_record(float_decimals),
+            episode.model_dump(
+                mode="json",
+                exclude={"traces": {"__all__": EXCLUDE_FIELDS}},
+                exclude_none=True,
+                context=context,
+            ),
+        ),
+    ]
+    for record, json_dump in cases:
+        nodes = (record["traces"][0] if "traces" in record else record)["nodes"]
+        assert isinstance(nodes[1]["token_ids"], np.ndarray)
+        assert nodes[1]["logprobs"].dtype == np.float64
+        assert isinstance(nodes[1]["loss_weights"]["policy"], np.ndarray)
+        # same content and key order as the plain JSON dump
+        assert json.dumps(vf.json_safe_record(record)) == json.dumps(json_dump)
+        # the input stays as it was
+        assert isinstance(nodes[1]["token_ids"], np.ndarray)
+
+
+def test_round_stream_matches_round():
+    values = np.random.default_rng(0).standard_normal(100_000).astype(np.float32) * 10
+    values = np.concatenate([values, np.float32([0.00005, -0.00015, 1.23445, 2.5e-5])])
+    expected = [round(value, 4) for value in values.tolist()]
+    assert round_stream(values, 4).tolist() == expected
 
 
 def test_custom_task_state_round_trip(tmp_path):

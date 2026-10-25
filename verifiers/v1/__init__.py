@@ -90,7 +90,7 @@ if TYPE_CHECKING:
         TunnelError,
     )
     from verifiers.v1.grading import grade_submission
-    from verifiers.v1.graph import MessageNode
+    from verifiers.v1.graph import MessageNode, json_safe_record
     from verifiers.v1.harness import Harness, HarnessSession
     from verifiers.v1.judge import Judge, JudgeResponse, JudgeView
     from verifiers.v1.judges import (
@@ -356,6 +356,7 @@ _NAME_TO_MODULE = {
     "import_judge": "verifiers.v1.utils.loaders",
     "import_taskset": "verifiers.v1.utils.loaders",
     "intercept": "verifiers.v1.utils.decorators",
+    "json_safe_record": "verifiers.v1.graph",
     "judge_config_type": "verifiers.v1.utils.loaders",
     "load_environment": "verifiers.v1.utils.loaders",
     "load_harness": "verifiers.v1.utils.loaders",
@@ -437,6 +438,7 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "State",
     "StateT",
     "MessageNode",
+    "json_safe_record",
     "Branch",
     "TurnTokens",
     "SamplingMask",

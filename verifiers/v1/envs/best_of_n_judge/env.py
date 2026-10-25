@@ -136,7 +136,7 @@ class RankTask(vf.Task):
         for node in record["nodes"]:
             node["message"].pop("reasoning_content", None)
             node["message"].pop("provider_state", None)
-        return json.dumps(record).encode()
+        return json.dumps(vf.json_safe_record(record)).encode()
 
     async def setup(self, trace: vf.Trace, runtime: vf.Runtime) -> None:
         # Archive bytes are the attempts': confine every member to its declared

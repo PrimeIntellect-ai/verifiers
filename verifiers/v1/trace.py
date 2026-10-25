@@ -52,6 +52,25 @@ EXCLUDE_FIELDS: dict = {
 }
 """Raw tensor fields kept on the msgpack wire but excluded from disk serialization."""
 
+RECORD_DUMP_EXCLUDE: dict = {
+    "nodes": {"__all__": EXCLUDE_FIELDS["nodes"]["__all__"] | set(graph.RECORD_STREAMS)}
+}
+"""What `to_record` leaves out of its JSON dump: the excluded tensors, and the per-token
+streams it then adds as numpy arrays."""
+
+
+def add_record_streams(
+    record: dict[str, Any],
+    trace: Trace,
+    float_decimals: int | None,
+    exclude_none: bool,
+) -> None:
+    """Join a trace's record (dumped with `RECORD_DUMP_EXCLUDE`) with its node streams."""
+    record["nodes"] = [
+        node.record(dumped, float_decimals, exclude_none)
+        for dumped, node in zip(record["nodes"], trace.nodes, strict=True)
+    ]
+
 
 class TimeSpan(BaseModel):
     """Wall-clock timestamps with a derived, non-serialized duration in seconds."""
@@ -799,12 +818,13 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         self, float_decimals: int | None = RECORD_FLOAT_DECIMALS
     ) -> dict[str, Any]:
         """JSON record without raw tensors, which remain available on the msgpack wire.
-        Per-token float streams are rounded to `float_decimals` (`None` keeps every digit)."""
-        return self.model_dump(
-            mode="json",
-            exclude=EXCLUDE_FIELDS,
-            context={"float_decimals": float_decimals},
-        )
+        Per-token node streams are numpy arrays (`graph.RECORD_STREAMS`): write it with a
+        numpy-aware encoder such as orjson with `OPT_SERIALIZE_NUMPY`, or convert it with
+        `json_safe_record` first. Per-token float streams are rounded to `float_decimals`
+        (`None` keeps every digit)."""
+        record = self.model_dump(mode="json", exclude=RECORD_DUMP_EXCLUDE)
+        add_record_streams(record, self, float_decimals, exclude_none=False)
+        return record
 
 
 WireTrace = Trace[WireTaskData, State, WireAgentConfig]

@@ -9,7 +9,14 @@ from verifiers.v1.configs.agent import WireAgentConfig
 from verifiers.v1.graph import RECORD_FLOAT_DECIMALS
 from verifiers.v1.state import State, StateT
 from verifiers.v1.task import DataT, WireTaskData
-from verifiers.v1.trace import EXCLUDE_FIELDS, AgentConfigT, Error, Trace, TraceTask
+from verifiers.v1.trace import (
+    RECORD_DUMP_EXCLUDE,
+    AgentConfigT,
+    Error,
+    Trace,
+    TraceTask,
+    add_record_streams,
+)
 from verifiers.v1.types import Usage
 
 
@@ -157,13 +164,18 @@ class Episode(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         self, float_decimals: int | None = RECORD_FLOAT_DECIMALS
     ) -> dict[str, Any]:
         """JSON record without raw trace tensors, which remain on the msgpack wire.
-        Per-token float streams are rounded to `float_decimals` (`None` keeps every digit)."""
-        return self.model_dump(
+        Per-token node streams are numpy arrays (`graph.RECORD_STREAMS`): write it with a
+        numpy-aware encoder such as orjson with `OPT_SERIALIZE_NUMPY`, or convert it with
+        `json_safe_record` first. Per-token float streams are rounded to `float_decimals`
+        (`None` keeps every digit)."""
+        record = self.model_dump(
             mode="json",
-            exclude={"traces": {"__all__": EXCLUDE_FIELDS}},
+            exclude={"traces": {"__all__": RECORD_DUMP_EXCLUDE}},
             exclude_none=True,
-            context={"float_decimals": float_decimals},
         )
+        for trace_record, trace in zip(record["traces"], self.traces, strict=True):
+            add_record_streams(trace_record, trace, float_decimals, exclude_none=True)
+        return record
 
 
 WireEpisode = Episode[WireTaskData, State, WireAgentConfig]
