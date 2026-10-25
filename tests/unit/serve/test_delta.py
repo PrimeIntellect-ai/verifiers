@@ -172,8 +172,7 @@ async def test_pending_preview_streams_and_clears_on_commit():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("routing_dtype", [np.uint8, np.uint16])
-async def test_deltas_stream_once_and_reassemble_the_episode(routing_dtype):
+async def test_deltas_stream_once_and_reassemble_the_episode():
     traces: list[vf.Trace] = []
     frames: list[bytes] = []
 
@@ -192,12 +191,6 @@ async def test_deltas_stream_once_and_reassemble_the_episode(routing_dtype):
         trace.nodes[1].routed_experts = np.arange(6, dtype=np.uint8).reshape(3, 2, 1)
         await settle()
         add_turn(trace, "a2")
-        # The next prefill corrects the previous turn's last routing row, potentially
-        # widening its dtype. The previous node has already crossed the wire.
-        trace.nodes[1].routed_experts = np.array(
-            [[[0], [1]], [[2], [3]], [[100], [np.iinfo(routing_dtype).max]]],
-            dtype=routing_dtype,
-        )
         trace.nodes[0].semantic_parents.append(ParentLink(node=1, type="reply"))
         await settle()
         trace.record_reward("match", 1.0)
@@ -228,10 +221,8 @@ async def test_deltas_stream_once_and_reassemble_the_episode(routing_dtype):
     rebuilt = WireEpisode.model_validate(unpack(pack(assembly.finish(head, summaries))))
     assert rebuilt.ok and rebuilt.traces[0].id == trace.id
     assert rebuilt.traces[0].messages == trace.messages
-    np.testing.assert_array_equal(
-        rebuilt.traces[0].nodes[1].routed_experts, trace.nodes[1].routed_experts
-    )
-    assert rebuilt.traces[0].nodes[1].routed_experts.dtype == routing_dtype
+    # Training arrays stay in the worker.
+    assert rebuilt.traces[0].nodes[1].routed_experts is None
     assert (
         rebuilt.traces[0].nodes[0].semantic_parents == trace.nodes[0].semantic_parents
     )
@@ -272,30 +263,3 @@ def test_finish_refuses_a_gap():
     assembly.apply({"trace": "t", "open": {"id": "t"}, "nodes": [{}]})
     with pytest.raises(RuntimeError, match="assembled 1 nodes"):
         assembly.finish({}, [TraceSummary(id="t", nodes=2, calls=0)])
-
-
-@pytest.mark.asyncio
-async def test_streamer_without_arrays_streams_nodes_without_them():
-    """A host that keeps the training arrays itself (`set_episode_hook`) streams nodes
-    without them, and sends no routing repairs."""
-    traces: list[vf.Trace] = []
-    frames: list[bytes] = []
-
-    async def send(data: dict) -> None:
-        frames.append(pack(data))
-
-    async with DeltaStreamer(lambda: traces, send, keep_arrays=False) as streamer:
-        trace = make_trace()
-        traces.append(trace)
-        streamer.watch(trace)
-        add_turn(trace, "a1")
-        trace.nodes[1].routed_experts = np.arange(6, dtype=np.uint8).reshape(3, 2, 1)
-        await settle()
-        add_turn(trace, "a2")
-        trace.nodes[1].routed_experts = np.zeros((3, 2, 1), dtype=np.uint8)
-        await settle()
-    deltas = [unpack(frame) for frame in frames]
-    nodes = [node for delta in deltas for node in delta.get("nodes", [])]
-    assert len(nodes) == 3
-    assert all("routed_experts" not in node for node in nodes)
-    assert not any("routing_repairs" in delta for delta in deltas)

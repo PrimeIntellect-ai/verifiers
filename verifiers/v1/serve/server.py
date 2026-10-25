@@ -43,9 +43,9 @@ _episode_hook: EpisodeHook | None = None
 
 
 def set_episode_hook(hook: EpisodeHook | None) -> None:
-    """Install a hook that keeps finished episodes' training arrays. Every episode it
-    keeps is either delivered in its run's reply or handed back to `discard`. While a
-    hook is set, the streamed nodes carry no training arrays."""
+    """Install a hook that keeps finished episodes' training arrays. Streamed nodes never
+    carry them, so the hook is the only way they leave the worker. Every episode it
+    keeps is either delivered in its run's reply or handed back to `discard`."""
     global _episode_hook
     _episode_hook = hook
 
@@ -136,9 +136,7 @@ class EnvServer:
         # in flight the same way the in-process eval's semaphore does. The streamer
         # ships each trace as it changes; the reply below carries only the rest.
         hook = _episode_hook
-        async with DeltaStreamer(
-            lambda: slot.traces, send_delta, keep_arrays=hook is None
-        ) as streamer:
+        async with DeltaStreamer(lambda: slot.traces, send_delta) as streamer:
             episode = await self.env.run_slot(
                 slot, ctx, self._gate, on_trace=streamer.watch
             )
