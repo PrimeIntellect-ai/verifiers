@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import threading
+import time
 from typing import Protocol
 
 import msgpack
@@ -42,11 +43,16 @@ class EpisodeHook(Protocol):
 
 _episode_hook: EpisodeHook | None = None
 
+LATE_CANCEL_SECONDS = 10.0
+"""How long a delivered episode stays discardable: a client whose caller cancels the run
+after the reply left drops the reply and sends a cancel right away."""
+
 
 def set_episode_hook(hook: EpisodeHook | None) -> None:
     """Install a hook that keeps finished episodes' training arrays. Streamed nodes never
     carry them, so the hook is the only way they leave the worker. Every episode it
-    keeps is either delivered in its run's reply or handed back to `discard`."""
+    keeps is either delivered in its run's reply or handed back to `discard`, and so is
+    a delivered one whose client cancels the run within `LATE_CANCEL_SECONDS`."""
     global _episode_hook
     _episode_hook = hook
 
@@ -112,6 +118,8 @@ class EnvServer:
         self._running: dict[str, asyncio.Task] = {}
         # Episodes the hook kept, by run request, until their reply is sent.
         self._kept: dict[bytes, tuple[EpisodeHook, Episode]] = {}
+        self._delivered: dict[str, tuple[float, EpisodeHook, Episode]] = {}
+        """Recently delivered kept episodes, oldest first, for a cancel that arrives late."""
         self.ctx = zmq.asyncio.Context()
         self.frontend = self.ctx.socket(zmq.ROUTER)
         self.frontend.setsockopt(zmq.ROUTER_MANDATORY, 1)
@@ -215,6 +223,10 @@ class EnvServer:
                 if running is not None:
                     running.cancel()
                     logger.info("cancelled run %s on client request", target)
+                if (late := self._delivered.pop(target, None)) is not None:
+                    # The client dropped the reply, so nothing will ever take the arrays.
+                    _, hook, episode = late
+                    hook.discard(episode)
                 response = CancelResponse(cancelled=running is not None)
             else:
                 response = BaseResponse(
@@ -251,9 +263,22 @@ class EnvServer:
         finally:
             # Also on a cancel (shutdown) while the reply is sending.
             kept = self._kept.pop(request_id, None)
-            if kept is not None and not delivered:
+            if kept is not None:
                 hook, episode = kept
-                hook.discard(episode)
+                if delivered:
+                    self._remember_delivered(request_id.decode(), hook, episode)
+                else:
+                    hook.discard(episode)
+
+    def _remember_delivered(
+        self, request_id: str, hook: EpisodeHook, episode: Episode
+    ) -> None:
+        now = time.monotonic()
+        self._delivered[request_id] = (now, hook, episode)
+        for old, (delivered_at, _, _) in list(self._delivered.items()):
+            if now - delivered_at <= LATE_CANCEL_SECONDS:
+                break
+            del self._delivered[old]
 
     async def run(self) -> None:
         logger.info(
