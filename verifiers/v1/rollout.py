@@ -78,8 +78,13 @@ class RolloutTimeouts:
     isolated verifier setup and retries. Finalization has its own budget."""
 
 
+# Shell builtins only, past `getent` when the image has it: some task images delete awk,
+# cut and friends so a solver cannot wrap them, and the lookup must still find the user.
 _HOME_PROBE = (
-    "home=$(awk -F: -v u=\"$1\" '$1 == u { print $6 }' /etc/passwd); "
+    'entry=$(getent passwd "$1" 2>/dev/null) || entry=$('
+    'while IFS= read -r line || [ -n "$line" ]; do case $line in "$1":*) '
+    "printf '%s\\n' \"$line\"; break;; esac; done < /etc/passwd); "
+    "home=$(printf '%s\\n' \"$entry\" | { IFS=: read -r _ _ _ _ _ dir _; printf '%s' \"$dir\"; }); "
     'echo "$home"; test -n "$home" && test -d "$home"'
 )
 
