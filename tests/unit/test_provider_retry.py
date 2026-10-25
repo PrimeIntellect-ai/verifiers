@@ -104,6 +104,32 @@ class Provider:
                 "total_tokens": 105,
                 "completion_tokens_details": {"reasoning_tokens": 6},
             }
+        if failure == "tail":
+            # text, then a tool call the provider generated and never sent
+            completion["choices"][0]["message"] = {
+                "role": "assistant",
+                "content": "I'll start by exploring the environment.",
+            }
+            completion["choices"][0]["finish_reason"] = "stop"
+            completion["usage"] = {
+                "prompt_tokens": 20,
+                "completion_tokens": 62,
+                "total_tokens": 82,
+                "completion_tokens_details": {"reasoning_tokens": 0},
+            }
+        if failure == "summary":
+            # a final answer: its usage covers its text
+            completion["choices"][0]["message"] = {
+                "role": "assistant",
+                "content": "Done. The notes are written and the tests pass.",
+            }
+            completion["choices"][0]["finish_reason"] = "stop"
+            completion["usage"] = {
+                "prompt_tokens": 20,
+                "completion_tokens": 12,
+                "total_tokens": 32,
+                "completion_tokens_details": {"reasoning_tokens": 0},
+            }
         if failure == "eos":
             # the provider answered with one end-of-turn token: no content, no tool
             # calls, no reasoning
@@ -381,6 +407,30 @@ async def test_an_empty_turn_after_reasoning_is_kept():
     """A model that reasons and then ends with an empty reply (its usage counting only
     an end-of-turn token past the reasoning) ends its run: nothing is retried."""
     async with Provider("done") as provider:
+        agent = make(provider, StreamHarness)
+        trace = await agent.run(task())
+    assert len(provider.requests) == 1
+    assert all(call.error is None for call in trace.calls)
+
+
+@pytest.mark.parametrize(
+    "harness", [ScriptHarness, StreamHarness], ids=["json", "stream"]
+)
+async def test_a_turn_with_text_and_unsent_output_is_retried(harness):
+    """A reply with text, no tool calls and usage counting clearly more output than its
+    text (the provider dropped the tool call after it) is retried in place."""
+    async with Provider("tail", "ok", "ok", "ok") as provider:
+        agent = make(provider, harness)
+        trace = await agent.run(task())
+    assert trace.ok, trace.errors
+    assert trace.calls[0].node is None
+    assert "never arrived" in trace.calls[0].error.message
+    assert len(provider.requests) == (4 if harness is ScriptHarness else 2)
+
+
+async def test_a_final_answer_with_text_is_kept():
+    """A reply whose usage covers its text is a final answer: nothing is retried."""
+    async with Provider("summary") as provider:
         agent = make(provider, StreamHarness)
         trace = await agent.run(task())
     assert len(provider.requests) == 1

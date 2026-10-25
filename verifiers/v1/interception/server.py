@@ -24,6 +24,7 @@ import contextlib
 import hashlib
 import json
 import logging
+import math
 import secrets
 import time
 import traceback
@@ -160,6 +161,33 @@ markers); more means the provider generated output it did not send. A model that
 run with an empty reply counts at most 3 (Nemotron 3.5: 143 such endings, none past 3)."""
 
 
+UNSENT_TAIL_TOKENS = 16
+"""Completion tokens a reply with text and no tool call may leave unaccounted for, its
+text counted at 2 characters a token (more tokens than it is): more means the provider
+generated a tool call after the text and sent none of it."""
+
+
+def _check_unsent_tail(response: Response, content: str) -> None:
+    """Raise a transient `ProviderError` for a reply with text, no tool calls and usage
+    counting clearly more output than its reasoning and text (GLM 5.3 on Prime,
+    2026-10-25: "I'll start by exploring the environment ..." of ~20 tokens in a
+    62-token completion, finish "stop", the tool call the text announced dropped; 1 in
+    6 samples of a first turn). The harness would take the turn as the end of the run."""
+    usage = response.usage
+    if usage is None or usage.reasoning_tokens is None:
+        return
+    unsent = (
+        usage.completion_tokens - usage.reasoning_tokens - math.ceil(len(content) / 2)
+    )
+    if unsent > UNSENT_TAIL_TOKENS:
+        raise model_error(
+            "malformed upstream response: a turn with text and no tool call whose usage "
+            f"counts ~{unsent} completion tokens past its reasoning and text that never "
+            "arrived",
+            status_code=502,
+        )
+
+
 def _check_tool_call_leak(response: Response) -> None:
     """Raise a transient `ProviderError` for a reply with no content and no tool calls
     whose tool calls the provider failed to parse: raw tool-call markup left in its
@@ -168,7 +196,11 @@ def _check_tool_call_leak(response: Response) -> None:
     ~80 tokens past the reasoning, the call the reasoning announced). The empty turn would
     otherwise end the harness's run."""
     message = response.message
-    if (message.content or "").strip() or message.tool_calls:
+    if message.tool_calls:
+        return
+    content = (message.content or "").strip()
+    if content:
+        _check_unsent_tail(response, content)
         return
     if LEAKED_TOOL_CALL in (message.reasoning_content or ""):
         raise model_error(
