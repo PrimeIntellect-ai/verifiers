@@ -134,6 +134,28 @@ class ServerBase(Generic[ConfigT, StateT]):
     tools bare (no `<server>_` prefix); name collisions across servers are then the taskset
     author's concern."""
 
+    def __init_subclass__(cls, **kwargs) -> None:
+        super().__init_subclass__(**kwargs)
+        # A @tool method stored under one of these names replaces the ServerBase
+        # attribute of the same name: `run` then no longer starts the server,
+        # `setup`/`setup_task`/`register` no longer configure it and `state` no
+        # longer reads state, while `config` (an instance attribute) hides the
+        # method so the tool never registers. Fail at class definition instead.
+        reserved = {"config"} | {
+            name
+            for base in cls.__mro__[1:]
+            for name in vars(base)
+            if not name.startswith("__")
+        }
+        for name, fn in vars(cls).items():
+            if callable(fn) and hasattr(fn, "tool") and name in reserved:
+                raise TypeError(
+                    f"a tool method named {name!r} on {cls.__name__} shadows "
+                    f"ServerBase's {name!r} attribute, so its tool server cannot "
+                    f"start. Rename the method and keep the exposed name with "
+                    f"@vf.tool(name={name!r})."
+                )
+
     def __init__(self, config: ConfigT) -> None:
         self.config = config
         self._state_cls = state_cls(type(self))
