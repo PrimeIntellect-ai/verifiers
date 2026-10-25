@@ -79,3 +79,16 @@ def test_a_compose_task_cannot_name_a_checkpoint(tmp_path, monkeypatch):
     )
     with pytest.raises(ValueError, match="checkpoint_id"):
         list(harbor.HarborTaskset(harbor.HarborConfig()))
+
+
+def test_a_checkpoint_task_needs_no_image_beside_its_dockerfile(tmp_path, monkeypatch):
+    task_dir = _harbor_task(tmp_path, monkeypatch, 'checkpoint_id = "ck-world"\n')
+    (task_dir / "environment").mkdir()
+    (task_dir / "environment/Dockerfile").write_text("FROM python:3.11-slim\n")
+    [loaded] = list(harbor.HarborTaskset(harbor.HarborConfig()))
+    assert (loaded.data.checkpoint, loaded.data.image) == ("ck-world", None)
+    assert not loaded.data.upload_environment
+    # Without a checkpoint the same task still needs a pullable image.
+    (task_dir / "task.toml").write_text("[environment]\ncpus = 2\n")
+    with pytest.raises(ValueError, match="pullable docker_image"):
+        list(harbor.HarborTaskset(harbor.HarborConfig()))

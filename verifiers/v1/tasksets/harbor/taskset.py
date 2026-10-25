@@ -1302,11 +1302,17 @@ def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborD
             raise ValueError(
                 f"{task_dir.name}: sidecar tool bundles {clash} share a Compose service name"
             )
-    image = resolve_image(
-        task_dir,
-        environment.docker_image,
-        harbor_config.require_image,
-        harbor_config.ignore_dockerfile,
+    # A checkpoint carries the box: a Dockerfile beside it is how the checkpoint was
+    # built, not something to run, so the task needs no image.
+    image = (
+        None
+        if checkpoint is not None and environment.docker_image is None
+        else resolve_image(
+            task_dir,
+            environment.docker_image,
+            harbor_config.require_image,
+            harbor_config.ignore_dockerfile,
+        )
     )
     definition = (
         resolve_verifier_environment_definition(parsed, harbor_task.paths)
