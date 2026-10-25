@@ -242,9 +242,128 @@ def test_location_idle_timeout_reaches_opencode_settings():
 def test_input_modalities_declare_a_text_only_model():
     """A text-only model must say so: OpenCode otherwise attaches an image the agent reads,
     and GLM 5.3 rejects the request ("Unsupported input modality: image"), ending the
-    rollout. With modalities.input ["text"] OpenCode's read reports the file unreadable."""
-    assert "modalities" not in settings()["providers"]["intercept"]["models"]["model"]
+    rollout. OpenCode 2 reads `capabilities.input`; it drops a `modalities` key."""
+    assert "capabilities" not in settings()["providers"]["intercept"]["models"]["model"]
     model = settings(input_modalities=["text"])["providers"]["intercept"]["models"][
         "model"
     ]
-    assert model["modalities"] == {"input": ["text"], "output": ["text"]}
+    assert model["capabilities"] == {"input": ["text"], "output": ["text"]}
+    assert "modalities" not in model
+
+
+# A 1x1 PNG.
+PNG = (
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAAB"
+    "JRU5ErkJggg=="
+)
+
+
+class ReadsAnImage(BaseHTTPRequestHandler):
+    """The agent writes a PNG with the shell, reads it, then stops."""
+
+    requests: ClassVar[list[dict]] = []
+
+    def log_message(self, *args):
+        pass
+
+    def do_POST(self):
+        body = json.loads(self.rfile.read(int(self.headers["content-length"])))
+        type(self).requests.append(body)
+        script = [
+            (
+                "shell",
+                {
+                    "command": f"echo {PNG} | base64 -d > logo.png",
+                    "description": "x",
+                },
+            ),
+            ("read", {"path": "logo.png"}),
+        ]
+        n = len(type(self).requests)
+        if n <= len(script):
+            name, args = script[n - 1]
+            call = {"index": 0, "id": f"call_{n}", "type": "function"}
+            deltas = [
+                {"role": "assistant", "content": f"Turn {n}."},
+                {
+                    "tool_calls": [
+                        {
+                            **call,
+                            "function": {"name": name, "arguments": json.dumps(args)},
+                        }
+                    ]
+                },
+            ]
+            finish = "tool_calls"
+        else:
+            deltas, finish = [{"role": "assistant", "content": "Done."}], "stop"
+        base = {
+            "id": "c",
+            "object": "chat.completion.chunk",
+            "created": 0,
+            "model": "m",
+        }
+        events = [
+            *({**base, "choices": [{"index": 0, "delta": d}]} for d in deltas),
+            {**base, "choices": [{"index": 0, "delta": {}, "finish_reason": finish}]},
+            {
+                **base,
+                "choices": [],
+                "usage": {
+                    "prompt_tokens": 10,
+                    "completion_tokens": 1,
+                    "total_tokens": 11,
+                },
+            },
+        ]
+        self.send_response(200)
+        self.send_header("content-type", "text/event-stream")
+        self.end_headers()
+        for event in events:
+            self.wfile.write(f"data: {json.dumps(event)}\n\n".encode())
+        self.wfile.write(b"data: [DONE]\n\n")
+
+
+def run_reads_an_image(**config) -> list[dict]:
+    ReadsAnImage.requests = []
+    server = ThreadingHTTPServer(("127.0.0.1", 0), ReadsAnImage)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    endpoint = f"http://127.0.0.1:{server.server_address[1]}/v1"
+    try:
+        with tempfile.TemporaryDirectory() as root:
+            env = asyncio.run(opencode_env(endpoint, **config))
+            for key in ("XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME"):
+                env[key] = f"{root}/{key}"
+            env["XDG_STATE_HOME"] = f"{root}/state"
+            env["OPENCODE_CONFIG_DIR"] = f"{root}/config"
+            work = Path(root) / "work"
+            work.mkdir()
+            subprocess.run(
+                [os.environ["VF_OPENCODE_BIN"], "run", "--standalone", "--auto", "go"],
+                cwd=work,
+                env={"PATH": os.environ["PATH"], "HOME": root, **env},
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                timeout=300,
+                check=True,
+            )
+    finally:
+        server.shutdown()
+    return ReadsAnImage.requests
+
+
+@pytest.mark.skipif(
+    not os.environ.get("VF_OPENCODE_BIN"), reason="needs VF_OPENCODE_BIN (opencode 2.x)"
+)
+def test_text_only_model_never_receives_the_image_it_reads():
+    """GLM nl2repo draws wrote a PNG and read it back to look at it; with images on,
+    the next request carried an image_url part and the provider rejected it."""
+    sent = json.dumps(run_reads_an_image()[-1]["messages"])
+    assert "data:image/png;base64" in sent
+    requests = run_reads_an_image(input_modalities=["text"])
+    assert len(requests) == 3
+    sent = json.dumps(requests[-1]["messages"])
+    assert "image_url" not in sent and "data:image" not in sent
+    assert "this model does not support image input" in sent
+    # Tools stay on.
+    assert {t["function"]["name"] for t in requests[-1]["tools"]} >= {"read", "shell"}

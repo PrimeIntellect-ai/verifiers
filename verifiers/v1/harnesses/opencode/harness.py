@@ -84,12 +84,13 @@ class OpenCodeHarnessConfig(HarnessConfig):
     input_modalities: list[Literal["text", "image", "audio", "video", "pdf"]] | None = (
         None
     )
-    """What the model accepts (OpenCode's model `modalities.input`), e.g. ["text"] for a
-    text-only model. OpenCode attaches an image or PDF the agent reads only when the
-    model accepts it, otherwise the read returns "this model does not support image
-    input". Unset, OpenCode assumes a custom model accepts images, and a text-only
-    provider rejects the request (GLM 5.3: "Unsupported input modality: image"), which
-    ends the rollout."""
+    """What the model accepts (OpenCode's model `capabilities.input`), e.g. ["text"] for
+    a text-only model. OpenCode sends an image or PDF (a file the agent reads, an MCP
+    result, an attachment) only when the model accepts it, otherwise the part becomes
+    "ERROR: Cannot read ... (this model does not support image input)". Unset, OpenCode
+    assumes a custom model accepts text and images, and a text-only provider rejects
+    the request (GLM 5.3: "Unsupported input modality: image"; OpenRouter: "No
+    endpoints found that support image input"), which ends the rollout."""
     max_shell_output_bytes: PositiveInt | None = 64 * 1024 * 1024
     """The most of one shell command's output OpenCode keeps; the rest is dropped after
     a note. OpenCode stores a command's whole output on the box's disk, and a command
@@ -152,7 +153,9 @@ class OpenCodeHarness(ACPHarness[OpenCodeHarnessConfig]):
         }[self.config.dialect]
         model: dict = {"modelID": ctx.model}
         if self.config.input_modalities is not None:
-            model["modalities"] = {
+            # OpenCode 2's config schema has `capabilities`; a models.dev-style
+            # `modalities` key is silently dropped and leaves images on.
+            model["capabilities"] = {
                 "input": list(self.config.input_modalities),
                 "output": ["text"],
             }
