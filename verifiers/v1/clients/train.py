@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from typing import Any, ClassVar, TypeVar
 
 import numpy as np
+import orjson
 from openai import OpenAIError
 from renderers import OverlongPromptError, RenderedTokens, Renderer, RendererConfig
 from renderers.base import ToolCallParseStatus, is_multimodal
@@ -272,7 +273,7 @@ class ElasticRendererPool:
         self.key = (
             renderer_model,
             config.model_dump_json() if config is not None else None,
-            json.dumps(dict(chat_template_kwargs), sort_keys=True)
+            orjson.dumps(dict(chat_template_kwargs), option=orjson.OPT_SORT_KEYS)
             if chat_template_kwargs
             else None,
         )

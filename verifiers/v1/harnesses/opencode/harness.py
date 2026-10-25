@@ -1,7 +1,8 @@
 """Run OpenCode 2's native ACP server against interception."""
 
-import json
 from pathlib import Path
+
+import orjson
 
 from verifiers.v1.acp import ACPConfig, ACPHarness
 from verifiers.v1.clients import ModelContext
@@ -136,7 +137,7 @@ class OpenCodeHarness(ACPHarness[OpenCodeHarnessConfig]):
                 "XDG_CACHE_HOME": f"{root}/cache",
                 "XDG_STATE_HOME": f"{root}/state",
                 "OPENCODE_CONFIG_DIR": config_dir,
-                "OPENCODE_CONFIG_CONTENT": json.dumps(settings),
+                "OPENCODE_CONFIG_CONTENT": orjson.dumps(settings).decode(),
                 "OPENCODE_DISABLE_AUTOUPDATE": "1",
                 "OPENCODE_DISABLE_MODELS_FETCH": "1",
             },

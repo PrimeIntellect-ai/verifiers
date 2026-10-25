@@ -1,8 +1,8 @@
 """Decision-model judge using Prime's evaluations API by default."""
 
-import json
 from typing import Any, cast
 
+import orjson
 from pydantic import Field
 
 from verifiers.v1.clients.base import build_async_openai
@@ -62,7 +62,7 @@ class DecisionJudge(Judge[float, DecisionJudgeConfig]):
                 self.config.base_url, cast_to=dict[str, Any], body=request
             )
         result = raw.get("result", raw)  # Workers AI wraps its response in `result`.
-        response = JudgeResponse[float](text=json.dumps(raw))
+        response = JudgeResponse[float](text=orjson.dumps(raw).decode())
         try:
             if usage := result.get("usage"):
                 response.usage = Usage(

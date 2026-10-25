@@ -28,6 +28,7 @@ from dataclasses import dataclass, fields
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
+import orjson
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -376,7 +377,7 @@ def message_hash(message: Message) -> str:
             state = hashed_state if represented else item
             add("provider_state")
             add(kind)
-            add(json.dumps(state, sort_keys=True))
+            add(orjson.dumps(state, option=orjson.OPT_SORT_KEYS).decode())
         for tc in message.tool_calls or []:
             add("tool_call")
             add(tc.type)
@@ -396,7 +397,7 @@ def message_hash(message: Message) -> str:
 
 def _tools_hash(tools: list[Tool] | None) -> str:
     payload = [tool.model_dump(mode="json", exclude_none=True) for tool in tools or []]
-    data = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    data = orjson.dumps(payload, option=orjson.OPT_SORT_KEYS)
     return hashlib.blake2b(data, digest_size=16).hexdigest()
 
 

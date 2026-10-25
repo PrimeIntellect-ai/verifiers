@@ -1,9 +1,9 @@
 """CLI output directories, saved launch/config files, and per-attempt log paths."""
 
-import json
 import os
 from pathlib import Path
 
+import orjson
 from pydantic import BaseModel
 
 from verifiers.v1.configs.cli.eval import EvalConfig
@@ -77,7 +77,9 @@ def write_config(
     config_dir = results_dir / CONFIG_DIR / RESOLVED_DIR
     config_dir.mkdir(parents=True, exist_ok=True)
     config_path = config_dir / filename
-    config_path.write_text(json.dumps(config.model_dump(mode="json"), indent=2))
+    config_path.write_bytes(
+        orjson.dumps(config.model_dump(mode="json"), option=orjson.OPT_INDENT_2)
+    )
     return config_path
 
 

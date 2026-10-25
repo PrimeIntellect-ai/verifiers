@@ -3,7 +3,6 @@
 import asyncio
 import atexit
 import io
-import json
 import logging
 import os
 import shlex
@@ -18,6 +17,8 @@ from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
+
+import orjson
 
 from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes import (
@@ -207,9 +208,11 @@ async def compose_services(
                 del main["image"]
                 main["build"] = {"context": "${CONTEXT_DIR}"}
                 main["pull_policy"] = "build"
-            (directory / "base.json").write_text(json.dumps(base))
-            (directory / "env.json").write_text(
-                json.dumps({"services": {spec.workspace: {"environment": environment}}})
+            (directory / "base.json").write_bytes(orjson.dumps(base))
+            (directory / "env.json").write_bytes(
+                orjson.dumps(
+                    {"services": {spec.workspace: {"environment": environment}}}
+                )
             )
 
             root = str(directory)
@@ -260,7 +263,7 @@ async def compose_services(
             )
 
             # Validate authored services after interpolation, before adding our own.
-            resolved = json.loads(await compose("config", "--format", "json"))
+            resolved = orjson.loads(await compose("config", "--format", "json"))
             services = resolved["services"]
             for service in services.values():
                 if service.get("network_mode") == "host":
@@ -310,10 +313,10 @@ async def compose_services(
                 if sys.platform != "linux":
                     publish["extra_hosts"] = {"host.docker.internal": "host-gateway"}
             if host_backend is None:
-                (directory / "overlay.json").write_text(json.dumps(overlay))
+                (directory / "overlay.json").write_bytes(orjson.dumps(overlay))
             else:
                 await host_backend.bind().write(
-                    f"{root}/overlay.json", json.dumps(overlay).encode()
+                    f"{root}/overlay.json", orjson.dumps(overlay)
                 )
             compose_argv += ["-f", f"{root}/overlay.json"]
 

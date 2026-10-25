@@ -1,8 +1,8 @@
 import inspect
-import json
 from collections.abc import Sequence
 from types import ModuleType
 
+import orjson
 from pydantic import PositiveInt
 from pydantic_config import BaseConfig
 
@@ -81,14 +81,14 @@ async def launch_chat_program(
     if mcp_urls:
         args.append(
             "--mcp-config="
-            + json.dumps(
+            + orjson.dumps(
                 {
                     "mcpServers": {
                         name: {"url": url, "timeout": config.tool_timeout}
                         for name, url in mcp_urls.items()
                     }
                 }
-            )
+            ).decode()
         )
     if isinstance(prompt, str):
         args.append(f"--prompt={prompt}")
@@ -96,7 +96,7 @@ async def launch_chat_program(
         path = f".vf-initial-messages-{trace.id}.json"
         await runtime.write(
             path,
-            json.dumps([message_to_wire(message) for message in prompt]).encode(),
+            orjson.dumps([message_to_wire(message) for message in prompt]),
         )
         args.append(f"--initial-messages-file={path}")
     program = await runtime.prepare_uv_script(

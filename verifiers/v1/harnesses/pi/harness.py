@@ -5,6 +5,8 @@ import logging
 import shlex
 from pathlib import Path
 
+import orjson
+
 from verifiers.v1.acp import ACPConfig, ACPHarness
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import (
@@ -155,7 +157,7 @@ class PiHarness(ACPHarness[PiHarnessConfig]):
                 }
             }
         }
-        await runtime.write(f"{agent_dir}/models.json", json.dumps(models).encode())
+        await runtime.write(f"{agent_dir}/models.json", orjson.dumps(models))
 
         mcp_args: list[str] = []
         if mcp_urls:

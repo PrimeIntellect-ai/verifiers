@@ -17,7 +17,6 @@ import asyncio
 import contextlib
 import csv
 import io
-import json
 import logging
 import os
 import re
@@ -32,6 +31,8 @@ from collections.abc import AsyncIterator
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, ClassVar
 from urllib.parse import urlsplit
+
+import orjson
 
 from verifiers.v1.configs.runtime import DockerConfig, NetworkPolicyConfig
 from verifiers.v1.errors import SandboxError
@@ -265,7 +266,7 @@ class DockerBackend(RuntimeBackend):
                 raise SandboxError(
                     f"Container inspection failed: {stderr.decode(errors='replace')}"
                 )
-            info = json.loads(data)
+            info = orjson.loads(data)
             backend._image_env = dict(
                 entry.split("=", 1) for entry in info["Env"] or []
             )
@@ -413,7 +414,7 @@ class DockerBackend(RuntimeBackend):
             raise SandboxError(
                 f"docker environment inspection failed: {inspected.stderr.strip()}"
             )
-        container = json.loads(inspected.stdout)
+        container = orjson.loads(inspected.stdout)
         self._image_env = dict(entry.split("=", 1) for entry in container["Env"] or [])
         # Create a missing workdir, owned by the image's execution user.
         made = await cli(

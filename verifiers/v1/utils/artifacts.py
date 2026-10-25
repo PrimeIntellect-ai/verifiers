@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import io
-import json
 import logging
 import posixpath
 import re
@@ -16,6 +15,7 @@ from collections.abc import Iterable
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 
+import orjson
 from pydantic import BaseModel, Field, field_validator
 
 if TYPE_CHECKING:
@@ -303,7 +303,9 @@ def save_artifacts(
             except (OSError, ValueError, RuntimeError, tarfile.TarError) as exc:
                 entry.update(status="failed", error=str(exc))
                 logger.warning("failed to save artifact %r: %s", source, exc)
-        (saved / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+        (saved / "manifest.json").write_bytes(
+            orjson.dumps(manifest, option=orjson.OPT_INDENT_2) + b"\n"
+        )
         if directory.is_symlink():
             raise ValueError(f"artifact directory must not be a symlink: {directory}")
         if directory.exists():

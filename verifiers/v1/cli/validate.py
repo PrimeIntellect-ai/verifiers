@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+import orjson
 from pydantic_config import cli
 from pydantic_core import from_json
 
@@ -205,7 +206,9 @@ def summarize(rows: Sequence[ResultRow], total: int, mode: str) -> dict[str, Any
 def write_summary(results_dir: Path, summary: Mapping[str, Any]) -> None:
     path = results_dir / SUMMARY_FILE
     tmp = path.with_suffix(f"{path.suffix}.tmp")
-    tmp.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n")
+    tmp.write_bytes(
+        orjson.dumps(summary, option=orjson.OPT_INDENT_2 | orjson.OPT_SORT_KEYS) + b"\n"
+    )
     tmp.replace(path)
 
 
@@ -594,9 +597,13 @@ def main(argv: list[str] | None = None) -> None:
     except KeyboardInterrupt:
         print(f"interrupted; partial results: {out}", file=sys.stderr)
         raise SystemExit(130)
-    summary = json.loads((out / SUMMARY_FILE).read_text())
+    summary = orjson.loads((out / SUMMARY_FILE).read_bytes())
     print(f"results: {out}")
-    print(json.dumps(summary, indent=2, sort_keys=True))
+    print(
+        orjson.dumps(
+            summary, option=orjson.OPT_INDENT_2 | orjson.OPT_SORT_KEYS
+        ).decode()
+    )
 
 
 if __name__ == "__main__":

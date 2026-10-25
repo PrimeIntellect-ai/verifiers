@@ -9,6 +9,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Literal
 
+import orjson
 import tomli_w
 
 from verifiers.v1.acp import ACPConfig, ACPHarness, ACPTurn
@@ -239,9 +240,9 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
         }
         return {
             **self.config.resolved_env,
-            "CODEX_CONFIG": json.dumps(config),
+            "CODEX_CONFIG": orjson.dumps(config).decode(),
             "CODEX_HOME": home,
-            "DEFAULT_AUTH_REQUEST": json.dumps(
+            "DEFAULT_AUTH_REQUEST": orjson.dumps(
                 {
                     "methodId": "gateway",
                     "_meta": {
@@ -252,7 +253,7 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
                         }
                     },
                 }
-            ),
+            ).decode(),
             "INITIAL_AGENT_MODE": "agent-full-access",
             "NO_BROWSER": "1",
         }

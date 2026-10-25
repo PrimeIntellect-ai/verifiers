@@ -11,7 +11,6 @@ cross-trace `score()` can't run offline.
 
 import asyncio
 import contextlib
-import json
 import logging
 import os
 import sys
@@ -19,6 +18,7 @@ import time
 import uuid
 from pathlib import Path
 
+import orjson
 from pydantic_config import cli
 
 import verifiers.v1 as vf
@@ -45,7 +45,7 @@ USAGE = (
 def _narrow(config_path: Path) -> type[ReplayConfig]:
     """Narrow replay config to the saved taskset's config type. The source may be
     an eval run (taskset on the [env] block) or an earlier replay (root taskset)."""
-    data = json.loads(config_path.read_text())
+    data = orjson.loads(config_path.read_bytes())
     taskset = data.get("taskset") or (data.get("env") or {}).get("taskset") or {}
     taskset_id = taskset.get("id")
     return narrow_taskset_config(ReplayConfig, taskset_id)
@@ -64,7 +64,7 @@ async def run_replay(config: ReplayConfig, source: Path, out: Path) -> list[Trac
     source_config = saved_config_path(source)
     if source_config is None:
         raise SystemExit(f"no saved config under {source} - not a run dir")
-    saved = json.loads(source_config.read_text())
+    saved = orjson.loads(source_config.read_bytes())
     saved_env = saved.get("env") or {}
     saved_taskset = saved.get("taskset") or saved_env.get("taskset") or {}
     env_cls = vf.environment_class(
@@ -213,7 +213,7 @@ def main(argv: list[str] | None = None) -> None:
     config_type = _narrow(config_path)
     sys.argv = [sys.argv[0], *layered]
     config = cli(config_type)
-    source_out = json.loads(config_path.read_text()).get("output_dir")
+    source_out = orjson.loads(config_path.read_bytes()).get("output_dir")
     # Clear the source run's output_dir unless the user overrode it.
     if config.output_dir is None or str(config.output_dir) == str(source_out):
         config = config.model_copy(update={"output_dir": None})

@@ -1,8 +1,9 @@
 """Run OpenClaw's Gateway-backed ACP agent against interception."""
 
-import json
 import logging
 from typing import Literal
+
+import orjson
 
 from verifiers.v1.acp import ACPConfig, ACPHarness
 from verifiers.v1.clients import ModelContext
@@ -174,7 +175,7 @@ class OpenClawHarness(ACPHarness[OpenClawHarnessConfig]):
                     "OPENCLAW_STATE_DIR": check_dir,
                     "OPENCLAW_CONFIG_PATH": f"{check_dir}/openclaw.json",
                     "VF_OPENCLAW_BIN": OPENCLAW_BIN.format(version=self.config.version),
-                    "VF_OPENCLAW_MODEL": json.dumps(model),
+                    "VF_OPENCLAW_MODEL": orjson.dumps(model).decode(),
                 },
             )
             self._cataloged[model] = result.exit_code == 0
@@ -251,7 +252,7 @@ class OpenClawHarness(ACPHarness[OpenClawHarnessConfig]):
         if not self.config.use_bundled_skill:
             # OpenClaw treats an empty allowlist as all; a no-match key disables the catalog.
             config.setdefault("skills", {})["allowBundled"] = ["__none__"]
-        await runtime.write(config_path, json.dumps(config).encode())
+        await runtime.write(config_path, orjson.dumps(config))
         await self.install_skills(runtime, skills_dir)
 
         env = {

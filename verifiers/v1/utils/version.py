@@ -1,10 +1,11 @@
 """Build provenance: the installed verifiers package's git commit, when resolvable."""
 
-import json
 import subprocess
 from functools import cache
 from importlib.metadata import PackageNotFoundError, distribution
 from pathlib import Path
+
+import orjson
 
 
 @cache
@@ -15,7 +16,7 @@ def verifiers_commit() -> str | None:
     try:
         direct_url = distribution("verifiers").read_text("direct_url.json")
         if direct_url:
-            commit = json.loads(direct_url).get("vcs_info", {}).get("commit_id")
+            commit = orjson.loads(direct_url).get("vcs_info", {}).get("commit_id")
             if commit:
                 return commit
     except (PackageNotFoundError, ValueError):

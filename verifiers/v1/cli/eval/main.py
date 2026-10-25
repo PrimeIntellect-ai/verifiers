@@ -1,11 +1,11 @@
 """Eval CLI entrypoint."""
 
 import asyncio
-import json
 import logging
 import shutil
 import sys
 
+import orjson
 from pydantic_config import cli
 
 from verifiers.v1.cli.eval.runner import run_eval
@@ -97,8 +97,8 @@ def main(argv: list[str] | None = None) -> None:
             saved = config_type.model_validate_json(saved_path.read_text())
         saved_dump = saved.model_dump(mode="json")
         current_dump = config.model_dump(mode="json")
-        saved_json = json.dumps(saved_dump, sort_keys=True, separators=(",", ":"))
-        current_json = json.dumps(current_dump, sort_keys=True, separators=(",", ":"))
+        saved_json = orjson.dumps(saved_dump, option=orjson.OPT_SORT_KEYS)
+        current_json = orjson.dumps(current_dump, option=orjson.OPT_SORT_KEYS)
         if saved_json != current_json:
             changed = sorted(
                 key

@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import asyncio
-import json
 from functools import cache
 from pathlib import Path
 
+import orjson
 from pydantic import TypeAdapter
 
 from verifiers.v1.episode import EnvInfo, Episode, WireEpisode
@@ -48,11 +48,11 @@ def read_episodes(results_dir: Path, trace_type: type) -> list[WireEpisode]:
     importing it)."""
     trace_adapter = type_adapter(trace_type)
     episodes: list[WireEpisode] = []
-    with (results_dir / TRACES_FILE).open(encoding="utf-8") as f:
+    with (results_dir / TRACES_FILE).open("rb") as f:
         for line in f:
             if not line.strip():
                 continue
-            row = json.loads(line)
+            row = orjson.loads(line)
             record = WireEpisode.model_validate({**row, "traces": []})
             record.traces = [
                 trace_adapter.validate_python(trace) for trace in row["traces"]

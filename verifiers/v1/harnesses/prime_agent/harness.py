@@ -5,6 +5,8 @@ import json
 import logging
 from typing import Literal
 
+import orjson
+
 from verifiers.v1.acp import ACPConfig, ACPHarness, ACPTurn
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import DialectName, HarnessConfig, skill_destination
@@ -232,7 +234,7 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
             }
         }
         models_path = f"{agent_dir}/models.json"
-        await runtime.write(models_path, json.dumps(models).encode())
+        await runtime.write(models_path, orjson.dumps(models))
         secured = await runtime.run(["chmod", "600", models_path], {})
         if secured.exit_code != 0:
             raise RuntimeError(

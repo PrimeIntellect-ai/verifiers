@@ -1,7 +1,8 @@
 """Run Claude Code through the Claude Agent SDK ACP adapter."""
 
-import json
 from typing import Literal
+
+import orjson
 
 from verifiers.v1.acp import ACPConfig, ACPHarness
 from verifiers.v1.clients import ModelContext
@@ -123,7 +124,7 @@ class ClaudeCodeHarness(ACPHarness[ClaudeCodeHarnessConfig]):
         # `CLAUDE_CONFIG_DIR` holds the user settings, which the adapter loads by default.
         await runtime.write(
             f"{config.env['CLAUDE_CONFIG_DIR']}/settings.json",
-            json.dumps({"permissions": {"ask": ["*"]}}).encode(),
+            orjson.dumps({"permissions": {"ask": ["*"]}}),
         )
 
     async def cleanup(self, trace: Trace, runtime: Runtime) -> None:
