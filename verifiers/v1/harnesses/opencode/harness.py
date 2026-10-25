@@ -10,7 +10,7 @@ from pydantic_config import BaseConfig
 from verifiers.v1.acp import ACPConfig, ACPHarness
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import DialectName, HarnessConfig, PinnedVersion
-from verifiers.v1.harnesses.node import ensure_node
+from verifiers.v1.harnesses.node import NODE_BIN_DIR, ensure_node
 from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
 from verifiers.v1.harnesses.utils.replay import drop_blank_text
 from verifiers.v1.runtimes import Runtime
@@ -22,6 +22,8 @@ OPENCODE_DIR = "/var/tmp/vf-opencode"
 STATE_ROOT = "/tmp/vf-opencode-runs"
 KEY_VAR = "VF_OPENCODE_API_KEY"
 MCP_READY = (Path(__file__).resolve().parent / "mcp-ready.js").read_bytes()
+SHELL_GUARD = (Path(__file__).resolve().parent / "shell-guard.js").read_bytes()
+SHELL_CAP = (Path(__file__).resolve().parent / "shell-cap.js").read_bytes()
 
 INSTALL = r"""
 set -e
@@ -88,6 +90,12 @@ class OpenCodeHarnessConfig(HarnessConfig):
     input". Unset, OpenCode assumes a custom model accepts images, and a text-only
     provider rejects the request (GLM 5.3: "Unsupported input modality: image"), which
     ends the rollout."""
+    max_shell_output_bytes: PositiveInt | None = 64 * 1024 * 1024
+    """The most of one shell command's output OpenCode keeps; the rest is dropped after
+    a note. OpenCode stores a command's whole output on the box's disk, and a command
+    that never stops printing filled a 5 GB box before its timeout, killing OpenCode's
+    session mid-turn. The model sees only the output's tail (~50 KB) either way. None
+    keeps everything (as does a shell other than bash or zsh)."""
 
 
 class OpenCodeHarness(ACPHarness[OpenCodeHarnessConfig]):
@@ -190,10 +198,23 @@ class OpenCodeHarness(ACPHarness[OpenCodeHarnessConfig]):
             settings["compaction"] = {
                 "buffer": compaction.context_window - compaction.summarize_at_tokens
             }
+        guard_dir = f"{root}/shell-guard"
+        await runtime.write(f"{guard_dir}/index.js", SHELL_GUARD)
+        await runtime.write(f"{guard_dir}/cap.js", SHELL_CAP)
+        plugins = [
+            {
+                "package": guard_dir,
+                "options": {
+                    "maxOutputBytes": self.config.max_shell_output_bytes,
+                    "node": f"{NODE_BIN_DIR}/node",
+                    "cap": f"{guard_dir}/cap.js",
+                },
+            }
+        ]
         if mcp_urls:
             plugin_dir = f"{root}/mcp-ready"
             await runtime.write(f"{plugin_dir}/index.js", MCP_READY)
-            settings["plugins"] = [
+            plugins.append(
                 {
                     "package": plugin_dir,
                     "options": {
@@ -201,7 +222,8 @@ class OpenCodeHarness(ACPHarness[OpenCodeHarnessConfig]):
                         "timeout": int(self.config.tool_timeout * 1000),
                     },
                 }
-            ]
+            )
+        settings["plugins"] = plugins
         return ACPConfig(
             command=[
                 f"{OPENCODE_DIR}/{self.config.version}/node_modules/.bin/opencode",
