@@ -45,7 +45,7 @@ if TYPE_CHECKING:
         SingleAgentEnvConfig,
         default_agent_harness,
     )
-    from verifiers.v1.configs.harness import HarnessConfig
+    from verifiers.v1.configs.harness import ID, HarnessConfig
     from verifiers.v1.configs.judge import JudgeConfig, Judges
     from verifiers.v1.configs.model_pool import ModelDeployment, ModelPoolConfig
     from verifiers.v1.configs.retries import RetryConfig, RetryRule
@@ -59,6 +59,7 @@ if TYPE_CHECKING:
         RuntimeConfig,
         SubprocessConfig,
     )
+    from verifiers.v1.configs.sampling import Sampling, SamplingConfig
     from verifiers.v1.configs.scoring import ScoringConfig
     from verifiers.v1.configs.select import (
         SelectCLIConfig,
@@ -200,7 +201,6 @@ if TYPE_CHECKING:
         WireTrace,
     )
     from verifiers.v1.types import (
-        ID,
         AssistantMessage,
         ContentPart,
         ImageUrlContentPart,
@@ -210,8 +210,6 @@ if TYPE_CHECKING:
         Messages,
         Request,
         Response,
-        Sampling,
-        SamplingConfig,
         SamplingMask,
         SystemMessage,
         TextContentPart,
@@ -317,7 +315,7 @@ _NAME_TO_MODULE = {
     "HarnessError": "verifiers.v1.errors",
     "HarnessKilled": "verifiers.v1.errors",
     "HarnessSession": "verifiers.v1.harness",
-    "ID": "verifiers.v1.types",
+    "ID": "verifiers.v1.configs.harness",
     "ImageUrlContentPart": "verifiers.v1.types",
     "ImageUrlSource": "verifiers.v1.types",
     "Interaction": "verifiers.v1.agent",
@@ -373,8 +371,8 @@ _NAME_TO_MODULE = {
     "RuntimeConfig": "verifiers.v1.configs.runtime",
     "RuntimeInfo": "verifiers.v1.runtimes",
     "RuntimeProcess": "verifiers.v1.runtimes",
-    "Sampling": "verifiers.v1.types",
-    "SamplingConfig": "verifiers.v1.types",
+    "Sampling": "verifiers.v1.configs.sampling",
+    "SamplingConfig": "verifiers.v1.configs.sampling",
     "SamplingMask": "verifiers.v1.types",
     "SandboxError": "verifiers.v1.errors",
     "SandboxErrorKind": "verifiers.v1.errors",

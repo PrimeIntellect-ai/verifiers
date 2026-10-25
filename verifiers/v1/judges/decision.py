@@ -6,6 +6,7 @@ from typing import Any, cast
 from pydantic import Field
 
 from verifiers.v1.clients.base import build_async_openai
+from verifiers.v1.configs.harness import ID
 from verifiers.v1.configs.judge import JudgeConfig
 from verifiers.v1.judge import (
     Judge,
@@ -16,7 +17,7 @@ from verifiers.v1.judge import (
 )
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
-from verifiers.v1.types import ID, Usage
+from verifiers.v1.types import Usage
 
 
 class DecisionJudgeConfig(JudgeConfig):

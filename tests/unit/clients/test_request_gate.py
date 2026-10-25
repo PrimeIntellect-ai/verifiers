@@ -25,11 +25,11 @@ from verifiers.v1.clients.base import build_async_httpx
 from verifiers.v1.clients.eval import EvalClient
 from verifiers.v1.clients.gate import GatedAsyncClient, ModelGate, gate_key
 from verifiers.v1.configs.client import EvalClientConfig, RequestGateConfig
+from verifiers.v1.configs.sampling import Sampling
 from verifiers.v1.dialects import ChatDialect
 from verifiers.v1.harnesses.null.harness import NullHarness
 from verifiers.v1.interception import server
 from verifiers.v1.runtimes import ProgramResult
-from verifiers.v1.types import Sampling
 
 MODEL = "internal/fake-model"
 COMPLETION = {

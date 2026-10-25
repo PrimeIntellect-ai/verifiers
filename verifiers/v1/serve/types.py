@@ -3,9 +3,9 @@ from typing import ClassVar
 from pydantic import BaseModel, Field
 
 from verifiers.v1.configs.client import ClientConfig
+from verifiers.v1.configs.sampling import SamplingConfig
 from verifiers.v1.serve.delta import TraceSummary
 from verifiers.v1.steering import SteerReceipt
-from verifiers.v1.types import SamplingConfig
 
 
 class BaseRequest(BaseModel):

@@ -6,6 +6,7 @@ If your taskset package does not export a custom `Env` and you don't specify `--
 
 - `best-of-n` (`BestOfNEnv`): runs `n` independent attempts on the same task, marks which attempt achieved the highest reward (`best`), and records whether any attempt crossed a success threshold (`pass_at_n`), which is useful for rejection sampling and pass@k evaluation.
 - `agentic-judge` (`AgenticJudgeEnv`): runs a solver agent first, then a judge agent to evaluate the result. The solver's `ScoringConfig` (`--env.solver.scoring.mode shared|isolated`) selects the workspace used for both task scoring and agentic judging.
+- `best-of-n-judge` (`BestOfNJudgeEnv`): runs `n` attempts like `best-of-n`, then gives `--env.judges` independent judge agents each a fresh container holding every attempt's trace and collected artifacts under shuffled labels, and has them rank the attempts best to worst. Each attempt's `judge` reward is its rank score (the share of other attempts it beats, ties counting half) averaged across the judges.
 - `user-sim` (`UserSimEnv`): models the user as a second agent and runs a turn-by-turn conversation between the user simulator and the assistant.
 
 ## Custom control flow
@@ -32,7 +33,7 @@ class AttemptsEnv(vf.Env[AttemptsConfig]):
             trace.record_metric("best", float(trace.reward == best))
 ```
 
-`Env.run(task, agents)` receives the task and pre-initialized agents and orchestrates the episode; it returns `None` because every completed `agent.run(task)` call automatically appends its trace to the episode (with `trace.agent.name` set to the role name). Unless overridden on the role, each agent inherits the evaluation's model and client and the taskset's default harness. Export your `Env` subclass alongside the taskset in your package's `__all__` so verifiers uses it automatically.
+`Env.run(task, agents)` receives the task and pre-initialized agents and orchestrates the episode; it returns `None` because every completed `agent.run(task)` call automatically appends its trace to the episode (with `trace.agent.name` set to the role name). Unless overridden on the role, each agent inherits the evaluation's model, client and sampling, and the taskset's default harness. An agent that sets its own `client` uses only its own `sampling`, because the evaluation's sampling can be specific to its endpoint. Export your `Env` subclass alongside the taskset in your package's `__all__` so verifiers uses it automatically.
 
 When you need episode-level metrics that compare traces across runs, such as marking the best attempt above, implement `finalize(task, episode)`. Because the agents' runtimes have already been released by the time `finalize` runs, any evidence needed for cross-trace scoring should be recorded on the traces during `run`. If an environment includes helper roles that shouldn't be trained (such as a judge or user simulator), mark them in `setup(agents)` with `agents.judge.trainable = False`.
 

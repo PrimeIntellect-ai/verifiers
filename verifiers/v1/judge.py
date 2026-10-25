@@ -76,9 +76,10 @@ from verifiers.v1.configs.judge import (
     JudgeConfig,
     judge_key,
 )
+from verifiers.v1.configs.sampling import SamplingConfig
 from verifiers.v1.dialects.chat import message_to_wire
 from verifiers.v1.errors import model_error
-from verifiers.v1.types import Messages, SamplingConfig, Usage
+from verifiers.v1.types import Messages, Usage
 from verifiers.v1.utils.generic import concrete_type, merge_defaults
 from verifiers.v1.utils.retries import provider_retry_wait
 from verifiers.v1.utils.score import parse_judge_choice

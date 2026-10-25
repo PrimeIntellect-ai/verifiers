@@ -375,3 +375,17 @@ def test_a_resumed_run_starts_undropped_and_its_earlier_run_keeps_its_drop(
     assert trace.dropped is None and trace.rewards == {}
     assert trace.attempt(0).dropped == "judge: outcome=task_defect"
     assert trace.attempt(1).dropped is None
+
+
+@pytest.mark.parametrize("pinned", [False, True])
+def test_run_sampling_stays_with_run_client(pinned):
+    run_sampling = vf.SamplingConfig(temperature=0.8, top_k=20)
+    client = vf.EvalClientConfig(base_url="http://judge.invalid/v1") if pinned else None
+    spec = vf.AgentConfig(client=client, sampling={"reasoning_effort": "high"})
+    resolved = resolve_agent(
+        spec, client=vf.TrainClientConfig(), sampling=run_sampling
+    ).sampling
+    expected = {"reasoning_effort": "high"}
+    if not pinned:
+        expected |= {"temperature": 0.8, "top_k": 20}
+    assert resolved.model_dump(exclude_none=True) == expected

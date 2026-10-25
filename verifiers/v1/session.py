@@ -30,6 +30,7 @@ from pydantic import TypeAdapter
 
 from verifiers.v1 import graph
 from verifiers.v1.clients import Client, ModelContext
+from verifiers.v1.configs.harness import DialectName
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.errors import HarnessError, RolloutError, TaskError
 from verifiers.v1.harnesses.utils.compaction import bound_tool_message
@@ -41,7 +42,6 @@ from verifiers.v1.trace import (
 )
 from verifiers.v1.types import (
     AssistantMessage,
-    DialectName,
     Messages,
     Request,
     Response,

@@ -23,6 +23,7 @@ import zmq
 import zmq.asyncio
 
 from verifiers.v1.configs.client import ClientConfig
+from verifiers.v1.configs.sampling import SamplingConfig
 from verifiers.v1.episode import WireEpisode
 from verifiers.v1.serve.delta import EpisodeAssembly, unpack
 from verifiers.v1.serve.types import (
@@ -36,7 +37,6 @@ from verifiers.v1.serve.types import (
     SteerRequest,
     SteerResponse,
 )
-from verifiers.v1.types import SamplingConfig
 
 logger = logging.getLogger(__name__)
 
