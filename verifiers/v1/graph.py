@@ -323,10 +323,22 @@ def message_hash(message: Message) -> str:
                 ]
                 if unparsed_content:
                     hashed_state["content"] = unparsed_content
-            represented = kind in ("message", "reasoning") or (
-                kind in ("function_call", "custom_tool_call")
-                and any(
-                    call.id == item.get("call_id") for call in message.tool_calls or []
+            # Chat-completions reasoning details (OpenRouter `reasoning_details`) carry the
+            # text that `reasoning_content` already holds; a harness that resends the turn
+            # without them (LiteLLM) restates the same message, so only their opaque fields
+            # (a signature) distinguish it.
+            represented = (
+                kind in ("message", "reasoning")
+                or (
+                    kind in ("reasoning.text", "reasoning.summary")
+                    and message.reasoning_content is not None
+                )
+                or (
+                    kind in ("function_call", "custom_tool_call")
+                    and any(
+                        call.id == item.get("call_id")
+                        for call in message.tool_calls or []
+                    )
                 )
             )
             if represented and not hashed_state:

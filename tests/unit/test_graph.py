@@ -816,3 +816,35 @@ def test_a_read_trace_holds_its_opening_once():
     prompt = read.task.data.prompt
     assert prompt == opening
     assert all(held is node.message for held, node in zip(prompt, read.nodes[1:]))
+
+
+def test_resent_turn_without_openrouter_reasoning_details_matches_the_sampled_one():
+    """OpenRouter returns `reasoning_details` beside `reasoning`; LiteLLM (mini-swe-agent)
+    resends the assistant turn without them. The text is the message's reasoning_content,
+    so the resent turn is the same message, not a branch. A signature still counts."""
+    call = vf.ToolCall(id="c1", name="bash", arguments='{"command": "ls"}')
+    base = {
+        "content": "",
+        "reasoning_content": "Look at the files.",
+        "tool_calls": [call],
+    }
+    sampled = vf.AssistantMessage(
+        **base,
+        provider_state=[
+            {
+                "type": "reasoning.text",
+                "text": "Look at the files.",
+                "format": "unknown",
+                "index": 0,
+            }
+        ],
+    )
+    resent = vf.AssistantMessage(**base)
+    assert graph.message_hash(sampled) == graph.message_hash(resent)
+    signed = vf.AssistantMessage(
+        **base,
+        provider_state=[
+            {"type": "reasoning.text", "text": "Look at the files.", "signature": "s1"}
+        ],
+    )
+    assert graph.message_hash(signed) != graph.message_hash(resent)
