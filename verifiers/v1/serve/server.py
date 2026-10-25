@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import threading
 from typing import Protocol
 
 import msgpack
@@ -48,6 +49,38 @@ def set_episode_hook(hook: EpisodeHook | None) -> None:
     keeps is either delivered in its run's reply or handed back to `discard`."""
     global _episode_hook
     _episode_hook = hook
+
+
+class _Keeping:
+    """One episode's `keep`, run off the event loop. A failed or abandoned `keep` hands
+    the episode to `discard` exactly once, and only after `keep` has returned: in the
+    thread when `keep` finishes last, else in `abandon`."""
+
+    def __init__(self, hook: EpisodeHook, episode: Episode) -> None:
+        self.hook = hook
+        self.episode = episode
+        self._lock = threading.Lock()
+        self._kept = False
+        self._abandoned = False
+
+    def run(self, sampling: SamplingConfig) -> None:
+        try:
+            self.hook.keep(self.episode, sampling)
+        except BaseException:
+            self.hook.discard(self.episode)
+            raise
+        with self._lock:
+            self._kept = True
+            discard = self._abandoned
+        if discard:
+            self.hook.discard(self.episode)
+
+    def abandon(self) -> None:
+        with self._lock:
+            self._abandoned = True
+            discard = self._kept
+        if discard:
+            self.hook.discard(self.episode)
 
 
 class EnvServer:
@@ -142,14 +175,12 @@ class EnvServer:
             )
             if hook is not None:
                 # Before the final flush, so what the hook writes to the traces streams.
-                keeping = asyncio.ensure_future(
-                    asyncio.to_thread(hook.keep, episode, ctx.sampling)
-                )
+                keeping = _Keeping(hook, episode)
                 try:
-                    await asyncio.shield(keeping)
+                    # The thread runs to the end even when this await is cancelled.
+                    await asyncio.shield(asyncio.to_thread(keeping.run, ctx.sampling))
                 except asyncio.CancelledError:
-                    # The thread finishes regardless; this episode is never delivered.
-                    keeping.add_done_callback(lambda _: hook.discard(episode))
+                    keeping.abandon()
                     raise
                 self._kept[request_id] = (hook, episode)
         return RunResponse(
@@ -217,9 +248,12 @@ class EnvServer:
             delivered = response.success
         except zmq.ZMQError as e:
             logger.warning("failed to send response: %s", e)
-        if (kept := self._kept.pop(request_id, None)) is not None and not delivered:
-            hook, episode = kept
-            hook.discard(episode)
+        finally:
+            # Also on a cancel (shutdown) while the reply is sending.
+            kept = self._kept.pop(request_id, None)
+            if kept is not None and not delivered:
+                hook, episode = kept
+                hook.discard(episode)
 
     async def run(self) -> None:
         logger.info(
