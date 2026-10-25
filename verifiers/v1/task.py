@@ -60,6 +60,14 @@ _SCORING_DEFAULTS = {
 }
 """Scoring fields left out of task identity at these values (`identity_data`)."""
 
+_IDENTITY_DEFAULTS: dict[str, Any] = {"checkpoint": None}
+"""Task data fields left out of task identity at these values (`identity_data`). A call's
+fingerprint hashes every key of the dumped data, so a field added with a default would
+change it, and every in-flight call and finished result of every task would be lost with
+it. Put a new `TaskData` field here with its default in the commit that adds it: it counts
+only once a task sets it. (`tests/unit/test_task_identity_defaults.py` fails for a field
+that is neither here nor among the ones identity always hashed.)"""
+
 
 def identity_data(data: Mapping) -> dict:
     """Task wire data in the shape task identity is hashed in: network policy as the
@@ -78,6 +86,9 @@ def identity_data(data: Mapping) -> dict:
         if not allow and block == ["*"]:
             block = []  # framework-only access: was an empty allowlist
         out["network_allow"], out["network_block"] = allow, block
+    for key, default in _IDENTITY_DEFAULTS.items():
+        if key in out and out[key] == default:
+            del out[key]
     scoring = out.get("scoring")
     if isinstance(scoring, Mapping):
         # Scoring fields added after a task's identity was first hashed count only when
