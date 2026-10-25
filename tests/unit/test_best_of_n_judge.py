@@ -128,7 +128,7 @@ async def test_run_averages_the_ensemble_and_weighs_the_task(make_trace):
 
     assert len(judge.tasks) == 2
     for task in judge.tasks:
-        assert sorted(task.labels) == ["A", "B", "C"]
+        assert {t.id for t in task.labels.values()} == {t.id for t in attempts}
     for trace in attempts:
         assert trace.metrics["task_reward"] in (0.0, 1.0)
         assert trace.rewards["correct"].weight == 0.5

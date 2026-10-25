@@ -13,7 +13,6 @@ import json
 import random
 import shlex
 import statistics
-import string
 import uuid
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -296,8 +295,21 @@ class BestOfNJudgeEnv(BestOfNEnv, vf.Env[BestOfNJudgeEnvConfig]):
         """One judge's rank scores, keyed by attempt trace id."""
         shuffled = _SHUFFLE.sample(attempts, len(attempts))
         labels = dict(zip(_labels(len(shuffled)), shuffled))
+        verdict = await agents.judge.run(self.make_rank_task(task, labels))
+        if not verdict.ok:
+            raise RuntimeError(
+                "best-of-n judge failed: "
+                + "; ".join(error.message for error in verdict.errors)
+            )
+        return verdict.info["ranking"]["scores"]
+
+    def make_rank_task(self, task: vf.Task, labels: dict[str, vf.Trace]) -> RankTask:
+        """One judge's task over the labelled attempts. Override to change what
+        the judge sees (e.g. native image parts), or to return a RankTask subclass
+        whose `setup` also rebuilds the task's world: a fresh box from the task's
+        image doesn't replay the task's own setup."""
         data = task.data
-        rank_task = RankTask(
+        return RankTask(
             vf.TaskData(
                 idx=data.idx,
                 prompt=self.config.task.build_prompt(data, list(labels)),
@@ -308,13 +320,6 @@ class BestOfNJudgeEnv(BestOfNEnv, vf.Env[BestOfNJudgeEnvConfig]):
             ),
             labels,
         )
-        verdict = await agents.judge.run(rank_task)
-        if not verdict.ok:
-            raise RuntimeError(
-                "best-of-n judge failed: "
-                + "; ".join(error.message for error in verdict.errors)
-            )
-        return verdict.info["ranking"]["scores"]
 
     async def finalize(self, task: vf.Task, episode: vf.Episode) -> None:
         """best-of-n's sibling metrics over the attempts alone: `best` marks the
@@ -332,12 +337,9 @@ class BestOfNJudgeEnv(BestOfNEnv, vf.Env[BestOfNJudgeEnvConfig]):
 
 
 def _labels(count: int) -> list[str]:
-    """Spreadsheet-column labels — A..Z, AA, AB, ... — for shuffled attempts."""
-    labels = []
-    for index in range(1, count + 1):
-        label = ""
-        while index:
-            index, rest = divmod(index - 1, 26)
-            label = string.ascii_uppercase[rest] + label
-        labels.append(label)
-    return labels
+    """Distinct random hex labels, three digits unless more attempts need more,
+    so a label hints at neither an attempt's index nor its listing position."""
+    width = 3
+    while 16**width < count:
+        width += 1
+    return [f"{i:0{width}x}" for i in _SHUFFLE.sample(range(16**width), count)]
