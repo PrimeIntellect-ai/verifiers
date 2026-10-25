@@ -237,3 +237,14 @@ def test_location_idle_timeout_reaches_opencode_settings():
     assert settings(location_idle_timeout="24 hours")["experimental"] == {
         "location_idle_timeout": "24 hours"
     }
+
+
+def test_input_modalities_declare_a_text_only_model():
+    """A text-only model must say so: OpenCode otherwise attaches an image the agent reads,
+    and GLM 5.3 rejects the request ("Unsupported input modality: image"), ending the
+    rollout. With modalities.input ["text"] OpenCode's read reports the file unreadable."""
+    assert "modalities" not in settings()["providers"]["intercept"]["models"]["model"]
+    model = settings(input_modalities=["text"])["providers"]["intercept"]["models"][
+        "model"
+    ]
+    assert model["modalities"] == {"input": ["text"], "output": ["text"]}

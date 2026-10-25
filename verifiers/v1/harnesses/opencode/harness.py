@@ -79,6 +79,15 @@ class OpenCodeHarnessConfig(HarnessConfig):
     single model turn longer than an hour (GLM 5.3 planning or writing a large file at
     ~15 tok/s) ended the run "Session interrupted: inactivity". Unset leaves OpenCode's
     default."""
+    input_modalities: list[Literal["text", "image", "audio", "video", "pdf"]] | None = (
+        None
+    )
+    """What the model accepts (OpenCode's model `modalities.input`), e.g. ["text"] for a
+    text-only model. OpenCode attaches an image or PDF the agent reads only when the
+    model accepts it, otherwise the read returns "this model does not support image
+    input". Unset, OpenCode assumes a custom model accepts images, and a text-only
+    provider rejects the request (GLM 5.3: "Unsupported input modality: image"), which
+    ends the rollout."""
 
 
 class OpenCodeHarness(ACPHarness[OpenCodeHarnessConfig]):
@@ -134,6 +143,11 @@ class OpenCodeHarness(ACPHarness[OpenCodeHarnessConfig]):
             "anthropic_messages": "anthropic-compatible",
         }[self.config.dialect]
         model: dict = {"modelID": ctx.model}
+        if self.config.input_modalities is not None:
+            model["modalities"] = {
+                "input": list(self.config.input_modalities),
+                "output": ["text"],
+            }
         compaction = self.config.compaction
         if compaction is not None:
             # OpenCode caps each request's output at `limit.output`, 32,000 tokens when
