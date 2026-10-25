@@ -70,7 +70,6 @@ class ClaudeCodeHarness(ACPHarness[ClaudeCodeHarnessConfig]):
             },
             label="Claude Agent ACP",
         )
-        await super().setup(runtime)
 
     async def prepare_acp(
         self,

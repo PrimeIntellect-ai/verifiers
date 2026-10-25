@@ -95,7 +95,6 @@ class PiHarness(ACPHarness[PiHarnessConfig]):
             },
             label="pi",
         )
-        await super().setup(runtime)
 
     async def prepare_acp(
         self,
