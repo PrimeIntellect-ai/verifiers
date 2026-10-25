@@ -1169,12 +1169,17 @@ class PrimeBackend(RuntimeBackend):
         )
 
     async def _job_alive(self, job: Any, user: str | None) -> bool | None:
-        """Whether a job without an exit file still runs: some process holds its output
-        open, or the exit file has appeared since. None when the check itself failed.
-        Runs as the job's user, who can read the job's own file descriptors."""
+        """Whether a job without an exit status still runs: some process holds its output
+        open, or its exit status has been written since. None when the check itself
+        failed. Runs as the job's user, who can read the job's own file descriptors.
+
+        An exit file that exists but is empty is not an exit status: a wrapper killed
+        between creating the file and writing the code leaves one, and the job is then
+        gone with nothing to report (TB-engineering 2026-10-25: two draws polled such a
+        file for 14 hours). Only a non-empty file, or a live holder of the output, counts."""
         log = shlex.quote(job.stdout_log_file)
         command = (
-            f"if [ -e {shlex.quote(job.exit_file)} ] || "
+            f"if [ -s {shlex.quote(job.exit_file)} ] || "
             f"ls -l /proc/[0-9]*/fd 2>/dev/null | grep -qF -- ' -> '{log}; "
             "then echo alive; else echo dead; fi"
         )
