@@ -7,12 +7,15 @@
 import asyncio
 import json
 import os
+import re
 import signal
 import sys
 import traceback
+from collections.abc import AsyncIterator
 from contextlib import AsyncExitStack, suppress
 from dataclasses import asdict, dataclass
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 from acp import (
@@ -36,6 +39,23 @@ from acp.schema import (
 )
 
 MAX_PACKET_BYTES = 128 * 1024 * 1024
+
+# A Prime tunnel's gateway answers this page itself while the tunnel has no frpc
+# registered: for the moment after its frpc's connection drops, until frpc logs in again.
+TUNNEL_NOT_FOUND = b"Tunnel Not Found"
+# How long the relay keeps resending a request the gateway turned away.
+RELAY_RETRY_SECONDS = 120.0
+_HOP_HEADERS = {
+    "connection",
+    "content-length",
+    "host",
+    "keep-alive",
+    "proxy-connection",
+    "te",
+    "trailer",
+    "transfer-encoding",
+    "upgrade",
+}
 
 
 @dataclass(frozen=True)
@@ -76,6 +96,189 @@ class ToolGate:
         except Exception as error:  # noqa: BLE001 - an unreachable gate lets nothing run
             print(f"tool gate denied {tool_call_id}: {error}", file=sys.stderr)
             return "deny"
+
+
+class ProviderRelay:
+    """Front the rollout's model endpoint inside the box, so a request the tunnel gateway
+    turned away is sent again instead of failing the agent.
+
+    The endpoint is a Prime tunnel to the host's interception server. When the tunnel's
+    frpc connection drops, the gateway unregisters the tunnel and, until frpc logs in
+    again (under a second), answers every new request with its own `404 - Tunnel Not
+    Found` page. Such a request never reached the interception server, so it is safe to
+    resend; the agent can't tell, and OpenCode treats a provider 404 as fatal. Every other
+    answer, the interception server's own errors included, streams back unchanged.
+
+    One request per connection: each response is chunked and closes the connection."""
+
+    def __init__(self, upstream: str) -> None:
+        parts = urlsplit(upstream)
+        self.origin = f"{parts.scheme}://{parts.netloc}"
+        self.client = httpx.AsyncClient(
+            timeout=httpx.Timeout(None, connect=30),
+            limits=httpx.Limits(max_connections=None, max_keepalive_connections=32),
+        )
+        self.server: asyncio.Server | None = None
+        self.local_origin = ""
+
+    async def start(self) -> None:
+        self.server = await asyncio.start_server(
+            self._serve, "127.0.0.1", 0, limit=1024 * 1024
+        )
+        port = self.server.sockets[0].getsockname()[1]
+        self.local_origin = f"http://127.0.0.1:{port}"
+
+    def route(self, env: dict[str, str]) -> dict[str, str]:
+        """`env` with the endpoint's origin pointed at the relay."""
+        origin = re.compile(re.escape(self.origin) + r"(?![\w.:-])")
+        return {key: origin.sub(self.local_origin, value) for key, value in env.items()}
+
+    async def close(self) -> None:
+        if self.server is not None:
+            self.server.close()
+        await self.client.aclose()
+
+    async def _serve(
+        self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+    ) -> None:
+        try:
+            request = await _read_request(reader)
+            if request is not None:
+                await self._forward(*request, writer)
+        except (
+            ConnectionError,
+            asyncio.IncompleteReadError,
+            asyncio.LimitOverrunError,
+            httpx.HTTPError,
+        ):
+            pass  # either side hung up mid-exchange: the agent sees the cut, as unrelayed
+        except Exception:  # noqa: BLE001 - one bad request must not stop the relay
+            traceback.print_exc()
+        finally:
+            writer.close()
+            with suppress(Exception):
+                await writer.wait_closed()
+
+    async def _send(
+        self, method: str, target: str, headers: list[tuple[str, str]], body: bytes
+    ) -> tuple[httpx.Response, bytes | None]:
+        """The upstream response, streaming; or a 404, closed, with its raw body."""
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + RELAY_RETRY_SECONDS
+        delay = 0.25
+        while True:
+            request = self.client.build_request(
+                method, self.origin + target, headers=headers, content=body
+            )
+            try:
+                response = await self.client.send(request, stream=True)
+            except httpx.ConnectError as error:  # never sent
+                if loop.time() + delay > deadline:
+                    raise
+                reason = f"{type(error).__name__}: {error}"
+            else:
+                if response.status_code != 404:
+                    return response, None
+                try:
+                    raw = b"".join([chunk async for chunk in response.aiter_raw()])
+                finally:
+                    await response.aclose()
+                page = httpx.Response(404, headers=response.headers, content=raw)
+                if (
+                    TUNNEL_NOT_FOUND not in page.content
+                    or loop.time() + delay > deadline
+                ):
+                    return response, raw
+                reason = "the tunnel gateway answered 404 Tunnel Not Found"
+            print(
+                f"provider relay: {reason}; resending {method} {target} in {delay:.2f}s",
+                file=sys.stderr,
+            )
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, 8.0)
+
+    async def _forward(
+        self,
+        method: str,
+        target: str,
+        headers: list[tuple[str, str]],
+        body: bytes,
+        writer: asyncio.StreamWriter,
+    ) -> None:
+        try:
+            response, raw = await self._send(method, target, headers, body)
+        except httpx.HTTPError as error:
+            message = f"provider relay: {type(error).__name__}: {error}".encode()
+            head = (
+                "HTTP/1.1 502 Bad Gateway\r\nContent-Type: text/plain\r\n"
+                f"Content-Length: {len(message)}\r\nConnection: close\r\n\r\n"
+            )
+            writer.write(head.encode() + message)
+            await writer.drain()
+            return
+        try:
+            head = [f"HTTP/1.1 {response.status_code} {response.reason_phrase}"]
+            head += [
+                f"{key}: {value}"
+                for key, value in response.headers.multi_items()
+                if key.lower() not in _HOP_HEADERS
+            ]
+            has_body = method != "HEAD" and response.status_code not in (204, 304)
+            if has_body:
+                head.append("Transfer-Encoding: chunked")
+            head.append("Connection: close")
+            writer.write(("\r\n".join(head) + "\r\n\r\n").encode("latin-1"))
+            if has_body:
+                chunks = response.aiter_raw() if raw is None else _once(raw)
+                async for chunk in chunks:
+                    if chunk:
+                        writer.write(b"%x\r\n%s\r\n" % (len(chunk), chunk))
+                        await writer.drain()
+                writer.write(b"0\r\n\r\n")
+            await writer.drain()
+        finally:
+            await response.aclose()
+
+
+async def _once(data: bytes) -> AsyncIterator[bytes]:
+    yield data
+
+
+async def _read_request(
+    reader: asyncio.StreamReader,
+) -> tuple[str, str, list[tuple[str, str]], bytes] | None:
+    """One HTTP/1.1 request: method, target, end-to-end headers and the whole body."""
+    try:
+        head = await reader.readuntil(b"\r\n\r\n")
+    except asyncio.IncompleteReadError as error:
+        if not error.partial:
+            return None
+        raise
+    request_line, *lines = head.decode("latin-1").split("\r\n")
+    method, target, _ = request_line.split(" ", 2)
+    headers = []
+    length = 0
+    chunked = False
+    for line in lines:
+        if not line:
+            continue
+        key, _, value = line.partition(":")
+        key, value = key.strip(), value.strip()
+        lower = key.lower()
+        if lower == "content-length":
+            length = int(value)
+        elif lower == "transfer-encoding":
+            chunked = "chunked" in value.lower()
+        if lower not in _HOP_HEADERS and lower != "expect":
+            headers.append((key, value))
+    if not chunked:
+        return method, target, headers, await reader.readexactly(length)
+    body = bytearray()
+    while size := int((await reader.readuntil(b"\r\n")).split(b";")[0], 16):
+        body += (await reader.readexactly(size + 2))[:-2]
+    while await reader.readuntil(b"\r\n") != b"\r\n":
+        pass  # trailers
+    return method, target, headers, bytes(body)
 
 
 class VerifiersACPClient(Client):
@@ -234,6 +437,7 @@ class ACPSession:
 
     def __init__(self) -> None:
         self.client = VerifiersACPClient()
+        self.relay: ProviderRelay | None = None
         self._reset()
 
     def _reset(self) -> None:
@@ -246,13 +450,20 @@ class ACPSession:
 
     async def start(self, config: dict) -> None:
         command = config["command"]
+        env = os.environ.copy()
+        if upstream := config.get("provider_url"):
+            if self.relay is None:
+                relay = ProviderRelay(upstream)
+                await relay.start()
+                self.relay = relay
+            env = self.relay.route(env)
         try:
             agent_process = await self.stack.enter_async_context(
                 spawn_agent_process(
                     self.client,
                     command[0],
                     *command[1:],
-                    env=os.environ.copy(),
+                    env=env,
                     transport_kwargs={"stderr": None},
                 )
             )
@@ -332,6 +543,9 @@ class ACPSession:
                 if self.client.gate is not None:
                     await self.client.gate.client.aclose()
                     self.client.gate = None
+                if self.relay is not None:
+                    await self.relay.close()
+                    self.relay = None
                 self._reset()
         return response_metadata
 

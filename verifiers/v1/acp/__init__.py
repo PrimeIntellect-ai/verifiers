@@ -346,6 +346,9 @@ class ACPHarnessSession(HarnessSession):
         )
         config = {
             "command": self.config.command,
+            # The runner fronts this endpoint with a relay that resends what the tunnel
+            # gateway turns away (`ProviderRelay`).
+            "provider_url": self.endpoint,
             "user_contents": user_contents,
             "mcp_urls": self.mcp_urls,
             "mcp_headers": self.harness.config.resolve_mcp_headers(self.mcp_urls),
