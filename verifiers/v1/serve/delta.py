@@ -32,7 +32,7 @@ import msgpack
 import numpy as np
 from pydantic import BaseModel
 
-from verifiers.v1.graph import _decode_ndarray, _encode_ndarray
+from verifiers.v1.graph import decode_ndarray, encode_ndarray
 from verifiers.v1.serve.encoding import msgpack_encoder
 
 if TYPE_CHECKING:
@@ -194,7 +194,7 @@ class DeltaStreamer:
         for index, node in enumerate(trace.nodes):
             if node.routed_experts is None:
                 continue
-            row = _encode_ndarray(node.routed_experts[-1:])
+            row = encode_ndarray(node.routed_experts[-1:])
             packed = pack(row)
             if cursor.final_rows.get(index) != packed:
                 cursor.final_rows[index] = packed
@@ -239,8 +239,11 @@ class DeltaStreamer:
                         if field == "nodes" and not self.keep_arrays
                         else None
                     )
+                    # Nodes' per-token streams ride as raw-bytes arrays.
+                    context = {"token_arrays": True} if field == "nodes" else None
                     delta[field] = [
-                        dump(item, exclude=exclude) for item in items[sent:]
+                        dump(item, context=context, exclude=exclude)
+                        for item in items[sent:]
                     ]
                     cursor.sent[field] = len(items)
                     if field == "nodes":
@@ -282,9 +285,9 @@ class EpisodeAssembly:
         """
         for index, row in (delta.get("routing_repairs") or {}).items():
             node = trace["nodes"][int(index)]
-            node["routed_experts"] = _encode_ndarray(
+            node["routed_experts"] = encode_ndarray(
                 np.concatenate(
-                    [_decode_ndarray(node["routed_experts"])[:-1], _decode_ndarray(row)]
+                    [decode_ndarray(node["routed_experts"])[:-1], decode_ndarray(row)]
                 )
             )
 

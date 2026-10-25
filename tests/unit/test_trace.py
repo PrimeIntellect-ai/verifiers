@@ -293,3 +293,17 @@ def test_max_turn_tokens_caps_sampling(max_tokens, expected):
     spec = vf.AgentConfig(max_turn_tokens=16)
     sampling = vf.SamplingConfig(max_tokens=max_tokens)
     assert resolve_agent(spec, sampling=sampling).sampling.max_tokens == expected
+
+
+@pytest.mark.parametrize("pinned", [False, True])
+def test_run_sampling_stays_with_run_client(pinned):
+    run_sampling = vf.SamplingConfig(temperature=0.8, top_k=20)
+    client = vf.EvalClientConfig(base_url="http://judge.invalid/v1") if pinned else None
+    spec = vf.AgentConfig(client=client, sampling={"reasoning_effort": "high"})
+    resolved = resolve_agent(
+        spec, client=vf.TrainClientConfig(), sampling=run_sampling
+    ).sampling
+    expected = {"reasoning_effort": "high"}
+    if not pinned:
+        expected |= {"temperature": 0.8, "top_k": 20}
+    assert resolved.model_dump(exclude_none=True) == expected

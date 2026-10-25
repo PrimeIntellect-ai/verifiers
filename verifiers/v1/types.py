@@ -1,20 +1,71 @@
 import base64
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Annotated, Any, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import (
-    AliasChoices,
-    BaseModel,
-    ConfigDict,
-    Field,
-    model_validator,
-)
+import numpy as np
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, field_serializer
+from pydantic.json_schema import WithJsonSchema
 from typing_extensions import TypedDict
 
-# The config tree imports this module, so numpy loads only where arrays are built.
-if TYPE_CHECKING:
-    import numpy as np
+
+def encode_ndarray(arr: np.ndarray) -> dict:
+    """A numpy array as a msgpack-safe dict (dtype + shape + raw bytes). The bytes ride the
+    env-server wire natively via msgpack's `bin` type — no base64 — so the response must be
+    packed from `model_dump(mode="python")` (`mode="json"` would coerce the bytes to str)."""
+    arr = np.ascontiguousarray(arr)
+    return {
+        "__nd__": True,
+        "dtype": str(arr.dtype),
+        "shape": list(arr.shape),
+        "data": arr.tobytes(),
+    }
+
+
+def decode_ndarray(d: dict) -> np.ndarray:
+    """Reverse :func:`encode_ndarray`."""
+    return np.frombuffer(d["data"], dtype=np.dtype(d["dtype"])).reshape(d["shape"])
+
+
+def as_list(values: list | np.ndarray) -> list:
+    """A token stream as a list, whichever form it is in."""
+    return values.tolist() if isinstance(values, np.ndarray) else values
+
+
+def _token_stream(dtype: type[np.generic], item_type: str):
+    """The field type of a per-token stream: a numpy array of `dtype`.
+
+    One list entry per token is a Python object the cyclic garbage collector walks and the
+    msgpack wire packs one by one; an array is one object it skips and raw bytes on the wire, so
+    a process holding many long episodes (an RL orchestrator) keeps full collections short.
+    Validation takes a list, an array or an `__nd__` dict; the models that hold streams
+    serialize them (`graph.MessageNode.serialize_token_stream`). Typed as an array alone,
+    because a `list[int] | np.ndarray` union makes pydantic try the list branch element by
+    element on every array it validates."""
+
+    def validate(value: Any) -> np.ndarray:
+        if isinstance(value, dict) and value.get("__nd__"):
+            value = decode_ndarray(value)
+        return np.asarray(value, dtype=dtype)
+
+    return Annotated[
+        np.ndarray,
+        BeforeValidator(validate),
+        WithJsonSchema({"type": "array", "items": {"type": item_type}}),
+    ]
+
+
+IntStream = _token_stream(np.int32, "integer")
+"""Token ids: int32."""
+BoolStream = _token_stream(np.bool_, "boolean")
+"""Per-token flags: bool."""
+FloatStream = _token_stream(np.float32, "number")
+"""Per-token values (logprobs, advantages, loss weights): float32."""
+
+
+def empty_stream(dtype: type[np.generic]) -> Callable[[], np.ndarray]:
+    """A `default_factory` for an empty stream of `dtype`."""
+    return lambda: np.zeros(0, dtype=dtype)
 
 
 class TextContentPart(BaseModel):
@@ -128,10 +179,6 @@ class Request(BaseModel):
 
 FinishReason = Literal["stop", "length", "tool_calls"] | None
 
-DialectName = Literal["chat_completions", "responses", "anthropic_messages"]
-"""A model API wire format: a `Dialect.name`, and the values of the harness `dialect`
-setting."""
-
 
 class Usage(BaseModel):
     """Provider token accounting.
@@ -229,8 +276,6 @@ class SamplingMask:
     ) -> "SamplingMask":
         """Build from vLLM's one-list-per-token masks, or from prime-rl's packed CSR
         form: `{"ids", "counts"}`, each a base64 `{data, shape, dtype}` int32 array."""
-        import numpy as np
-
         if isinstance(sampling_mask, dict):
             return cls(
                 ids=_decode_packed(sampling_mask["ids"], np.int32),
@@ -249,9 +294,7 @@ class SamplingMask:
         return cls(ids=ids, counts=counts)
 
 
-def _decode_packed(packed: dict[str, Any], dtype: type) -> "np.ndarray":
-    import numpy as np
-
+def _decode_packed(packed: dict[str, Any], dtype: type) -> np.ndarray:
     array = np.frombuffer(base64.b64decode(packed["data"]), dtype=packed["dtype"])
     return array.astype(dtype, copy=False)
 
@@ -273,8 +316,6 @@ class TopLogprobs:
     def from_top_logprobs(
         cls, ids: list[list[int]], logprobs: list[list[float]]
     ) -> "TopLogprobs":
-        import numpy as np
-
         if len(ids) != len(logprobs):
             raise ValueError("top ids and logprobs must have one row per token")
         counts = np.fromiter(
@@ -298,14 +339,14 @@ class TurnTokens(BaseModel):
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    prompt_ids: list[int] = Field(default_factory=list)
+    prompt_ids: IntStream = Field(default_factory=empty_stream(np.int32))
     """Effective prompt IDs evaluated by the model, after multimodal expansion."""
-    completion_ids: list[int] = Field(default_factory=list)
-    completion_logprobs: list[float] = Field(default_factory=list)
+    completion_ids: IntStream = Field(default_factory=empty_stream(np.int32))
+    completion_logprobs: FloatStream = Field(default_factory=empty_stream(np.float32))
 
     # Transient graph-construction metadata, consumed by the turn's commit and excluded
     # from serialized responses.
-    renderer_prompt_ids: list[int] | None = Field(default=None, exclude=True)
+    renderer_prompt_ids: IntStream | None = Field(default=None, exclude=True)
     """Logical renderer IDs before multimodal expansion, retained for bridge extension."""
     bridged: bool = Field(default=False, exclude=True)
     """Whether the renderer constructed this prompt by extending a stored prefix."""
@@ -314,7 +355,7 @@ class TurnTokens(BaseModel):
     message_spans: list[tuple[int, int] | None] | None = Field(
         default=None, exclude=True
     )
-    is_content: list[bool] | None = Field(default=None, exclude=True)
+    is_content: BoolStream | None = Field(default=None, exclude=True)
     # Authoritative effective-prompt ranges returned by vLLM, flattened across modalities.
     mm_placeholders: list[tuple[int, int]] | None = Field(default=None, exclude=True)
     # Transient carrier (excluded): the renderer's special-token id -> modality marker map,
@@ -336,6 +377,10 @@ class TurnTokens(BaseModel):
     # attributed to the assistant node by the turn's `commit`, then dropped.
     top_logprobs: TopLogprobs | None = Field(default=None, exclude=True)
 
+    @field_serializer("prompt_ids", "completion_ids", "completion_logprobs")
+    def serialize_stream(self, values: list | np.ndarray) -> list:
+        return as_list(values)
+
 
 class Response(BaseModel):
     id: str
@@ -347,37 +392,3 @@ class Response(BaseModel):
     tokens: TurnTokens | None = None
     raw: dict | None = Field(default=None, exclude=True, repr=False)
     """Full native response object returned to the program; excluded from traces."""
-
-
-class SamplingConfig(BaseModel):
-    """Typed sampling knobs; provider-specific keys pass through (extra='allow')."""
-
-    model_config = ConfigDict(extra="allow")
-    temperature: float | None = None
-    top_p: float | None = None
-    reasoning_effort: str | None = None
-    max_tokens: int | None = Field(
-        None, validation_alias=AliasChoices("max_tokens", "max_completion_tokens")
-    )
-
-    @model_validator(mode="before")
-    @classmethod
-    def normalize(cls, data: Any) -> Any:
-        """Use one key per parameter before merging overrides, retaining null clears."""
-        if not isinstance(data, dict):
-            return data
-        normalized = {}
-        for layer in (data.get("extra_body") or {}, data):
-            layer = dict(layer)
-            if "max_completion_tokens" in layer:
-                layer.setdefault("max_tokens", layer.pop("max_completion_tokens"))
-            layer.pop("extra_body", None)
-            normalized.update(layer)
-        return normalized
-
-
-Sampling = SamplingConfig
-
-
-ID = str
-"""Plugin id: the name of an installed package exporting the plugin."""
