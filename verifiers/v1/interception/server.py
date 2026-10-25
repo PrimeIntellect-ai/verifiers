@@ -150,13 +150,6 @@ async def _request_digest(raw: bytes) -> bytes:
     return await asyncio.to_thread(_body_digest, raw)
 
 
-KEEPALIVE_ONLY_SECONDS = 900.0
-"""How long a provider stream may send only keepalive comments, no data event, before the
-turn counts as stalled and is sampled again (GLM 5.3 on Prime, 2026-10-25: ~8% of in-flight
-calls received only keepalives, under 500 bytes a minute, until the turn was cut about an
-hour later; the keepalives reset the client's read timeout, so nothing retried them)."""
-
-
 LEAKED_TOOL_CALL = "<tool_call>"
 """Raw tool-call markup a provider's parser left in a reply's reasoning."""
 
@@ -386,22 +379,10 @@ async def _collect_stream(
     started = time.monotonic()
     count = 0
     last = b""
-    last_data = started
     try:
         async for chunk in reply.chunks:
             if not any(line.startswith(b"data:") for line in chunk.splitlines()):
-                if (idle := time.monotonic() - last_data) > KEEPALIVE_ONLY_SECONDS:
-                    # keepalives keep the read timeout from firing while the provider
-                    # sends nothing of the turn: a stall to retry, not a wait
-                    error = ProviderError(
-                        f"upstream stream sent only keepalives for {idle:.0f}s "
-                        f"(after {time.monotonic() - started:.0f}s, {count} events, "
-                        f"{len(events)} bytes)"
-                    )
-                    error.streamed = count > 0
-                    raise error
                 continue
-            last_data = time.monotonic()
             if message := _stream_error(chunk):
                 # The provider failed the turn mid-stream with an error event (Nemotron's
                 # gateway: "Service error. Please retry shortly.", then [DONE]): a cut, not

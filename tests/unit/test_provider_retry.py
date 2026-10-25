@@ -153,12 +153,6 @@ class Provider:
         }
         stream = web.StreamResponse(headers={"Content-Type": "text/event-stream"})
         await stream.prepare(request)
-        if failure == "keepalives":
-            # the provider holds the turn: keepalive comments only, then it lets go
-            for _ in range(8):
-                await stream.write(b": keepalive\n\n")
-                await asyncio.sleep(0.1)
-            return stream
         if failure == "slow":
             # a long generation: each event comes well inside the read timeout, the
             # whole turn takes longer than it
@@ -391,23 +385,6 @@ async def test_an_empty_turn_after_reasoning_is_kept():
         trace = await agent.run(task())
     assert len(provider.requests) == 1
     assert all(call.error is None for call in trace.calls)
-
-
-@pytest.mark.parametrize(
-    "harness", [ScriptHarness, StreamHarness], ids=["json", "stream"]
-)
-async def test_a_stream_of_keepalives_only_is_retried(harness, monkeypatch):
-    """A provider stream that sends only keepalive comments (which keep the read timeout
-    from firing) for longer than KEEPALIVE_ONLY_SECONDS is a stalled turn, retried in
-    place rather than waited on."""
-    monkeypatch.setattr(server, "KEEPALIVE_ONLY_SECONDS", 0.3)
-    async with Provider("keepalives", "ok", "ok", "ok") as provider:
-        agent = make(provider, harness, timeout={"read": 5.0})
-        trace = await agent.run(task())
-    assert trace.ok, trace.errors
-    assert trace.calls[0].node is None
-    assert "only keepalives" in trace.calls[0].error.message
-    assert len(provider.requests) == (4 if harness is ScriptHarness else 2)
 
 
 async def test_a_read_timeout_is_retried_in_place():
