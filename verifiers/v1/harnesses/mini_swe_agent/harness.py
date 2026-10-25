@@ -23,6 +23,11 @@ class MiniSWEAgentHarnessConfig(HarnessConfig):
     model it timed out. The default leaves the rollout timeout in charge; a shorter one
     keeps a command that never returns (a server started in the foreground) from holding
     the rollout until then."""
+    request_timeout: PositiveInt = 86400
+    """Seconds mini-swe-agent's LiteLLM client waits for one model call. LiteLLM's own
+    default (600) failed the run with `litellm.Timeout` on any longer turn (GLM 5.3 at
+    high effort thinks past ten minutes on hard turns); the interception keeps the
+    provider stream alive and retries it, so the rollout timeout stays in charge."""
 
 
 class MiniSWEAgentHarness(Harness[MiniSWEAgentHarnessConfig]):
@@ -68,6 +73,8 @@ class MiniSWEAgentHarness(Harness[MiniSWEAgentHarnessConfig]):
             "model.model_kwargs.custom_llm_provider=openai",
             "-c",
             "model.model_kwargs.parallel_tool_calls=true",
+            "-c",
+            f"model.model_kwargs.timeout={self.config.request_timeout}",
             "-c",
             f"model.model_kwargs.api_base={endpoint}",
             "-c",

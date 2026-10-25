@@ -1,4 +1,4 @@
-"""mini-swe-agent's per-command timeout comes from the harness config."""
+"""mini-swe-agent's per-command and per-model-call timeouts come from the harness config."""
 
 import json
 
@@ -34,7 +34,7 @@ async def test_the_command_timeout_reaches_mini_swe_agents_environment(monkeypat
 
     harness = module.MiniSWEAgentHarness.__new__(module.MiniSWEAgentHarness)
     harness.config = MiniSWEAgentHarnessConfig(
-        id="mini_swe_agent", command_timeout=1800
+        id="mini_swe_agent", command_timeout=1800, request_timeout=7200
     )
     monkeypatch.setattr(
         harness, "resolve_text_prompt", lambda data: (None, "do it"), raising=False
@@ -49,3 +49,9 @@ async def test_the_command_timeout_reaches_mini_swe_agents_environment(monkeypat
         None,
     )
     assert "environment.timeout=1800" in written["args"]
+    # LiteLLM's own 600 s default failed long model turns with litellm.Timeout
+    assert "model.model_kwargs.timeout=7200" in written["args"]
+
+
+def test_the_model_request_timeout_defaults_to_a_day():
+    assert MiniSWEAgentHarnessConfig(id="mini_swe_agent").request_timeout == 86400
