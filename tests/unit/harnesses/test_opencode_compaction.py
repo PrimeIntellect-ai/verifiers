@@ -224,3 +224,16 @@ def test_opencode_compacts_at_threshold_and_keeps_its_prefix():
     assert "<conversation-checkpoint>" in resumed[1]["content"]
     assert SUMMARY.strip() in resumed[1]["content"]
     assert Scripted.turns > 14  # the rollout ran to its end after compacting
+
+
+def test_location_idle_timeout_reaches_opencode_settings():
+    """OpenCode 2.0 unloads a workspace (interrupting its session) after an hour without
+    durable activity, which a single long model turn is; 2.1 takes the limit, or False
+    to never unload, from experimental.location_idle_timeout."""
+    assert "experimental" not in settings()
+    assert settings(location_idle_timeout=False)["experimental"] == {
+        "location_idle_timeout": False
+    }
+    assert settings(location_idle_timeout="24 hours")["experimental"] == {
+        "location_idle_timeout": "24 hours"
+    }

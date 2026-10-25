@@ -2,6 +2,7 @@
 
 import json
 from pathlib import Path
+from typing import Literal
 
 from pydantic import PositiveInt, model_validator
 from pydantic_config import BaseConfig
@@ -70,6 +71,14 @@ class OpenCodeHarnessConfig(HarnessConfig):
     """Auto-compaction. OpenCode compacts only for a model whose context window it
     knows, and the interception model has none: unset, a rollout never compacts and
     ends at the provider's context limit."""
+    location_idle_timeout: str | Literal[False] | None = None
+    """OpenCode's `experimental.location_idle_timeout` (2.1 and later): how long a
+    workspace may go without durable session activity before OpenCode unloads it and
+    interrupts its sessions, e.g. "24 hours", or False never to unload. OpenCode 2.0
+    unloads after a fixed 60 minutes, and streamed model output is not activity: a
+    single model turn longer than an hour (GLM 5.3 planning or writing a large file at
+    ~15 tok/s) ended the run "Session interrupted: inactivity". Unset leaves OpenCode's
+    default."""
 
 
 class OpenCodeHarness(ACPHarness[OpenCodeHarnessConfig]):
@@ -158,6 +167,10 @@ class OpenCodeHarness(ACPHarness[OpenCodeHarnessConfig]):
             "share": "disabled",
             "snapshots": False,
         }
+        if self.config.location_idle_timeout is not None:
+            settings["experimental"] = {
+                "location_idle_timeout": self.config.location_idle_timeout
+            }
         if compaction is not None and compaction.summarize_at_tokens is not None:
             # OpenCode compacts at `limit.context - buffer` tokens.
             settings["compaction"] = {
