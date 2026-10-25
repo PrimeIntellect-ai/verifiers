@@ -104,6 +104,30 @@ class Provider:
                 "total_tokens": 105,
                 "completion_tokens_details": {"reasoning_tokens": 6},
             }
+        if failure == "eos":
+            # the provider answered with one end-of-turn token: no content, no tool
+            # calls, no reasoning
+            completion["choices"][0]["message"] = {"role": "assistant", "content": ""}
+            completion["choices"][0]["finish_reason"] = "stop"
+            completion["usage"] = {
+                "prompt_tokens": 20,
+                "completion_tokens": 1,
+                "total_tokens": 21,
+            }
+        if failure == "done":
+            # a model that ends its run with an empty reply after reasoning: kept
+            completion["choices"][0]["message"] = {
+                "role": "assistant",
+                "content": "",
+                "reasoning_content": "All done.",
+            }
+            completion["choices"][0]["finish_reason"] = "stop"
+            completion["usage"] = {
+                "prompt_tokens": 20,
+                "completion_tokens": 5,
+                "total_tokens": 25,
+                "completion_tokens_details": {"reasoning_tokens": 4},
+            }
         if not body.get("stream"):
             return web.json_response(completion)
         message = completion["choices"][0]["message"]
@@ -336,6 +360,31 @@ async def test_an_empty_turn_whose_usage_counts_unsent_output_is_retried(harness
     assert trace.calls[0].error is not None and trace.calls[0].error.status_code == 502
     assert "never arrived" in trace.calls[0].error.message
     assert len(provider.requests) == (4 if harness is ScriptHarness else 2)
+
+
+@pytest.mark.parametrize(
+    "harness", [ScriptHarness, StreamHarness], ids=["json", "stream"]
+)
+async def test_an_empty_turn_of_one_token_is_retried(harness):
+    """A reply of one end-of-turn token with no content, tool calls or reasoning is a
+    provider failure, retried in place."""
+    async with Provider("eos", "ok", "ok", "ok") as provider:
+        agent = make(provider, harness)
+        trace = await agent.run(task())
+    assert trace.ok, trace.errors
+    assert trace.calls[0].node is None
+    assert trace.calls[0].error is not None and trace.calls[0].error.status_code == 502
+    assert len(provider.requests) == (4 if harness is ScriptHarness else 2)
+
+
+async def test_an_empty_turn_after_reasoning_is_kept():
+    """A model that reasons and then ends with an empty reply (its usage counting only
+    an end-of-turn token past the reasoning) ends its run: nothing is retried."""
+    async with Provider("done") as provider:
+        agent = make(provider, StreamHarness)
+        trace = await agent.run(task())
+    assert len(provider.requests) == 1
+    assert all(call.error is None for call in trace.calls)
 
 
 async def test_a_read_timeout_is_retried_in_place():

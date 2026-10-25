@@ -154,9 +154,10 @@ LEAKED_TOOL_CALL = "<tool_call>"
 """Raw tool-call markup a provider's parser left in a reply's reasoning."""
 
 
-DROPPED_OUTPUT_TOKENS = 8
+DROPPED_OUTPUT_TOKENS = 3
 """Completion tokens past the reasoning that an empty reply may account for (end-of-turn
-markers); more means the provider generated output it did not send."""
+markers); more means the provider generated output it did not send. A model that ends its
+run with an empty reply counts at most 3 (Nemotron 3.5: 143 such endings, none past 3)."""
 
 
 def _check_tool_call_leak(response: Response) -> None:
@@ -176,7 +177,18 @@ def _check_tool_call_leak(response: Response) -> None:
             status_code=502,
         )
     usage = response.usage
-    if usage is not None and usage.reasoning_tokens is not None:
+    if usage is None:
+        return
+    if usage.completion_tokens <= 1:
+        # one end-of-turn token and nothing else, not even reasoning: GLM 5.3 on Prime
+        # mid-run (2026-10-25, 10 of ProgramBench's early endings); no model ends a run
+        # it reasoned through this way
+        raise model_error(
+            "malformed upstream response: an empty turn of "
+            f"{usage.completion_tokens} completion token(s), no reasoning",
+            status_code=502,
+        )
+    if usage.reasoning_tokens is not None:
         dropped = usage.completion_tokens - usage.reasoning_tokens
         if dropped > DROPPED_OUTPUT_TOKENS:
             raise model_error(
