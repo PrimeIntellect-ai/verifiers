@@ -25,6 +25,21 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 uv tool install prime
 ```
 
+## Web search
+
+The Bash harness supports any Serper.dev-compatible endpoint (like litescrape.com, serpbase.dev, and others) through `search_url`.
+
+Set `SERPER_API_KEY` in the host environment to a key issued by your chosen provider, then configure its full search endpoint URL. For example, with Litescrape:
+
+```toml
+[env.agent.harness]
+id = "bash"
+search = true
+search_url = "https://api.litescrape.com/search"
+```
+
+Omit `search_url` to use `https://google.serper.dev/search`. The URL is used as supplied, without appending a path. Compatible endpoints must accept `POST` JSON with `q`, authenticate with `X-API-KEY`, and return an `organic` array with `title`, `link`, and `snippet` fields.
+
 ## Further reading
 
 - The [docs](docs/) contain short, human-written guides and overviews about the architecture.
