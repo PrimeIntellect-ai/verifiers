@@ -76,6 +76,14 @@ class ComposeSpec:
     image_override: bool = False
 
 
+def authored_project(spec: ComposeSpec) -> dict:
+    """The task's Compose file as authored, uninterpolated: enough to plan with (its
+    services and their networks), not to run."""
+    import yaml
+
+    return yaml.safe_load((Path(spec.directory) / spec.file).read_text()) or {}
+
+
 @asynccontextmanager
 async def compose_services(
     config: RuntimeConfig,

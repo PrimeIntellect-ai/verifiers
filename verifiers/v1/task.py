@@ -21,6 +21,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from typing_extensions import TypeVar
 
 from verifiers.v1.configs.harness import SkillSource
+from verifiers.v1.configs.nodes import NodeConfig
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.configs.scoring import ScoringConfig
 from verifiers.v1.configs.task import TaskConfig
@@ -120,6 +121,15 @@ class TaskData(BaseModel):
     intersect with it, and blocklists merge. Unsupported intersections are rejected, and a
     concrete allowlist cannot be combined with a blocklist. Prime runtimes accept
     host-level entries; Docker framework routes take precedence."""
+
+    nodes: dict[str, NodeConfig] | None = None
+    """Machines and services the rollout runs besides the workspace, by name, each with
+    the runtime fields that differ from the workspace's, an optional long-running
+    process, and the nodes that may reach it (by default the workspace). A node under
+    the workspace's network policy shares its machine as a Compose service; one with a
+    policy of its own, or `isolated`, gets a machine of its own on the rollout's
+    private network. A tool server runs on one with `ToolsetConfig.on`, and task hooks
+    reach one through `deployment.target(name)`."""
 
     artifacts: list[Artifact] = Field(default_factory=list)
     """Paths collected from one runtime and restored at the same locations in another,

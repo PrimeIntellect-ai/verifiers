@@ -18,7 +18,8 @@ Each runtime declares its features through its backend's class attributes, and n
 | Task image, container-only harnesses, isolated scoring | `SUPPORTS_TASK_IMAGES` | `docker`, `prime` |
 | Task network policy | config inherits `NetworkPolicyConfig` | `docker`, `prime` |
 | Task `agent_user` | `SUPPORTS_USER_SWITCHING` | `docker`, `prime` |
-| Tool server in its own runtime | `SUPPORTS_PORT_EXPOSURE` | `subprocess`, `docker`, `prime` |
+| Tool server in its own runtime, reached at a published port | `SUPPORTS_PORT_EXPOSURE` | `subprocess`, `docker`, `prime` |
+| Tool server in its own runtime, reached over the rollout's private network under its own network policy | `SUPPORTS_PRIVATE_NETWORK` | `prime` |
 | Compose services | `SUPPORTS_COMPOSE` | `docker`, `prime` |
 
 Runtime capabilities are orthogonal to agent harness capabilities like MCP tool support, image inputs, or conversation resumption; see [harnesses](harnesses.md) for harness features and [building environments](building-environments.md#separate-agent-and-grading-sandboxes) for running separate solver and grading sandboxes.
@@ -163,6 +164,7 @@ bindings and the uv-script helpers on top of it:
 | `run_background(runtime, argv, env, log)` | no | Start a long-lived process with its output in `log`. The default keeps an `exec` open for the process's life; override it when the provider runs detached jobs. |
 | `read(runtime, path, max_bytes)` | no | Read a file. The default reads through `run`. |
 | `expose(port)` | with `SUPPORTS_PORT_EXPOSURE` | Publish a port to a URL outside the runtime. |
+| `private_network(members, rules)` and `network_host` | with `SUPPORTS_PRIVATE_NETWORK` | A class-level context manager: a network for backends of this runtime that have not started, on which each `(source, target)` rule lets the source open connections to the target and nothing else may open any. Each member joins as it starts and is reached at its `network_host`. |
 | `prepare_execution(routes, network)` | with `NetworkPolicyConfig` | Apply the network policy, or `network` in its place, before the agent starts; `None` routes reopen the network. |
 | `host_url(url)` | no | Rewrite a host URL for programs inside the runtime. |
 
@@ -199,7 +201,36 @@ Compose runs on local Docker or on a Prime VM. On Prime, one VM hosts the Docker
 
 When isolated scoring inherits a workspace image built inside the Compose VM, the deployment releases the solver VM and rebuilds the trusted task definition on a fresh VM for grading. Only the declared submission artifacts are restored there. A separately configured verifier image uses the normal image-provisioning path instead.
 
-A tool server can also run on a Prime VM of its own, under an egress policy of its own: set its `ToolsetConfig.runtime` to a Prime runtime, such as `vf.PrimeConfig(image="example/tools:1", allow=["*"])` for a server that calls public APIs beside an offline workspace, or `allow=[]` for one that runs agent-submitted code with no egress at all. Beside a Prime workspace without Compose services, the server's VM boots with the workspace and joins it over a LAN network of the rollout's own, on which the workspace's VM may open connections to the server and nothing may open one to the workspace; the harness reaches the server at its VM's LAN name (`<sandbox-id>.sandbox.internal`), and `deployment.target(name)` gives task hooks the server's VM. The VM's policy applies when the workspace's does, after setup. Elsewhere such a server keeps its runtime's published port, which takes no network policy. On Prime, the published port is a public HTTPS URL (`https://<port>-<sandbox-id>.sandbox-v2-prod.pinfra.io`) without authentication.
+A tool server can also run on a Prime VM of its own, under an egress policy of its own: set its `ToolsetConfig.runtime` to a Prime runtime, such as `vf.PrimeConfig(image="example/tools:1", allow=["*"])` for a server that calls public APIs beside an offline workspace, or `allow=[]` for one that runs agent-submitted code with no egress at all. Beside a Prime workspace without Compose services, the server's VM boots with the workspace and joins it over a LAN network of the rollout's own, on which the workspace's VM may open connections to the server and nothing may open one to the workspace; the harness reaches the server at its VM's LAN name (`<sandbox-id>.sandbox.internal`), and `deployment.target(name)` gives task hooks the server's VM. The VM's policy applies when the workspace's does, after setup. Elsewhere such a server keeps its runtime's published port, which takes no network policy. A runtime plugin that declares `SUPPORTS_PRIVATE_NETWORK` gets the same placement for a server on a runtime of its own type. On Prime, the published port is a public HTTPS URL (`https://<port>-<sandbox-id>.sandbox-v2-prod.pinfra.io`) without authentication.
+
+### Nodes
+
+A task can declare the machines and services its rollout runs besides the workspace as **nodes**, by name, in `TaskData.nodes` (see [RFC 0001](../rfcs/0001-nodes.md)). Each node gives the runtime fields that differ from the workspace's, an optional long-running process, and the nodes that may open connections to it (by default the workspace):
+
+```python
+data = vf.TaskData(
+    prompt="Use the wiki tools to answer.",
+    network=vf.NetworkPolicyConfig(allow=[]),  # the workspace stays offline
+    nodes={
+        "wiki": vf.NodeConfig(
+            runtime={"image": "example/wiki:1", "allow": ["*"]},
+            process=vf.ProcessConfig(
+                command=["wiki-server", "--port", "8000"],
+                readiness=["curl", "-sf", "http://127.0.0.1:8000/health"],
+            ),
+        ),
+    },
+)
+```
+
+Before anything is provisioned, the rollout plans where each node runs, and refuses a plan its runtimes cannot realize:
+
+- A node under the workspace's network policy shares the workspace's machine. The deployment runs it as a Compose service of a generated project (`SUPPORTS_COMPOSE`), reached by its name, with one container network per connection. A process without a `command` runs the image's own; a node without a process runs nothing and idles. A packed node takes no runtime `mounts`; give one that needs them `isolated = true`.
+- A node with a policy of its own, or with `isolated = true`, gets a machine of its own on the rollout's private network (`SUPPORTS_PRIVATE_NETWORK`), with one rule per connection. The node's process starts there after the machine boots, and the machine's policy applies when the workspace's does. Such a node needs `process.command`, because the runtime does not run its image's own command.
+- A tool server runs on a node with `ToolsetConfig.on = "<node>"`; `on = "main"` is the workspace and `on = "host"` the evaluator. `colocated = true` and `service = "<name>"` remain as the older spellings of `on`.
+- Task hooks reach a node through `deployment.target(name)`, and the name the workspace resolves it by through `deployment.host(name)`.
+
+Nodes beside a task's own Compose project are not realized yet: declare packed services in that project instead. A Compose project and machines of their own cannot be combined either, since the Compose host VM cannot join the private network yet. Both are refused before provisioning.
 
 To validate an isolated task without calling a model, finalize the submission, collect its artifacts, and call `vf.grade_submission(task, trace, runtime)`. This runs the task's normal grader, verifier image, timeouts, and retries in a fresh verification target without taking ownership of the supplied solver runtime. As in a rollout, the verifier derives from the agent's runtime config on the trace (`trace.agent.config.runtime`), not from the solver's resolved config, so the solver task's requirements, such as its network policy, don't carry over. Inside `Task.validate`, request `trace` by name for vf-validate's trace, which records its runtime config.
 

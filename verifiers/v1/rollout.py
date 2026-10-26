@@ -36,7 +36,7 @@ from verifiers.v1.runtimes import (
     RuntimeConfig,
     make_backend,
 )
-from verifiers.v1.runtimes.private_network import tool_vms
+from verifiers.v1.runtimes.nodes import HOST, WORKSPACE, plan, task_topology
 from verifiers.v1.session import RolloutLimits, RolloutSession, hook_boundary
 from verifiers.v1.state import state_cls
 from verifiers.v1.task import Task
@@ -294,15 +294,20 @@ class Rollout:
                 async with boundary(ToolsetError, "building tool servers"):
                     toolsets = self.task.toolsets(self.task.config)
                 spec = self.task.deployment_spec()
+                # Where each part runs, refused before anything is provisioned.
+                async with boundary(TaskError, "planning the rollout's nodes"):
+                    topology = task_topology(
+                        {toolset.server_name: toolset.config for toolset in toolsets},
+                        spec,
+                        self.task.data.nodes,
+                        workspace=runtime.backend.config,
+                        borrowed=self._borrowed_runtime is not None,
+                    )
+                    placement = plan(topology, runtime.backend.config)
                 self.deployment = runtime.backend.deploy(
                     spec=spec,
-                    # Tool servers on Prime VMs of their own boot with the workspace.
-                    tool_vms=tool_vms(
-                        toolsets,
-                        runtime.backend.config,
-                        composed=spec is not None,
-                        borrowed=self._borrowed_runtime is not None,
-                    ),
+                    plan=placement,
+                    topology=topology,
                     env=runtime.env,
                     config=self._deployment_config,
                     borrowed_runtime=self._borrowed_runtime,
@@ -374,14 +379,10 @@ class Rollout:
                 )
                 self._endpoint = runtime.host_url(f"{base_url.rstrip('/')}/v1")
                 self._secret = model_secret
-                services = (
-                    {
-                        name: self.deployment.target(name)
-                        for name in self.deployment.target_backends
-                    }
-                    if self.deployment.spec is not None
-                    else {}
-                )
+                services = {
+                    name: self.deployment.target(name)
+                    for name in self.deployment.target_backends
+                }
                 self._urls = await self._stack.enter_async_context(
                     serve_tools(
                         toolsets,
@@ -391,12 +392,17 @@ class Rollout:
                         state_route=self.trace.id,
                         state_base=base_url,
                         services=services,
-                        hosts=self.deployment.hosts,
-                        # Tool servers on VMs of their own, by server name; an explicit
-                        # `service` names only a Compose service.
+                        # Tool servers on a node besides the workspace and the
+                        # evaluator, by server name: its runtime, and its host name.
+                        hosts={
+                            name: self.deployment.host(node)
+                            for name, node in topology.mcp_servers.items()
+                            if node not in (HOST, WORKSPACE)
+                        },
                         placements={
-                            name: self.deployment.target(name)
-                            for name in self.deployment.tool_vms
+                            name: self.deployment.target(node)
+                            for name, node in topology.mcp_servers.items()
+                            if node not in (HOST, WORKSPACE)
                         },
                     )
                 )

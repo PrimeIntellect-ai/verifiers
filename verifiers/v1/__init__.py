@@ -32,6 +32,7 @@ if TYPE_CHECKING:
     )
     from verifiers.v1.configs.harness import ID, HarnessConfig
     from verifiers.v1.configs.judge import JudgeConfig, Judges
+    from verifiers.v1.configs.nodes import NodeConfig, ProcessConfig
     from verifiers.v1.configs.retries import RetryConfig, RetryRule
     from verifiers.v1.configs.runtime import (
         BindMount,
@@ -111,6 +112,7 @@ if TYPE_CHECKING:
     )
     from verifiers.v1.runtimes.compose import ComposeSpec
     from verifiers.v1.runtimes.deployment import Deployment
+    from verifiers.v1.runtimes.nodes import PlacementError
     from verifiers.v1.semantic import (
         ACP_SEMANTIC_EDGES_METADATA_KEY,
         ACPInfo,
@@ -260,12 +262,15 @@ _NAME_TO_MODULE = {
     "ModelCall": "verifiers.v1.trace",
     "ModelContext": "verifiers.v1.clients",
     "NetworkPolicyConfig": "verifiers.v1.configs.runtime",
+    "NodeConfig": "verifiers.v1.configs.nodes",
     "PATCH_CAP_BYTES": "verifiers.v1.utils.git",
     "ParentLink": "verifiers.v1.semantic",
+    "PlacementError": "verifiers.v1.runtimes.nodes",
     "PolicyEvent": "verifiers.v1.trace",
     "PolicySpan": "verifiers.v1.episode",
     "PrimeConfig": "verifiers.v1.configs.runtime",
     "PrimeVolume": "verifiers.v1.configs.runtime",
+    "ProcessConfig": "verifiers.v1.configs.nodes",
     "ProgramResult": "verifiers.v1.runtimes",
     "ProviderError": "verifiers.v1.errors",
     "ReferenceJudge": "verifiers.v1.judges",
@@ -580,6 +585,9 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "ComposeSpec",
     "Deployment",
     "DeploymentConfig",
+    "NodeConfig",
+    "PlacementError",
+    "ProcessConfig",
     "ScoringConfig",
 ]
 
