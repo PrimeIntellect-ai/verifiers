@@ -122,7 +122,7 @@ class HermesAgentHarness(ACPHarness[HermesAgentHarnessConfig]):
                 name: {
                     "url": url,
                     "headers": mcp_headers.get(name, {}),
-                    "tool_timeout": self.config.tool_timeout,
+                    "timeout": self.config.tool_timeout,
                 }
                 for name, url in mcp_urls.items()
             },
