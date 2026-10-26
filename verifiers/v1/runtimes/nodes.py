@@ -358,13 +358,15 @@ def compose_project(topology: TopologyConfig, result: Plan) -> dict[str, Any]:
         if (workdir := topology.node(name).runtime.get("workdir")) is not None:
             service["working_dir"] = workdir
         process = topology.node(name).process
+        if process is None or process.command is not None:
+            # As on a machine of its own, the command runs as given, past any image
+            # entrypoint; without a process, the container idles for tool servers and
+            # hooks. The image's own healthcheck probes a command that no longer runs.
+            command = list(IDLE) if process is None else process.command
+            service["entrypoint"] = command
+            service["healthcheck"] = {"disable": True}
         if process is None:
-            # Nothing of its own runs, as on a machine of its own: the container idles
-            # for tool servers and hooks, whatever its image's own command would do.
-            service["command"] = list(IDLE)
             continue
-        if process.command is not None:
-            service["command"] = process.command
         if process.environment or process.passthrough:
             service["environment"] = [
                 *(f"{key}={value}" for key, value in process.environment.items()),

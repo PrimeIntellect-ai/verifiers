@@ -28,7 +28,7 @@ class ProcessConfig(BaseConfig):
     workdir: str | None = None
     readiness: list[str] | None = None
     """Exits 0 once the process serves. Runs as the process does: in its `workdir`,
-    with its `environment`."""
+    with its `environment`. On a packed node it replaces the image's healthcheck."""
     readiness_timeout: float = 600
     """Seconds the readiness check may take to pass before the rollout fails."""
 

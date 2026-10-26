@@ -363,10 +363,13 @@ def test_declared_nodes_on_the_workspace_s_machine_become_a_compose_project():
     assert all(
         networks[link] == {"internal": True} for link in networks if "link" in link
     )
-    assert services["db"]["image"] == "postgres" and "command" not in services["db"]
+    assert services["db"]["image"] == "postgres" and "entrypoint" not in services["db"]
     assert services["db"]["environment"] == ["POSTGRES_PASSWORD=pw", "PGDATA"]
     assert services["db"]["healthcheck"]["test"] == ["CMD", "pg_isready"]
-    assert services["cache"]["command"] == ["redis-server"]
+    # The command runs past any image entrypoint, and the image's own healthcheck,
+    # which probes the image's own command, is off.
+    assert services["cache"]["entrypoint"] == ["redis-server"]
+    assert services["cache"]["healthcheck"] == {"disable": True}
     assert services["cache"]["working_dir"] == "/data"
     with pytest.raises(PlacementError, match="names Compose accepts"):
         named = TopologyConfig(nodes={"DB!": NodeConfig()})
@@ -410,7 +413,7 @@ def test_a_packed_node_keeps_its_own_workdir_and_on_follows_the_workspace_rename
     assert services["db"]["working_dir"] == "/data"
     assert "working_dir" not in services["cache"]  # its image's own, not /workspace
     # Without a process, it idles rather than run an image command that may exit.
-    assert services["cache"]["command"] == [
+    assert services["cache"]["entrypoint"] == [
         "sh",
         "-c",
         "trap 'exit 0' TERM; while :; do sleep 3600 & wait $$!; done",
@@ -436,7 +439,7 @@ def test_a_generated_compose_project_keeps_a_node_s_values_literal():
     topology = TopologyConfig(nodes={"web": node})
     web = compose_project(topology, plan(topology, OFFLINE))["services"]["web"]
     # Escaped for Compose, which would otherwise read them from the evaluator.
-    assert web["command"] == ["sh", "-c", "exec serve --token $$TOKEN"]
+    assert web["entrypoint"] == ["sh", "-c", "exec serve --token $$TOKEN"]
     assert web["environment"] == ["GREETING=costs $$5", "TOKEN"]
     assert web["working_dir"] == "/srv/$$APP"
     assert web["healthcheck"]["test"] == ["CMD", "sh", "-c", "test -n $$TOKEN"]
