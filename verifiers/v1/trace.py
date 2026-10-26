@@ -55,8 +55,10 @@ EXCLUDE_FIELDS: dict = {
 RECORD_DUMP_EXCLUDE: dict = {
     "nodes": {"__all__": EXCLUDE_FIELDS["nodes"]["__all__"] | set(graph.RECORD_STREAMS)}
 }
-"""What `to_record` leaves out of its JSON dump: the excluded tensors, and the per-token
-streams it then adds as numpy arrays."""
+"""What `to_record` leaves out of its pydantic dump: the wire-only tensors, and the per-token
+streams, which `add_record_streams` adds as numpy arrays. Pydantic's JSON mode cannot emit
+numpy arrays, and building the streams as lists of Python numbers would be most of the cost
+of a record."""
 
 
 def add_record_streams(
@@ -66,10 +68,8 @@ def add_record_streams(
     exclude_none: bool,
 ) -> None:
     """Join a trace's record (dumped with `RECORD_DUMP_EXCLUDE`) with its node streams."""
-    record["nodes"] = [
-        node.record(dumped, float_decimals, exclude_none)
-        for dumped, node in zip(record["nodes"], trace.nodes, strict=True)
-    ]
+    for node_record, node in zip(record["nodes"], trace.nodes, strict=True):
+        node_record.update(node.record_streams(float_decimals, exclude_none))
 
 
 class TimeSpan(BaseModel):
@@ -818,10 +818,9 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         self, float_decimals: int | None = RECORD_FLOAT_DECIMALS
     ) -> dict[str, Any]:
         """JSON record without raw tensors, which remain available on the msgpack wire.
-        Per-token node streams are numpy arrays (`graph.RECORD_STREAMS`): write it with a
-        numpy-aware encoder such as orjson with `OPT_SERIALIZE_NUMPY`, or convert it with
-        `json_safe_record` first. Per-token float streams are rounded to `float_decimals`
-        (`None` keeps every digit)."""
+        Per-token node streams are numpy arrays (`graph.RECORD_STREAMS`): encode it with
+        orjson and `OPT_SERIALIZE_NUMPY`. Per-token float streams are rounded to
+        `float_decimals` (`None` keeps every digit)."""
         record = self.model_dump(mode="json", exclude=RECORD_DUMP_EXCLUDE)
         add_record_streams(record, self, float_decimals, exclude_none=False)
         return record

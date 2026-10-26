@@ -3,6 +3,7 @@
 import json
 
 import numpy as np
+import orjson
 import pytest
 
 import verifiers.v1 as vf
@@ -124,10 +125,9 @@ def test_record_streams_are_arrays_with_json_dump_content(float_decimals):
         assert isinstance(nodes[1]["token_ids"], np.ndarray)
         assert nodes[1]["logprobs"].dtype == np.float64
         assert isinstance(nodes[1]["loss_weights"]["policy"], np.ndarray)
-        # same content and key order as the plain JSON dump
-        assert json.dumps(vf.json_safe_record(record)) == json.dumps(json_dump)
-        # the input stays as it was
-        assert isinstance(nodes[1]["token_ids"], np.ndarray)
+        assert orjson.loads(
+            orjson.dumps(record, option=orjson.OPT_SERIALIZE_NUMPY)
+        ) == orjson.loads(json.dumps(json_dump))
 
 
 def test_round_stream_matches_round():

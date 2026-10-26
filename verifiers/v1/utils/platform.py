@@ -14,7 +14,6 @@ from prime_runs.projection import (
 
 from verifiers.v1.configs.cli.eval import EvalConfig
 from verifiers.v1.episode import Episode
-from verifiers.v1.graph import json_safe_record
 
 logger = logging.getLogger(__name__)
 
@@ -105,11 +104,7 @@ def log_episodes(run: pr.Run, episodes: list[Episode]) -> None:
     if not episodes:
         return
     try:
-        # JSON-safe records, not the episodes: the SDK writes them with the stdlib json,
-        # which cannot encode a record's numpy streams
-        run.log_episodes(
-            [json_safe_record(episode.to_record()) for episode in episodes]
-        )
+        run.log_episodes(episodes)
     except Exception as e:  # noqa: BLE001 - the rollouts are on disk; report, don't raise
         logger.warning(
             "--push: could not queue %d episode(s) (%s: %s)",

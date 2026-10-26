@@ -127,27 +127,6 @@ def _serialize_stream(
     return as_list(values)
 
 
-def json_safe_record(record: dict[str, Any]) -> dict[str, Any]:
-    """A `to_record` record (an episode's or a trace's) with its stream arrays as lists, for
-    encoders without numpy support such as the stdlib `json`. The input stays as it was."""
-    if "nodes" not in record:
-        return {
-            **record,
-            "traces": [json_safe_record(trace) for trace in record.get("traces") or []],
-        }
-    nodes = []
-    for node in record["nodes"]:
-        node = dict(node)
-        for name in RECORD_STREAMS:
-            value = node.get(name)
-            if isinstance(value, np.ndarray):
-                node[name] = value.tolist()
-            elif isinstance(value, dict):
-                node[name] = {key: array.tolist() for key, array in value.items()}
-        nodes.append(node)
-    return {**record, "nodes": nodes}
-
-
 class MessageNode(BaseModel):
     """One message in the graph: a message plus the tokens it adds to the cumulative
     sequence. Concatenating a root→leaf path's nodes reconstructs that branch's full token
@@ -249,29 +228,25 @@ class MessageNode(BaseModel):
             else self.renderer_token_ids
         )
 
-    def record(
-        self, dumped: dict[str, Any], float_decimals: int | None, exclude_none: bool
+    def record_streams(
+        self, float_decimals: int | None, exclude_none: bool
     ) -> dict[str, Any]:
-        """This node's JSON record: `dumped` (its JSON dump without `RECORD_STREAMS`) joined
-        with the streams as record arrays, in field order. Float streams in
-        `ROUNDED_STREAMS` are rounded to `float_decimals` (`None` keeps every digit)."""
-        record = dict(dumped)
+        """This node's `RECORD_STREAMS` for its JSON record, as numpy arrays. Float streams
+        in `ROUNDED_STREAMS` are rounded to `float_decimals` (`None` keeps every digit)."""
+        streams: dict[str, Any] = {}
         for name in RECORD_STREAMS:
             values = getattr(self, name)
             if values is None:
                 if not exclude_none:
-                    record[name] = None
+                    streams[name] = None
             elif name == "loss_weights":
-                record[name] = {
+                streams[name] = {
                     key: _record_array(stream, None) for key, stream in values.items()
                 }
             else:
                 decimals = float_decimals if name in ROUNDED_STREAMS else None
-                record[name] = _record_array(values, decimals)
-        ordered = {
-            name: record[name] for name in type(self).model_fields if name in record
-        }
-        return ordered | record
+                streams[name] = _record_array(values, decimals)
+        return streams
 
     @field_serializer("token_ids", "mask", "is_content", *ROUNDED_STREAMS)
     def serialize_token_stream(
