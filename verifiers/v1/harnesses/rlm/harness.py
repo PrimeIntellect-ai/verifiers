@@ -159,13 +159,27 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
         # install.sh installs the Python skill packages under $RLM_HOME/skills.
         home = self._skills_home()
         home_env = f"RLM_HOME={home} " if home else ""
-        # install.sh fetches curl/uv itself; add git only when the image lacks it.
+        version = shlex.quote(self.config.version)
+        clone = (
+            f"git clone https://{RLM_REPO} {checkout} && "
+            f"git -C {checkout} checkout {version}"
+        )
+        # Without git, fetch the source tarball with curl (which install.sh needs
+        # anyway): images that lock apt down (emptied sources, pinned snapshots)
+        # cannot install git. apt is the last resort for images with neither.
+        fetch = (
+            f"if command -v git >/dev/null 2>&1; then {clone}; "
+            "elif command -v curl >/dev/null 2>&1; then "
+            f"mkdir -p {checkout} && curl -fsSL --retry 3 "
+            f"https://codeload.{RLM_REPO.removesuffix('.git')}/tar.gz/{version} "
+            f"| tar -xz --strip-components=1 -C {checkout} && "
+            f"[ -f {checkout}/install.sh ]; "
+            "else apt-get update -qq && apt-get install -y -qq git && "
+            f"{clone}; fi"
+        )
         install = (
             f"rm -f {ready} && "
-            "(command -v git >/dev/null 2>&1 || "
-            "{ apt-get update -qq && apt-get install -y -qq git; } && "
-            f"rm -rf {checkout} && git clone https://{RLM_REPO} {checkout} && "
-            f"git -C {checkout} checkout {shlex.quote(self.config.version)} && "
+            f"(rm -rf {checkout} && {fetch} && "
             # The editable install needs the files, not the history; agents searching
             # their workspace for a repository must not find the harness's own.
             f"rm -rf {checkout}/.git && "

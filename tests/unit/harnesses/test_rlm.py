@@ -1,4 +1,10 @@
-"""The rlm harness maps its session's stop reason onto the trace's stop condition."""
+"""The rlm harness maps its session's stop reason onto the trace's stop condition,
+and installs nano-rlm on images whose apt cannot install git."""
+
+import asyncio
+import shutil
+import subprocess
+import tarfile
 
 import pytest
 
@@ -43,3 +49,84 @@ def test_rlm_stop_reason_survives_completion_and_serialization(reason, condition
     restored = vf.WireTrace.model_validate_json(trace.model_dump_json())
     assert restored.stop_condition == condition
     assert restored.is_truncated is (condition != "agent_completed")
+
+
+STUB_TOOLS = ("sh", "bash", "mkdir", "rm", "tar", "gzip", "touch", "cat", "chmod")
+
+
+async def _install_script(monkeypatch, tmp_path) -> str:
+    from verifiers.v1.harnesses.rlm import harness
+
+    scripts = []
+
+    async def installed(runtime, **kwargs):
+        scripts.append(kwargs["install"])
+
+    async def acp_setup(self, runtime):
+        pass
+
+    monkeypatch.setattr(harness, "RLM_CACHE_DIR", str(tmp_path / "rlm"))
+    monkeypatch.setattr(harness, "ensure_installed", installed)
+    monkeypatch.setattr(harness.ACPHarness, "setup", acp_setup)
+    await RLMHarness(RLMHarnessConfig(version="abc123")).setup(object())  # type: ignore[arg-type]
+    return scripts[0]
+
+
+def _box(tmp_path, tools: dict[str, str]) -> dict[str, str]:
+    """A PATH holding only basic tools plus `tools` (name -> script body)."""
+    bin_dir = tmp_path / "box-bin"
+    bin_dir.mkdir()
+    for name in STUB_TOOLS:
+        (bin_dir / name).symlink_to(shutil.which(name))
+    for name, body in tools.items():
+        (bin_dir / name).write_text(f"#!/bin/sh\n{body}\n")
+        (bin_dir / name).chmod(0o755)
+    return {"PATH": str(bin_dir)}
+
+
+def test_an_image_without_git_or_working_apt_fetches_the_rlm_tarball(
+    monkeypatch, tmp_path
+):
+    """Images that lock apt down (emptied sources, pinned snapshots) cannot apt-get
+    git; with curl the source tarball goes in instead and apt is never touched."""
+    source = tmp_path / "nano-rlm-abc123"
+    source.mkdir()
+    (source / "install.sh").write_text(
+        'mkdir -p "$UV_INSTALL_DIR" && printf "#!/bin/sh\\n" > "$UV_INSTALL_DIR/rlm" '
+        '&& chmod +x "$UV_INSTALL_DIR/rlm"\n'
+    )
+    tarball = tmp_path / "rlm.tar.gz"
+    with tarfile.open(tarball, "w:gz") as tar:
+        tar.add(source, arcname=source.name)
+    fetched = tmp_path / "fetched"
+    env = _box(
+        tmp_path,
+        {
+            "curl": f'echo "$@" > {fetched}; cat {tarball}',
+            "apt-get": "echo 'E: Unable to locate package git' >&2; exit 100",
+        },
+    )
+    script = asyncio.run(_install_script(monkeypatch, tmp_path))
+
+    done = subprocess.run(
+        ["sh", "-c", script], env=env, capture_output=True, text=True, check=False
+    )
+
+    assert done.returncode == 0, done.stderr
+    assert fetched.read_text().split()[-1] == (
+        "https://codeload.github.com/PrimeIntellect-ai/nano-rlm/tar.gz/abc123"
+    )
+    [directory] = (tmp_path / "rlm").parent.glob("rlm-*")
+    assert (directory / ".ready").exists() and (directory / "bin/rlm").exists()
+
+
+def test_a_failed_tarball_fetch_fails_the_install(monkeypatch, tmp_path):
+    env = _box(tmp_path, {"curl": "exit 22", "apt-get": "exit 100"})
+    script = asyncio.run(_install_script(monkeypatch, tmp_path))
+
+    done = subprocess.run(
+        ["sh", "-c", script], env=env, capture_output=True, text=True, check=False
+    )
+
+    assert done.returncode != 0
+    assert not list((tmp_path / "rlm").parent.glob("rlm-*/.ready"))
