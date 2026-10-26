@@ -25,6 +25,7 @@ import hashlib
 import json
 import logging
 import math
+import os
 import secrets
 import time
 import traceback
@@ -124,6 +125,47 @@ def _retry_wait(
 
 
 IDEMPOTENCY_KEY_HEADER = "Idempotency-Key"
+REJECTED_REQUEST_DIR_ENV = "VF_REJECTED_REQUEST_DIR"
+"""A directory to write each request body a provider rejected with a non-retryable 4xx
+(an opaque `invalid_request` names no cause; the body is the only evidence). Unset: off."""
+REJECTED_REQUEST_DUMPS = 200
+"""At most this many dumps per process, so a provider rejecting everything cannot fill the disk."""
+_rejected_dumps = 0
+
+
+def _dump_rejected(
+    request: dict | None, error: BaseException | None, trace_id: str
+) -> None:
+    global _rejected_dumps
+    directory = os.environ.get(REJECTED_REQUEST_DIR_ENV)
+    status = getattr(error, "status_code", None)
+    if not directory or request is None or not isinstance(error, ProviderError):
+        return
+    if status is None or not 400 <= status < 500 or status in (408, 429):
+        return
+    if _rejected_dumps >= REJECTED_REQUEST_DUMPS:
+        return
+    _rejected_dumps += 1
+    try:
+        os.makedirs(directory, exist_ok=True)
+        path = os.path.join(
+            directory, f"{int(time.time())}-{trace_id}-{secrets.token_hex(3)}.json"
+        )
+        with open(path, "w") as out:
+            json.dump(
+                {
+                    "trace": trace_id,
+                    "status": status,
+                    "error": str(error),
+                    "request": request,
+                },
+                out,
+                default=str,
+            )
+    except OSError:
+        logger.warning("could not dump a rejected request", exc_info=True)
+
+
 IDEMPOTENCY_CACHE_TTL_SECONDS = 600
 IDEMPOTENCY_CACHE_MAX_COMPLETED = 4
 """Completed replays a session keeps. A harness retries one of its latest requests, and
@@ -790,6 +832,7 @@ class InterceptionServer(Interception):
             session.released
         ):  # the trace is sealed — a straggler exchange isn't recorded
             return
+        _dump_rejected(request, error, session.trace.id)
         sampling = None
         if request is not None:
             try:
