@@ -748,6 +748,8 @@ def _decode_routed_experts(payload: Any) -> tuple[np.ndarray, int] | None:
     arr = np.frombuffer(raw, dtype=np.dtype(payload.get("dtype", "uint8"))).reshape(
         payload["shape"]
     )
+    if arr.ndim != 3:
+        raise ValueError("Routed experts must have shape [tokens, layers, top_k]")
     return arr, int(payload.get("start", 0) or 0)
 
 
@@ -891,9 +893,12 @@ def _commit_turn(turn: PendingTurn, response: Response) -> int:
     trace = turn.trace
     prompt = turn.prompt
     tokens = response.tokens
-    # Constant per renderer, so re-stamping every turn is idempotent.
-    if tokens is not None and tokens.mm_token_type_id_map:
-        trace.mm_token_type_id_map = tokens.mm_token_type_id_map
+    # Use this turn's renderer map for validation, but publish it only on a successful commit.
+    mm_token_type_id_map = (
+        tokens.mm_token_type_id_map
+        if tokens is not None and tokens.mm_token_type_id_map
+        else trace.mm_token_type_id_map
+    )
     prompt_ids = np.asarray(tokens.prompt_ids if tokens else (), dtype=np.int32)
     # Logical renderer ids differ from `prompt_ids` only after multimodal expansion; otherwise
     # the nodes keep none and read `token_ids` (`MessageNode.logical_ids`).
@@ -951,7 +956,7 @@ def _commit_turn(turn: PendingTurn, response: Response) -> int:
     spans, is_content = _project_prompt_attribution(
         renderer_prompt_ids,
         prompt_ids,
-        trace.mm_token_type_id_map,
+        mm_token_type_id_map,
         tokens.mm_placeholders if tokens else None,
         renderer_spans,
         renderer_is_content,
@@ -1113,6 +1118,7 @@ def _commit_turn(turn: PendingTurn, response: Response) -> int:
         trace, assistant_id, tokens.top_logprobs if tokens else None
     )
 
+    trace.mm_token_type_id_map = mm_token_type_id_map
     return assistant_id
 
 
