@@ -29,10 +29,10 @@ def test_every_builtin_harness_loads() -> None:
 
 def test_harness_config_narrows_to_its_own_type() -> None:
     config = vf.AgentConfig.model_validate(
-        {"harness": {"id": "kimi-code", "transport": "responses"}}
+        {"harness": {"id": "kimi-code", "dialect": "responses"}}
     )
     assert type(config.harness) is harness_config_type("kimi-code")
-    assert config.harness.transport == "responses"
+    assert config.harness.dialect == "responses"
 
 
 def test_unknown_harness_names_the_builtins() -> None:
@@ -41,7 +41,7 @@ def test_unknown_harness_names_the_builtins() -> None:
 
 
 @pytest.mark.parametrize(
-    "env_id", ["best-of-n", "user-sim", "agentic-judge", "shared-agentic-judge"]
+    "env_id", ["best-of-n", "best-of-n-judge", "user-sim", "agentic-judge"]
 )
 def test_bundled_envs_load_with_a_role_typed_config(env_id: str) -> None:
     cls = environment_class("", env_id)

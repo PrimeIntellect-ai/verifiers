@@ -1,13 +1,13 @@
-"""One task, one reply: the model echoes a phrase back (echo-v1), across the harness x
+"""One task, one reply: the model echoes a phrase back (echo), across the harness x
 runtime grid."""
 
 import pytest
-from grid import grid, skip_harness
+from grid import RUNTIMES, grid, skip_harness
 
 # mini-swe-agent's loop requires a bash tool call in every response and ends only on
 # `echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT`, so it cannot answer a chat-only task.
 SINGLE_TURN = skip_harness(
-    grid(),
+    grid(runtimes=RUNTIMES),
     "mini-swe-agent",
     "mini-swe-agent requires a bash call every turn; it cannot answer in text",
 )
@@ -16,13 +16,14 @@ SINGLE_TURN = skip_harness(
 @pytest.mark.parametrize("harness,harness_runtime", SINGLE_TURN, indirect=True)
 async def test_single_turn(run, harness, harness_runtime):
     (episode,) = await run(
-        "echo-v1",
+        "echo",
         harness=harness,
         runtime=harness_runtime,
         env={"agent": {"sampling": {"temperature": 0.0}}},
         max_turns=2,
     )
     (trace,) = episode.traces
+    assert trace.num_branches == 1
     assert trace.ok, [error.message for error in trace.errors]
     assert trace.num_turns == 1
     assert trace.stop_condition == "agent_completed"

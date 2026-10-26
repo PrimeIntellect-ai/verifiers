@@ -1,9 +1,9 @@
 """The task's non-root agent user: a scripted agent is denied root-only actions
-(agent-user-v1), and every harness installs and runs as that user against a scripted
-upstream (agent-user-harness-v1), on the runtimes that can switch users."""
+(agent-user), and every harness installs and runs as that user against a scripted
+upstream (agent-user-harness), on the runtimes that can switch users."""
 
 import pytest
-from grid import grid, runtimes_grid
+from grid import assert_one_branch, grid, runtimes_grid
 
 
 @pytest.mark.parametrize(
@@ -18,8 +18,8 @@ async def test_agent_user_cannot_act_as_root(run, harness_runtime, preinstalled_
     all act as the user. With `preinstalled_tools`, the tool's package was first installed
     by the default user, as on a reused runtime."""
     (episode,) = await run(
-        "agent-user-v1",
-        harness="agent-user-v1",
+        "agent-user",
+        harness="agent-user",
         runtime=harness_runtime,
         taskset_overrides={"preinstalled_tools": preinstalled_tools},
     )
@@ -46,11 +46,12 @@ async def test_agent_user_harness(run, harness, harness_runtime, scripted_model)
     """Each harness installs and runs a turn as a non-root agent user against a scripted
     upstream, so the run fails only if the harness can't set up or run without root."""
     (episode,) = await run(
-        "agent-user-harness-v1",
+        "agent-user-harness",
         harness=harness,
         runtime=harness_runtime,
         client=scripted_model,
     )
     (trace,) = episode.traces
+    assert_one_branch(trace, harness, forks=("mini-swe-agent",))
     assert trace.ok, [error.message for error in trace.errors]
     assert trace.num_turns >= 1

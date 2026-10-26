@@ -42,7 +42,7 @@ async def test_retry_resumes_from_checkpoint(run, harness, harness_runtime):
     # checkpoint is the one taken as turn FAIL_AFTER_TURNS was asked for: the box then
     # held the earlier turns' effects, and the trace kept those turns.
     assert trace.agent.runtime is not None
-    restored_from = trace.agent.runtime.restored_from
+    restored_from = trace.agent.runtime.checkpoint
     assert restored_from is not None
     assert restored_from in [checkpoint.id for checkpoint in trace.checkpoints]
     assert trace.num_turns >= FAIL_AFTER_TURNS

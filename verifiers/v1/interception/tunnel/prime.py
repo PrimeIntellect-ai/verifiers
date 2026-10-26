@@ -1,6 +1,5 @@
 """Prime tunnel: expose the host interception port via prime_tunnel (frpc). The default;
-works from any host with prime credentials, for consumers in prime *or* modal sandboxes
-alike — and the only tunnel the framework can mint on demand, so it's what the elastic
+works from any host with prime credentials, for consumers in any remote sandbox — and the only tunnel the framework can mint on demand, so it's what the elastic
 pool scales with."""
 
 import asyncio
@@ -8,9 +7,10 @@ import contextlib
 import logging
 import random
 from collections.abc import AsyncIterator
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING
 
-from verifiers.v1.interception.tunnel.base import BaseTunnelConfig, Tunnel
+from verifiers.v1.configs.interception import PrimeTunnelConfig
+from verifiers.v1.interception.tunnel.base import Tunnel
 from verifiers.v1.runtimes.limiters import CreationLimiter
 from verifiers.v1.utils.aio import run_shielded
 from verifiers.v1.utils.prime import ensure_prime_auth
@@ -87,13 +87,6 @@ async def _watch(client: "TunnelClient", url: str) -> None:
         else:
             logger.warning("tunnel %s: back up", url)
             strikes = 0
-
-
-class PrimeTunnelConfig(BaseTunnelConfig):
-    """Expose the host interception port via `prime_tunnel` (frpc). No fields — the tunnel
-    service mints a fresh public URL per exposed port."""
-
-    type: Literal["prime"] = "prime"
 
 
 class PrimeTunnel(Tunnel[PrimeTunnelConfig]):

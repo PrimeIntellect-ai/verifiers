@@ -10,13 +10,14 @@ async def test_env_id_user_sim(run):
     the conversation from the task's prompt-as-scenario; the assistant's trace is
     judged by the task's own reward; both sides land agent-stamped on one episode."""
     (episode,) = await run(
-        "echo-v1",
+        "echo",
         harness=None,  # multi-agent: each seat pins its own
         env={"id": "user-sim", "assistant": {"harness": {"id": "null"}}},
         max_turns=6,
         rollout_timeout=300,
     )
     traces = episode.traces
+    assert all(trace.num_branches == 1 for trace in traces)
     assert sorted(t.agent.name for t in traces) == ["assistant", "user"]
     (assistant,) = [t for t in traces if t.agent.name == "assistant"]
     (user,) = [t for t in traces if t.agent.name == "user"]
@@ -43,7 +44,7 @@ async def test_env_id_user_sim_with_tools(run):
     Reward 1.0 proves the tool actually ran mid-conversation: its token never
     appears in any prompt."""
     (episode,) = await run(
-        "echo-tool-v1",
+        "echo-tool",
         harness=None,  # multi-agent: each seat pins its own
         env={"id": "user-sim", "assistant": {"harness": {"id": "null"}}},
         max_turns=8,
@@ -53,6 +54,7 @@ async def test_env_id_user_sim_with_tools(run):
         rollout_timeout=300,
     )
     traces = episode.traces
+    assert all(trace.num_branches == 1 for trace in traces)
     (assistant,) = [t for t in traces if t.agent.name == "assistant"]
     (user,) = [t for t in traces if t.agent.name == "user"]
     assert assistant.ok and user.ok

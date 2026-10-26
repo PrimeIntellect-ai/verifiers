@@ -1,19 +1,20 @@
-"""Multi-agent episodes: an `Env` with two roles (duet-v1), best-of-n over a plain
+"""Multi-agent episodes: an `Env` with two roles (duet), best-of-n over a plain
 taskset, and turn-coupled self-play (kuhn-poker)."""
 
 import json
 
 
 async def test_multi_agent_env(run):
-    """An `Env` subclass shipped with its taskset (duet-v1): two roles run the
+    """An `Env` subclass shipped with its taskset (duet): two roles run the
     task, `score()` episodes a sibling-dependent metric, and one episode carries
     two role-stamped traces."""
     (episode,) = await run(
-        "duet-v1",
+        "duet",
         harness=None,  # both duet seats pin their own harness
         max_turns=2,
     )
     traces = episode.traces
+    assert all(trace.num_branches == 1 for trace in traces)
     assert len(traces) == 2  # one episode, one trace per role
     assert sorted(t.agent.name for t in traces) == ["a", "b"]
     (b,) = [t for t in traces if t.agent.name == "b"]
@@ -25,7 +26,7 @@ async def test_multi_agent_env(run):
     # The wire form (what traces.jsonl stores): one episode carrying both traces, each
     # self-stamped on its agent info (completion order — the seats land in either order).
     row = json.loads(episode.model_dump_json(exclude_none=True))
-    assert row["env"] == {"id": "duet-v1"}
+    assert row["env"] == {"id": "duet"}
     by_name = {t["agent"]["name"]: t for t in row["traces"]}
     assert set(by_name) == {"a", "b"}
     assert by_name["a"]["agent"]["trainable"] is True
@@ -36,12 +37,13 @@ async def test_env_id_best_of_n(run):
     """`--env.id` pairs a bundled env with an arbitrary taskset: best-of-n over the
     plain echo taskset — n solver attempts in one episode, sibling-scored."""
     (episode,) = await run(
-        "echo-v1",
+        "echo",
         harness=None,  # a multi-agent env refuses the run-level harness
         env={"id": "best-of-n", "n": 2, "agent": {"harness": {"id": "null"}}},
         max_turns=2,
     )
     traces = episode.traces
+    assert all(trace.num_branches == 1 for trace in traces)
     assert len(traces) == 2  # one episode, two attempts
     assert all(t.agent.name == "agent" and t.ok for t in traces)
     assert any(t.metrics["best"] == 1.0 for t in traces)
@@ -62,6 +64,7 @@ async def test_kuhn_poker_self_play(run):
         rollout_timeout=300,
     )
     traces = episode.traces
+    assert all(trace.num_branches == 1 for trace in traces)
     assert sorted(t.agent.name for t in traces) == ["player0", "player1"]
     payoffs = {t.agent.name: t.rewards["payoff"].score for t in traces}
     assert payoffs["player0"] + payoffs["player1"] == 0  # zero-sum

@@ -2,14 +2,23 @@
 
 from typing import Any
 
-from pydantic import BaseModel, Field, SerializeAsAny, field_serializer, model_validator
+from pydantic import (
+    BaseModel,
+    Field,
+    SerializationInfo,
+    SerializeAsAny,
+    field_serializer,
+    model_validator,
+)
 from pydantic_config import BaseConfig
 
-from verifiers.v1.clients import ClientConfig
+from verifiers.v1.configs.client import ClientConfig
+from verifiers.v1.configs.deployment import DeploymentConfig
 from verifiers.v1.configs.harness import HarnessConfig, WireHarnessConfig
 from verifiers.v1.configs.retries import RetryConfig
-from verifiers.v1.runtimes import PrimeConfig, RuntimeConfig
-from verifiers.v1.types import SamplingConfig
+from verifiers.v1.configs.runtime import PrimeConfig, RuntimeConfig
+from verifiers.v1.configs.sampling import SamplingConfig
+from verifiers.v1.configs.scoring import ScoringConfig
 from verifiers.v1.utils.generic import merge_defaults
 
 
@@ -25,22 +34,30 @@ class TimeoutConfig(BaseConfig):
     finalize: float | None = Field(None, gt=0)
     """Timeout (in seconds) for the task + harness finalize hooks."""
     scoring: float | None = Field(None, gt=0)
-    """Timeout (in seconds) for the task + harness metrics + scoring hooks."""
+    """Combined budget (in seconds) for harness metrics and task scoring, including
+    isolated verifier setup and retries. Finalization has its own budget."""
 
 
 class AgentConfig(BaseConfig):
     harness: SerializeAsAny[HarnessConfig] | None = None
     """The agent's program (None = the taskset's default harness)."""
     runtime: RuntimeConfig = PrimeConfig()
-    """Runtime for the harness program — the policy each run provisions its box
+    """Runtime configuration for the harness program — the policy each run provisions its box
     from; tool servers choose their placement separately."""
+
+    scoring: ScoringConfig = ScoringConfig()
+    """Scoring overrides; unset fields inherit the task’s scoring defaults."""
+
+    deployment: DeploymentConfig = DeploymentConfig()
+    """Workspace and service placement, including trust for local Compose tasks."""
 
     model: str | None = None
     """Model id (None = the run's model, i.e. the policy under evaluation/training)."""
     client: ClientConfig | None = None
-    """Endpoint override (None = the run's client)."""
+    """Endpoint override (None = the run's client, with the run's sampling)."""
     sampling: SamplingConfig | None = None
-    """Sampling values merged onto the run's sampling."""
+    """Sampling values merged onto the run's sampling. A seat with its own `client`
+    does not inherit the run's sampling: it uses only these values."""
 
     max_turns: int | None = None
     """Max model turns per run (None = no limit)."""
@@ -50,12 +67,25 @@ class AgentConfig(BaseConfig):
     """Max output tokens per run (None = no limit)."""
     max_total_tokens: int | None = None
     """Max total tokens per run (None = no limit)."""
+    max_turn_tokens: int | None = Field(None, gt=0)
+    """Max output tokens per model response (None = no limit). Caps the sampling
+    `max_tokens` the framework sets on every request, whatever the harness asks for,
+    and stops the run once a response hits it. `sampling.max_tokens` alone caps each
+    response without stopping the run."""
 
     timeout: TimeoutConfig = TimeoutConfig()
     retries: RetryConfig = RetryConfig()
 
     network_notice: bool = True
     """Include the runtime's network restrictions in the agent's prompt."""
+
+    @field_serializer("scoring")
+    def _scoring_overrides(
+        self, scoring: ScoringConfig, info: SerializationInfo
+    ) -> dict:
+        # Preserve unset fields across env-server and trace roundtrips so they
+        # continue to inherit from the task instead of becoming explicit overrides.
+        return scoring.model_dump(mode=info.mode, exclude_unset=True)
 
     @field_serializer("sampling")
     def _sampling_overrides(self, sampling: SamplingConfig | None) -> dict | None:
@@ -119,10 +149,21 @@ def resolve_agent(
 ) -> AgentConfig:
     """`spec` with what it leaves unset filled from the run's defaults; its own
     sampling values merge over the run's. The one place a seat's identity resolves,
-    for configured agent roles."""
-    defaults = sampling or SamplingConfig()
+    for configured agent roles.
+
+    The run's sampling belongs to the run's client: it can carry endpoint-specific
+    keys (e.g. vLLM's `top_k`) that another provider rejects. A seat that pins its
+    own `client` therefore starts from empty sampling."""
+    defaults = (
+        sampling if sampling is not None and spec.client is None else SamplingConfig()
+    )
     overrides = (spec.sampling or SamplingConfig()).model_dump(exclude_unset=True)
     merged = {**defaults.model_dump(), **merge_defaults(defaults, overrides)}
+    if spec.max_turn_tokens is not None:
+        max_tokens = merged.get("max_tokens")
+        merged["max_tokens"] = min(
+            max_tokens or spec.max_turn_tokens, spec.max_turn_tokens
+        )
     return spec.model_copy(
         update={
             "harness": spec.harness if spec.harness is not None else harness,

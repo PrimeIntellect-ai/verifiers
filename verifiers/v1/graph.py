@@ -24,7 +24,7 @@ import binascii
 import hashlib
 import json
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -33,43 +33,36 @@ from pydantic import (
     ConfigDict,
     Field,
     FieldSerializationInfo,
+    ValidationInfo,
     field_serializer,
     field_validator,
 )
 from pydantic.json_schema import SkipJsonSchema
 from renderers.base import RenderedTokens
 
+from verifiers.v1.configs.harness import DialectName
 from verifiers.v1.semantic import ParentLink
 from verifiers.v1.types import (
     AssistantMessage,
+    BoolStream,
+    FloatStream,
+    IntStream,
     Message,
     Response,
     SamplingMask,
     TextContentPart,
     Tool,
     ToolMessage,
+    TopLogprobs,
+    WeightVersionSpan,
+    as_list,
+    decode_ndarray,
+    empty_stream,
+    encode_ndarray,
 )
 
 if TYPE_CHECKING:
     from verifiers.v1.trace import Trace
-
-
-def _encode_ndarray(arr: np.ndarray) -> dict:
-    """A numpy array as a msgpack-safe dict (dtype + shape + raw bytes). The bytes ride the
-    env-server wire natively via msgpack's `bin` type — no base64 — so the response must be
-    packed from `model_dump(mode="python")` (`mode="json"` would coerce the bytes to str)."""
-    arr = np.ascontiguousarray(arr)
-    return {
-        "__nd__": True,
-        "dtype": str(arr.dtype),
-        "shape": list(arr.shape),
-        "data": arr.tobytes(),
-    }
-
-
-def _decode_ndarray(d: dict) -> np.ndarray:
-    """Reverse :func:`_encode_ndarray`."""
-    return np.frombuffer(d["data"], dtype=np.dtype(d["dtype"])).reshape(d["shape"])
 
 
 RECORD_FLOAT_DECIMALS = 4
@@ -78,6 +71,39 @@ digits are noise to every record reader and the least compressible bytes of a tr
 decimals leave a logprob within 1e-4 of what the trainer saw. `to_record(float_decimals=...)`
 overrides it per dump (`None` keeps every digit). The msgpack wire (`mode="python"`) keeps
 full precision — training never reads the record."""
+
+
+def same_tokens(a: list | np.ndarray, b: list | np.ndarray) -> bool:
+    """Two token spans are equal (`==` on an array compares elementwise)."""
+    return len(a) == len(b) and bool(np.array_equal(a, b))
+
+
+ROUNDED_STREAMS = (
+    "logprobs",
+    "advantages",
+    "reference_logprobs",
+    "trainer_logprobs",
+    "entropies",
+)
+"""Float streams a JSON record rounds to `float_decimals`. Loss weights stay exact: a 1/T
+weight would round to zero."""
+
+
+def _serialize_stream(
+    values: list | np.ndarray, info: FieldSerializationInfo, rounded: bool
+) -> list | dict:
+    """JSON records: a list. Python dumps: a list too, unless the context sets `token_arrays`,
+    when the msgpack wire carries a raw-bytes `__nd__` dict."""
+    context = info.context or {}
+    if info.mode_is_json():
+        values = as_list(values)
+        decimals = context.get("float_decimals", RECORD_FLOAT_DECIMALS)
+        if not rounded or decimals is None:
+            return values
+        return [round(value, decimals) for value in values]
+    if context.get("token_arrays"):
+        return encode_ndarray(np.asarray(values))
+    return as_list(values)
 
 
 class MessageNode(BaseModel):
@@ -110,20 +136,20 @@ class MessageNode(BaseModel):
     delta between consecutive sampled nodes is that turn's harness + inference wall-clock.
     Reused prefix nodes keep the stamp from the turn that first created them. Serialized, so
     a dump re-validated from wire/disk keeps the original times."""
-    token_ids: list[int] = Field(default_factory=list)
+    token_ids: IntStream = Field(default_factory=empty_stream(np.int32))
     """This message's delta contribution to the cumulative token sequence: its leading
     template scaffold + its own tokens — for an assistant, the generation-prompt scaffold
     followed by the sampled completion. Concatenated along a path, these reproduce the exact
     `prompt_ids + completion_ids` the model saw."""
-    renderer_token_ids: list[int] | None = Field(default=None, exclude=True)
+    renderer_token_ids: IntStream | None = Field(default=None, exclude=True)
     """Logical renderer tokens retained only while extending a live rollout.
-    None means they are identical to `token_ids`; an empty list is a real empty slice."""
+    None means they are identical to `token_ids`; an empty array is a real empty slice."""
 
-    mask: list[bool] = Field(default_factory=list)
+    mask: BoolStream = Field(default_factory=empty_stream(np.bool_))
     """Per-token, parallel to `token_ids`: True for trainable, model-sampled tokens (only an
     assistant node's completion span); False for template scaffold and every input-message
     token."""
-    is_content: list[bool] = Field(default_factory=list)
+    is_content: BoolStream = Field(default_factory=empty_stream(np.bool_))
     """Per-token, parallel to `token_ids` (when populated): True for message-body tokens (the
     renderer's content), False for template scaffold (role-tag openers/closers, inter-turn
     separators, tool-response wraps, the generation prompt). Populated from the renderer's
@@ -132,24 +158,24 @@ class MessageNode(BaseModel):
     `mask`: `mask` is "did the model sample this?" (assistant completion only); `is_content`
     is "is this caller/model body vs scaffold?" — meaningful on every role, so observation
     weighting (prime-rl `echo`) can train a tool/user message's *body* without its scaffold."""
-    logprobs: list[float] = Field(default_factory=list)
+    logprobs: FloatStream = Field(default_factory=empty_stream(np.float32))
     """Sampling logprobs for the sampled tokens — length equals the number of True entries in
     `mask`; empty for input messages."""
-    advantages: list[float] | None = None
+    advantages: FloatStream | None = None
     """Per-token credit over the sampled tokens, same layout as `logprobs`. `None` until a
     consumer's RL algorithm assigns it, which is not the same as a credit of zero: a group whose
     rewards were all equal is assigned zeros and carries no gradient, while an unassigned node was
     never scored at all."""
-    reference_logprobs: list[float] | None = None
+    reference_logprobs: FloatStream | None = None
     """Reference-model logprobs over the sampled tokens, in the same compact layout as
     `logprobs`. None means no reference model scored this node."""
-    trainer_logprobs: list[float] | None = None
+    trainer_logprobs: FloatStream | None = None
     """Trainer-recomputed logprobs over the sampled tokens, in the same compact layout as
     `logprobs`. None means no trainer forward annotated this node."""
-    entropies: list[float] | None = None
+    entropies: FloatStream | None = None
     """Trainer policy entropies over the sampled tokens, in the same compact layout as
     `logprobs`. None means no trainer forward annotated this node."""
-    loss_weights: dict[str, list[float]] | None = None
+    loss_weights: dict[str, FloatStream] | None = None
     """Named loss-weight streams aligned to `token_ids`, consumer-stamped."""
     routed_experts: SkipJsonSchema[np.ndarray | None] = None
     """This node's slice of the MoE expert-routing array — uint8 `[len(token_ids), layers,
@@ -163,37 +189,47 @@ class MessageNode(BaseModel):
     `ids` stores the flat token ids and `counts` stores each token's row size. Assistant
     nodes only. The arrays serialize as raw-byte `__nd__` dictionaries.
     """
+    weight_versions: list[WeightVersionSpan] | None = None
+    """Engine weight-version spans over this node's sampled tokens (indexes into the
+    completion, as vLLM returns them). Assistant nodes only; None when the engine labels
+    none."""
+
+    top_logprobs: SkipJsonSchema[TopLogprobs | None] = None
+    """Sampler top-k probabilities for sampled tokens; unnormalized over the head."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     @property
-    def logical_ids(self) -> list[int]:
+    def logical_ids(self) -> np.ndarray:
         return (
             self.token_ids
             if self.renderer_token_ids is None
             else self.renderer_token_ids
         )
 
-    @field_serializer(
-        "logprobs",
-        "advantages",
-        "reference_logprobs",
-        "trainer_logprobs",
-        "entropies",
-        when_used="json",
-    )
-    def serialize_record_floats(
-        self, values: list[float] | None, info: FieldSerializationInfo
-    ) -> list[float] | None:
-        decimals = (info.context or {}).get("float_decimals", RECORD_FLOAT_DECIMALS)
-        if values is None or decimals is None:
-            return values
-        return [round(value, decimals) for value in values]
+    @field_serializer("token_ids", "mask", "is_content", *ROUNDED_STREAMS)
+    def serialize_token_stream(
+        self, values: list | np.ndarray | None, info: FieldSerializationInfo
+    ) -> list | dict | None:
+        if values is None:
+            return None
+        return _serialize_stream(values, info, info.field_name in ROUNDED_STREAMS)
+
+    @field_serializer("loss_weights")
+    def serialize_loss_weights(
+        self, streams: dict[str, list | np.ndarray] | None, info: FieldSerializationInfo
+    ) -> dict | None:
+        if streams is None:
+            return None
+        return {
+            name: _serialize_stream(values, info, rounded=False)
+            for name, values in streams.items()
+        }
 
     @field_serializer("routed_experts")
     def serialize_ndarray_field(self, arr: np.ndarray | None) -> dict | None:
         """Integer array -> raw-bytes `__nd__` dict so it rides the wire (numpy can't JSON)."""
-        return None if arr is None else _encode_ndarray(arr)
+        return None if arr is None else encode_ndarray(arr)
 
     @field_validator("routed_experts", mode="before")
     @classmethod
@@ -201,29 +237,31 @@ class MessageNode(BaseModel):
         if value is None or isinstance(value, np.ndarray):
             return value
         if isinstance(value, dict) and value.get("__nd__"):
-            return _decode_ndarray(value)
+            return decode_ndarray(value)
         raise TypeError(f"cannot build ndarray field from {type(value).__name__}")
 
-    @field_serializer("sampling_mask")
-    def serialize_sampling_mask(self, mask: SamplingMask | None) -> dict | None:
-        if mask is None:
+    @field_serializer("sampling_mask", "top_logprobs")
+    def serialize_sampling_arrays(
+        self, payload: SamplingMask | TopLogprobs | None
+    ) -> dict | None:
+        if payload is None:
             return None
         return {
-            "ids": _encode_ndarray(mask.ids),
-            "counts": _encode_ndarray(mask.counts),
+            field.name: encode_ndarray(getattr(payload, field.name))
+            for field in fields(payload)
         }
 
-    @field_validator("sampling_mask", mode="before")
+    @field_validator("sampling_mask", "top_logprobs", mode="before")
     @classmethod
-    def deserialize_sampling_mask(cls, value: Any) -> SamplingMask | None:
-        if value is None or isinstance(value, SamplingMask):
+    def deserialize_sampling_arrays(
+        cls, value: Any, info: ValidationInfo
+    ) -> SamplingMask | TopLogprobs | None:
+        kind = SamplingMask if info.field_name == "sampling_mask" else TopLogprobs
+        if value is None or isinstance(value, kind):
             return value
         if isinstance(value, dict):
-            return SamplingMask(
-                ids=_decode_ndarray(value["ids"]),
-                counts=_decode_ndarray(value["counts"]),
-            )
-        raise TypeError(f"cannot build SamplingMask from {type(value).__name__}")
+            return kind(**{key: decode_ndarray(array) for key, array in value.items()})
+        raise TypeError(f"cannot build {kind.__name__} from {type(value).__name__}")
 
 
 def _canonical_tool_arguments(arguments: str) -> str:
@@ -321,27 +359,56 @@ def _tools_hash(tools: list[Tool] | None) -> str:
     return hashlib.blake2b(data, digest_size=16).hexdigest()
 
 
+def _message_key(trace: Trace, message: Message, dialect: DialectName | None) -> str:
+    """`message_hash` of the message as the trace's harness replays it over `dialect`,
+    so a turn the harness re-sends with cosmetic rewrites still matches the node it
+    came from."""
+    view = trace._replay_view
+    return message_hash(view(message, dialect) if view is not None else message)
+
+
 def _node_key(
-    parent: int | None, message: Message, tools: list[Tool] | None = None
+    trace: Trace,
+    parent: int | None,
+    message: Message,
+    tools: list[Tool] | None = None,
+    *,
+    dialect: DialectName | None,
 ) -> tuple[int | None, str | None, str]:
     return (
         parent,
         _tools_hash(tools) if parent is None else None,
-        message_hash(message),
+        _message_key(trace, message, dialect),
     )
 
 
-def _head_index(trace: Trace) -> dict[tuple[int | None, str | None, str], int]:
-    """Physical node key -> id, rebuilt lazily after deserialization."""
-    if not trace._head_index and trace.nodes:
-        trace._head_index = {
-            _node_key(node.parent, node.message, node.tools): nid
+def _head_index(
+    trace: Trace, dialect: DialectName | None
+) -> dict[tuple[int | None, str | None, str], int]:
+    """Physical node key -> id under `dialect`'s replay view, built lazily per dialect
+    (and after deserialization)."""
+    index = trace._head_index.get(dialect)
+    if index is None:
+        index = trace._head_index[dialect] = {
+            _node_key(
+                trace, node.parent, node.message, node.tools, dialect=dialect
+            ): nid
             for nid, node in enumerate(trace.nodes)
         }
-    return trace._head_index
+    return index
 
 
-def message_prefix_len(trace: Trace, prompt: list[Message]) -> int:
+def _index_node(trace: Trace, node_id: int) -> None:
+    """Point every built dialect index at a new node."""
+    node = trace.nodes[node_id]
+    for dialect, index in trace._head_index.items():
+        key = _node_key(trace, node.parent, node.message, node.tools, dialect=dialect)
+        index[key] = node_id
+
+
+def message_prefix_len(
+    trace: Trace, prompt: list[Message], dialect: DialectName | None = None
+) -> int:
     """Length of the longest message-only graph prefix matching `prompt`."""
     children: dict[int | None, list[int]] = {}
     for node_id, node in enumerate(trace.nodes):
@@ -350,12 +417,12 @@ def message_prefix_len(trace: Trace, prompt: list[Message]) -> int:
     parents: list[int | None] = [None]
     matched = 0
     for message in prompt:
-        key = message_hash(message)
+        key = _message_key(trace, message, dialect)
         parents = [
             node_id
             for parent in parents
             for node_id in children.get(parent, [])
-            if message_hash(trace.nodes[node_id].message) == key
+            if _message_key(trace, trace.nodes[node_id].message, dialect) == key
         ]
         if not parents:
             break
@@ -370,6 +437,8 @@ def _matching_node(
     token_ids: list[int] | None = None,
     renderer_token_ids: list[int] | None = None,
     tools: list[Tool] | None = None,
+    *,
+    dialect: DialectName | None,
 ) -> int | None:
     """Find an existing child, optionally requiring its exact token spans.
 
@@ -377,14 +446,16 @@ def _matching_node(
     prefix breaks can leave older physical variants under the same key, so a token mismatch falls
     back to a reverse scan rather than materializing a duplicate of an already-existing variant.
     """
-    key = _node_key(parent, message, tools)
-    indexed = _head_index(trace).get(key)
+    key = _node_key(trace, parent, message, tools, dialect=dialect)
+    indexed = _head_index(trace, dialect).get(key)
     if (
         indexed is not None
-        and (token_ids is None or trace.nodes[indexed].token_ids == token_ids)
+        and (
+            token_ids is None or same_tokens(trace.nodes[indexed].token_ids, token_ids)
+        )
         and (
             renderer_token_ids is None
-            or trace.nodes[indexed].logical_ids == renderer_token_ids
+            or same_tokens(trace.nodes[indexed].logical_ids, renderer_token_ids)
         )
     ):
         return indexed
@@ -395,9 +466,13 @@ def _matching_node(
             continue
         node = trace.nodes[node_id]
         if (
-            (token_ids is None or node.token_ids == token_ids)
-            and (renderer_token_ids is None or node.logical_ids == renderer_token_ids)
-            and _node_key(node.parent, node.message, node.tools) == key
+            (token_ids is None or same_tokens(node.token_ids, token_ids))
+            and (
+                renderer_token_ids is None
+                or same_tokens(node.logical_ids, renderer_token_ids)
+            )
+            and _node_key(trace, node.parent, node.message, node.tools, dialect=dialect)
+            == key
         ):
             return node_id
     return None
@@ -414,6 +489,8 @@ def _matching_prefix_node(
     renderer_start: int,
     renderer_stop: int,
     tools: list[Tool] | None = None,
+    *,
+    dialect: DialectName | None,
 ) -> int | None:
     """Find the longest content-equivalent child matching inside `[start, stop]`.
 
@@ -422,8 +499,8 @@ def _matching_prefix_node(
     otherwise-missing message boundary. The next attributed message's start bounds the match:
     a sampled variant must never consume tokens that the renderer assigned to that message.
     """
-    key = _node_key(parent, message, tools)
-    indexed = _head_index(trace).get(key)
+    key = _node_key(trace, parent, message, tools, dialect=dialect)
+    indexed = _head_index(trace, dialect).get(key)
     candidates: list[int] = []
     if indexed is not None:
         candidates.append(indexed)
@@ -432,9 +509,11 @@ def _matching_prefix_node(
         for node_id in range(len(trace.nodes) - 1, -1, -1)
         if node_id != indexed
         and _node_key(
+            trace,
             trace.nodes[node_id].parent,
             trace.nodes[node_id].message,
             trace.nodes[node_id].tools,
+            dialect=dialect,
         )
         == key
     )
@@ -442,13 +521,17 @@ def _matching_prefix_node(
         node_id
         for node_id in candidates
         if start + len(trace.nodes[node_id].token_ids) <= stop
-        and prompt_ids[start : start + len(trace.nodes[node_id].token_ids)]
-        == trace.nodes[node_id].token_ids
+        and same_tokens(
+            prompt_ids[start : start + len(trace.nodes[node_id].token_ids)],
+            trace.nodes[node_id].token_ids,
+        )
         and renderer_start + len(trace.nodes[node_id].logical_ids) <= renderer_stop
-        and renderer_prompt_ids[
-            renderer_start : renderer_start + len(trace.nodes[node_id].logical_ids)
-        ]
-        == trace.nodes[node_id].logical_ids
+        and same_tokens(
+            renderer_prompt_ids[
+                renderer_start : renderer_start + len(trace.nodes[node_id].logical_ids)
+            ],
+            trace.nodes[node_id].logical_ids,
+        )
     ]
     return max(
         matches, key=lambda node_id: len(trace.nodes[node_id].token_ids), default=None
@@ -469,6 +552,8 @@ class PendingTurn:
     tools: list[Tool]
     prefix_node_ids: list[int]
     path_len: int
+    dialect: DialectName | None = None
+    """The wire format of the request, whose replay view matches its prompt."""
 
     @property
     def tail_start(self) -> int:
@@ -489,20 +574,17 @@ class PendingTurn:
         last = self.trace.nodes[self.prefix_node_ids[-1]]
         if not last.sampled:
             return None
-        num_sampled = sum(last.mask)
+        num_sampled = int(np.count_nonzero(last.mask))
         if not num_sampled:
             return None
 
-        renderer_prompt_ids: list[int] = []
-        for nid in self.prefix_node_ids[:-1]:
-            node = self.trace.nodes[nid]
-            renderer_prompt_ids.extend(node.logical_ids)
-        last_ids = last.logical_ids
-        renderer_prompt_ids.extend(last_ids[:-num_sampled])
-        completion_ids = last_ids[-num_sampled:]
-        if not renderer_prompt_ids or not completion_ids:
+        # The renderer bridges over lists, so the stream converts once here.
+        ids = np.concatenate(
+            [self.trace.nodes[nid].logical_ids for nid in self.prefix_node_ids]
+        )
+        if len(ids) <= num_sampled:
             return None
-        return renderer_prompt_ids, completion_ids
+        return ids[:-num_sampled].tolist(), ids[-num_sampled:].tolist()
 
     def prompt_message_spans(
         self, tail_attribution: RenderedTokens
@@ -547,13 +629,14 @@ class PendingTurn:
     def commit_prompt(self) -> None:
         """Record an input that terminated before model inference."""
         parent = self.prefix_node_ids[-1] if self.prefix_node_ids else None
-        index = _head_index(self.trace)
+        _head_index(self.trace, self.dialect)
         for message in self.tail:
-            existing = _matching_node(self.trace, parent, message, tools=self.tools)
+            existing = _matching_node(
+                self.trace, parent, message, tools=self.tools, dialect=self.dialect
+            )
             if existing is not None:
                 parent = existing
                 continue
-            previous = parent
             self.trace.nodes.append(
                 MessageNode(
                     parent=parent,
@@ -562,7 +645,7 @@ class PendingTurn:
                 )
             )
             parent = len(self.trace.nodes) - 1
-            index[_node_key(previous, message, self.tools)] = parent
+            _index_node(self.trace, parent)
         if self.tools:
             self.trace.tools = list(
                 {
@@ -577,9 +660,11 @@ def prepare_turn(
     trace: Trace,
     prompt: list[Message],
     tools: list[Tool] | None = None,
+    dialect: DialectName | None = None,
 ) -> PendingTurn:
-    """Resolve a physical message-and-tools prefix without mutating the trace."""
-    idx = _head_index(trace)
+    """Resolve a physical message-and-tools prefix without mutating the trace. `dialect`
+    is the request's wire format, whose replay view matches the prompt to stored nodes."""
+    idx = _head_index(trace, dialect)
     tools = list(tools or [])
     tools_hash = _tools_hash(tools)
     parent: int | None = None
@@ -603,7 +688,7 @@ def prepare_turn(
             if len(children) == 1 and trace.nodes[children[0]].message == msg:
                 existing = children[0]
         if existing is None:
-            message_key = message_hash(msg)
+            message_key = _message_key(trace, msg, dialect)
             existing = idx.get(
                 (parent, tools_hash if parent is None else None, message_key)
             )
@@ -618,6 +703,7 @@ def prepare_turn(
         tools=tools,
         prefix_node_ids=prefix_node_ids,
         path_len=path_len,
+        dialect=dialect,
     )
 
 
@@ -633,7 +719,7 @@ def _replace_placeholder_routing_row(
     # placeholder, attempt to fix up below.
     node_with_placeholder = None
     for nid in reversed(prefix_node_ids):
-        if trace.nodes[nid].token_ids:
+        if len(trace.nodes[nid].token_ids):
             node_with_placeholder = trace.nodes[nid]
             break
     if node_with_placeholder is None or not node_with_placeholder.sampled:
@@ -699,56 +785,52 @@ def _attribute_sampling_mask(
     if payload is None:
         return
     node = trace.nodes[assistant_id]
-    if len(payload.counts) != sum(node.mask) or int(payload.counts.sum()) != len(
-        payload.ids
-    ):
+    if len(payload.counts) != np.count_nonzero(node.mask) or int(
+        payload.counts.sum()
+    ) != len(payload.ids):
         return
     node.sampling_mask = payload
 
 
 def _project_prompt_attribution(
-    renderer_prompt_ids: list[int],
-    prompt_ids: list[int],
+    renderer_prompt_ids: np.ndarray,
+    prompt_ids: np.ndarray,
     mm_token_type_id_map: dict[int, int],
     mm_placeholders: list[tuple[int, int]] | None,
     message_spans: list[tuple[int, int] | None] | None,
-    is_content: list[bool] | None,
-) -> tuple[list[tuple[int, int] | None] | None, list[bool] | None]:
+    is_content: np.ndarray | None,
+) -> tuple[list[tuple[int, int] | None] | None, np.ndarray | None]:
     """Project logical attribution using vLLM's multimodal placeholder ranges."""
-    if renderer_prompt_ids == prompt_ids:
+    if renderer_prompt_ids is prompt_ids or same_tokens(
+        renderer_prompt_ids, prompt_ids
+    ):
         return message_spans, is_content
     if not mm_token_type_id_map or mm_placeholders is None:
         raise ValueError(
             "cannot align renderer and vLLM prompt tokens without multimodal placeholders"
         )
 
-    offsets = [0]
-    prompt_offset = 0
-    placeholder_index = 0
-    for token_id in renderer_prompt_ids:
-        if token_id in mm_token_type_id_map:
-            if placeholder_index >= len(mm_placeholders):
-                raise ValueError(
-                    "vLLM multimodal placeholders do not align with renderer prompt"
-                )
-            offset, length = mm_placeholders[placeholder_index]
-            if offset != prompt_offset or length < 1:
-                raise ValueError(
-                    "vLLM multimodal placeholders do not align with renderer prompt"
-                )
-            prompt_offset += length
-            placeholder_index += 1
-        else:
-            if (
-                prompt_offset >= len(prompt_ids)
-                or prompt_ids[prompt_offset] != token_id
-            ):
-                raise ValueError(
-                    "renderer prompt does not align with vLLM prompt tokens"
-                )
-            prompt_offset += 1
-        offsets.append(prompt_offset)
-    if prompt_offset != len(prompt_ids) or placeholder_index != len(mm_placeholders):
+    # Each logical token covers one prompt token, or one placeholder's whole range.
+    is_mm = np.isin(renderer_prompt_ids, list(mm_token_type_id_map))
+    placeholders = np.asarray(mm_placeholders, dtype=np.int64).reshape(-1, 2)
+    if np.count_nonzero(is_mm) > len(placeholders):
+        raise ValueError(
+            "vLLM multimodal placeholders do not align with renderer prompt"
+        )
+    if np.count_nonzero(is_mm) < len(placeholders):
+        raise ValueError("renderer prompt does not align with vLLM prompt tokens")
+    lengths = np.ones(len(renderer_prompt_ids), dtype=np.int64)
+    lengths[is_mm] = placeholders[:, 1]
+    offsets = np.concatenate([[0], np.cumsum(lengths)])
+    if (placeholders[:, 1] < 1).any() or not np.array_equal(
+        placeholders[:, 0], offsets[:-1][is_mm]
+    ):
+        raise ValueError(
+            "vLLM multimodal placeholders do not align with renderer prompt"
+        )
+    if offsets[-1] != len(prompt_ids) or not np.array_equal(
+        prompt_ids[offsets[:-1][~is_mm]], renderer_prompt_ids[~is_mm]
+    ):
         raise ValueError("renderer prompt does not align with vLLM prompt tokens")
 
     projected_spans = None
@@ -761,18 +843,33 @@ def _project_prompt_attribution(
             start, end = span
             if not 0 <= start <= end <= len(renderer_prompt_ids):
                 raise ValueError("message span exceeds renderer prompt tokens")
-            projected_spans.append((offsets[start], offsets[end]))
+            projected_spans.append((int(offsets[start]), int(offsets[end])))
 
     projected_is_content = is_content
-    if is_content:
+    if is_content is not None and len(is_content):
         if len(is_content) != len(renderer_prompt_ids):
             raise ValueError(
                 "content attribution does not match renderer prompt tokens"
             )
-        projected_is_content = []
-        for index, value in enumerate(is_content):
-            projected_is_content.extend([value] * (offsets[index + 1] - offsets[index]))
+        projected_is_content = np.repeat(is_content, lengths)
     return projected_spans, projected_is_content
+
+
+def _attribute_top_logprobs(
+    trace: Trace, assistant_id: int, payload: TopLogprobs | None
+) -> None:
+    """Attach a completion-aligned top-k sampling head to the assistant node."""
+    if payload is None:
+        return
+    node = trace.nodes[assistant_id]
+    if (
+        len(payload.counts) != np.count_nonzero(node.mask)
+        or (payload.counts < 0).any()
+        or int(payload.counts.sum()) != len(payload.ids)
+        or len(payload.ids) != len(payload.logprobs)
+    ):
+        raise ValueError("Top logprobs must align with every sampled node token")
+    node.top_logprobs = payload
 
 
 def _commit_turn(turn: PendingTurn, response: Response) -> int:
@@ -782,15 +879,22 @@ def _commit_turn(turn: PendingTurn, response: Response) -> int:
     # Constant per renderer, so re-stamping every turn is idempotent.
     if tokens is not None and tokens.mm_token_type_id_map:
         trace.mm_token_type_id_map = tokens.mm_token_type_id_map
-    prompt_ids = tokens.prompt_ids if tokens else []
+    prompt_ids = np.asarray(tokens.prompt_ids if tokens else (), dtype=np.int32)
+    # Logical renderer ids differ from `prompt_ids` only after multimodal expansion; otherwise
+    # the nodes keep none and read `token_ids` (`MessageNode.logical_ids`).
     renderer_prompt_ids = (
-        tokens.renderer_prompt_ids
+        np.asarray(tokens.renderer_prompt_ids, dtype=np.int32)
         if tokens and tokens.renderer_prompt_ids is not None
         else prompt_ids
     )
+    expanded = renderer_prompt_ids is not prompt_ids
     renderer_spans = tokens.message_spans if tokens else None
-    renderer_is_content = tokens.is_content if tokens else None
-    idx = _head_index(trace)
+    renderer_is_content = (
+        np.asarray(tokens.is_content, dtype=np.bool_)
+        if tokens and tokens.is_content is not None
+        else None
+    )
+    _head_index(trace, turn.dialect)
 
     prefix = turn.prefix_node_ids
     path_len = turn.path_len
@@ -802,12 +906,13 @@ def _commit_turn(turn: PendingTurn, response: Response) -> int:
         for nid in prefix:
             node = trace.nodes[nid]
             node_renderer_ids = node.logical_ids
-            if (
-                prompt_ids[off : off + len(node.token_ids)] != node.token_ids
-                or renderer_prompt_ids[
+            if not same_tokens(
+                prompt_ids[off : off + len(node.token_ids)], node.token_ids
+            ) or not same_tokens(
+                renderer_prompt_ids[
                     renderer_off : renderer_off + len(node_renderer_ids)
-                ]
-                != node_renderer_ids
+                ],
+                node_renderer_ids,
             ):
                 break
             off += len(node.token_ids)
@@ -875,6 +980,7 @@ def _commit_turn(turn: PendingTurn, response: Response) -> int:
                 renderer_path_len,
                 next_renderer_start,
                 tools=turn.tools,
+                dialect=turn.dialect,
             )
             if existing is not None:
                 end += len(trace.nodes[existing].token_ids)
@@ -889,6 +995,7 @@ def _commit_turn(turn: PendingTurn, response: Response) -> int:
                 node_tokens if tokens is not None else None,
                 renderer_node_tokens if tokens is not None else None,
                 tools=turn.tools,
+                dialect=turn.dialect,
             )
         if existing is None:
             break
@@ -903,11 +1010,11 @@ def _commit_turn(turn: PendingTurn, response: Response) -> int:
     # Track new nodes separately so routed-expert attribution needs only node ids, not this path.
     new_node_ids: list[int] = []
     for i, msg in enumerate(prompt[num_reused:], start=num_reused):
-        key = _node_key(parent, msg, turn.tools)
         start = path_len if cursor is None else cursor
         span = spans[i] if spans and i < len(spans) else None
         end = span[1] if span else start
-        node_tokens = prompt_ids[start:end]
+        # Each node copies its slice: a view would retain the turn's full-context array.
+        node_tokens = prompt_ids[start:end].copy()
         renderer_start = (
             renderer_path_len if renderer_cursor is None else renderer_cursor
         )
@@ -921,42 +1028,53 @@ def _commit_turn(turn: PendingTurn, response: Response) -> int:
                 tools=turn.tools if parent is None else [],
                 message=msg,
                 token_ids=node_tokens,
-                renderer_token_ids=renderer_prompt_ids[renderer_start:renderer_end],
-                mask=[False] * len(node_tokens),
-                is_content=is_content[start:end] if has_is_content else [],
+                renderer_token_ids=renderer_prompt_ids[
+                    renderer_start:renderer_end
+                ].copy()
+                if expanded
+                else None,
+                mask=np.zeros(len(node_tokens), dtype=np.bool_),
+                is_content=is_content[start:end].copy()
+                if has_is_content
+                else np.zeros(0, dtype=np.bool_),
             )
         )
         parent = len(trace.nodes) - 1
-        idx[key] = parent
+        _index_node(trace, parent)
         new_node_ids.append(parent)
         cursor = end
         renderer_cursor = renderer_end
 
-    comp_ids = tokens.completion_ids if tokens else []
+    comp_ids = np.asarray(tokens.completion_ids if tokens else (), dtype=np.int32)
     gen_start = path_len if cursor is None else cursor
     gen_prompt = prompt_ids[gen_start:]
     renderer_gen_start = (
         renderer_path_len if renderer_cursor is None else renderer_cursor
     )
     renderer_gen_prompt = renderer_prompt_ids[renderer_gen_start:]
+    sampled = np.arange(len(gen_prompt) + len(comp_ids)) >= len(gen_prompt)
     trace.nodes.append(
         MessageNode.model_construct(
             parent=parent,
             tools=turn.tools if parent is None else [],
             message=response.message,
             sampled=True,
-            token_ids=[*gen_prompt, *comp_ids],
-            renderer_token_ids=[*renderer_gen_prompt, *comp_ids],
-            mask=[False] * len(gen_prompt) + [True] * len(comp_ids),
-            is_content=([False] * len(gen_prompt) + [True] * len(comp_ids))
-            if has_is_content
-            else [],
-            # TurnTokens is discarded after commit, so transfer its logprobs without copying.
-            logprobs=tokens.completion_logprobs if tokens else [],
+            token_ids=np.concatenate([gen_prompt, comp_ids]),
+            renderer_token_ids=np.concatenate([renderer_gen_prompt, comp_ids])
+            if expanded
+            else None,
+            mask=sampled,
+            is_content=sampled.copy() if has_is_content else np.zeros(0, np.bool_),
+            # TurnTokens is discarded after commit, so its completion-sized logprobs move
+            # onto the node without a copy.
+            logprobs=np.asarray(
+                tokens.completion_logprobs if tokens else (), dtype=np.float32
+            ),
+            weight_versions=tokens.weight_versions if tokens else None,
         )
     )
     assistant_id = len(trace.nodes) - 1
-    idx[_node_key(parent, response.message, turn.tools)] = assistant_id
+    _index_node(trace, assistant_id)
     new_node_ids.append(assistant_id)
 
     # Attribute this turn's expert-routing array onto the nodes created this turn (new input
@@ -969,6 +1087,9 @@ def _commit_turn(turn: PendingTurn, response: Response) -> int:
     # Sampling masks are completion-aligned, so only the sampled node carries them.
     _attribute_sampling_mask(
         trace, assistant_id, tokens.sampling_mask if tokens else None
+    )
+    _attribute_top_logprobs(
+        trace, assistant_id, tokens.top_logprobs if tokens else None
     )
 
     return assistant_id

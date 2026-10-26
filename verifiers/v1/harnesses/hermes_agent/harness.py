@@ -2,15 +2,18 @@
 
 import json
 from pathlib import Path
+from typing import Literal
 
 from verifiers.v1.acp import ACPConfig, ACPHarness
 from verifiers.v1.clients import ModelContext
-from verifiers.v1.configs.harness import HarnessConfig, PinnedVersion
+from verifiers.v1.configs.harness import DialectName, HarnessConfig, PinnedVersion
 from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
+from verifiers.v1.harnesses.utils.replay import strip_text
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.runtimes.base import _ENSURE_UV
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
+from verifiers.v1.types import Message
 
 PROGRAM_SOURCE = (Path(__file__).resolve().parent / "program.py").read_text()
 HERMES_DIR = "/var/tmp/vf-hermes-agent-{version}"
@@ -30,12 +33,23 @@ class HermesAgentHarnessConfig(HarnessConfig):
     """Hermes Agent Git release tag to install, pinned for reproducibility."""
     use_bundled_skill: bool = False
     """Enable Hermes Agent's bundled skill catalog in addition to uploaded skills."""
+    # Over Responses it replays an earlier turn without its reasoning.
+    dialect: Literal["chat_completions", "anthropic_messages", "auto"] = "auto"
+    """`auto` lets Hermes pick the transport from the model name on eval clients, and
+    chat completions on others."""
 
 
 class HermesAgentHarness(ACPHarness[HermesAgentHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
     SUPPORTS_SKILLS = True
+
+    # Hermes stores assistant text stripped and pads missing reasoning with " " on
+    # replay. Recheck on version bumps:
+    # https://github.com/NousResearch/hermes-agent/blob/v2026.9.14/agent/chat_completion_helpers.py#L1444
+    # https://github.com/NousResearch/hermes-agent/blob/v2026.9.14/agent/message_sanitization.py#L545
+    def replay_view(self, message: Message, dialect: DialectName | None) -> Message:
+        return strip_text(message)
 
     async def setup(self, runtime: Runtime) -> None:
         # Hermes needs its source-tree assets and supports editable installs only.
@@ -85,7 +99,9 @@ class HermesAgentHarness(ACPHarness[HermesAgentHarnessConfig]):
             "api_key": secret,
             "discover_models": False,
         }
-        if ctx.client.type == "eval":
+        if self.config.dialect != "auto":
+            provider["transport"] = self.config.dialect
+        elif ctx.client.type == "eval":
             provider["transport"] = "${HERMES_INTERCEPT_TRANSPORT}"
         config = {
             "model": model,

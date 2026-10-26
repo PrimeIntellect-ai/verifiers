@@ -33,7 +33,7 @@ dependencies = [
     "math-verify>=0.8.0",
     "openai>=2.54.0,<3.0.0",
     "prime-tunnel>=0.1.14",
-    "prime-sandboxes>=0.4.4",
+    "prime-sandboxes>=0.5.1",
     "prime-runs>=0.1.4",
     "pydantic>=2.12.3",
     "rich>=11.0.0",
@@ -49,9 +49,9 @@ dependencies = [
     "prime-pydantic-config[toml]>=0.4.3",
     "loguru>=0.7.0",
     "tomli-w>=1.0.0",
-    "renderers[multimodal]>=0.1.12",
+    "renderers[multimodal]>=0.1.13.dev17",
     "typing_extensions>=4.12.2",
-    "mcp==2.0.0",
+    "mcp==2.2.0",
 ]
 
 [dependency-groups]
@@ -96,14 +96,6 @@ harbor = [
     # Harbor currently publishes Python 3.12+ packages; keep core verifiers installable on 3.11.
     "harbor==0.24.0 ; python_full_version >= '3.12'",
 ]
-modal = [
-    "modal>=1.5.4",
-]
-e2b = [
-    # <3: the runtime swaps the SDK command handle's private stream decoders for
-    # byte-accurate live output (see runtimes/e2b.py _byte_handle).
-    "e2b>=2.35.0,<3",
-]
 openenv = [
     "openenv>=0.4.1",
 ]
@@ -139,6 +131,8 @@ bash-interception = { path = "environments/bash_interception", editable = true }
 web-search-interception = { path = "environments/web_search_interception", editable = true }
 
 [tool.uv.exclude-newer-package]
+# CA bundle: security fixes (e.g. 2026.10.19 for the eMudhra compromise) must not wait out the cooldown
+certifi = false
 # Bounded cutoffs for the explicitly requested tool upgrades.
 # Full UTC timestamps: bare dates resolve to local-tz midnight and churn the
 # lockfile across timezones.
@@ -157,7 +151,6 @@ vf-eval = "verifiers.v1.cli.eval.main:main"
 vf-validate = "verifiers.v1.cli.validate:main"
 vf-debug = "verifiers.v1.cli.debug:main"
 vf-replay = "verifiers.v1.cli.replay:main"
-vf-init = "verifiers.v1.cli.init:main"
 vf-gepa = "verifiers.v1.cli.gepa:main"
 
 # hatchling configuration
@@ -192,7 +185,6 @@ include = [
 exclude = [
     "/wandb",
     "/scratch",
-    "/configs",
     "/environments",
 ]
 
@@ -227,17 +219,15 @@ markers = [
     # is applied per axis, so it matches every cell touching that value on any axis.
     "subprocess: integration cells touching the subprocess (host) runtime",
     "docker: integration cells touching the docker runtime",
-    "podman: integration cells touching the podman runtime (needs the engine on the host; local-only)",
-    "apptainer: integration cells touching the apptainer runtime (needs the engine on the host; local-only)",
     "prime: integration cells touching the prime runtime (real sandbox + tunnel)",
-    "modal: integration cells touching the modal runtime (external sandbox; local-only, excluded in CI)",
-    "e2b: integration cells touching the e2b runtime (external sandbox; local-only, excluded in CI)",
     "colocated: integration cells with a tool server colocated in the harness runtime",
+    "service: integration cells with a tool server in a Compose service beside the harness",
     "null: integration cells on the null harness",
     "bash: integration cells on the bash harness",
     "claude_code: integration cells on the claude-code harness",
     "openclaw: integration cells on the OpenClaw harness",
     "hermes_agent: integration cells on the hermes-agent harness",
+    "deepseek: integration cells on the DeepSeek minimal harness",
     "rlm: integration cells on the rlm harness",
     "kimi_code: integration cells on the kimi-code harness",
     "pi: integration cells on the pi harness",

@@ -1,9 +1,9 @@
 """One task, a scripted user: the user speaks first and the harness resumes onto the
-conversation each turn (echo-user-sim-v1), across the harness x runtime grid; and the
+conversation each turn (echo-user-sim), across the harness x runtime grid; and the
 caller drives an agent turn by turn through `agent.interaction`."""
 
 import pytest
-from grid import grid
+from grid import assert_one_branch, grid
 
 import verifiers.v1 as vf
 
@@ -18,13 +18,14 @@ async def test_user(run, harness, harness_runtime):
     onto the conversation, and leaving the loop ends the exchange (`user_closed`).
     The user runs in the eval process itself, so there is no placement axis."""
     (episode,) = await run(
-        "echo-user-sim-v1",
+        "echo-user-sim",
         harness=harness,
         runtime=harness_runtime,
         max_turns=6,
         max_tokens=8192,
     )
     (trace,) = episode.traces
+    assert_one_branch(trace, harness, forks=("openclaw",))
     assert trace.ok, [error.message for error in trace.errors]
     assert trace.num_turns >= 2  # genuinely multi-turn
     assert trace.stop_condition == "user_closed"  # leaving the interaction ended it
@@ -67,3 +68,4 @@ async def test_interaction(live_ctx):
     assert trace is not None and trace.errors == []
     assert trace.stop_condition == "user_closed"  # closing the interaction ended it
     assert trace.num_turns == 2
+    assert trace.num_branches == 1

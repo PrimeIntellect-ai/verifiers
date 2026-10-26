@@ -21,6 +21,8 @@ from pydantic import BaseModel, ConfigDict, Field
 from typing_extensions import TypeVar
 
 from verifiers.v1.configs.harness import SkillSource
+from verifiers.v1.configs.runtime import NetworkPolicyConfig
+from verifiers.v1.configs.scoring import ScoringConfig
 from verifiers.v1.configs.task import TaskConfig
 from verifiers.v1.errors import TaskError, boundary
 from verifiers.v1.state import StateT
@@ -38,6 +40,8 @@ if TYPE_CHECKING:
     from verifiers.v1.judge import Judge
     from verifiers.v1.mcp import Toolset
     from verifiers.v1.runtimes import Runtime
+    from verifiers.v1.runtimes.compose import ComposeSpec
+    from verifiers.v1.runtimes.deployment import Deployment
     from verifiers.v1.trace import Trace
 
 logger = logging.getLogger(__name__)
@@ -60,7 +64,7 @@ class TaskResources(BaseModel):
     gpu: str | None = None
     """GPU spec, e.g. "A100" or "A100:2" (type[:count])."""
     disk: float | None = None
-    """Disk in GB (enforced by prime; advisory on local containers and modal)."""
+    """Disk in GB (enforced by prime; advisory on local containers)."""
 
 
 class TaskTimeout(BaseModel):
@@ -95,6 +99,9 @@ class TaskData(BaseModel):
     system_prompt: str | None = None
     """Optional system prompt to prepend to the user prompt."""
 
+    scoring: ScoringConfig = ScoringConfig()
+    """Task scoring defaults; explicitly set agent.scoring fields take precedence."""
+
     image: str | None = None
     """Optional Docker image to use for the task. Only relevant for tasks that run in a container."""
     workdir: str | None = None
@@ -107,14 +114,12 @@ class TaskData(BaseModel):
     skills: list[SkillSource] = Field(default_factory=list)
     """Skill sources installed before the harness's configured skills for this task."""
 
-    network_allow: list[str] = Field(default_factory=lambda: ["*"])
-    """Execution-time destinations requested by this task. `*` leaves the runtime
-    allowlist unchanged; concrete lists intersect with the runtime's rules. Unsupported
-    intersections are rejected. Prime runtimes accept host-level entries."""
-    network_block: list[str] = Field(default_factory=list)
-    """Execution-time destinations denied by this task and combined with runtime
-    blocks. Non-empty concrete allowlists cannot be combined with blocklists. Docker
-    framework routes take precedence; ordinary Prime deny rules pass through unchanged."""
+    network: NetworkPolicyConfig = Field(default_factory=NetworkPolicyConfig)
+    """What the task's box may reach once the agent starts, combined with the runtime's
+    own rules: `allow=["*"]` leaves the runtime's allowlist unchanged, concrete allowlists
+    intersect with it, and blocklists merge. Unsupported intersections are rejected, and a
+    concrete allowlist cannot be combined with a blocklist. Prime runtimes accept
+    host-level entries; Docker framework routes take precedence."""
 
     artifacts: list[Artifact] = Field(default_factory=list)
     """Paths collected from one runtime and restored at the same locations in another,
@@ -182,6 +187,25 @@ class Task(Generic[DataT, StateT, ConfigT]):
         """Live-only process environment; unlike TaskData, it is not traced."""
         return {}
 
+    def deployment_spec(self) -> ComposeSpec | None:
+        """Optional service composition for each independent attempt."""
+        return
+
+    @property
+    def scoring(self) -> ScoringConfig:
+        """Task scoring defaults, including any task-format-specific defaults."""
+        return self.data.scoring
+
+    def grading_task(self, runtime: Runtime, *, scoring: ScoringConfig) -> Self:
+        """Adapt scoring inputs to the resolved policy without changing the solver task."""
+        return self
+
+    async def finalize_services(
+        self, trace: Trace, targets: dict[str, Runtime]
+    ) -> None:
+        """Collect isolated-grading evidence after the workspace has stopped."""
+        return
+
     async def setup(self, trace: Trace, runtime: Runtime) -> None:
         return None
 
@@ -193,8 +217,22 @@ class Task(Generic[DataT, StateT, ConfigT]):
         return
 
     async def validate(self, runtime: Runtime) -> bool | None:
-        """Check the ground truth, or return None when no model-free check exists."""
+        """Check the ground truth, or return None when no model-free check exists.
+
+        Request `trace` by name for the check's trace, which `setup` ran with and which
+        records vf-validate's runtime config; pass it to `vf.grade_submission` to grade
+        as a rollout would."""
         return None
+
+    async def rescore(self, trace: Trace) -> None:
+        """Score a finished trace again, offline: clear its rewards, metrics, judge
+        calls and drop, then run this task's signals that need only the trace."""
+        if trace.has_error:
+            raise ValueError("the rollout errored: its transcript is incomplete")
+        trace.info.pop("judge_calls", None)
+        trace.rewards, trace.metrics, trace.extra_usage = {}, {}, []
+        trace.dropped = None
+        await self.score(trace)
 
     def defer_scoring(self) -> Self:
         """An independent copy whose task signals are deferred.
@@ -214,40 +252,58 @@ class Task(Generic[DataT, StateT, ConfigT]):
         self,
         trace: Trace,
         runtime: Runtime | None = None,
+        deployment: Deployment | None = None,
     ) -> None:
         if self.scoring_deferred:
             return
 
-        def requires_runtime(fn) -> bool:
-            param = inspect.signature(fn).parameters.get("runtime")
-            # A defaulted runtime parameter can still be called offline with None.
-            return param is not None and param.default is inspect.Parameter.empty
+        def requires_unavailable_resource(fn) -> bool:
+            parameters = inspect.signature(fn).parameters
+            return any(
+                value is None
+                and (param := parameters.get(name)) is not None
+                and param.default is inspect.Parameter.empty
+                for name, value in (
+                    ("runtime", runtime),
+                    ("deployment", deployment),
+                )
+            )
 
         judges = self.plugged_judges()
         available = {"task": self.data, "trace": trace}
         if runtime is not None:
             available["runtime"] = runtime
+        if deployment is not None:
+            available["deployment"] = deployment
 
         async with boundary(TaskError, f"task {type(self).__name__} scoring"):
             metrics = self.hooks("metric")
             rewards = self.hooks("reward")
-            if runtime is None:
+            if runtime is None or deployment is None:
                 skipped = [
-                    fn.__name__ for fn in (*metrics, *rewards) if requires_runtime(fn)
+                    fn.__name__
+                    for fn in (*metrics, *rewards)
+                    if requires_unavailable_resource(fn)
                 ] + [
                     judge.reward_name
                     for judge in judges
-                    if requires_runtime(judge.score)
+                    if requires_unavailable_resource(judge.score)
                 ]
                 if skipped:
                     logger.info(
-                        "score: no runtime — skipped runtime-dependent signals: %s",
+                        "score: skipped signals requiring unavailable runtime/deployment: %s",
                         skipped,
                     )
-                metrics = [fn for fn in metrics if not requires_runtime(fn)]
-                rewards = [fn for fn in rewards if not requires_runtime(fn)]
+                metrics = [
+                    fn for fn in metrics if not requires_unavailable_resource(fn)
+                ]
+                rewards = [
+                    fn for fn in rewards if not requires_unavailable_resource(fn)
+                ]
                 judges = [
-                    judge for judge in judges if not requires_runtime(judge.score)
+                    judge
+                    for judge in judges
+                    if not requires_unavailable_resource(judge.score)
                 ]
 
             seed(trace.metrics, (fn.__name__ for fn in metrics))
@@ -270,7 +326,8 @@ class Task(Generic[DataT, StateT, ConfigT]):
                 else:
                     items = [(fn.__name__, result)]
                 for key, value in items:
-                    trace.record_reward(key, value, weight)
+                    if value is not None:
+                        trace.record_reward(key, value, weight)
             judge_results = await invoke_all(
                 [judge.score for judge in judges], available
             )
@@ -281,7 +338,8 @@ class Task(Generic[DataT, StateT, ConfigT]):
                 else:
                     items = [(judge.reward_name, result)]
                 for key, value in items:
-                    trace.record_reward(key, value, judge.config.weight)
+                    if value is not None:
+                        trace.record_reward(key, value, judge.config.weight)
 
     @classmethod
     def data_type(cls) -> type[TaskData]:

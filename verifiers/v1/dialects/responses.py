@@ -19,6 +19,7 @@ from openai.types.responses.response_usage import (
 from pydantic import BaseModel, ConfigDict
 
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
+from verifiers.v1.configs.sampling import Sampling, SamplingConfig
 from verifiers.v1.dialects.base import (
     Dialect,
     RawRequest,
@@ -38,8 +39,6 @@ from verifiers.v1.types import (
     Messages,
     Request,
     Response,
-    Sampling,
-    SamplingConfig,
     SystemMessage,
     TextContentPart,
     Tool,
@@ -354,6 +353,7 @@ class ResponsesStreamParser(StreamParser):
 
 
 class ResponsesDialect(Dialect[OpenAIResponse]):
+    name = "responses"
     sampling_fields = frozenset(
         {
             "temperature",
@@ -687,7 +687,7 @@ class ResponsesDialect(Dialect[OpenAIResponse]):
         payload = {"type": kind, "sequence_number": 0, "response": _KEEPALIVE_RESPONSE}
         return f"event: {kind}\ndata: {json.dumps(payload)}\n\n".encode()
 
-    def stream_error(self, error: dict) -> bytes:
+    def stream_error(self, error: dict, *, status_code: int | None = None) -> bytes:
         # `response.failed` is what Responses clients (codex) act on; the `error` key is what
         # the OpenAI SDK raises on.
         message = error["error"]["message"]

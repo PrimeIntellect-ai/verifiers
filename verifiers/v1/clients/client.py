@@ -9,9 +9,10 @@ from verifiers.v1.configs.client import (
     ClientConfig,
     TrainClientConfig,
 )
+from verifiers.v1.configs.sampling import Sampling, SamplingConfig
 from verifiers.v1.dialects import Dialect
 from verifiers.v1.graph import PendingTurn
-from verifiers.v1.types import Response, Sampling, SamplingConfig
+from verifiers.v1.types import Response
 
 SESSION_ID_HEADER = "X-Session-ID"
 """Per-rollout routing header (the trace id, same value every turn), so a session-affinity

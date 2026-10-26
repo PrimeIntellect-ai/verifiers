@@ -1,86 +1,54 @@
-# The Env
+# Environments
 
-An `Env` defines the control flow between `Agents`. In the simplest case, it is just a `SingleAgentEnv` where a single agent solves a task from a taskset.
+An `Env` defines the control flow across one or more `Agents` for a single task. Each completed agent run produces a `Trace`, and the environment collects every trace from the run into an `Episode`.
 
-Its core signature is `Env.run(task: Task, agents: Agents)` -> None — it is passed an initial task and pre-initialized agents and then programs the full multi-agent control flow; every finished agent run automatically joins the resulting `Episode`, which holds all the traces of all the agents.
+If your taskset package does not export a custom `Env` and you don't specify `--env.id`, verifiers defaults to `SingleAgentEnv`, which runs a single agent on each task. You can also select one of the built-in environments with `--env.id`:
 
-```python
-class Env(ABC):
-    @abstractmethod
-    async def run(self, task: Task, agents: Agents) -> None:
-        """Run a single multi-agent episode."""
-        ...
-```
+- `best-of-n` (`BestOfNEnv`): runs `n` independent attempts on the same task, marks which attempt achieved the highest reward (`best`), and records whether any attempt crossed a success threshold (`pass_at_n`), which is useful for rejection sampling and pass@k evaluation.
+- `agentic-judge` (`AgenticJudgeEnv`): runs a solver agent first, then a judge agent to evaluate the result. The solver's `ScoringConfig` (`--env.solver.scoring.mode shared|isolated`) selects the workspace used for both task scoring and agentic judging.
+- `best-of-n-judge` (`BestOfNJudgeEnv`): runs `n` attempts like `best-of-n`, then gives `--env.judges` independent judge agents each a fresh container holding every attempt's trace and collected artifacts under shuffled labels, and has them rank the attempts best to worst. Each attempt's `judge` reward is its rank score (the share of other attempts it beats, ties counting half) averaged across the judges.
+- `user-sim` (`UserSimEnv`): models the user as a second agent and runs a turn-by-turn conversation between the user simulator and the assistant.
 
-verifiers comes with different pre-built `Env`s to use:
+## Custom control flow
 
-- `IsolatedVerifierEnv` runs one solver, transfers only declared artifacts into a
-  fresh configured runtime, and runs deterministic task scoring there.
-- The `AgenticJudgeEnv` defines the sequential interaction between a solver and judge agent. The judge can re-use the same runtime after the solver (`SharedAgenticJudgeEnv`) or use its own, new runtime `IsolatedAgenticJudgeEnv`.
-- The `UserSimEnv` models users as agents, and the episode is a turn-by-turn conversation between the user and assistant agents.
-- The `BestOfNEnv` runs n independent attempts at the same task, then marks which attempt achieved the highest reward (best) and whether any attempt crossed a success threshold (pass_at_n), which is useful for rejection sampling and pass@k evaluation.
-
-## Isolated deterministic verification
-
-Select `--env.id isolated-verifier` when the task's score must not run in the
-solver's sandbox. It is still a one-agent run: the environment records one solver
-trace and starts no verifier agent, model, or harness.
-
-```bash
-uv run vf-eval my-task --env.id isolated-verifier --env.agent.runtime.type docker
-```
-
-Task authors use the existing task API. Declare every solver output the verifier
-needs in `TaskData.artifacts`, then implement deterministic `@vf.reward` and
-`@vf.metric` methods. A runtime parameter makes the fresh verifier box available:
+To write a custom environment, subclass `vf.Env` and declare an `AgentConfig` field on your `EnvConfig` for each agent role. The field name becomes the CLI and TOML config prefix, such as `--env.solver.model` and `--env.solver.harness.id`:
 
 ```python
-from pathlib import Path
-
 import verifiers.v1 as vf
 
 
-PRIVATE_TESTS = Path("tests/test_solution.sh").read_bytes()
+class AttemptsConfig(vf.EnvConfig):
+    solver: vf.AgentConfig = vf.AgentConfig()
+    attempts: int = 2
 
 
-class CodeTask(vf.Task[CodeData]):
-    async def stage_verifier(self, runtime: vf.Runtime) -> None:
-        await runtime.write("/tmp/test_solution.sh", PRIVATE_TESTS)
+class AttemptsEnv(vf.Env[AttemptsConfig]):
+    async def run(self, task: vf.Task, agents: vf.Agents) -> None:
+        for _ in range(self.config.attempts):
+            await agents.solver.run(task)
 
-    @vf.reward
-    async def tests(self, runtime: vf.Runtime) -> float:
-        result = await runtime.run(["bash", "/tmp/test_solution.sh"], {})
-        return float(result.exit_code == 0)
-
-
-task = CodeTask(
-    CodeData(
-        prompt="Fix the implementation.",
-        artifacts=[vf.Artifact(source="src")],
-    )
-)
+    async def finalize(self, task: vf.Task, episode: vf.Episode) -> None:
+        best = max(trace.reward for trace in episode.traces)
+        for trace in episode.traces:
+            trace.record_metric("best", float(trace.reward == best))
 ```
 
-The lifecycle is fixed:
+`Env.run(task, agents)` receives the task and pre-initialized agents and orchestrates the episode; it returns `None` because every completed `agent.run(task)` call automatically appends its trace to the episode (with `trace.agent.name` set to the role name). Unless overridden on the role, each agent inherits the evaluation's model, client and sampling, and the taskset's default harness. An agent that sets its own `client` uses only its own `sampling`, because the evaluation's sampling can be specific to its endpoint. Export your `Env` subclass alongside the taskset in your package's `__all__` so verifiers uses it automatically.
 
-1. The task and harness run normally, including task `finalize` and harness metrics,
-   but task metrics and rewards are deferred.
-2. The environment collects the declared paths and `/logs/artifacts`, then destroys
-   the solver runtime.
-3. It creates a fresh task controller and provisions either the same resolved
-   container/runtime policy or the independently configured verifier runtime, runs
-   task `setup`, restores the artifacts at their original paths, runs task
-   `stage_verifier`, reapplies the execution network policy, and runs task metrics
-   and rewards onto the solver trace.
+When you need episode-level metrics that compare traces across runs, such as marking the best attempt above, implement `finalize(task, episode)`. Because the agents' runtimes have already been released by the time `finalize` runs, any evidence needed for cross-trace scoring should be recorded on the traces during `run`. If an environment includes helper roles that shouldn't be trained (such as a judge or user simulator), mark them in `setup(agents)` with `agents.judge.trainable = False`.
 
-The verifier runtime must be Docker, Prime, or another container runtime; absolute
-artifact restoration is intentionally refused on the host subprocess runtime.
-By default the verifier uses the solver's resolved runtime policy. Set
-`--env.verifier.runtime.*` to independently choose its runtime type, image, resources,
-and network policy; `--env.verifier.env` can independently set its process environment.
-Relative artifacts require matching solver and verifier workdirs because artifacts are
-restored without path translation; absolute artifacts permit different workdirs.
-Configured model-backed task judges are rejected: use deterministic metrics/rewards
-here, or an agentic/judge environment when a model must judge the result.
-`--env.verifier.retries` retries fresh verifier attempts after setup, restoration,
-staging, or scoring failures (default: 2).
+### Role defaults
+
+You can customize a role's default settings directly on its `AgentConfig` field. For example, an answer-only environment that does not need shell tools can default its agent to the `null` harness:
+
+```python
+class AnswerConfig(vf.EnvConfig):
+    agent: vf.AgentConfig = vf.AgentConfig(harness={"id": "null"})
+
+
+class AnswerEnv(vf.Env[AnswerConfig]):
+    async def run(self, task: vf.Task, agents: vf.Agents) -> None:
+        await agents.agent.run(task)
+```
+
+CLI flags and TOML settings merge into those defaults, so a user can still switch harnesses at runtime with `--env.agent.harness.id bash`. If a role's default harness depends on a taskset setting, type the config's `taskset` field with that taskset's config class and choose a harness in a Pydantic `after` model validator only when `agent.harness` was left unset, keeping explicit user overrides intact.

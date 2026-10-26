@@ -1,8 +1,8 @@
 """One task, two segments: the harness preserves context and MCP access across a resumed
-exchange (echo-acp-resume-v1), across the harness x runtime grid."""
+exchange (echo-acp-resume), across the harness x runtime grid."""
 
 import pytest
-from grid import grid
+from grid import assert_one_branch, grid
 
 
 @pytest.mark.parametrize(
@@ -11,7 +11,7 @@ from grid import grid
 async def test_resume_tool(run, harness, harness_runtime):
     """Each harness preserves context and MCP access across two segments."""
     (episode,) = await run(
-        "echo-acp-resume-v1",
+        "echo-acp-resume",
         harness=harness,
         runtime=harness_runtime,
         max_turns=8,
@@ -19,6 +19,7 @@ async def test_resume_tool(run, harness, harness_runtime):
         rollout_timeout=600,
     )
     (trace,) = episode.traces
+    assert_one_branch(trace, harness, forks=("openclaw",))
     assert trace.ok, [error.message for error in trace.errors]
     assert trace.stop_condition == "user_closed"
     assert trace.rewards["resumed"].score == 1.0
@@ -27,10 +28,6 @@ async def test_resume_tool(run, harness, harness_runtime):
     assert segments[0]["terminated"] is False
     assert segments[1]["terminated"] is False
     assert trace.last_reply == segments[1]["last_reply"]
-    # Kimi Code's resumed requests replay history that differs from the turns it
-    # sampled (seen on prime), so its graph forks instead of extending one branch.
-    if harness.id != "kimi-code":
-        assert trace.num_branches == 1
     assert "tool" in segments[1]["roles"]
     assert segments[1]["tool_outputs"]
     if harness.id == "pi":
