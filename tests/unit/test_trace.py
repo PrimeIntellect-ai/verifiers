@@ -142,8 +142,8 @@ def test_saved_episode_omits_raw_training_arrays(tmp_path, arrays):
     [saved] = episode.traces
     assert saved.task.data.answer == "gold"
     assert [m.content for m in saved.branches[0].messages] == ["q", "a"]
-    assert saved.nodes[-1].token_ids == [10, 20]
-    assert saved.nodes[-1].logprobs == [-0.5]
+    assert saved.nodes[-1].token_ids.tolist() == [10, 20]
+    assert saved.nodes[-1].logprobs.tolist() == [-0.5]
     for node in saved.nodes:
         assert node.routed_experts is None
         assert node.sampling_mask is None
