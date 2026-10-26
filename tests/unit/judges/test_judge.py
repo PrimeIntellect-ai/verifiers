@@ -1,7 +1,9 @@
 """Pluggable judges: plugin resolution, config narrowing, views, and how `Task.score` runs them.
-Judge model calls are faked at `Judge.complete`; no network."""
+Judge model calls are faked at `Judge.complete` or the client builder; no network."""
 
+import httpx
 import pytest
+from openai import AsyncOpenAI
 from pydantic import Field
 
 import verifiers.v1 as vf
@@ -204,6 +206,43 @@ async def test_error_attribution(monkeypatch, tmp_path, make_trace):
         )
     assert trace.rewards["reference"] is None  # seeded: expected but never scored
     assert len(trace.info["judge_calls"]) == 1  # the billed call is still recorded
+
+
+@pytest.mark.parametrize("judge_id", ["reference", "decision"])
+async def test_judge_provider_failure_is_a_provider_error(
+    monkeypatch, make_trace, judge_id
+):
+    # A judge endpoint's 5xx surfaces as a ProviderError with its status, so a rollout
+    # retry rule for provider 5xx covers the judge as well as the agent's model calls.
+    def unavailable(config):
+        return AsyncOpenAI(
+            base_url="http://judge.invalid/v1",
+            api_key="key",
+            max_retries=0,
+            http_client=httpx.AsyncClient(
+                transport=httpx.MockTransport(
+                    lambda request: httpx.Response(502, json={"error": "unavailable"})
+                )
+            ),
+        )
+
+    monkeypatch.setattr("verifiers.v1.judge.build_async_openai", unavailable)
+    monkeypatch.setattr("verifiers.v1.judges.decision.build_async_openai", unavailable)
+    taskset = JudgedTaskset(
+        JudgedConfig.model_validate(
+            {
+                "task": {
+                    "judges": [{"id": judge_id, "base_url": "http://judge.invalid/v1"}]
+                }
+            }
+        )
+    )
+    trace = make_trace()
+    with pytest.raises(vf.ProviderError) as raised:
+        await JudgedTask(trace.task.data, taskset.config.task).score(
+            trace, runtime=None
+        )
+    assert raised.value.status_code == 502
 
 
 def test_judge_composition_weights_are_finite():
