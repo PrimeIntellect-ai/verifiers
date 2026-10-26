@@ -134,12 +134,14 @@ _rejected_dumps = 0
 
 
 def _dump_rejected(
-    request: dict | None, error: BaseException | None, trace_id: str
+    body: dict | EncodedBody | None, error: BaseException | None, trace_id: str
 ) -> None:
+    """Write the full body sent upstream (as the client holds it) when the provider
+    rejected it with a non-retryable 4xx and `VF_REJECTED_REQUEST_DIR` is set."""
     global _rejected_dumps
     directory = os.environ.get(REJECTED_REQUEST_DIR_ENV)
     status = getattr(error, "status_code", None)
-    if not directory or request is None or not isinstance(error, ProviderError):
+    if not directory or body is None or not isinstance(error, ProviderError):
         return
     if status is None or not 400 <= status < 500 or status in (408, 429):
         return
@@ -151,6 +153,7 @@ def _dump_rejected(
         path = os.path.join(
             directory, f"{int(time.time())}-{trace_id}-{secrets.token_hex(3)}.json"
         )
+        request = from_json(body.data) if isinstance(body, EncodedBody) else body
         with open(path, "w") as out:
             json.dump(
                 {
@@ -832,7 +835,6 @@ class InterceptionServer(Interception):
             session.released
         ):  # the trace is sealed — a straggler exchange isn't recorded
             return
-        _dump_rejected(request, error, session.trace.id)
         sampling = None
         if request is not None:
             try:
@@ -1329,6 +1331,7 @@ class InterceptionServer(Interception):
             finally:
                 if node is None:
                     turn.abandon()
+                _dump_rejected(upstream, error, session.trace.id)
                 # The turn's one per-exchange record: settings, timing, outcome, and
                 # the error that ended it (if any).
                 self.record_call(
