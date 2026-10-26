@@ -10,6 +10,7 @@ import random
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Literal
 
+from verifiers.v1.errors import TunnelError
 from verifiers.v1.interception.tunnel.base import BaseTunnelConfig, Tunnel
 from verifiers.v1.runtimes.limiters import CreationLimiter
 from verifiers.v1.utils.aio import run_shielded
@@ -50,7 +51,13 @@ def tunnel_limiter() -> CreationLimiter:
 CHECK_SECONDS = 20
 
 
-async def _watch(client: "TunnelClient", url: str) -> None:
+async def _require_registered(client: "TunnelClient", label: str) -> None:
+    """Reject a newly created slot whose registration is not ready for consumers."""
+    if not await client.check_registered():
+        raise TunnelError(f"{label}: registration not ready")
+
+
+async def _watch(client: "TunnelClient", url: str, on_gone=None) -> None:
     """Keep a held tunnel up. A tunnel service hiccup can leave frpc running while the
     service has it disconnected for good, and every request to the URL then hangs or
     404s; frpc can also exit. Either way, restart it. A tunnel the service has deleted
@@ -69,6 +76,8 @@ async def _watch(client: "TunnelClient", url: str) -> None:
             strikes = strikes + 1 if status.registration == "disconnected" else 0
         if client.is_gone:
             logger.error("tunnel %s: registration gone; cannot repair", url)
+            if on_gone is not None:
+                await on_gone()
             return
         if client.is_running and strikes < 2:
             continue
@@ -81,6 +90,8 @@ async def _watch(client: "TunnelClient", url: str) -> None:
             await client.restart()
         except TunnelGoneError:
             logger.error("tunnel %s: registration gone; cannot repair", url)
+            if on_gone is not None:
+                await on_gone()
             return
         except Exception as e:  # noqa: BLE001 - tried again on the next check
             logger.warning("tunnel %s: frpc restart failed: %s", url, e)
@@ -100,6 +111,7 @@ class PrimeTunnel(Tunnel[PrimeTunnelConfig]):
     def __init__(self, config: PrimeTunnelConfig | None = None) -> None:
         ensure_prime_auth()
         super().__init__(config)
+        self.on_gone = None
 
     @contextlib.asynccontextmanager
     async def expose(self, port: int) -> AsyncIterator[str]:
@@ -110,7 +122,6 @@ class PrimeTunnel(Tunnel[PrimeTunnelConfig]):
         torn down on exit."""
         from prime_tunnel import Tunnel as TunnelClient
 
-        from verifiers.v1.errors import TunnelError
         from verifiers.v1.utils.retries import retrying
 
         label = f"host tunnel (port {port})"
@@ -120,9 +131,10 @@ class PrimeTunnel(Tunnel[PrimeTunnelConfig]):
                     client = TunnelClient(local_port=port)
                     async with tunnel_limiter():
                         url = str(await client.start()).rstrip("/")
+                await _require_registered(client, label)
         except Exception as e:
             raise TunnelError(f"{label} failed: {e}") from e
-        watch = asyncio.create_task(_watch(client, url))
+        watch = asyncio.create_task(_watch(client, url, on_gone=self.on_gone))
 
         async def close() -> None:
             watch.cancel()  # first, so it can't start a new frpc after the stop

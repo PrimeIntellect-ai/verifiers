@@ -105,3 +105,34 @@ async def test_restart_refused_as_gone_stops_watching(monkeypatch):
 async def test_failed_restart_is_tried_again(monkeypatch):
     client = FakeClient([], running=False, restart_error=RuntimeError("frpc"))
     assert await watch(client, 6, monkeypatch) >= 2
+
+
+class RegistrationClient:
+    def __init__(self, ready):
+        self.ready = ready
+
+    async def check_registered(self):
+        return self.ready
+
+
+async def test_require_registered_accepts_ready_registration():
+    await prime._require_registered(RegistrationClient(True), "test")
+
+
+@pytest.mark.parametrize("ready", [False, None])
+async def test_require_registered_rejects_unready_registration(ready):
+    with pytest.raises(prime.TunnelError, match="registration not ready"):
+        await prime._require_registered(RegistrationClient(ready), "test")
+
+
+async def test_gone_registration_invokes_callback(monkeypatch):
+    client = FakeClient(["terminated"])
+    calls = 0
+
+    async def on_gone():
+        nonlocal calls
+        calls += 1
+
+    monkeypatch.setattr(prime, "CHECK_SECONDS", 0.01)
+    await asyncio.wait_for(prime._watch(client, "https://t", on_gone=on_gone), 1)
+    assert calls == 1

@@ -30,7 +30,8 @@ BuiltinSkill = Literal["bash", "edit", "fetch", "search"]
 BuiltinTool = Literal["bash", "edit", "fetch", "ipython"]
 
 RLM_REPO = "github.com/PrimeIntellect-ai/nano-rlm.git"
-RLM_CACHE_DIR = "/tmp/vf-rlm"
+# Install outside /tmp so task images with a noexec /tmp mount can still start RLM.
+RLM_CACHE_DIR = "/opt/vf-rlm"
 RLM_STATE_DIR = "/tmp/vf-rlm-state"
 RLM_RUNTIME_METADATA_KEY = "ai.prime.rlm/runtime-v1"
 RLM_SESSION_METADATA_KEY = "ai.prime.rlm/session-v1"
@@ -168,6 +169,7 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
             f"{home_env}UV_INSTALL_DIR={directory}/bin UV_TOOL_BIN_DIR={directory}/bin "
             f"UV_TOOL_DIR={directory}/tools "
             f"RLM_CHECKOUT_PATH={checkout} bash {checkout}/install.sh && "
+            f"chmod a+x {shlex.quote(binary)} && test -x {shlex.quote(binary)} && "
             f"touch {ready})"
         )
         logger.info("rlm: ensuring rlm is installed (version=%s)", self.config.version)
@@ -293,7 +295,9 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
         await runtime.run(["rm", "-rf", f"{RLM_STATE_DIR}/{trace.id}"], {})
         if self._skills_install_dir is not None:
             await remove_dir(
-                runtime, self._skills_install_dir, "RLM skill installation"
+                runtime.with_user(None),
+                self._skills_install_dir,
+                "RLM skill installation",
             )
 
     def _home(self, trace: Trace) -> str:

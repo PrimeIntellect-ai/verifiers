@@ -344,6 +344,9 @@ class InterceptionServer(Interception):
         self.tunnel: Tunnel | None = (
             make_tunnel(self.config.tunnel) if requires_tunnel else None
         )
+        self.healthy = True
+        if self.tunnel is not None:
+            self.tunnel.on_gone = self._handle_tunnel_gone
         self.host = "127.0.0.1"
         self.port = 0
         self.base_url = ""  # set by `start`
@@ -353,6 +356,15 @@ class InterceptionServer(Interception):
     def load(self) -> int:
         """Rollouts currently registered — what the pools balance on."""
         return len(self.sessions)
+
+    async def _handle_tunnel_gone(self) -> None:
+        """Fail this slot so its dead URL cannot be handed to another rollout."""
+        self.healthy = False
+        logger.error("interception unhealthy: url=%s", self.base_url)
+        for session in list(self.sessions.values()):
+            session.release()
+        if self.runner is not None:
+            await self.runner.cleanup()
 
     def _client(self, config: BaseClientConfig) -> Client:
         """The server-owned client for `config` — one per distinct endpoint config, shared
