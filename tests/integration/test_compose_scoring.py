@@ -171,6 +171,7 @@ def compose_task(
     tests.mkdir()
     (tests / "test.sh").write_text(
         "set -eu\n"
+        "test -d /logs/artifacts\n"
         'test "$(cat /app/answer)" = 42\n'
         'if [ "$EXPECT_SIDECAR" = 1 ]; then test "$(cat /evidence/result)" = 42; fi\n'
         + ("sleep 30\n" if scoring_timeout else "")

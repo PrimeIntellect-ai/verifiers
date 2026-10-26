@@ -42,7 +42,12 @@ from verifiers.v1.state import State
 from verifiers.v1.task import Task, TaskData, TaskResources, TaskTimeout
 from verifiers.v1.taskset import Taskset
 from verifiers.v1.trace import Trace
-from verifiers.v1.utils.artifacts import MAX_ARTIFACT_BYTES, Artifact, collect
+from verifiers.v1.utils.artifacts import (
+    ARTIFACTS_DIR,
+    MAX_ARTIFACT_BYTES,
+    Artifact,
+    collect,
+)
 from verifiers.v1.utils.decorators import reward
 from verifiers.v1.utils.env import resolve_env
 
@@ -408,7 +413,7 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
             )
         command = (
             "rm -f /logs/verifier/reward.json /logs/verifier/reward.txt && "
-            f"mkdir -p /logs/verifier && {stage}"
+            f"mkdir -p /logs/verifier {ARTIFACTS_DIR} && {stage}"
         )
         result = await runtime.run(["sh", "-c", command], {})
         if result.exit_code:
