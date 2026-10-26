@@ -10,7 +10,9 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    NonNegativeFloat,
     NonNegativeInt,
+    PositiveFloat,
     PositiveInt,
     model_validator,
 )
@@ -43,6 +45,7 @@ class _SessionSnapshot(BaseModel):
     session_id: str = Field(pattern=r"^[A-Za-z0-9._:-]{1,128}$")
     metrics: dict[str, int | float]
     last_stop_reason: str | None = None
+    population: dict[str, Any] | None = None
 
 
 _TRUNCATION_STOPS = {
@@ -65,6 +68,32 @@ class CompactionConfig(BaseConfig):
     max_attempts: PositiveInt | None = None
     """Summary-generation attempts within one compaction cycle; `None` =
     nano-rlm's default (5)."""
+
+
+class PopulationConfig(BaseConfig):
+    """Run the rollout as one population episode of peer RLM agents: founders admitted
+    together, any agent can spawn, message and share a board, and the episode ends when
+    every agent is idle. All agents' model calls land in the rollout's one trace. Unset
+    fields defer to nano-rlm's defaults."""
+
+    founders: PositiveInt | None = None
+    """Agents admitted when the episode starts."""
+    max_live_agents: PositiveInt | None = None
+    """Agents holding a kernel at once, idle ones included."""
+    max_total_agents: PositiveInt | None = None
+    """Agents admitted over the episode, founders included."""
+    idle_grace_seconds: NonNegativeFloat | None = None
+    """Idle time before a birth at the live cap may retire an agent's kernel."""
+    allow_agent_lookup_agent_history: bool | None = None
+    """Let agents read each other's conversations without waking them."""
+    max_seconds: PositiveFloat | None = None
+    """Episode wall clock; the episode ends with its current answer when it runs out."""
+    artifacts: list[str] | None = None
+    """Final files the task scores (relative to the working directory); agents replace
+    them only through revision-checked publication."""
+    process_isolation: Literal["none", "per_agent"] | None = None
+    """`per_agent` runs each agent's processes under its own uid in a shared group (the
+    runtime must run rlm as root); `none` shares one uid."""
 
 
 class RLMHarnessConfig(HarnessConfig):
@@ -122,6 +151,9 @@ class RLMHarnessConfig(HarnessConfig):
     `max_depth`); unset falls back to `append_to_system_prompt`."""
     leaf_append_to_system_prompt: str | None = None
     """Append for depth-capped leaf engines; unset falls back to the sub-agent append."""
+    population: PopulationConfig | None = None
+    """Run the rollout as a population episode instead of one root agent's tree; the
+    trace's reply is the population's submitted episode answer."""
 
     @model_validator(mode="after")
     def reject_disabled_tools(self) -> "RLMHarnessConfig":
@@ -129,6 +161,11 @@ class RLMHarnessConfig(HarnessConfig):
             raise ValueError(
                 "the rlm harness does not support `disabled_tools`; select the tool "
                 "set with `builtin_tools` and skills with `builtin_skills` instead."
+            )
+        if self.population is not None and self.max_subagent_calls is not None:
+            raise ValueError(
+                "a population is capped by `population.max_total_agents`, "
+                "not `max_subagent_calls`."
             )
         return self
 
@@ -208,6 +245,10 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
             policy_knobs["summarize_at_tokens"] = compaction.summarize_at_tokens
             policy_knobs["max_compactions"] = compaction.max_compactions
             policy_knobs["max_compaction_attempts"] = compaction.max_attempts
+        if self.config.population is not None:
+            policy_knobs["population"] = self.config.population.model_dump(
+                exclude_none=True
+            )
         appends = [
             text
             for text in (system_prompt, self.config.append_to_system_prompt)
@@ -278,6 +319,8 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
         if snapshot.session_id != trace.id:
             raise ValueError("RLM session snapshot does not match the rollout")
         trace.record_metrics(snapshot.metrics)
+        if snapshot.population is not None:
+            trace.info["rlm_population"] = snapshot.population
         if condition := _TRUNCATION_STOPS.get(snapshot.last_stop_reason or ""):
             trace.stop(condition)
 
