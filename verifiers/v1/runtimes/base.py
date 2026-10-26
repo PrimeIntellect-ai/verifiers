@@ -233,7 +233,16 @@ class RuntimeBackend(ABC):
         Best-effort and idempotent, like `cleanup`. An override must not consume state
         `cleanup` keys off before its first await: if the event loop dies mid-teardown
         (second Ctrl-C), the atexit backstop must still find the resource."""
-        await asyncio.to_thread(self.cleanup)
+        try:
+            # Stop background commands before removing their working directory.
+            for process in self._background:
+                with contextlib.suppress(Exception):
+                    async with asyncio.timeout(5):
+                        await process.kill()
+                        await process.wait()
+            self._background.clear()
+        finally:
+            await asyncio.to_thread(self.cleanup)
 
     def cleanup(self) -> None:
         """Synchronously free the provisioned resource — best-effort and idempotent. The
