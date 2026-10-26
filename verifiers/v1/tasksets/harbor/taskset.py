@@ -91,6 +91,10 @@ VERIFIER_OUTPUT_BYTES = 16_000
 """How much of the verifier's output, and of each log it leaves, a trace keeps."""
 MAX_VERIFIER_OUTPUT_CHARS = 16 * 1024
 """How much of the verifier's stdout and stderr survive a failed scoring attempt."""
+VERIFIER_PROBE_SECONDS = 120
+"""How long a verifier's box has to answer a trivial command after `test.sh` outlived its
+timeout: one that answers graded a submission that ran too long, one that does not is
+an infrastructure failure."""
 # Booleans count as 1/0, as Harbor reads them (CyberGym's verifier writes flags alongside its reward).
 REWARD_JSON_ADAPTER = TypeAdapter(
     dict[str, bool | float],
@@ -145,10 +149,13 @@ class HarborConfig(TasksetConfig):
     tasks: list[str] | None = None
     """Optional subset of task names to load (None = all)."""
     ignore_timeouts: bool = True
-    """Drop each task's declared agent and verifier timeouts so rollouts use only the
+    """Drop each task's declared agent timeout and scoring budget so rollouts use only the
     run-level `--timeout.*` limits (none by default). Task timeouts are authored
     against Harbor's runtime and confound model capability with inference speed; set
-    False to apply them anyway."""
+    False to apply them anyway. `test.sh` itself still runs under the task's declared
+    `[verifier].timeout_sec`, as Harbor runs it (`HarborTask.verifier_timeout`): how
+    long grading takes does not depend on the model's speed, and a submission that
+    hangs its tests would otherwise hold the run for the whole scoring budget."""
     timeout_multiplier: float = Field(1.0, gt=0)
     """Scale each task's agent and verifier timeouts. Only applies with
     `ignore_timeouts=False`."""
@@ -711,7 +718,14 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
     ) -> float | dict[str, float]:
         await self.stage_trajectory(runtime, trace)
         # The reward file is authoritative even when the script exits nonzero.
-        result = await self.launch_verifier(runtime, trace)
+        timeout = self.verifier_timeout()
+        try:
+            async with asyncio.timeout(timeout) as limit:
+                result = await self.launch_verifier(runtime, trace)
+        except TimeoutError:
+            if not limit.expired():
+                raise
+            return await self.verifier_timed_out(runtime, trace, timeout)
         await self.record_verifier_output(runtime, trace, result)
         scores = await self.read_reward_json(runtime)
         if self.data.criteria is not None:
@@ -749,6 +763,42 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
             {name: value for name, value in scores.items() if name != key}
         )
         return {key: scores[key]}
+
+    def verifier_timeout(self) -> float | None:
+        """How long `test.sh` may run: the task's declared `[verifier].timeout_sec`, or
+        its scoring budget when that is longer (a `timeout_multiplier` scales it). None
+        when the task declares neither. Read from the task's `task.toml` rather than
+        kept in the task data, so the task keeps its identity and finished calls."""
+        declared = declared_verifier_timeout(self.data.task_dir)
+        budget = self.data.timeout.scoring
+        if declared is None or budget is None:
+            return declared if budget is None else budget
+        return max(declared, budget)
+
+    async def verifier_timed_out(
+        self, runtime: Runtime, trace: Trace, timeout: float
+    ) -> dict[str, float]:
+        """`test.sh` outlived its timeout: graded 0, as Harbor fails the trial
+        (`VerifierTimeoutError`, never retried). If the box no longer answers, the hang
+        was the box's, not the submission's: a retryable `SandboxError` instead."""
+        try:
+            async with asyncio.timeout(VERIFIER_PROBE_SECONDS):
+                await runtime.run(["true"], {})
+        except (SandboxError, TimeoutError) as exc:
+            raise SandboxError(
+                f"Harbor verifier ran past its {timeout:g}s timeout and its box does "
+                f"not answer: {exc or type(exc).__name__}",
+                kind="io",
+            ) from exc
+        logger.warning(
+            "%s: verifier ran past its %gs timeout; graded 0", self.data.name, timeout
+        )
+        result = ProgramResult(
+            exit_code=124, stdout="", stderr=f"verifier timed out after {timeout:g}s"
+        )
+        await self.record_verifier_output(runtime, trace, result)
+        trace.info["verifier"]["timed_out"] = timeout
+        return {self.config.reward_key: 0.0}
 
     async def grade_criteria(
         self, runtime: Runtime, trace: Trace, scores: dict[str, float] | None
@@ -923,6 +973,21 @@ async def guard_onednn(runtime: Runtime) -> str:
     return "\n".join(
         line for line in result.stdout.splitlines() if "installed in" in line
     )
+
+
+@lru_cache(maxsize=4096)
+def declared_verifier_timeout(task_dir: str | None) -> float | None:
+    """The `[verifier].timeout_sec` a task's `task.toml` declares, if any."""
+    if not task_dir:
+        return None
+    try:
+        with open(Path(task_dir) / "task.toml", "rb") as file:
+            timeout = tomllib.load(file).get("verifier", {}).get("timeout_sec")
+    except (OSError, tomllib.TOMLDecodeError):
+        return None
+    if isinstance(timeout, bool) or not isinstance(timeout, (int, float)):
+        return None
+    return float(timeout) if timeout > 0 else None
 
 
 def log_tails(files: str, size: int = 800) -> str:

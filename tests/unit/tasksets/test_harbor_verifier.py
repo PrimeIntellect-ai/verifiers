@@ -1,11 +1,14 @@
 """Harbor's verifier run: what it records on the trace and how a missing reward fails."""
 
+import asyncio
+
 import pytest
 
 import verifiers.v1 as vf
 from verifiers.v1.configs.scoring import ScoringConfig
 from verifiers.v1.errors import SandboxError, TaskError
 from verifiers.v1.runtimes import ProgramResult
+from verifiers.v1.tasksets.harbor import taskset
 from verifiers.v1.tasksets.harbor.taskset import (
     WITHOUT_SYS_RESOURCE,
     HarborData,
@@ -234,3 +237,54 @@ async def test_the_verifier_runs_as_its_declared_user():
     )
     await task.run_verifier(UserRuntime(b"1"), make_trace(task))
     assert users == ["reliant"]
+
+
+class HangingRuntime(FakeRuntime):
+    """test.sh never returns; `answers` says whether the box still runs other commands."""
+
+    def __init__(self, answers: bool = True):
+        super().__init__(b"1")
+        self.answers = answers
+
+    async def run(self, argv, env):
+        if argv == TEST_SH or (argv == ["true"] and not self.answers):
+            await asyncio.sleep(3600)
+        return await super().run(argv, env)
+
+
+def timed_task(tmp_path, timeout_sec: float) -> HarborTask:
+    (tmp_path / "task.toml").write_text(
+        f'[verifier]\nenvironment_mode = "separate"\ntimeout_sec = {timeout_sec}\n'
+    )
+    return HarborTask(HarborData(idx=0, prompt="p", task_dir=str(tmp_path)))
+
+
+async def test_a_verifier_past_its_declared_timeout_is_graded_zero(tmp_path):
+    # pyappkit-psygnal (2026-10-26): test.sh hung on a live box for 3.5 hours past the
+    # task's 2 h timeout; `ignore_timeouts` had dropped it from the scoring budget.
+    task = timed_task(tmp_path, 0.2)
+    trace = make_trace(task)
+    async with asyncio.timeout(10):
+        assert await task.run_verifier(HangingRuntime(), trace) == {"reward": 0.0}
+    assert trace.info["verifier"]["timed_out"] == 0.2
+    assert trace.info["verifier"]["exit_code"] == 124
+    assert trace.info["verifier"]["files"] == LOGS
+
+
+async def test_a_verifier_whose_box_stops_answering_is_a_sandbox_error(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(taskset, "VERIFIER_PROBE_SECONDS", 0.2)
+    task = timed_task(tmp_path, 0.2)
+    with pytest.raises(SandboxError) as raised:
+        async with asyncio.timeout(10):
+            await task.run_verifier(HangingRuntime(answers=False), make_trace(task))
+    assert raised.value.kind == "io"
+
+
+async def test_the_scoring_budget_extends_a_shorter_declared_timeout(tmp_path):
+    task = timed_task(tmp_path, 7200)
+    assert task.verifier_timeout() == 7200
+    longer = task.data.model_copy(update={"timeout": vf.TaskTimeout(scoring=9000.0)})
+    assert HarborTask(longer).verifier_timeout() == 9000
+    assert make_task().verifier_timeout() is None
