@@ -130,3 +130,68 @@ def test_a_failed_tarball_fetch_fails_the_install(monkeypatch, tmp_path):
 
     assert done.returncode != 0
     assert not list((tmp_path / "rlm").parent.glob("rlm-*/.ready"))
+
+
+def test_an_image_with_only_python_fetches_through_the_urllib_curl(
+    monkeypatch, tmp_path
+):
+    """No git, no curl, apt locked down (python-slim task images): python3's urllib
+    stands in for curl during the install, and is gone afterwards."""
+    source = tmp_path / "nano-rlm-abc123"
+    source.mkdir()
+    (source / "install.sh").write_text(
+        # install.sh downloads through whatever `curl` is on its PATH
+        'curl -LsSf "$CURL_PROBE" -o "$UV_INSTALL_DIR.probe" && mkdir -p "$UV_INSTALL_DIR" '
+        '&& printf "#!/bin/sh\\n" > "$UV_INSTALL_DIR/rlm" && chmod +x "$UV_INSTALL_DIR/rlm"\n'
+    )
+    tarball = tmp_path / "rlm.tar.gz"
+    with tarfile.open(tarball, "w:gz") as tar:
+        tar.add(source, arcname=source.name)
+    (tmp_path / "probe").write_text("probed")
+    fetched = tmp_path / "fetched"
+    real_python = shutil.which("python3")
+    # The stand-in runs `python3 curl.py ARGS`: the codeload URL comes from the
+    # tarball, anything else through the real urllib script.
+    env = _box(
+        tmp_path,
+        {
+            "python3": (
+                f'case "$*" in *codeload*) echo "$@" > {fetched}; cat {tarball};; '
+                f'*) exec {real_python} "$@";; esac'
+            ),
+            "apt-get": "exit 100",
+        },
+    )
+    env["CURL_PROBE"] = (tmp_path / "probe").as_uri()
+    script = asyncio.run(_install_script(monkeypatch, tmp_path))
+
+    done = subprocess.run(
+        ["sh", "-c", script], env=env, capture_output=True, text=True, check=False
+    )
+
+    assert done.returncode == 0, done.stderr
+    assert fetched.read_text().split()[-1].endswith("nano-rlm/tar.gz/abc123")
+    [directory] = (tmp_path / "rlm").parent.glob("rlm-*")
+    assert (directory / ".ready").exists() and (directory / "bin/rlm").exists()
+    assert (directory / "bin.probe").read_text() == "probed"
+    assert not (directory / "curl-shim").exists()
+
+
+def test_the_urllib_curl_writes_to_a_file_or_stdout(tmp_path):
+    from verifiers.v1.harnesses.rlm.harness import URLLIB_CURL
+
+    page = tmp_path / "page"
+    page.write_text("body")
+    run = [shutil.which("python3"), "-c", URLLIB_CURL, "-sSfL", "--retry", "3"]
+
+    out = tmp_path / "out"
+    subprocess.run([*run, page.as_uri(), "-o", str(out)], check=True)
+    printed = subprocess.run(
+        [*run, page.as_uri()], check=True, capture_output=True, text=True
+    )
+    missing = subprocess.run(
+        [*run, (tmp_path / "nope").as_uri()], capture_output=True, check=False
+    )
+
+    assert out.read_text() == "body" and printed.stdout == "body"
+    assert missing.returncode != 0

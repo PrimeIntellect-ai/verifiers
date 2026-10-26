@@ -34,6 +34,33 @@ RLM_CACHE_DIR = "/tmp/vf-rlm"
 RLM_STATE_DIR = "/tmp/vf-rlm-state"
 RLM_RUNTIME_METADATA_KEY = "ai.prime.rlm/runtime-v1"
 RLM_SESSION_METADATA_KEY = "ai.prime.rlm/session-v1"
+URLLIB_CURL = """\
+import sys, urllib.request
+
+# Python-urllib's own User-Agent is refused (403) by some download hosts.
+args, out, url, headers = sys.argv[1:], None, None, {"User-Agent": "curl/8.5.0"}
+while args:
+    arg = args.pop(0)
+    if arg in ("-o", "--output"):
+        out = args.pop(0)
+    elif arg in ("--retry", "--proto", "--max-time", "--connect-timeout", "-m"):
+        args.pop(0)
+    elif arg in ("-H", "--header"):
+        name, value = args.pop(0).split(":", 1)
+        headers[name.strip()] = value.strip()
+    elif not arg.startswith("-"):
+        url = arg
+with urllib.request.urlopen(urllib.request.Request(url, headers=headers)) as response:
+    data = response.read()
+if out:
+    with open(out, "wb") as f:
+        f.write(data)
+else:
+    sys.stdout.buffer.write(data)
+"""
+"""`curl [flags] URL [-o FILE] [-H HEADER]` over Python's urllib (redirects followed,
+HTTP errors fail): the downloads install.sh and uv's installer make, for an image with
+python3 but neither curl nor a working apt."""
 
 
 class _SessionSnapshot(BaseModel):
@@ -166,27 +193,35 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
         )
         # Without git, fetch the source tarball with curl (which install.sh needs
         # anyway): images that lock apt down (emptied sources, pinned snapshots)
-        # cannot install git. apt is the last resort for images with neither.
-        fetch = (
-            f"if command -v git >/dev/null 2>&1; then {clone}; "
-            "elif command -v curl >/dev/null 2>&1; then "
+        # cannot install git. Without curl too, python3's urllib stands in for it
+        # during the install only. apt is the last resort for images with none.
+        shim = f"{directory}/curl-shim"
+        tarball = (
             f"mkdir -p {checkout} && curl -fsSL --retry 3 "
             f"https://codeload.{RLM_REPO.removesuffix('.git')}/tar.gz/{version} "
             f"| tar -xz --strip-components=1 -C {checkout} && "
-            f"[ -f {checkout}/install.sh ]; "
+            f"[ -f {checkout}/install.sh ]"
+        )
+        fetch = (
+            f"if command -v git >/dev/null 2>&1; then {clone}; "
+            f"elif command -v curl >/dev/null 2>&1; then {tarball}; "
+            "elif py=$(command -v python3); then "
+            f"mkdir -p {shim} && printf '%s' {shlex.quote(URLLIB_CURL)} > {shim}/curl.py && "
+            f'printf \'#!/bin/sh\\nexec "%s" %s "$@"\\n\' "$py" {shim}/curl.py > {shim}/curl && '
+            f"chmod +x {shim}/curl && export PATH={shim}:$PATH && {tarball}; "
             "else apt-get update -qq && apt-get install -y -qq git && "
             f"{clone}; fi"
         )
         install = (
             f"rm -f {ready} && "
-            f"(rm -rf {checkout} && {fetch} && "
+            f"(rm -rf {checkout} {shim} && {fetch} && "
             # The editable install needs the files, not the history; agents searching
             # their workspace for a repository must not find the harness's own.
             f"rm -rf {checkout}/.git && "
             f"{home_env}UV_INSTALL_DIR={directory}/bin UV_TOOL_BIN_DIR={directory}/bin "
             f"UV_TOOL_DIR={directory}/tools "
             f"RLM_CHECKOUT_PATH={checkout} bash {checkout}/install.sh && "
-            f"touch {ready})"
+            f"rm -rf {shim} && touch {ready})"
         )
         logger.info("rlm: ensuring rlm is installed (version=%s)", self.config.version)
         env = self.config.resolved_env.copy()
