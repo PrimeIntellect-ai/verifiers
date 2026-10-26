@@ -223,9 +223,13 @@ class EnvServer:
                 if running is not None:
                     running.cancel()
                     logger.info("cancelled run %s on client request", target)
-                if (late := self._delivered.pop(target, None)) is not None:
-                    # The client dropped the reply, so nothing will ever take the arrays.
-                    _, hook, episode = late
+                # The client dropped the reply, or will: nothing will take the arrays.
+                self._expire_delivered()
+                kept = self._kept.pop(target.encode(), None)
+                if kept is None and (late := self._delivered.pop(target, None)):
+                    kept = late[1:]
+                if kept is not None:
+                    hook, episode = kept
                     hook.discard(episode)
                 response = CancelResponse(cancelled=running is not None)
             else:
@@ -273,12 +277,17 @@ class EnvServer:
     def _remember_delivered(
         self, request_id: str, hook: EpisodeHook, episode: Episode
     ) -> None:
+        self._delivered[request_id] = (time.monotonic(), hook, episode)
+        asyncio.get_running_loop().call_later(
+            LATE_CANCEL_SECONDS, self._expire_delivered
+        )
+
+    def _expire_delivered(self) -> None:
         now = time.monotonic()
-        self._delivered[request_id] = (now, hook, episode)
-        for old, (delivered_at, _, _) in list(self._delivered.items()):
-            if now - delivered_at <= LATE_CANCEL_SECONDS:
+        for request_id, (delivered_at, _, _) in list(self._delivered.items()):
+            if now - delivered_at < LATE_CANCEL_SECONDS:
                 break
-            del self._delivered[old]
+            del self._delivered[request_id]
 
     async def run(self) -> None:
         logger.info(
