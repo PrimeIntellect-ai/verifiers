@@ -296,8 +296,9 @@ class EnvClient:
                 WireEpisode.model_validate,
                 assembly.finish(response.head, response.traces),
             )
-        except asyncio.CancelledError:
-            # The reply already arrived, so the server counts the episode delivered.
+        except BaseException:
+            # The reply already arrived, so the server counts the episode delivered;
+            # tell it this caller never got the episode.
             self._cancel_run(request_id)
             raise
 

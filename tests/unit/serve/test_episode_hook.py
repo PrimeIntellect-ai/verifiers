@@ -121,9 +121,10 @@ def test_a_stale_delivery_expires_without_discard(monkeypatch):
     assert asyncio.run(run()) == []
 
 
-def test_a_run_cancelled_while_decoding_its_reply_cancels_on_the_server():
-    """The reply arrived, so the server counts the episode delivered; a cancel during
-    the client's final decode must still reach the server."""
+@pytest.mark.parametrize("error", [asyncio.CancelledError, ValueError])
+def test_a_run_lost_after_its_reply_cancels_on_the_server(error):
+    """The reply arrived, so the server counts the episode delivered; a run cancelled or
+    failing while the client assembles and decodes it must still cancel on the server."""
 
     async def run() -> bool:
         client = EnvClient("tcp://127.0.0.1:1")
@@ -135,13 +136,13 @@ def test_a_run_cancelled_while_decoding_its_reply_cancels_on_the_server():
             return RunResponse(head={}, traces=[])
 
         async def decode(*args):
-            raise asyncio.CancelledError
+            raise error
 
         client._request = request
         client._decode = decode
         client._cancel_run = cancelled.append
         try:
-            with pytest.raises(asyncio.CancelledError):
+            with pytest.raises(error):
                 await client.run(
                     client=vf.TrainClientConfig(),
                     model="m",
