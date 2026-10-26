@@ -9,6 +9,7 @@ from collections.abc import Callable, Iterable, Iterator, Mapping
 from typing import TYPE_CHECKING, Any, Generic
 
 import numpy as np
+import orjson
 from pydantic import BaseModel, Field, PrivateAttr, computed_field, field_serializer
 from typing_extensions import TypeVar
 
@@ -819,11 +820,17 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     ) -> dict[str, Any]:
         """JSON record without raw tensors, which remain available on the msgpack wire.
         Per-token node streams are numpy arrays (`graph.RECORD_STREAMS`): encode it with
-        orjson and `OPT_SERIALIZE_NUMPY`. Per-token float streams are rounded to
-        `float_decimals` (`None` keeps every digit)."""
+        `to_json`, or with orjson and `OPT_SERIALIZE_NUMPY`. Per-token float streams are
+        rounded to `float_decimals` (`None` keeps every digit)."""
         record = self.model_dump(mode="json", exclude=RECORD_DUMP_EXCLUDE)
         add_record_streams(record, self, float_decimals, exclude_none=False)
         return record
+
+    def to_json(self, float_decimals: int | None = RECORD_FLOAT_DECIMALS) -> bytes:
+        """`to_record` as compact UTF-8 JSON. NaN and infinity become `null`."""
+        return orjson.dumps(
+            self.to_record(float_decimals), option=orjson.OPT_SERIALIZE_NUMPY
+        )
 
 
 WireTrace = Trace[WireTaskData, State, WireAgentConfig]

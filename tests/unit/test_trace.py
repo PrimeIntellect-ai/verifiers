@@ -128,6 +128,12 @@ def test_record_streams_are_arrays_with_json_dump_content(float_decimals):
         assert orjson.loads(
             orjson.dumps(record, option=orjson.OPT_SERIALIZE_NUMPY)
         ) == orjson.loads(json.dumps(json_dump))
+    assert orjson.loads(tr.to_json(float_decimals)) == orjson.loads(
+        json.dumps(cases[0][1])
+    )
+    assert orjson.loads(episode.to_json(float_decimals)) == orjson.loads(
+        json.dumps(cases[1][1])
+    )
 
 
 def test_round_stream_matches_round():

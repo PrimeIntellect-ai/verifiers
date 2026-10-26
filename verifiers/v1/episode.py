@@ -3,6 +3,7 @@
 import uuid
 from typing import Annotated, Any, Generic, Literal, Self
 
+import orjson
 from pydantic import BaseModel, Field, computed_field, model_validator
 
 from verifiers.v1.configs.agent import WireAgentConfig
@@ -165,8 +166,8 @@ class Episode(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     ) -> dict[str, Any]:
         """JSON record without raw trace tensors, which remain on the msgpack wire.
         Per-token node streams are numpy arrays (`graph.RECORD_STREAMS`): encode it with
-        orjson and `OPT_SERIALIZE_NUMPY`. Per-token float streams are rounded to
-        `float_decimals` (`None` keeps every digit)."""
+        `to_json`, or with orjson and `OPT_SERIALIZE_NUMPY`. Per-token float streams are
+        rounded to `float_decimals` (`None` keeps every digit)."""
         record = self.model_dump(
             mode="json",
             exclude={"traces": {"__all__": RECORD_DUMP_EXCLUDE}},
@@ -175,6 +176,12 @@ class Episode(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         for trace_record, trace in zip(record["traces"], self.traces, strict=True):
             add_record_streams(trace_record, trace, float_decimals, exclude_none=True)
         return record
+
+    def to_json(self, float_decimals: int | None = RECORD_FLOAT_DECIMALS) -> bytes:
+        """`to_record` as compact UTF-8 JSON. NaN and infinity become `null`."""
+        return orjson.dumps(
+            self.to_record(float_decimals), option=orjson.OPT_SERIALIZE_NUMPY
+        )
 
 
 WireEpisode = Episode[WireTaskData, State, WireAgentConfig]
