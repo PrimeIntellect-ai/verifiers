@@ -332,7 +332,9 @@ def compose_project(topology: TopologyConfig, result: Plan) -> dict[str, Any]:
     names = [name for name in machine.nodes if name != WORKSPACE]
     if invalid := [n for n in names if not re.fullmatch(r"[a-z0-9][a-z0-9_.-]*", n)]:
         raise PlacementError(f"nodes {invalid} need names Compose accepts as services")
-    if mounted := [n for n in names if getattr(result.runtimes[n], "mounts", None)]:
+    # Only mounts a node sets: the workspace's own, which a node inherits, are refused
+    # with the workspace's Compose services.
+    if mounted := [n for n in names if topology.node(n).runtime.get("mounts")]:
         raise PlacementError(
             f"nodes {mounted} mount storage, which a Compose service on the "
             "workspace's machine does not take; `isolated = true` gives a node a "

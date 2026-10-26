@@ -376,6 +376,9 @@ def test_declared_nodes_on_the_workspace_s_machine_become_a_compose_project():
     mounted = TopologyConfig(nodes={"db": NodeConfig(runtime=volume)})
     with pytest.raises(PlacementError, match="mount storage"):
         compose_project(mounted, plan(mounted, OFFLINE))
+    # A plain node inherits the workspace's mounts, but they are not its own.
+    plain = TopologyConfig(nodes={"db": NodeConfig()})
+    compose_project(plain, plan(plain, OFFLINE.model_copy(update=volume)))
 
 
 def test_egress_networks_and_connection_networks_never_share_a_name():
