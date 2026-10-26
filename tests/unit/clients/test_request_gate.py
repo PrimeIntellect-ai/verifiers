@@ -1,6 +1,7 @@
 """The request gate against a fake provider that enforces a concurrency limit with 429s."""
 
 import asyncio
+import contextlib
 import gc
 import json
 import os
@@ -10,6 +11,7 @@ import sys
 import textwrap
 import threading
 import time
+from collections.abc import Iterator
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Self
@@ -130,8 +132,8 @@ async def post(http: httpx.AsyncClient, url: str) -> httpx.Response:
 
 
 def state(tmp_path: Path) -> dict:
-    (path,) = (tmp_path / "gates").glob("*.state.json")
-    return json.loads(path.read_text())
+    (status,) = gate_module.gate_states(tmp_path / "gates")
+    return status
 
 
 async def test_a_static_cap_at_the_provider_limit_draws_no_429(tmp_path):
@@ -306,7 +308,11 @@ def test_a_killed_process_returns_its_permits(tmp_path):
     finally:
         os.kill(holder.pid, signal.SIGKILL)
         holder.wait()
-    assert gate.try_admit(config) == 0
+    for _ in range(100):  # the daemon sees the connection close
+        if (slot := gate.try_admit(config)) is not None:
+            break
+        time.sleep(0.02)
+    assert slot == 0
 
 
 def test_gates_are_keyed_by_endpoint_credential_and_model():
@@ -469,22 +475,23 @@ def test_a_stream_collected_unclosed_inside_the_gate_does_not_deadlock(
     tmp_path, monkeypatch
 ):
     """An unclosed streamed response is freed by the cyclic garbage collector, which can
-    run inside the gate's own mutex section; its finalizer's release must not wait on
-    that mutex. The requests run in a thread so a deadlock fails the test, not the run."""
+    run inside the gate's own code, as it sends an admission; its finalizer's release
+    must not wait on anything that code holds. The requests run in a thread so a
+    deadlock fails the test, not the run."""
 
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, stream=httpx.ByteStream(b"{}"))
 
     collect = False
-    real_loads = json.loads
+    real_dumps = json.dumps
 
-    def loads(raw):  # the collector firing at an allocation inside `try_admit`
+    def dumps(message, **kwargs):  # the collector firing at an allocation in a send
         if collect:
             gc.collect()
-        return real_loads(raw)
+        return real_dumps(message, **kwargs)
 
     monkeypatch.setattr(
-        gate_module, "json", SimpleNamespace(loads=loads, dumps=json.dumps)
+        gate_module, "json", SimpleNamespace(loads=json.loads, dumps=dumps)
     )
     config = gate_config(tmp_path, max_concurrent=1)
 
@@ -508,7 +515,7 @@ def test_a_stream_collected_unclosed_inside_the_gate_does_not_deadlock(
         thread.join(10)
     finally:
         gc.enable()
-    assert not thread.is_alive(), "the gate deadlocked on its own mutex"
+    assert not thread.is_alive(), "the gate deadlocked on its own send"
     assert statuses == [200], "the collected stream's permit was returned"
 
 
@@ -516,7 +523,7 @@ def test_a_learned_limit_lasts_only_while_a_process_uses_the_gate(tmp_path):
     config = RequestGateConfig(max_concurrent=32, decrease_cooldown=0)
 
     def limit() -> float:
-        return json.loads(first.state_path.read_text())["limit"]
+        return first.state()["limit"]
 
     first = ModelGate(tmp_path, "k", "m")
     for _ in range(15):
@@ -580,7 +587,7 @@ def test_a_forked_child_drops_the_parents_permits_but_keeps_the_learned_limit(tm
         ok = False
         try:
             child = gate_module.model_gate(tmp_path, "fork", "m")
-            lowered = json.loads(child.state_path.read_text())["lowered"]
+            lowered = child.state()["lowered"]
             ok = (
                 child is not parent
                 and not child._held
@@ -631,7 +638,7 @@ def test_a_lowered_cap_sheds_nothing_and_admits_once_below_it(tmp_path):
     assert second.try_admit(config) is None
     second.release(high[1], config, "ok")
     assert second.try_admit(config) == 1
-    assert json.loads(first.state_path.read_text())["slots"] == 2, "back to the cap"
+    assert first.state()["slots"] == 2, "back to the cap"
 
 
 def test_a_smaller_config_admitting_first_never_shrinks_the_shared_cap(tmp_path):
@@ -662,7 +669,7 @@ def test_the_adaptive_limit_follows_the_cap(tmp_path):
     gate = ModelGate(tmp_path, "k", "m")
 
     def limit() -> float:
-        return json.loads(gate.state_path.read_text())["limit"]
+        return gate.state()["limit"]
 
     slot = gate.try_admit(config)
     assert slot is not None
@@ -743,20 +750,25 @@ async def test_a_resize_reaches_running_processes(tmp_path):
     assert provider.served == 60 and provider.peak == 4 and provider.rejected == 0
 
 
-async def test_a_request_waiting_on_a_busy_gate_lock_never_stalls_its_event_loop(
+@contextlib.contextmanager
+def stopped_daemon(directory: Path) -> Iterator[None]:
+    """The directory's daemon stopped (SIGSTOP) until the context exits: every answer
+    waits, as under a daemon too busy to keep up."""
+    pid = int((directory / "daemon.pid").read_text())
+    os.kill(pid, signal.SIGSTOP)
+    try:
+        yield
+    finally:
+        os.kill(pid, signal.SIGCONT)
+
+
+async def test_a_request_waiting_on_a_busy_daemon_never_stalls_its_event_loop(
     tmp_path,
 ):
-    # Every process on the host flocks the gate's state for each admission. Taken on the
-    # event loop, a contended lock stalled every coroutine of a worker (its box polls among
-    # them) for as long as another process held it: box setups blew their timeouts.
-    import fcntl
-
+    # Taken on the event loop, a contended gate stalled every coroutine of a worker (its
+    # box polls among them) for as long as it was busy: box setups blew their timeouts.
     gate = ModelGate(tmp_path, "k", "m")
     config = RequestGateConfig(max_concurrent=1, adaptive=False)
-    other = os.open(
-        gate.state_path, os.O_RDWR | os.O_CREAT, 0o600
-    )  # another process's lock
-    fcntl.flock(other, fcntl.LOCK_EX)
     ticks = 0
 
     async def ticking():
@@ -766,14 +778,13 @@ async def test_a_request_waiting_on_a_busy_gate_lock_never_stalls_its_event_loop
             await asyncio.sleep(0.01)
 
     ticker = asyncio.create_task(ticking())
-    admission = asyncio.create_task(gate.acquire(config))
-    await asyncio.sleep(0.5)
-    assert not admission.done() and ticks >= 20  # the loop ran while the lock was held
-    fcntl.flock(other, fcntl.LOCK_UN)
-    os.close(other)
+    with stopped_daemon(tmp_path):
+        admission = asyncio.create_task(gate.acquire(config))
+        await asyncio.sleep(0.5)
+        assert not admission.done() and ticks >= 20  # the loop ran while it was stopped
     slot = await asyncio.wait_for(admission, 5)
     ticker.cancel()
-    gate.release(slot, config, "ok")  # applied on the gate's thread
+    gate.release(slot, config, "ok")  # never waits on the daemon
     for _ in range(100):
         if gate.try_admit(config) is not None:
             break
@@ -782,24 +793,152 @@ async def test_a_request_waiting_on_a_busy_gate_lock_never_stalls_its_event_loop
         pytest.fail("the released slot never came back")
 
 
-async def test_a_cancelled_admission_returns_the_slot_its_gate_thread_took(tmp_path):
-    import fcntl
-
+async def test_a_cancelled_admission_returns_the_slot_the_daemon_gave_it(tmp_path):
     gate = ModelGate(tmp_path, "k", "m")
     config = RequestGateConfig(max_concurrent=1, adaptive=False)
-    other = os.open(gate.state_path, os.O_RDWR | os.O_CREAT, 0o600)
-    fcntl.flock(other, fcntl.LOCK_EX)
-    admission = asyncio.create_task(gate.acquire(config))
-    await asyncio.sleep(0.2)
-    admission.cancel()
-    fcntl.flock(other, fcntl.LOCK_UN)
-    os.close(other)
-    with pytest.raises(asyncio.CancelledError):
-        await admission
-    for _ in range(
-        100
-    ):  # the gate thread finishes the admission, then gives the slot back
-        if not gate._held:
+    with stopped_daemon(tmp_path):
+        admission = asyncio.create_task(gate.acquire(config))
+        await asyncio.sleep(0.2)
+        admission.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await admission
+    # the daemon admits the request before it reads the cancel: the slot comes back
+    for _ in range(100):
+        if gate.state()["in_flight"] == 0 and not gate._held:
             break
         await asyncio.sleep(0.05)
-    assert gate._held == set()
+    assert gate._held == set() and gate.state()["in_flight"] == 0
+    assert gate.try_admit(config) == 0
+
+
+async def until(predicate, seconds: float = 20.0) -> None:
+    """Wait for `predicate()` (run off the loop: it may ask the daemon)."""
+    deadline = time.monotonic() + seconds
+    while not await asyncio.to_thread(predicate):
+        if time.monotonic() > deadline:
+            pytest.fail("timed out waiting for the gate")
+        await asyncio.sleep(0.02)
+
+
+QUEUER = textwrap.dedent(
+    """
+    import asyncio, sys
+    from pathlib import Path
+    from verifiers.v1.clients.gate import ModelGate
+    from verifiers.v1.configs.client import RequestGateConfig
+
+    async def main(directory, count):
+        gate = ModelGate(Path(directory), "k", "m")
+        config = RequestGateConfig(max_concurrent=1, adaptive=False)
+
+        async def one():
+            slot = await gate.acquire(config)
+            print("admitted", flush=True)
+            await asyncio.to_thread(sys.stdin.readline)
+            gate.release(slot, config, "ok")
+
+        await asyncio.gather(*(one() for _ in range(count)))
+        gate.state()  # every release reached the daemon
+
+    asyncio.run(main(sys.argv[1], int(sys.argv[2])))
+    """
+)
+
+
+async def queuer(directory: Path, count: int = 1) -> asyncio.subprocess.Process:
+    return await asyncio.create_subprocess_exec(
+        sys.executable,
+        "-c",
+        QUEUER,
+        str(directory),
+        str(count),
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+    )
+
+
+async def test_the_oldest_waiting_request_of_the_host_is_admitted_first(tmp_path):
+    gate = ModelGate(tmp_path, "k", "m")
+    config = RequestGateConfig(max_concurrent=1, adaptive=False)
+    held = gate.try_admit(config)
+    assert held == 0
+    child = await queuer(tmp_path)  # queues first, from another process
+    try:
+        await until(lambda: gate.state()["waiting"] == 1)
+        mine = asyncio.create_task(gate.acquire(config))
+        await until(lambda: gate.state()["waiting"] == 2)
+        gate.release(held, config, "ok")
+        assert child.stdout is not None
+        line = await asyncio.wait_for(child.stdout.readline(), 20)
+        assert line == b"admitted\n", "the older request, of the other process"
+        await asyncio.sleep(0.2)
+        assert not mine.done()
+        assert child.stdin is not None
+        child.stdin.write(b"go\n")
+        assert await asyncio.wait_for(mine, 20) == 0
+        assert await asyncio.wait_for(child.wait(), 20) == 0
+    finally:
+        if child.returncode is None:
+            child.kill()
+            await child.wait()
+
+
+async def test_a_killed_process_leaves_the_queue(tmp_path):
+    gate = ModelGate(tmp_path, "k", "m")
+    config = RequestGateConfig(max_concurrent=1, adaptive=False)
+    held = gate.try_admit(config)
+    assert held == 0
+    child = await queuer(tmp_path, count=3)
+    await until(lambda: gate.state()["waiting"] == 3)
+    child.kill()
+    await child.wait()
+    await until(lambda: gate.state()["waiting"] == 0)
+    gate.release(held, config, "ok")
+    assert await asyncio.wait_for(gate.acquire(config), 5) == 0, "no one ahead"
+
+
+async def test_a_daemon_that_dies_comes_back_with_what_was_held_and_queued(tmp_path):
+    gate = ModelGate(tmp_path, "k", "m")
+    config = RequestGateConfig(max_concurrent=2, adaptive=False)
+    first, second = gate.try_admit(config), gate.try_admit(config)
+    assert (first, second) == (0, 1) and second is not None
+    waiting = asyncio.create_task(gate.acquire(config))
+    await until(lambda: gate.state()["waiting"] == 1)
+    old = int((tmp_path / "daemon.pid").read_text())
+    os.kill(old, signal.SIGKILL)
+
+    def restarted() -> bool:
+        try:
+            pid = int((tmp_path / "daemon.pid").read_text())
+            state = gate.state()
+        except (OSError, ValueError, ConnectionError, TimeoutError):
+            return False
+        return pid != old and state.get("in_flight") == 2 and state["waiting"] == 1
+
+    await until(restarted)
+    assert not waiting.done(), "the re-registered permits still fill the cap"
+    gate.release(second, config, "ok")
+    assert await asyncio.wait_for(waiting, 10) == 1
+    assert gate.try_admit(config) is None
+    assert gate.state()["in_flight"] == 2
+
+
+async def test_thousands_of_waiters_drain_under_the_cap(tmp_path):
+    gate = ModelGate(tmp_path, "k", "m")
+    config = RequestGateConfig(max_concurrent=20, adaptive=False)
+    held = peak = 0
+
+    async def one() -> None:
+        nonlocal held, peak
+        slot = await gate.acquire(config)
+        held += 1
+        peak = max(peak, held)
+        await asyncio.sleep(0.001)
+        held -= 1
+        gate.release(slot, config, "ok")
+
+    started = time.monotonic()
+    await asyncio.wait_for(asyncio.gather(*(one() for _ in range(4000))), 60)
+    assert peak == 20
+    assert gate.state()["admitted"] == 4000
+    assert time.monotonic() - started < 30
