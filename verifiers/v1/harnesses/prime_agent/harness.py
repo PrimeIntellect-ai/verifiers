@@ -84,6 +84,9 @@ class PrimeAgentHarnessConfig(HarnessConfig):
     """Enable Prime Agent's autonomous continuation loop."""
     # Over Responses it replays an earlier turn without its reasoning.
     dialect: Literal["chat_completions", "anthropic_messages"] = "chat_completions"
+    supports_developer_role: bool | None = None
+    """Override Prime Agent's chat-completions role detection, which sends the system
+    prompt as a `developer` message to a reasoning model behind the interception endpoint."""
 
 
 class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
@@ -231,6 +234,14 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
                 }
             }
         }
+        if (
+            self.config.dialect == "chat_completions"
+            and self.config.supports_developer_role is not None
+        ):
+            # Provider-level: Prime Agent ignores a model entry's `compat`.
+            models["providers"][PROVIDER]["compat"] = {
+                "supportsDeveloperRole": self.config.supports_developer_role
+            }
         models_path = f"{agent_dir}/models.json"
         await runtime.write(models_path, json.dumps(models).encode())
         secured = await runtime.run(["chmod", "600", models_path], {})

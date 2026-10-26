@@ -49,3 +49,16 @@ def test_apply_overrides_keeps_other_reasoning_fields():
     body = {"reasoning": {"effort": "high", "summary": "detailed"}}
     sent = ResponsesDialect().apply_overrides(body, "m", SAMPLING)
     assert sent["reasoning"] == {"effort": "low", "summary": "detailed"}
+
+
+def test_chat_developer_message_is_the_system_prompt():
+    request = ChatDialect().parse_request(
+        {
+            "messages": [
+                {"role": "developer", "content": "Answer in French."},
+                {"role": "user", "content": "Hi"},
+            ]
+        }
+    )
+    assert [message.role for message in request.messages] == ["system", "user"]
+    assert request.messages[0].content == "Answer in French."
