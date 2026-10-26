@@ -628,3 +628,18 @@ async def test_a_long_generation_is_not_abandoned_by_the_read_timeout():
     assert trace.ok, trace.errors
     assert len(provider.requests) == 3
     assert all(call.error is None for call in trace.calls)
+
+
+def test_a_replicas_opaque_rejection_is_transient():
+    """Prime inference's opaque 400 is one replica refusing a request another serves
+    (replicas of a deployment can differ in context length), so it is retried; any
+    other 400 stays final."""
+    from verifiers.v1.errors import ProviderError, transient
+
+    opaque = (
+        'upstream 400: {"error":{"message":"Provider returned error",'
+        '"type":"invalid_request_error","param":null,"code":"invalid_request"}}'
+    )
+    assert transient(ProviderError(opaque, status_code=400))
+    other = 'upstream 400: {"error":{"message":"messages: field required","code":"invalid_request"}}'
+    assert not transient(ProviderError(other, status_code=400))

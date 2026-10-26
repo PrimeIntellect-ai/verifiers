@@ -53,14 +53,27 @@ class ProviderError(RolloutError):
         self.retry_after = retry_after
 
 
+OPAQUE_REPLICA_REJECTION = (
+    '"message":"Provider returned error"',
+    '"code":"invalid_request"',
+)
+"""Prime inference's body for a 400 that one serving replica raised, with its cause
+dropped. Replicas of one deployment can differ (2026-10-26: most Nemotron 3.5 Super
+replicas serve 262,144 tokens of prompt plus max_tokens, some more), so the same request
+is refused by one replica and served by the next: 3 of 8 identical sends got through."""
+
+
 def transient(error: BaseException) -> bool:
     """Whether `error` is a provider failure that sending the same call again can get past:
     a 5xx (which includes a dropped connection, a timeout, and a truncated or malformed
-    response), a 408 or a 429. Every other 4xx (an invalid request, a context overflow,
-    auth) fails the same way again."""
+    response), a 408, a 429, or a replica's opaque rejection (`OPAQUE_REPLICA_REJECTION`).
+    Every other 4xx (an invalid request, a context overflow, auth) fails the same way
+    again."""
     if not isinstance(error, ProviderError):
         return False
     status = error.status_code
+    if status == 400 and all(part in str(error) for part in OPAQUE_REPLICA_REJECTION):
+        return True
     return status >= 500 or status in (408, 429)
 
 
