@@ -643,3 +643,37 @@ def test_a_replicas_opaque_rejection_is_transient():
     assert transient(ProviderError(opaque, status_code=400))
     other = 'upstream 400: {"error":{"message":"messages: field required","code":"invalid_request"}}'
     assert not transient(ProviderError(other, status_code=400))
+
+
+def test_an_output_over_the_window_is_refitted():
+    """A prompt that fits the window only without the output asked for is resent asking
+    for what fits; anything else (another 400, a prompt over the window) is left alone."""
+    from verifiers.v1.errors import ProviderError
+
+    body = {"model": "m", "messages": [], "max_completion_tokens": 131072}
+    prime = (
+        'upstream 400: {"error":{"message":"This model configuration accepts at most 1048576 '
+        "combined input and output tokens. However, your request has 919998 input tokens and "
+        'asks for 131072 output tokens (1051070 tokens total)."}}'
+    )
+    fitted = server._fit_output_to_window(ProviderError(prime, status_code=400), body)
+    assert fitted["max_completion_tokens"] == 1048576 - 919998 - 256
+    assert body["max_completion_tokens"] == 131072
+    openrouter = (
+        "upstream 400: This endpoint's maximum context length is 1048576 tokens. However, you "
+        "requested about 1060000 tokens (930000 of text input, 130000 in the output)."
+    )
+    fitted = server._fit_output_to_window(
+        ProviderError(openrouter, status_code=400), {"max_tokens": 130000}
+    )
+    assert fitted == {"max_tokens": 1048576 - 930000 - 256}
+    full = prime.replace("919998 input", "1046000 input")
+    assert (
+        server._fit_output_to_window(ProviderError(full, status_code=400), body) is None
+    )
+    assert (
+        server._fit_output_to_window(
+            ProviderError("upstream 400: bad", status_code=400), body
+        )
+        is None
+    )

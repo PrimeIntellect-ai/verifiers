@@ -26,6 +26,7 @@ import json
 import logging
 import math
 import os
+import re
 import secrets
 import time
 import traceback
@@ -122,6 +123,48 @@ def _retry_wait(
     return provider_retry_wait(
         error, failures, failing_for, retry, base=RETRY_BACKOFF_SECONDS
     )
+
+
+_WINDOW_OVERFLOWS = (
+    # Prime inference: "This model configuration accepts at most 1048576 combined input and
+    # output tokens. However, your request has 919998 input tokens and asks for 131072 ..."
+    re.compile(
+        r"at most (\d+) combined input and output tokens.*?has (\d+) input tokens",
+        re.DOTALL,
+    ),
+    # OpenRouter: "This endpoint's maximum context length is N tokens. However, you
+    # requested about M tokens (X of text input, Y in the output)."
+    re.compile(
+        r"maximum context length is (\d+) tokens.*?\((\d+) of text input", re.DOTALL
+    ),
+)
+MIN_FITTED_OUTPUT = 4096
+"""Least output worth resending for; below it the prompt itself is the overflow."""
+
+
+def _fit_output_to_window(
+    error: ProviderError, held: dict | EncodedBody
+) -> dict | None:
+    """The request body with its output cap lowered to what the provider says fits, when
+    it refused a prompt that fits its window only because of the output asked for (2026-10-26:
+    OpenCode compacts after a turn ends above its threshold, so one large tool result can
+    carry the next prompt to 920K, and 920K + 131,072 output tokens tops a 1M window)."""
+    if error.status_code != 400:
+        return None
+    for pattern in _WINDOW_OVERFLOWS:
+        if match := pattern.search(str(error)):
+            window, prompt = int(match.group(1)), int(match.group(2))
+            break
+    else:
+        return None
+    body = from_json(held.data) if isinstance(held, EncodedBody) else dict(held)
+    key = next(
+        (k for k in ("max_completion_tokens", "max_tokens") if body.get(k)), None
+    )
+    fits = window - prompt - 256
+    if key is None or fits < MIN_FITTED_OUTPUT or fits >= body[key]:
+        return None
+    return {**body, key: fits}
 
 
 IDEMPOTENCY_KEY_HEADER = "Idempotency-Key"
@@ -1185,6 +1228,7 @@ class InterceptionServer(Interception):
                 return await send()
 
         async def sample() -> web.Response:
+            nonlocal upstream
             session.error = None
             call_response: Response | None = None
             events: bytes | None = None
@@ -1199,6 +1243,7 @@ class InterceptionServer(Interception):
                     failures = 0
                     first_failure = 0.0
                     cut_offs = 0
+                    refitted = False
                     while True:
                         try:
                             call_response, events = await exchange(
@@ -1206,6 +1251,32 @@ class InterceptionServer(Interception):
                             )
                             break
                         except ProviderError as e:
+                            fitted = (
+                                None if refitted else _fit_output_to_window(e, upstream)
+                            )
+                            if fitted is not None:
+                                # The prompt fits the window but not with the output the
+                                # harness asked for: send it once more asking only for what
+                                # fits (the harness compacts on its next turn).
+                                refitted = True
+                                self.record_call(
+                                    session,
+                                    dialect,
+                                    settings,
+                                    started,
+                                    error=e,
+                                    policy_paths=policy_paths,
+                                    acp=acp,
+                                )
+                                upstream = client.hold(fitted)
+                                logger.warning(
+                                    "model call over the context window, resending with "
+                                    "the output that fits: id=%s %s",
+                                    session.trace.id,
+                                    e,
+                                )
+                                started = time.time()
+                                continue
                             now = time.monotonic()
                             if not failures:
                                 first_failure = now
