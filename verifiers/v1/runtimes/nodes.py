@@ -332,6 +332,12 @@ def compose_project(topology: TopologyConfig, result: Plan) -> dict[str, Any]:
     names = [name for name in machine.nodes if name != WORKSPACE]
     if invalid := [n for n in names if not re.fullmatch(r"[a-z0-9][a-z0-9_.-]*", n)]:
         raise PlacementError(f"nodes {invalid} need names Compose accepts as services")
+    if mounted := [n for n in names if getattr(result.runtimes[n], "mounts", None)]:
+        raise PlacementError(
+            f"nodes {mounted} mount storage, which a Compose service on the "
+            "workspace's machine does not take; `isolated = true` gives a node a "
+            "machine of its own"
+        )
     services: dict[str, dict[str, Any]] = {
         name: {"networks": [f"vf-egress-{name}"]} for name in [WORKSPACE, *names]
     }

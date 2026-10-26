@@ -371,6 +371,11 @@ def test_declared_nodes_on_the_workspace_s_machine_become_a_compose_project():
     with pytest.raises(PlacementError, match="names Compose accepts"):
         named = TopologyConfig(nodes={"DB!": NodeConfig()})
         compose_project(named, plan(named, OFFLINE))
+    # A packed node's own mounts would be silently lost; it is refused instead.
+    volume = {"mounts": {"/data": {"name": "pgdata"}}}
+    mounted = TopologyConfig(nodes={"db": NodeConfig(runtime=volume)})
+    with pytest.raises(PlacementError, match="mount storage"):
+        compose_project(mounted, plan(mounted, OFFLINE))
 
 
 def test_egress_networks_and_connection_networks_never_share_a_name():

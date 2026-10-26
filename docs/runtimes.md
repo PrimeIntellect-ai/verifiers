@@ -225,7 +225,7 @@ data = vf.TaskData(
 
 Before anything is provisioned, the rollout plans where each node runs, and refuses a plan its runtimes cannot realize:
 
-- A node under the workspace's network policy shares the workspace's machine. The deployment runs it as a Compose service of a generated project (`SUPPORTS_COMPOSE`), reached by its name, with one container network per connection. A process without a `command` runs the image's own; a node without a process runs nothing and idles.
+- A node under the workspace's network policy shares the workspace's machine. The deployment runs it as a Compose service of a generated project (`SUPPORTS_COMPOSE`), reached by its name, with one container network per connection. A process without a `command` runs the image's own; a node without a process runs nothing and idles. A packed node takes no runtime `mounts`; give one that needs them `isolated = true`.
 - A node with a policy of its own, or with `isolated = true`, gets a machine of its own on the rollout's private network (`SUPPORTS_PRIVATE_NETWORK`), with one rule per connection. The node's process starts there after the machine boots, and the machine's policy applies when the workspace's does. Such a node needs `process.command`, because the runtime does not run its image's own command.
 - A tool server runs on a node with `ToolsetConfig.on = "<node>"`; `on = "main"` is the workspace and `on = "host"` the evaluator. `colocated = true` and `service = "<name>"` remain as the older spellings of `on`.
 - Task hooks reach a node through `deployment.target(name)`, and the name the workspace resolves it by through `deployment.host(name)`.
