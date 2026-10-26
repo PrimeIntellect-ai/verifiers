@@ -18,6 +18,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import socket
 import subprocess
 import tempfile
@@ -46,6 +47,7 @@ from verifiers.v1.runtimes import (
     backend_cls,
     provision_runtime,
 )
+from verifiers.v1.runtimes.backends.subprocess import signal_process
 from verifiers.v1.runtimes.compose import ComposeSpec, compose_services
 from verifiers.v1.runtimes.strategies import _deployment_strategy
 from verifiers.v1.utils.compile import resolve_runtime_config
@@ -54,7 +56,7 @@ RUNTIMES = ["subprocess", "docker", "prime", "plugin"]
 SUPPORTED = {
     "task_images": {"docker", "prime"},
     "user_switching": {"docker", "prime"},
-    "port_exposure": {"subprocess", "docker"},
+    "port_exposure": {"subprocess", "docker", "prime"},
     "compose": {"docker", "prime"},
     "network_policies": {"docker", "prime"},
 }
@@ -385,12 +387,10 @@ class HostProcess(RuntimeProcess):
         return self._process.returncode
 
     async def terminate(self) -> None:
-        if self._process.returncode is None:
-            self._process.terminate()
+        signal_process(self._process, signal.SIGTERM)
 
     async def kill(self) -> None:
-        if self._process.returncode is None:
-            self._process.kill()
+        signal_process(self._process, signal.SIGKILL)
 
 
 class HostConfig(CustomRuntimeConfig):
@@ -427,6 +427,7 @@ class HostBackend(RuntimeBackend):
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            start_new_session=True,
         )
         return HostProcess(process)
 
