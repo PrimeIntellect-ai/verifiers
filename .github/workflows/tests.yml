@@ -78,6 +78,7 @@ jobs:
     timeout-minutes: 60
     strategy:
       fail-fast: false
+      max-parallel: 16
       matrix:
         include:
           - behavior: Single-Turn
@@ -106,6 +107,8 @@ jobs:
             tests: tests/integration/test_compose_scoring.py
           - behavior: Tool VMs
             tests: tests/integration/test_tool_vms.py
+          - behavior: Mounts
+            tests: tests/integration/test_mounts.py
           - behavior: Nodes
             tests: tests/integration/test_nodes.py
           - behavior: Sampling

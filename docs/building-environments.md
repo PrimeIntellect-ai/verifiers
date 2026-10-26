@@ -177,7 +177,7 @@ During an isolated run, task `finalize` and harness metrics still execute before
 When your benchmark needs more than a single solver and deterministic grading, you can combine other verifiers primitives:
 
 - **Task-specific MCP tools**: define a [`vf.Toolset`](tasksets.md#adding-tools) on the task, running either in its own runtime or inside the agent sandbox with `colocated = true`.
-- **Multi-attempt sampling or model judges**: run the built-in `best-of-n` or `agentic-judge` environments, or `user-sim` when a model needs to role-play the user across turns.
+- **Multi-attempt sampling or model judges**: run the built-in `best-of-n`, `agentic-judge`, or `best-of-n-judge` environments, or `user-sim` when a model needs to role-play the user across turns.
 - **Games and multi-turn scripted interactions**: write a custom [`Env.run()`](env.md#custom-control-flow) that drives `agents.<role>.interaction(task)` across turns or agents. Note that a custom environment's `finalize(task, episode)` hook runs after agent runtimes have been torn down, so read from saved trace data (`trace.info`) rather than live sandboxes.
 - **Multi-container service stacks** (such as an application server paired with a database): package the task as a [Harbor benchmark](harbor.md) using Docker Compose, or return a `ComposeSpec` from `Task.deployment_spec()` (see [deployment and services](runtimes.md#deployment-and-services)).
 - **Custom agent loops or CLI harnesses**: pick another built-in [harness](harnesses.md) or subclass `vf.Harness` to install and launch a different agent binary.

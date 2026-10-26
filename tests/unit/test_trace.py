@@ -9,6 +9,7 @@ from verifiers.v1.configs.agent import resolve_agent
 from verifiers.v1.dialects.chat import ChatDialect
 from verifiers.v1.dialects.responses import ResponsesDialect, fold_assistant
 from verifiers.v1.graph import MessageNode, prepare_turn
+from verifiers.v1.session import RolloutLimits
 from verifiers.v1.types import AssistantMessage, UserMessage
 from verifiers.v1.utils.trace_store import write_episode
 
@@ -266,3 +267,43 @@ def test_sampling_mask_from_packed_matches_lists():
     ):
         np.testing.assert_array_equal(mask.ids, ids)
         np.testing.assert_array_equal(mask.counts, counts)
+
+
+def test_max_turn_tokens_limit():
+    limits = RolloutLimits(max_turn_tokens=16)
+    trace = vf.Trace(
+        agent=vf.AgentInfo(config=vf.AgentConfig()),
+        task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt=None)),
+    )
+    trace.calls.append(vf.ModelCall(finish_reason="stop"))
+    assert limits.reached(trace) is None
+    # A length finish below the cap ran out of context: not this limit.
+    usage = vf.Usage(prompt_tokens=100, completion_tokens=8)
+    trace.calls.append(vf.ModelCall(finish_reason="length", usage=usage))
+    assert limits.reached(trace) is None
+    usage = vf.Usage(prompt_tokens=100, completion_tokens=16)
+    trace.calls.append(vf.ModelCall(finish_reason="length", usage=usage))
+    assert limits.reached(trace) == "max_turn_tokens"
+    trace.stop("max_turn_tokens")
+    assert trace.is_truncated
+
+
+@pytest.mark.parametrize("max_tokens,expected", [(None, 16), (8, 8), (64, 16)])
+def test_max_turn_tokens_caps_sampling(max_tokens, expected):
+    spec = vf.AgentConfig(max_turn_tokens=16)
+    sampling = vf.SamplingConfig(max_tokens=max_tokens)
+    assert resolve_agent(spec, sampling=sampling).sampling.max_tokens == expected
+
+
+@pytest.mark.parametrize("pinned", [False, True])
+def test_run_sampling_stays_with_run_client(pinned):
+    run_sampling = vf.SamplingConfig(temperature=0.8, top_k=20)
+    client = vf.EvalClientConfig(base_url="http://judge.invalid/v1") if pinned else None
+    spec = vf.AgentConfig(client=client, sampling={"reasoning_effort": "high"})
+    resolved = resolve_agent(
+        spec, client=vf.TrainClientConfig(), sampling=run_sampling
+    ).sampling
+    expected = {"reasoning_effort": "high"}
+    if not pinned:
+        expected |= {"temperature": 0.8, "top_k": 20}
+    assert resolved.model_dump(exclude_none=True) == expected

@@ -15,7 +15,11 @@ from pydantic_config import BaseConfig
 from verifiers.v1.configs.env import EnvConfig
 from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.configs.judge import JudgeConfig
-from verifiers.v1.configs.task import DecoratedFunctionConfig, RewardFunctionConfig
+from verifiers.v1.configs.task import (
+    DecoratedFunctionConfig,
+    RewardFunctionConfig,
+    StopFunctionConfig,
+)
 from verifiers.v1.configs.taskset import TasksetConfig
 from verifiers.v1.env import Env
 from verifiers.v1.envs.single_agent import SingleAgentEnv
@@ -279,6 +283,11 @@ def load_plugged_fn(
         if weight is None:
             weight = getattr(fn, "_vf_weight", 1.0)
         plugged._vf_weight = weight
+    if isinstance(config, StopFunctionConfig):
+        skip_scoring = config.skip_scoring
+        if skip_scoring is None:
+            skip_scoring = getattr(fn, "stop_skip_scoring", False)
+        plugged.stop_skip_scoring = skip_scoring
     return plugged
 
 

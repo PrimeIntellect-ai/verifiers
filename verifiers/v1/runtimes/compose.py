@@ -93,7 +93,12 @@ async def compose_services(
     trust_compose: bool = False,
     setup_timeout: float | None = None,
 ) -> AsyncIterator[
-    tuple[dict[str, DockerBackend], Callable[[], Awaitable[str]], RuntimeBackend | None]
+    tuple[
+        dict[str, DockerBackend],
+        Callable[[], Awaitable[str]],
+        RuntimeBackend | None,
+        str | None,
+    ]
 ]:
     """Own one Compose attempt and lend its services until the context exits."""
     local = isinstance(config, DockerConfig)
@@ -102,6 +107,8 @@ async def compose_services(
             "Local Compose tasks can access host files and Docker privileges; "
             "only run trusted tasks with --env.agent.deployment.trust-compose"
         )
+    if getattr(config, "mounts", {}):
+        raise ValueError("Runtime mounts are not supported for Compose tasks")
     if local and config.network_restricted:
         raise ValueError(
             "Local Compose does not enforce network policies; run the task on prime"
@@ -194,9 +201,20 @@ async def compose_services(
                     }
                 }
             }
-            if {"image", "build"} & authored["services"].get(spec.workspace, {}).keys():
+            main = authored["services"].get(spec.workspace, {})
+            if {"image", "build"} & main.keys():
                 # A template default must not replace an authored image or skip its build.
                 del base["services"][spec.workspace]["image"]
+            elif (
+                not spec.image_override
+                and (
+                    directory / "task" / Path(spec.file).parent / "Dockerfile"
+                ).is_file()
+            ):
+                main = base["services"][spec.workspace]
+                del main["image"]
+                main["build"] = {"context": "${CONTEXT_DIR}"}
+                main["pull_policy"] = "build"
             (directory / "base.json").write_text(json.dumps(base))
             (directory / "env.json").write_text(
                 json.dumps({"services": {spec.workspace: {"environment": environment}}})
@@ -342,6 +360,9 @@ async def compose_services(
             backends,
             partial(compose, "stop", spec.workspace, timeout=60),
             host_backend,
+            backends[spec.workspace].config.image
+            if services[spec.workspace].get("build")
+            else None,
         )
     finally:
         await run_shielded(stack.aclose())

@@ -283,13 +283,14 @@ Each one is reversible. The alternative is noted.
 2. **Config overrides of a row's nodes,** for example to give one node another image in an eval config.
 3. **Sharing across rollouts:** for example one instance of Atlas's stateless servers for many rollouts. Out of scope here.
 4. **Policy on local Compose.** Docker packs nodes through local Compose, which enforces no network policy. To refuse a restricted packed plan on Docker, the planner needs that stated: a flag of its own, or policy enforcement as part of `SUPPORTS_COMPOSE`?
-5. **Exposure on Prime.** A Prime VM can publish an HTTP port to the internet through a private-network rule from `internet` to its tag and port, with no authentication. That could back `SUPPORTS_PORT_EXPOSURE` for Prime VMs, and with it a harness or tool server reached from the evaluator. Tool servers would first need to authenticate their callers.
+5. **Authenticating exposed ports.** Since #2914, a Prime VM backs `SUPPORTS_PORT_EXPOSURE` with a private-network rule from `internet` to its port, so the planner routes the evaluator to a node on Prime through it. The URL has no authentication: tool servers reached that way should first authenticate their callers.
 
 ## In this PR
 
+`verifiers/v1/configs/nodes.py`, in the config tree, which imports without the runtime: the config models (`NodeConfig`, `ProcessConfig`, and `TopologyConfig`, which flattens a rollout's placements into one model).
+
 `verifiers/v1/runtimes/nodes.py`:
 
-- the config models (`NodeConfig`, `ProcessConfig`, and `TopologyConfig`, which flattens a rollout's placements into one model);
 - `topology_from()` / `task_topology()`, which build a rollout's topology from its Compose project, `TaskData.nodes` and its toolsets' placements;
 - `plan()`, which returns machines and connections or raises `PlacementError`, from the capabilities the backends declare;
 - `compose_project()`, the Compose project for declared nodes on the workspace's machine;

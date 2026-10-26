@@ -38,12 +38,12 @@ def without_private_network(config) -> nodes.Capabilities:
 
 def test_capabilities_are_what_the_backends_declare():
     prime = nodes.capabilities(PrimeConfig())
-    assert (prime.network_policy, prime.compose, prime.private_network) == (
-        True,
-        True,
-        True,
-    )
-    assert not prime.port_exposure
+    assert (
+        prime.network_policy,
+        prime.compose,
+        prime.private_network,
+        prime.port_exposure,
+    ) == (True, True, True, True)
     docker = nodes.capabilities(DockerConfig())
     assert (docker.network_policy, docker.compose, docker.port_exposure) == (
         True,
@@ -162,12 +162,16 @@ def test_split_execution_is_the_agent_loop_on_another_node():
 
 def test_a_harness_on_the_evaluator_needs_a_workspace_that_exposes_a_port():
     hosted = TopologyConfig(harness_on="host")
-    with pytest.raises(PlacementError, match="prime runtime cannot expose a port"):
-        plan(hosted, OFFLINE)
-    assert shape(plan(hosted, DockerConfig())) == (
-        [("main",)],
-        {Connection("host", "main", "execution", "exposed port")},
+    plugin = TypeAdapter(RuntimeConfig).validate_python(
+        {"type": "custom", "import_path": f"{__name__}.Plugin"}
     )
+    with pytest.raises(PlacementError, match="custom runtime cannot expose a port"):
+        plan(hosted, plugin)
+    for workspace in (DockerConfig(), OFFLINE):
+        assert shape(plan(hosted, workspace)) == (
+            [("main",)],
+            {Connection("host", "main", "execution", "exposed port")},
+        )
 
 
 def test_refusals_name_the_runtime_and_the_gap():
