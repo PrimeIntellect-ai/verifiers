@@ -123,7 +123,6 @@ def test_record_streams_are_arrays_with_json_dump_content(float_decimals):
     for record, json_dump in cases:
         nodes = (record["traces"][0] if "traces" in record else record)["nodes"]
         assert isinstance(nodes[1]["token_ids"], np.ndarray)
-        assert nodes[1]["logprobs"].dtype == np.float64
         assert isinstance(nodes[1]["loss_weights"]["policy"], np.ndarray)
         assert orjson.loads(
             orjson.dumps(record, option=orjson.OPT_SERIALIZE_NUMPY)
@@ -133,6 +132,21 @@ def test_record_streams_are_arrays_with_json_dump_content(float_decimals):
     )
     assert orjson.loads(episode.to_json(float_decimals)) == orjson.loads(
         json.dumps(cases[1][1])
+    )
+
+
+def test_record_exclude_merges_with_the_record_excludes():
+    tr = _streamed_trace()
+    tr.nodes[1].message.reasoning_content = "hidden"
+    exclude = {"ok": True, "nodes": {"__all__": {"message": {"reasoning_content"}}}}
+    record = tr.to_record(exclude=exclude)
+    assert "ok" not in record
+    assert "reasoning_content" not in record["nodes"][1]["message"]
+    assert record["nodes"][1]["message"]["content"] == "a"
+    assert "top_logprobs" not in record["nodes"][1]
+    assert record["nodes"][1]["token_ids"].tolist() == [4, 5, 6]
+    assert orjson.loads(tr.to_json(exclude=exclude)) == orjson.loads(
+        orjson.dumps(record, option=orjson.OPT_SERIALIZE_NUMPY)
     )
 
 

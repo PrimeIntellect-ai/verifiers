@@ -62,6 +62,23 @@ numpy arrays, and building the streams as lists of Python numbers would be most 
 of a record."""
 
 
+def merge_exclude(*excludes: dict | set | None) -> dict:
+    """Pydantic `exclude` specs combined into one. A field that any spec excludes whole
+    stays excluded whole."""
+    merged: dict = {}
+    for exclude in excludes:
+        if not exclude:
+            continue
+        items = dict.fromkeys(exclude, True) if isinstance(exclude, set) else exclude
+        for key, value in items.items():
+            current = merged.get(key)
+            if current is True or value is True or value is ...:
+                merged[key] = True
+            else:
+                merged[key] = merge_exclude(current, value)
+    return merged
+
+
 def add_record_streams(
     record: dict[str, Any],
     trace: Trace,
@@ -816,20 +833,29 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         self.stop(stop_condition(error))
 
     def to_record(
-        self, float_decimals: int | None = RECORD_FLOAT_DECIMALS
+        self,
+        float_decimals: int | None = RECORD_FLOAT_DECIMALS,
+        exclude: dict | set | None = None,
     ) -> dict[str, Any]:
         """JSON record without raw tensors, which remain available on the msgpack wire.
         Per-token node streams are numpy arrays (`graph.RECORD_STREAMS`): encode it with
         `to_json`, or with orjson and `OPT_SERIALIZE_NUMPY`. Per-token float streams are
-        rounded to `float_decimals` (`None` keeps every digit)."""
-        record = self.model_dump(mode="json", exclude=RECORD_DUMP_EXCLUDE)
+        rounded to `float_decimals` (`None` keeps every digit). `exclude` is a pydantic
+        exclude spec for the other fields; the streams are always included."""
+        record = self.model_dump(
+            mode="json", exclude=merge_exclude(RECORD_DUMP_EXCLUDE, exclude)
+        )
         add_record_streams(record, self, float_decimals, exclude_none=False)
         return record
 
-    def to_json(self, float_decimals: int | None = RECORD_FLOAT_DECIMALS) -> bytes:
+    def to_json(
+        self,
+        float_decimals: int | None = RECORD_FLOAT_DECIMALS,
+        exclude: dict | set | None = None,
+    ) -> bytes:
         """`to_record` as compact UTF-8 JSON. NaN and infinity become `null`."""
         return orjson.dumps(
-            self.to_record(float_decimals), option=orjson.OPT_SERIALIZE_NUMPY
+            self.to_record(float_decimals, exclude), option=orjson.OPT_SERIALIZE_NUMPY
         )
 
 

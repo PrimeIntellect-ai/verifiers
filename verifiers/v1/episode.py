@@ -17,6 +17,7 @@ from verifiers.v1.trace import (
     Trace,
     TraceTask,
     add_record_streams,
+    merge_exclude,
 )
 from verifiers.v1.types import Usage
 
@@ -162,25 +163,34 @@ class Episode(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         return grouped
 
     def to_record(
-        self, float_decimals: int | None = RECORD_FLOAT_DECIMALS
+        self,
+        float_decimals: int | None = RECORD_FLOAT_DECIMALS,
+        exclude: dict | set | None = None,
     ) -> dict[str, Any]:
         """JSON record without raw trace tensors, which remain on the msgpack wire.
         Per-token node streams are numpy arrays (`graph.RECORD_STREAMS`): encode it with
         `to_json`, or with orjson and `OPT_SERIALIZE_NUMPY`. Per-token float streams are
-        rounded to `float_decimals` (`None` keeps every digit)."""
+        rounded to `float_decimals` (`None` keeps every digit). `exclude` is a pydantic
+        exclude spec for the other fields; the streams are always included."""
         record = self.model_dump(
             mode="json",
-            exclude={"traces": {"__all__": RECORD_DUMP_EXCLUDE}},
+            exclude=merge_exclude(
+                {"traces": {"__all__": RECORD_DUMP_EXCLUDE}}, exclude
+            ),
             exclude_none=True,
         )
         for trace_record, trace in zip(record["traces"], self.traces, strict=True):
             add_record_streams(trace_record, trace, float_decimals, exclude_none=True)
         return record
 
-    def to_json(self, float_decimals: int | None = RECORD_FLOAT_DECIMALS) -> bytes:
+    def to_json(
+        self,
+        float_decimals: int | None = RECORD_FLOAT_DECIMALS,
+        exclude: dict | set | None = None,
+    ) -> bytes:
         """`to_record` as compact UTF-8 JSON. NaN and infinity become `null`."""
         return orjson.dumps(
-            self.to_record(float_decimals), option=orjson.OPT_SERIALIZE_NUMPY
+            self.to_record(float_decimals, exclude), option=orjson.OPT_SERIALIZE_NUMPY
         )
 
 

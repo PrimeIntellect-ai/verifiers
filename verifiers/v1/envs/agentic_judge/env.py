@@ -9,7 +9,6 @@ import copy
 import re
 from pathlib import Path
 
-import orjson
 from pydantic import FiniteFloat
 
 import verifiers.v1 as vf
@@ -28,6 +27,9 @@ from verifiers.v1.utils.compile import validate_pairing
 
 VERDICT_FILE = "/tmp/verdict.json"
 TRACE_FILE = "/tmp/trace.json"
+HIDDEN_REASONING = {"reasoning_content", "provider_state"}
+"""Message fields a judge's trace file leaves out by default: hidden reasoning and
+provider-only state."""
 
 GRADE_PROMPT = """\
 You are grading another agent's attempt at a task. Verify the work EMPIRICALLY:
@@ -138,16 +140,12 @@ class JudgeTask(vf.Task):
     ) -> "JudgeTask":
         """Build the verdict task for the already prepared scoring workspace."""
         solved = solution.task.data
-        record = solution.to_record()
         # This snapshot is evidence for verification, not its final outcome.
         # stop() marks the agent loop completed before rollout scoring finishes.
-        record.pop("ok", None)
+        exclude: dict = {"ok": True}
         if not config.include_hidden_reasoning:
-            for node in record["nodes"]:
-                message = node["message"]
-                message.pop("reasoning_content", None)
-                message.pop("provider_state", None)
-        files = {TRACE_FILE: orjson.dumps(record, option=orjson.OPT_SERIALIZE_NUMPY)}
+            exclude["nodes"] = {"__all__": {"message": HIDDEN_REASONING}}
+        files = {TRACE_FILE: solution.to_json(exclude=exclude)}
         template = config.build_prompt()
         body = _render(template, prompt=solved.prompt_text)
         if "{prompt}" not in template:
