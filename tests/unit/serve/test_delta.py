@@ -111,7 +111,7 @@ async def test_failed_send_is_diffed_again():
 
 @pytest.mark.asyncio
 async def test_rewound_trace_streams_again_from_scratch():
-    """A retry resumed from a checkpoint rewinds its trace below what the client
+    """A retry restored from a checkpoint rewinds its trace below what the client
     holds; the stream drops the client's copy and resends the trace as it now is."""
     traces: list[vf.Trace] = []
     frames: list[bytes] = []
@@ -135,7 +135,7 @@ async def test_rewound_trace_streams_again_from_scratch():
         trace.rewind(vf.Checkpoint(id="cp", node=1))
         # the discard fails on the wire: the reopen must wait for it, not race ahead
         fail["on"] = True
-        trace.notify()  # the resumed rollout's boot
+        trace.notify()  # the restored rollout's boot
         await settle()
         fail["on"] = False
         add_turn(trace, "a2 again")
@@ -144,7 +144,8 @@ async def test_rewound_trace_streams_again_from_scratch():
     assert sum(bool(unpack(f).get("discard")) for f in frames) == 1
     record = assembled(frames)[trace.id]
     assert [n["message"]["content"] for n in record["nodes"]] == ["q", "a1", "a2 again"]
-    assert len(record["calls"]) == 2
+    # The rewound turns' calls stay, unlinked: a1, a2 and a3 before, a2 again after.
+    assert [call["node"] for call in record["calls"]] == [1, None, None, 2]
     assert [e["type"] for e in record["errors"]] == ["RuntimeError"]
 
 

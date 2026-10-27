@@ -42,7 +42,7 @@ from verifiers.v1.runtimes.private_network import tool_vms
 from verifiers.v1.session import RolloutLimits, RolloutSession, hook_boundary
 from verifiers.v1.state import state_cls
 from verifiers.v1.task import Task, TaskData
-from verifiers.v1.trace import AgentInfo, Checkpoint, Trace, TraceTask
+from verifiers.v1.trace import AgentInfo, Checkpoint, TimeSpan, Trace, TraceTask
 from verifiers.v1.types import Messages, Request, Response, SystemMessage, UserMessage
 from verifiers.v1.utils.artifacts import collect
 from verifiers.v1.utils.decorators import discover_decorated, invoke
@@ -609,16 +609,16 @@ class Rollout:
         self,
         messages: Messages | None = None,
         *,
-        intercept: bool = True,
+        intercepted: int = 0,
         on_input: Callable[[], None] | None = None,
     ) -> bool:
         """Run ONE segment: the harness program to its exit. With `messages`, the
         segment resumes the exchange with the user's turn(s) (`Harness.resume` —
         for an exchange the user opens, this is also the first segment, on an
         empty conversation); without, it launches on the task's own prompt.
-        `intercept=False` passes `messages` to the harness as they are — they were
-        already intercepted when the trace first saw them (a restored checkpoint's
-        tail). Returns whether the exchange can continue — a refused turn (limit,
+        The first `intercepted` messages pass to the harness as they are — they were
+        intercepted when the trace first saw them (a restored checkpoint's tail).
+        Returns whether the exchange can continue — a refused turn (limit,
         @stop), a failure (an expired agent timeout included), or a segment that
         made no progress all end it."""
         if not self._opened or self._closed or not self.ok:
@@ -641,13 +641,13 @@ class Rollout:
                 assert self._harness_session is not None
                 if (
                     messages is not None
-                    and intercept
+                    and len(messages) > intercepted
                     and self._session.request_interceptors
                 ):
                     prepared, rewrites = await self._session.prepare_users(
-                        Request(messages=messages)
+                        Request(messages=messages[intercepted:])
                     )
-                    messages = prepared.messages
+                    messages = [*messages[:intercepted], *prepared.messages]
                     self.trace.request_rewrites.extend(rewrites)
                     if self._session.stopped:
                         return False
@@ -724,7 +724,8 @@ class Rollout:
         self._session.pinned_tool_results.update(checkpoint.pins)
         self._session.mark_intercepted(self.trace.messages, tail)
         messages = self._harness_session.restore(checkpoint.harness, tail)
-        return await self.step(messages, intercept=False)
+        # Only the restore notice is new; user hooks prepare it like any user turn.
+        return await self.step(messages, intercepted=len(messages) - 1)
 
     async def _checkpoint(self, turn: graph.PendingTurn) -> None:
         assert self.runtime is not None
@@ -747,8 +748,9 @@ class Rollout:
         state = copy.deepcopy(self.trace.state)
         info = copy.deepcopy(self.trace.info)
         pins = dict(self._session.pinned_tool_results)
+        started = time.time()
         try:
-            checkpoint = await self.runtime.backend.checkpoint()
+            checkpoint, stored_bytes = await self.runtime.backend.checkpoint()
         except Exception:
             logger.warning(
                 "checkpoint failed (rollout %s)", self.trace.id, exc_info=True
@@ -764,6 +766,8 @@ class Rollout:
                 info=info,
                 pins=pins,
                 harness=harness,
+                time=TimeSpan(start=started, end=time.time()),
+                stored_bytes=stored_bytes,
             )
         )
         logger.debug(
@@ -808,7 +812,11 @@ class Rollout:
         if self.runtime is not None:
             with contextlib.suppress(Exception):
                 await self.runtime.backend.discard_checkpoints(
-                    [*self.rewound_checkpoints, *(c.id for c in self.trace.checkpoints)]
+                    [
+                        *self.rewound_checkpoints,
+                        *(c.id for c in self.trace.checkpoints),
+                        *self.runtime.backend.stray_checkpoints,
+                    ]
                 )
 
     async def _score_harness(self, runtime: Runtime, deadline: float | None) -> None:
@@ -1101,6 +1109,10 @@ class Rollout:
                 ):
                     # Setup can fail before a deployment takes ownership.
                     await runtime.backend.stop()
+                if runtime is not None and runtime.backend.stray_checkpoints:
+                    await runtime.backend.discard_checkpoints(
+                        runtime.backend.stray_checkpoints
+                    )
             except Exception:
                 logger.warning("runtime teardown failed", exc_info=True)
         logger.info(

@@ -283,33 +283,35 @@ class PrimeBackend(RuntimeBackend):
         ) as e:  # provisioning failure is one rollout's problem, not the eval's
             raise SandboxError(f"prime sandbox provisioning failed: {e}") from e
 
-    async def checkpoint(self) -> str:
+    async def checkpoint(self) -> tuple[str, int | None]:
         # Blocking: the turn goes upstream only once the snapshot is durable, so it
         # cannot include that turn's writes, and teardown (which fails pending
-        # checkpoints) never loses one. The POST is shielded through the id capture
-        # and a cancelled wait deletes the snapshot: a checkpoint the trace never
-        # records is one nothing would ever discard.
+        # checkpoints) never loses one. Until then the snapshot is stray: the platform
+        # refuses to delete it while this box lives, so teardown frees it after.
+        async def create() -> str:
+            checkpoint = await self._client.checkpoint(self.info.id)
+            self.stray_checkpoints.append(checkpoint.id)
+            return checkpoint.id
+
         try:
-            checkpoint = await run_shielded(self._client.checkpoint(self.info.id))
+            checkpoint = await run_shielded(create())
         except Exception as e:
             raise SandboxError(f"prime checkpoint failed: {e}") from e
         started = time.monotonic()
         try:
-            await self._client.wait_for_checkpoint(
-                checkpoint.id, timeout_seconds=_CHECKPOINT_DURABLE_SECONDS
+            durable = await self._client.wait_for_checkpoint(
+                checkpoint, timeout_seconds=_CHECKPOINT_DURABLE_SECONDS
             )
-        except asyncio.CancelledError:
-            await run_shielded(self.discard_checkpoints([checkpoint.id]))
-            raise
         except Exception as e:
-            raise SandboxError(f"prime checkpoint {checkpoint.id}: {e}") from e
+            raise SandboxError(f"prime checkpoint {checkpoint}: {e}") from e
+        self.stray_checkpoints.remove(checkpoint)
         logger.debug(
             "prime: checkpoint %s durable after %.1fs on sandbox %s",
-            checkpoint.id,
+            checkpoint,
             time.monotonic() - started,
             self.info.id,
         )
-        return checkpoint.id
+        return checkpoint, durable.stored_bytes
 
     async def discard_checkpoints(self, ids: list[str]) -> None:
         # Runs after teardown: the platform refuses to delete a checkpoint while a

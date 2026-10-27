@@ -1,4 +1,4 @@
-"""Resuming a trace from a checkpoint: what `rewind` restores and what a resumed
+"""Restoring a trace from a checkpoint: what `rewind` restores and what a restored
 attempt must not redo."""
 
 import verifiers.v1 as vf
@@ -45,7 +45,16 @@ def test_rewind_restores_info_with_state():
     assert trace.info == {"setup": "nonce"}
 
 
-def test_resumed_span_counts_only_its_own_calls():
+def test_rewind_keeps_the_dropped_turns_calls():
+    trace = make_trace()
+    checkpoint = Checkpoint(id="ck", node=0)
+    trace.checkpoints.append(checkpoint)
+    trace.rewind(checkpoint)
+    assert len(trace.nodes) == 1
+    assert [call.node for call in trace.calls] == [None]
+
+
+def test_restored_span_counts_only_its_own_calls():
     trace = make_trace()
     trace.timing.agent.start, trace.timing.agent.end = 100.0, 120.0
     trace.calls.append(ModelCall(time=TimeSpan(start=105.0, end=110.0)))
@@ -54,7 +63,7 @@ def test_resumed_span_counts_only_its_own_calls():
     assert trace.timing.agent.harness.duration == 15.0
 
 
-async def test_resumed_tail_is_not_intercepted_twice():
+async def test_restored_tail_is_not_intercepted_twice():
     trace = make_trace()
     seen: list[str] = []
 

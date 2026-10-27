@@ -143,7 +143,12 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
     async def setup(self, runtime: Runtime) -> None:
         if self.config.skills:
             # Editable skill packages and uv's tool environment must belong to this run.
-            self._skills_install_dir = f"{RLM_CACHE_DIR}-skills-{secrets.token_hex(16)}"
+            # A retry keeps the directory: it holds `RLM_HOME`, whose session a box
+            # restored from a checkpoint loads.
+            if self._skills_install_dir is None:
+                self._skills_install_dir = (
+                    f"{RLM_CACHE_DIR}-skills-{secrets.token_hex(16)}"
+                )
             await self.install_skills(runtime, f"{self._skills_home()}/skills")
         directory = self._install_dir()
         binary = f"{directory}/bin/rlm"

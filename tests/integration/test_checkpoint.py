@@ -53,8 +53,9 @@ async def test_retry_restores_checkpoint(run, harness, harness_runtime):
         and RESTORE_PROMPT in content_text(node.message.content)
         for node in trace.nodes
     )
-    # Every turn kept has its call; the failure never went upstream, so no call
-    # records it.
-    assert [call.node for call in trace.calls] == [
+    # Every turn kept has its call; the dropped turns' calls stay, unlinked, so usage
+    # counts them.
+    assert [call.node for call in trace.calls if call.node is not None] == [
         i for i, node in enumerate(trace.nodes) if node.sampled
     ]
+    assert any(call.node is None for call in trace.calls)

@@ -256,6 +256,10 @@ class Checkpoint(BaseModel):
     """The rollout's pinned tool results as the snapshot was taken
     (`RolloutSession.pinned_tool_results`): a restored harness re-sends its own
     copies, which must be pinned again to match the trace. Live-only."""
+    time: TimeSpan = Field(default_factory=TimeSpan)
+    """From the snapshot request until it was durable: how long the turn waited."""
+    stored_bytes: int | None = None
+    """The snapshot's stored size, which the provider bills, when it reports one."""
     harness: dict[str, Any] = Field(default_factory=dict)
     """What the harness session needs to continue in a box restored from the snapshot
     (`HarnessSession.checkpoint_state`), e.g. an ACP agent's session id."""
@@ -870,8 +874,9 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     def rewind(self, checkpoint: Checkpoint) -> list[str]:
         """Roll the graph back to `checkpoint` — the nodes committed after it go, its own
         conversation stays sampled — and reopen the trace for another attempt: the outcome
-        stamps reset, while `errors` and the calls that committed no node stay as the
-        attempts' history. Returns the ids of the later checkpoints this drops."""
+        stamps reset, while `errors` and every call stay as the attempts' history (the
+        calls of the dropped nodes unlinked, so usage still counts them). Returns the ids
+        of the later checkpoints this drops."""
         keep = 0 if checkpoint.node is None else checkpoint.node + 1
         if keep > len(self.nodes):
             raise ValueError(f"checkpoint {checkpoint.id!r} is past this trace's graph")
@@ -883,7 +888,9 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         self._head_index = {}
         self._pending = {}
         self._generation += 1
-        self.calls = [c for c in self.calls if c.node is None or c.node < keep]
+        for call in self.calls:
+            if call.node is not None and call.node >= keep:
+                call.node = None
         if checkpoint.state is not None:
             self.state = copy.deepcopy(checkpoint.state)
         if checkpoint.info is not None:

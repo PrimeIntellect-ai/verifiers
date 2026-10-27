@@ -198,6 +198,9 @@ class RuntimeBackend(ABC):
         # Explicit process values (model credentials, proxy settings, etc.) override these.
         self.env: dict[str, str] = {}
         self.cache = RuntimeCache()
+        self.stray_checkpoints: list[str] = []
+        """Checkpoints this box took that never became restorable (a failed or cancelled
+        durability wait), so no trace records them; freed after the box is gone."""
         self._setup_claimed = False
         self._background: list[RuntimeProcess] = []
         self.stopped = False
@@ -224,9 +227,10 @@ class RuntimeBackend(ABC):
     async def start(self) -> None:
         pass
 
-    async def checkpoint(self) -> str:
+    async def checkpoint(self) -> tuple[str, int | None]:
         """Snapshot the filesystem and return the checkpoint's id, restorable from the
-        moment this returns; the box keeps running."""
+        moment this returns, with its stored size in bytes when the provider reports
+        it; the box keeps running."""
         raise NotImplementedError(f"{type(self).__name__} does not support checkpoints")
 
     async def discard_checkpoints(self, ids: list[str]) -> None:
