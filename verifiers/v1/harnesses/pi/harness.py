@@ -155,6 +155,11 @@ class PiHarness(ACPHarness[PiHarnessConfig]):
             }
         }
         await runtime.write(f"{agent_dir}/models.json", json.dumps(models).encode())
+        # pi-acp otherwise sends a startup notice (the AGENTS.md and skills it found) as an
+        # agent message chunk, which lands in the recorded reply ahead of the model's answer.
+        await runtime.write(
+            f"{agent_dir}/settings.json", json.dumps({"quietStartup": True}).encode()
+        )
 
         if mcp_urls:
             mcp = {
