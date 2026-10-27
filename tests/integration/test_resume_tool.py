@@ -31,7 +31,9 @@ async def test_resume_tool(run, harness, harness_runtime):
     assert "tool" in segments[1]["roles"]
     assert segments[1]["tool_outputs"]
     if harness.id == "pi":
-        recall = next(tool for tool in trace.tools if tool.name == "resume_recall")
+        recall = next(
+            tool for tool in trace.tools if tool.name == "mcp__resume__recall"
+        )
         assert recall.parameters["properties"]["codeword"]["type"] == "string"
         assert "codeword" in recall.parameters["required"]
     if harness.id == "codex":

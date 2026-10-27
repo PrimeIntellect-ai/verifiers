@@ -13,6 +13,7 @@ from verifiers.v1.harnesses.utils import compaction, core, mcp
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.trace import Trace
 from verifiers.v1.types import Messages
+from verifiers.v1.utils import network
 
 PEP_723_END = "# ///\n"
 
@@ -29,10 +30,10 @@ def bundle_program(program: str, *modules: ModuleType) -> str:
 # use argv so tools do not inherit them.
 CHAT_PROGRAM = (
     '# /// script\n# requires-python = ">=3.10"\n'
-    '# dependencies = ["openai", "mcp==2.0.0", "httpx", "httpx2", "tenacity", "certifi"]\n'
+    '# dependencies = ["openai", "mcp==2.3.0", "httpx", "httpx2", "tenacity", "certifi"]\n'
     "# ///\n"
 )
-CHAT_PROGRAM_SOURCE = bundle_program(CHAT_PROGRAM, mcp, compaction, core)
+CHAT_PROGRAM_SOURCE = bundle_program(CHAT_PROGRAM, network, mcp, compaction, core)
 
 
 class CompactionConfig(BaseConfig):

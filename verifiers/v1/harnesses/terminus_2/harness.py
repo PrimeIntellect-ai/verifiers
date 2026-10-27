@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 class Terminus2HarnessConfig(HarnessConfig):
     dialect: Literal["chat_completions"] = "chat_completions"
-    version: PinnedVersion = "0.23.0"
+    version: PinnedVersion = "0.24.0"
     """Harbor release to install, pinned for reproducibility."""
 
 

@@ -3,7 +3,7 @@ from verifiers.v1.runtimes import Runtime
 
 NODE_DIR = "/var/tmp/vf-node"
 NODE_BIN_DIR = f"{NODE_DIR}/bin"
-NODE_VERSION = "22.19.0"
+NODE_VERSION = "22.23.4"
 
 INSTALL = r"""
 set -e
