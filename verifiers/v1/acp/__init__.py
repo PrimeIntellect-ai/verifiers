@@ -3,6 +3,7 @@
 import asyncio
 import contextlib
 import json
+import logging
 from abc import abstractmethod
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
@@ -13,7 +14,12 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
-from verifiers.v1.errors import HarnessError, InterceptionError, ProviderError
+from verifiers.v1.errors import (
+    HarnessError,
+    InterceptionError,
+    ProviderError,
+    SandboxError,
+)
 from verifiers.v1.harness import Harness, HarnessSession
 from verifiers.v1.runtimes import ProgramResult, Runtime, RuntimeProcess
 from verifiers.v1.semantic import (
@@ -25,8 +31,15 @@ from verifiers.v1.trace import Trace
 from verifiers.v1.types import Messages
 from verifiers.v1.utils.aio import run_shielded
 
+logger = logging.getLogger(__name__)
+
 ACP_SOURCE = (Path(__file__).resolve().parent / "runner.py").read_text()
 MAX_PACKET_BYTES = 128 * 1024 * 1024
+ACP_STALL_SECONDS = 300.0
+"""How long the ACP process's stream may carry nothing, not even the runner's heartbeat
+(every `HEARTBEAT_SECONDS`), before the session counts it dead. A box whose network path
+died leaves its live process stream re-attached to nothing: no output, no error, no exit,
+until the stream's own 24-hour bound, while the turn holds its rollout."""
 _STOP_CONDITIONS = {
     "max_tokens": "max_output_tokens",
     "max_turn_requests": "max_turns",
@@ -252,6 +265,8 @@ class ACPHarnessSession(HarnessSession):
         self._responses: dict[int, asyncio.Future] = {}
         self._request_id = 0
         self._response_task: asyncio.Task | None = None
+        self._resends: set[asyncio.Task] = set()
+        self.stall_timeout: float | None = ACP_STALL_SECONDS
 
     async def _start(self) -> None:
         self._stderr_tail.clear()
@@ -269,7 +284,19 @@ class ACPHarnessSession(HarnessSession):
     async def _read_responses(self, reader: _PacketReader) -> None:
         try:
             while True:
-                response = await reader.read()
+                try:
+                    async with asyncio.timeout(self.stall_timeout):
+                        response = await reader.read()
+                except TimeoutError:
+                    raise SandboxError(
+                        f"ACP process stream stalled: nothing, not even a heartbeat, "
+                        f"for {self.stall_timeout:g}s (the box or its live process "
+                        "stream stopped answering)",
+                        kind="io",
+                    ) from None
+                if "heartbeat" in response:
+                    self._recover(response["heartbeat"])
+                    continue
                 future = self._responses.get(response.get("id"))
                 if future is not None and not future.done():
                     future.set_result(response)
@@ -277,8 +304,38 @@ class ACPHarnessSession(HarnessSession):
             for future in self._responses.values():
                 if not future.done():
                     future.set_exception(
-                        RuntimeError(f"ACP connection closed: {error}")
+                        error
+                        if isinstance(error, SandboxError)
+                        else RuntimeError(f"ACP connection closed: {error}")
                     )
+
+    def _recover(self, answered: list) -> None:
+        """Ask again for each answer the runner reports sent that never arrived: the live
+        process stream drops what the box writes while it re-attaches. The stream keeps
+        order, so an answer sent before this heartbeat and still awaited is lost. Every
+        heartbeat that names it asks again; an answer that then arrives twice is used once."""
+        process = self._process
+        for request_id in answered:
+            future = self._responses.get(request_id)
+            if future is None or future.done() or process is None:
+                continue
+            logger.warning(
+                "ACP answer to request %s was lost on the process stream; asking again",
+                request_id,
+            )
+
+            async def resend(target: int = request_id) -> None:
+                try:
+                    async with self._write_lock:
+                        await process.write(
+                            _packet({"operation": "resend", "target": target})
+                        )
+                except Exception as error:  # noqa: BLE001 - the next heartbeat asks again
+                    logger.debug("ACP resend of %s failed: %s", target, error)
+
+            task = asyncio.create_task(resend())
+            self._resends.add(task)
+            task.add_done_callback(self._resends.discard)
 
     async def _request(self, operation: str, **payload: Any) -> JsonObject:
         process = self._process

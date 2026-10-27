@@ -39,6 +39,11 @@ from acp.schema import (
 )
 
 MAX_PACKET_BYTES = 128 * 1024 * 1024
+# How often the runner tells the host it is alive (`serve_stream`). The host fails a turn
+# whose stream carried nothing for many of these (`ACP_STALL_SECONDS`).
+HEARTBEAT_SECONDS = float(os.environ.get("VF_ACP_HEARTBEAT_SECONDS", "15"))
+# Answered requests kept for a host that lost one (`resend`).
+ANSWERS_KEPT = 8
 
 # A Prime tunnel's gateway answers this page itself while the tunnel has no frpc
 # registered: for the moment after its frpc's connection drops, until frpc logs in again.
@@ -584,6 +589,15 @@ async def serve_stream() -> None:
     )
     tasks: set[asyncio.Task] = set()
     prompt_lock = asyncio.Lock()
+    # The live process stream does not replay output written while it was re-attaching,
+    # so an answer can be lost on the way: each heartbeat names the recent answers, and a
+    # host still waiting on one asks for it again (`resend`).
+    answered: dict[Any, dict] = {}
+
+    async def heartbeat() -> None:
+        while True:
+            await asyncio.sleep(HEARTBEAT_SECONDS)
+            write_packet(sys.stdout.buffer, {"heartbeat": list(answered)})
 
     async def handle(request: dict) -> None:
         operation = request.get("operation")
@@ -609,10 +623,18 @@ async def serve_stream() -> None:
             if operation == "prompt":
                 response["result"] = asdict(session.client.turn_result())
         response["id"] = request.get("id")
+        answered[response["id"]] = response
+        while len(answered) > ANSWERS_KEPT:
+            del answered[next(iter(answered))]
         write_packet(sys.stdout.buffer, response)
 
+    beating = asyncio.create_task(heartbeat())
     try:
         while request := await read_packet(reader):
+            if request.get("operation") == "resend":
+                if (answer := answered.get(request.get("target"))) is not None:
+                    write_packet(sys.stdout.buffer, answer)
+                continue
             if request.get("operation") == "shutdown":
                 if tasks:
                     await asyncio.gather(*tasks)
@@ -622,6 +644,7 @@ async def serve_stream() -> None:
             tasks.add(task)
             task.add_done_callback(tasks.discard)
     finally:
+        beating.cancel()
         for task in tasks:
             task.cancel()
         if tasks:

@@ -1020,6 +1020,11 @@ class Rollout:
     async def _cleanup_harness(self, runtime: Runtime) -> None:
         if self._harness_cleaned:
             return
+        if runtime.backend.stopped:
+            # A runtime torn down already (setup failed, the box was lost) holds nothing
+            # to clean, and its backend has released its client.
+            self._harness_cleaned = True
+            return
         try:
             await self.harness.cleanup(self.trace, runtime)
         except Exception:
