@@ -129,13 +129,27 @@ _WINDOW_OVERFLOWS = (
     # Prime inference: "This model configuration accepts at most 1048576 combined input and
     # output tokens. However, your request has 919998 input tokens and asks for 131072 ..."
     re.compile(
-        r"at most (\d+) combined input and output tokens.*?has (\d+) input tokens",
+        r"at most (?P<window>\d+) combined input and output tokens.*?has (?P<prompt>\d+) input tokens",
         re.DOTALL,
     ),
     # OpenRouter: "This endpoint's maximum context length is N tokens. However, you
     # requested about M tokens (X of text input, Y in the output)."
     re.compile(
-        r"maximum context length is (\d+) tokens.*?\((\d+) of text input", re.DOTALL
+        r"maximum context length is (?P<window>\d+) tokens.*?\((?P<prompt>\d+) of text input",
+        re.DOTALL,
+    ),
+    # Providers behind OpenRouter, quoted in its `metadata.raw` (2026-10-26, ProgramBench):
+    # "input (919960 tokens) plus requested output (131072 tokens) exceeds the safe limit of
+    # 1043334 tokens for model context window of 1048576 tokens"
+    re.compile(
+        r"input \((?P<prompt>\d+) tokens\) plus requested output \(\d+ tokens\) exceeds the safe limit of (?P<window>\d+) tokens",
+        re.DOTALL,
+    ),
+    # vLLM: "maximum context length of 1048576 tokens. You requested a total of 1070000
+    # tokens: 938928 tokens from the input messages and 131072 tokens for the completion"
+    re.compile(
+        r"maximum context length of (?P<window>\d+) tokens\. You requested a total of \d+ tokens: (?P<prompt>\d+) tokens from the input",
+        re.DOTALL,
     ),
 )
 MIN_FITTED_OUTPUT = 4096
@@ -153,7 +167,7 @@ def _fit_output_to_window(
         return None
     for pattern in _WINDOW_OVERFLOWS:
         if match := pattern.search(str(error)):
-            window, prompt = int(match.group(1)), int(match.group(2))
+            window, prompt = int(match.group("window")), int(match.group("prompt"))
             break
     else:
         return None

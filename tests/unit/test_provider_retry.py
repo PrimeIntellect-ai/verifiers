@@ -677,3 +677,30 @@ def test_an_output_over_the_window_is_refitted():
         )
         is None
     )
+
+
+def test_provider_wordings_behind_openrouter_are_refitted():
+    """OpenRouter quotes the serving provider's own overflow message in `metadata.raw`;
+    those wordings are refitted too, and a prompt over the window alone is not."""
+    from verifiers.v1.errors import ProviderError
+
+    body = {"max_completion_tokens": 131072}
+    safe = (
+        'upstream 400: {"error":{"message":"Provider returned error","code":400,"metadata":{"raw":'
+        '"{\\"error\\":{\\"code\\":\\"context_length_exceeded\\",\\"message\\":\\"input (919960 tokens) '
+        "plus requested output (131072 tokens) exceeds the safe limit of 1043334 tokens for model "
+        'context window of 1048576 tokens\\"}}"}}}'
+    )
+    fitted = server._fit_output_to_window(ProviderError(safe, status_code=400), body)
+    assert fitted["max_completion_tokens"] == 1043334 - 919960 - 256
+    vllm = (
+        "upstream 400: Off-thread admission: Requested token count exceeds the model's maximum "
+        "context length of 1048576 tokens. You requested a total of 1070000 tokens: 938928 tokens "
+        "from the input messages and 131072 tokens for the completion."
+    )
+    fitted = server._fit_output_to_window(ProviderError(vllm, status_code=400), body)
+    assert fitted["max_completion_tokens"] == 1048576 - 938928 - 256
+    over = vllm.replace("938928 tokens from", "1048000 tokens from")
+    assert (
+        server._fit_output_to_window(ProviderError(over, status_code=400), body) is None
+    )
