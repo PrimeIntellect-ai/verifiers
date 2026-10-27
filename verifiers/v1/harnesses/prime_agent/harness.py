@@ -307,7 +307,6 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
             self._bin(),
             "--mode",
             "acp",
-            "--no-session",  # The ACP connection owns the session's lifetime.
             "--provider",
             PROVIDER,
             "--model",
