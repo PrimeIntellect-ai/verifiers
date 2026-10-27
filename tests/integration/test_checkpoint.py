@@ -47,6 +47,9 @@ async def test_retry_restores_checkpoint(run, harness, harness_runtime):
     assert trace.num_turns >= FAIL_AFTER_TURNS
     # The error belongs to the first attempt, in the agent stage.
     assert [(error.attempt, error.stage) for error in trace.errors] == [(0, "agent")]
+    # The restored process made no side request of its own (it would start a second
+    # root), e.g. a model probe on session load.
+    assert sum(node.parent is None for node in trace.nodes) == 1
     # The restored process got the restore notice as a user turn.
     assert any(
         node.message.role == "user"

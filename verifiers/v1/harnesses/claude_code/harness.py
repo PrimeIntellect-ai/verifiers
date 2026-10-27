@@ -105,6 +105,10 @@ class ClaudeCodeHarness(ACPHarness[ClaudeCodeHarnessConfig]):
             "ANTHROPIC_BASE_URL": endpoint.removesuffix("/v1"),
             "ANTHROPIC_API_KEY": secret,
             "ANTHROPIC_MODEL": ctx.model,
+            # Claude Code validates a model it has not seen in this process with a
+            # one-token "Hi" request (e.g. when a restored session re-selects its
+            # model); a custom model option is trusted without that request.
+            "ANTHROPIC_CUSTOM_MODEL_OPTION": ctx.model,
             "CLAUDE_CODE_EXECUTABLE": CLAUDE_BIN.format(**versions),
             "CLAUDE_CONFIG_DIR": config_dir,
             "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
