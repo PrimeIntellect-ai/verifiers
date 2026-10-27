@@ -31,6 +31,9 @@ PI_BIN = f"{PACKAGES_DIR}/node_modules/.bin/pi"
 ACP_VERSION = "0.0.34"
 ACP_BIN = f"{PACKAGES_DIR}/node_modules/.bin/pi-acp"
 ACP_COMMAND = [f"{NODE_BIN_DIR}/node", ACP_BIN]
+# Per-rollout Pi state (config, sessions), kept out of the working directory so the
+# agent doesn't find its own session log when it searches the task's files.
+STATE_ROOT = "/tmp/vf-pi-runs"
 
 GATE_EXTENSION = (Path(__file__).resolve().parent / "gate.mjs").read_text()
 
@@ -104,7 +107,7 @@ class PiHarness(ACPHarness[PiHarnessConfig]):
         data: TaskData,
     ) -> ACPConfig:
         system_prompt, prompt = self.resolve_prompt(data)
-        agent_dir = f".vf-pi-agent-{trace.id}"
+        agent_dir = f"{STATE_ROOT}/{trace.id}"
         skills_dir = f"{agent_dir}/skills"
         await self.install_skills(runtime, skills_dir)
         reasoning = ctx.sampling.reasoning_effort not in (
@@ -203,7 +206,7 @@ class PiHarness(ACPHarness[PiHarnessConfig]):
         )
 
     async def cleanup(self, trace: Trace, runtime: Runtime) -> None:
-        await remove_dir(runtime, f".vf-pi-agent-{trace.id}", "Pi state")
+        await remove_dir(runtime, f"{STATE_ROOT}/{trace.id}", "Pi state")
 
     async def gate_tools(
         self, config: ACPConfig, runtime: Runtime, url: str, secret: str
