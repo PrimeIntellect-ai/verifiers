@@ -25,7 +25,6 @@ from pydantic_core import from_json
 from verifiers.v1.configs.runtime import (
     NetworkPolicyConfig,
     intersect_network_hosts,
-    parse_network_rule,
 )
 from verifiers.v1.types import (
     DialectName,
@@ -34,6 +33,7 @@ from verifiers.v1.types import (
     Sampling,
     SamplingConfig,
 )
+from verifiers.v1.utils.network import parse_network_rule
 
 RespT = TypeVar("RespT", bound=BaseModel)
 RawRequest = dict[str, Any]

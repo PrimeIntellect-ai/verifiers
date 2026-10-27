@@ -4,35 +4,16 @@ from fnmatch import fnmatchcase
 from glob import has_magic
 from itertools import product
 from typing import Annotated, Any, Literal, Self
-from urllib.parse import SplitResult, urlsplit
 
 from pydantic import Field, SerializeAsAny, model_validator
 from pydantic_config import BaseConfig
 
-
-def parse_network_rule(rule: str) -> tuple[SplitResult, str, int | None]:
-    """Normalize host/port while retaining URL syntax for backend validation."""
-    parsed = urlsplit(rule if "://" in rule else f"//{rule}")
-    port = parsed.port
-    if parsed.scheme and port is None:
-        port = 443 if parsed.scheme == "https" else 80
-    return parsed, (parsed.hostname or "").lower().rstrip("."), port
-
-
-def network_rule_matches(
-    rule: str, scheme: str, host: str, port: int, *, subdomains: bool = False
-) -> bool:
-    """Match a network-policy host pattern or URL origin. Paths are ignored."""
-    try:
-        parsed, pattern, rule_port = parse_network_rule(rule)
-    except ValueError:
-        return False
-    if not pattern or (parsed.scheme and parsed.scheme != scheme):
-        return False
-    if rule_port is not None and rule_port != port:
-        return False
-    host = host.lower().rstrip(".")
-    return fnmatchcase(host, pattern) or (subdomains and host.endswith(f".{pattern}"))
+from verifiers.v1.utils.network import (
+    NetworkAllowlist,
+    NetworkBlocklist,
+    network_rule_matches,
+    parse_network_rule,
+)
 
 
 def intersect_network_hosts(left: str, right: str) -> str:
@@ -59,10 +40,10 @@ class NetworkPolicyConfig(BaseConfig):
     task's scoring (`ScoringConfig.network`) all use it; a task's policy combines with its
     runtime's rules: allowlists intersect and blocklists merge."""
 
-    allow: list[str] = Field(default_factory=lambda: ["*"])
+    allow: NetworkAllowlist = Field(default_factory=lambda: ["*"])
     """Destinations allowed during execution; `*` is unrestricted and `[]` is
     framework-only."""
-    block: list[str] = Field(default_factory=list)
+    block: NetworkBlocklist = Field(default_factory=list)
     """Denied destinations; bare domains include subdomains, `*.` excludes the base
     domain, and any `*` makes the policy framework-only."""
 

@@ -31,7 +31,6 @@ from tenacity import (
 
 if TYPE_CHECKING:
     # The harness bundles this module into the generated script before execution.
-    from verifiers.v1.configs.runtime import network_rule_matches  # noqa: TC004
     from verifiers.v1.harnesses.utils.compaction import (  # noqa: TC004
         Compactor,
         bound_tool_message,
@@ -41,6 +40,10 @@ if TYPE_CHECKING:
         is_context_overflow,
     )
     from verifiers.v1.harnesses.utils.mcp import call_mcp, connect_mcp  # noqa: TC004
+    from verifiers.v1.utils.network import (  # noqa: TC004
+        NetworkBlocklist,
+        network_rule_matches,
+    )
 
 # Mirror of verifiers.v1.errors.MODEL_TRANSPORT_ERROR_EXIT_CODE;
 # this bundled script cannot import verifiers.
@@ -134,7 +137,7 @@ def run_search(
     query: str,
     api_key: str,
     num_results: int = 5,
-    network_block: list[str] | None = None,
+    network_block: "NetworkBlocklist | None" = None,
 ) -> str:
     """Serper Google web search -> formatted organic results.
 

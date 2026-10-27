@@ -1,29 +1,27 @@
 import inspect
 import json
 from collections.abc import Sequence
-from types import FunctionType, ModuleType
+from types import ModuleType
 
 from pydantic import PositiveInt
 from pydantic_config import BaseConfig
 
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
-from verifiers.v1.configs.runtime import network_rule_matches, parse_network_rule
 from verifiers.v1.dialects.chat import message_to_wire
 from verifiers.v1.harnesses.utils import compaction, core, mcp
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.trace import Trace
 from verifiers.v1.types import Messages
+from verifiers.v1.utils import network
 
 PEP_723_END = "# ///\n"
 
 
-def bundle_program(program: str, *parts: ModuleType | FunctionType | str) -> str:
-    """Embed helper sources so PEP 723 programs need only their declared packages."""
+def bundle_program(program: str, *modules: ModuleType) -> str:
+    """Embed utils modules so PEP 723 programs need only their declared packages."""
     metadata, body = program.split(PEP_723_END, 1)
-    sources = "\n".join(
-        part if isinstance(part, str) else inspect.getsource(part) for part in parts
-    )
+    sources = "\n".join(inspect.getsource(module) for module in modules)
     return f"{metadata}{PEP_723_END}{sources}\n{body}"
 
 
@@ -35,15 +33,7 @@ CHAT_PROGRAM = (
     '# dependencies = ["openai", "mcp==2.0.0", "httpx", "httpx2", "tenacity", "certifi"]\n'
     "# ///\n"
 )
-CHAT_PROGRAM_SOURCE = bundle_program(
-    CHAT_PROGRAM,
-    "from fnmatch import fnmatchcase\nfrom urllib.parse import SplitResult, urlsplit",
-    parse_network_rule,
-    network_rule_matches,
-    mcp,
-    compaction,
-    core,
-)
+CHAT_PROGRAM_SOURCE = bundle_program(CHAT_PROGRAM, network, mcp, compaction, core)
 
 
 class CompactionConfig(BaseConfig):
