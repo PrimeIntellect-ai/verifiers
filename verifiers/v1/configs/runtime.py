@@ -9,8 +9,6 @@ from pydantic import Field, SerializeAsAny, model_validator
 from pydantic_config import BaseConfig
 
 from verifiers.v1.utils.network import (
-    NetworkAllowlist,
-    NetworkBlocklist,
     network_rule_matches,
     parse_network_rule,
 )
@@ -40,10 +38,10 @@ class NetworkPolicyConfig(BaseConfig):
     task's scoring (`ScoringConfig.network`) all use it; a task's policy combines with its
     runtime's rules: allowlists intersect and blocklists merge."""
 
-    allow: NetworkAllowlist = Field(default_factory=lambda: ["*"])
+    allow: list[str] = Field(default_factory=lambda: ["*"])
     """Destinations allowed during execution; `*` is unrestricted and `[]` is
     framework-only."""
-    block: NetworkBlocklist = Field(default_factory=list)
+    block: list[str] = Field(default_factory=list)
     """Denied destinations; bare domains include subdomains, `*.` excludes the base
     domain, and any `*` makes the policy framework-only."""
 

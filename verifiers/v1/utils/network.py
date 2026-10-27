@@ -1,11 +1,7 @@
-"""Network rule types and matching shared by runtimes and standalone harnesses."""
+"""Network rule matching shared by runtimes and standalone harnesses."""
 
 from fnmatch import fnmatchcase
-from typing import TypeAlias
 from urllib.parse import SplitResult, urlsplit
-
-NetworkAllowlist: TypeAlias = list[str]
-NetworkBlocklist: TypeAlias = list[str]
 
 
 def parse_network_rule(rule: str) -> tuple[SplitResult, str, int | None]:
