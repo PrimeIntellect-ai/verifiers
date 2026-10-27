@@ -53,6 +53,7 @@ import re
 from collections.abc import Callable, Mapping, Sequence
 from typing import TYPE_CHECKING, Any, Generic, Literal, cast
 
+from openai import APIConnectionError, APIStatusError
 from openai.types.chat.completion_create_params import (
     CompletionCreateParamsNonStreaming,
 )
@@ -66,6 +67,7 @@ from verifiers.v1.configs.judge import (
 )
 from verifiers.v1.configs.sampling import SamplingConfig
 from verifiers.v1.dialects.chat import message_to_wire
+from verifiers.v1.errors import model_error
 from verifiers.v1.types import Messages, Usage
 from verifiers.v1.utils.generic import concrete_type, merge_defaults
 from verifiers.v1.utils.score import parse_judge_choice
@@ -229,6 +231,9 @@ class Judge(Generic[ParsedT, ConfigT]):
             if parse is not None:
                 response.parsed = parse(response)
             return response
+        except (APIStatusError, APIConnectionError) as error:
+            # A provider failure, typed with its status so retry rules can match it.
+            raise model_error(error) from error
         finally:
             if trace is not None and response is not None:
                 trace.record_judge_call(
