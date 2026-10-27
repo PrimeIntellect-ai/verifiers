@@ -3,6 +3,9 @@
 import hashlib
 import json
 import logging
+import uuid
+from functools import cached_property
+from pathlib import Path
 from typing import Literal
 
 from verifiers.v1.acp import ACPConfig, ACPHarness, ACPTurn
@@ -25,6 +28,21 @@ PRIME_AGENT_COMMIT: Literal["8aac8692456c00c01d4e53e60e6d3347a3506559"] = (
     "8aac8692456c00c01d4e53e60e6d3347a3506559"
 )
 PRIME_AGENT_VERSION = "0.10.1"
+# Release archive digests by Prime Agent platform name.
+PRIME_AGENT_SHA256 = {
+    "linux-x64": "21ec219183f4134dd23dce9572102e69456066fe374846525561c776d4d1945c",
+    "linux-arm64": "5af68c10a088538fd4990fd18778d8c7fe28c0491083dc069c5177f733770e91",
+    "darwin-x64": "9e2812084acead5a2c44209ffac350f762da67a27f4abcc5b417b7a6ef436632",
+    "darwin-arm64": "2b47bd9cefa0b531151aaeb7295073ba0a16cf694177c18b4f9f74a54b24e279",
+}
+# `uname -sm` to Prime Agent platform name.
+PLATFORMS = {
+    "Linux x86_64": "linux-x64",
+    "Linux aarch64": "linux-arm64",
+    "Linux arm64": "linux-arm64",
+    "Darwin x86_64": "darwin-x64",
+    "Darwin arm64": "darwin-arm64",
+}
 PRIME_AGENT_DIR = "/var/tmp/vf-prime-agent"
 STATE_ROOT = "/tmp/vf-prime-agent-runs"
 PROVIDER = "intercept"
@@ -37,30 +55,30 @@ INSTALL = (
     "set -e\n"
     + _ENSURE_UV
     + r"""
-prefix="$VF_PRIME_AGENT_DIR/$PRIME_AGENT_COMMIT"
+prefix="$VF_PRIME_AGENT_DIR/$PRIME_AGENT_BUILD"
 if [ ! -x "$prefix/bin/prime-agent" ]; then
-    case "$(uname -s)-$(uname -m)" in
-        Linux-x86_64) platform=linux-x64; sha=21ec219183f4134dd23dce9572102e69456066fe374846525561c776d4d1945c ;;
-        Linux-aarch64|Linux-arm64) platform=linux-arm64; sha=5af68c10a088538fd4990fd18778d8c7fe28c0491083dc069c5177f733770e91 ;;
-        Darwin-x86_64) platform=darwin-x64; sha=9e2812084acead5a2c44209ffac350f762da67a27f4abcc5b417b7a6ef436632 ;;
-        Darwin-arm64) platform=darwin-arm64; sha=2b47bd9cefa0b531151aaeb7295073ba0a16cf694177c18b4f9f74a54b24e279 ;;
-        *) echo "unsupported prime-agent platform: $(uname -s)-$(uname -m)" >&2; exit 1 ;;
-    esac
-    command -v curl >/dev/null || { apt-get update -qq && apt-get install -y -qq curl ca-certificates; } || apk add --no-cache curl ca-certificates
-    release_url="$VF_PRIME_AGENT_GITHUB_RELEASE_URL/v$PRIME_AGENT_RELEASE_VERSION"
-    tarball="prime-agent-$PRIME_AGENT_RELEASE_VERSION-$platform.tar.gz"
     download_dir="$(mktemp -d "$VF_PRIME_AGENT_DIR/install.XXXXXX")"
     trap 'rm -rf "$download_dir"' EXIT
-    curl -fsSL --retry 5 --retry-all-errors "$release_url/$tarball" -o "$download_dir/$tarball"
-    printf '%s  %s\n' "$sha" "$tarball" > "$download_dir/SHA256SUMS"
+    archive="${PRIME_AGENT_ARCHIVE:-$download_dir/prime-agent.tar.gz}"
+    if [ -z "${PRIME_AGENT_ARCHIVE:-}" ]; then
+        command -v curl >/dev/null || { apt-get update -qq && apt-get install -y -qq curl ca-certificates; } || apk add --no-cache curl ca-certificates
+        curl -fsSL --retry 5 --retry-all-errors "$PRIME_AGENT_ARCHIVE_URL" -o "$archive"
+    fi
+    printf '%s  %s\n' "$PRIME_AGENT_ARCHIVE_SHA256" "$archive" > "$download_dir/SHA256SUMS"
     if command -v sha256sum >/dev/null; then
-        (cd "$download_dir" && sha256sum -c SHA256SUMS)
+        sha256sum -c "$download_dir/SHA256SUMS"
     else
-        (cd "$download_dir" && shasum -a 256 -c SHA256SUMS)
+        shasum -a 256 -c "$download_dir/SHA256SUMS"
     fi
     mkdir "$download_dir/bin"
-    tar -xzf "$download_dir/$tarball" -C "$download_dir/bin"
-    [ "$("$download_dir/bin/prime-agent" --version)" = "$PRIME_AGENT_RELEASE_VERSION" ]
+    tar -xzf "$archive" -C "$download_dir/bin"
+    if [ -n "${PRIME_AGENT_RELEASE_VERSION:-}" ]; then
+        reported="$("$download_dir/bin/prime-agent" --version)"
+        [ "$reported" = "$PRIME_AGENT_RELEASE_VERSION" ] || {
+            echo "prime-agent reports version $reported, expected $PRIME_AGENT_RELEASE_VERSION" >&2
+            exit 1
+        }
+    fi
     mkdir -p "$prefix"
     mv "$download_dir/bin" "$prefix/bin"
 fi
@@ -79,6 +97,11 @@ uv pip install --python "$PRIME_AGENT_KERNEL_VENV/bin/python" "$@"
 class PrimeAgentHarnessConfig(HarnessConfig):
     commit: Literal["8aac8692456c00c01d4e53e60e6d3347a3506559"] = PRIME_AGENT_COMMIT
     """Prime Agent release commit to install."""
+
+    release: Path | None = None
+    """A locally built Prime Agent release to install instead of `commit`: the directory
+    holding its `manifest.json`, such as the `target/release/dist` that
+    `make continuous-dry-run` writes."""
 
     autonomous: bool = False
     """Enable Prime Agent's autonomous continuation loop."""
@@ -151,21 +174,62 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
         statuses.append(status)
 
     async def setup(self, runtime: Runtime) -> None:
-        logger.info("prime-agent: ensuring commit %s is installed", self.config.commit)
-        await ensure_installed(
-            runtime,
-            directory=PRIME_AGENT_DIR,
-            install=INSTALL,
-            env={
-                **self.config.resolved_env,
-                "VF_PRIME_AGENT_DIR": PRIME_AGENT_DIR,
-                "VF_PRIME_AGENT_GITHUB_RELEASE_URL": GITHUB_RELEASE_URL,
-                "PRIME_AGENT_COMMIT": self.config.commit,
-                "PRIME_AGENT_RELEASE_VERSION": PRIME_AGENT_VERSION,
-                "PRIME_AGENT_KERNEL_VENV": self._kernel_venv(),
-            },
-            label="prime-agent",
-        )
+        logger.info("prime-agent: ensuring build %s is installed", self._build)
+        uname = await runtime.run(["uname", "-sm"], {})
+        platform = PLATFORMS.get(uname.stdout.strip())
+        if uname.exit_code != 0 or platform is None:
+            raise RuntimeError(
+                f"unsupported prime-agent platform: {uname.stdout.strip() or uname.stderr.strip()}"
+            )
+        archive: dict[str, str] = {}
+        upload: tuple[str, Path] | None = None
+        root = runtime.with_user(None)
+        if (local := self._local_release) is None:
+            version = PRIME_AGENT_VERSION
+            archive["PRIME_AGENT_RELEASE_VERSION"] = version
+            archive["PRIME_AGENT_ARCHIVE_SHA256"] = PRIME_AGENT_SHA256[platform]
+            archive["PRIME_AGENT_ARCHIVE_URL"] = (
+                f"{GITHUB_RELEASE_URL}/v{version}/prime-agent-{version}-{platform}.tar.gz"
+            )
+        else:
+            release, manifest_bytes = local
+            manifest = json.loads(manifest_bytes)
+            entry = next(
+                (b for b in manifest["binaries"] if b["platform"] == platform), None
+            )
+            if entry is None:
+                raise RuntimeError(
+                    f"prime-agent release {release} has no {platform} archive"
+                )
+            # The archive digest pins the build; the version stamp differs by release channel.
+            archive["PRIME_AGENT_ARCHIVE_SHA256"] = entry["sha256"]
+            if (await root.run(["test", "-x", self._bin()], {})).exit_code != 0:
+                upload = (
+                    f"{PRIME_AGENT_DIR}/upload.{uuid.uuid4().hex}",
+                    release / entry["file"],
+                )
+                archive["PRIME_AGENT_ARCHIVE"] = f"{upload[0]}/{entry['file']}"
+        try:
+            if upload is not None:
+                await root.write(
+                    archive["PRIME_AGENT_ARCHIVE"], self._archive(upload[1])
+                )
+            await ensure_installed(
+                runtime,
+                directory=PRIME_AGENT_DIR,
+                install=INSTALL,
+                env={
+                    **self.config.resolved_env,
+                    **archive,
+                    "VF_PRIME_AGENT_DIR": PRIME_AGENT_DIR,
+                    "PRIME_AGENT_BUILD": self._build,
+                    "PRIME_AGENT_KERNEL_VENV": self._kernel_venv(),
+                },
+                label="prime-agent",
+            )
+        finally:
+            if upload is not None:
+                await remove_dir(root, upload[0], "prime-agent upload")
         await super().setup(runtime)
 
     async def prepare_acp(
@@ -290,13 +354,43 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
         root = self._root(trace)
         await remove_dir(runtime, root, "prime-agent state")
 
+    @cached_property
+    def _local_release(self) -> tuple[Path, bytes] | None:
+        """The configured local release and its `manifest.json`, read once: every rollout
+        installs the build the install directory is named for, and a dist rebuilt mid-run
+        fails its checksum instead of landing under the old name."""
+        release = self.config.release
+        return (
+            None
+            if release is None
+            else (release, (release / "manifest.json").read_bytes())
+        )
+
+    @cached_property
+    def _build(self) -> str:
+        """The install directory name: the pinned commit, or a local release's manifest
+        digest, which changes with every archive it lists."""
+        if self._local_release is None:
+            return self.config.commit
+        return f"local-{hashlib.sha256(self._local_release[1]).hexdigest()[:16]}"
+
+    @cached_property
+    def _archives(self) -> dict[Path, bytes]:
+        return {}
+
+    def _archive(self, path: Path) -> bytes:
+        """A local release archive, read once and shared by every rollout's upload."""
+        if path not in self._archives:
+            self._archives[path] = path.read_bytes()
+        return self._archives[path]
+
     def _bin(self) -> str:
-        return f"{PRIME_AGENT_DIR}/{self.config.commit}/bin/prime-agent"
+        return f"{PRIME_AGENT_DIR}/{self._build}/bin/prime-agent"
 
     def _kernel_venv(self) -> str:
         """One venv path for install and session, in the shared install dir so the
         agent user can read the venv the root run bootstrapped."""
-        return f"{PRIME_AGENT_DIR}/{self.config.commit}/kernel-venv"
+        return f"{PRIME_AGENT_DIR}/{self._build}/kernel-venv"
 
     @staticmethod
     def _root(trace: Trace) -> str:
