@@ -50,6 +50,7 @@ def make_rollout(trace: vf.Trace, session, time_remaining=None):
     run._session = SimpleNamespace(
         request_interceptors=[],
         error=None,
+        hook_error=None,
         stopped=False,
     )
     run.deadline_at = None
@@ -100,3 +101,25 @@ async def test_expired_deadline_is_a_timeout_when_the_runtime_reports_an_error()
 
     assert trace.is_timeout and not trace.errors
     assert trace.stop_condition == "agent_timeout"
+
+
+@pytest.mark.parametrize("outcome", ["completes", "times out"])
+async def test_request_hook_failure_fails_the_rollout(outcome):
+    """A request hook's failure is the task's verdict: it fails the rollout even when
+    the harness survives the HTTP error — ending its turn cleanly, or retrying it until
+    the agent deadline."""
+    trace = make_trace()
+    error = vf.ProviderError("hook refused the turn", status_code=503)
+
+    class SurvivingSession:
+        async def turn(self, messages):
+            run._session.hook_error = error
+            if outcome == "times out":
+                await asyncio.sleep(60)
+
+    run = make_rollout(trace, SurvivingSession(), time_remaining=0.05)
+
+    await Interaction(run).turn("next")
+
+    assert [(e.type, e.stage) for e in trace.errors] == [("ProviderError", "agent")]
+    assert not trace.is_timeout

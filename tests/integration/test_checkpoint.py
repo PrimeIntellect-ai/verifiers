@@ -1,37 +1,35 @@
-"""A retry resumes from the box's newest filesystem checkpoint (checkpoint-resume-v1: the
+"""A retry restores the box's newest filesystem checkpoint (checkpoint-restore-v1: the
 first attempt dies as turn 3 goes upstream; the retry restores the turn-2 snapshot,
-keeps turn 1, and finishes). One cell: prime is the one runtime with checkpoints, and
-of the harnesses that relaunch on a transcript (`SUPPORTS_RESUME`) bash is the one
-the fixture can drive — null has no shell and takes one turn, browser-use needs a
-browser image. The ACP harnesses take no checkpoints (they start a fresh process
-on user turns, not a handed conversation)."""
+keeps the turns before it, and finishes in a new harness process). Every harness that
+declares `SUPPORTS_CHECKPOINT_RESTORE` runs it on prime, the one runtime with
+checkpoints; the others are collected as skips."""
 
 import pytest
-from checkpoint_resume_v1 import FAIL_AFTER_TURNS
-from grid import mark
+from checkpoint_restore_v1 import FAIL_AFTER_TURNS
+from grid import grid
+
+from verifiers.v1.harness import RESTORE_PROMPT
+from verifiers.v1.types import content_text
 
 RETRIES = {"max_retries": 0, "rules": [{"type": "ProviderError", "max_retries": 1}]}
 
 
 @pytest.mark.parametrize(
     "harness,harness_runtime",
-    [
-        pytest.param(
-            "bash", "prime", marks=[mark("bash"), mark("prime")], id="bash-in-prime"
-        )
-    ],
+    grid(needs=("restore", "checkpoint", "mcp")),
     indirect=True,
 )
-async def test_retry_resumes_from_checkpoint(run, harness, harness_runtime):
+async def test_retry_restores_checkpoint(run, harness, harness_runtime):
     """The box restores to the state before the turn that failed, the turns up to
-    there stay sampled, and the task's `setup` (a nonce the prompt never reveals) is
-    not rerun — the resumed attempt builds on turn 1's file."""
+    there stay sampled, the task's `setup` (a nonce the prompt never reveals) is not
+    rerun, and the harness is told about the restore — the restored attempt builds on
+    the earlier tool call's file."""
     (episode,) = await run(
-        "checkpoint-resume-v1",
+        "checkpoint-restore-v1",
         harness=harness,
         runtime=harness_runtime,
         env={"agent": {"retries": RETRIES}},
-        max_turns=8,
+        max_turns=12,
         max_tokens=4096,
     )
     (trace,) = episode.traces
@@ -44,14 +42,17 @@ async def test_retry_resumes_from_checkpoint(run, harness, harness_runtime):
     assert trace.agent.runtime is not None
     restored_from = trace.agent.runtime.checkpoint
     assert restored_from is not None
-    assert restored_from in [checkpoint.id for checkpoint in trace.checkpoints]
+    assert [c.id for c in trace.checkpoints if c.restored] == [restored_from]
+    assert trace.has_restored
     assert trace.num_turns >= FAIL_AFTER_TURNS
-    assert len(trace.checkpoints) >= trace.num_turns
-    # The error belongs to the first attempt, in the agent stage; the retry resumed
-    # from the restored checkpoint.
-    assert trace.has_resumed
-    assert [c.id for c in trace.checkpoints if c.resumed] == [restored_from]
+    # The error belongs to the first attempt, in the agent stage.
     assert [(error.attempt, error.stage) for error in trace.errors] == [(0, "agent")]
+    # The restored process got the restore notice as a user turn.
+    assert any(
+        node.message.role == "user"
+        and RESTORE_PROMPT in content_text(node.message.content)
+        for node in trace.nodes
+    )
     # Every turn kept has its call; the failure never went upstream, so no call
     # records it.
     assert [call.node for call in trace.calls] == [

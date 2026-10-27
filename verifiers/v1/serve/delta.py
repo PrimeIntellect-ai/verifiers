@@ -216,7 +216,7 @@ class DeltaStreamer:
             delta: dict[str, Any] = {"trace": trace.id}
             sent = self.cursors.get(trace.id)
             if sent is not None and sent.generation != trace.generation:
-                # A rewound trace (a retry resumed from a checkpoint) no longer extends
+                # A rewound trace (a retry restored from a checkpoint) no longer extends
                 # what went out: the client drops its copy and receives it anew.
                 deltas.append((trace.id, {"trace": trace.id, "discard": True}, None))
                 sent = None

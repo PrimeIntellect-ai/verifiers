@@ -187,7 +187,7 @@ class RuntimeBackend(ABC):
     SUPPORTS_CHECKPOINTS: ClassVar[bool] = False
     """Whether `checkpoint` snapshots the box's filesystem for a new box of this config
     to boot from (its config's `checkpoint`). A rollout checkpoints before each model
-    turn, so a retry resumes at the newest turn instead of replaying the run (see
+    turn, so a retry restores the newest turn instead of replaying the run (see
     `RetryConfig.checkpoint`)."""
 
     info: BaseRuntimeInfo

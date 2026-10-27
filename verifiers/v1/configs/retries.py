@@ -49,12 +49,12 @@ class RetryConfig(BaseConfig):
     checkpoint: bool = True
     """Experimental. With a retry budget, checkpoint the runtime's filesystem before
     every model turn (on a runtime that supports it: prime; the turn waits a few
-    seconds for the snapshot to be durable) and resume a retry from the newest one:
-    the trace keeps its turns up to there, its typed state as of then, and the
-    harness continues the conversation in a box restored to that state. False takes
-    no checkpoints and retries from scratch; so does a run with no retry budget.
-    Snapshots are freed when the run is final. Known limits: a harness with
-    concurrent sub-agents can snapshot while one of them is mid-tool, processes the
-    agent left running are not restored (a restore cold boots), and only a harness
-    that relaunches on a transcript resumes (`SUPPORTS_RESUME`: bash, null,
-    browser-use) — the ACP harnesses retry from scratch and take no checkpoints."""
+    seconds for the snapshot to be durable) and restore a retry from the newest one:
+    the trace keeps its turns up to there, its typed state as of then, and a new
+    harness process continues the conversation in a box restored to that state,
+    told that the box was restored (`HarnessSession.restore`). False takes no
+    checkpoints and retries from scratch; so does a run with no retry budget, or a
+    harness without `SUPPORTS_CHECKPOINT_RESTORE`. Snapshots are freed when the run
+    is final. Known limits: a harness with concurrent sub-agents can snapshot while
+    one of them is mid-tool, and processes the agent left running (background jobs,
+    sub-agents, a REPL's variables) are gone after a restore, which cold boots."""

@@ -236,7 +236,7 @@ def min_new_input_tokens(calls: Iterable[ModelCall]) -> Iterator[tuple[ModelCall
 class Checkpoint(BaseModel):
     """A snapshot of the rollout's box taken as a model turn went upstream: the box holds
     the effects of every message in `node`'s conversation plus `tail`, and nothing of the
-    turn that followed. A retry resumes there (`Trace.rewind`)."""
+    turn that followed. A retry restores it (`Trace.rewind`)."""
 
     id: str
     """The runtime's checkpoint id (`Runtime.checkpoint`)."""
@@ -245,15 +245,22 @@ class Checkpoint(BaseModel):
     the snapshot preceded the first turn."""
     tail: Messages = Field(default_factory=list, exclude=True)
     """The turn's prompt messages after `node` that had no node yet (tool results, user
-    turns): with `node`'s conversation, the prompt a resumed harness continues from.
-    Live-only — a retry resumes in the process that took the snapshot."""
+    turns): with `node`'s conversation, the prompt a restored harness continues from.
+    Live-only — a retry restores it in the process that took the snapshot."""
     state: Any = Field(None, exclude=True)
     """The trace's typed state as the snapshot was taken (tool servers write it over
     `/state`), restored with the box so a retry sees one consistent world. Live-only."""
     info: dict[str, Any] | None = Field(None, exclude=True)
     """`Trace.info` as the snapshot was taken, restored with `state`. Live-only."""
-    resumed: bool = False
-    """Whether a retry resumed the run from this snapshot."""
+    pins: dict[tuple[str, str], ToolMessage] = Field(default_factory=dict, exclude=True)
+    """The rollout's pinned tool results as the snapshot was taken
+    (`RolloutSession.pinned_tool_results`): a restored harness re-sends its own
+    copies, which must be pinned again to match the trace. Live-only."""
+    harness: dict[str, Any] = Field(default_factory=dict)
+    """What the harness session needs to continue in a box restored from the snapshot
+    (`HarnessSession.checkpoint_state`), e.g. an ACP agent's session id."""
+    restored: bool = False
+    """Whether a retry restored the run from this snapshot."""
 
 
 def _concat(parts: list[list | np.ndarray], dtype: type[np.generic]) -> np.ndarray:
@@ -487,7 +494,7 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     """Response changes made by `@intercept`, in execution order."""
     checkpoints: list[Checkpoint] = Field(default_factory=list)
     """Snapshots of the run's box, oldest first — one per model turn on a runtime that
-    supports them; a retry resumes from the newest."""
+    supports them; a retry restores the newest."""
 
     rewards: dict[str, Reward | None] = Field(default_factory=dict)
     """Named, weighted rewards; `None` means scoring didn't run (e.g. because of a
@@ -764,9 +771,9 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         return self.errors[-1] if self.errors else None
 
     @property
-    def has_resumed(self) -> bool:
-        """Whether a retry resumed this run from a checkpoint rather than starting over."""
-        return any(checkpoint.resumed for checkpoint in self.checkpoints)
+    def has_restored(self) -> bool:
+        """Whether a retry restored this run from a checkpoint rather than starting over."""
+        return any(checkpoint.restored for checkpoint in self.checkpoints)
 
     @property
     def transcript(self) -> str:
@@ -846,7 +853,7 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         span = self.timing.agent
         if not span.end:
             return
-        # A resumed trace keeps the calls of the attempts before this span.
+        # A restored trace keeps the calls of the attempts before this span.
         model = sum(
             call.time.duration for call in self.calls if call.time.start >= span.start
         )
@@ -881,7 +888,7 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
             self.state = copy.deepcopy(checkpoint.state)
         if checkpoint.info is not None:
             self.info = copy.deepcopy(checkpoint.info)
-        # The resumed rollout re-stamps every stage span; the run's start stays.
+        # The restored rollout re-stamps every stage span; the run's start stays.
         self.timing = Timing(start=self.timing.start)
         dropped = [
             c.id for c in self.checkpoints if c.node is not None and c.node >= keep

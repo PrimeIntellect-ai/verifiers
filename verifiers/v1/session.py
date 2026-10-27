@@ -179,6 +179,10 @@ class RolloutSession:
     when its program dies on it the rollout records this original error instead of a secondary
     `HarnessError`. A harness that completes cleanly after the failure handled it. Reset before
     each model turn, so a successful retry clears it."""
+    hook_error: "RolloutError | None" = None
+    """A request hook's failure: the task, not the provider, refused a turn. It ends the
+    rollout even when the harness carries on past the HTTP error (retries, then ends its
+    turn cleanly); never reset."""
     idempotent_requests: dict[str, IdempotentRequest] = field(default_factory=dict)
     """Explicit keys or marked SDK retries mapped to their replay state."""
     released: bool = False
@@ -206,7 +210,7 @@ class RolloutSession:
     prepared_users: Counter[str] = field(default_factory=Counter)
     checkpointer: Callable[[graph.PendingTurn], Awaitable[None]] | None = None
     """Snapshots the rollout's box right before a turn goes upstream (`Rollout` sets it
-    when its runtime supports checkpoints and a retry may resume from one)."""
+    when its runtime supports checkpoints and a retry may restore one)."""
 
     @property
     def stopped(self) -> bool:
@@ -385,7 +389,7 @@ class RolloutSession:
 
     def mark_intercepted(self, branch: Messages, tail: Messages) -> None:
         """Treat `tail`, which follows `branch` and was intercepted in an earlier
-        attempt (a resumed checkpoint's), as prepared: the harness re-sends it, and
+        attempt (a restored checkpoint's), as prepared: the harness re-sends it, and
         a non-idempotent hook must not rewrite it twice."""
         request = Request(messages=[*branch, *tail])
         for position, key in self.tool_result_keys(request).items():

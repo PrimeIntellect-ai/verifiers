@@ -640,19 +640,15 @@ class Agent:
             return self._server
         return None
 
-    def _supports_resume(self) -> bool:
-        """Whether the harness can continue a conversation it is handed: transcript
-        replay, a native resume implementation, or a rollout-scoped session."""
-        harness = self.harness
-        return (
-            type(harness).session is not Harness.session
-            or type(harness).resume is not Harness.resume
-            or harness.SUPPORTS_RESUME
-        )
-
     def _check_resume_support(self) -> None:
-        if not self._supports_resume():
-            harness = self.harness
+        # Multi-turn capability is derived: a harness needs transcript replay, a
+        # native resume implementation, or a rollout-scoped session implementation.
+        harness = self.harness
+        if (
+            type(harness).session is Harness.session
+            and type(harness).resume is Harness.resume
+            and not harness.SUPPORTS_RESUME
+        ):
             raise ValueError(
                 f"Harness {harness.config.id!r} cannot host a user: resuming an "
                 "exchange takes transcript-backed resume (SUPPORTS_RESUME) for the "
@@ -679,28 +675,25 @@ class Agent:
         moment it's minted, before any I/O. `collect_artifacts` captures the task's
         declared artifacts after its finalizer while its container runtime is still
         alive. Retries while the trace ends with a retryable error (`config.retries`)
-        — never into a borrowed box. A retry resumes from the failed attempt's newest
-        checkpoint when it has one (`retries.checkpoint` on a runtime that supports
-        them, a harness that relaunches on a transcript), keeping that trace and
-        its turns up to there; otherwise it starts over. The final trace keeps every
+        — never into a borrowed box. A retry restores the failed attempt's newest
+        checkpoint when it has one (`retries.checkpoint` on a runtime and a harness
+        that support it), keeping that trace and its turns up to there; otherwise it
+        starts over. The final trace keeps every
         attempt's errors. `on_score(trace, runtime)` runs after task scoring in
         the selected verifier workspace, inside its timeout and retry boundary."""
         if self._closed:
             raise RuntimeError("Agent is closed; create a new agent")
         retry = self.config.retries
         retry_state = RetryState(retry)
-        # A checkpoint resume relaunches the program on the trace's transcript; a
-        # harness with only a live-session resume (ACP) starts a fresh process that
-        # takes user turns, not a handed conversation.
-        can_resume = (
+        can_restore = (
             retry.checkpoint
             and retry_state.max_retries > 0
             and runtime is None
-            and self.harness.SUPPORTS_RESUME
+            and self.harness.SUPPORTS_CHECKPOINT_RESTORE
         )
         history: list[Error] = []  # errors of the attempts started over from
         trace: Trace | None = None
-        resume: Checkpoint | None = None
+        restore: Checkpoint | None = None
         snapshots: set[str] = set()  # every checkpoint any attempt took
         run: Rollout | None = None
         # TODO: retain sandbox snapshots beyond the run (an episode's forks, later
@@ -709,14 +702,14 @@ class Agent:
         # open to free them on abort.
         try:
             for attempt in range(retry_state.max_retries + 1):
-                resuming = (
-                    (trace, resume)
-                    if trace is not None and resume is not None
+                restoring = (
+                    (trace, restore)
+                    if trace is not None and restore is not None
                     else None
                 )
-                # This attempt's own errors decide — a resumed trace still carries
+                # This attempt's own errors decide — a restored trace still carries
                 # the earlier attempts'.
-                seen = len(resuming[0].errors) if resuming is not None else 0
+                seen = len(restoring[0].errors) if restoring is not None else 0
                 run = await self._run_once(
                     task,
                     runtime,
@@ -724,8 +717,8 @@ class Agent:
                     on_trace,
                     collect_artifacts,
                     on_score,
-                    resume=resuming,
-                    checkpoints=can_resume,
+                    restore=restoring,
+                    checkpoints=can_restore,
                     attempt=attempt,
                 )
                 trace = run.trace
@@ -742,10 +735,10 @@ class Agent:
                 cause = retry_state.next_error(trace.errors[seen:])
                 if cause is None:
                     break
-                resume = (
-                    trace.checkpoints[-1] if can_resume and trace.checkpoints else None
+                restore = (
+                    trace.checkpoints[-1] if can_restore and trace.checkpoints else None
                 )
-                if resume is None:
+                if restore is None:
                     history.extend(trace.errors)
                 delay = backoff(attempt)
                 logger.warning(
@@ -754,8 +747,8 @@ class Agent:
                     retry_state.max_retries,
                     delay,
                     cause.type,
-                    f"resuming from checkpoint {resume.id}"
-                    if resume is not None
+                    f"restoring checkpoint {restore.id}"
+                    if restore is not None
                     else "from scratch",
                 )
                 await asyncio.sleep(delay)
@@ -787,7 +780,7 @@ class Agent:
         collect_artifacts: bool,
         on_score: Callable[[Trace, Runtime], Awaitable[None]] | None,
         *,
-        resume: tuple[Trace, Checkpoint] | None = None,
+        restore: tuple[Trace, Checkpoint] | None = None,
         checkpoints: bool = False,
         attempt: int = 0,
     ) -> Rollout:
@@ -805,15 +798,15 @@ class Agent:
             on_trace=on_trace,
             collect_artifacts=collect_artifacts,
             on_score=on_score,
-            resume=resume,
+            restore=restore,
             checkpoints=checkpoints,
             attempt=attempt,
             **params,
         )
         try:
             if await run.open():
-                if resume is not None:
-                    await run.resume()
+                if restore is not None:
+                    await run.restore()
                 else:
                     await run.step()
                 if run.ok:

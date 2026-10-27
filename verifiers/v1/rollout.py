@@ -117,17 +117,17 @@ class Rollout:
         on_trace: Callable[[Trace], None] | None = None,
         collect_artifacts: bool = False,
         on_score: Callable[[Trace, Runtime], Awaitable[None]] | None = None,
-        resume: tuple[Trace, Checkpoint] | None = None,
+        restore: tuple[Trace, Checkpoint] | None = None,
         checkpoints: bool = False,
         attempt: int = 0,
     ) -> None:
         """`attempt` numbers this run among the trace's retries (stamped on the
-        errors it captures). `resume` continues a failed attempt's trace from one of
+        errors it captures). `restore` continues a failed attempt's trace from one of
         its checkpoints: the trace rewinds to it and this run boots its box from the
-        snapshot instead of setting the task up again. `checkpoints` snapshots the box before every
-        turn (on a runtime that supports it) for a retry to resume from; the owner
-        of the retries frees them (`Runtime.discard_checkpoints`) once the run is
-        final — this rollout only frees them when it aborts."""
+        snapshot instead of setting the task up again. `checkpoints` snapshots the box
+        before every turn (on a runtime and a harness that support it) for a retry to
+        restore; the owner of the retries frees them (`Runtime.discard_checkpoints`)
+        once the run is final — this rollout only frees them when it aborts."""
         self._on_score = on_score
         self.task = task
         self.harness = harness
@@ -149,14 +149,14 @@ class Rollout:
         self._collect_artifacts = collect_artifacts
         self._checkpoints = checkpoints
         self._attempt = attempt
-        self._resume: Checkpoint | None = None
+        self._restore: Checkpoint | None = None
         self._harness_data: TaskData | None = None
         self.rewound_checkpoints: list[str] = []
-        """Checkpoints the resumed trace dropped (taken after the one resumed from)."""
-        if resume is not None:
-            self.trace, self._resume = resume
-            self.rewound_checkpoints = self.trace.rewind(self._resume)
-            self._resume.resumed = True
+        """Checkpoints the restored trace dropped (taken after the one restored)."""
+        if restore is not None:
+            self.trace, self._restore = restore
+            self.rewound_checkpoints = self.trace.rewind(self._restore)
+            self._restore.restored = True
         else:
             self.trace = Trace(
                 task=TraceTask(
@@ -273,8 +273,8 @@ class Rollout:
         self.trace.notify()
         if self._borrowed_runtime is None:
             config = self.runtime_config
-            if self._resume is not None:
-                config = config.model_copy(update={"checkpoint": self._resume.id})
+            if self._restore is not None:
+                config = config.model_copy(update={"checkpoint": self._restore.id})
             self.runtime = make_backend(config, name=self.trace.id).bind()
         elif (
             self._borrowed_runtime is not None
@@ -290,7 +290,7 @@ class Rollout:
         runtime = self.runtime
         assert self.trace.agent is not None  # minted with the trace
         self.trace.agent.runtime = runtime.info.model_copy()
-        if self._resume is None:
+        if self._restore is None:
             logger.info(
                 "rollout start: id=%s task=%s harness=%s runtime=%s",
                 self.trace.id,
@@ -300,12 +300,12 @@ class Rollout:
             )
         else:
             logger.info(
-                "rollout resume: id=%s task=%s harness=%s runtime=%s checkpoint=%s turns=%d",
+                "rollout restore: id=%s task=%s harness=%s runtime=%s checkpoint=%s turns=%d",
                 self.trace.id,
                 self.task.data.idx,
                 self.harness.config.name,
                 self.runtime_config.type,
-                self._resume.id,
+                self._restore.id,
                 self.trace.num_turns,
             )
         loop = asyncio.get_running_loop()
@@ -383,7 +383,7 @@ class Rollout:
                 self.trace.notify()
                 # A restored box already holds the task's setup; only the harness's
                 # (idempotent) install runs again.
-                if self._resume is None:
+                if self._restore is None:
                     async with boundary(TaskError, "task setup"):
                         await invoke(
                             self.task.setup,
@@ -505,11 +505,11 @@ class Rollout:
                             harness_data = harness_data.model_copy(
                                 update={"system_prompt": network_prompt}
                             )
-                    # A resumed trace already carries its prompt's rewrites.
+                    # A restored trace already carries its prompt's rewrites.
                     if (
                         self._session.request_interceptors
                         and harness_data.prompt is not None
-                        and self._resume is None
+                        and self._restore is None
                     ):
                         prompt = harness_data.prompt
                         system_prompt = harness_data.system_prompt
@@ -617,7 +617,7 @@ class Rollout:
         for an exchange the user opens, this is also the first segment, on an
         empty conversation); without, it launches on the task's own prompt.
         `intercept=False` passes `messages` to the harness as they are — they were
-        already intercepted when the trace first saw them (a resumed checkpoint's
+        already intercepted when the trace first saw them (a restored checkpoint's
         tail). Returns whether the exchange can continue — a refused turn (limit,
         @stop), a failure (an expired agent timeout included), or a segment that
         made no progress all end it."""
@@ -656,15 +656,23 @@ class Rollout:
                 await self._harness_session.turn(messages)
         except TimeoutError as e:
             # An expired rollout deadline is the agent breaking its time budget: a
-            # timeout stop. A TimeoutError from the harness's own I/O with no
+            # timeout stop — unless a request hook failed first, and the harness spent
+            # the budget retrying it. A TimeoutError from the harness's own I/O with no
             # expired deadline stays the raw failure.
-            if self.deadline_at is not None and (loop.time() >= self.deadline_at):
+            if self._session.hook_error is not None:
+                self.fail(self._session.hook_error, stage="agent")
+            elif self.deadline_at is not None and (loop.time() >= self.deadline_at):
                 self.timeout("agent")
             else:
                 self.fail(e, stage="agent")
             return False
         except Exception as e:  # noqa: BLE001 - harness boundary records every rollout failure
             if self._session.stopped:
+                return False
+            hook_error = self._session.hook_error
+            if hook_error is not None:
+                hook_error.__cause__ = e
+                self.fail(hook_error, stage="agent")
                 return False
             # A runtime can report the cancellation the deadline caused as its own
             # error (Prime's SDK raises one for a cancelled request); the expired
@@ -691,24 +699,32 @@ class Rollout:
         # A harness that completes cleanly after a failed model call handled it (e.g. it
         # ends its run on context overflow); the failure stays recorded on the call. A
         # harness that dies on it surfaces the stashed error through the except above.
+        # A request hook's failure is the task's verdict, which no harness can handle.
+        if self._session.hook_error is not None:
+            self.fail(self._session.hook_error, stage="agent")
+            return False
         self._session.error = None
         # A segment that committed nothing can't be waiting on the user; treating
         # it as continuable would consult the user against a conversation that
         # never moved, forever.
         return self.ok and trace.num_turns > turns_before
 
-    async def resume(self) -> bool:
-        """Run the resumed attempt's first segment: the harness continues the
-        conversation the checkpoint left off at — its recorded tail (tool results,
-        user turns) after the trace's rewound branch — in the restored box."""
-        assert self._resume is not None and self._harness_data is not None
-        # `Harness.resume` re-emits the session's system prompt (the task's, plus a
+    async def restore(self) -> bool:
+        """Run the restored attempt's first segment: a new harness process in the box
+        restored from the checkpoint continues the conversation the checkpoint left
+        off at (`HarnessSession.restore`), told that the box was restored."""
+        checkpoint = self._restore
+        assert checkpoint is not None and self._harness_data is not None
+        assert self._harness_session is not None
+        # The relaunch re-emits the session's system prompt (the task's, plus a
         # network notice) through the program's own system message; the tail's copy
         # would double it.
         system = self._harness_data.system_prompt
-        tail = [m for m in self._resume.tail if m.role != "system" or system is None]
+        tail = [m for m in checkpoint.tail if m.role != "system" or system is None]
+        self._session.pinned_tool_results.update(checkpoint.pins)
         self._session.mark_intercepted(self.trace.messages, tail)
-        return await self.step(tail, intercept=False)
+        messages = self._harness_session.restore(checkpoint.harness, tail)
+        return await self.step(messages, intercept=False)
 
     async def _checkpoint(self, turn: graph.PendingTurn) -> None:
         assert self.runtime is not None
@@ -716,8 +732,21 @@ class Rollout:
             # Another request is in flight (parallel sub-agents share the trace): the
             # box is not idle, so no snapshot would match this turn's prefix.
             return
+        assert self._harness_session is not None
+        try:
+            harness = await self._harness_session.checkpoint_state()
+        except Exception:
+            logger.warning(
+                "harness checkpoint state failed (rollout %s)",
+                self.trace.id,
+                exc_info=True,
+            )
+            return
+        if harness is None:
+            return
         state = copy.deepcopy(self.trace.state)
         info = copy.deepcopy(self.trace.info)
+        pins = dict(self._session.pinned_tool_results)
         try:
             checkpoint = await self.runtime.backend.checkpoint()
         except Exception:
@@ -733,6 +762,8 @@ class Rollout:
                 tail=list(turn.tail),
                 state=state,
                 info=info,
+                pins=pins,
+                harness=harness,
             )
         )
         logger.debug(

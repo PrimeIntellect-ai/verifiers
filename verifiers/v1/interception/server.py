@@ -453,11 +453,19 @@ class InterceptionServer(Interception):
             )
 
     def _fail(
-        self, session: RolloutSession, dialect: Dialect, error: RolloutError
+        self,
+        session: RolloutSession,
+        dialect: Dialect,
+        error: RolloutError,
+        *,
+        hook: bool = False,
     ) -> web.Response:
         """Stash a model-turn-adjacent failure (such as a hook raising) so the rollout
-        re-raises it as the real cause, and report it to the harness as an HTTP error."""
+        re-raises it as the real cause, and report it to the harness as an HTTP error.
+        A `hook` failure fails the rollout even if the harness survives it."""
         session.error = error
+        if hook:
+            session.hook_error = error
         logger.warning(
             "rollout %s failed: %s: %s", session.trace.id, type(error).__name__, error
         )
@@ -714,7 +722,7 @@ class InterceptionServer(Interception):
             if stopped is None and model_request != original_request:
                 dialect.rewrite_request(body, original_request, model_request)
         except RolloutError as error:
-            return self._fail(session, dialect, error)
+            return self._fail(session, dialect, error, hook=True)
         except Exception as error:  # noqa: BLE001 - surface task hook failures
             return self._fail(
                 session,
@@ -722,6 +730,7 @@ class InterceptionServer(Interception):
                 TaskError(
                     f"model boundary hook failed: {type(error).__name__}: {error}"
                 ),
+                hook=True,
             )
         except BaseException:
             raise
