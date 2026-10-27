@@ -57,7 +57,10 @@ class StaticInterceptionPool(Interception):
     async def acquire(self, session: RolloutSession) -> AsyncIterator[Slot]:
         # server.acquire registers before its first yield, so concurrent acquires see the
         # updated load before choosing their own least-loaded server.
-        server = min(self.servers, key=lambda s: s.load)
+        candidates = [server for server in self.servers if server.healthy]
+        if not candidates:
+            raise RuntimeError("no healthy interception servers")
+        server = min(candidates, key=lambda s: s.load)
         async with server.acquire(session) as slot:
             yield slot
 
@@ -96,7 +99,7 @@ class ElasticInterceptionPool(Interception):
         one (its own tunnel, on `stack`, torn down with the pool). Acquires hold `_lock`;
         the warm task runs before they reach this path."""
         for server in self.servers:
-            if server.load < self.config.multiplex:
+            if server.healthy and server.load < self.config.multiplex:
                 return server
         # Pin prime explicitly — the only tunnel kind that can be minted on demand.
         server = InterceptionServer(
