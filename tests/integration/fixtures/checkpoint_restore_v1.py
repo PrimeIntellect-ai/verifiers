@@ -2,15 +2,15 @@
 restores the box's newest filesystem checkpoint instead of starting over.
 
 `setup` stamps a nonce into the box that the prompt never reveals; the task asks the model
-for two tool calls that build on each other (the second needs the first's token, so
-they take two turns), and the reward reads the second one's file
-back out of the box. The tools are colocated: they run in the box, so their files are in
-its snapshots, and any harness with MCP tools can drive them. A request `@intercept`
-raises a `ProviderError` once the first attempt has made two turns — after the checkpoint
-of turn 2 exists. The restored attempt continues from that checkpoint in a new harness
-process: it never sees the injected failure again (the trace already carries the
-error), finds the earlier calls' files, and finishes. Needs a harness that can restore a
-checkpoint (`SUPPORTS_CHECKPOINT_RESTORE`) on a runtime with checkpoints (prime).
+for two tool calls that build on each other (the second needs the first's token, so they
+take two turns), and the reward reads the second one's file back out of the box. The
+tools are colocated: they run in the box, so their files are in its snapshots, and any
+harness with MCP tools can drive them. A request `@intercept` raises a `ProviderError`
+once the first attempt has made two turns — after the checkpoint of turn 2 exists. The
+restored attempt continues from that checkpoint in a new harness process: it never sees
+the injected failure again (it fires once per task), finds the earlier calls' files, and
+finishes. Needs a harness that can restore a checkpoint (`SUPPORTS_CHECKPOINT_RESTORE`)
+on a runtime with checkpoints (prime).
 """
 
 import shutil
@@ -68,6 +68,10 @@ class CheckpointRestoreConfig(vf.TasksetConfig):
 class CheckpointRestoreTask(
     vf.Task[vf.TaskData, RestoreState, CheckpointRestoreTaskConfig]
 ):
+    failed = False
+    """Whether the injected failure fired: once per task, so a retry from scratch
+    (checkpoints off) also gets through."""
+
     @classmethod
     def toolsets(cls, config: CheckpointRestoreTaskConfig) -> list[vf.Toolset]:
         return [StepsToolset(config.tools)]
@@ -86,7 +90,8 @@ class CheckpointRestoreTask(
         # (every tool returns text, so a real result is never empty).
         last = request.messages[-1]
         probe = isinstance(last, vf.ToolMessage) and not last.content
-        if trace.num_turns >= FAIL_AFTER_TURNS and not probe and not trace.errors:
+        if trace.num_turns >= FAIL_AFTER_TURNS and not probe and not self.failed:
+            self.failed = True
             # A 4xx: harness SDKs end the turn at once instead of retrying it until the
             # rollout's deadline.
             raise vf.ProviderError("injected mid-rollout failure", status_code=400)
