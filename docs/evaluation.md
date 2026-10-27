@@ -106,7 +106,7 @@ type = "SandboxError"
 max_retries = 2
 ```
 
-When an agent rollout fails, `rules` are checked in order and the first rule where all fields match sets the retry budget for that error; unmatched errors use the top-level `max_retries` budget. Each retry starts a fresh attempt from the beginning, unless the runtime and the harness support checkpoints (`retries.checkpoint`, on by default with a retry budget): the box is then snapshotted before every model turn, and a retry restores the newest snapshot and continues the trace from there. To bound how long individual stages or rollouts can run, configure stage timeouts and token limits on the [runtime](runtimes.md); see [debugging](debugging.md) for diagnosing failed episodes.
+When an agent rollout fails, `rules` are checked in order and the first rule where all fields match sets the retry budget for that error; unmatched errors use the top-level `max_retries` budget. Each retry starts a fresh attempt from the beginning, unless the agent takes checkpoints (`[env.agent.checkpoint]`, on a runtime and a harness that support them): the box is then snapshotted as model turns go upstream, and a retry restores the newest snapshot and continues the trace from there. `interval` sets how often it snapshots, `keep` which snapshots stay while the rollout runs (`"last"`, `"all"`, or every k-th), and `after` whether the kept ones are deleted (`"delete"`) or kept (`"keep"`) when the run is final. To bound how long individual stages or rollouts can run, configure stage timeouts and token limits on the [runtime](runtimes.md); see [debugging](debugging.md) for diagnosing failed episodes.
 
 ## Disabling tools
 

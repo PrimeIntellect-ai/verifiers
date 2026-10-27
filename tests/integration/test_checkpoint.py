@@ -2,16 +2,29 @@
 first attempt dies as turn 3 goes upstream; the retry restores the turn-2 snapshot,
 keeps the turns before it, and finishes in a new harness process). Every harness that
 declares `SUPPORTS_CHECKPOINT_RESTORE` runs it on prime, the one runtime with
-checkpoints; the others are collected as skips."""
+checkpoints; the others are collected as skips. The retention policies run on one
+harness: what they keep or delete does not depend on it."""
 
 import pytest
 from checkpoint_restore_v1 import FAIL_AFTER_TURNS
 from grid import grid
+from prime_sandboxes import AsyncSandboxClient
 
 from verifiers.v1.harness import RESTORE_PROMPT
+from verifiers.v1.rollout import kept
 from verifiers.v1.types import content_text
 
 RETRIES = {"max_retries": 0, "rules": [{"type": "ProviderError", "max_retries": 1}]}
+CHECKPOINT = {"agent": {"retries": RETRIES, "checkpoint": {}}}
+
+
+async def on_platform(checkpoint: str) -> bool:
+    """Whether prime still holds `checkpoint`, restorable."""
+    async with AsyncSandboxClient() as client:
+        try:
+            return (await client.get_checkpoint(checkpoint)).state == "DURABLE"
+        except Exception:  # noqa: BLE001 - a deleted checkpoint is not found
+            return False
 
 
 @pytest.mark.parametrize(
@@ -28,7 +41,7 @@ async def test_retry_restores_checkpoint(run, harness, harness_runtime):
         "checkpoint-restore-v1",
         harness=harness,
         runtime=harness_runtime,
-        env={"agent": {"retries": RETRIES}},
+        env=CHECKPOINT,
         max_turns=12,
         max_tokens=4096,
     )
@@ -62,3 +75,50 @@ async def test_retry_restores_checkpoint(run, harness, harness_runtime):
         i for i, node in enumerate(trace.nodes) if node.sampled
     ]
     assert any(call.node is None for call in trace.calls)
+
+
+@pytest.mark.parametrize(
+    "keep,after",
+    [("last", "delete"), ("last", "keep"), ("all", "keep"), (2, "keep")],
+    ids=["keep-last-delete", "keep-last", "keep-all", "keep-every-2nd"],
+)
+@pytest.mark.parametrize(
+    "harness,harness_runtime",
+    grid(["bash"], needs=("restore", "checkpoint", "mcp")),
+    indirect=True,
+)
+async def test_checkpoint_retention(run, harness, harness_runtime, keep, after):
+    """Snapshots the policy drops are deleted while the rollout runs, without breaking
+    the newest one: the retry still restores it. When the run is final, `after` deletes
+    the rest or leaves exactly what `keep` holds."""
+    (episode,) = await run(
+        "checkpoint-restore-v1",
+        harness=harness,
+        runtime=harness_runtime,
+        env={
+            "agent": {"retries": RETRIES, "checkpoint": {"keep": keep, "after": after}}
+        },
+        max_turns=12,
+        max_tokens=4096,
+    )
+    (trace,) = episode.traces
+    assert trace.ok, [error.message for error in trace.errors]
+    assert trace.reward == 1.0
+    assert trace.has_restored
+    live = [c.id for c in trace.checkpoints if not c.deleted]
+    try:
+        if after == "delete":
+            assert live == []
+        else:
+            assert set(live) == kept(trace.checkpoints, keep)
+            if keep == "last":
+                assert len(live) == 1
+            if keep == "all":
+                # Snapshots still uploading when the run succeeded were never restorable.
+                assert live == [c.id for c in trace.checkpoints if c.time.end]
+        for checkpoint in trace.checkpoints:
+            assert await on_platform(checkpoint.id) == (not checkpoint.deleted)
+    finally:
+        async with AsyncSandboxClient() as client:
+            for checkpoint in live:
+                await client.delete_checkpoint(checkpoint)

@@ -3,12 +3,14 @@ attempt must not redo."""
 
 import asyncio
 from types import SimpleNamespace
+from typing import Literal
 
 import verifiers.v1 as vf
 from verifiers.v1.clients import ModelContext
+from verifiers.v1.configs.agent import RolloutCheckpointConfig
 from verifiers.v1.configs.client import EvalClientConfig
 from verifiers.v1.graph import MessageNode
-from verifiers.v1.rollout import Rollout
+from verifiers.v1.rollout import Rollout, kept
 from verifiers.v1.session import RolloutSession
 from verifiers.v1.trace import Checkpoint, ModelCall, TimeSpan, TraceTask
 from verifiers.v1.types import (
@@ -103,6 +105,7 @@ class SlowBackend:
         self.durable = asyncio.Event()
         self.fail = False
         self.taken = 0
+        self.deleted: list[str] = []
 
     async def checkpoint(self) -> str:
         self.taken += 1
@@ -114,8 +117,14 @@ class SlowBackend:
             raise RuntimeError("upload failed")
         return 1024
 
+    async def discard_checkpoints(self, ids: list[str]) -> list[str]:
+        self.deleted += ids
+        return ids
 
-def make_rollout(interval: int) -> tuple[Rollout, SlowBackend]:
+
+def make_rollout(
+    interval: int = 1, keep: Literal["all", "last"] | int = "last"
+) -> tuple[Rollout, SlowBackend]:
     backend = SlowBackend()
     run = Rollout.__new__(Rollout)
     run.trace = make_trace()  # one turn so far
@@ -126,8 +135,11 @@ def make_rollout(interval: int) -> tuple[Rollout, SlowBackend]:
 
     run._harness_session = SimpleNamespace(checkpoint_state=checkpoint_state)  # type: ignore[assignment]
     run._session = SimpleNamespace(pinned_tool_results={})  # type: ignore[assignment]
-    run._checkpoints = interval
+    run._checkpointing = RolloutCheckpointConfig(interval=interval, keep=keep)
     run._durable = {}
+    run._pruning = asyncio.Lock()
+    run.deleted_checkpoints = set()
+    run.rewound_checkpoints = []
     return run, backend
 
 
@@ -171,3 +183,33 @@ async def test_settling_without_a_retry_stops_waiting():
     await asyncio.wait_for(run._settle_checkpoints(wait=False), timeout=1)
     assert run._durable == {}
     assert run.trace.checkpoints == [checkpoint] and checkpoint.time.end == 0
+
+
+def durable(*ids: str, deleted: tuple[str, ...] = ()) -> list[Checkpoint]:
+    return [
+        Checkpoint(id=i, time=TimeSpan(start=1.0, end=2.0), deleted=i in deleted)
+        for i in ids
+    ]
+
+
+def test_keep_policies():
+    checkpoints = durable("a", "b", "c", "d", "e")
+    assert kept(checkpoints, "last") == {"e"}
+    assert kept(checkpoints, "all") == {"a", "b", "c", "d", "e"}
+    assert kept(checkpoints, 2) == {"a", "c", "e"}
+    assert kept(checkpoints, 3) == {"a", "d", "e"}
+    # Deleted and not yet durable snapshots are never kept.
+    pending = [*durable("a", "b", deleted=("a",)), Checkpoint(id="c")]
+    assert kept(pending, "all") == {"b"}
+
+
+async def test_a_durable_snapshot_prunes_the_older_ones():
+    run, backend = make_rollout(keep="last")
+    run.trace.checkpoints = durable("old1", "old2")
+    run.rewound_checkpoints = ["rewound"]
+    backend.durable.set()
+    newest = await run._checkpoint(TURN)
+    await run._settle_checkpoints(wait=True)
+    assert sorted(backend.deleted) == ["old1", "old2", "rewound"]
+    assert [c.id for c in run.trace.checkpoints if not c.deleted] == [newest.id]
+    assert run.deleted_checkpoints == {"old1", "old2", "rewound"}

@@ -1,10 +1,11 @@
 """One env agent's config: who plays the seat, and its per-run caps."""
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import (
     BaseModel,
     Field,
+    PositiveInt,
     SerializationInfo,
     SerializeAsAny,
     field_serializer,
@@ -36,6 +37,34 @@ class TimeoutConfig(BaseConfig):
     scoring: float | None = Field(None, gt=0)
     """Combined budget (in seconds) for harness metrics and task scoring, including
     isolated verifier setup and retries. Finalization has its own budget."""
+
+
+class RolloutCheckpointConfig(BaseConfig):
+    """Experimental. Snapshot the rollout's box (its filesystem) as model turns go
+    upstream, so a retry restores the newest snapshot instead of starting over: the
+    trace keeps its turns up to there, and a new harness process continues in a box
+    restored to that state, told that the box was restored. Needs a runtime with
+    checkpoints (prime) and a harness that can restore one
+    (`SUPPORTS_CHECKPOINT_RESTORE`); elsewhere no snapshot is taken. The snapshot runs
+    alongside the model call, and the reply waits only until its content is fixed.
+
+    Known limits: a harness with concurrent sub-agents can be snapshotted while one of
+    them is mid-tool, and processes the agent left running (background jobs,
+    sub-agents, a REPL's variables) are gone after a restore, which cold boots."""
+
+    interval: PositiveInt = 1
+    """Snapshot before every this-many-th model turn (the 1st, the 1+n-th, ...). A
+    larger interval takes fewer snapshots, and a restore loses up to this many turns."""
+    keep: Literal["all", "last"] | PositiveInt = "last"
+    """Which snapshots stay while the rollout runs: `"last"` keeps only the newest
+    restorable one, `"all"` keeps every one, and `k` keeps every k-th (the 1st, the
+    1+k-th, ...) plus the newest. The others are deleted as soon as a newer one is
+    restorable. A retry whose restore fails falls back to an older snapshot that is
+    still kept, else it starts over."""
+    after: Literal["delete", "keep"] = "delete"
+    """What happens to the kept snapshots when the rollout's run is final (it succeeded,
+    or its retries ran out): `"delete"` deletes them once the box is gone; `"keep"`
+    leaves them for their owner (forks, inspection), who must delete them."""
 
 
 class AgentConfig(BaseConfig):
@@ -75,6 +104,9 @@ class AgentConfig(BaseConfig):
 
     timeout: TimeoutConfig = TimeoutConfig()
     retries: RetryConfig = RetryConfig()
+    checkpoint: RolloutCheckpointConfig | None = None
+    """Snapshot the box as turns go upstream, so a retry restores the newest snapshot
+    instead of starting over (see `RolloutCheckpointConfig`). None takes no snapshots."""
 
     network_notice: bool = True
     """Include the runtime's network restrictions in the agent's prompt."""

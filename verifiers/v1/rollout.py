@@ -8,11 +8,12 @@ import time
 from collections.abc import Awaitable, Callable
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
+from typing import Literal
 from urllib.parse import urlsplit
 
 from verifiers.v1 import graph
 from verifiers.v1.clients import ModelContext
-from verifiers.v1.configs.agent import AgentConfig
+from verifiers.v1.configs.agent import AgentConfig, RolloutCheckpointConfig
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.configs.scoring import resolve_scoring
 from verifiers.v1.errors import (
@@ -97,6 +98,25 @@ async def resolve_agent_runtime(runtime: Runtime, user: str | None) -> Runtime:
     return view
 
 
+def kept(checkpoints: list[Checkpoint], keep: Literal["all", "last"] | int) -> set[str]:
+    """The ids of the restorable `checkpoints` (durable, not deleted) that the `keep`
+    policy holds on to (`RolloutCheckpointConfig.keep`): the newest always, plus every one for
+    `"all"` or every k-th (by position, the 1st, the 1+k-th, ...) for `k`."""
+    live = [
+        (index, c)
+        for index, c in enumerate(checkpoints)
+        if c.time.end and not c.deleted
+    ]
+    if not live:
+        return set()
+    if keep == "all":
+        return {c.id for _, c in live}
+    held = {live[-1][1].id}
+    if keep != "last":
+        held.update(c.id for index, c in live if index % keep == 0)
+    return held
+
+
 class Rollout:
     """Manages one rollout's lifecycle (open, step, close)."""
 
@@ -118,17 +138,18 @@ class Rollout:
         collect_artifacts: bool = False,
         on_score: Callable[[Trace, Runtime], Awaitable[None]] | None = None,
         restore: tuple[Trace, Checkpoint] | None = None,
-        checkpoints: int = 0,
+        checkpoint: RolloutCheckpointConfig | None = None,
         attempt: int = 0,
     ) -> None:
         """`attempt` numbers this run among the trace's retries (stamped on the
         errors it captures). `restore` continues a failed attempt's trace from one of
         its checkpoints: the trace rewinds to it and this run boots its box from the
-        snapshot instead of setting the task up again. `checkpoints` snapshots the box
-        before every `checkpoints`-th model turn (0: never; on a runtime and a harness
-        that support it) for a retry to restore; the owner of the retries frees them
-        (`Runtime.discard_checkpoints`) once the run is final — this rollout only frees
-        them when it aborts."""
+        snapshot instead of setting the task up again. `checkpoint` snapshots the box as
+        model turns go upstream (on a runtime and a harness that support it) for a
+        retry to restore, and deletes the ones its `keep` policy drops as newer ones
+        become restorable; the owner of the retries deletes the rest once the run is
+        final (`RolloutCheckpointConfig.after`) — this rollout deletes them only when it
+        aborts."""
         self._on_score = on_score
         self.task = task
         self.harness = harness
@@ -148,12 +169,15 @@ class Rollout:
         self.runtime = runtime
         self._borrowed_runtime = runtime
         self._collect_artifacts = collect_artifacts
-        self._checkpoints = checkpoints
+        self._checkpointing = checkpoint
         self._durable: dict[str, asyncio.Task[None]] = {}
         """The snapshots still on their way to restorable, by checkpoint id."""
         self._attempt = attempt
         self._restore: Checkpoint | None = None
         self._harness_data: TaskData | None = None
+        self.deleted_checkpoints: set[str] = set()
+        """The snapshots this run deleted."""
+        self._pruning = asyncio.Lock()
         self.rewound_checkpoints: list[str] = []
         """Checkpoints the restored trace dropped (taken after the one restored)."""
         if restore is not None:
@@ -356,7 +380,7 @@ class Rollout:
                     # Providers may assign an ID before startup fails; retain it for diagnostics.
                     self.trace.agent.runtime = runtime.info.model_copy()
                 if (
-                    self._checkpoints
+                    self._checkpointing is not None
                     and self._borrowed_runtime is None
                     and runtime.backend.SUPPORTS_CHECKPOINTS
                 ):
@@ -732,8 +756,9 @@ class Rollout:
 
     async def _checkpoint(self, turn: graph.PendingTurn) -> Checkpoint | None:
         assert self.runtime is not None
-        if self.trace.num_turns % self._checkpoints:
-            return
+        assert self._checkpointing is not None
+        if self.trace.num_turns % self._checkpointing.interval:
+            return None
         if len(self.trace._pending) > 1:
             # Another request is in flight (parallel sub-agents share the trace): the
             # box is not idle, so no snapshot would match this turn's prefix.
@@ -799,8 +824,37 @@ class Rollout:
                 self.trace.checkpoints.remove(checkpoint)
         else:
             checkpoint.time.end = time.time()
+            await self._prune()
         finally:
             self._durable.pop(checkpoint.id, None)
+
+    async def _prune(self) -> None:
+        """Delete the snapshots the `keep` policy drops now that a newer one is
+        restorable, and the ones a restore rewound past."""
+        assert self.runtime is not None and self._checkpointing is not None
+        async with self._pruning:
+            keep = kept(self.trace.checkpoints, self._checkpointing.keep)
+            drop = [
+                *(
+                    c.id
+                    for c in self.trace.checkpoints
+                    if c.time.end and not c.deleted and c.id not in keep
+                ),
+                *(
+                    c
+                    for c in self.rewound_checkpoints
+                    if c not in self.deleted_checkpoints
+                ),
+            ]
+            if drop:
+                self.record_deleted(await self.runtime.backend.discard_checkpoints(drop))
+
+    def record_deleted(self, ids: list[str]) -> None:
+        """Mark the snapshots with these ids deleted."""
+        self.deleted_checkpoints.update(ids)
+        for checkpoint in self.trace.checkpoints:
+            if checkpoint.id in self.deleted_checkpoints:
+                checkpoint.deleted = True
 
     async def _settle_checkpoints(self, *, wait: bool) -> None:
         """Before the box goes: wait for the snapshots still uploading, so a retry
@@ -850,12 +904,14 @@ class Rollout:
                 await self.runtime.backend.stop()
         if self.runtime is not None:
             with contextlib.suppress(Exception):
-                await self.runtime.backend.discard_checkpoints(
-                    [
-                        *self.rewound_checkpoints,
-                        *(c.id for c in self.trace.checkpoints),
-                        *self.runtime.backend.stray_checkpoints,
-                    ]
+                self.record_deleted(
+                    await self.runtime.backend.discard_checkpoints(
+                        [
+                            *self.rewound_checkpoints,
+                            *(c.id for c in self.trace.checkpoints if not c.deleted),
+                            *self.runtime.backend.stray_checkpoints,
+                        ]
+                    )
                 )
 
     async def _score_harness(self, runtime: Runtime, deadline: float | None) -> None:

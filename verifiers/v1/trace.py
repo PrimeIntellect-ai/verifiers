@@ -271,6 +271,9 @@ class Checkpoint(BaseModel):
     (`HarnessSession.checkpoint_state`), e.g. an ACP agent's session id."""
     restored: bool = False
     """Whether a retry restored the run from this snapshot."""
+    deleted: bool = False
+    """Whether the snapshot was deleted (`RolloutCheckpointConfig.keep`, `.after`): it
+    can no longer be restored."""
 
 
 def _concat(parts: list[list | np.ndarray], dtype: type[np.generic]) -> np.ndarray:

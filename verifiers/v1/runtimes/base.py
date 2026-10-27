@@ -239,9 +239,11 @@ class RuntimeBackend(ABC):
         must stay alive until then: its teardown fails a pending checkpoint."""
         raise NotImplementedError(f"{type(self).__name__} does not support checkpoints")
 
-    async def discard_checkpoints(self, ids: list[str]) -> None:
-        """Free checkpoints nothing will restore from, once the box is gone (a provider
-        may refuse while a box descends from one). Best-effort and idempotent."""
+    async def discard_checkpoints(self, ids: list[str]) -> list[str]:
+        """Free checkpoints nothing will restore from and return the ids it freed.
+        Best-effort: a provider may refuse one a live box still needs (prime: the
+        newest one of a running box)."""
+        return []
 
     async def stop(self) -> None:
         """Free the provisioned resource on the normal path (the owner's `finally`),
