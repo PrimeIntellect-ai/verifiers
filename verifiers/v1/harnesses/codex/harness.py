@@ -3,9 +3,7 @@
 import hashlib
 import json
 import logging
-import re
 import tomllib
-from collections import Counter
 from pathlib import Path
 from typing import Literal
 
@@ -24,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 CODEX_DIR = "/var/tmp/vf-codex-{version}-{acp_version}"
 PACKAGES_DIR = f"{CODEX_DIR}/acp"
-ACP_VERSION = "1.12.0"
+ACP_VERSION = "2.2.2"
 CODEX_BIN = f"{PACKAGES_DIR}/node_modules/.bin/codex"
 ACP_BIN = f"{PACKAGES_DIR}/node_modules/.bin/codex-acp"
 INSTALL = r"""
@@ -50,10 +48,12 @@ GATE_HANDLER = {
 
 class CodexHarnessConfig(HarnessConfig):
     # Codex accepts no other wire API:
-    # https://github.com/openai/codex/blob/rust-v0.155.1/codex-rs/model-provider-info/src/lib.rs#L61
+    # https://github.com/openai/codex/blob/rust-v0.164.0/codex-rs/model-provider-info/src/lib.rs#L109
     dialect: Literal["responses"] = "responses"
-    version: PinnedVersion = "0.155.1"
+    version: PinnedVersion = "0.164.0"
     """Codex release to install, pinned for reproducibility."""
+    code_mode: bool = False
+    """Enable Code Mode when the model's metadata does not select its tool mode."""
     multi_agent: bool = False
     """Enable Codex's native multi-agent v2 tools."""
 
@@ -192,6 +192,7 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
             + ",".join(
                 f"{json.dumps(name, ensure_ascii=False)}="
                 f"{{url={json.dumps(url, ensure_ascii=False)},required=true,"
+                'omit_tools_from=["deferred","code_mode"],'
                 f"startup_timeout_sec=60.0,tool_timeout_sec={self.config.tool_timeout}}}"
                 for name, url in mcp_urls.items()
             )
@@ -201,38 +202,14 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
         )
         await runtime.write(f"{home}/config.toml", mcp_config.encode())
 
-        namespace_bases = {
-            name: (namespace if namespace.startswith("mcp__") else f"mcp__{namespace}")
-            for name in mcp_urls
-            for namespace in (re.sub(r"[^a-zA-Z0-9_]", "_", name) or "_",)
-        }
-        namespace_counts = Counter(namespace_bases.values())
-        direct_mcp_namespaces: list[str] = []
-        for name, namespace in namespace_bases.items():
-            if namespace_counts[namespace] > 1:
-                suffix = hashlib.sha1(f"{name}\0{name}\0".encode()).hexdigest()[:12]
-                namespace = (
-                    f"{namespace[:-2]}_{suffix}__"
-                    if namespace.endswith("__")
-                    else f"{namespace}_{suffix}"
-                )
-            direct_mcp_namespaces.append(namespace)
-            if len(namespace) > 49:
-                direct_mcp_namespaces.append(namespace[:49])
-
         features: dict[str, object] = {
             "apps": False,
             "plugins": False,
+            "code_mode": self.config.code_mode,
             "multi_agent": False,
             "multi_agent_v2": {"enabled": self.config.multi_agent},
             **{tool: False for tool in self.config.disabled_tools or []},
         }
-        if direct_mcp_namespaces:
-            features["code_mode"] = {
-                "direct_only_tool_namespaces": list(
-                    dict.fromkeys(direct_mcp_namespaces)
-                )
-            }
         config = {
             "model": ctx.model,
             "features": features,
