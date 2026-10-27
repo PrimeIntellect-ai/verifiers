@@ -79,6 +79,7 @@ if TYPE_CHECKING:
         WorkInfo,
     )
     from verifiers.v1.errors import (
+        ContextOverflowError,
         EnvError,
         HarnessError,
         InterceptionError,
@@ -268,6 +269,7 @@ _NAME_TO_MODULE = {
     "PrimeVolume": "verifiers.v1.configs.runtime",
     "ProgramResult": "verifiers.v1.runtimes",
     "ProviderError": "verifiers.v1.errors",
+    "ContextOverflowError": "verifiers.v1.errors",
     "ReferenceJudge": "verifiers.v1.judges",
     "ReferenceJudgeConfig": "verifiers.v1.judges",
     "Request": "verifiers.v1.types",
@@ -458,6 +460,7 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "RolloutError",
     "EnvError",
     "ProviderError",
+    "ContextOverflowError",
     "HarnessError",
     "ToolsetError",
     "SandboxError",

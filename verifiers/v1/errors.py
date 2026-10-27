@@ -12,7 +12,9 @@ Four mechanisms, each in one place:
    `ProviderError`, tunnels → `TunnelError`); an already-typed `RolloutError` passes through unchanged.
 3. Surfacing (`session.RolloutSession.error`): a model or tool call fails behind the harness
    subprocess and comes back as HTTP, so the interception server stashes the real error there and
-   the rollout re-raises it once the harness returns — not a secondary `HarnessError`.
+   the rollout re-raises it once the harness returns — not a secondary `HarnessError`. A
+   `ContextOverflowError` is also kept apart (`RolloutSession.context_overflow`): a harness that
+   dies after one truncates the rollout instead of failing it.
 4. Capture (`Rollout`, mirrored by the env-server): the one place that records a failure (typed
    or not) onto the trace and never lets it cancel sibling rollouts. A bad rollout is data, not a
    crash.
@@ -40,6 +42,15 @@ class ProviderError(RolloutError):
     def __init__(self, message: str = "", *, status_code: int = 502) -> None:
         super().__init__(message)
         self.status_code = status_code
+
+
+class ContextOverflowError(ProviderError):
+    """The prompt exceeds the model's context window, a deterministic 400. A harness may
+    recover (by compacting); one that dies after it truncates the rollout instead of failing
+    it (`prompt_too_long`), so the run is scored like any other cut-off trajectory."""
+
+    def __init__(self, message: str = "") -> None:
+        super().__init__(message, status_code=400)
 
 
 MODEL_TRANSPORT_ERROR_EXIT_CODE = 97

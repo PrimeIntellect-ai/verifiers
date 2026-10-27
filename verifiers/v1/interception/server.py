@@ -53,6 +53,7 @@ from verifiers.v1.dialects.base import (
     is_sse_done_event,
 )
 from verifiers.v1.errors import (
+    ContextOverflowError,
     ProviderError,
     RolloutError,
     TaskError,
@@ -844,6 +845,8 @@ class InterceptionServer(Interception):
                     # Relay the provider's status so the harness SDK retries 5xx/429 and not 4xx.
                     error = e
                     session.error = e
+                    if isinstance(e, ContextOverflowError):
+                        session.context_overflow = e
                     logger.warning(
                         "model call failed: id=%s %s: %s",
                         session.trace.id,
