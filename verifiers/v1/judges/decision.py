@@ -3,11 +3,13 @@
 import json
 from typing import Any, cast
 
+from openai import APIConnectionError, APIStatusError
 from pydantic import Field
 
 from verifiers.v1.clients.base import build_async_openai
 from verifiers.v1.configs.harness import ID
 from verifiers.v1.configs.judge import JudgeConfig
+from verifiers.v1.errors import model_error
 from verifiers.v1.judge import (
     Judge,
     JudgeResponse,
@@ -57,10 +59,13 @@ class DecisionJudge(Judge[float, DecisionJudgeConfig]):
                 }
             },
         }
-        async with build_async_openai(self.config) as client:
-            raw = await client.post(
-                self.config.base_url, cast_to=dict[str, Any], body=request
-            )
+        try:
+            async with build_async_openai(self.config) as client:
+                raw = await client.post(
+                    self.config.base_url, cast_to=dict[str, Any], body=request
+                )
+        except (APIStatusError, APIConnectionError) as error:
+            raise model_error(error) from error
         result = raw.get("result", raw)  # Workers AI wraps its response in `result`.
         response = JudgeResponse[float](text=json.dumps(raw))
         try:
