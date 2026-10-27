@@ -711,8 +711,10 @@ class Agent:
         run: Rollout | None = None
         # The `finally` also covers a cancellation between attempts, when no rollout is
         # open to delete them on abort.
+        budget = retry_state.max_retries
+        attempt = 0
         try:
-            for attempt in range(retry_state.max_retries + 1):
+            while True:
                 restoring = (
                     (trace, target)
                     if trace is not None and target is not None
@@ -741,7 +743,28 @@ class Agent:
                 ):
                     # The box never booted from it: the next retry steps back.
                     failed_restores.add(target.id)
-                if attempt == retry_state.max_retries or trace.ok:
+                if trace.ok:
+                    break
+                if (
+                    attempt == 0
+                    and restore is not None
+                    and target is not None
+                    and target.id in failed_restores
+                ):
+                    # Another process's restore that cannot boot (its snapshot is gone)
+                    # is not the rollout's failure: start over, unbudgeted.
+                    logger.warning(
+                        "restoring trace %s from checkpoint %s failed; starting over",
+                        trace.id,
+                        target.id,
+                    )
+                    history.extend(trace.errors)
+                    target = None
+                    trace = None
+                    attempt += 1
+                    budget += 1
+                    continue
+                if attempt >= budget:
                     break
                 if runtime is not None:
                     logger.warning(
@@ -766,7 +789,7 @@ class Agent:
                 logger.warning(
                     "retrying agent rollout (retry %d/%d) in %.1fs after error: %s (%s)",
                     attempt + 1,
-                    retry_state.max_retries,
+                    budget,
                     delay,
                     cause.type,
                     f"restoring checkpoint {target.id}"
@@ -774,6 +797,7 @@ class Agent:
                     else "from scratch",
                 )
                 await asyncio.sleep(delay)
+                attempt += 1
         finally:
             # The run is final (or cancelled): delete what `after` does not keep. Every
             # box is gone by now, so the platform refuses none of them.
