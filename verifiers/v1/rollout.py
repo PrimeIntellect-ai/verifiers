@@ -568,8 +568,8 @@ class Rollout:
         for an exchange the user opens, this is also the first segment, on an
         empty conversation); without, it launches on the task's own prompt.
         Returns whether the exchange can continue — a refused turn (limit, @stop),
-        a failure (an expired agent timeout included), or a segment that made no
-        progress all end it."""
+        a harness dying after a context overflow, a failure (an expired agent timeout
+        included), or a segment that made no progress all end it."""
         if not self._opened or self._closed or not self.ok:
             return False
         trace = self.trace
@@ -618,6 +618,17 @@ class Rollout:
                 self.timeout("agent")
                 return False
             real = self._session.error
+            overflow = self._session.context_overflow
+            if (
+                overflow is not None
+                and real in (None, overflow)
+                and isinstance(e, HarnessError)
+            ):
+                # The harness died after a context overflow: the rollout ran out of
+                # context, a truncation that still scores, like a framework limit.
+                # Infra failures (tunnel, sandbox) surface as their own types and fail.
+                self.trace.stop("prompt_too_long")
+                return False
             if real is not None and isinstance(e, RolloutError):
                 real.__cause__ = e
                 self.fail(real)
@@ -637,6 +648,7 @@ class Rollout:
         # ends its run on context overflow); the failure stays recorded on the call. A
         # harness that dies on it surfaces the stashed error through the except above.
         self._session.error = None
+        self._session.context_overflow = None
         # A segment that committed nothing can't be waiting on the user; treating
         # it as continuable would consult the user against a conversation that
         # never moved, forever.

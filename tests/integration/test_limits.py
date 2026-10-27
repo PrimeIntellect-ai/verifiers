@@ -114,3 +114,32 @@ async def test_skip_scoring_on_stop(run, scripted_model, skip):
     else:
         assert trace.reward == 1
         assert "scoring_skipped" not in trace.info
+
+
+async def test_context_overflow_is_scored(run, scripted_model, monkeypatch):
+    """A harness that dies on a context overflow (the renderer client's pre-flight 400)
+    leaves a truncated trace that still scores, instead of a failed one. The null harness
+    with compaction on re-raises an overflow it can't compact, as Prime Agent does."""
+    from verifiers.v1.clients.eval import EvalClient
+    from verifiers.v1.errors import ContextOverflowError
+    from verifiers.v1.harnesses.null import NullHarnessConfig
+
+    async def overflow(self, *args, **kwargs):
+        raise ContextOverflowError(
+            "Prompt length (32949) exceeds maximum context length (32768)."
+        )
+
+    # The chat program streams, which the eval client relays.
+    monkeypatch.setattr(EvalClient, "relay", overflow)
+    (episode,) = await run(
+        "counter-tool",
+        harness=NullHarnessConfig(id="null", compaction={"summarize_at_tokens": 1000}),
+        runtime={"type": "subprocess"},
+        client=scripted_model,
+        taskset_overrides={"task": {"constant_reward": True}},
+    )
+    (trace,) = episode.traces
+    assert episode.ok and trace.ok and not trace.errors
+    assert trace.stop_condition == "prompt_too_long" and trace.is_truncated
+    assert trace.reward == 1
+    assert [call.error.type for call in trace.calls] == ["ContextOverflowError"]

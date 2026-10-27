@@ -684,7 +684,8 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
 
     @property
     def is_truncated(self) -> bool:
-        """True for framework limits, failed compaction, or a length-finished response."""
+        """True for framework limits, failed compaction, a context overflow the harness
+        died after, or a length-finished response."""
         if self.stop_condition in (
             "max_turns",
             "max_input_tokens",
@@ -692,6 +693,7 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
             "max_total_tokens",
             "max_turn_tokens",
             "compaction_failed",
+            "prompt_too_long",
         ):
             return True
         last = next((c for c in reversed(self.calls) if c.error is None), None)

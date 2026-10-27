@@ -31,7 +31,12 @@ from verifiers.v1 import graph
 from verifiers.v1.clients import Client, ModelContext
 from verifiers.v1.configs.harness import DialectName
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
-from verifiers.v1.errors import HarnessError, RolloutError, TaskError
+from verifiers.v1.errors import (
+    ContextOverflowError,
+    HarnessError,
+    RolloutError,
+    TaskError,
+)
 from verifiers.v1.harnesses.utils.compaction import bound_tool_message
 from verifiers.v1.trace import InterceptRecord, Trace
 from verifiers.v1.types import (
@@ -179,6 +184,11 @@ class RolloutSession:
     when its program dies on it the rollout records this original error instead of a secondary
     `HarnessError`. A harness that completes cleanly after the failure handled it. Reset before
     each model turn, so a successful retry clears it."""
+    context_overflow: "ContextOverflowError | None" = None
+    """The segment's latest context overflow. Unlike `error`, no later model turn clears it:
+    a harness running agents in parallel keeps sampling for the others after one overflows,
+    so a harness that dies after the overflow still truncates the rollout
+    (`prompt_too_long`) rather than failing it."""
     idempotent_requests: dict[str, IdempotentRequest] = field(default_factory=dict)
     """Explicit keys or marked SDK retries mapped to their replay state."""
     released: bool = False
