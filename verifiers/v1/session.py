@@ -33,7 +33,7 @@ from verifiers.v1.configs.harness import DialectName
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.errors import HarnessError, RolloutError, TaskError
 from verifiers.v1.harnesses.utils.compaction import bound_tool_message
-from verifiers.v1.trace import InterceptRecord, Trace
+from verifiers.v1.trace import Checkpoint, InterceptRecord, Trace
 from verifiers.v1.types import (
     AssistantMessage,
     Messages,
@@ -208,9 +208,12 @@ class RolloutSession:
     gated_tools: set[tuple[str, str]] = field(default_factory=set)
     """Calls the harness's gate asked about before executing."""
     prepared_users: Counter[str] = field(default_factory=Counter)
-    checkpointer: Callable[[graph.PendingTurn], Awaitable[None]] | None = None
-    """Snapshots the rollout's box right before a turn goes upstream (`Rollout` sets it
-    when its runtime supports checkpoints and a retry may restore one)."""
+    checkpointer: Callable[[graph.PendingTurn], Awaitable[Checkpoint | None]] | None = (
+        None
+    )
+    """Snapshots the rollout's box as a turn goes upstream, alongside the model call;
+    the reply waits for the capture (`Rollout` sets it when its runtime supports
+    checkpoints and a retry may restore one). Returns the checkpoint it took, if any."""
 
     @property
     def stopped(self) -> bool:

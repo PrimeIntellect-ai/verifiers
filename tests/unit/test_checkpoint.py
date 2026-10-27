@@ -1,10 +1,14 @@
 """Restoring a trace from a checkpoint: what `rewind` restores and what a restored
 attempt must not redo."""
 
+import asyncio
+from types import SimpleNamespace
+
 import verifiers.v1 as vf
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.client import EvalClientConfig
 from verifiers.v1.graph import MessageNode
+from verifiers.v1.rollout import Rollout
 from verifiers.v1.session import RolloutSession
 from verifiers.v1.trace import Checkpoint, ModelCall, TimeSpan, TraceTask
 from verifiers.v1.types import (
@@ -90,3 +94,80 @@ async def test_restored_tail_is_not_intercepted_twice():
     assert rewritten.messages == request.messages
     assert records == []
     assert seen == []
+
+
+class SlowBackend:
+    """Captures at once; becomes durable when the test says so."""
+
+    def __init__(self) -> None:
+        self.durable = asyncio.Event()
+        self.fail = False
+        self.taken = 0
+
+    async def checkpoint(self) -> str:
+        self.taken += 1
+        return f"ck{self.taken}"
+
+    async def wait_checkpoint(self, checkpoint: str) -> int | None:
+        await self.durable.wait()
+        if self.fail:
+            raise RuntimeError("upload failed")
+        return 1024
+
+
+def make_rollout(interval: int) -> tuple[Rollout, SlowBackend]:
+    backend = SlowBackend()
+    run = Rollout.__new__(Rollout)
+    run.trace = make_trace()  # one turn so far
+    run.runtime = SimpleNamespace(backend=backend)  # type: ignore[assignment]
+
+    async def checkpoint_state() -> dict:
+        return {}
+
+    run._harness_session = SimpleNamespace(checkpoint_state=checkpoint_state)  # type: ignore[assignment]
+    run._session = SimpleNamespace(pinned_tool_results={})  # type: ignore[assignment]
+    run._checkpoints = interval
+    run._durable = {}
+    return run, backend
+
+
+TURN = SimpleNamespace(prefix_node_ids=[0, 1], tail=[])
+
+
+async def test_checkpoint_interval_skips_turns():
+    run, backend = make_rollout(interval=2)
+    assert await run._checkpoint(TURN) is None  # turn 2: 1 % 2
+    run.trace.nodes.append(MessageNode(parent=1, message=UserMessage(content="go")))
+    run.trace.nodes.append(
+        MessageNode(parent=2, message=AssistantMessage(content="ok"), sampled=True)
+    )
+    assert await run._checkpoint(TURN) is not None  # turn 3: 2 % 2
+    assert backend.taken == 1
+
+
+async def test_checkpoint_becomes_durable_in_the_background():
+    run, backend = make_rollout(interval=1)
+    checkpoint = await run._checkpoint(TURN)
+    assert checkpoint is not None and checkpoint.captured
+    assert checkpoint.time.end == 0 and checkpoint.bytes is None
+    backend.durable.set()
+    await run._settle_checkpoints(wait=True)
+    assert checkpoint.time.end and checkpoint.bytes == 1024
+    assert run.trace.checkpoints == [checkpoint]
+
+
+async def test_a_checkpoint_that_never_becomes_durable_is_dropped():
+    run, backend = make_rollout(interval=1)
+    await run._checkpoint(TURN)
+    backend.fail = True
+    backend.durable.set()
+    await run._settle_checkpoints(wait=True)
+    assert run.trace.checkpoints == []
+
+
+async def test_settling_without_a_retry_stops_waiting():
+    run, _ = make_rollout(interval=1)
+    checkpoint = await run._checkpoint(TURN)
+    await asyncio.wait_for(run._settle_checkpoints(wait=False), timeout=1)
+    assert run._durable == {}
+    assert run.trace.checkpoints == [checkpoint] and checkpoint.time.end == 0

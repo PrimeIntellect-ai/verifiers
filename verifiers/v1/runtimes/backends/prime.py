@@ -53,9 +53,8 @@ _OUTPUT_RETRIES = 10
 """Re-reads of a finished job's output that the SDK still failed to fetch, before the
 exec is reported as failed."""
 _CHECKPOINT_DURABLE_SECONDS = 300
-"""How long a checkpoint gets to become restorable (`DURABLE`): the platform captures
-and uploads it after the request returns, and only a durable one restores. A turn
-waits this long at most before it goes upstream."""
+"""How long a checkpoint gets to become restorable (`DURABLE`): the platform uploads it
+after the request returns, and only a durable one restores."""
 _PUBLIC_DOMAIN = "sandbox-v2-prod.pinfra.io"
 """Domain of the public URLs `https://<port>-<sandbox-id>.<domain>` that a LAN network's
 `internet` rule publishes ports at."""
@@ -283,20 +282,21 @@ class PrimeBackend(RuntimeBackend):
         ) as e:  # provisioning failure is one rollout's problem, not the eval's
             raise SandboxError(f"prime sandbox provisioning failed: {e}") from e
 
-    async def checkpoint(self) -> tuple[str, int | None]:
-        # Blocking: the turn goes upstream only once the snapshot is durable, so it
-        # cannot include that turn's writes, and teardown (which fails pending
-        # checkpoints) never loses one. Until then the snapshot is stray: the platform
-        # refuses to delete it while this box lives, so teardown frees it after.
+    async def checkpoint(self) -> str:
+        # The platform fixes the snapshot's content before the request returns, then
+        # uploads it. Until it is durable the snapshot is stray: the platform refuses
+        # to delete it while this box lives, so teardown frees it after.
         async def create() -> str:
             checkpoint = await self._client.checkpoint(self.info.id)
             self.stray_checkpoints.append(checkpoint.id)
             return checkpoint.id
 
         try:
-            checkpoint = await run_shielded(create())
+            return await run_shielded(create())
         except Exception as e:
             raise SandboxError(f"prime checkpoint failed: {e}") from e
+
+    async def wait_checkpoint(self, checkpoint: str) -> int | None:
         started = time.monotonic()
         try:
             durable = await self._client.wait_for_checkpoint(
@@ -311,7 +311,7 @@ class PrimeBackend(RuntimeBackend):
             time.monotonic() - started,
             self.info.id,
         )
-        return checkpoint, durable.stored_bytes
+        return durable.stored_bytes
 
     async def discard_checkpoints(self, ids: list[str]) -> None:
         # Runs after teardown: the platform refuses to delete a checkpoint while a

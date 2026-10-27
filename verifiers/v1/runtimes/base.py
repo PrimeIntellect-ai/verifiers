@@ -227,10 +227,16 @@ class RuntimeBackend(ABC):
     async def start(self) -> None:
         pass
 
-    async def checkpoint(self) -> tuple[str, int | None]:
-        """Snapshot the filesystem and return the checkpoint's id, restorable from the
-        moment this returns, with its stored size in bytes when the provider reports
-        it; the box keeps running."""
+    async def checkpoint(self) -> str:
+        """Snapshot the filesystem and return the checkpoint's id once its content is
+        fixed: writes after this returns are not in it. It becomes restorable only later
+        (`wait_checkpoint`); the box keeps running."""
+        raise NotImplementedError(f"{type(self).__name__} does not support checkpoints")
+
+    async def wait_checkpoint(self, checkpoint: str) -> int | None:
+        """Wait until `checkpoint` is restorable and return its stored size in bytes,
+        when the provider reports it. Raises if it never becomes restorable. The box
+        must stay alive until then: its teardown fails a pending checkpoint."""
         raise NotImplementedError(f"{type(self).__name__} does not support checkpoints")
 
     async def discard_checkpoints(self, ids: list[str]) -> None:

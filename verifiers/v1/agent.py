@@ -685,7 +685,7 @@ class Agent:
             raise RuntimeError("Agent is closed; create a new agent")
         retry = self.config.retries
         retry_state = RetryState(retry)
-        can_restore = (
+        can_restore = bool(
             retry.checkpoint
             and retry_state.max_retries > 0
             and runtime is None
@@ -718,7 +718,7 @@ class Agent:
                     collect_artifacts,
                     on_score,
                     restore=restoring,
-                    checkpoints=can_restore,
+                    checkpoints=retry.checkpoint_interval if can_restore else 0,
                     attempt=attempt,
                 )
                 trace = run.trace
@@ -781,7 +781,7 @@ class Agent:
         on_score: Callable[[Trace, Runtime], Awaitable[None]] | None,
         *,
         restore: tuple[Trace, Checkpoint] | None = None,
-        checkpoints: bool = False,
+        checkpoints: int = 0,
         attempt: int = 0,
     ) -> Rollout:
         params = self._rollout_params(task, runtime, dict(shared_tools or {}))

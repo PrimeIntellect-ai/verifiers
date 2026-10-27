@@ -257,9 +257,15 @@ class Checkpoint(BaseModel):
     (`RolloutSession.pinned_tool_results`): a restored harness re-sends its own
     copies, which must be pinned again to match the trace. Live-only."""
     time: TimeSpan = Field(default_factory=TimeSpan)
-    """From the snapshot request until it was durable: how long the turn waited."""
+    """From the snapshot request until it was durable (restorable); `end` stays 0 while
+    it is not."""
+    captured: float = 0.0
+    """When the request returned: the snapshot's content was fixed from then on."""
+    held: float = 0.0
+    """Seconds the turn's reply waited for the capture; 0 when the model call took
+    longer, since the snapshot runs alongside it."""
     bytes: int | None = None
-    """The snapshot's stored size, which the provider bills, when it reports one."""
+    """The snapshot's stored size, which the provider bills, once it is durable."""
     harness: dict[str, Any] = Field(default_factory=dict)
     """What the harness session needs to continue in a box restored from the snapshot
     (`HarnessSession.checkpoint_state`), e.g. an ACP agent's session id."""

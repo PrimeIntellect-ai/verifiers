@@ -118,16 +118,17 @@ class Rollout:
         collect_artifacts: bool = False,
         on_score: Callable[[Trace, Runtime], Awaitable[None]] | None = None,
         restore: tuple[Trace, Checkpoint] | None = None,
-        checkpoints: bool = False,
+        checkpoints: int = 0,
         attempt: int = 0,
     ) -> None:
         """`attempt` numbers this run among the trace's retries (stamped on the
         errors it captures). `restore` continues a failed attempt's trace from one of
         its checkpoints: the trace rewinds to it and this run boots its box from the
         snapshot instead of setting the task up again. `checkpoints` snapshots the box
-        before every turn (on a runtime and a harness that support it) for a retry to
-        restore; the owner of the retries frees them (`Runtime.discard_checkpoints`)
-        once the run is final — this rollout only frees them when it aborts."""
+        before every `checkpoints`-th model turn (0: never; on a runtime and a harness
+        that support it) for a retry to restore; the owner of the retries frees them
+        (`Runtime.discard_checkpoints`) once the run is final — this rollout only frees
+        them when it aborts."""
         self._on_score = on_score
         self.task = task
         self.harness = harness
@@ -148,6 +149,8 @@ class Rollout:
         self._borrowed_runtime = runtime
         self._collect_artifacts = collect_artifacts
         self._checkpoints = checkpoints
+        self._durable: dict[str, asyncio.Task[None]] = {}
+        """The snapshots still on their way to restorable, by checkpoint id."""
         self._attempt = attempt
         self._restore: Checkpoint | None = None
         self._harness_data: TaskData | None = None
@@ -727,8 +730,10 @@ class Rollout:
         # Only the restore notice is new; user hooks prepare it like any user turn.
         return await self.step(messages, intercepted=len(messages) - 1)
 
-    async def _checkpoint(self, turn: graph.PendingTurn) -> None:
+    async def _checkpoint(self, turn: graph.PendingTurn) -> Checkpoint | None:
         assert self.runtime is not None
+        if self.trace.num_turns % self._checkpoints:
+            return
         if len(self.trace._pending) > 1:
             # Another request is in flight (parallel sub-agents share the trace): the
             # box is not idle, so no snapshot would match this turn's prefix.
@@ -750,29 +755,62 @@ class Rollout:
         pins = dict(self._session.pinned_tool_results)
         started = time.time()
         try:
-            checkpoint, size = await self.runtime.backend.checkpoint()
+            checkpoint_id = await self.runtime.backend.checkpoint()
         except Exception:
             logger.warning(
                 "checkpoint failed (rollout %s)", self.trace.id, exc_info=True
             )
-            return
+            return None
         node = turn.prefix_node_ids[-1] if turn.prefix_node_ids else None
-        self.trace.checkpoints.append(
-            Checkpoint(
-                id=checkpoint,
-                node=node,
-                tail=list(turn.tail),
-                state=state,
-                info=info,
-                pins=pins,
-                harness=harness,
-                time=TimeSpan(start=started, end=time.time()),
-                bytes=size,
-            )
+        checkpoint = Checkpoint(
+            id=checkpoint_id,
+            node=node,
+            tail=list(turn.tail),
+            state=state,
+            info=info,
+            pins=pins,
+            harness=harness,
+            time=TimeSpan(start=started),
+            captured=time.time(),
+        )
+        self.trace.checkpoints.append(checkpoint)
+        self._durable[checkpoint_id] = asyncio.create_task(
+            self._make_durable(checkpoint)
         )
         logger.debug(
-            "checkpoint %s taken: id=%s node=%s", checkpoint, self.trace.id, node
+            "checkpoint %s taken: id=%s node=%s", checkpoint_id, self.trace.id, node
         )
+        return checkpoint
+
+    async def _make_durable(self, checkpoint: Checkpoint) -> None:
+        assert self.runtime is not None
+        try:
+            checkpoint.bytes = await self.runtime.backend.wait_checkpoint(checkpoint.id)
+        except Exception:
+            # Not restorable: no retry may pick it. The backend still holds it as
+            # stray and frees it with the box.
+            logger.warning(
+                "checkpoint %s never became durable (rollout %s)",
+                checkpoint.id,
+                self.trace.id,
+                exc_info=True,
+            )
+            with contextlib.suppress(ValueError):
+                self.trace.checkpoints.remove(checkpoint)
+        else:
+            checkpoint.time.end = time.time()
+        finally:
+            self._durable.pop(checkpoint.id, None)
+
+    async def _settle_checkpoints(self, *, wait: bool) -> None:
+        """Before the box goes: wait for the snapshots still uploading, so a retry
+        can restore them (its teardown would fail them), or, with nothing to retry,
+        stop waiting and leave them to be freed."""
+        tasks = list(self._durable.values())
+        if not wait:
+            for task in tasks:
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
 
     async def _cleanup_harness(self, runtime: Runtime) -> None:
         if self._harness_cleaned:
@@ -791,6 +829,7 @@ class Rollout:
         (a cancellation mid-setup, a lifetime bug raised to the caller) means the
         driver will never reach `close()`. Safe after a partial `close()`."""
         self._closed = True
+        await self._settle_checkpoints(wait=False)
         if self._harness_session is not None:
             with contextlib.suppress(Exception):
                 await self._harness_session.close()
@@ -1096,6 +1135,9 @@ class Rollout:
             trace.split_agent_time()
             if runtime is not None:
                 await self._cleanup_harness(runtime)
+            # A failed attempt's retry restores the newest snapshot, which must be
+            # durable before the box goes.
+            await self._settle_checkpoints(wait=not trace.ok)
             # Tear down here — the env's `score()` (later) needs only the traces,
             # not a live runtime. A borrowed runtime is its creator's to tear down,
             # not this rollout's.

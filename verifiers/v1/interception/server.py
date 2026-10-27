@@ -785,12 +785,16 @@ class InterceptionServer(Interception):
             node: int | None = None
             error: Exception | None = None
             started = time.time()
+            # The box is idle while the harness awaits this turn, so a snapshot captured
+            # before the reply returns matches the prompt exactly (tool results in, this
+            # reply not yet). It runs alongside the model call; the reply waits for it.
+            capture = (
+                asyncio.create_task(session.checkpointer(turn))
+                if session.checkpointer is not None
+                else None
+            )
             try:
                 try:
-                    # The box is idle while the harness awaits this turn: the snapshot
-                    # matches the prompt exactly (tool results in, this reply not yet).
-                    if session.checkpointer is not None:
-                        await session.checkpointer(turn)
                     # What actually goes upstream: the native body with the rollout's model +
                     # sampling imposed — recorded raw on the trace, per call.
                     if relay:
@@ -881,6 +885,18 @@ class InterceptionServer(Interception):
                     error = e
                     raise
             finally:
+                if capture is not None:
+                    held = time.monotonic()
+                    try:
+                        checkpoint = await capture
+                    # A lost snapshot never fails the turn.
+                    except Exception:
+                        logger.warning(
+                            "checkpoint failed: id=%s", session.trace.id, exc_info=True
+                        )
+                    else:
+                        if checkpoint is not None:
+                            checkpoint.held = time.monotonic() - held
                 if node is None:
                     turn.abandon()
                 # The turn's one per-exchange record: settings, timing, outcome, and
