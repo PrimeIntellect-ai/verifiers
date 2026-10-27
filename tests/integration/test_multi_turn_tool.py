@@ -2,7 +2,8 @@
 never reveals (echo-tool), so reward 1.0 proves the tool ran. Every MCP harness reaches
 it colocated across the harness x runtime grid; the chat loop reaches it across its
 placements (colocated in the harness's box, in a Compose service beside it, or its own
-runtime) on the runtime x runtime grid."""
+runtime) on the runtime x runtime grid. A tool that raises (tool-error) reports its message
+to the model; that is server-side, so the chat loop covers it."""
 
 import pytest
 from grid import assert_one_branch, grid, placements
@@ -62,6 +63,16 @@ async def test_tool_placement(run, harness_runtime, tool_runtime):
     assert trace.tools
     (echo_tool,) = [tool for tool in trace.tools if tool.name.endswith("back")]
     assert "message" in echo_tool.parameters.get("properties", {})
+
+
+async def test_tool_error(run):
+    """A tool's exception message comes back to the model, not just that the call failed."""
+    (episode,) = await run("tool-error", max_turns=4)
+    (trace,) = episode.traces
+    assert trace.ok, [error.message for error in trace.errors]
+    assert trace.reward == 1.0, [
+        message.model_dump_json(exclude_none=True) for message in trace.tool_messages
+    ]
 
 
 @pytest.mark.parametrize(
