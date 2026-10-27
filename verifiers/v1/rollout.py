@@ -41,7 +41,7 @@ from verifiers.v1.runtimes import (
 from verifiers.v1.runtimes.private_network import tool_vms
 from verifiers.v1.session import RolloutLimits, RolloutSession, hook_boundary
 from verifiers.v1.state import state_cls
-from verifiers.v1.task import Task
+from verifiers.v1.task import Task, TaskData
 from verifiers.v1.trace import AgentInfo, Checkpoint, Trace, TraceTask
 from verifiers.v1.types import Messages, Request, Response, SystemMessage, UserMessage
 from verifiers.v1.utils.artifacts import collect
@@ -150,6 +150,7 @@ class Rollout:
         self._checkpoints = checkpoints
         self._attempt = attempt
         self._resume: Checkpoint | None = None
+        self._harness_data: TaskData | None = None
         self.rewound_checkpoints: list[str] = []
         """Checkpoints the resumed trace dropped (taken after the one resumed from)."""
         if resume is not None:
@@ -504,9 +505,11 @@ class Rollout:
                             harness_data = harness_data.model_copy(
                                 update={"system_prompt": network_prompt}
                             )
+                    # A resumed trace already carries its prompt's rewrites.
                     if (
                         self._session.request_interceptors
                         and harness_data.prompt is not None
+                        and self._resume is None
                     ):
                         prompt = harness_data.prompt
                         system_prompt = harness_data.system_prompt
@@ -557,6 +560,7 @@ class Rollout:
                             )
                             else {}
                         )
+                        self._harness_data = harness_data
                         self._harness_session = await self.harness.session(
                             self.ctx,
                             self.trace,
@@ -697,15 +701,13 @@ class Rollout:
         """Run the resumed attempt's first segment: the harness continues the
         conversation the checkpoint left off at — its recorded tail (tool results,
         user turns) after the trace's rewound branch — in the restored box."""
-        assert self._resume is not None
-        data = self.trace.task.data
-        # `Harness.resume` re-emits `data.system_prompt` through the program's own
-        # system message; the tail's copy would double it.
-        tail = [
-            m
-            for m in self._resume.tail
-            if m.role != "system" or data.system_prompt is None
-        ]
+        assert self._resume is not None and self._harness_data is not None
+        # `Harness.resume` re-emits the session's system prompt (the task's, plus a
+        # network notice) through the program's own system message; the tail's copy
+        # would double it.
+        system = self._harness_data.system_prompt
+        tail = [m for m in self._resume.tail if m.role != "system" or system is None]
+        self._session.mark_intercepted(self.trace.messages, tail)
         return await self.step(tail, intercept=False)
 
     async def _checkpoint(self, turn: graph.PendingTurn) -> None:
@@ -715,6 +717,7 @@ class Rollout:
             # box is not idle, so no snapshot would match this turn's prefix.
             return
         state = copy.deepcopy(self.trace.state)
+        info = copy.deepcopy(self.trace.info)
         try:
             checkpoint = await self.runtime.backend.checkpoint()
         except Exception:
@@ -729,6 +732,7 @@ class Rollout:
                 node=node,
                 tail=list(turn.tail),
                 state=state,
+                info=info,
             )
         )
         logger.debug(

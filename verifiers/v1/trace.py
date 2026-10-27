@@ -250,6 +250,8 @@ class Checkpoint(BaseModel):
     state: Any = Field(None, exclude=True)
     """The trace's typed state as the snapshot was taken (tool servers write it over
     `/state`), restored with the box so a retry sees one consistent world. Live-only."""
+    info: dict[str, Any] | None = Field(None, exclude=True)
+    """`Trace.info` as the snapshot was taken, restored with `state`. Live-only."""
     resumed: bool = False
     """Whether a retry resumed the run from this snapshot."""
 
@@ -844,7 +846,10 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         span = self.timing.agent
         if not span.end:
             return
-        model = sum(call.time.duration for call in self.calls)
+        # A resumed trace keeps the calls of the attempts before this span.
+        model = sum(
+            call.time.duration for call in self.calls if call.time.start >= span.start
+        )
         span.model.duration = min(model, span.duration)
         span.harness.duration = span.duration - span.model.duration
 
@@ -874,6 +879,8 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         self.calls = [c for c in self.calls if c.node is None or c.node < keep]
         if checkpoint.state is not None:
             self.state = copy.deepcopy(checkpoint.state)
+        if checkpoint.info is not None:
+            self.info = copy.deepcopy(checkpoint.info)
         # The resumed rollout re-stamps every stage span; the run's start stays.
         self.timing = Timing(start=self.timing.start)
         dropped = [

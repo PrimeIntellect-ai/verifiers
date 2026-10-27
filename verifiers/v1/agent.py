@@ -703,71 +703,79 @@ class Agent:
         resume: Checkpoint | None = None
         snapshots: set[str] = set()  # every checkpoint any attempt took
         run: Rollout | None = None
-        for attempt in range(retry_state.max_retries + 1):
-            resuming = (
-                (trace, resume) if trace is not None and resume is not None else None
-            )
-            # This attempt's own errors decide — a resumed trace still carries
-            # the earlier attempts'.
-            seen = len(resuming[0].errors) if resuming is not None else 0
-            run = await self._run_once(
-                task,
-                runtime,
-                tools,
-                on_trace,
-                collect_artifacts,
-                on_score,
-                resume=resuming,
-                checkpoints=can_resume,
-                attempt=attempt,
-            )
-            trace = run.trace
-            snapshots.update(run.rewound_checkpoints)
-            snapshots.update(checkpoint.id for checkpoint in trace.checkpoints)
-            if attempt == retry_state.max_retries or trace.ok:
-                break
-            if runtime is not None:
-                logger.warning(
-                    "not retrying the rollout on a borrowed box (its state is no "
-                    "longer the task's start state); the error stands"
+        # TODO: retain sandbox snapshots beyond the run (an episode's forks, later
+        # inspection); for now a final run frees every snapshot its attempts took.
+        # The `finally` covers a cancellation between attempts, when no rollout is
+        # open to free them on abort.
+        try:
+            for attempt in range(retry_state.max_retries + 1):
+                resuming = (
+                    (trace, resume)
+                    if trace is not None and resume is not None
+                    else None
                 )
-                break
-            cause = retry_state.next_error(trace.errors[seen:])
-            if cause is None:
-                break
-            resume = trace.checkpoints[-1] if can_resume and trace.checkpoints else None
-            if resume is None:
-                history.extend(trace.errors)
-            delay = backoff(attempt)
-            logger.warning(
-                "retrying agent rollout (retry %d/%d) in %.1fs after error: %s (%s)",
-                attempt + 1,
-                retry_state.max_retries,
-                delay,
-                cause.type,
-                f"resuming from checkpoint {resume.id}"
-                if resume is not None
-                else "from scratch",
-            )
-            await asyncio.sleep(delay)
+                # This attempt's own errors decide — a resumed trace still carries
+                # the earlier attempts'.
+                seen = len(resuming[0].errors) if resuming is not None else 0
+                run = await self._run_once(
+                    task,
+                    runtime,
+                    tools,
+                    on_trace,
+                    collect_artifacts,
+                    on_score,
+                    resume=resuming,
+                    checkpoints=can_resume,
+                    attempt=attempt,
+                )
+                trace = run.trace
+                snapshots.update(run.rewound_checkpoints)
+                snapshots.update(checkpoint.id for checkpoint in trace.checkpoints)
+                if attempt == retry_state.max_retries or trace.ok:
+                    break
+                if runtime is not None:
+                    logger.warning(
+                        "not retrying the rollout on a borrowed box (its state is no "
+                        "longer the task's start state); the error stands"
+                    )
+                    break
+                cause = retry_state.next_error(trace.errors[seen:])
+                if cause is None:
+                    break
+                resume = (
+                    trace.checkpoints[-1] if can_resume and trace.checkpoints else None
+                )
+                if resume is None:
+                    history.extend(trace.errors)
+                delay = backoff(attempt)
+                logger.warning(
+                    "retrying agent rollout (retry %d/%d) in %.1fs after error: %s (%s)",
+                    attempt + 1,
+                    retry_state.max_retries,
+                    delay,
+                    cause.type,
+                    f"resuming from checkpoint {resume.id}"
+                    if resume is not None
+                    else "from scratch",
+                )
+                await asyncio.sleep(delay)
+        finally:
+            if snapshots and run is not None and run.runtime is not None:
+                try:
+                    await run_shielded(
+                        run.runtime.backend.discard_checkpoints(sorted(snapshots))
+                    )
+                except Exception:
+                    logger.warning(
+                        "discarding checkpoints failed (rollout %s)",
+                        run.trace.id,
+                        exc_info=True,
+                    )
         assert trace is not None and run is not None
         if history:
             # The full history rides the final trace either way; success is the
             # `ok` stamp, never errors-emptiness.
             trace.errors = history + trace.errors
-        # TODO: retain sandbox snapshots beyond the run (an episode's forks, later
-        # inspection); for now a final run frees every snapshot its attempts took.
-        if snapshots and run.runtime is not None:
-            try:
-                await run_shielded(
-                    run.runtime.backend.discard_checkpoints(sorted(snapshots))
-                )
-            except Exception:
-                logger.warning(
-                    "discarding checkpoints failed (rollout %s)",
-                    trace.id,
-                    exc_info=True,
-                )
         return trace
 
     async def _run_once(

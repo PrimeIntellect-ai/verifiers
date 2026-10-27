@@ -383,6 +383,21 @@ class RolloutSession:
                 self.pinned_tool_results[tool_keys[position]] = after
         return current, records, None
 
+    def mark_intercepted(self, branch: Messages, tail: Messages) -> None:
+        """Treat `tail`, which follows `branch` and was intercepted in an earlier
+        attempt (a resumed checkpoint's), as prepared: the harness re-sends it, and
+        a non-idempotent hook must not rewrite it twice."""
+        request = Request(messages=[*branch, *tail])
+        for position, key in self.tool_result_keys(request).items():
+            message = request.messages[position]
+            if position >= len(branch) and isinstance(message, ToolMessage):
+                self.pinned_tool_results.setdefault(key, message)
+        self.prepared_users.update(
+            graph.message_hash(message)
+            for message in tail
+            if isinstance(message, UserMessage)
+        )
+
     def consume_prepared(self, messages: Messages) -> None:
         """Forget pre-harness user rewrites only after their model request commits."""
         for message in messages:
