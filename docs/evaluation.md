@@ -72,7 +72,7 @@ Unlike static `client.headers` (which are written into the saved resolved config
 
 ## Sampling settings
 
-Shared generation parameters go under `[sampling]`, with per-agent overrides under `[env.<agent>.sampling]`. Overrides merge field by field, so setting an agent's `temperature` preserves the shared token limit and provider options (pass `None` in Python or `null` in JSON to clear an inherited field).
+Shared generation parameters go under `[sampling]`, with per-agent overrides under `[env.<agent>.sampling]`. Overrides merge field by field, so setting an agent's `temperature` preserves the shared token limit and provider options (pass `None` in Python or `null` in JSON to clear an inherited field). An agent that sets its own `client` does not inherit `[sampling]`, because shared options can be specific to the run's endpoint. Give that agent all of its sampling under `[env.<agent>.sampling]`.
 
 Alongside standard parameters like `temperature`, `top_p`, `reasoning_effort`, and `max_tokens` (or its alias `max_completion_tokens`), you can pass provider-specific options either directly in `[sampling]` or inside `extra_body`.
 

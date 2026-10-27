@@ -2,7 +2,9 @@
 
 A DEALER socket + msgpack, with a single receive loop matching replies to
 per-request futures by `request_id` and routing a run's `delta` frames to its
-assembly (`serve/delta.py`). Speaks the typed pydantic request/response models
+assembly (`serve/delta.py`). The loop drains every queued frame per wakeup and
+handles the batch in arrival order, so a busy event loop costs one turn per batch
+rather than one per delta. Speaks the typed pydantic request/response models
 (`serve/types.py`) end-to-end: a request is `model_dump`ed onto the wire; a run's
 traces stream back turn by turn and the assembled record is `model_validate`d into a
 `WireEpisode` once the reply lands — `Trace`s typed as `Trace[WireTaskData]`
@@ -23,6 +25,7 @@ import zmq
 import zmq.asyncio
 
 from verifiers.v1.configs.client import ClientConfig
+from verifiers.v1.configs.sampling import SamplingConfig
 from verifiers.v1.episode import WireEpisode
 from verifiers.v1.serve.delta import EpisodeAssembly, unpack
 from verifiers.v1.serve.types import (
@@ -34,16 +37,33 @@ from verifiers.v1.serve.types import (
     RunRequest,
     RunResponse,
 )
-from verifiers.v1.types import SamplingConfig
 
 logger = logging.getLogger(__name__)
 
 ResponseT = TypeVar("ResponseT", bound=BaseResponse)
 DecodedT = TypeVar("DecodedT")
 
+# How much of the queue one wakeup drains before the loop yields.
+MAX_BATCH_FRAMES = 512
+MAX_BATCH_BYTES = 16 << 20
+INLINE_DECODE_BYTES = 1 << 20
+"""A batch with fewer delta bytes decodes on the loop: unpacking a turn's delta takes
+microseconds, less than a worker-thread round trip on a busy loop."""
+
+
+def _unpack_all(payloads: list[memoryview]) -> list[object]:
+    """`unpack` each payload; one that fails yields its exception instead."""
+    decoded: list[object] = []
+    for payload in payloads:
+        try:
+            decoded.append(unpack(payload))
+        except Exception as e:  # noqa: BLE001 - logged by the caller, in arrival order
+            decoded.append(e)
+    return decoded
+
 
 class EnvClient:
-    """Receive streamed episodes with bounded worker decoding."""
+    """Receive streamed episodes, decoding each drained batch of frames at once."""
 
     def __init__(self, address: str = "tcp://127.0.0.1:5000") -> None:
         self.address = address
@@ -67,13 +87,38 @@ class EnvClient:
             self._receiver = asyncio.create_task(self._receive_loop())
 
     async def _receive_loop(self) -> None:
-        # The one receiver serves every in-flight request, so a bad frame or a delta
-        # handler that raises is logged and skipped rather than allowed to end the loop.
+        # The one receiver serves every in-flight request. Awaiting each frame would
+        # cost a loop turn per delta, which a busy loop turns into a hard cap on how
+        # fast a server's stream drains; so each wakeup takes everything queued.
         while True:
             try:
-                frames = await self.socket.recv_multipart(copy=False)
+                batch = [await self.socket.recv_multipart(copy=False)]
             except asyncio.CancelledError:
                 break
+            size = sum(len(frame) for frame in batch[0])
+            while len(batch) < MAX_BATCH_FRAMES and size < MAX_BATCH_BYTES:
+                try:
+                    # A non-blocking recv returns an already-resolved future.
+                    frames = self.socket.recv_multipart(
+                        flags=zmq.NOBLOCK, copy=False
+                    ).result()
+                except zmq.Again:
+                    break
+                batch.append(frames)
+                size += sum(len(frame) for frame in frames)
+            await self._handle_batch(batch)
+            # A recv with frames already queued resolves without yielding: give the
+            # rest of the loop a turn between batches of a deep backlog.
+            await asyncio.sleep(0)
+
+    async def _handle_batch(self, batch: list[list[zmq.Frame]]) -> None:
+        """Decode a batch's deltas, then apply each delta and resolve each reply in
+        arrival order, so a run's reply lands after its last delta. A bad frame or a
+        delta handler that raises is logged and skipped rather than allowed to end
+        the loop or lose its neighbours."""
+        # (request_id, data, delta handler) — a reply carries no handler
+        routed: list[tuple[str, zmq.Frame, Callable[[dict], None] | None]] = []
+        for frames in batch:
             try:
                 if len(frames) != 3:
                     raise ValueError(
@@ -83,20 +128,38 @@ class EnvClient:
                 request_id_frame, kind_frame, data_frame = frames
                 request_id = request_id_frame.bytes.decode()
                 kind = kind_frame.bytes
-                if kind == b"delta":
-                    on_delta = self._deltas.get(request_id)
-                    if on_delta is not None:
-                        # The view retains its ZMQ frame while a cancelled worker finishes.
-                        delta = await self._decode(
-                            unpack, data_frame.buffer.toreadonly()
-                        )
-                        # Cancellation may remove the handler while the worker decodes.
-                        if self._deltas.get(request_id) is on_delta:
-                            on_delta(delta)
-                    continue
+            except Exception:  # keep receiving for the other requests
+                logger.warning("dropping a malformed env-server frame", exc_info=True)
+                continue
+            if kind != b"delta":
+                routed.append((request_id, data_frame, None))
+            elif (on_delta := self._deltas.get(request_id)) is not None:
+                routed.append((request_id, data_frame, on_delta))
+        # The views retain their ZMQ frames while a cancelled worker finishes.
+        payloads = [
+            data_frame.buffer.toreadonly()
+            for _, data_frame, on_delta in routed
+            if on_delta is not None
+        ]
+        if sum(payload.nbytes for payload in payloads) <= INLINE_DECODE_BYTES:
+            decoded = iter(_unpack_all(payloads))
+        else:
+            decoded = iter(await asyncio.to_thread(_unpack_all, payloads))
+        for request_id, data_frame, on_delta in routed:
+            if on_delta is None:
                 future = self._pending.pop(request_id, None)
                 if future is not None and not future.done():
                     future.set_result(data_frame.bytes)
+                continue
+            delta = next(decoded)
+            if isinstance(delta, Exception):
+                logger.warning("dropping a malformed env-server frame", exc_info=delta)
+                continue
+            # Cancellation may remove the handler while the worker decodes.
+            if self._deltas.get(request_id) is not on_delta:
+                continue
+            try:
+                on_delta(delta)
             except Exception:  # keep receiving for the other requests
                 logger.warning("dropping a malformed env-server frame", exc_info=True)
 
@@ -145,7 +208,9 @@ class EnvClient:
         return response
 
     async def _decode(self, decode: Callable[..., DecodedT], *args: object) -> DecodedT:
-        """Decode off the loop, sharing one slot with final episode validation."""
+        """Validate a finished episode off the loop, one at a time per client. The
+        receive loop decodes its own batches, so a large episode validating here
+        never holds up another run's deltas."""
         await self._decode_slots.acquire()
         decoding = asyncio.create_task(asyncio.to_thread(decode, *args))
         # Hold the slot until the worker finishes so cancellation cannot overlap decodes.

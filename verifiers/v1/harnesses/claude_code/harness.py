@@ -5,18 +5,18 @@ from typing import Literal
 
 from verifiers.v1.acp import ACPConfig, ACPHarness
 from verifiers.v1.clients import ModelContext
-from verifiers.v1.configs.harness import HarnessConfig, PinnedVersion
+from verifiers.v1.configs.harness import DialectName, HarnessConfig, PinnedVersion
 from verifiers.v1.harnesses.node import NODE_BIN_DIR, ensure_node
 from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
 from verifiers.v1.harnesses.utils.replay import drop_blank_text
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
-from verifiers.v1.types import DialectName, Message
+from verifiers.v1.types import Message
 
 CLAUDE_ACP_DIR = "/var/tmp/vf-claude-agent-acp-{version}-{acp_version}"
 PACKAGES_DIR = f"{CLAUDE_ACP_DIR}/packages"
-ACP_VERSION = "0.79.0"
+ACP_VERSION = "0.95.0"
 CLAUDE_BIN = f"{PACKAGES_DIR}/node_modules/.bin/claude"
 ACP_BIN = f"{PACKAGES_DIR}/node_modules/.bin/claude-agent-acp"
 CLAUDE_CONFIG_ROOT = ".vf-claude"
@@ -34,7 +34,7 @@ touch {ready}
 
 class ClaudeCodeHarnessConfig(HarnessConfig):
     dialect: Literal["anthropic_messages"] = "anthropic_messages"
-    version: PinnedVersion = "2.1.278"
+    version: PinnedVersion = "2.1.309"
     """Claude Code release to install, pinned for reproducibility."""
 
 
@@ -45,7 +45,7 @@ class ClaudeCodeHarness(ACPHarness[ClaudeCodeHarnessConfig]):
     SUPPORTS_TOOL_INTERCEPTION = True
 
     # Claude Code drops whitespace-only text blocks on replay. Closed source: observed
-    # with 2.1.278, recheck on version bumps.
+    # with 2.1.309, recheck on version bumps.
     def replay_view(self, message: Message, dialect: DialectName | None) -> Message:
         return drop_blank_text(message)
 
@@ -91,6 +91,8 @@ class ClaudeCodeHarness(ACPHarness[ClaudeCodeHarnessConfig]):
                 "options": {
                     "strictMcpConfig": True,
                     "disallowedTools": self.config.disabled_tools or [],
+                    # Evaluations do not need a model-generated next-user prompt.
+                    "promptSuggestions": False,
                     # A supplied title prevents the adapter's background title-model call.
                     "extraArgs": {"name": trace.id},
                 }
@@ -105,6 +107,8 @@ class ClaudeCodeHarness(ACPHarness[ClaudeCodeHarnessConfig]):
             "CLAUDE_CODE_EXECUTABLE": CLAUDE_BIN.format(**versions),
             "CLAUDE_CONFIG_DIR": config_dir,
             "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+            # Discovering deferred tools changes the tool schema mid-trace.
+            "ENABLE_TOOL_SEARCH": "false",
             "DISABLE_AUTOUPDATER": "1",
             "IS_SANDBOX": "1",
         }

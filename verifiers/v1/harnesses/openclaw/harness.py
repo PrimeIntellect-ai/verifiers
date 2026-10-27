@@ -24,7 +24,7 @@ if [ ! -x "$VF_OPENCLAW_BIN" ]; then
     curl -fsSL --proto '=https' --tlsv1.2 https://openclaw.ai/install-cli.sh \
         | bash -s -- --prefix "$VF_OPENCLAW_DIR" --version "$VF_OPENCLAW_VERSION" --no-onboard
 fi
-set -- $(find "$VF_OPENCLAW_DIR/tools" -type f -path '*/openclaw/dist/transcript-redact-*.mjs')
+set -- $(find "$VF_OPENCLAW_DIR/tools" -type f -path '*/openclaw/dist/session-accessor.sqlite-transcript-store-*.mjs')
 [ "$#" -eq 1 ] || { echo "could not locate OpenClaw's transcript sanitizer for replay patch" >&2; exit 1; }
 "$VF_OPENCLAW_DIR/tools/node/bin/node" - "$1" <<'NODE'
 const fs = require("node:fs");
@@ -125,7 +125,7 @@ wait "$acp_pid"
 
 
 class OpenClawHarnessConfig(HarnessConfig):
-    version: PinnedVersion = "2026.9.5"
+    version: PinnedVersion = "2026.10.6"
     """OpenClaw release to install, pinned for reproducibility."""
     dialect: Literal["auto"] = "auto"
     """OpenClaw takes the transport from its model catalog."""

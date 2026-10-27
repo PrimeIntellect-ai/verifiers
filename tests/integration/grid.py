@@ -66,10 +66,10 @@ RUNTIME_FEATURES = {
     "compose": "Compose services",
 }
 
-# Harnesses that cannot run against the CI model yet.
+# Harness dialects that cannot run against the CI model yet.
 # TODO: drop each entry once its fix lands.
 CI_MODEL_GAPS = {
-    "kimi-code": "Prime chat completions rejects kimi-code's prompt_cache_key",
+    ("kimi-code", "chat_completions"): "Prime rejects Kimi chat prompt_cache_key",
 }
 
 
@@ -78,10 +78,10 @@ CI_MODEL_GAPS = {
 FORKS = {
     # Acts only through tool calls: it drops a tool-less reply from its history and
     # resends only its format error.
-    "mini-swe-agent": "https://github.com/SWE-agent/mini-swe-agent/blob/v2.4.6/src/minisweagent/agents/default.py#L114",
+    "mini-swe-agent": "https://github.com/SWE-agent/mini-swe-agent/blob/v2.4.6/src/minisweagent/models/litellm_model.py#L79-L90",
     # Moves its runtime-context message to the tail of every request and drops the
     # earlier one, unless the provider's replay policy is append-only.
-    "openclaw": "https://github.com/openclaw/openclaw/blob/v2026.9.5/src/agents/internal-runtime-context.ts#L402-L408",
+    "openclaw": "https://github.com/openclaw/openclaw/blob/v2026.10.6/src/agents/internal-runtime-context.ts#L402-L443",
 }
 
 
@@ -174,7 +174,10 @@ def unsupported(
     for feature in runtime_needs:
         if feature in RUNTIME_FEATURES and not supports(runtime, feature):
             return f"{runtime} does not support {RUNTIME_FEATURES[feature]}"
-    return CI_MODEL_GAPS.get(name)
+    dialect = harness_config_type(name).model_fields["dialect"].default
+    if isinstance(harness, dict):
+        dialect = harness.get("dialect", dialect)
+    return CI_MODEL_GAPS.get((name, dialect))
 
 
 def cell_marks(

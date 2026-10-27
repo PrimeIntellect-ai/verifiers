@@ -4,7 +4,7 @@ from typing import TypeVar, get_args, get_origin
 
 from pydantic import BaseModel, ValidationError
 
-from verifiers.v1.types import SamplingConfig
+from verifiers.v1.configs.sampling import SamplingConfig
 
 T = TypeVar("T")
 

@@ -22,17 +22,13 @@ from typing import Any, ClassVar, Generic, TypeVar
 from pydantic import AnyHttpUrl, BaseModel, ValidationError
 from pydantic_core import from_json
 
+from verifiers.v1.configs.harness import DialectName
 from verifiers.v1.configs.runtime import (
     NetworkPolicyConfig,
     intersect_network_hosts,
 )
-from verifiers.v1.types import (
-    DialectName,
-    Request,
-    Response,
-    Sampling,
-    SamplingConfig,
-)
+from verifiers.v1.configs.sampling import Sampling, SamplingConfig
+from verifiers.v1.types import Request, Response
 from verifiers.v1.utils.network import parse_network_rule
 
 RespT = TypeVar("RespT", bound=BaseModel)
