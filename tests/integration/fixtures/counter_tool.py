@@ -35,6 +35,19 @@ class CounterTask(vf.Task[vf.TaskData, CounterState, CounterTaskConfig]):
         return float(self.config.constant_reward or trace.state.count >= 2)
 
 
+_failed = False
+
+
+def fail_once_after_bumps(request: vf.Request, trace: vf.Trace) -> bool:
+    """A plugged stop that fails one model turn per process once the counter reached 2:
+    the snapshot before that turn, the run's newest, holds one bump."""
+    global _failed
+    if not _failed and trace.state.count >= 2:
+        _failed = True
+        raise vf.ProviderError("injected failure after two bumps", status_code=400)
+    return False
+
+
 def any_response(response: vf.Response) -> bool:
     """A plugged stop that ends the run on its first model response."""
     return True

@@ -239,7 +239,12 @@ class Checkpoint(BaseModel):
     turn that followed. A retry restores it (`Trace.rewind`)."""
 
     id: str
-    """The runtime's checkpoint id (`Runtime.checkpoint`)."""
+    """The runtime's checkpoint id (`Runtime.checkpoint`), or this record's own for a
+    box-less checkpoint."""
+    box: bool = True
+    """Whether a runtime snapshot holds the box. A box-less checkpoint (a harness that
+    keeps nothing in its box, on a runtime without snapshots) restores into a fresh box
+    whose task setup runs again; the trace and its typed state carry the rest."""
     node: int | None = None
     """The last committed node whose conversation the box's state follows; None when
     the snapshot preceded the first turn."""
@@ -274,6 +279,56 @@ class Checkpoint(BaseModel):
     deleted: bool = False
     """Whether the snapshot was deleted (`RolloutCheckpointConfig.keep`, `.after`): it
     can no longer be restored."""
+
+
+class PinnedResult(BaseModel):
+    """One pinned tool result (`RolloutSession.pinned_tool_results`), keyed by the
+    conversation prefix that issued its call and the call's id."""
+
+    prefix: str
+    call_id: str
+    message: ToolMessage
+
+
+class RestorePoint(BaseModel):
+    """A checkpoint with everything a restore needs, serializable: its live-only fields
+    travel with it, so another process (an orchestrator resuming its run) can restore
+    the trace from it (`RunRequest.restore`)."""
+
+    checkpoint: Checkpoint
+    tail: Messages = Field(default_factory=list)
+    state: dict[str, Any] | None = None
+    info: dict[str, Any] | None = None
+    pins: list[PinnedResult] = Field(default_factory=list)
+
+    @classmethod
+    def of(cls, checkpoint: Checkpoint) -> RestorePoint:
+        state = checkpoint.state
+        return cls(
+            checkpoint=checkpoint,
+            tail=list(checkpoint.tail),
+            state=state.model_dump(mode="json")
+            if isinstance(state, BaseModel)
+            else state,
+            info=checkpoint.info,
+            pins=[
+                PinnedResult(prefix=prefix, call_id=call_id, message=message)
+                for (prefix, call_id), message in checkpoint.pins.items()
+            ],
+        )
+
+    def live(self, state_type: type[BaseModel]) -> Checkpoint:
+        """The checkpoint with its live-only fields back, the state as `state_type`."""
+        return self.checkpoint.model_copy(
+            update={
+                "tail": list(self.tail),
+                "state": state_type.model_validate(self.state)
+                if self.state is not None
+                else None,
+                "info": self.info,
+                "pins": {(p.prefix, p.call_id): p.message for p in self.pins},
+            }
+        )
 
 
 def _concat(parts: list[list | np.ndarray], dtype: type[np.generic]) -> np.ndarray:
@@ -784,6 +839,14 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         return self.errors[-1] if self.errors else None
 
     @property
+    def restorable(self) -> Checkpoint | None:
+        """The newest checkpoint a restore can use: restorable and not deleted."""
+        return next(
+            (c for c in reversed(self.checkpoints) if c.time.end and not c.deleted),
+            None,
+        )
+
+    @property
     def has_restored(self) -> bool:
         """Whether a retry restored this run from a checkpoint rather than starting over."""
         return any(checkpoint.restored for checkpoint in self.checkpoints)
@@ -880,12 +943,19 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         self.is_timeout = True
         self.stop(f"{stage}_timeout", override=True)
 
+    def rewind_state(self, checkpoint: Checkpoint) -> None:
+        """Set the typed state and `info` back to `checkpoint`'s."""
+        if checkpoint.state is not None:
+            self.state = copy.deepcopy(checkpoint.state)
+        if checkpoint.info is not None:
+            self.info = copy.deepcopy(checkpoint.info)
+
     def rewind(self, checkpoint: Checkpoint) -> list[str]:
         """Roll the graph back to `checkpoint` — the nodes committed after it go, its own
         conversation stays sampled — and reopen the trace for another attempt: the outcome
         stamps reset, while `errors` and every call stay as the attempts' history (the
         calls of the dropped nodes unlinked, so usage still counts them). Returns the ids
-        of the later checkpoints this drops."""
+        of the later box snapshots this drops."""
         keep = 0 if checkpoint.node is None else checkpoint.node + 1
         if keep > len(self.nodes):
             raise ValueError(f"checkpoint {checkpoint.id!r} is past this trace's graph")
@@ -900,16 +970,12 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         for call in self.calls:
             if call.node is not None and call.node >= keep:
                 call.node = None
-        if checkpoint.state is not None:
-            self.state = copy.deepcopy(checkpoint.state)
-        if checkpoint.info is not None:
-            self.info = copy.deepcopy(checkpoint.info)
+        self.rewind_state(checkpoint)
         # The restored rollout re-stamps every stage span; the run's start stays.
         self.timing = Timing(start=self.timing.start)
-        dropped = [
-            c.id for c in self.checkpoints if c.node is not None and c.node >= keep
-        ]
-        self.checkpoints = [c for c in self.checkpoints if c.id not in dropped]
+        rewound = [c for c in self.checkpoints if c.node is not None and c.node >= keep]
+        self.checkpoints = [c for c in self.checkpoints if c not in rewound]
+        dropped = [c.id for c in rewound if c.box]
         self.rewards = {}
         self.metrics = {}
         self.dropped = None

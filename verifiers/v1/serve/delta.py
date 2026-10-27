@@ -34,6 +34,7 @@ from pydantic import BaseModel
 
 from verifiers.v1.graph import decode_ndarray, encode_ndarray
 from verifiers.v1.serve.encoding import msgpack_encoder
+from verifiers.v1.trace import RestorePoint
 
 if TYPE_CHECKING:
     from verifiers.v1.trace import Trace
@@ -103,6 +104,8 @@ class TraceCursor:
         """Per node that carries routing, its final row as packed when last sent."""
         self.scalars: dict[str, bytes] = {}
         self.pending: bytes = pack([])
+        self.restore: str | None = None
+        """The checkpoint whose restore point went out last."""
 
 
 class DeltaStreamer:
@@ -260,6 +263,12 @@ class DeltaStreamer:
                     changed[field] = value
             if changed:
                 delta["set"] = changed
+            restorable = trace.restorable
+            if restorable is not None and restorable.id != cursor.restore:
+                # The newest restorable checkpoint, with what restoring it needs: a client
+                # can continue the trace from it in another process.
+                delta["restore"] = dump(RestorePoint.of(restorable))
+                cursor.restore = restorable.id
             pending = [dump(message) for message in trace.pending]
             packed = pack(pending)
             if packed != cursor.pending:
@@ -278,6 +287,8 @@ class EpisodeAssembly:
 
     def __init__(self) -> None:
         self.traces: dict[str, dict] = {}
+        self.restores: dict[str, dict] = {}
+        """Per trace, its newest restore point (`RestorePoint`, dumped) as streamed."""
 
     def _maybe_apply_routing_repairs(self, delta: dict[str, Any], trace: dict) -> None:
         """Replace repaired final rows in nodes the client already holds.
@@ -297,7 +308,10 @@ class EpisodeAssembly:
         trace_id = delta["trace"]
         if delta.get("discard"):
             self.traces.pop(trace_id, None)
+            self.restores.pop(trace_id, None)
             return
+        if "restore" in delta:
+            self.restores[trace_id] = delta["restore"]
         trace = self.traces.get(trace_id)
         if trace is None:
             trace = self.traces[trace_id] = {

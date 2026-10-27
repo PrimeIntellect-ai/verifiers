@@ -12,7 +12,13 @@ from verifiers.v1.configs.client import EvalClientConfig
 from verifiers.v1.graph import MessageNode
 from verifiers.v1.rollout import Rollout, kept
 from verifiers.v1.session import RolloutSession
-from verifiers.v1.trace import Checkpoint, ModelCall, TimeSpan, TraceTask
+from verifiers.v1.trace import (
+    Checkpoint,
+    ModelCall,
+    RestorePoint,
+    TimeSpan,
+    TraceTask,
+)
 from verifiers.v1.types import (
     AssistantMessage,
     Request,
@@ -140,6 +146,7 @@ def make_rollout(
     run._pruning = asyncio.Lock()
     run.deleted_checkpoints = set()
     run.rewound_checkpoints = []
+    run._boxless = False
     return run, backend
 
 
@@ -213,3 +220,30 @@ async def test_a_durable_snapshot_prunes_the_older_ones():
     assert sorted(backend.deleted) == ["old1", "old2", "rewound"]
     assert [c.id for c in run.trace.checkpoints if not c.deleted] == [newest.id]
     assert run.deleted_checkpoints == {"old1", "old2", "rewound"}
+
+
+async def test_a_boxless_checkpoint_is_restorable_at_once():
+    run, backend = make_rollout()
+    run._boxless = True
+    checkpoint = await run._checkpoint(TURN)
+    assert checkpoint is not None and not checkpoint.box
+    assert checkpoint.time.end and backend.taken == 0
+    assert run.trace.restorable is checkpoint
+
+
+def test_a_restore_point_round_trips():
+    checkpoint = Checkpoint(
+        id="ck",
+        node=1,
+        tail=[ToolMessage(tool_call_id="c1", content="out")],
+        state=vf.State(),
+        info={"nonce": "n"},
+        pins={("prefix", "c1"): ToolMessage(tool_call_id="c1", content="pinned")},
+        time=TimeSpan(start=1.0, end=2.0),
+    )
+    wire = RestorePoint.of(checkpoint).model_dump(mode="json")
+    back = RestorePoint.model_validate(wire).live(vf.State)
+    assert back.tail == checkpoint.tail
+    assert back.info == {"nonce": "n"}
+    assert back.pins == checkpoint.pins
+    assert back.state == checkpoint.state

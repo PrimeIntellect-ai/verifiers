@@ -571,6 +571,9 @@ class Agent:
             sampling=config.sampling,
         )
         self._closed = False
+        self.pending_restore: tuple[Trace, Checkpoint] | None = None
+        """A restore the next `run` starts from (a trace another process ran); consumed
+        by that run."""
         self.runtime_config: RuntimeConfig = config.runtime
         self.interception = interception
         self.limits = RolloutLimits(
@@ -667,6 +670,7 @@ class Agent:
         on_trace: Callable[[Trace], None] | None = None,
         collect_artifacts: bool = False,
         on_score: Callable[[Trace, Runtime], Awaitable[None]] | None = None,
+        restore: tuple[Trace, Checkpoint] | None = None,
     ) -> Trace:
         """Run this agent on `task` once and return the trace: one segment — the
         program runs on the task's prompt until it exits (a multi-turn exchange
@@ -685,6 +689,8 @@ class Agent:
         the selected verifier workspace, inside its timeout and retry boundary."""
         if self._closed:
             raise RuntimeError("Agent is closed; create a new agent")
+        if restore is None and self.pending_restore is not None:
+            restore, self.pending_restore = self.pending_restore, None
         retry = self.config.retries
         retry_state = RetryState(retry)
         checkpointing = (
@@ -693,8 +699,12 @@ class Agent:
             else None
         )
         history: list[Error] = []  # errors of the attempts started over from
-        trace: Trace | None = None
-        restore: Checkpoint | None = None
+        # `restore` continues a trace another process ran (an orchestrator resuming its
+        # run): its first attempt restores it, and `on_trace` sees it as the run's trace.
+        trace: Trace | None = restore[0] if restore is not None else None
+        target: Checkpoint | None = restore[1] if restore is not None else None
+        if restore is not None and on_trace is not None:
+            on_trace(restore[0])
         snapshots: set[str] = set()  # every checkpoint any attempt took
         deleted: set[str] = set()
         failed_restores: set[str] = set()
@@ -704,8 +714,8 @@ class Agent:
         try:
             for attempt in range(retry_state.max_retries + 1):
                 restoring = (
-                    (trace, restore)
-                    if trace is not None and restore is not None
+                    (trace, target)
+                    if trace is not None and target is not None
                     else None
                 )
                 # This attempt's own errors decide — a restored trace still carries
@@ -724,13 +734,13 @@ class Agent:
                 )
                 trace = run.trace
                 snapshots.update(run.rewound_checkpoints)
-                snapshots.update(checkpoint.id for checkpoint in trace.checkpoints)
+                snapshots.update(c.id for c in trace.checkpoints if c.box)
                 deleted.update(run.deleted_checkpoints)
-                if restore is not None and any(
+                if target is not None and any(
                     error.stage == "setup" for error in trace.errors[seen:]
                 ):
                     # The box never booted from it: the next retry steps back.
-                    failed_restores.add(restore.id)
+                    failed_restores.add(target.id)
                 if attempt == retry_state.max_retries or trace.ok:
                     break
                 if runtime is not None:
@@ -742,7 +752,7 @@ class Agent:
                 cause = retry_state.next_error(trace.errors[seen:])
                 if cause is None:
                     break
-                restore = next(
+                target = next(
                     (
                         c
                         for c in reversed(trace.checkpoints)
@@ -750,7 +760,7 @@ class Agent:
                     ),
                     None,
                 )
-                if restore is None:
+                if target is None:
                     history.extend(trace.errors)
                 delay = backoff(attempt)
                 logger.warning(
@@ -759,8 +769,8 @@ class Agent:
                     retry_state.max_retries,
                     delay,
                     cause.type,
-                    f"restoring checkpoint {restore.id}"
-                    if restore is not None
+                    f"restoring checkpoint {target.id}"
+                    if target is not None
                     else "from scratch",
                 )
                 await asyncio.sleep(delay)
@@ -1071,6 +1081,7 @@ class _EpisodeAgent(Agent):
         on_trace: Callable[[Trace], None] | None = None,
         collect_artifacts: bool = False,
         on_score: Callable[[Trace, Runtime], Awaitable[None]] | None = None,
+        restore: tuple[Trace, Checkpoint] | None = None,
     ) -> Trace:
         async with self._gate or nullcontext():
             trace = await super().run(
@@ -1080,6 +1091,7 @@ class _EpisodeAgent(Agent):
                 on_trace=self._watch(on_trace),
                 collect_artifacts=collect_artifacts,
                 on_score=self._scoring_callback(on_score),
+                restore=restore,
             )
         self._completed.append(trace)
         return trace
@@ -1146,6 +1158,11 @@ class Agents(Generic[AgentT]):
             name: cast(AgentT, make_agent(value)) if make is None else make(name, value)
             for name, value in agent_config_fields(config).items()
         }
+
+    def only(self) -> AgentT | None:
+        """The agent of a config with one agent seat; None when it has several."""
+        agents = list(self._agents.values())
+        return agents[0] if len(agents) == 1 else None
 
     def __getattr__(self, name: str) -> AgentT:
         # self.__dict__ directly: attribute lookup re-entering __getattr__ before
