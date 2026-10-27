@@ -184,7 +184,7 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
         archive: dict[str, str] = {}
         upload: tuple[str, Path] | None = None
         root = runtime.with_user(None)
-        if (release := self.config.release) is None:
+        if (local := self._local_release) is None:
             version = PRIME_AGENT_VERSION
             archive["PRIME_AGENT_RELEASE_VERSION"] = version
             archive["PRIME_AGENT_ARCHIVE_SHA256"] = PRIME_AGENT_SHA256[platform]
@@ -192,13 +192,14 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
                 f"{GITHUB_RELEASE_URL}/v{version}/prime-agent-{version}-{platform}.tar.gz"
             )
         else:
-            manifest = json.loads((release / "manifest.json").read_bytes())
+            release, manifest_bytes = local
+            manifest = json.loads(manifest_bytes)
             entry = next(
                 (b for b in manifest["binaries"] if b["platform"] == platform), None
             )
             if entry is None:
                 raise RuntimeError(
-                    f"prime-agent release {self.config.release} has no {platform} archive"
+                    f"prime-agent release {release} has no {platform} archive"
                 )
             # The archive digest pins the build; the version stamp differs by release channel.
             archive["PRIME_AGENT_ARCHIVE_SHA256"] = entry["sha256"]
@@ -354,18 +355,24 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
         await remove_dir(runtime, root, "prime-agent state")
 
     @cached_property
-    def _manifest(self) -> bytes | None:
-        """The local release's `manifest.json`, if one is configured."""
+    def _local_release(self) -> tuple[Path, bytes] | None:
+        """The configured local release and its `manifest.json`, read once: every rollout
+        installs the build the install directory is named for, and a dist rebuilt mid-run
+        fails its checksum instead of landing under the old name."""
         release = self.config.release
-        return None if release is None else (release / "manifest.json").read_bytes()
+        return (
+            None
+            if release is None
+            else (release, (release / "manifest.json").read_bytes())
+        )
 
     @cached_property
     def _build(self) -> str:
         """The install directory name: the pinned commit, or a local release's manifest
         digest, which changes with every archive it lists."""
-        if self._manifest is None:
+        if self._local_release is None:
             return self.config.commit
-        return f"local-{hashlib.sha256(self._manifest).hexdigest()[:16]}"
+        return f"local-{hashlib.sha256(self._local_release[1]).hexdigest()[:16]}"
 
     @cached_property
     def _archives(self) -> dict[Path, bytes]:
