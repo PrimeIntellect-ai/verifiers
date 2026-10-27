@@ -41,6 +41,7 @@ dependencies = [
     "gepa>=0.0.6",
     "pyzmq>=27.1.0",
     "msgpack>=1.1.2",
+    "orjson>=3.10.0",
     "httpx>=0.27.0",
     "httpx2>=2.12.0",
     "h11>=0.16.0",
