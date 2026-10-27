@@ -750,7 +750,7 @@ class Rollout:
         pins = dict(self._session.pinned_tool_results)
         started = time.time()
         try:
-            checkpoint, stored_bytes = await self.runtime.backend.checkpoint()
+            checkpoint, size = await self.runtime.backend.checkpoint()
         except Exception:
             logger.warning(
                 "checkpoint failed (rollout %s)", self.trace.id, exc_info=True
@@ -767,7 +767,7 @@ class Rollout:
                 pins=pins,
                 harness=harness,
                 time=TimeSpan(start=started, end=time.time()),
-                stored_bytes=stored_bytes,
+                bytes=size,
             )
         )
         logger.debug(

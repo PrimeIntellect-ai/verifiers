@@ -258,7 +258,7 @@ class Checkpoint(BaseModel):
     copies, which must be pinned again to match the trace. Live-only."""
     time: TimeSpan = Field(default_factory=TimeSpan)
     """From the snapshot request until it was durable: how long the turn waited."""
-    stored_bytes: int | None = None
+    bytes: int | None = None
     """The snapshot's stored size, which the provider bills, when it reports one."""
     harness: dict[str, Any] = Field(default_factory=dict)
     """What the harness session needs to continue in a box restored from the snapshot
