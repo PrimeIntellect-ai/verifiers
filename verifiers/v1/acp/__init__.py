@@ -447,6 +447,11 @@ class ACPHarnessSession(HarnessSession):
                 raise InterceptionError(detail)
             if kind == "disk_full":
                 # The agent wedged on a full disk (`runner.watch`).
+                if getattr(self.harness.config, "full_disk", "retry") == "fail":
+                    # the task's disk budget is the agent's to keep: its failure, scored 0
+                    self.trace.info["full_disk"] = detail[-2000:]
+                    self.trace.stop("disk_full")
+                    return ProgramResult(exit_code=0, stdout="", stderr=detail[-2000:])
                 raise SandboxError(detail, kind="disk_full")
             if kind == "agent_stalled":
                 raise HarnessError(detail)

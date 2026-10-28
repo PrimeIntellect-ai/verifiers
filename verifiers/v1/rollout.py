@@ -1112,6 +1112,8 @@ class Rollout:
             return "timeout"
         if self.trace.stop_condition in self._skip_scoring_stops:
             return self.trace.stop_condition
+        if self.trace.stop_condition == "disk_full":
+            return "disk_full"
         return None
 
     def _metrics_deadline(self) -> float:
@@ -1151,7 +1153,13 @@ class Rollout:
             if not self._agent_finished():
                 await self._close_harness()
             trace.notify()
-            if not self._failed and self._opened:
+            if skip_reason == "disk_full" and not self._failed:
+                # the agent filled the task's disk (`HarnessConfig.full_disk = "fail"`):
+                # nothing can be collected or graded on it, and the run scores 0
+                logger.info("rollout %s: disk full, scored 0", trace.id)
+                trace.info["scoring_skipped"] = "disk_full"
+                self.task.record_refusal(trace)
+            elif not self._failed and self._opened:
                 assert runtime is not None
                 assert self.deployment is not None
                 grader = self._grader

@@ -36,6 +36,11 @@ class HarnessConfig(BaseConfig):
     """Extra program variables; harness-owned variables take precedence."""
     forward_env: list[str] = Field(default_factory=list)
     """Host variables to forward without writing secrets into config; explicit `env` wins."""
+    full_disk: Literal["retry", "fail"] = "retry"
+    """What a turn that wedged on a full box disk means (ACP harnesses, `runner.watch`):
+    `retry`, a sandbox error the run's retries repeat; `fail`, the agent's own failure,
+    the run stopped as `disk_full` and scored 0 without grading (for tasks whose disk
+    budget is part of the task)."""
     mcp_header_env: dict[str, dict[str, str]] = Field(default_factory=dict)
     """ACP MCP headers by server name: header values are read from host env vars."""
 
