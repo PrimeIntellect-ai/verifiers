@@ -10,6 +10,7 @@ from reverse_text.taskset import ReverseTextData, ReverseTextTask
 import verifiers.v1 as vf
 from verifiers.v1.cli.output import CONFIG_DIR, RESOLVED_DIR, saved_config_path
 from verifiers.v1.cli.replay import run_replay
+from verifiers.v1.cli.resolve import narrow_taskset_config
 from verifiers.v1.configs.cli.eval import EvalConfig
 from verifiers.v1.configs.cli.replay import ReplayConfig
 from verifiers.v1.graph import MessageNode
@@ -43,6 +44,40 @@ async def saved_run(run_dir: Path) -> vf.Trace:
     await task.score(trace)
     write_episode(run_dir, vf.Episode(task=trace.task, traces=[trace], ok=True))
     return trace
+
+
+def test_replay_taskset_override_layers_on_saved():
+    """A `--taskset.*` override layers on the saved run's taskset instead of replacing
+    it: the id, split and judges the run was scored with survive, and a nested
+    `--taskset.task.*` override merges into `task` rather than wiping it."""
+    saved = {
+        "env": {
+            "taskset": {
+                "id": "reverse-text",
+                "dataset_split": "test",
+                "task": {
+                    "judges": [
+                        {
+                            "id": "reference",
+                            "name": "saved_judge",
+                            "model": "saved-judge-model",
+                            "sampling": {"temperature": 0.2},
+                        }
+                    ],
+                    "rewards": {"lcs": {"weight": 2.0}},
+                },
+            }
+        }
+    }
+    # Narrowed to the saved taskset's config type, as `vf-replay` does.
+    config_type = narrow_taskset_config(ReplayConfig, "reverse-text")
+    override = {"dataset_name": "X", "task": {"rewards": {"lcs": {"weight": 3.0}}}}
+    taskset = config_type(**saved, taskset=override).taskset
+    assert taskset.id == "reverse-text"
+    assert taskset.dataset_split == "test"
+    assert taskset.dataset_name == "X"
+    assert [judge.name for judge in taskset.task.judges] == ["saved_judge"]
+    assert taskset.task.rewards["lcs"].weight == 3.0
 
 
 async def test_replay_round_trip(tmp_path):
