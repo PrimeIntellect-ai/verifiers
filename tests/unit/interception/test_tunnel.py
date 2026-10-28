@@ -1,12 +1,16 @@
 """The prime tunnel watchdog restarts frpc when the tunnel service has the tunnel
 disconnected or frpc has exited, leaves it alone otherwise, and stops watching a tunnel
-whose registration is gone."""
+whose registration is gone. A creation the service refuses for the account's cap is a
+quota outage that holds the process's next creation; a transient one is retried."""
 
 import asyncio
 
 import pytest
 from prime_tunnel import TunnelGoneError, TunnelStatus
+from prime_tunnel.exceptions import TunnelError, TunnelLimitReachedError
 
+import verifiers.v1 as vf
+from verifiers.v1.errors import Outage, outage_kind
 from verifiers.v1.interception.tunnel import prime
 
 GONE = (None, "terminated", "expired")
@@ -105,3 +109,71 @@ async def test_restart_refused_as_gone_stops_watching(monkeypatch):
 async def test_failed_restart_is_tried_again(monkeypatch):
     client = FakeClient([], running=False, restart_error=RuntimeError("frpc"))
     assert await watch(client, 6, monkeypatch) >= 2
+
+
+class RefusedClient:
+    """A prime_tunnel client whose creations the tunnel service refuses with `errors`
+    in turn, then accepts."""
+
+    errors: list[Exception] = []  # noqa: RUF012 - shared across instances
+    starts = 0
+
+    def __init__(self, local_port, labels):
+        self.is_running, self.is_gone = True, False
+
+    async def start(self):
+        RefusedClient.starts += 1
+        if RefusedClient.errors:
+            raise RefusedClient.errors.pop(0)
+        return "https://t.example"
+
+    def sync_stop(self):
+        pass
+
+
+@pytest.fixture
+def refused(monkeypatch):
+    import prime_tunnel
+
+    monkeypatch.setattr(prime_tunnel, "Tunnel", RefusedClient)
+    monkeypatch.setattr(prime, "ensure_prime_auth", lambda: None)
+    monkeypatch.setattr(prime, "_quota_until", 0.0)
+    RefusedClient.starts = 0
+    return RefusedClient
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        TunnelError(
+            "Failed to create tunnel: Hourly tunnel creation limit exceeded. "
+            "Maximum allowed is 2048 per hour."
+        ),
+        TunnelError("Failed to create tunnel: Too Many Requests (per-token limit)"),
+        TunnelLimitReachedError("tunnel quota"),
+    ],
+    ids=["hourly", "per-token", "limit-reached"],
+)
+async def test_a_capped_account_is_a_quota_outage_and_holds_the_next_creation(
+    refused, monkeypatch, error
+):
+    monkeypatch.setattr(prime, "QUOTA_WAIT_SECONDS", 0.3)
+    refused.errors = [error]
+    with pytest.raises(vf.TunnelError) as raised:
+        async with prime.PrimeTunnel().expose(1234):
+            pass
+    assert outage_kind(raised.value) == "quota"
+    assert isinstance(raised.value, Outage)
+    assert refused.starts == 1  # asked once, not retried at once
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+    async with prime.PrimeTunnel().expose(1234) as url:
+        assert url == "https://t.example"
+    assert loop.time() - started >= 0.25
+
+
+async def test_a_transient_creation_failure_is_retried(refused):
+    refused.errors = [TunnelError("Failed to connect to API: reset")]
+    async with prime.PrimeTunnel().expose(1234) as url:
+        assert url == "https://t.example"
+    assert refused.starts == 2

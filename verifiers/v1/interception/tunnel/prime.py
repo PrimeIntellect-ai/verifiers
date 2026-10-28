@@ -21,6 +21,8 @@ from verifiers.v1.utils.scope import run_scope
 if TYPE_CHECKING:
     from prime_tunnel import Tunnel as TunnelClient
 
+    from verifiers.v1.errors import OutageKind
+
 logger = logging.getLogger(__name__)
 
 
@@ -98,6 +100,29 @@ would otherwise outlive the process, and its registration stays connected."""
 _atexit_armed = False
 
 
+QUOTA_WAIT_SECONDS = 60.0
+"""How long every tunnel creation in the process waits after the tunnel service refused
+one for the account's creation cap (hourly, or per token): retrying sooner is refused
+again and spends the cap other runs share."""
+_quota_until = 0.0
+
+
+def creation_outage(error: BaseException) -> "OutageKind | None":
+    """The outage a failed tunnel creation was: `quota` for the service's creation caps
+    (prime_tunnel raises them as a plain `TunnelError` with the service's detail, its
+    status dropped, so the detail is the evidence), `account` for a refused key."""
+    from prime_tunnel.exceptions import TunnelAuthError, TunnelLimitReachedError
+
+    from verifiers.v1.errors import sandbox_error_kind
+
+    if isinstance(error, TunnelLimitReachedError):
+        return "quota"
+    if isinstance(error, TunnelAuthError):
+        return "account"
+    kind = sandbox_error_kind(error)
+    return kind if kind in ("account", "quota", "io") else None
+
+
 def _stop_at_exit() -> None:
     for client in list(_LIVE):
         with contextlib.suppress(Exception):
@@ -122,15 +147,28 @@ class PrimeTunnel(Tunnel[PrimeTunnelConfig]):
         from verifiers.v1.errors import TunnelError
         from verifiers.v1.utils.retries import retrying
 
+        global _quota_until
         label = f"host tunnel (port {port})"
+        loop = asyncio.get_running_loop()
         try:
-            async for attempt in retrying(retries=3, label=label):
+            async for attempt in retrying(
+                retries=3,
+                label=label,
+                when=lambda e: creation_outage(e) not in ("quota", "account"),
+            ):
                 with attempt:
+                    # A capped account refuses every creation for a while: wait out
+                    # the hold the last refusal set instead of asking again now.
+                    if (wait := _quota_until - loop.time()) > 0:
+                        await asyncio.sleep(wait)
                     client = TunnelClient(local_port=port, labels=run_labels())
                     async with tunnel_limiter():
                         url = str(await client.start()).rstrip("/")
         except Exception as e:
-            raise TunnelError(f"{label} failed: {e}") from e
+            kind = creation_outage(e)
+            if kind == "quota":
+                _quota_until = max(_quota_until, loop.time() + QUOTA_WAIT_SECONDS)
+            raise TunnelError(f"{label} failed: {e}", kind=kind) from e
         global _atexit_armed
         if not _atexit_armed:
             _atexit_armed = True

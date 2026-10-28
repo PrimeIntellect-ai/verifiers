@@ -175,7 +175,13 @@ _ACCOUNT_MARKERS = (
     "invalid api key",
     "forbidden",
 )
-_QUOTA_MARKERS = ("too many requests", "rate limit", "burst limit", "quota exceeded")
+_QUOTA_MARKERS = (
+    "too many requests",
+    "rate limit",
+    "burst limit",
+    "quota exceeded",
+    "tunnel creation limit",
+)
 _BOX_LOST_TYPES = frozenset(
     {"SandboxNotRunningError", "SandboxOOMError", "SandboxTimeoutError"}
 )
@@ -422,6 +428,8 @@ def outage_kind(error: object) -> OutageKind | None:
             return _status_outage(current.status_code)
         if isinstance(current, SandboxError):
             return current.kind if current.kind in ("account", "quota", "io") else None
+        if isinstance(current, TunnelError) and current.kind is not None:
+            return current.kind
         if isinstance(current, RolloutError):
             continue
         if isinstance(current, (ConnectionError, TimeoutError)) and not isinstance(
@@ -481,7 +489,13 @@ class InterceptionError(RolloutError):
 
 
 class TunnelError(InterceptionError):
-    """The `prime_tunnel` tunnel to the host interception server couldn't be established."""
+    """The `prime_tunnel` tunnel to the host interception server couldn't be established.
+    `kind` is the outage it was, when the tunnel service refused it for one (the
+    account's tunnel creations capped: `quota`)."""
+
+    def __init__(self, message: str = "", *, kind: OutageKind | None = None) -> None:
+        super().__init__(message)
+        self.kind = kind
 
 
 @contextlib.asynccontextmanager
