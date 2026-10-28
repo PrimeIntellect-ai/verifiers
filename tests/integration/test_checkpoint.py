@@ -145,13 +145,41 @@ async def test_restore_in_another_process(harness, runtime, checkpoint):
     the stream's partial trace and newest restore point (`EpisodeAssembly`); the run is
     cut (it fails once the counter reached 2); a new run restores the trace from that
     point, the counter at 1, and finishes it. The counter's
-    typed state rides the restore point. The null harness on the subprocess runtime
+    typed state rides the restore point; the episode hook watches each trace and gets
+    the restored one before it continues. The null harness on the subprocess runtime
     keeps nothing in its box, so its checkpoints are box-less. Bash on prime restores a
     box snapshot the client owns (`after = "keep"`): the cut run leaves its snapshots,
     and the client deletes them when done (`discard`)."""
     from conftest import _eval_config
 
-    from verifiers.v1.serve import EnvClient, EnvServer, EpisodeAssembly, RestoreRequest
+    from verifiers.v1.serve import (
+        EnvClient,
+        EnvServer,
+        EpisodeAssembly,
+        RestoreRequest,
+        set_episode_hook,
+    )
+
+    class Hook:
+        """Marks each trace it watches; records the traces it restores."""
+
+        def __init__(self) -> None:
+            self.restored: list[str] = []
+
+        def keep(self, episode, sampling) -> None:
+            pass
+
+        def discard(self, episode) -> None:
+            pass
+
+        def watch(self, trace) -> None:
+            trace.info["watched"] = True
+
+        def restore(self, trace) -> None:
+            self.restored.append(trace.id)
+
+    hook = Hook()
+    set_episode_hook(hook)
 
     config = _eval_config(
         "counter-tool",
@@ -200,6 +228,7 @@ async def test_restore_in_another_process(harness, runtime, checkpoint):
         if snapshots:
             assert sorted(await client.discard(snapshots)) == sorted(snapshots)
     finally:
+        set_episode_hook(None)
         await client.close()
         serving.cancel()
         with contextlib.suppress(asyncio.CancelledError):
@@ -207,6 +236,9 @@ async def test_restore_in_another_process(harness, runtime, checkpoint):
 
     (trace,) = episode.traces
     assert trace.id == trace_id
+    # The episode hook saw the trace before it streamed, and got the restored one back.
+    assert restore.trace["info"]["watched"]
+    assert hook.restored == [trace_id]
     assert trace.ok, [error.message for error in trace.errors]
     assert trace.reward == 1.0
     assert trace.has_restored

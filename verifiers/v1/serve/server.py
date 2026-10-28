@@ -47,6 +47,13 @@ class EpisodeHook(Protocol):
     def discard(self, episode: Episode) -> None:
         """Free what `keep` kept for an episode that was not delivered."""
 
+    def watch(self, trace: Trace) -> None:
+        """See a trace as it is minted, or restored, before its first delta streams."""
+
+    def restore(self, trace: Trace) -> None:
+        """Give a restored trace's nodes back their arrays (a client's assembly never
+        has them). Runs before the rollout rewinds the trace to its restore point."""
+
 
 _episode_hook: EpisodeHook | None = None
 
@@ -175,6 +182,8 @@ class EnvServer:
         the live-only fields back."""
         trace = Trace.model_validate(restore.trace)
         trace.task.data = task.data
+        if _episode_hook is not None:
+            _episode_hook.restore(trace)
         checkpoint = RestorePoint.model_validate(restore.point).live(
             state_cls(type(task))
         )
@@ -214,8 +223,14 @@ class EnvServer:
         # ships each trace as it changes; the reply below carries only the rest.
         hook = _episode_hook
         async with DeltaStreamer(lambda: slot.traces, send_delta) as streamer:
+
+            def watch(trace: Trace) -> None:
+                if hook is not None:
+                    hook.watch(trace)
+                streamer.watch(trace)
+
             episode = await self.env.run_slot(
-                slot, ctx, self._gate, on_trace=streamer.watch, restore=restore
+                slot, ctx, self._gate, on_trace=watch, restore=restore
             )
             if hook is not None:
                 # Before the final flush, so what the hook writes to the traces streams.
