@@ -8,7 +8,7 @@ To evaluate an installed taskset, run `vf-eval`:
 uv run vf-eval primeintellect/terminal-bench-2
 ```
 
-The taskset package must already be installed in your environment (passing an ID like `owner/name@version` loads the installed `name` package rather than downloading or pinning that version). Because tasksets and harnesses expose their own CLI flags, include their IDs when passing `--help` to see all available options:
+The taskset package must already be installed in your environment (passing an ID like `owner/name@version` loads the installed `name` package rather than downloading or pinning that version). An ID that is a path (`/abs/dir/name`, `./name`) imports the package directory there without installing it. Because tasksets and harnesses expose their own CLI flags, include their IDs when passing `--help` to see all available options:
 
 ```bash
 uv run vf-eval my-task --env.agent.harness.id codex --help
