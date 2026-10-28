@@ -17,12 +17,16 @@ class _Process:
         poll_status: int | None = None,
         wait_status: int | None = None,
         respond: bool = False,
+        block_poll: bool = False,
     ) -> None:
         self.poll_status = poll_status
         self.wait_status = wait_status
         self.respond = respond
+        self.block_poll = block_poll
         self.requests = []
         self.written = asyncio.Event()
+        self.poll_started = asyncio.Event()
+        self.poll_release = asyncio.Event()
         self.poll_calls = 0
         self.wait_calls = 0
         self._output = asyncio.Queue()
@@ -53,6 +57,9 @@ class _Process:
 
     async def poll(self) -> int | None:
         self.poll_calls += 1
+        if self.block_poll:
+            self.poll_started.set()
+            await self.poll_release.wait()
         return self.poll_status
 
     async def wait(self) -> int:
@@ -65,6 +72,22 @@ class _Process:
         self._output.put_nowait(error)
 
 
+async def _read_stream(reader: asyncio.StreamReader):
+    while chunk := await reader.read(1024):
+        yield chunk
+
+
+class _StreamProcess(_Process):
+    def __init__(self) -> None:
+        super().__init__(poll_status=0)
+        self.stdout_reader = asyncio.StreamReader()
+        self.stderr_reader = asyncio.StreamReader()
+        self.stderr = _read_stream(self.stderr_reader)
+
+    def stdout(self):
+        return _read_stream(self.stdout_reader)
+
+
 def _make_session(process: _Process) -> ACPHarnessSession:
     session = object.__new__(ACPHarnessSession)
     session._process = process
@@ -75,6 +98,7 @@ def _make_session(process: _Process) -> ACPHarnessSession:
     session._write_lock = asyncio.Lock()
     session._responses = {}
     session._request_id = 0
+    session._disconnected = False
     session._response_task = asyncio.create_task(
         session._read_responses(session._reader)
     )
@@ -168,3 +192,58 @@ async def test_stdout_eof_does_not_replay_request():
         await session._request("prompt")
 
     assert [request["operation"] for request in process.requests] == ["prompt"]
+
+
+async def test_request_during_eof_diagnostics_cannot_write():
+    process = _Process(poll_status=0, block_poll=True)
+    session = _make_session(process)
+    request = await _pending_request(session, process)
+    process.disconnect()
+    await process.poll_started.wait()
+
+    with pytest.raises(RuntimeError, match="ACP process is not running"):
+        await session._request("prompt")
+
+    assert [request["operation"] for request in process.requests] == ["prompt"]
+    process.poll_release.set()
+    with pytest.raises(RuntimeError, match="ACP process closed its stdout"):
+        await request
+    await session._response_task
+
+
+async def test_cancelled_stderr_diagnostics_settle_request_and_preserve_cancellation():
+    process = _StreamProcess()
+    session = _make_session(process)
+    session._stderr_task = asyncio.create_task(session._drain_stderr(process.stderr))
+    request = await _pending_request(session, process)
+    process.stdout_reader.feed_eof()
+    await asyncio.sleep(0)
+
+    session._response_task.cancel()
+
+    with pytest.raises(RuntimeError, match="ACP connection closed"):
+        await request
+    with pytest.raises(asyncio.CancelledError):
+        await session._response_task
+    assert not session._responses
+
+
+async def test_stdout_eof_drains_buffered_stderr_from_real_streams():
+    process = _StreamProcess()
+    session = _make_session(process)
+    session._stderr_task = asyncio.create_task(session._drain_stderr(process.stderr))
+    request = await _pending_request(session, process)
+
+    process.stdout_reader.feed_eof()
+    process.stderr_reader.feed_data(b"runner failed\n")
+    process.stderr_reader.feed_eof()
+
+    with pytest.raises(RuntimeError) as caught:
+        await request
+
+    assert str(caught.value) == (
+        "ACP connection closed: ACP process closed its stdout\n"
+        "ACP process exited with code 0\n\n"
+        "ACP process stderr:\nrunner failed"
+    )
+    await session._stderr_task

@@ -17,6 +17,7 @@ from verifiers.v1.runtimes.backends.docker import DockerBackend, DockerRuntimeIn
 from verifiers.v1.runtimes.backends.prime import (
     PrimeBackend,
     PrimeRuntimeInfo,
+    is_sandbox_gone_error,
     set_base_sandbox_labels,
 )
 from verifiers.v1.runtimes.backends.subprocess import (
@@ -112,6 +113,7 @@ __all__ = [
     "SubprocessConfig",
     "SubprocessRuntimeInfo",
     "backend_cls",
+    "is_sandbox_gone_error",
     "make_backend",
     "provision_backend",
     "provision_runtime",

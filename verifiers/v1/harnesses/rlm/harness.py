@@ -30,8 +30,8 @@ BuiltinSkill = Literal["bash", "edit", "fetch", "search"]
 BuiltinTool = Literal["bash", "edit", "fetch", "ipython"]
 
 RLM_REPO = "github.com/PrimeIntellect-ai/nano-rlm.git"
-# Install outside /tmp so task images with a noexec /tmp mount can still start RLM.
-RLM_CACHE_DIR = "/opt/vf-rlm"
+# /var/tmp is user-writable and avoids task images with a noexec /tmp mount.
+RLM_CACHE_DIR = "/var/tmp/vf-rlm"
 RLM_STATE_DIR = "/tmp/vf-rlm-state"
 RLM_RUNTIME_METADATA_KEY = "ai.prime.rlm/runtime-v1"
 RLM_SESSION_METADATA_KEY = "ai.prime.rlm/session-v1"

@@ -284,3 +284,95 @@ async def test_cancellation_is_recorded_without_replacing_it(monkeypatch, caplog
     assert [record["event"] for record in logged] == ["start", "end"]
     assert logged[-1]["terminal_error_type"] == "CancelledError"
     assert prime.current_prime_operation() is None
+
+
+async def test_operation_cleanup_propagates_completion_boundary_cancellation(
+    monkeypatch,
+):
+    heartbeat_started = asyncio.Event()
+    heartbeat_cleanup_started = asyncio.Event()
+
+    async def heartbeat(context):
+        heartbeat_started.set()
+        try:
+            await asyncio.Future()
+        finally:
+            heartbeat_cleanup_started.set()
+            await asyncio.sleep(0)
+
+    monkeypatch.setattr(prime, "_operation_heartbeat", heartbeat)
+
+    async def complete_operation():
+        async with prime._operation("trace-123", "completion"):
+            await heartbeat_started.wait()
+        return "completed"
+
+    task = asyncio.create_task(complete_operation())
+    await heartbeat_cleanup_started.wait()
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert task.cancelled()
+    assert prime.current_prime_operation() is None
+
+
+async def test_stream_early_abandonment_is_context_safe():
+    contexts = []
+    stream = prime._stream_chunks(
+        FakeStream([b"first", b"unused"], contexts), "trace-123", "stdout"
+    )
+
+    assert await asyncio.create_task(anext(stream)) == b"first"
+    await asyncio.create_task(stream.aclose())
+
+    assert [context.operation for context in contexts] == ["stdout_stream"]
+    assert prime.current_prime_operation() is None
+
+
+async def test_interleaved_streams_attribute_every_read_without_reset_errors():
+    stdout_contexts = []
+    stderr_contexts = []
+    stdout = prime._stream_chunks(
+        FakeStream([b"out-1", b"out-2"], stdout_contexts), "trace-123", "stdout"
+    )
+    stderr = prime._stream_chunks(
+        FakeStream([b"err-1", b"err-2"], stderr_contexts), "trace-123", "stderr"
+    )
+
+    for expected in ([b"out-1", b"err-1"], [b"out-2", b"err-2"]):
+        chunks = await asyncio.gather(
+            asyncio.create_task(anext(stdout)), asyncio.create_task(anext(stderr))
+        )
+        assert chunks == expected
+        assert prime.current_prime_operation() is None
+
+    done = await asyncio.gather(
+        asyncio.create_task(anext(stdout)),
+        asyncio.create_task(anext(stderr)),
+        return_exceptions=True,
+    )
+    assert all(type(result) is StopAsyncIteration for result in done)
+    assert [context.operation for context in stdout_contexts] == ["stdout_stream"] * 3
+    assert [context.operation for context in stderr_contexts] == ["stderr_stream"] * 3
+    assert prime.current_prime_operation() is None
+
+
+async def test_streaming_read_overflow_abandons_stream_without_context_error(
+    monkeypatch,
+):
+    class Client:
+        def __init__(self):
+            self.process = FakeProcess(exit_code=0)
+
+        async def open_process(self, *args, **kwargs):
+            return self.process
+
+    backend = make_backend(monkeypatch, Client())
+
+    with pytest.raises(SandboxError, match="read stream exceeded its byte limit"):
+        await backend.read(runtime(), "path", max_bytes=1)
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+
+    assert prime.current_prime_operation() is None

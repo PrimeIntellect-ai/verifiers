@@ -77,11 +77,14 @@ class PrimeOperationContext:
         if phase is not None:
             self.phase = phase
         self.sdk_started_at = time.monotonic()
+        # Keep set/reset in one coroutine: stream generators can resume in new contexts.
+        token = _current_operation.set(self)
         try:
             return await awaitable
         finally:
             self.sdk_wait += time.monotonic() - self.sdk_started_at
             self.sdk_started_at = None
+            _current_operation.reset(token)
 
     def record(self, event: str) -> dict[str, Any]:
         """A payload-free record suitable for structured logs and attribution."""
@@ -121,6 +124,37 @@ def current_prime_operation() -> PrimeOperationContext | None:
     return _current_operation.get()
 
 
+def is_sandbox_gone_error(error: BaseException) -> bool:
+    """Whether an exception chain explicitly reports a terminated Prime sandbox.
+
+    Keep this typed and specific: a model API 404, an unavailable stream, or arbitrary
+    task text is not proof that runtime teardown has already completed.
+    """
+    from prime_sandboxes.core import APIError
+    from prime_sandboxes.exceptions import SandboxNotRunningError
+
+    seen: set[int] = set()
+    current: BaseException | None = error
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, SandboxNotRunningError) and (
+            current.status == "TERMINATED" or current.error_type == "SANDBOX_NOT_FOUND"
+        ):
+            return True
+        if isinstance(current, APIError):
+            message = str(current).lower()
+            if (
+                "(not_found)" in message
+                and "sandbox" in message
+                and "terminated" in message
+            ):
+                return True
+        # Explicit causes preserve provider attribution. Implicit context may be an
+        # unrelated exception being handled when cleanup failed, so do not use it.
+        current = current.__cause__
+    return False
+
+
 def _log_operation(context: PrimeOperationContext, event: str) -> None:
     logger.info(
         "prime_operation %s",
@@ -146,7 +180,6 @@ async def _operation(
     )
     if stream:
         context.last_stream_activity = context.started_at
-    token = _current_operation.set(context)
     _log_operation(context, "start")
     heartbeat = asyncio.create_task(_operation_heartbeat(context))
     try:
@@ -158,10 +191,10 @@ async def _operation(
         raise
     finally:
         heartbeat.cancel()
-        with contextlib.suppress(asyncio.CancelledError, Exception):
-            await heartbeat
+        # Consume the heartbeat's own cancellation without consuming a new
+        # cancellation delivered to the caller during this cleanup await.
+        await asyncio.gather(heartbeat, return_exceptions=True)
         _log_operation(context, "end")
-        _current_operation.reset(token)
 
 
 async def _stream_chunks(
@@ -626,6 +659,11 @@ class PrimeBackend(RuntimeBackend):
             if self.info.id is not None:  # keep info.id available after teardown
                 await client.delete(self.info.id)
         except Exception as e:  # noqa: BLE001 - provider teardown is best-effort
-            logger.warning("prime: failed to delete sandbox %s: %s", self.info.id, e)
+            if is_sandbox_gone_error(e):
+                logger.debug("prime: sandbox %s is already gone", self.info.id)
+            else:
+                logger.warning(
+                    "prime: failed to delete sandbox %s: %s", self.info.id, e
+                )
         finally:
             await _release_client(client)

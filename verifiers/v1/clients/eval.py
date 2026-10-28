@@ -2,7 +2,7 @@
 
 import logging
 import re
-from collections.abc import Iterable, Mapping
+from collections.abc import Mapping
 
 import httpx
 from pydantic import ValidationError
@@ -62,7 +62,6 @@ _BLOCKED_REQUEST_HEADERS = (
 
 logger = logging.getLogger(__name__)
 
-_BODY_PREVIEW_LIMIT = 512
 _SAFE_RESPONSE_HEADERS = frozenset(
     {
         "cf-ray",
@@ -73,29 +72,6 @@ _SAFE_RESPONSE_HEADERS = frozenset(
         "x-request-id",
     }
 )
-
-
-def _payload_strings(value) -> Iterable[str]:
-    if isinstance(value, str):
-        if value:
-            yield value
-    elif isinstance(value, Mapping):
-        for nested in value.values():
-            yield from _payload_strings(nested)
-    elif isinstance(value, (list, tuple)):
-        for nested in value:
-            yield from _payload_strings(nested)
-
-
-def _body_preview(text: str, body: dict, credentials: Iterable[str]) -> str:
-    sensitive = set(credentials)
-    for name, value in body.items():
-        if name != "model":
-            sensitive.update(_payload_strings(value))
-    preview = text[:65536]
-    for value in sorted(sensitive, key=len, reverse=True):
-        preview = preview.replace(value, "<redacted>")
-    return preview[:_BODY_PREVIEW_LIMIT]
 
 
 # Atomic so one CRLF cannot backtrack into two line endings and split an event mid-field.
@@ -177,11 +153,6 @@ class EvalClient(Client):
             for name, value in response.headers.items()
             if name.lower() in _SAFE_RESPONSE_HEADERS
         }
-        credentials = {self.api_key}
-        for value in headers.values():
-            credentials.update(_payload_strings(value))
-            if " " in value:
-                credentials.update(_payload_strings(value.split(" ", 1)[1]))
         request_id = (
             headers.get("Idempotency-Key")
             or headers.get(SESSION_ID_HEADER)
@@ -189,13 +160,12 @@ class EvalClient(Client):
         )
         logger.warning(
             "upstream model request failed: url=%s model=%r status=%d request_id=%s "
-            "response_headers=%s body_preview=%r",
+            "response_headers=%s",
             safe_url(url),
             body.get("model"),
             response.status_code,
             request_id,
             response_headers,
-            _body_preview(text, body, credentials),
         )
         return model_error(
             f"upstream {response.status_code}: url={safe_url(url)} "

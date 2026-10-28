@@ -237,9 +237,11 @@ class ACPHarnessSession(HarnessSession):
         self._responses: dict[int, asyncio.Future] = {}
         self._request_id = 0
         self._response_task: asyncio.Task | None = None
+        self._disconnected = False
 
     async def _start(self) -> None:
         self._stderr_tail.clear()
+        self._disconnected = False
         program = await self.runtime.prepare_uv_script(
             ACP_SOURCE,
             {**self.config.env, "UV_FROZEN": "false"},
@@ -252,6 +254,7 @@ class ACPHarnessSession(HarnessSession):
         self._stderr_task = asyncio.create_task(self._drain_stderr(process.stderr))
 
     async def _read_responses(self, reader: _PacketReader) -> None:
+        detail = "ACP connection closed"
         try:
             while True:
                 response = await reader.read()
@@ -259,6 +262,7 @@ class ACPHarnessSession(HarnessSession):
                 if future is not None and not future.done():
                     future.set_result(response)
         except BaseException as error:  # noqa: BLE001 - settle callers on disconnect or shutdown
+            self._disconnected = True
             detail = f"ACP connection closed: {error}"
             if isinstance(error, EOFError) and any(
                 not future.done() for future in self._responses.values()
@@ -274,15 +278,26 @@ class ACPHarnessSession(HarnessSession):
                             )
                     if exit_code is not None:
                         detail = f"{detail}\nACP process exited with code {exit_code}"
+                stderr_task = self._stderr_task
+                if stderr_task is not None and not stderr_task.done():
+                    with contextlib.suppress(Exception):
+                        await run_shielded(asyncio.wait_for(stderr_task, timeout=0.1))
                 if stderr := self._stderr():
                     detail = f"{detail}\n\nACP process stderr:\n{stderr}"
+        finally:
+            self._disconnected = True
             for future in self._responses.values():
                 if not future.done():
                     future.set_exception(RuntimeError(detail))
 
     async def _request(self, operation: str, **payload: Any) -> JsonObject:
         process = self._process
-        if process is None or self._response_task is None or self._response_task.done():
+        if (
+            self._disconnected
+            or process is None
+            or self._response_task is None
+            or self._response_task.done()
+        ):
             raise RuntimeError("ACP process is not running")
         self._request_id += 1
         request_id = self._request_id

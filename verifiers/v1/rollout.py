@@ -38,6 +38,7 @@ from verifiers.v1.mcp import SharedToolServer, serve_tools
 from verifiers.v1.runtimes import (
     Runtime,
     RuntimeConfig,
+    is_sandbox_gone_error,
     make_backend,
 )
 from verifiers.v1.runtimes.private_network import tool_vms
@@ -648,10 +649,18 @@ class Rollout:
             return
         try:
             await self.harness.cleanup(self.trace, runtime)
-        except Exception:
-            logger.warning(
-                "harness cleanup failed (rollout %s)", self.trace.id, exc_info=True
-            )
+        except Exception as error:
+            if is_sandbox_gone_error(error):
+                logger.debug(
+                    "harness cleanup already complete; sandbox is gone (rollout %s)",
+                    self.trace.id,
+                )
+            else:
+                logger.warning(
+                    "harness cleanup failed (rollout %s)",
+                    self.trace.id,
+                    exc_info=True,
+                )
         self._harness_cleaned = True
 
     async def abort(self) -> None:
@@ -700,12 +709,18 @@ class Rollout:
         if self._harness_session is not None:
             try:
                 await self._harness_session.close()
-            except Exception:
-                logger.warning(
-                    "harness session close failed (rollout %s)",
-                    self.trace.id,
-                    exc_info=True,
-                )
+            except Exception as error:
+                if is_sandbox_gone_error(error):
+                    logger.debug(
+                        "harness session already closed; sandbox is gone (rollout %s)",
+                        self.trace.id,
+                    )
+                else:
+                    logger.warning(
+                        "harness session close failed (rollout %s)",
+                        self.trace.id,
+                        exc_info=True,
+                    )
         try:
             await self._stack.aclose()
         except Exception:
