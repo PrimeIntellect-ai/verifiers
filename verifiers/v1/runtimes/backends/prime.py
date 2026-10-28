@@ -582,6 +582,54 @@ HOSTS_ENTRY = (
 )
 """Add the box's hostname to /etc/hosts when it is missing (never fails the start)."""
 
+NVLINK_FABRIC = r"""
+import ctypes, os, platform, re, subprocess, sys, time
+
+def fabric():
+    try:
+        out = subprocess.run(["nvidia-smi", "-q"], capture_output=True, text=True, timeout=60).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    states = re.findall(r"^\s*Fabric\s*\n\s*State\s*:\s*(.+?)\s*$", out, re.M)
+    return [s for s in states if s not in ("N/A", "Completed")]
+
+stuck = fabric()
+if not stuck:
+    print("nvlink: fabric", "unknown" if stuck is None else "ready")
+    sys.exit(0)
+libc = ctypes.CDLL(None, use_errno=True)
+libc.syscall.restype = ctypes.c_long
+INIT_MODULE = {"x86_64": 175, "aarch64": 105}[platform.machine()]
+directory = "/usr/local/nvidia/modules"
+loaded = [l.split()[0] for l in open("/proc/modules") if l.startswith("nvidia")]
+# Dependents first: every nvidia module but the core one depends on it.
+for name in sorted(loaded, key=lambda n: n == "nvidia"):
+    for _ in range(30):
+        if libc.delete_module(name.encode(), 0) == 0:
+            break
+        time.sleep(1)
+    else:
+        sys.exit(f"nvlink: cannot unload {name}: {os.strerror(ctypes.get_errno())}")
+for name in sorted(loaded, key=lambda n: n != "nvidia"):
+    image = open(f"{directory}/{name.replace('_', '-')}.ko", "rb").read()
+    params = b"NVreg_NvLinkDisable=1" if name == "nvidia" else b""
+    if libc.syscall(ctypes.c_long(INIT_MODULE), ctypes.create_string_buffer(image), ctypes.c_ulong(len(image)), ctypes.c_char_p(params)):
+        sys.exit(f"nvlink: cannot load {name}: {os.strerror(ctypes.get_errno())}")
+left = fabric()
+if left:
+    sys.exit(f"nvlink: fabric still {left} after reloading the driver without NVLink")
+print(f"nvlink: fabric was {stuck}; reloaded {loaded} with NVreg_NvLinkDisable=1")
+"""
+"""Make CUDA usable on a GPU box whose NVLink fabric never finishes initializing.
+
+Prime's single-GPU H200 VMs pass through one SXM GPU of an NVSwitch host. The guest
+driver loads with NVLink on, probes for a fabric the VM cannot reach, and stays at
+fabric state "In Progress": `nvidia-smi` works, but every `cuInit` returns 802 (system
+not yet initialized), so nothing can train or serve a model. Reloading the driver with
+`NVreg_NvLinkDisable=1` leaves the lone GPU without a fabric to wait for (state N/A),
+and CUDA starts. A box whose fabric is ready, or that has no NVIDIA GPU, is left as it
+is."""
+
 
 class PrimeBackend(RuntimeBackend):
     SUPPORTS_TASK_IMAGES: ClassVar[bool] = True
@@ -837,6 +885,8 @@ class PrimeBackend(RuntimeBackend):
                         f"Cannot prepare runtime directories: {prepared.stderr}",
                         kind="exec",
                     )
+                if gpu_count:
+                    await self._ready_gpu()
                 await validate_runtime_mounts(self.bind(), [])
                 self.placed = True
         except CreationBacklogFull as e:
@@ -914,6 +964,28 @@ class PrimeBackend(RuntimeBackend):
                 ),
             )
             await self._held("boot", wait, attempts=1)
+
+    async def _ready_gpu(self) -> None:
+        """Bring up CUDA on a GPU box whose NVLink fabric is stuck (`NVLINK_FABRIC`),
+        before anything runs on it. A box it cannot fix is refused: every CUDA call
+        there fails, so a rollout or a grader on it could only waste its time."""
+        ready = await self._held(
+            "gpu",
+            lambda: self._client.execute_command(
+                self.info.id,
+                "command -v python3 >/dev/null || exit 0; "
+                f"python3 -I -c {shlex.quote(NVLINK_FABRIC)}",
+                working_dir="/",
+                timeout=600,
+            ),
+        )
+        output = f"{ready.stdout}{ready.stderr}".strip()
+        if ready.exit_code:
+            raise SandboxError(
+                f"prime sandbox {self.info.id}: GPU unusable: {output}", kind="exec"
+            )
+        if "reloaded" in output:
+            logger.warning("prime: sandbox %s: %s", self.info.id, output)
 
     async def prepare_execution(
         self, routes: list[str] | None, network: NetworkPolicyConfig | None = None
