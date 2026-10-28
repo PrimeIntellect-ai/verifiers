@@ -123,7 +123,11 @@ def response_from_generate(
         ToolCall(
             id=tc.id or f"call_{i}",
             name=tc.name,
-            arguments=tc.arguments
+            # The argument text the model wrote, where the format has one, so a
+            # re-rendered history keeps the model's own spacing.
+            arguments=tc.arguments_text
+            if tc.arguments_text is not None
+            else tc.arguments
             if isinstance(tc.arguments, str)
             else json.dumps(tc.arguments or {}),
         )
