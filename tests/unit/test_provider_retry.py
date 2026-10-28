@@ -130,6 +130,21 @@ class Provider:
                 "total_tokens": 32,
                 "completion_tokens_details": {"reasoning_tokens": 0},
             }
+        if failure == "json":
+            # a final answer of short JSON: more tokens than prose of its length
+            completion["choices"][0]["message"] = {
+                "role": "assistant",
+                "content": json.dumps(
+                    {f"r{n:03}": {"skills": []} for n in range(1, 12)}
+                ),
+            }
+            completion["choices"][0]["finish_reason"] = "stop"
+            completion["usage"] = {
+                "prompt_tokens": 20,
+                "completion_tokens": 108,
+                "total_tokens": 128,
+                "completion_tokens_details": {"reasoning_tokens": 0},
+            }
         if failure == "eos":
             # the provider answered with one end-of-turn token: no content, no tool
             # calls, no reasoning
@@ -431,6 +446,16 @@ async def test_a_turn_with_text_and_unsent_output_is_retried(harness):
 async def test_a_final_answer_with_text_is_kept():
     """A reply whose usage covers its text is a final answer: nothing is retried."""
     async with Provider("summary") as provider:
+        agent = make(provider, StreamHarness)
+        trace = await agent.run(task())
+    assert len(provider.requests) == 1
+    assert all(call.error is None for call in trace.calls)
+
+
+async def test_a_final_answer_of_short_json_is_kept():
+    """A short JSON reply whose usage covers its words and punctuation is a final answer,
+    though 3.5 characters a token would count it short: nothing is retried."""
+    async with Provider("json") as provider:
         agent = make(provider, StreamHarness)
         trace = await agent.run(task())
     assert len(provider.requests) == 1

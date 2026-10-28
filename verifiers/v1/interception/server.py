@@ -271,9 +271,15 @@ UNSENT_TAIL_TOKENS = 16
 means the provider generated a tool call after the text and sent none of it. The text is
 counted at 3.5 characters a token when short (a sentence announcing the next step, the
 shape the dropped calls take) and at 2 when long (a final summary's markdown and code
-pack more characters into a token)."""
+pack more characters into a token), and never at fewer tokens than it has words and
+punctuation marks: a short JSON answer packs fewer characters into a token than prose
+(a record tagger's all-empty verdict on 11 records, 264 characters, is ~100 tokens on
+GLM 5.3 and DeepSeek v4.1 flash, which 3.5 characters a token counts as 76, so the same
+answer was refused on every retry, 2026-10-28)."""
 
 SHORT_TEXT_CHARS = 300
+
+TEXT_PIECE = re.compile(r"\w+|[^\w\s]")
 
 
 def _check_unsent_tail(response: Response, content: str) -> None:
@@ -286,11 +292,10 @@ def _check_unsent_tail(response: Response, content: str) -> None:
     if usage is None or usage.reasoning_tokens is None:
         return
     per_token = 3.5 if len(content) <= SHORT_TEXT_CHARS else 2
-    unsent = (
-        usage.completion_tokens
-        - usage.reasoning_tokens
-        - math.ceil(len(content) / per_token)
+    text_tokens = max(
+        math.ceil(len(content) / per_token), len(TEXT_PIECE.findall(content))
     )
+    unsent = usage.completion_tokens - usage.reasoning_tokens - text_tokens
     if unsent > UNSENT_TAIL_TOKENS:
         raise model_error(
             "malformed upstream response: a turn with text and no tool call whose usage "
