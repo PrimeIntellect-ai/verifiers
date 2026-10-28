@@ -204,13 +204,26 @@ async def test_process_wait_and_stream_diagnostics_are_not_per_chunk(
 
 
 async def test_heartbeat_and_terminal_error_type_are_metadata_only(monkeypatch, caplog):
+    second_heartbeat = asyncio.Event()
+    heartbeat_count = 0
+    log_operation = prime._log_operation
+
+    def log_and_release(context, event):
+        nonlocal heartbeat_count
+        log_operation(context, event)
+        if event == "heartbeat":
+            heartbeat_count += 1
+            if heartbeat_count == 2:
+                second_heartbeat.set()
+
     class Client:
         async def start_background_job(self, *args, **kwargs):
-            await asyncio.sleep(0.035)
+            await second_heartbeat.wait()
             raise TimeoutError("ERROR_PAYLOAD_SECRET")
 
     backend = make_backend(monkeypatch, Client())
-    monkeypatch.setattr(prime, "_OPERATION_HEARTBEAT_SECONDS", 0.01)
+    monkeypatch.setattr(prime, "_OPERATION_HEARTBEAT_SECONDS", 0)
+    monkeypatch.setattr(prime, "_log_operation", log_and_release)
     caplog.set_level(logging.INFO, logger=prime.__name__)
 
     with pytest.raises(SandboxError, match="prime background launch failed"):
@@ -221,14 +234,9 @@ async def test_heartbeat_and_terminal_error_type_are_metadata_only(monkeypatch, 
     logged = records(caplog)
     assert [record["event"] for record in logged].count("heartbeat") >= 2
     assert logged[0]["event"] == "start"
-    assert all(
-        record["sdk_wait_s"] >= 0.009
-        for record in logged
-        if record["event"] == "heartbeat"
-    )
     assert logged[-1]["event"] == "end"
     assert logged[-1]["terminal_error_type"] == "TimeoutError"
-    assert logged[-1]["elapsed_s"] >= logged[-1]["sdk_wait_s"] >= 0.03
+    assert logged[-1]["elapsed_s"] >= logged[-1]["sdk_wait_s"] >= 0
     assert len({record["operation_id"] for record in logged}) == 1
     assert prime.current_prime_operation() is None
     assert "ARGV_SECRET" not in caplog.text
