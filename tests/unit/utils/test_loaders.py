@@ -1,6 +1,8 @@
 """Plugin resolution by id: every bundled harness, env, and judge loads, each with its
 own config type, and an unknown id fails with the bundled ids in the message."""
 
+import sys
+
 import pytest
 
 import verifiers.v1 as vf
@@ -11,6 +13,7 @@ from verifiers.v1.utils.loaders import (
     environment_class,
     harness_class,
     harness_config_type,
+    import_taskset,
     judge_class,
     judge_config_type,
     load_harness,
@@ -62,3 +65,14 @@ def test_bundled_envs_load_with_a_role_typed_config(env_id: str) -> None:
 def test_bundled_judges_load(judge_id: str, config: dict) -> None:
     assert issubclass(judge_class(judge_id), vf.Judge)
     assert judge_config_type(judge_id)(**config).id == judge_id
+
+
+def test_a_path_id_imports_the_package_there(tmp_path, monkeypatch) -> None:
+    package = tmp_path / "mounted" / "path_id_taskset"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("MARK = 1\n")
+    monkeypatch.setattr(sys, "path", list(sys.path))
+    module = import_taskset(str(package))
+    assert module.MARK == 1 and module.__file__ == str(package / "__init__.py")
+    with pytest.raises(ModuleNotFoundError, match="does not exist"):
+        import_taskset(str(tmp_path / "missing"))

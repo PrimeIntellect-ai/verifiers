@@ -4,6 +4,7 @@ import functools
 import importlib
 import importlib.util
 import pkgutil
+import sys
 from collections.abc import Callable
 from pathlib import Path
 from types import ModuleType
@@ -82,7 +83,23 @@ def narrow_plugin_field(
         raise prefix_validation_error(e, (field,)) from None
 
 
+def _import_path(plugin_id: str, kind: str) -> ModuleType:
+    """A plugin id that is a path (`/abs/dir/pkg`, `./pkg`, `~/pkg`): the package dir (or
+    module file) there, imported by its name with its parent dir on `sys.path`, so a
+    plugin runs from a mounted dir without being installed."""
+    path = Path(plugin_id).expanduser().resolve()
+    if not path.exists():
+        raise ModuleNotFoundError(
+            f"{kind} {plugin_id!r} not found: {path} does not exist"
+        )
+    if str(path.parent) not in sys.path:
+        sys.path.insert(0, str(path.parent))
+    return importlib.import_module(path.stem)
+
+
 def _import_plugin(plugin_id: str, kind: str, group: str) -> ModuleType:
+    if plugin_id.startswith(("/", "./", "../", "~")):
+        return _import_path(plugin_id, kind)
     # Hub ids are `owner/name[@version]` (installed as just `name`); strip both
     # before normalizing so a hub id imports the same module a bare id would.
     name = plugin_id.rsplit("/", 1)[-1].split("@", 1)[0]
