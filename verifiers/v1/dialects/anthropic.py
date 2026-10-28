@@ -22,6 +22,7 @@ from verifiers.v1.dialects.base import (
     RequestFilter,
     StreamParser,
     append_user_notice,
+    for_model,
     parse_sse_event,
     provider_domains,
 )
@@ -705,4 +706,4 @@ class AnthropicDialect(Dialect[AnthropicMessage]):
             for k, v in body.items()
             if k not in ("temperature", "top_p") and k not in overrides
         }
-        return {**steered, **overrides}
+        return for_model({**steered, **overrides}, model)

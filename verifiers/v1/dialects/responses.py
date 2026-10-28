@@ -26,6 +26,7 @@ from verifiers.v1.dialects.base import (
     RequestFilter,
     StreamParser,
     append_user_notice,
+    for_model,
     parse_sse_event,
     provider_domains,
 )
@@ -787,4 +788,4 @@ class ResponsesDialect(Dialect[OpenAIResponse]):
             for k, v in body.items()
             if k not in _SAMPLING_KEYS and k not in overrides
         }
-        return {**steered, **overrides}
+        return for_model({**steered, **overrides}, model)

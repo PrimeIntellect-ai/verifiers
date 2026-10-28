@@ -49,3 +49,27 @@ def test_apply_overrides_keeps_other_reasoning_fields():
     body = {"reasoning": {"effort": "high", "summary": "detailed"}}
     sent = ResponsesDialect().apply_overrides(body, "m", SAMPLING)
     assert sent["reasoning"] == {"effort": "low", "summary": "detailed"}
+
+
+CACHED = SamplingConfig.model_validate({"cache_control": {"type": "ephemeral"}})
+
+
+@pytest.mark.parametrize(
+    "dialect", [ChatDialect(), ResponsesDialect(), AnthropicDialect()]
+)
+@pytest.mark.parametrize(
+    "model,kept",
+    [
+        ("anthropic/claude-opus-4.7", True),
+        ("internal/glm-5.3-fast", False),
+        ("internal/deepseek-v4.1-flash", False),
+        ("openai/gpt-5.5", False),
+    ],
+)
+def test_cache_control_reaches_only_anthropic_models(dialect, model, kept):
+    # A trace switched off Opus mid-run keeps the run's sampling; other providers
+    # refuse `cache_control` with a 400.
+    for body in ({}, {"cache_control": {"type": "ephemeral"}}):
+        sent = dialect.apply_overrides(body, model, CACHED)
+        assert ("cache_control" in sent) is kept
+        assert sent["model"] == model

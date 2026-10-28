@@ -129,6 +129,25 @@ class RequestFilter:
         raise NotImplementedError
 
 
+ANTHROPIC_ONLY_FIELDS = ("cache_control",)
+"""Request fields only Anthropic models accept (Prime's gateway caches Anthropic requests
+by `cache_control`); other providers refuse them with a 400."""
+
+
+def is_anthropic_model(model: str) -> bool:
+    return model.startswith("anthropic/") or (
+        "/" not in model and model.startswith("claude")
+    )
+
+
+def for_model(body: RawRequest, model: str) -> RawRequest:
+    """`body` without the provider fields `model` does not accept: run-level sampling
+    is per run, but a trace switched to another model mid-conversation keeps it."""
+    if is_anthropic_model(model):
+        return body
+    return {k: v for k, v in body.items() if k not in ANTHROPIC_ONLY_FIELDS}
+
+
 def provider_domains(
     policy: NetworkPolicyConfig, requested: object = None
 ) -> list[str]:

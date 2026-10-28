@@ -25,6 +25,7 @@ from verifiers.v1.dialects.base import (
     RequestFilter,
     StreamParser,
     append_user_notice,
+    for_model,
     parse_sse_event,
 )
 from verifiers.v1.types import (
@@ -594,4 +595,4 @@ class ChatDialect(Dialect[ChatCompletion]):
             for k, v in body.items()
             if not max_tokens_overridden or k not in max_token_keys
         }
-        return {**steered, **overrides, "model": model}
+        return for_model({**steered, **overrides, "model": model}, model)
