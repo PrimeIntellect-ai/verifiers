@@ -58,6 +58,28 @@ HARBOR_INSTALL_HINT = "uv sync --python 3.12 --extra harbor"
 REWARD_JSON = "/logs/verifier/reward.json"
 MAX_REWARD_BYTES = 1024 * 1024
 MAX_VERIFIER_OUTPUT_CHARS = 16 * 1024
+# Bytes of each verifier stream that leave the box: enough for the diagnostics' tail
+# and their truncation flags, far below what a sandbox API reads back in one call.
+VERIFIER_OUTPUT_TAIL_BYTES = 4 * MAX_VERIFIER_OUTPUT_CHARS
+_VERIFIER_SCRIPT = (
+    "out=$(mktemp) && err=$(mktemp) || exit 125\n"
+    'bash "$1" >"$out" 2>"$err"; rc=$?\n'
+    'tail -c "$2" "$out"; tail -c "$2" "$err" >&2\n'
+    'rm -f "$out" "$err"\n'
+    'exit "$rc"'
+)
+
+
+def verifier_argv(
+    script: str = "/tests/test.sh", tail_bytes: int = VERIFIER_OUTPUT_TAIL_BYTES
+) -> list[str]:
+    """Run a Harbor test script with its output kept in the box, returning only the
+    tail of each stream and the script's own exit code. A test suite can log more
+    than a sandbox API reads back (e.g. 10 MiB), and a failed read would fail the
+    rollout although only the reward file decides the score."""
+    return ["bash", "-c", _VERIFIER_SCRIPT, "vf-verifier", script, str(tail_bytes)]
+
+
 REWARD_JSON_ADAPTER = TypeAdapter(
     dict[str, float],
     config=ConfigDict(strict=True, allow_inf_nan=False),
@@ -448,9 +470,7 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
         # By absolute path, in the runtime's configured workdir: Harbor execs the
         # script the same way, and scripts do grade the agent's work at `$PWD`.
         # The reward file is authoritative even when the script exits nonzero.
-        result = await runtime.run(
-            ["bash", "/tests/test.sh"], resolve_env(self.scoring.env or {})
-        )
+        result = await runtime.run(verifier_argv(), resolve_env(self.scoring.env or {}))
         trace.info.setdefault("scoring_diagnostics", {})["harbor"] = {
             "exit_code": result.exit_code,
             "stdout": result.stdout[-MAX_VERIFIER_OUTPUT_CHARS:],
