@@ -2878,29 +2878,6 @@ wheels = [
 ]
 
 [[package]]
-name = "openai-harmony"
-version = "0.0.8"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "pydantic" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/3e/92/2d038d096f29179c7c9571b431f9e739f87a487121901725e23fe338dd9d/openai_harmony-0.0.8.tar.gz", hash = "sha256:6e43f98e6c242fa2de6f8ea12eab24af63fa2ed3e89c06341fb9d92632c5cbdf", size = 284777, upload-time = "2025-11-05T19:07:06.727Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/45/c6/2502f416d46be3ec08bb66d696cccffb57781a499e3ff2e4d7c174af4e8f/openai_harmony-0.0.8-cp38-abi3-macosx_11_0_arm64.whl", hash = "sha256:029ec25ca74abe48fdb58eb9fdd2a8c1618581fc33ce8e5653f8a1ffbfbd9326", size = 2627806, upload-time = "2025-11-05T19:06:57.063Z" },
-    { url = "https://files.pythonhosted.org/packages/d3/d2/ce6953ca87db9cae3e775024184da7d1c5cb88cead19a2d75b42f00a959c/openai_harmony-0.0.8-cp38-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:e4f709815924ec325b9a890e6ab2bbb0ceec8e319a4e257328eb752cf36b2efc", size = 2948463, upload-time = "2025-11-05T19:06:48.17Z" },
-    { url = "https://files.pythonhosted.org/packages/fa/4c/b553c9651662d6ce102ca7f3629d268b23df1abe5841e24bed81e8a8e949/openai_harmony-0.0.8-cp38-abi3-manylinux_2_17_armv7l.manylinux2014_armv7l.whl", hash = "sha256:5cfcfd963b50a41fc656c84d3440ca6eecdccd6c552158ce790b8f2e33dfb5a9", size = 2704083, upload-time = "2025-11-05T19:06:50.205Z" },
-    { url = "https://files.pythonhosted.org/packages/9b/af/4eec8f9ab9c27bcdb444460c72cf43011d176fc44c79d6e113094ca1e152/openai_harmony-0.0.8-cp38-abi3-manylinux_2_17_i686.manylinux2014_i686.whl", hash = "sha256:0a3a16972aa1cee38ea958470cd04ac9a2d5ac38fdcf77ab686611246220c158", size = 2959765, upload-time = "2025-11-05T19:06:53.62Z" },
-    { url = "https://files.pythonhosted.org/packages/11/3c/33f3374e4624e0e776f6b13b73c45a7ead7f9c4529f8369ed5bfcaa30cac/openai_harmony-0.0.8-cp38-abi3-manylinux_2_17_ppc64le.manylinux2014_ppc64le.whl", hash = "sha256:b4d5cfa168e74d08f8ba6d58a7e49bc7daef4d58951ec69b66b0d56f4927a68d", size = 3427031, upload-time = "2025-11-05T19:06:51.829Z" },
-    { url = "https://files.pythonhosted.org/packages/25/3f/1a192b93bb47c6b44cd98ba8cc1d3d2a9308f1bb700c3017e6352da11bda/openai_harmony-0.0.8-cp38-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:c007d277218a50db8839e599ed78e0fffe5130f614c3f6d93ae257f282071a29", size = 2953260, upload-time = "2025-11-05T19:06:55.406Z" },
-    { url = "https://files.pythonhosted.org/packages/5b/f8/93b582cad3531797c3db7c2db5400fd841538ccddfd9f5e3df61be99a630/openai_harmony-0.0.8-cp38-abi3-musllinux_1_2_aarch64.whl", hash = "sha256:8565d4f5a0638da1bffde29832ed63c9e695c558611053add3b2dc0b56c92dbc", size = 3127044, upload-time = "2025-11-05T19:06:59.553Z" },
-    { url = "https://files.pythonhosted.org/packages/1d/10/4327dbf87f75ae813405fd9a9b4a5cde63d506ffed0a096a440a4cabd89c/openai_harmony-0.0.8-cp38-abi3-musllinux_1_2_armv7l.whl", hash = "sha256:cbaa3bda75ef0d8836e1f8cc84af62f971b1d756d740efc95c38c3e04c0bfde2", size = 2932931, upload-time = "2025-11-05T19:07:01.437Z" },
-    { url = "https://files.pythonhosted.org/packages/8a/c8/1774eec4f6f360ef57618fb8f52e3d3af245b2491bd0297513aa09eec04b/openai_harmony-0.0.8-cp38-abi3-musllinux_1_2_i686.whl", hash = "sha256:772922a9bd24e133950fad71eb1550836f415a88e8c77870e12d0c3bd688ddc2", size = 2996140, upload-time = "2025-11-05T19:07:03.438Z" },
-    { url = "https://files.pythonhosted.org/packages/60/c3/3d1e01e2dba517a91760e4a03e4f20ffc75039a6fe584d0e6f9b5c78fd15/openai_harmony-0.0.8-cp38-abi3-musllinux_1_2_x86_64.whl", hash = "sha256:007b0476a1f331f8130783f901f1da6f5a7057af1a4891f1b6a31dec364189b5", size = 3205080, upload-time = "2025-11-05T19:07:05.078Z" },
-    { url = "https://files.pythonhosted.org/packages/14/63/119de431572d7c70a7bf1037034a9be6ed0a7502a7498ba7302bca5b3242/openai_harmony-0.0.8-cp38-abi3-win32.whl", hash = "sha256:a9b5f893326b28d9e935ade14b4f655f5a840942473bc89b201c25f7a15af9cf", size = 2082457, upload-time = "2025-11-05T19:07:09.631Z" },
-    { url = "https://files.pythonhosted.org/packages/40/1f/c83cf5a206c263ee70448a5ae4264682555f4d0b5bed0d2cc6ca1108103d/openai_harmony-0.0.8-cp38-abi3-win_amd64.whl", hash = "sha256:39d44f0d8f466bd56698e7ead708bead3141e27b9b87e3ab7d5a6d0e4a869ee5", size = 2438369, upload-time = "2025-11-05T19:07:08.1Z" },
-]
-
-[[package]]
 name = "openapi-pydantic"
 version = "0.5.1"
 source = { registry = "https://pypi.org/simple" }
@@ -3078,6 +3055,29 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/bf/2b/277404bdcc21c93b112b963655b76443ebfe828f8a3ff1de7d90f8850eb3/orjson-3.12.0-cp314-cp314-win32.whl", hash = "sha256:d39f3f5c3927e2dc0913fe5bbc1a2f6b1b9d1bba1de6358340d0ad0d0c00ca92", size = 128048, upload-time = "2026-08-14T16:13:10.305Z" },
     { url = "https://files.pythonhosted.org/packages/41/2b/395b36fa2b4ce7af70b651d715e88f80d884b2c2b14a6b53e84d554fb5f0/orjson-3.12.0-cp314-cp314-win_amd64.whl", hash = "sha256:0b1ac5bf6609b2716c7954011c5fef6254922df029f45d032ee4ebf5d363cbed", size = 121858, upload-time = "2026-08-14T16:13:11.634Z" },
     { url = "https://files.pythonhosted.org/packages/ea/a3/833e895ff452859eebe75093d26691fe9108f1a7a6a08435d7a5780ea652/orjson-3.12.0-cp314-cp314-win_arm64.whl", hash = "sha256:50fae885cb073eac7556353ff3df93312b0d5137b0a5056b2bb63f97ed9a93c7", size = 126749, upload-time = "2026-08-14T16:13:13.117Z" },
+]
+
+[[package]]
+name = "oss-harmony"
+version = "0.0.11"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "pydantic" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/43/88/ca56e5b17df4763bbb552c7be3abe432b51db3c51f6327a3848b88ad7c08/oss_harmony-0.0.11.tar.gz", hash = "sha256:ccad467b71d61490df1f2204b7a064990833338615ac135536c5b3a8e2d03a15", size = 2198780, upload-time = "2026-05-13T20:49:11.767Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/8b/4c/400a7e375943ff06447c8cd3920819d2e37c808d0cfea3296b159e961610/oss_harmony-0.0.11-cp38-abi3-macosx_11_0_arm64.whl", hash = "sha256:83ca71b85be6e2f8e93527673cd2eff4da9180608ee5d4197bd4f01afc4fa6be", size = 3337401, upload-time = "2026-05-13T20:49:00.051Z" },
+    { url = "https://files.pythonhosted.org/packages/fd/e9/0b33d4c592e1422c9faeaf1cfe10731328ecf3504e900dc7921109affd55/oss_harmony-0.0.11-cp38-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:f1f74ef7f8be32fa1dcfe1644839af5f0873acce78b5668c2aa39f26d83218ff", size = 3493239, upload-time = "2026-05-13T20:48:49.588Z" },
+    { url = "https://files.pythonhosted.org/packages/de/c3/502b7ba6f36645117b58859b250355cba34d7107ec104ea40087b752977b/oss_harmony-0.0.11-cp38-abi3-manylinux_2_17_armv7l.manylinux2014_armv7l.whl", hash = "sha256:2221f2790411cfd5d0e517769dc2662b15b2711e44728291961506a367ffc3d1", size = 3415967, upload-time = "2026-05-13T20:48:51.731Z" },
+    { url = "https://files.pythonhosted.org/packages/8b/f7/f802d7aba027cd4e1c0ff5509c645de8d70fa674b31d80cdf8fec63ac844/oss_harmony-0.0.11-cp38-abi3-manylinux_2_17_ppc64le.manylinux2014_ppc64le.whl", hash = "sha256:f215934b05f3a7658e0cf30cf92bc25f4aed125a693529c53dd97325ecfbf7ef", size = 3707786, upload-time = "2026-05-13T20:48:53.91Z" },
+    { url = "https://files.pythonhosted.org/packages/89/68/001d7429a692b2db0c03bd49b756f834716b64afc0bbbece96824e8f0af8/oss_harmony-0.0.11-cp38-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:d877c6b526cdbdf55068bae8f05c60398e929c9e296c7f69a1d533339708be80", size = 3567858, upload-time = "2026-05-13T20:48:57.904Z" },
+    { url = "https://files.pythonhosted.org/packages/3b/5d/edf954b0aace872ec137a9ef7b92c29120bd16a4277fd11c5b83e7d1ed16/oss_harmony-0.0.11-cp38-abi3-manylinux_2_5_i686.manylinux1_i686.whl", hash = "sha256:e451e5dc28b0d883f33aa17a77c923afcab5d26ef3b95d7593b68a07e399706e", size = 3633793, upload-time = "2026-05-13T20:48:56.037Z" },
+    { url = "https://files.pythonhosted.org/packages/4b/c9/720aed1527d87f82e07a7f35c3c81c6d9198a8d1223bdbd298b3c66a72db/oss_harmony-0.0.11-cp38-abi3-musllinux_1_2_aarch64.whl", hash = "sha256:036505bfb39c6b50edcf717349518d269bb375207f7f8e95f517e938b8f2e0c8", size = 3695703, upload-time = "2026-05-13T20:49:02.857Z" },
+    { url = "https://files.pythonhosted.org/packages/94/a8/fb8cad33079ee848514ea70688005ef7b6c32ccee788cc18fcb04e24fa74/oss_harmony-0.0.11-cp38-abi3-musllinux_1_2_armv7l.whl", hash = "sha256:952218411c219dc7ca8ee56eb86271d015d0c347896b2009906096422d7a94cf", size = 3703138, upload-time = "2026-05-13T20:49:04.937Z" },
+    { url = "https://files.pythonhosted.org/packages/0d/7d/d71b3ee5abfbf9130eea646b9589e8f00a039514cdca2ab6dbffa22f8351/oss_harmony-0.0.11-cp38-abi3-musllinux_1_2_i686.whl", hash = "sha256:5c7b0cea27e1e4e9fc485bf8039a119d6732718cce6b067d1f7de9e637572348", size = 3790649, upload-time = "2026-05-13T20:49:07.337Z" },
+    { url = "https://files.pythonhosted.org/packages/48/9a/ad24d20ea1e8b3167744f5d357d48a116086258ca58540986a0896781864/oss_harmony-0.0.11-cp38-abi3-musllinux_1_2_x86_64.whl", hash = "sha256:0d1545203973abb3002dcc6c5cffd14ca4a376b655c14ce190c78eb6aaf5f6fd", size = 3807882, upload-time = "2026-05-13T20:49:09.767Z" },
+    { url = "https://files.pythonhosted.org/packages/03/33/2917125287b46255cfc6d7e0bc4bc5e5c90f7ad4e02d3922c2f0f95b696b/oss_harmony-0.0.11-cp38-abi3-win32.whl", hash = "sha256:fd91609eef825f342ae7ac990651cfebcf28aac6b6ad1186bf37c5b593cdf950", size = 3135714, upload-time = "2026-05-13T20:49:15.924Z" },
+    { url = "https://files.pythonhosted.org/packages/c8/c9/eedd8d02be8bbaa586f8a323de2fc976e6053582411020b7be1f7c7e1734/oss_harmony-0.0.11-cp38-abi3-win_amd64.whl", hash = "sha256:4db175b6f6264cd60ceb692c0e686937e072ca6ea1239d0d4cace2cfb50f4974", size = 3266750, upload-time = "2026-05-13T20:49:13.404Z" },
 ]
 
 [[package]]
@@ -4371,26 +4371,49 @@ wheels = [
 
 [[package]]
 name = "renderers"
-version = "0.1.13.dev17"
-source = { registry = "https://pypi.org/simple" }
+version = "0.1.13.dev20"
+source = { git = "https://github.com/PrimeIntellect-ai/renderers?rev=c3ef65392cb9be21d7b221379624d06a3944446f#c3ef65392cb9be21d7b221379624d06a3944446f" }
 dependencies = [
     { name = "jinja2" },
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
     { name = "numpy", version = "2.5.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "openai" },
-    { name = "openai-harmony" },
+    { name = "oss-harmony" },
     { name = "prime-pydantic-config" },
     { name = "tiktoken" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/12/31/a908c3560b710ffa537fd40021ae200f7d83b1537f7afa3a72d5d0f947ef/renderers-0.1.13.dev17.tar.gz", hash = "sha256:787152ddde094d409ca56983683bdaf33414d4940267176d290824cac858346c", size = 465146, upload-time = "2026-10-24T12:59:56.576Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/86/a6/60b5d1ee44f20720ab1e6e59d7bd7fd807e2cdf8f035013866e93e6ac84d/renderers-0.1.13.dev17-py3-none-any.whl", hash = "sha256:dfdbeb085e1ede9d7d49d2b39eb3f1ee5eada7dcb58115c2579d477943ca9a14", size = 266437, upload-time = "2026-10-24T12:59:54.569Z" },
 ]
 
 [package.optional-dependencies]
 multimodal = [
     { name = "pillow" },
     { name = "transformers" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "jinja2" },
+    { name = "numpy" },
+    { name = "openai", specifier = ">=1.108.1" },
+    { name = "oss-harmony", specifier = ">=0.0.11" },
+    { name = "pillow", marker = "extra == 'multimodal'", specifier = ">=12.2" },
+    { name = "prime-pydantic-config", specifier = ">=0.3.dev83" },
+    { name = "tiktoken" },
+    { name = "transformers", marker = "extra == 'multimodal'", specifier = ">=4.50" },
+    { name = "transformers", marker = "extra == 'transformers'", specifier = ">=4.50" },
+]
+provides-extras = ["multimodal", "transformers"]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "pillow", specifier = ">=12.2" },
+    { name = "pre-commit" },
+    { name = "pytest", specifier = ">=7" },
+    { name = "pytest-asyncio", specifier = ">=0.21" },
+    { name = "ruff" },
+    { name = "torch", specifier = ">=2.11" },
+    { name = "torchvision", specifier = ">=0.26" },
+    { name = "transformers", specifier = ">=4.50" },
+    { name = "ty", specifier = ">=0.0.1a29,<0.0.22" },
 ]
 
 [[package]]
