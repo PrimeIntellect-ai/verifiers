@@ -21,7 +21,7 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.errors import ToolsetError
-from verifiers.v1.interception.tunnel import PrimeTunnel
+from verifiers.v1.interception.tunnel.shared import shared_host_tunnel
 from verifiers.v1.mcp.server import (
     STATE_ROUTE_PARAM,
     STATE_SIGNATURE_PARAM,
@@ -416,14 +416,15 @@ async def reachable_url(
 
     - `colocated` -> localhost (same runtime, in-sandbox or host loopback);
     - else the runtime publishes the port (`expose`): a remote sandbox's URL is reachable
-      anywhere, a host-local URL directly by a local consumer and through a host tunnel
-      by a remote one."""
+      anywhere, a host-local URL directly by a local consumer and through the process's
+      shared host tunnel by a remote one (`shared_host_tunnel`: one tunnel for many
+      servers, not one each)."""
     if colocated:
         yield f"http://127.0.0.1:{port}"
         return
     url = await service_runtime.expose(port)
     if service_runtime.is_local and not consumer_is_local:
-        async with PrimeTunnel().expose(urlsplit(url).port or 80) as public:
+        async with shared_host_tunnel().route(urlsplit(url).port or 80) as public:
             yield public
     else:
         yield url

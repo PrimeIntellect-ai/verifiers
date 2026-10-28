@@ -3,6 +3,7 @@ works from any host with prime credentials, for consumers in any remote sandbox 
 pool scales with."""
 
 import asyncio
+import atexit
 import contextlib
 import logging
 import random
@@ -90,6 +91,19 @@ async def _watch(client: "TunnelClient", url: str) -> None:
             strikes = 0
 
 
+_LIVE: set["TunnelClient"] = set()
+"""Tunnels held open: the atexit backstop stops them if a signal cut their `finally`
+short (a Ctrl-C or SIGTERM that unwound the loop mid-teardown). A stopped tunnel's frpc
+would otherwise outlive the process, and its registration stays connected."""
+_atexit_armed = False
+
+
+def _stop_at_exit() -> None:
+    for client in list(_LIVE):
+        with contextlib.suppress(Exception):
+            client.sync_stop()
+
+
 class PrimeTunnel(Tunnel[PrimeTunnelConfig]):
     def __init__(self, config: PrimeTunnelConfig | None = None) -> None:
         ensure_prime_auth()
@@ -117,12 +131,18 @@ class PrimeTunnel(Tunnel[PrimeTunnelConfig]):
                         url = str(await client.start()).rstrip("/")
         except Exception as e:
             raise TunnelError(f"{label} failed: {e}") from e
+        global _atexit_armed
+        if not _atexit_armed:
+            _atexit_armed = True
+            atexit.register(_stop_at_exit)
+        _LIVE.add(client)
         watch = asyncio.create_task(_watch(client, url))
 
         async def close() -> None:
             watch.cancel()  # first, so it can't start a new frpc after the stop
             await asyncio.wait({watch})
             await asyncio.to_thread(client.sync_stop)
+            _LIVE.discard(client)
 
         try:
             yield url
