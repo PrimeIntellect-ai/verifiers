@@ -413,9 +413,11 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
         trace: Trace | None = None,
     ) -> None:
         # Harbor's Docker start runs the image's ENTRYPOINT before anything else, in the
-        # container's own PID namespace.
-        if not isinstance(self.deployment_spec(), ComposeSpec):
-            await runtime.backend.isolate_processes()
+        # container's own PID namespace. A Compose service is such a container already
+        # (`isolate_processes` does nothing there), but a Compose task's separate verifier
+        # is a box of its own: its grader would otherwise see, and kill, the platform's
+        # command daemon.
+        await runtime.backend.isolate_processes()
         guarded = await guard_onednn(runtime)
         if guarded and trace is not None:
             trace.info["onednn_guard"] = guarded
@@ -506,8 +508,7 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
         """A box from a checkpoint keeps its files but no process: start the tool
         servers again over the state they left on disk, in a PID namespace again,
         after the services the image's entrypoint had started (`restart_services`)."""
-        if not isinstance(self.deployment_spec(), ComposeSpec):
-            await runtime.backend.isolate_processes()
+        await runtime.backend.isolate_processes()
         if self.entrypoint_dockerfile() is not None:
             restarted = await restart_services(runtime)
             if restarted is not None and trace is not None:
