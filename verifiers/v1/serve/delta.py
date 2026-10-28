@@ -4,12 +4,13 @@ The worker streams a served episode as it grows. Each trace announces its own ch
 (`Trace.notify`, fired by the rollout at every phase change and by the interception proxy
 after every recorded turn); the `DeltaStreamer` then diffs the run's live traces against
 what it has already sent and ships only the new part — the trace header once, then
-appended nodes / calls / errors, semantic links and routing-row repairs on earlier nodes, the scalar
+appended nodes / calls / errors, semantic links on earlier nodes, the scalar
 fields whose value changed (timing spans, stop condition, rewards, ...), and the
 `pending` preview — the messages of the request in flight that no node holds yet, so a
 watcher sees a tool result before the model has answered it. The `Trace` is
-append-only at turn granularity except for links and the last routing row of a node,
-which the next prefill can repair. Apart from these and the preview, every byte of the
+append-only at turn granularity except for links. Nodes stream without their per-token
+training arrays (`TRAINING_ARRAY_FIELDS`): a host that trains on them keeps them itself
+(`set_episode_hook`). Apart from links and the preview, every byte of the
 episode crosses the wire once and the stream costs about what a single reply would; the
 reply that ends the run carries only the episode head and per-trace counts the client
 checks its assembly against. A cursor advances only once its delta is on the wire, so a
@@ -29,10 +30,8 @@ from collections.abc import Awaitable, Callable, Iterable
 from typing import TYPE_CHECKING, Any, Self
 
 import msgpack
-import numpy as np
 from pydantic import BaseModel
 
-from verifiers.v1.graph import decode_ndarray, encode_ndarray
 from verifiers.v1.serve.encoding import msgpack_encoder
 from verifiers.v1.trace import RestorePoint
 
@@ -76,6 +75,10 @@ SCALAR_FIELDS = (
 """Re-sent whole whenever their dumped value changes."""
 
 
+TRAINING_ARRAY_FIELDS = frozenset({"routed_experts", "sampling_mask", "top_logprobs"})
+"""Node fields holding per-token training arrays; never streamed."""
+
+
 def pack(payload: Any) -> bytes:
     return msgpack.packb(payload, default=msgpack_encoder, use_bin_type=True)
 
@@ -100,8 +103,6 @@ class TraceCursor:
         self.sent = dict.fromkeys(LIST_FIELDS, 0)
         self.links: list[int] = []
         """Per sent node, how many of its semantic links went out with or after it."""
-        self.final_rows: dict[int, bytes] = {}
-        """Per node that carries routing, its final row as packed when last sent."""
         self.scalars: dict[str, bytes] = {}
         self.pending: bytes = pack([])
         self.restore: str | None = None
@@ -180,31 +181,6 @@ class DeltaStreamer:
                 else:
                     self.cursors[trace_id] = cursor
 
-    def _maybe_add_routing_repairs(
-        self,
-        delta: dict[str, Any],
-        trace: Trace,
-        cursor: TraceCursor,
-        sent_nodes: int,
-    ) -> None:
-        """Add final rows repaired since they were sent, keyed by node index.
-
-        Record every node's current row on the cursor. `sent_nodes` is the pre-flush
-        count, so a node first sent in this delta is never reported as a repair.
-        """
-        repairs: dict[int, dict] = {}
-        for index, node in enumerate(trace.nodes):
-            if node.routed_experts is None:
-                continue
-            row = encode_ndarray(node.routed_experts[-1:])
-            packed = pack(row)
-            if cursor.final_rows.get(index) != packed:
-                cursor.final_rows[index] = packed
-                if index < sent_nodes:
-                    repairs[index] = row
-        if repairs:
-            delta["routing_repairs"] = repairs
-
     def diff(self) -> list[tuple[str, dict, TraceCursor | None]]:
         """Each trace's delta against its sent cursor, with the cursor as it stands once
         that delta is sent (None for a discard). Nothing here is committed: `flush`
@@ -240,15 +216,19 @@ class DeltaStreamer:
                     cursor.links[index] = len(node_links)
             if links:
                 delta["links"] = links
-            self._maybe_add_routing_repairs(delta, trace, cursor, cursor.sent["nodes"])
             for field in LIST_FIELDS:
                 items = getattr(trace, field)
                 sent = cursor.sent[field]
                 if len(items) > sent:
                     # Nodes' per-token streams ride as raw-bytes arrays.
-                    context = {"token_arrays": True} if field == "nodes" else None
+                    is_nodes = field == "nodes"
                     delta[field] = [
-                        dump(item, context=context) for item in items[sent:]
+                        dump(
+                            item,
+                            context={"token_arrays": True} if is_nodes else None,
+                            exclude=TRAINING_ARRAY_FIELDS if is_nodes else None,
+                        )
+                        for item in items[sent:]
                     ]
                     cursor.sent[field] = len(items)
                     if field == "nodes":
@@ -290,20 +270,6 @@ class EpisodeAssembly:
         self.restores: dict[str, dict] = {}
         """Per trace, its newest restore point (`RestorePoint`, dumped) as streamed."""
 
-    def _maybe_apply_routing_repairs(self, delta: dict[str, Any], trace: dict) -> None:
-        """Replace repaired final rows in nodes the client already holds.
-
-        Rebuild each array: a repair can widen its dtype, and decoded rows alias
-        the original delta's bytes, which must remain unchanged for consumers.
-        """
-        for index, row in (delta.get("routing_repairs") or {}).items():
-            node = trace["nodes"][int(index)]
-            node["routed_experts"] = encode_ndarray(
-                np.concatenate(
-                    [decode_ndarray(node["routed_experts"])[:-1], decode_ndarray(row)]
-                )
-            )
-
     def apply(self, delta: dict) -> None:
         trace_id = delta["trace"]
         if delta.get("discard"):
@@ -321,7 +287,6 @@ class EpisodeAssembly:
             }
         for index, links in (delta.get("links") or {}).items():
             trace["nodes"][int(index)]["semantic_parents"].extend(links)
-        self._maybe_apply_routing_repairs(delta, trace)
         # a later `links` delta grows a node's semantic_parents in place, so the node
         # is copied: the delta stays as it was when the caller received it
         if "nodes" in delta:
