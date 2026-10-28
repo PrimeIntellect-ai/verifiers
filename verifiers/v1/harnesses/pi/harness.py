@@ -13,7 +13,7 @@ from verifiers.v1.configs.harness import (
     PinnedVersion,
     skill_destination,
 )
-from verifiers.v1.harnesses.node import NODE_BIN_DIR, ensure_node
+from verifiers.v1.harnesses.node import NODE_BIN_DIR, NPM_ENV, ensure_node
 from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
 from verifiers.v1.harnesses.utils.replay import drop_blank_text
 from verifiers.v1.runtimes import Runtime
@@ -36,11 +36,13 @@ ACP_COMMAND = [f"{NODE_BIN_DIR}/node", ACP_BIN]
 
 GATE_EXTENSION = (Path(__file__).resolve().parent / "gate.mjs").read_text()
 
-INSTALL = r"""
+INSTALL = (
+    r"""
 set -e
 packages=/var/tmp/vf-pi/mcp
-export PATH="/var/tmp/vf-node/bin:$PATH"
-
+"""
+    + NPM_ENV
+    + r"""
 versions="$VF_PI_VERSION:$VF_PI_MCP_VERSION:$VF_PI_ACP_VERSION"
 if [ "$(cat "$packages/.versions" 2>/dev/null)" != "$versions" ]; then
     npm install --prefix "$packages" --ignore-scripts --no-audit --no-fund --omit=dev \
@@ -50,6 +52,7 @@ if [ "$(cat "$packages/.versions" 2>/dev/null)" != "$versions" ]; then
     printf %s "$versions" > "$packages/.versions"
 fi
 """
+)
 
 
 class PiHarnessConfig(HarnessConfig):

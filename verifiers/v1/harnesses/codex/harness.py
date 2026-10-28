@@ -14,7 +14,7 @@ import tomli_w
 from verifiers.v1.acp import ACPConfig, ACPHarness, ACPTurn
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig, PinnedVersion
-from verifiers.v1.harnesses.node import NODE_BIN_DIR, ensure_node
+from verifiers.v1.harnesses.node import NODE_BIN_DIR, NPM_ENV, ensure_node
 from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import TaskData
@@ -27,16 +27,19 @@ PACKAGES_DIR = f"{CODEX_DIR}/acp"
 ACP_VERSION = "1.12.0"
 CODEX_BIN = f"{PACKAGES_DIR}/node_modules/.bin/codex"
 ACP_BIN = f"{PACKAGES_DIR}/node_modules/.bin/codex-acp"
-INSTALL = r"""
+INSTALL = (
+    r"""
 set -e
-export PATH="/var/tmp/vf-node/bin:$PATH"
-rm -f {ready}
+"""
+    + NPM_ENV
+    + r"""rm -f {ready}
 npm install --prefix {packages} --ignore-scripts --no-audit --no-fund \
     --omit=dev \
     "@agentclientprotocol/codex-acp@$VF_CODEX_ACP_VERSION" \
     "@openai/codex@$VF_CODEX_VERSION" >/dev/null
 touch {ready}
 """
+)
 
 
 GATE_HOOK = (Path(__file__).resolve().parent / "gate.mjs").read_text()

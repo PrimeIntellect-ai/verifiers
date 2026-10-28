@@ -7,7 +7,7 @@ from typing import Literal
 from verifiers.v1.acp import ACPConfig, ACPHarness
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig, PinnedVersion
-from verifiers.v1.harnesses.node import NODE_BIN_DIR, ensure_node
+from verifiers.v1.harnesses.node import NODE_BIN_DIR, NPM_ENV, ensure_node
 from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import TaskData
@@ -16,13 +16,16 @@ from verifiers.v1.trace import Trace
 DEEPSEEK_DIR = "/var/tmp/vf-deepseek-{version}"
 USAGE_COMPAT = (Path(__file__).parent / "usage.mjs").read_bytes()
 GATE = (Path(__file__).parent / "gate.mjs").read_bytes()
-INSTALL = r"""
+INSTALL = (
+    r"""
 set -e
-export PATH="/var/tmp/vf-node/bin:$PATH"
-npm install --prefix "$VF_DEEPSEEK_DIR" --no-audit --no-fund \
+"""
+    + NPM_ENV
+    + r"""npm install --prefix "$VF_DEEPSEEK_DIR" --no-audit --no-fund \
     "@deepseek-ai/dsh@$VF_DEEPSEEK_VERSION" >/dev/null
 touch "$VF_DEEPSEEK_DIR/.ready"
 """
+)
 
 
 class DeepSeekHarnessConfig(HarnessConfig):

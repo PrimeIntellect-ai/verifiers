@@ -8,7 +8,7 @@ import tomli_w
 from verifiers.v1.acp import ACPConfig, ACPHarness
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import DialectName, HarnessConfig, PinnedVersion
-from verifiers.v1.harnesses.node import NODE_BIN_DIR, ensure_node
+from verifiers.v1.harnesses.node import NODE_BIN_DIR, NPM_ENV, ensure_node
 from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
 from verifiers.v1.harnesses.utils.replay import drop_blank_text
 from verifiers.v1.runtimes import Runtime
@@ -25,16 +25,19 @@ ACP_COMMAND = [f"{NODE_BIN_DIR}/node", KIMI_BIN, "acp"]
 
 # From npm rather than Kimi's installer: code.kimi.com sits behind a WAF that drops
 # traffic from some sandbox providers' datacenter ranges (prime's among them).
-INSTALL = r"""
+INSTALL = (
+    r"""
 set -e
 packages=/var/tmp/vf-kimi-code
-export PATH="/var/tmp/vf-node/bin:$PATH"
-if [ "$(cat "$packages/.version" 2>/dev/null)" != "$VF_KIMI_VERSION" ]; then
+"""
+    + NPM_ENV
+    + r"""if [ "$(cat "$packages/.version" 2>/dev/null)" != "$VF_KIMI_VERSION" ]; then
     npm install --prefix "$packages" --ignore-scripts --no-audit --no-fund --omit=dev \
         "@moonshot-ai/kimi-code@$VF_KIMI_VERSION" >/dev/null
     printf %s "$VF_KIMI_VERSION" > "$packages/.version"
 fi
 """
+)
 
 
 class KimiCodeHarnessConfig(HarnessConfig):

@@ -16,6 +16,25 @@ NODE_SHA256 = {
     "arm64": "d32817b937219b8f131a28546035183d79e7fd17a86e38ccb8772901a7cd9009",
 }
 """Digests of the pinned linux tarballs, from nodejs.org's SHASUMS256.txt."""
+NPM_ENV = r"""
+export PATH="/var/tmp/vf-node/bin:$PATH"
+# A task image keeps its solver off npm with its own npm settings (ENV
+# NPM_CONFIG_OFFLINE=true, NPM_CONFIG_REGISTRY=http://127.0.0.1:9, an .npmrc), and a
+# harness install inherited them: `ENOTCACHED ... cache mode is 'only-if-cached'`. The
+# install runs before networking is restricted, so it drops them and uses npm's public
+# registry and a cache of its own; nothing the solver runs afterwards sees this. The
+# user and global config files are two paths that do not exist (npm refuses one file
+# loaded as both: "double-loading config").
+for var in $(env | sed -n 's/^\([Nn][Pp][Mm]_[Cc][Oo][Nn][Ff][Ii][Gg]_[A-Za-z0-9_]*\)=.*/\1/p'); do
+    unset "$var"
+done
+export npm_config_userconfig=/var/tmp/vf-npm/no-user-npmrc \
+    npm_config_globalconfig=/var/tmp/vf-npm/no-global-npmrc \
+    npm_config_registry=https://registry.npmjs.org/ npm_config_offline=false \
+    npm_config_prefer_offline=false npm_config_cache=/var/tmp/vf-npm/cache
+"""
+"""The start of every harness's npm install script: the harness's Node on PATH, and npm
+free of the task image's npm configuration."""
 _ARCHES = {"x86_64": "x64", "amd64": "x64", "aarch64": "arm64", "arm64": "arm64"}
 _lock = asyncio.Lock()
 

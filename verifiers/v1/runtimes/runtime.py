@@ -43,7 +43,14 @@ _DROP_UNWRITABLE_UV_DIRS = (
 )
 # The stdlib extension modules a uv script's interpreter must load; one that cannot
 # (it crashes or lacks them) is replaced by a uv-managed Python.
-_SOUND_PYTHON = "import asyncio, ctypes, ssl"
+_SOUND_PYTHON = (
+    "import asyncio, ctypes, datetime, decimal, email.message, fractions, ipaddress, "
+    "json, ssl, unicodedata, uuid, zlib"
+)
+"""The stdlib a uv script's dependencies import (pydantic, httpx, anyio). A task image
+may strip a module its solver must write itself (Abundant's decimal-arithmetic deletes
+`decimal`: the ACP runner's `import pydantic` then failed and the runner exited on
+start); the script then runs on uv's own Python."""
 
 
 @dataclass(frozen=True, eq=False)

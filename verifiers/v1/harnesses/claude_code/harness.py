@@ -6,7 +6,7 @@ from typing import Literal
 from verifiers.v1.acp import ACPConfig, ACPHarness
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import DialectName, HarnessConfig, PinnedVersion
-from verifiers.v1.harnesses.node import NODE_BIN_DIR, ensure_node
+from verifiers.v1.harnesses.node import NODE_BIN_DIR, NPM_ENV, ensure_node
 from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
 from verifiers.v1.harnesses.utils.replay import drop_blank_text
 from verifiers.v1.runtimes import Runtime
@@ -20,16 +20,19 @@ ACP_VERSION = "0.79.0"
 CLAUDE_BIN = f"{PACKAGES_DIR}/node_modules/.bin/claude"
 ACP_BIN = f"{PACKAGES_DIR}/node_modules/.bin/claude-agent-acp"
 CLAUDE_CONFIG_ROOT = ".vf-claude"
-ACP_INSTALL = r"""
+ACP_INSTALL = (
+    r"""
 set -e
-export PATH="/var/tmp/vf-node/bin:$PATH"
-rm -f {ready}
+"""
+    + NPM_ENV
+    + r"""rm -f {ready}
 npm install --prefix {packages} --no-audit --no-fund \
     --omit=dev \
     "@anthropic-ai/claude-code@$VF_CLAUDE_CODE_VERSION" \
     "@agentclientprotocol/claude-agent-acp@$VF_CLAUDE_ACP_VERSION" >/dev/null
 touch {ready}
 """
+)
 
 
 class ClaudeCodeHarnessConfig(HarnessConfig):

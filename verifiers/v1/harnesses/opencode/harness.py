@@ -10,7 +10,7 @@ from pydantic_config import BaseConfig
 from verifiers.v1.acp import ACPConfig, ACPHarness
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import DialectName, HarnessConfig, PinnedVersion
-from verifiers.v1.harnesses.node import NODE_BIN_DIR, ensure_node
+from verifiers.v1.harnesses.node import NODE_BIN_DIR, NPM_ENV, ensure_node
 from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
 from verifiers.v1.harnesses.utils.replay import drop_blank_text
 from verifiers.v1.runtimes import Runtime
@@ -25,12 +25,15 @@ MCP_READY = (Path(__file__).resolve().parent / "mcp-ready.js").read_bytes()
 SHELL_GUARD = (Path(__file__).resolve().parent / "shell-guard.js").read_bytes()
 SHELL_CAP = (Path(__file__).resolve().parent / "shell-cap.js").read_bytes()
 
-INSTALL = r"""
+INSTALL = (
+    r"""
 set -e
-export PATH="/var/tmp/vf-node/bin:$PATH"
-npm install --prefix "$VF_OPENCODE_DIR" --no-audit --no-fund --omit=dev \
+"""
+    + NPM_ENV
+    + r"""npm install --prefix "$VF_OPENCODE_DIR" --no-audit --no-fund --omit=dev \
     "@opencode/cli@$VF_OPENCODE_VERSION" >/dev/null
 """
+)
 
 
 class OpenCodeCompactionConfig(BaseConfig):
