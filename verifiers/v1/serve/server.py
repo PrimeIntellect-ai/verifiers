@@ -1,5 +1,8 @@
 import asyncio
 import logging
+import threading
+import time
+from typing import Protocol
 
 import msgpack
 import zmq
@@ -9,6 +12,7 @@ from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.client import ClientConfig
 from verifiers.v1.configs.env import EnvConfig
 from verifiers.v1.configs.sampling import SamplingConfig
+from verifiers.v1.episode import Episode
 from verifiers.v1.serve.delta import DeltaStreamer, TraceSummary, dump, pack
 from verifiers.v1.serve.encoding import msgpack_encoder
 from verifiers.v1.serve.types import (
@@ -23,6 +27,66 @@ from verifiers.v1.task import Task
 from verifiers.v1.utils.loaders import load_environment
 
 logger = logging.getLogger(__name__)
+
+
+class EpisodeHook(Protocol):
+    """Takes finished episodes' per-token training arrays (routing rows, sampling masks,
+    top-k heads) before the episodes leave the worker."""
+
+    def keep(self, episode: Episode, sampling: SamplingConfig) -> None:
+        """Keep the episode's arrays; may leave references to them in `trace.info`.
+        Runs off the event loop, before the episode's final flush."""
+
+    def discard(self, episode: Episode) -> None:
+        """Free what `keep` kept for an episode that was not delivered."""
+
+
+_episode_hook: EpisodeHook | None = None
+
+LATE_CANCEL_SECONDS = 10.0
+"""How long a delivered episode stays discardable: a client whose caller cancels the run
+after the reply left drops the reply and sends a cancel right away."""
+
+
+def set_episode_hook(hook: EpisodeHook | None) -> None:
+    """Install a hook that keeps finished episodes' training arrays. Streamed nodes never
+    carry them, so the hook is the only way they leave the worker. Every episode it
+    keeps is either delivered in its run's reply or handed back to `discard`, and so is
+    a delivered one whose client cancels the run within `LATE_CANCEL_SECONDS`."""
+    global _episode_hook
+    _episode_hook = hook
+
+
+class _Keeping:
+    """One episode's `keep`, run off the event loop. A failed or abandoned `keep` hands
+    the episode to `discard` exactly once, and only after `keep` has returned: in the
+    thread when `keep` finishes last, else in `abandon`."""
+
+    def __init__(self, hook: EpisodeHook, episode: Episode) -> None:
+        self.hook = hook
+        self.episode = episode
+        self._lock = threading.Lock()
+        self._kept = False
+        self._abandoned = False
+
+    def run(self, sampling: SamplingConfig) -> None:
+        try:
+            self.hook.keep(self.episode, sampling)
+        except BaseException:
+            self.hook.discard(self.episode)
+            raise
+        with self._lock:
+            self._kept = True
+            discard = self._abandoned
+        if discard:
+            self.hook.discard(self.episode)
+
+    def abandon(self) -> None:
+        with self._lock:
+            self._abandoned = True
+            discard = self._kept
+        if discard:
+            self.hook.discard(self.episode)
 
 
 class EnvServer:
@@ -52,6 +116,10 @@ class EnvServer:
         self._gate = asyncio.Semaphore(max_concurrent) if max_concurrent else None
         # In-flight run tasks by wire request_id, so a `cancel` can abort them
         self._running: dict[str, asyncio.Task] = {}
+        # Episodes the hook kept, by run request, until their reply is sent.
+        self._kept: dict[bytes, tuple[EpisodeHook, Episode]] = {}
+        self._delivered: dict[str, tuple[float, EpisodeHook, Episode]] = {}
+        """Recently delivered kept episodes, oldest first, for a cancel that arrives late."""
         self.ctx = zmq.asyncio.Context()
         self.frontend = self.ctx.socket(zmq.ROUTER)
         self.frontend.setsockopt(zmq.ROUTER_MANDATORY, 1)
@@ -108,10 +176,21 @@ class EnvServer:
         # The gate spans requests: `--max-concurrent` bounds this worker's episodes
         # in flight the same way the in-process eval's semaphore does. The streamer
         # ships each trace as it changes; the reply below carries only the rest.
+        hook = _episode_hook
         async with DeltaStreamer(lambda: slot.traces, send_delta) as streamer:
             episode = await self.env.run_slot(
                 slot, ctx, self._gate, on_trace=streamer.watch
             )
+            if hook is not None:
+                # Before the final flush, so what the hook writes to the traces streams.
+                keeping = _Keeping(hook, episode)
+                try:
+                    # The thread runs to the end even when this await is cancelled.
+                    await asyncio.shield(asyncio.to_thread(keeping.run, ctx.sampling))
+                except asyncio.CancelledError:
+                    keeping.abandon()
+                    raise
+                self._kept[request_id] = (hook, episode)
         return RunResponse(
             head=dump(episode, exclude={"traces"}),
             traces=[
@@ -144,6 +223,14 @@ class EnvServer:
                 if running is not None:
                     running.cancel()
                     logger.info("cancelled run %s on client request", target)
+                # The client dropped the reply, or will: nothing will take the arrays.
+                self._expire_delivered()
+                kept = self._kept.pop(target.encode(), None)
+                if kept is None and (late := self._delivered.pop(target, None)):
+                    kept = late[1:]
+                if kept is not None:
+                    hook, episode = kept
+                    hook.discard(episode)
                 response = CancelResponse(cancelled=running is not None)
             else:
                 response = BaseResponse(
@@ -167,18 +254,40 @@ class EnvServer:
         except Exception as e:
             # Encoding failures must also reply so clients don't wait indefinitely.
             logger.warning("response encoding failed: %s", e, exc_info=True)
-            data = msgpack.packb(
-                BaseResponse(
-                    success=False, error=f"{type(e).__name__}: {e}"
-                ).model_dump(),
-                use_bin_type=True,
-            )
+            response = BaseResponse(success=False, error=f"{type(e).__name__}: {e}")
+            data = msgpack.packb(response.model_dump(), use_bin_type=True)
+        delivered = False
         try:
             await self.frontend.send_multipart(
                 [client_id, request_id, b"reply", data], copy=False
             )
+            delivered = response.success
         except zmq.ZMQError as e:
             logger.warning("failed to send response: %s", e)
+        finally:
+            # Also on a cancel (shutdown) while the reply is sending.
+            kept = self._kept.pop(request_id, None)
+            if kept is not None:
+                hook, episode = kept
+                if delivered:
+                    self._remember_delivered(request_id.decode(), hook, episode)
+                else:
+                    hook.discard(episode)
+
+    def _remember_delivered(
+        self, request_id: str, hook: EpisodeHook, episode: Episode
+    ) -> None:
+        self._delivered[request_id] = (time.monotonic(), hook, episode)
+        asyncio.get_running_loop().call_later(
+            LATE_CANCEL_SECONDS, self._expire_delivered
+        )
+
+    def _expire_delivered(self) -> None:
+        now = time.monotonic()
+        for request_id, (delivered_at, _, _) in list(self._delivered.items()):
+            if now - delivered_at < LATE_CANCEL_SECONDS:
+                break
+            del self._delivered[request_id]
 
     async def run(self) -> None:
         logger.info(
