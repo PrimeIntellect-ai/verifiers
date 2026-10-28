@@ -26,7 +26,7 @@ import zmq.asyncio
 
 from verifiers.v1.configs.client import ClientConfig
 from verifiers.v1.configs.sampling import SamplingConfig
-from verifiers.v1.episode import WireEpisode
+from verifiers.v1.episode import GroupInfo, WireEpisode
 from verifiers.v1.serve.delta import EpisodeAssembly, unpack
 from verifiers.v1.serve.types import (
     BaseRequest,
@@ -169,12 +169,13 @@ class EnvClient:
         response_type: type[ResponseT],
         timeout: float | None = None,
         on_delta: Callable[[dict], None] | None = None,
+        request_id: str | None = None,
     ) -> ResponseT:
         """Send a typed request and validate the reply into `response_type`. A
         `timeout` is only used for health polling — rollouts run untimed. `on_delta`
         receives each decoded `delta` the request streams before its reply."""
         self._ensure_receiver()
-        request_id = uuid.uuid4().hex
+        request_id = request_id or uuid.uuid4().hex
         future: asyncio.Future[bytes] = asyncio.get_running_loop().create_future()
         self._pending[request_id] = future
         if on_delta is not None:
@@ -191,14 +192,7 @@ class EnvClient:
         except asyncio.CancelledError:
             self._pending.pop(request_id, None)
             if request.method == RunRequest.method:
-                # Fire-and-forget: tell the server to abort the rollout so the
-                # episode stops consuming inference and env-runtime resources.
-                # A task on the loop outlives this (cancelled) caller.
-                task = asyncio.get_running_loop().create_task(
-                    self._send_cancel(request_id)
-                )
-                self._cancel_tasks.add(task)
-                task.add_done_callback(self._cancel_tasks.discard)
+                self._cancel_run(request_id)
             raise
         finally:
             self._deltas.pop(request_id, None)
@@ -222,6 +216,14 @@ class EnvClient:
                 lambda task: None if task.cancelled() else task.exception()
             )
             raise
+
+    def _cancel_run(self, run_request_id: str) -> None:
+        """Fire-and-forget: tell the server the caller abandoned the run, so it aborts
+        the rollout (or frees what it kept for an episode already sent). A task on the
+        loop outlives the cancelled caller."""
+        task = asyncio.get_running_loop().create_task(self._send_cancel(run_request_id))
+        self._cancel_tasks.add(task)
+        task.add_done_callback(self._cancel_tasks.discard)
 
     async def _send_cancel(self, run_request_id: str) -> None:
         """Best-effort server-side abort of an abandoned run."""
@@ -262,13 +264,15 @@ class EnvClient:
         sampling: SamplingConfig,
         task_data: dict,
         on_delta: Callable[[dict], None] | None = None,
+        group: GroupInfo | None = None,
     ) -> WireEpisode:
         """Run one rollout; return its episode record — flat traces (typed
         `Trace[WireTaskData]`) plus the shared stamp. The server takes the task
         itself (`task_data`, its dumped `TaskData`). The traces stream in as the
         rollout runs, one delta per turn or phase change (`serve.delta`); `on_delta`
         sees each as it lands, so a caller can relay or persist the stream. The
-        episode returned is assembled from the same deltas."""
+        episode returned is assembled from the same deltas. `group` names the
+        consumer's rollout group, which the env's hooks see on the episode."""
         assembly = EpisodeAssembly()
 
         def apply(delta: dict) -> None:
@@ -276,20 +280,30 @@ class EnvClient:
             if on_delta is not None:
                 on_delta(delta)
 
+        request_id = uuid.uuid4().hex
         response = await self._request(
             RunRequest(
                 task_data=task_data,
                 client=client,
                 model=model,
                 sampling=sampling,
+                group=group,
             ),
             RunResponse,
             on_delta=apply,
+            request_id=request_id,
         )
         assert response.head is not None
-        return await self._decode(
-            WireEpisode.model_validate, assembly.finish(response.head, response.traces)
-        )
+        try:
+            return await self._decode(
+                WireEpisode.model_validate,
+                assembly.finish(response.head, response.traces),
+            )
+        except BaseException:
+            # The reply already arrived, so the server counts the episode delivered;
+            # tell it this caller never got the episode.
+            self._cancel_run(request_id)
+            raise
 
     async def close(self) -> None:
         if self._receiver is not None:
