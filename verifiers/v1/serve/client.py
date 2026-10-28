@@ -26,7 +26,7 @@ import zmq.asyncio
 
 from verifiers.v1.configs.client import ClientConfig
 from verifiers.v1.configs.sampling import SamplingConfig
-from verifiers.v1.episode import WireEpisode
+from verifiers.v1.episode import GroupInfo, WireEpisode
 from verifiers.v1.serve.delta import EpisodeAssembly, unpack
 from verifiers.v1.serve.types import (
     BaseRequest,
@@ -264,13 +264,15 @@ class EnvClient:
         sampling: SamplingConfig,
         task_data: dict,
         on_delta: Callable[[dict], None] | None = None,
+        group: GroupInfo | None = None,
     ) -> WireEpisode:
         """Run one rollout; return its episode record — flat traces (typed
         `Trace[WireTaskData]`) plus the shared stamp. The server takes the task
         itself (`task_data`, its dumped `TaskData`). The traces stream in as the
         rollout runs, one delta per turn or phase change (`serve.delta`); `on_delta`
         sees each as it lands, so a caller can relay or persist the stream. The
-        episode returned is assembled from the same deltas."""
+        episode returned is assembled from the same deltas. `group` names the
+        consumer's rollout group, which the env's hooks see on the episode."""
         assembly = EpisodeAssembly()
 
         def apply(delta: dict) -> None:
@@ -285,6 +287,7 @@ class EnvClient:
                 client=client,
                 model=model,
                 sampling=sampling,
+                group=group,
             ),
             RunResponse,
             on_delta=apply,

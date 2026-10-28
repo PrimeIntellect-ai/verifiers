@@ -4,6 +4,7 @@ from pydantic import BaseModel, Field
 
 from verifiers.v1.configs.client import ClientConfig
 from verifiers.v1.configs.sampling import SamplingConfig
+from verifiers.v1.episode import GroupInfo
 from verifiers.v1.serve.delta import TraceSummary
 
 
@@ -48,6 +49,8 @@ class RunRequest(BaseRequest):
     client: ClientConfig
     model: str
     sampling: SamplingConfig
+    group: GroupInfo | None = None
+    """The consumer's rollout group this episode belongs to, if it groups them."""
 
 
 class RunResponse(BaseResponse):

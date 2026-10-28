@@ -167,6 +167,7 @@ class EnvServer:
     ) -> RunResponse:
         ctx = self._context(req.client, req.model, req.sampling)
         (slot,) = self.env.slots(self._build_task(req.task_data))
+        slot.group = req.group
 
         async def send_delta(delta: dict) -> None:
             await self.frontend.send_multipart(
