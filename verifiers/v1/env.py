@@ -20,7 +20,7 @@ from verifiers.v1.configs.agent import (
     resolve_agent,
 )
 from verifiers.v1.configs.env import EnvConfig, default_agent_harness
-from verifiers.v1.episode import EnvInfo, Episode
+from verifiers.v1.episode import EnvInfo, Episode, GroupInfo
 from verifiers.v1.errors import EnvError, boundary
 from verifiers.v1.harness import Harness, HarnessConfig
 from verifiers.v1.interception import (
@@ -58,6 +58,8 @@ class RunSlot:
     at dispatch so the slot still reads as running."""
 
     task: Task
+    group: GroupInfo | None = None
+    """The consumer's rollout group, stamped on the episode before its hooks run."""
     traces: list[Trace] = field(default_factory=list)
     episode: Episode | None = None
     done: bool = False
@@ -236,13 +238,15 @@ class Env(ABC, Generic[ConfigT]):
         task: Task,
         ctx: ModelContext,
         *,
+        group: GroupInfo | None = None,
         on_trace: Callable[[Trace], None] | None = None,
         on_discard: Callable[[Trace], None] | None = None,
     ) -> Episode:
         """One episode of `task`, minted as the wire atom: `setup()` then `run()`
         over fresh agents, then `finalize()`. Its agents run one at a time
         (`--env.max-concurrent-agents`), so one live episode is one live agent run
-        however `run()` fans out.
+        however `run()` fans out. `group` is the consumer's rollout group, on the
+        episode from the start so `finalize()` can read it.
         Traces join the episode as runs complete — a hook raising mid-way yields the
         completed subset, its exception on the episode's `errors`. `on_trace` observes
         each agent-run's trace at mint; `on_discard` its abandonment (a per-agent
@@ -255,6 +259,7 @@ class Env(ABC, Generic[ConfigT]):
                 key=task.key,
                 hash=task.hash,
             ),
+            group=group,
         )
         agents = self._episode_agents(ctx, episode.traces, on_trace, on_discard)
         try:
@@ -337,6 +342,7 @@ class Env(ABC, Generic[ConfigT]):
                 return await self.run_episode(
                     slot.task,
                     ctx,
+                    group=slot.group,
                     on_trace=minted,
                     on_discard=discard,
                 )

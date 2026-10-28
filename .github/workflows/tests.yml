@@ -125,6 +125,8 @@ jobs:
             tests: tests/integration/test_agentic_judge.py
           - behavior: Multi-Agent
             tests: tests/integration/test_multi_agent.py
+          - behavior: Serve
+            tests: tests/integration/test_serve.py
           - behavior: Examples
             tests: tests/integration/test_examples.py
     env:
