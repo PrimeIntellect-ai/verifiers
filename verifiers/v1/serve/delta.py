@@ -50,12 +50,12 @@ LIST_FIELDS = (
     "extra_usage",
     "request_rewrites",
     "response_rewrites",
-    "checkpoints",
 )
 """Append-only on the worker: each delta carries the items past the sent count."""
 
 SCALAR_FIELDS = (
     "agent",
+    "checkpoints",
     "tools",
     "mm_token_type_id_map",
     "rewards",
@@ -249,6 +249,9 @@ class DeltaStreamer:
                 # can continue the trace from it in another process.
                 delta["restore"] = dump(RestorePoint.of(restorable))
                 cursor.restore = restorable.id
+            elif restorable is None and cursor.restore is not None:
+                delta["restore"] = None
+                cursor.restore = None
             pending = [dump(message) for message in trace.pending]
             packed = pack(pending)
             if packed != cursor.pending:
@@ -276,10 +279,14 @@ class EpisodeAssembly:
             self.traces.pop(trace_id, None)
             self.restores.pop(trace_id, None)
             return
-        if "restore" in delta:
+        if delta.get("restore") is not None:
             self.restores[trace_id] = delta["restore"]
+        elif "restore" in delta:
+            self.restores.pop(trace_id, None)
         trace = self.traces.get(trace_id)
-        if trace is None:
+        # An `open` starts the trace's copy over, also in an assembly that holds a run
+        # this one restores.
+        if trace is None or "open" in delta:
             trace = self.traces[trace_id] = {
                 **delta["open"],
                 **{field: [] for field in LIST_FIELDS},

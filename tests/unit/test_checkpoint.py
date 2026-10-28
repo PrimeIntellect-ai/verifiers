@@ -143,6 +143,7 @@ def make_rollout(
     run._session = SimpleNamespace(pinned_tool_results={})  # type: ignore[assignment]
     run._checkpointing = RolloutCheckpointConfig(interval=interval, keep=keep)
     run._durable = {}
+    run._captures = set()
     run._pruning = asyncio.Lock()
     run.deleted_checkpoints = set()
     run.rewound_checkpoints = []

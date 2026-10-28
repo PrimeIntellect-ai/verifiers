@@ -310,3 +310,56 @@ def test_finish_refuses_a_gap():
     assembly.apply({"trace": "t", "open": {"id": "t"}, "nodes": [{}]})
     with pytest.raises(RuntimeError, match="assembled 1 nodes"):
         assembly.finish({}, [TraceSummary(id="t", nodes=2, calls=0)])
+
+
+@pytest.mark.asyncio
+async def test_checkpoints_stream_as_they_change():
+    """A snapshot becomes durable, is deleted or is dropped after it streamed; the client
+    sees each change, and its restore point follows the newest restorable one."""
+    traces: list[vf.Trace] = []
+    frames: list[bytes] = []
+
+    async def send(data: dict) -> None:
+        frames.append(pack(data))
+
+    async with DeltaStreamer(lambda: traces, send) as streamer:
+        trace = make_trace()
+        traces.append(trace)
+        streamer.watch(trace)
+        add_turn(trace, "a1")
+        first = vf.Checkpoint(id="ck1", node=1, time=TimeSpan(start=1.0))
+        trace.checkpoints.append(first)
+        trace.notify()
+        await settle()
+        first.time.end = 2.0
+        trace.notify()
+        await settle()
+        assembly = EpisodeAssembly()
+        for frame in frames:
+            assembly.apply(unpack(frame))
+        assert assembly.traces[trace.id]["checkpoints"][0]["time"]["end"] == 2.0
+        assert assembly.restores[trace.id]["checkpoint"]["id"] == "ck1"
+        # It never became durable after all, and the next one replaces it in the list.
+        trace.checkpoints.remove(first)
+        trace.checkpoints.append(
+            vf.Checkpoint(id="ck2", node=1, time=TimeSpan(start=3.0))
+        )
+        trace.notify()
+        await settle()
+        traces = [trace]
+    assembly = EpisodeAssembly()
+    for frame in frames:
+        assembly.apply(unpack(frame))
+    assert [c["id"] for c in assembly.traces[trace.id]["checkpoints"]] == ["ck2"]
+    assert trace.id not in assembly.restores
+
+
+def test_an_open_starts_the_trace_over_in_a_reused_assembly():
+    assembly = EpisodeAssembly()
+    assembly.apply(
+        {"trace": "t", "open": {"id": "t"}, "nodes": [{"semantic_parents": []}]}
+    )
+    assembly.apply(
+        {"trace": "t", "open": {"id": "t"}, "nodes": [{"semantic_parents": []}]}
+    )
+    assert len(assembly.traces["t"]["nodes"]) == 1

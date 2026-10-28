@@ -172,6 +172,8 @@ class Rollout:
         self._collect_artifacts = collect_artifacts
         self._checkpointing = checkpoint
         self._durable: dict[str, asyncio.Task[None]] = {}
+        self._captures: set[asyncio.Task] = set()
+        """Snapshots being taken (`_checkpoint`), for `_settle_checkpoints` to wait for."""
         """The snapshots still on their way to restorable, by checkpoint id."""
         self._attempt = attempt
         self._restore: Checkpoint | None = None
@@ -619,7 +621,8 @@ class Rollout:
                 self.timeout("setup")
                 if not self._deployment_started:
                     self.fail(
-                        SandboxError("deployment provisioning exceeded setup timeout")
+                        SandboxError("deployment provisioning exceeded setup timeout"),
+                        stage="setup",
                     )
             else:
                 self.fail(e, stage="setup")
@@ -769,6 +772,15 @@ class Rollout:
         return await self.step(messages, intercepted=len(messages) - 1)
 
     async def _checkpoint(self, turn: graph.PendingTurn) -> Checkpoint | None:
+        task = asyncio.current_task()
+        if task is not None:
+            self._captures.add(task)
+        try:
+            return await self._capture(turn)
+        finally:
+            self._captures.discard(task)
+
+    async def _capture(self, turn: graph.PendingTurn) -> Checkpoint | None:
         assert self.runtime is not None
         assert self._checkpointing is not None
         if self.trace.num_turns % self._checkpointing.interval:
@@ -886,11 +898,17 @@ class Rollout:
         """Before the box goes: wait for the snapshots still uploading, so a retry
         can restore them (its teardown would fail them), or, with nothing to retry,
         stop waiting and leave them to be freed."""
+        # A snapshot still being taken would start its upload after this returned.
+        await asyncio.gather(*self._captures, return_exceptions=True)
         tasks = list(self._durable.values())
         if not wait:
             for task in tasks:
                 task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
+        # A task cancelled before it first ran never reached its own cleanup.
+        for checkpoint_id, task in list(self._durable.items()):
+            if task.done():
+                del self._durable[checkpoint_id]
 
     async def _cleanup_harness(self, runtime: Runtime) -> None:
         if self._harness_cleaned:

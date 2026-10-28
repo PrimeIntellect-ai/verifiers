@@ -257,7 +257,7 @@ class EnvServer:
     ) -> None:
         try:
             route = method.decode()
-            raw = msgpack.unpackb(payload, raw=False)
+            raw = msgpack.unpackb(payload, raw=False, strict_map_key=False)
             if route == "health":
                 response: BaseResponse = HealthResponse()
             elif route == "run":
