@@ -316,6 +316,7 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
         data: TaskData,
     ) -> ACPConfig:
         system_prompt, prompt = self.resolve_prompt(data)
+        await self._make_state_dir(trace, runtime)
         return ACPConfig(
             env={**self.config.resolved_env, "RLM_HOME": self._home(trace)},
             command=[f"{self._install_dir()}/bin/rlm", "--acp"],
@@ -342,8 +343,27 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
         if RLM_SESSION_METADATA_KEY in response_metadata:
             self._consume_snapshot(trace, response_metadata)
 
+    async def _make_state_dir(self, trace: Trace, runtime: Runtime) -> None:
+        """Create the run's state directory for the runtime's user. rlm made it itself,
+        as that user, which fails where the image takes /tmp from everyone but root
+        (CyberStrike's python-fastapi-boundary-hardening runs `chmod 0755 /tmp` and
+        its agent as `agent`: "Permission denied: '/tmp/vf-rlm-state'" at session/new)."""
+        state = shlex.quote(f"{RLM_STATE_DIR}/{trace.id}")
+        command = f"mkdir -p {state}/home"
+        if runtime.user is not None:
+            command += f" && chown -R {shlex.quote(runtime.user)}: {state}"
+        result = await runtime.with_user(None).run(["sh", "-c", command], {})
+        if result.exit_code != 0:
+            raise RuntimeError(
+                f"failed to create RLM state directory {state}: "
+                f"{(result.stderr or result.stdout).strip()[-500:]}"
+            )
+
     async def cleanup(self, trace: Trace, runtime: Runtime) -> None:
-        await runtime.run(["rm", "-rf", f"{RLM_STATE_DIR}/{trace.id}"], {})
+        # As root: the run's directory sits in a root-owned one (`_make_state_dir`).
+        await runtime.with_user(None).run(
+            ["rm", "-rf", f"{RLM_STATE_DIR}/{trace.id}"], {}
+        )
         if self._skills_install_dir is not None:
             await remove_dir(
                 runtime, self._skills_install_dir, "RLM skill installation"
