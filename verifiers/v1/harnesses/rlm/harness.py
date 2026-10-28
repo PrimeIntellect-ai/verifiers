@@ -88,6 +88,11 @@ class PopulationConfig(BaseConfig):
     """Let agents read each other's conversations without waking them."""
     max_seconds: PositiveFloat | None = None
     """Episode wall clock; the episode ends with its current answer when it runs out."""
+    scored_on: Literal["answer", "workspace"] | None = None
+    """What the task scores: the episode answer, or the final shared workspace (e.g. a
+    repository's tests)."""
+    max_agent_turns: PositiveInt | None = None
+    """Model calls one agent may make over the episode."""
     artifacts: list[str] | None = None
     """Final files the task scores (relative to the working directory); agents replace
     them only through revision-checked publication."""
