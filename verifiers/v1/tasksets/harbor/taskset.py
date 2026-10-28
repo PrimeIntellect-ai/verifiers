@@ -470,7 +470,9 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
                         .decode()
                         .strip()
                     )
-                scores = {"reward": REWARD_SCALAR_ADAPTER.validate_python(float(value))}
+                    scores = {
+                        "reward": REWARD_SCALAR_ADAPTER.validate_python(float(value))
+                    }
             except (SandboxError, OSError, ValueError) as exc:
                 fallback_error = f"{type(exc).__name__}: {exc}"[:MAX_REWARD_ERROR_CHARS]
                 raise TaskError(

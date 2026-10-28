@@ -147,6 +147,28 @@ async def test_harbor_text_reward_records_execution_and_reads():
     assert all("stdout" not in event and "stderr" not in event for event in events)
 
 
+@pytest.mark.parametrize(
+    ("reward", "error_type"),
+    [
+        ("not-a-number", "ValueError"),
+        ("nan", "ValidationError"),
+        ("inf", "ValidationError"),
+        ("-inf", "ValidationError"),
+    ],
+)
+async def test_harbor_invalid_text_reward_marks_read_failed(reward, error_type):
+    task = HarborTask(HarborData(prompt=""))
+    trace = make_trace(task)
+
+    with pytest.raises(TaskError):
+        await task.run_verifier(RewardRuntime(reward=reward), trace)
+
+    event = trace.info["scoring_diagnostics"]["events"][-1]
+    assert event["phase"] == "reward_read"
+    assert event["status"] == "failed"
+    assert event["error_type"] == error_type
+
+
 async def test_harbor_missing_reward_reports_bounded_fallback_error():
     task = HarborTask(HarborData(prompt=""))
     trace = make_trace(task)
