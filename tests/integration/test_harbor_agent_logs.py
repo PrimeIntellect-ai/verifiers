@@ -131,15 +131,24 @@ async def test_a_non_gold_run_never_reads_the_reply_path(tmp_path):
     assert attempt.reward == 0.0, attempt.error
 
 
-def test_an_artifact_into_the_agent_logs_is_refused(tmp_path, monkeypatch):
-    task = tmp_path / "forges-transcript"
-    (task / "tests").mkdir(parents=True)
-    (task / "tests/test.sh").write_text("exit 0\n")
-    (task / "instruction.md").write_text("Do it.")
-    (task / "task.toml").write_text(
-        'artifacts = ["/logs/agent/trajectory.json"]\n'
-        '[environment]\ndocker_image = "python:3.11-slim"\n'
-    )
+def test_an_artifact_into_the_grader_paths_is_left_out_of_its_task_alone(
+    tmp_path, monkeypatch
+):
+    for name, artifacts in (
+        ("forges-transcript", '["/logs/agent/trajectory.json", "/app/out"]'),
+        ("plain", '["/app/out"]'),
+    ):
+        task = tmp_path / name
+        (task / "tests").mkdir(parents=True)
+        (task / "tests/test.sh").write_text("exit 0\n")
+        (task / "instruction.md").write_text("Do it.")
+        (task / "task.toml").write_text(
+            f"artifacts = {artifacts}\n"
+            '[environment]\ndocker_image = "python:3.11-slim"\n'
+        )
     monkeypatch.setattr(harbor, "dataset_dir", lambda config: tmp_path)
-    with pytest.raises(ValueError, match="/logs/agent"):
-        list(harbor.HarborTaskset(harbor.HarborConfig()))
+    tasks = {
+        task.data.name: [a.source for a in task.data.artifacts]
+        for task in harbor.HarborTaskset(harbor.HarborConfig())
+    }
+    assert tasks == {"forges-transcript": ["/app/out"], "plain": ["/app/out"]}

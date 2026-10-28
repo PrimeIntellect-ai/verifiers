@@ -1527,11 +1527,19 @@ def parse_verifier_extras(
             )
         )
 
+    # An artifact that would restore into a grader-owned path is left out of this task
+    # alone: the grader stages those paths itself (`/logs/agent` from the trace), so the
+    # artifact could only overwrite them. Refusing the task here would fail the load of
+    # every task in its taskset.
     if owned := grader_owned(artifact.source for artifact in artifacts):
-        raise ValueError(
-            f"{task_dir.name}: artifacts {owned} would restore into the grader's own "
-            f"paths {list(GRADER_PATHS)}; the grader stages those itself"
+        logger.warning(
+            "%s: artifacts %s would restore into the grader's own paths %s; left out, "
+            "the grader stages those itself",
+            task_dir.name,
+            owned,
+            list(GRADER_PATHS),
         )
+        artifacts = [a for a in artifacts if a.source not in owned]
 
     hooks: list[CollectHook] = []
     for hook in verifier.collect:
