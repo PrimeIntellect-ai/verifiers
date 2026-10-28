@@ -24,6 +24,7 @@ from verifiers.v1.configs.interception import (
     PrimeTunnelConfig,
     StaticInterceptionPoolConfig,
 )
+from verifiers.v1.errors import InterceptionError
 from verifiers.v1.interception.base import Interception, Slot
 from verifiers.v1.interception.server import InterceptionServer
 from verifiers.v1.session import RolloutSession
@@ -94,10 +95,25 @@ class ElasticInterceptionPool(Interception):
                 await self._warm_task
         await super().stop()
 
+    async def _prune(self) -> None:
+        """Remove terminal members and release their server/tunnel resources."""
+        dead = [server for server in self.servers if not server.healthy]
+        if not dead:
+            return
+        self.servers[:] = [server for server in self.servers if server.healthy]
+        for server in dead:
+            try:
+                await server.stop()
+            except Exception:
+                logger.warning(
+                    "interception pool: dead server cleanup failed", exc_info=True
+                )
+
     async def _server(self) -> InterceptionServer:
         """A server with spare capacity — reuse one under `multiplex`, else bring up a new
         one (its own tunnel, on `stack`, torn down with the pool). Acquires hold `_lock`;
         the warm task runs before they reach this path."""
+        await self._prune()
         for server in self.servers:
             if server.healthy and server.load < self.config.multiplex:
                 return server
@@ -108,6 +124,10 @@ class ElasticInterceptionPool(Interception):
             self.state_service_secrets,
         )
         await self.stack.enter_async_context(server)
+        if not server.healthy or not server.base_url:
+            with contextlib.suppress(Exception):
+                await server.stop()
+            raise InterceptionError("interception server failed startup health checks")
         self.servers.append(server)
         logger.info(
             "interception pool: %d server(s), multiplex=%d",

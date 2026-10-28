@@ -3,6 +3,8 @@ disconnected or frpc has exited, leaves it alone otherwise, and stops watching a
 whose registration is gone."""
 
 import asyncio
+from contextlib import asynccontextmanager
+from typing import ClassVar
 
 import pytest
 from prime_tunnel import TunnelGoneError, TunnelStatus
@@ -136,3 +138,116 @@ async def test_gone_registration_invokes_callback(monkeypatch):
     monkeypatch.setattr(prime, "CHECK_SECONDS", 0.01)
     await asyncio.wait_for(prime._watch(client, "https://t", on_gone=on_gone), 1)
     assert calls == 1
+
+
+@asynccontextmanager
+async def unlimited():
+    yield
+
+
+def install_expose_client(monkeypatch, client_cls):
+    """Use a fake tunnel service with no rate limit or retry backoff."""
+    from verifiers.v1.utils import retries
+
+    monkeypatch.setattr(prime, "ensure_prime_auth", lambda: None)
+    monkeypatch.setattr(prime, "tunnel_limiter", unlimited)
+    monkeypatch.setattr("prime_tunnel.Tunnel", client_cls)
+    client_cls.instances = []
+    real_retrying = retries.retrying
+
+    def retrying_without_wait(**kwargs):
+        retry = real_retrying(**kwargs)
+        retry.wait = lambda _: 0
+        return retry
+
+    monkeypatch.setattr(retries, "retrying", retrying_without_wait)
+
+
+class ExposeClient:
+    readiness: ClassVar[list[bool]] = []
+    instances: ClassVar[list["ExposeClient"]] = []
+
+    def __init__(self, local_port):
+        self.local_port = local_port
+        self.index = len(type(self).instances)
+        self.tunnel_id = f"tunnel-{self.index}"
+        self.is_running = True
+        self.is_gone = False
+        self.stops = 0
+        type(self).instances.append(self)
+
+    async def start(self):
+        return f"https://tunnel-{self.index}.example/"
+
+    async def check_registered(self):
+        if self.index < len(self.readiness):
+            return self.readiness[self.index]
+        return True
+
+    def sync_stop(self):
+        self.stops += 1
+        self.is_running = False
+
+
+async def test_expose_retries_unready_registration_and_closes_failed_attempt(
+    monkeypatch,
+):
+    class FalseThenReadyClient(ExposeClient):
+        readiness: ClassVar[list[bool]] = [False, True]
+
+    install_expose_client(monkeypatch, FalseThenReadyClient)
+    tunnel = prime.PrimeTunnel()
+
+    async with tunnel.expose(1234) as url:
+        assert url == "https://tunnel-1.example"
+        assert tunnel.tunnel_id == "tunnel-1"
+        assert [client.stops for client in FalseThenReadyClient.instances] == [1, 0]
+
+    assert [client.stops for client in FalseThenReadyClient.instances] == [1, 1]
+
+
+async def test_expose_cancellation_closes_partially_started_client(monkeypatch):
+    started = asyncio.Event()
+
+    class CancelledClient(ExposeClient):
+        async def check_registered(self):
+            started.set()
+            await asyncio.Future()
+
+    install_expose_client(monkeypatch, CancelledClient)
+    tunnel = prime.PrimeTunnel()
+    exposure = tunnel.expose(1234)
+    entering = asyncio.create_task(exposure.__aenter__())
+    await asyncio.wait_for(started.wait(), 1)
+
+    entering.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await entering
+    assert [client.stops for client in CancelledClient.instances] == [1]
+
+
+async def test_watch_callback_can_close_its_own_exposure(monkeypatch):
+    class GoneClient(ExposeClient):
+        async def status(self):
+            self.is_gone = True
+            return TunnelStatus(
+                tunnel_id=self.tunnel_id,
+                running=self.is_running,
+                registration="terminated",
+                gone=True,
+            )
+
+    install_expose_client(monkeypatch, GoneClient)
+    monkeypatch.setattr(prime, "CHECK_SECONDS", 0.01)
+    tunnel = prime.PrimeTunnel()
+    exposure = tunnel.expose(1234)
+    closed = asyncio.Event()
+
+    async def close_from_watch():
+        await exposure.__aexit__(None, None, None)
+        closed.set()
+
+    tunnel.on_gone = close_from_watch
+    await exposure.__aenter__()
+    await asyncio.wait_for(closed.wait(), 1)
+    assert [client.stops for client in GoneClient.instances] == [1]

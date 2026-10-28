@@ -122,17 +122,30 @@ class PrimeTunnel(Tunnel[PrimeTunnelConfig]):
             async for attempt in retrying(retries=3, label=label):
                 with attempt:
                     client = TunnelClient(local_port=port)
-                    async with tunnel_limiter():
-                        url = str(await client.start()).rstrip("/")
-                self.tunnel_id = getattr(client, "tunnel_id", None)
-                await _require_registered(client, label)
+                    try:
+                        async with tunnel_limiter():
+                            url = str(await client.start()).rstrip("/")
+                        # Registration is part of the attempt: an unready URL must be
+                        # torn down and retried, never escape with a running frpc.
+                        await _require_registered(client, label)
+                        self.tunnel_id = getattr(client, "tunnel_id", None)
+                    except BaseException:
+                        # Preserve the attempt's error (including cancellation); cleanup
+                        # is best-effort but shielded so it finishes before propagation.
+                        with contextlib.suppress(Exception):
+                            await run_shielded(asyncio.to_thread(client.sync_stop))
+                        raise
         except Exception as e:
             raise TunnelError(f"{label} failed: {e}") from e
         watch = asyncio.create_task(_watch(client, url, on_gone=self.on_gone))
 
-        async def close() -> None:
-            watch.cancel()  # first, so it can't start a new frpc after the stop
-            await asyncio.wait({watch})
+        async def close(caller: asyncio.Task | None) -> None:
+            # A terminal watch callback can tear down its own server. Never cancel or
+            # wait for that caller; the watch returns after on_gone. `run_shielded`
+            # runs this cleanup in a separate task, so the caller must be passed in.
+            if watch is not caller:
+                watch.cancel()  # first, so it can't start a new frpc after the stop
+                await asyncio.wait({watch})
             await asyncio.to_thread(client.sync_stop)
 
         try:
@@ -141,4 +154,4 @@ class PrimeTunnel(Tunnel[PrimeTunnelConfig]):
             # Run the stop to completion even under cancellation (`run_shielded` re-raises
             # the cancellation after); tunnel-stop failures are best-effort.
             with contextlib.suppress(Exception):
-                await run_shielded(close())
+                await run_shielded(close(asyncio.current_task()))

@@ -55,9 +55,11 @@ from verifiers.v1.dialects.base import (
     is_sse_done_event,
 )
 from verifiers.v1.errors import (
+    InterceptionError,
     ProviderError,
     RolloutError,
     TaskError,
+    TunnelError,
 )
 from verifiers.v1.interception.base import Interception, Slot
 from verifiers.v1.interception.tunnel import Tunnel, make_tunnel
@@ -359,6 +361,9 @@ class InterceptionServer(Interception):
         self.healthy = False
         logger.error("interception unhealthy: url=%s", self.base_url)
         for session in list(self.sessions.values()):
+            # The harness may only surface a secondary connection error. Preserve a
+            # fixed, sanitized cause for the rollout instead of leaking tunnel details.
+            session.error = TunnelError("interception tunnel lost")
             session.release()
         if self.runner is not None:
             await self.runner.cleanup()
@@ -378,6 +383,8 @@ class InterceptionServer(Interception):
     def register(self, session: RolloutSession) -> tuple[str, str]:
         """Register separate capabilities for model inference and private task state, and
         assign the session its server-owned model client."""
+        if not self.healthy or not self.base_url or self.runner is None:
+            raise InterceptionError("interception server is unavailable")
         session.client = self._client(session.ctx.client)
         model_secret = secrets.token_urlsafe(16)
         state_secret = secrets.token_urlsafe(16)
@@ -458,8 +465,8 @@ class InterceptionServer(Interception):
             status=200 if self.healthy else 503,
         )
 
-    async def _probe_health(self, scope: str, base_url: str) -> None:
-        """Check route reachability without changing tunnel or server lifecycle."""
+    async def _probe_health(self, scope: str, base_url: str) -> bool:
+        """Return whether this exact server and tunnel are reachable at `base_url`."""
         url = f"{base_url.rstrip('/')}/healthz"
         try:
             async with httpx.AsyncClient(
@@ -479,7 +486,7 @@ class InterceptionServer(Interception):
                 self.server_id,
                 self.tunnel_id,
             )
-            return
+            return False
         observed_server = observed.get("server_id")
         observed_tunnel = observed.get("tunnel_id")
         matched = (
@@ -500,6 +507,7 @@ class InterceptionServer(Interception):
             observed_server,
             observed_tunnel,
         )
+        return matched
 
     def _handler_for(self, dialect: Dialect):
         """Bind a route's dialect to the request handler — the route the SDK posts to is what
@@ -569,9 +577,12 @@ class InterceptionServer(Interception):
             )
             self.tunnel_id = getattr(self.tunnel, "tunnel_id", None)
         local_url = f"http://127.0.0.1:{self.port}"
-        await self._probe_health("local", local_url)
+        local_healthy = await self._probe_health("local", local_url)
+        public_healthy = True
         if self.tunnel is not None:
-            await self._probe_health("public", self.base_url)
+            public_healthy = await self._probe_health("public", self.base_url)
+        # Keep a concurrent terminal tunnel-loss verdict; startup must not resurrect it.
+        self.healthy = self.healthy and local_healthy and public_healthy
 
     def _fail(
         self, session: RolloutSession, dialect: Dialect, error: RolloutError
