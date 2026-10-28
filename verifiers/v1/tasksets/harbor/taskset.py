@@ -82,10 +82,14 @@ logger = logging.getLogger(__name__)
 CACHE = Path.home() / ".cache" / "harbor"
 HARBOR_INSTALL_HINT = "uv sync --python 3.12 --extra harbor"
 REWARD_JSON = "/logs/verifier/reward.json"
-TRAJECTORY = "/logs/agent/trajectory.json"
-GRADER_PATHS = ("/tests", "/logs/verifier")
-"""Where a Harbor verifier keeps its tests and writes its reward: grader-owned, so no
-restored submission may link into them."""
+AGENT_LOGS = "/logs/agent"
+TRAJECTORY = f"{AGENT_LOGS}/trajectory.json"
+FINAL_REPLY = f"{AGENT_LOGS}/final_reply.md"
+"""The solver's final reply, staged from the trace for graders (a judge criterion's
+evidence) beside its transcript."""
+GRADER_PATHS = ("/tests", "/logs/verifier", AGENT_LOGS)
+"""Where a Harbor verifier keeps its tests, writes its reward and reads the agent's
+transcript: grader-owned, so no restored submission may land or link in them."""
 MAX_REWARD_BYTES = 1024 * 1024
 VERIFIER_OUTPUT_BYTES = 16_000
 """How much of the verifier's output, and of each log it leaves, a trace keeps."""
@@ -629,11 +633,10 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
         trace.record_reward(self.config.reward_key, 0.0, 1.0)
 
     async def stage_verifier(self, trace: Trace, runtime: Runtime) -> None:
-        if self.scoring.mode == "isolated" and any(
-            PurePosixPath(root).is_relative_to("/tests")
-            for root in trace.state.artifacts
+        if self.scoring.mode == "isolated" and (
+            owned := grader_owned(trace.state.artifacts)
         ):
-            raise TaskError("Harbor artifacts cannot restore into /tests")
+            raise TaskError(f"Harbor artifacts cannot restore into {owned}")
         if self.scoring.mode == "isolated":
             await self.own_restored_artifacts(trace, runtime)
         await self.stage_tests(runtime, wipe=self.data.verifier is not None)
@@ -838,24 +841,33 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
         }
 
     async def stage_trajectory(self, runtime: Runtime, trace: Trace) -> None:
-        """Leave the agent's transcript at Harbor's `/logs/agent/trajectory.json`, as
-        Harbor's agents do, for graders that judge how the agent worked (CyberStrike's
-        process and output-quality judges skip without it). One the agent or image
-        already left there stays."""
-        if not trace.messages:
-            return
-        data = json.dumps(trajectory(trace), ensure_ascii=False).encode()
-        await runtime.write("/tmp/vf-trajectory.json", data)
-        command = (
-            "mkdir -p /logs/agent && "
-            f"{{ test -e {TRAJECTORY} || mv /tmp/vf-trajectory.json {TRAJECTORY}; }} && "
-            f"chmod a+r {TRAJECTORY}; rm -f /tmp/vf-trajectory.json"
+        """Leave the agent's transcript and final reply where graders read them, from
+        the trace alone: Harbor's `/logs/agent/trajectory.json` (CyberStrike's process
+        and output-quality judges skip without it) and `/logs/agent/final_reply.md`
+        (`final_reply`). `/logs/agent` is grader-owned: whatever the solver, its image
+        or a restored artifact left there is removed first, so a solver cannot stand
+        in for its own transcript. A trace without messages stages an empty directory;
+        one without a reply stages no reply file."""
+        files = {}
+        if trace.messages:
+            files[TRAJECTORY] = json.dumps(trajectory(trace), ensure_ascii=False)
+        if reply := final_reply(trace):
+            files[FINAL_REPLY] = reply
+        prepare = (
+            f"rm -rf {AGENT_LOGS} && mkdir -p {AGENT_LOGS} && chmod 755 {AGENT_LOGS}"
         )
-        result = await runtime.run(["sh", "-c", command], {})
+        result = await runtime.run(["sh", "-c", prepare], {})
         if result.exit_code:
-            logger.warning(
-                "staging the agent trajectory failed: %s", result.stderr.strip()
+            raise TaskError(
+                f"staging {AGENT_LOGS} failed (exit {result.exit_code}): "
+                f"{(result.stderr or result.stdout).strip()[-500:]}"
             )
+        for path, text in files.items():
+            await runtime.write(path, text.encode())
+        if files:
+            result = await runtime.run(["chmod", "644", *files], {})
+            if result.exit_code:
+                raise TaskError(f"staging {AGENT_LOGS} failed: {result.stderr.strip()}")
 
     async def record_verifier_output(
         self, runtime: Runtime, trace: Trace, result: ProgramResult
@@ -1515,6 +1527,12 @@ def parse_verifier_extras(
             )
         )
 
+    if owned := grader_owned(artifact.source for artifact in artifacts):
+        raise ValueError(
+            f"{task_dir.name}: artifacts {owned} would restore into the grader's own "
+            f"paths {list(GRADER_PATHS)}; the grader stages those itself"
+        )
+
     hooks: list[CollectHook] = []
     for hook in verifier.collect:
         hooks.append(
@@ -1643,19 +1661,41 @@ class HarborTaskset(Taskset[HarborTask, HarborConfig]):
             yield HarborTask(parse_task(task_dir, idx, self.config), self.config.task)
 
 
+def grader_owned(roots) -> list[str]:
+    """The artifact roots that would restore into a grader-owned path."""
+    return sorted(
+        root
+        for root in roots
+        if any(PurePosixPath(root).is_relative_to(path) for path in GRADER_PATHS)
+    )
+
+
+def text(content: Any) -> str:
+    """A message's content as text; a non-text part as its type."""
+    if content is None or isinstance(content, str):
+        return content or ""
+    parts = []
+    for part in content:
+        part = part if isinstance(part, dict) else part.model_dump()
+        parts.append(part.get("text") or f"[{part.get('type', 'content')}]")
+    return "\n".join(parts)
+
+
+def final_reply(trace: Trace) -> str:
+    """The solver's final reply: the agent's last response (`Trace.last_reply`), else
+    the last assistant message on the trace's final branch (a gold solution's reply,
+    which no model sampled; see `validation.GOLD_REPLY`)."""
+    if reply := trace.last_reply:
+        return reply
+    for message in reversed(trace.messages):
+        if message.role == "assistant":
+            return text(message.content).strip()
+    return ""
+
+
 def trajectory(trace: Trace) -> dict[str, Any]:
     """The trace's final branch as a Harbor (ATIF-style) trajectory: one step per
     message, its text, and an agent step's tool calls."""
-
-    def text(content: Any) -> str:
-        if content is None or isinstance(content, str):
-            return content or ""
-        parts = []
-        for part in content:
-            part = part if isinstance(part, dict) else part.model_dump()
-            parts.append(part.get("text") or f"[{part.get('type', 'content')}]")
-        return "\n".join(parts)
-
     sources = {"assistant": "agent"}
     steps = []
     for index, message in enumerate(trace.messages, start=1):

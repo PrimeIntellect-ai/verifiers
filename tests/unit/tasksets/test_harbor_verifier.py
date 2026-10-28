@@ -36,6 +36,8 @@ class FakeRuntime:
             if isinstance(self.listing, Exception):
                 raise self.listing
             return ProgramResult(exit_code=0, stdout=self.listing, stderr="")
+        if "/logs/agent" in argv[-1] or argv[0] == "chmod":
+            return ProgramResult(exit_code=0, stdout="", stderr="")  # agent logs staged
         # `read_reward_json`'s existence probe: no reward.json.
         return ProgramResult(exit_code=1, stdout="", stderr="")
 
@@ -154,14 +156,13 @@ async def test_grading_leaves_the_agent_transcript_where_harbor_graders_read_it(
     task = make_task()
     runtime = TrajectoryRuntime()
     assert await task.run_verifier(runtime, make_trace(task)) == {"reward": 1.0}
-    steps = json.loads(runtime.writes["/tmp/vf-trajectory.json"])["steps"]
+    steps = json.loads(runtime.writes["/logs/agent/trajectory.json"])["steps"]
     assert [s["source"] for s in steps] == ["user", "agent", "tool"]
     assert steps[0]["message"] == "Task Description: audit cJSON"
     assert steps[1]["tool_calls"] == [
         {"tool_call_id": "c1", "function_name": "bash", "arguments": '{"cmd": "ls"}'}
     ]
-    staged = next(i for i, a in enumerate(runtime.commands) if "trajectory" in a[-1])
-    assert "test -e /logs/agent/trajectory.json ||" in runtime.commands[staged][-1]
+    staged = next(i for i, a in enumerate(runtime.commands) if "/logs/agent" in a[-1])
     assert staged < runtime.commands.index(TEST_SH)
 
 

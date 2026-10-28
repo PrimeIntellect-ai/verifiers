@@ -14,16 +14,26 @@ from verifiers.v1.configs.agent import AgentConfig, TimeoutConfig
 from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.configs.retries import RetryConfig
 from verifiers.v1.errors import TaskError
+from verifiers.v1.graph import MessageNode
 from verifiers.v1.harness import Harness
 from verifiers.v1.runtimes import PrimeConfig, ProgramResult, Runtime, RuntimeConfig
 from verifiers.v1.task import Task
 from verifiers.v1.trace import Trace
+from verifiers.v1.types import AssistantMessage, UserMessage
 from verifiers.v1.utils.staging import stage_file
 
 if TYPE_CHECKING:
     from verifiers.v1.agent import Agent
 
 __all__ = ["ValidationAttempt", "ValidationHarness", "ValidationResult"]
+
+GOLD_REPLY = "reply.md"
+"""A gold solution's final reply: the file it leaves at `reply.md` in its solution
+directory (shipped there, or written by its command) becomes the gold run's final
+assistant message, so graders that read a solver's reply (a Harbor task's
+`/logs/agent/final_reply.md`) see the gold one. Only a gold run reads it: a solver's
+run never looks there."""
+MAX_GOLD_REPLY_BYTES = 1024 * 1024
 
 ValidationRunner = Callable[["Agent", Task, Callable[[Trace], None]], Awaitable[Trace]]
 """Optional per-attempt execution policy, returning the native graded trace."""
@@ -122,9 +132,32 @@ class ValidationHarness(Harness[ValidationHarnessConfig]):
                 "stderr": result.stderr[-4000:],
             }
         await invoke(self.task.validation_after, hooks)
+        if self.config.source is not None:
+            await self.adopt_reply(trace, runtime)
         # A broken reference is still graded: its failure and the actual grade
         # are both useful evidence, just as for an ordinary solver's attempt.
         return ProgramResult(exit_code=0, stdout="", stderr="")
+
+    async def adopt_reply(self, trace: Trace, runtime: Runtime) -> None:
+        """Make the gold solution's `GOLD_REPLY`, when it left one, the trace's final
+        assistant message, after the task's prompt. Neither message was sampled."""
+        path = str(PurePosixPath(self.config.target_dir, GOLD_REPLY))
+        probe = await runtime.run(["test", "-f", path], {})
+        if probe.exit_code:
+            return
+        reply = (await runtime.read(path, max_bytes=MAX_GOLD_REPLY_BYTES)).decode(
+            "utf-8", errors="replace"
+        )
+        parent = len(trace.nodes) - 1 if trace.nodes else None
+        if parent is None:
+            trace.nodes.append(
+                MessageNode(message=UserMessage(content=self.task.data.prompt_text))
+            )
+            parent = 0
+        trace.nodes.append(
+            MessageNode(parent=parent, message=AssistantMessage(content=reply))
+        )
+        trace._head_index = {}
 
 
 async def validate_attempt(

@@ -59,6 +59,8 @@ class FakeRuntime:
             return ProgramResult(exit_code=0, stdout="", stderr="")
         if "find /logs/verifier" in argv[-1]:
             return ProgramResult(exit_code=0, stdout="", stderr="")
+        if "/logs/agent" in argv[-1] or argv[0] == "chmod":
+            return ProgramResult(exit_code=0, stdout="", stderr="")  # agent logs staged
         if argv[:2] == ["sh", "-c"] and argv[2].startswith("test "):
             return ProgramResult(
                 exit_code=0 if argv[-1] in self.files else 1, stdout="", stderr=""

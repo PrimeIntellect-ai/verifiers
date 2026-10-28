@@ -140,6 +140,12 @@ Setting `[verifier].environment_mode = "separate"` grades the task in a fresh co
 
 Because verifiers never builds container images on the fly, a `[verifier.environment]` that relies on `tests/Dockerfile` without a pre-built `docker_image` must be built, pushed to a registry, and referenced via `docker_image` (or `verifier_image`). Setting `ignore_dockerfile = true` falls back to running the verifier inside the solver's image and logs a warning since that diverges from the task's declared verifier environment. Setting `ignore_separate_verifier = true` forces every task back into shared grading inside the solver's container, trading grading isolation for a single sandbox per task.
 
+## The agent's transcript and final reply
+
+Before `test.sh` runs, verifiers stages the solver's run from its trace into `/logs/agent`: `trajectory.json` (Harbor's ATIF trajectory of the final branch) and `final_reply.md` (the agent's last response). The directory is the grader's: whatever the solver, its image or an artifact left there is removed first, and a task whose `artifacts` restore into `/logs/agent`, `/tests` or `/logs/verifier` is refused. A judge criterion can name `/logs/agent/final_reply.md` as evidence.
+
+A gold solution gives a final reply by leaving `reply.md` in its solution directory (`/solution/reply.md`), shipped in `solution/` or written by `solve.sh`. Gold runs (`task.validate`, and flow's QC reference runs through it) make it the run's final assistant message, so it is staged like a solver's reply. A solver's run never reads that path.
+
 ## Task-declared criteria
 
 A task can ship `tests/criteria.toml`, a list of graded checks that verifiers decides after `test.sh` runs, in the grading box:
