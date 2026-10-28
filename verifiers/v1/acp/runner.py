@@ -10,6 +10,7 @@ import os
 import re
 import signal
 import sys
+import time
 import traceback
 from collections.abc import AsyncIterator
 from contextlib import AsyncExitStack, suppress
@@ -44,6 +45,13 @@ MAX_PACKET_BYTES = 128 * 1024 * 1024
 HEARTBEAT_SECONDS = float(os.environ.get("VF_ACP_HEARTBEAT_SECONDS", "15"))
 # Answered requests kept for a host that lost one (`resend`).
 ANSWERS_KEPT = 8
+# A turn whose agent does nothing (no model request in flight, no ACP update) for this
+# long is stalled (`watch`): on a full disk after DISK_FULL_IDLE_SECONDS, else, with no
+# tool call open, after AGENT_IDLE_SECONDS.
+AGENT_IDLE_SECONDS = float(os.environ.get("VF_ACP_AGENT_IDLE_SECONDS", "600"))
+DISK_FULL_IDLE_SECONDS = float(os.environ.get("VF_ACP_DISK_FULL_IDLE_SECONDS", "120"))
+DISK_FULL_BYTES = 8 * 1024 * 1024
+WATCH_SECONDS = float(os.environ.get("VF_ACP_WATCH_SECONDS", "5"))
 
 # A Prime tunnel's gateway answers this page itself while the tunnel has no frpc
 # registered: for the moment after its frpc's connection drops, until frpc logs in again.
@@ -61,6 +69,83 @@ _HOP_HEADERS = {
     "transfer-encoding",
     "upgrade",
 }
+
+
+class AgentStalled(Exception):
+    """The agent stopped working mid-turn without ending it (`watch`); `kind` is
+    `disk_full` or `agent_stalled`."""
+
+    def __init__(self, message: str, kind: str) -> None:
+        super().__init__(message)
+        self.kind = kind
+
+
+class Activity:
+    """What the agent is doing, as the runner sees it: its model requests in flight
+    (through the relay), its open tool calls (from ACP updates), and when it last did
+    anything."""
+
+    def __init__(self) -> None:
+        self.requests = 0
+        self.tools: set[str] = set()
+        self.last = time.monotonic()
+
+    def touch(self) -> None:
+        self.last = time.monotonic()
+
+    def update(self, update: Any) -> None:
+        self.touch()
+        kind = getattr(update, "session_update", None)
+        tool_call_id = getattr(update, "tool_call_id", None)
+        if kind not in ("tool_call", "tool_call_update") or tool_call_id is None:
+            return
+        status = getattr(update, "status", None)
+        if status in ("completed", "failed"):
+            self.tools.discard(tool_call_id)
+        elif kind == "tool_call" or status is not None:
+            self.tools.add(tool_call_id)
+
+
+def free_bytes(path: str) -> int | None:
+    try:
+        stat = os.statvfs(path)
+    except OSError:
+        return None
+    return stat.f_bavail * stat.f_frsize
+
+
+async def watch(activity: Activity, path: str) -> AgentStalled:
+    """Wait until the agent stalls mid-turn, and say how.
+
+    OpenCode's session never ends its turn once a write to its database fails: on a
+    full disk (2026-10-28: ProgramBench boxes, 5 GB with 4.7 GB used, the image and the
+    agent's install taking most of it) it took a tool call's reply and then neither ran
+    the tool's result back to the model nor answered the prompt, while this runner kept
+    beating its heartbeat, so the turn held its rollout until the 24 h timeout. A model
+    request in flight is never a stall (a generation can take hours), nor is an open
+    tool call short of a full disk (a command may run as long as the model allows)."""
+    while True:
+        await asyncio.sleep(WATCH_SECONDS)
+        if activity.requests:
+            continue
+        idle = time.monotonic() - activity.last
+        free = free_bytes(path)
+        if (
+            idle >= DISK_FULL_IDLE_SECONDS
+            and free is not None
+            and free < DISK_FULL_BYTES
+        ):
+            return AgentStalled(
+                f"the box's disk is full ({free} bytes free at {path}) and the agent has "
+                f"done nothing for {idle:.0f}s: OpenCode cannot write its session",
+                "disk_full",
+            )
+        if not activity.tools and idle >= AGENT_IDLE_SECONDS:
+            return AgentStalled(
+                f"the agent has done nothing for {idle:.0f}s mid-turn: no model request, "
+                f"no tool call open, no update ({free} bytes free at {path})",
+                "agent_stalled",
+            )
 
 
 @dataclass(frozen=True)
@@ -116,7 +201,8 @@ class ProviderRelay:
 
     One request per connection: each response is chunked and closes the connection."""
 
-    def __init__(self, upstream: str) -> None:
+    def __init__(self, upstream: str, activity: Activity | None = None) -> None:
+        self.activity = activity or Activity()
         parts = urlsplit(upstream)
         self.origin = f"{parts.scheme}://{parts.netloc}"
         self.client = httpx.AsyncClient(
@@ -146,9 +232,13 @@ class ProviderRelay:
     async def _serve(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
     ) -> None:
+        counted = False
         try:
             request = await _read_request(reader)
             if request is not None:
+                self.activity.requests += 1
+                self.activity.touch()
+                counted = True
                 await self._forward(*request, writer)
         except (
             ConnectionError,
@@ -160,6 +250,9 @@ class ProviderRelay:
         except Exception:  # noqa: BLE001 - one bad request must not stop the relay
             traceback.print_exc()
         finally:
+            if counted:
+                self.activity.requests -= 1
+                self.activity.touch()
             writer.close()
             with suppress(Exception):
                 await writer.wait_closed()
@@ -295,6 +388,7 @@ class VerifiersACPClient(Client):
         self.stop_reason: str | None = None
         self.response_metadata: dict[str, Any] = {}
         self.update_metadata: list[dict[str, Any]] = []
+        self.activity = Activity()
 
     def reset(self) -> None:
         self.visible_reply = ""
@@ -312,6 +406,7 @@ class VerifiersACPClient(Client):
         )
 
     async def session_update(self, session_id: str, update: Any, **kwargs: Any) -> None:
+        self.activity.update(update)
         metadata = dict(kwargs)
         if isinstance(field_meta := getattr(update, "field_meta", None), dict):
             metadata.update(field_meta)
@@ -334,6 +429,7 @@ class VerifiersACPClient(Client):
         **kwargs: Any,
     ) -> RequestPermissionResponse:
         """Ask the rollout before execution: deny rejects one call; stop cancels the turn."""
+        self.activity.touch()
         kinds = ("allow_once", "allow_always")
         if self.gate is not None:
             decision = await self.gate.decision(
@@ -411,7 +507,11 @@ async def prompt(
     config: dict,
     *,
     is_new: bool,
+    watched: str | None = None,
 ) -> ACPTurn:
+    """One turn. With `watched` (the path whose disk the agent writes its session to),
+    a turn whose agent stalls (`watch`) is cancelled and raises `AgentStalled`; only a
+    relayed agent is watched, as only its model requests in flight are seen."""
     client.reset()
     prompt_capabilities = capabilities and capabilities.prompt_capabilities
     supports_images = bool(prompt_capabilities and prompt_capabilities.image)
@@ -421,10 +521,26 @@ async def prompt(
     blocks.extend(user_content_blocks(config["user_contents"], supports_images))
     if not blocks:
         raise ValueError("ACP prompt has no content")
+    watcher: asyncio.Task | None = None
     try:
         client.prompt_task = asyncio.create_task(
             connection.prompt(session_id=session_id, prompt=blocks)
         )
+        if watched is not None:
+            client.activity.touch()
+            watcher = asyncio.create_task(watch(client.activity, watched))
+            await asyncio.wait(
+                {client.prompt_task, watcher}, return_when=asyncio.FIRST_COMPLETED
+            )
+            if not client.prompt_task.done():
+                stalled = watcher.result()
+                print(f"agent stalled: {stalled}", file=sys.stderr)
+                with suppress(Exception):
+                    await asyncio.wait_for(connection.cancel(session_id=session_id), 10)
+                client.prompt_task.cancel()
+                with suppress(BaseException):
+                    await client.prompt_task
+                raise stalled
         response = await client.prompt_task
         client.stop_reason = response.stop_reason
         client.response_metadata = dict(response.field_meta or {})
@@ -434,6 +550,8 @@ async def prompt(
         await connection.cancel(session_id=session_id)
     finally:
         client.prompt_task = None
+        if watcher is not None:
+            watcher.cancel()
     return client.turn_result()
 
 
@@ -458,7 +576,7 @@ class ACPSession:
         env = os.environ.copy()
         if upstream := config.get("provider_url"):
             if self.relay is None:
-                relay = ProviderRelay(upstream)
+                relay = ProviderRelay(upstream, self.client.activity)
                 await relay.start()
                 self.relay = relay
             env = self.relay.route(env)
@@ -510,6 +628,10 @@ class ACPSession:
             self.session_id,
             config,
             is_new=self.is_new,
+            # The agent's session lives under its data directory (XDG_DATA_HOME).
+            watched=(os.environ.get("XDG_DATA_HOME") or os.getcwd())
+            if self.relay is not None
+            else None,
         )
         self.is_new = False
         return result
@@ -620,6 +742,8 @@ async def serve_stream() -> None:
             if isinstance(error, RequestError) and isinstance(error.data, dict):
                 response["error"] = error.data.get("details") or str(error)
                 response["error_data"] = error.data
+            if isinstance(error, AgentStalled):
+                response["error_data"] = {"kind": error.kind}
             if operation == "prompt":
                 response["result"] = asdict(session.client.turn_result())
         response["id"] = request.get("id")
