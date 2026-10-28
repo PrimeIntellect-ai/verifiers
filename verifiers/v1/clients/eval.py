@@ -1,13 +1,14 @@
 """The eval client: proxies harness-native request to the provider."""
 
+import logging
 import re
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 
 import httpx
 from pydantic import ValidationError
 from pydantic_core import from_json, to_json
 
-from verifiers.v1.clients.base import build_async_httpx, join_url
+from verifiers.v1.clients.base import build_async_httpx, join_url, safe_url
 from verifiers.v1.clients.client import SESSION_ID_HEADER, Client, RelayReply
 from verifiers.v1.configs.client import (
     BaseClientConfig,
@@ -57,6 +58,44 @@ _BLOCKED_REQUEST_HEADERS = (
     )
     | ACP_EXTENSION_HEADERS
 )
+
+
+logger = logging.getLogger(__name__)
+
+_BODY_PREVIEW_LIMIT = 512
+_SAFE_RESPONSE_HEADERS = frozenset(
+    {
+        "cf-ray",
+        "content-type",
+        "request-id",
+        "retry-after",
+        "x-correlation-id",
+        "x-request-id",
+    }
+)
+
+
+def _payload_strings(value) -> Iterable[str]:
+    if isinstance(value, str):
+        if value:
+            yield value
+    elif isinstance(value, Mapping):
+        for nested in value.values():
+            yield from _payload_strings(nested)
+    elif isinstance(value, (list, tuple)):
+        for nested in value:
+            yield from _payload_strings(nested)
+
+
+def _body_preview(text: str, body: dict, credentials: Iterable[str]) -> str:
+    sensitive = set(credentials)
+    for name, value in body.items():
+        if name != "model":
+            sensitive.update(_payload_strings(value))
+    preview = text[:65536]
+    for value in sorted(sensitive, key=len, reverse=True):
+        preview = preview.replace(value, "<redacted>")
+    return preview[:_BODY_PREVIEW_LIMIT]
 
 
 # Atomic so one CRLF cannot backtrack into two line endings and split an event mid-field.
@@ -125,6 +164,45 @@ class EvalClient(Client):
         headers.update(dialect.auth_headers(self.api_key))
         return headers
 
+    def _upstream_error(
+        self,
+        url: str,
+        body: dict,
+        headers: httpx.Headers,
+        response: httpx.Response,
+        text: str,
+    ) -> Exception:
+        response_headers = {
+            name: value
+            for name, value in response.headers.items()
+            if name.lower() in _SAFE_RESPONSE_HEADERS
+        }
+        credentials = {self.api_key}
+        for value in headers.values():
+            credentials.update(_payload_strings(value))
+            if " " in value:
+                credentials.update(_payload_strings(value.split(" ", 1)[1]))
+        request_id = (
+            headers.get("Idempotency-Key")
+            or headers.get(SESSION_ID_HEADER)
+            or response.headers.get("x-request-id")
+        )
+        logger.warning(
+            "upstream model request failed: url=%s model=%r status=%d request_id=%s "
+            "response_headers=%s body_preview=%r",
+            safe_url(url),
+            body.get("model"),
+            response.status_code,
+            request_id,
+            response_headers,
+            _body_preview(text, body, credentials),
+        )
+        return model_error(
+            f"upstream {response.status_code}: url={safe_url(url)} "
+            f"model={body.get('model')!r} error={text}",
+            status_code=response.status_code,
+        )
+
     async def _request(
         self,
         url: str,
@@ -152,9 +230,8 @@ class EvalClient(Client):
             try:
                 response.raise_for_status()
             except httpx.HTTPStatusError as e:
-                raise model_error(
-                    f"upstream {e.response.status_code}: {e.response.text}",
-                    status_code=e.response.status_code,
+                raise self._upstream_error(
+                    url, body, headers, e.response, e.response.text
                 ) from e
             return response
         if response.status_code < 400:
@@ -163,9 +240,7 @@ class EvalClient(Client):
             text = (await response.aread()).decode("utf-8", errors="replace")
         finally:
             await response.aclose()
-        raise model_error(
-            f"upstream {response.status_code}: {text}", status_code=response.status_code
-        )
+        raise self._upstream_error(url, body, headers, response, text)
 
     async def relay(
         self,

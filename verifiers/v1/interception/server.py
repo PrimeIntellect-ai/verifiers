@@ -30,15 +30,17 @@ import traceback
 from collections.abc import AsyncIterator, Awaitable, Collection, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from urllib.parse import urlsplit
 
 import httpx
 from aiohttp import web
+from aiohttp.web_urldispatcher import SystemRoute
 from pydantic import ValidationError
 from pydantic_core import PydanticSerializationError, from_json, to_json
 
 from verifiers.v1 import graph
 from verifiers.v1.clients import Client, resolve_client
-from verifiers.v1.clients.base import join_url
+from verifiers.v1.clients.base import join_url, safe_url
 from verifiers.v1.clients.client import RelayReply
 from verifiers.v1.configs.client import (
     BaseClientConfig,
@@ -338,6 +340,8 @@ class InterceptionServer(Interception):
             make_tunnel(self.config.tunnel) if requires_tunnel else None
         )
         self.healthy = True
+        self.server_id = secrets.token_hex(6)
+        self.tunnel_id: str | None = None
         if self.tunnel is not None:
             self.tunnel.on_gone = self._handle_tunnel_gone
         self.host = "127.0.0.1"
@@ -400,6 +404,103 @@ class InterceptionServer(Interception):
         finally:
             self.unregister(model_secret, state_secret)
 
+    def _health_scope(self, request: web.Request) -> str:
+        public_host = urlsplit(self.base_url).netloc
+        if self.tunnel is not None and request.host.lower() == public_host.lower():
+            return "public"
+        return "local"
+
+    def _log_access(self, request: web.Request, status: int, started: float) -> None:
+        request_id = request.headers.get("X-ACP-Model-Request-ID", "")[:128] or None
+        matched_route = request.match_info.route
+        route = (
+            "unmatched"
+            if matched_route is None or isinstance(matched_route, SystemRoute)
+            else "routed"
+        )
+        probe = self._health_scope(request) if request.path == "/healthz" else None
+        logger.log(
+            logging.WARNING if status >= 400 else logging.INFO,
+            "interception access: method=%s path=%r status=%d route=%s probe=%s "
+            "server_id=%s tunnel_id=%s request_id=%r duration_ms=%.1f",
+            request.method,
+            request.path,
+            status,
+            route,
+            probe,
+            self.server_id,
+            self.tunnel_id,
+            request_id,
+            (time.monotonic() - started) * 1000,
+        )
+
+    @web.middleware
+    async def _access_log(self, request: web.Request, handler) -> web.StreamResponse:
+        started = time.monotonic()
+        try:
+            response = await handler(request)
+        except web.HTTPException as error:
+            self._log_access(request, error.status, started)
+            raise
+        except Exception:
+            self._log_access(request, 500, started)
+            raise
+        self._log_access(request, response.status, started)
+        return response
+
+    async def handle_health(self, request: web.Request) -> web.Response:
+        return web.json_response(
+            {
+                "status": "ok" if self.healthy else "unhealthy",
+                "server_id": self.server_id,
+                "tunnel_id": self.tunnel_id,
+            },
+            status=200 if self.healthy else 503,
+        )
+
+    async def _probe_health(self, scope: str, base_url: str) -> None:
+        """Check route reachability without changing tunnel or server lifecycle."""
+        url = f"{base_url.rstrip('/')}/healthz"
+        try:
+            async with httpx.AsyncClient(
+                timeout=httpx.Timeout(5.0, connect=2.0)
+            ) as client:
+                response = await client.get(url)
+            observed = response.json()
+            if not isinstance(observed, dict):
+                observed = {}
+        except (httpx.HTTPError, ValueError) as error:
+            logger.warning(
+                "interception health probe: scope=%s url=%s error=%s "
+                "server_id=%s tunnel_id=%s",
+                scope,
+                safe_url(url),
+                type(error).__name__,
+                self.server_id,
+                self.tunnel_id,
+            )
+            return
+        observed_server = observed.get("server_id")
+        observed_tunnel = observed.get("tunnel_id")
+        matched = (
+            response.status_code == 200
+            and observed_server == self.server_id
+            and observed_tunnel == self.tunnel_id
+        )
+        logger.log(
+            logging.INFO if matched else logging.WARNING,
+            "interception health probe: scope=%s url=%s status=%d matched=%s "
+            "server_id=%s tunnel_id=%s observed_server_id=%s observed_tunnel_id=%s",
+            scope,
+            safe_url(url),
+            response.status_code,
+            matched,
+            self.server_id,
+            self.tunnel_id,
+            observed_server,
+            observed_tunnel,
+        )
+
     def _handler_for(self, dialect: Dialect):
         """Bind a route's dialect to the request handler — the route the SDK posts to is what
         selects the wire format (see `dialects.DIALECTS`)."""
@@ -427,13 +528,16 @@ class InterceptionServer(Interception):
         return handler
 
     async def start(self) -> None:
-        app = web.Application(client_max_size=MAX_REQUEST_BODY)
+        app = web.Application(
+            client_max_size=MAX_REQUEST_BODY, middlewares=[self._access_log]
+        )
         for dialect in DIALECTS:
             for route in dialect.routes:
                 app.router.add_post(route, self._handler_for(dialect))
             for aux in dialect.aux_routes:
                 app.router.add_post(aux, self._aux_handler_for(dialect, aux))
         app.router.add_get("/v1/models", self.handle_models)
+        app.router.add_get("/healthz", self.handle_health)
         # Tool servers use a state-only capability; the model bearer cannot reach these.
         app.router.add_get("/state", self.handle_state_get)
         app.router.add_put("/state", self.handle_state_put)
@@ -463,6 +567,11 @@ class InterceptionServer(Interception):
             self.base_url = await self.stack.enter_async_context(
                 self.tunnel.expose(self.port)
             )
+            self.tunnel_id = getattr(self.tunnel, "tunnel_id", None)
+        local_url = f"http://127.0.0.1:{self.port}"
+        await self._probe_health("local", local_url)
+        if self.tunnel is not None:
+            await self._probe_health("public", self.base_url)
 
     def _fail(
         self, session: RolloutSession, dialect: Dialect, error: RolloutError
@@ -857,10 +966,10 @@ class InterceptionServer(Interception):
                     error = e
                     session.error = e
                     logger.warning(
-                        "model call failed: id=%s %s: %s",
+                        "model call failed: id=%s %s status=%s",
                         session.trace.id,
                         type(e).__name__,
-                        e,
+                        getattr(e, "status_code", None),
                     )
                     return _error_response(
                         dialect, str(e), status=getattr(e, "status_code", 502)
@@ -868,10 +977,9 @@ class InterceptionServer(Interception):
                 except Exception as e:  # noqa: BLE001 - surface as an API error
                     error = e
                     logger.warning(
-                        "model call failed: id=%s %s: %s",
+                        "model call failed: id=%s %s status=502",
                         session.trace.id,
                         type(e).__name__,
-                        e,
                     )
                     return _error_response(dialect, str(e), status=502)
                 except BaseException as e:

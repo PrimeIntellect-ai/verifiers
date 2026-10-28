@@ -26,7 +26,9 @@ from verifiers.v1.errors import (
 from verifiers.v1.grading import (
     bind_scoring_env,
     grade_task,
+    record_scoring_context,
     scoring_network,
+    scoring_phase,
     scoring_transaction,
     verifier_runtime,
 )
@@ -777,6 +779,12 @@ class Rollout:
                     else None
                 )
                 scoring_elapsed = 0.0
+                record_scoring_context(
+                    trace,
+                    budget=self._timeouts.scoring,
+                    mode=self._scoring_policy.mode,
+                    metrics_elapsed=scoring_elapsed,
+                )
                 metrics_done = False
                 finalize_phase = "task finalization"
                 try:
@@ -812,6 +820,9 @@ class Rollout:
                         await self._score_harness(runtime, self._metrics_deadline())
                         metrics_done = True
                         scoring_elapsed = loop.time() - metrics_started
+                        trace.info["scoring_diagnostics"]["metrics_elapsed"] = (
+                            scoring_elapsed
+                        )
                         if finalize_deadline is not None:
                             finalize_deadline += loop.time() - interlude_started
                         finalize_phase = "service finalization"
@@ -894,13 +905,14 @@ class Rollout:
                                     scoring_runtime = bind_scoring_env(
                                         runtime, self._scoring_policy
                                     )
-                                    await invoke(
-                                        self._scoring_task.stage_verifier,
-                                        {
-                                            "trace": trace,
-                                            "runtime": scoring_runtime,
-                                        },
-                                    )
+                                    async with scoring_phase(trace, "staging"):
+                                        await invoke(
+                                            self._scoring_task.stage_verifier,
+                                            {
+                                                "trace": trace,
+                                                "runtime": scoring_runtime,
+                                            },
+                                        )
                                     if self._scoring_policy.network is not None:
                                         await scoring_runtime.set_network(
                                             scoring_network(
@@ -924,7 +936,14 @@ class Rollout:
                         # Graded in the agent's own box: now the session can close, and
                         # the metrics read what it handed over and left behind.
                         await self._close_harness()
-                        await self._score_harness(runtime, self._metrics_deadline())
+                        metrics_started = loop.time()
+                        try:
+                            await self._score_harness(runtime, self._metrics_deadline())
+                        finally:
+                            scoring_elapsed = loop.time() - metrics_started
+                            trace.info["scoring_diagnostics"]["metrics_elapsed"] = (
+                                scoring_elapsed
+                            )
                 # A nan reward scores nothing: keep it unscored (None) and fail the
                 # rollout after scoring, so it is never retried as a scoring failure.
                 unscored = [

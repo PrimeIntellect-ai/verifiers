@@ -3,7 +3,8 @@
 import asyncio
 import copy
 import logging
-from contextlib import AsyncExitStack, contextmanager
+from collections.abc import AsyncIterator
+from contextlib import AsyncExitStack, asynccontextmanager, contextmanager
 from pathlib import PurePosixPath
 
 from verifiers.v1.configs.scoring import ScoringConfig
@@ -26,6 +27,58 @@ from verifiers.v1.utils.retries import RetryState, backoff
 logger = logging.getLogger(__name__)
 _SCORING_INFO_KEYS = ("judge_calls", "scoring_diagnostics")
 """Accounting and diagnostics survive failed scoring attempts, unlike partial scores."""
+_MAX_SCORING_PHASE_EVENTS = 32
+_MAX_SCORING_ERROR_TYPE_CHARS = 100
+
+
+def record_scoring_context(
+    trace: Trace,
+    *,
+    budget: float | None,
+    mode: str,
+    metrics_elapsed: float,
+) -> None:
+    diagnostics = trace.info.setdefault("scoring_diagnostics", {})
+    diagnostics.update(
+        {
+            "budget": budget,
+            "mode": mode,
+            "metrics_elapsed": metrics_elapsed,
+        }
+    )
+    diagnostics.setdefault("events", [])
+
+
+@asynccontextmanager
+async def scoring_phase(trace: Trace, phase: str) -> AsyncIterator[None]:
+    """Record a bounded phase event, including when its operation is cancelled."""
+    diagnostics = trace.info.setdefault("scoring_diagnostics", {})
+    events = diagnostics.setdefault("events", [])
+    event = None
+    if len(events) < _MAX_SCORING_PHASE_EVENTS:
+        event = {"phase": phase, "status": "running"}
+        events.append(event)
+    else:
+        diagnostics["events_dropped"] = diagnostics.get("events_dropped", 0) + 1
+    started = asyncio.get_running_loop().time()
+    try:
+        yield
+    except BaseException as error:
+        if event is not None:
+            event.update(
+                status="cancelled"
+                if isinstance(error, asyncio.CancelledError)
+                else "failed",
+                elapsed=asyncio.get_running_loop().time() - started,
+                error_type=type(error).__name__[:_MAX_SCORING_ERROR_TYPE_CHARS],
+            )
+        raise
+    else:
+        if event is not None:
+            event.update(
+                status="completed",
+                elapsed=asyncio.get_running_loop().time() - started,
+            )
 
 
 @contextmanager
@@ -121,6 +174,12 @@ async def grade_task(
     scoring_elapsed: float = 0.0,
     on_score=None,
 ) -> None:
+    record_scoring_context(
+        trace,
+        budget=timeouts.scoring,
+        mode=policy.mode,
+        metrics_elapsed=scoring_elapsed,
+    )
     await deployment.prepare_verifier()
     # Provisioning, scoring, and retry backoff share the remaining scoring budget.
     # Setup may have an additional, stricter limit; retries do not reset scoring.
@@ -139,22 +198,24 @@ async def grade_task(
                 raise TimeoutError("scoring budget exhausted")
             async with AsyncExitStack() as stack:
                 grader, result = copy.deepcopy(task), copy.deepcopy(trace)
-                async with (
-                    asyncio.timeout_at(deadline),
-                    asyncio.timeout(timeouts.setup),
-                    boundary(TaskError, "verifier setup"),
-                ):
-                    runtime = await stack.enter_async_context(
-                        deployment.verifier(
-                            config,
-                            env=grader.runtime_env(),
-                        )
-                    )
-                    runtime = bind_scoring_env(runtime, policy)
-                    await runtime.backend.prepare_setup()
-                    await stage_verifier(grader, result, runtime)
-                    await runtime.backend.prepare_execution([])
                 try:
+                    async with (
+                        scoring_phase(result, "isolated_setup"),
+                        asyncio.timeout_at(deadline),
+                        asyncio.timeout(timeouts.setup),
+                        boundary(TaskError, "verifier setup"),
+                    ):
+                        runtime = await stack.enter_async_context(
+                            deployment.verifier(
+                                config,
+                                env=grader.runtime_env(),
+                            )
+                        )
+                        runtime = bind_scoring_env(runtime, policy)
+                        await runtime.backend.prepare_setup()
+                        async with scoring_phase(result, "staging"):
+                            await stage_verifier(grader, result, runtime)
+                        await runtime.backend.prepare_execution([])
                     async with (
                         asyncio.timeout_at(deadline),
                         boundary(TaskError, "verifier scoring"),

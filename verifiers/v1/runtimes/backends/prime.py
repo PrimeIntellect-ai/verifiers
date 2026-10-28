@@ -5,14 +5,17 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import io
+import json
 import logging
 import math
 import shlex
 import tempfile
+import time
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from contextvars import ContextVar
+from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any, ClassVar
 from urllib.parse import urlsplit
@@ -49,6 +52,137 @@ _OUTPUT_DEADLINE_SECONDS = 300
 _OUTPUT_RETRIES = 10
 """Re-reads of a finished job's output that the SDK still failed to fetch, before the
 exec is reported as failed."""
+_OPERATION_HEARTBEAT_SECONDS = 30
+"""Interval between metadata-only records for a stalled Prime operation."""
+
+
+@dataclass
+class PrimeOperationContext:
+    """Metadata for one Prime operation, also exposed to attribution analysis."""
+
+    rollout_id: str
+    operation_id: str
+    operation: str
+    phase: str
+    started_at: float = field(default_factory=time.monotonic, repr=False)
+    sdk_wait: float = 0.0
+    sdk_started_at: float | None = field(default=None, repr=False)
+    poll_count: int = 0
+    output_retries: int = 0
+    last_stream_activity: float | None = field(default=None, repr=False)
+    terminal_error_type: str | None = None
+
+    async def sdk(self, awaitable: Awaitable[Any], *, phase: str | None = None) -> Any:
+        """Await an SDK/stream operation and account only for time inside that await."""
+        if phase is not None:
+            self.phase = phase
+        self.sdk_started_at = time.monotonic()
+        try:
+            return await awaitable
+        finally:
+            self.sdk_wait += time.monotonic() - self.sdk_started_at
+            self.sdk_started_at = None
+
+    def record(self, event: str) -> dict[str, Any]:
+        """A payload-free record suitable for structured logs and attribution."""
+        now = time.monotonic()
+        sdk_wait = self.sdk_wait + (
+            now - self.sdk_started_at if self.sdk_started_at is not None else 0.0
+        )
+        stream_age = (
+            max(0.0, now - self.last_stream_activity)
+            if self.last_stream_activity is not None
+            else None
+        )
+        return {
+            "event": event,
+            "rollout_id": self.rollout_id,
+            "operation_id": self.operation_id,
+            "operation": self.operation,
+            "phase": self.phase,
+            "elapsed_s": round(max(0.0, now - self.started_at), 3),
+            "sdk_wait_s": round(sdk_wait, 3),
+            "poll_count": self.poll_count,
+            "output_retries": self.output_retries,
+            "last_stream_activity_age_s": (
+                round(stream_age, 3) if stream_age is not None else None
+            ),
+            "terminal_error_type": self.terminal_error_type,
+        }
+
+
+_current_operation: ContextVar[PrimeOperationContext | None] = ContextVar(
+    "prime_operation", default=None
+)
+
+
+def current_prime_operation() -> PrimeOperationContext | None:
+    """Return the active operation's metadata for later attribution analysis."""
+    return _current_operation.get()
+
+
+def _log_operation(context: PrimeOperationContext, event: str) -> None:
+    logger.info(
+        "prime_operation %s",
+        json.dumps(context.record(event), sort_keys=True, separators=(",", ":")),
+    )
+
+
+async def _operation_heartbeat(context: PrimeOperationContext) -> None:
+    while True:
+        await asyncio.sleep(_OPERATION_HEARTBEAT_SECONDS)
+        _log_operation(context, "heartbeat")
+
+
+@asynccontextmanager
+async def _operation(
+    rollout_id: str, operation: str, *, stream: bool = False
+) -> AsyncIterator[PrimeOperationContext]:
+    context = PrimeOperationContext(
+        rollout_id=rollout_id,
+        operation_id=uuid.uuid4().hex,
+        operation=operation,
+        phase=operation,
+    )
+    if stream:
+        context.last_stream_activity = context.started_at
+    token = _current_operation.set(context)
+    _log_operation(context, "start")
+    heartbeat = asyncio.create_task(_operation_heartbeat(context))
+    try:
+        yield context
+    except BaseException as exc:
+        # The type identifies the terminal path without reproducing error messages,
+        # which can contain provider commands or output.
+        context.terminal_error_type = type(exc).__name__
+        raise
+    finally:
+        heartbeat.cancel()
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await heartbeat
+        _log_operation(context, "end")
+        _current_operation.reset(token)
+
+
+async def _stream_chunks(
+    stream: AsyncIterator[bytes], rollout_id: str, stream_name: str
+) -> AsyncIterator[bytes]:
+    """Instrument a stream as one operation, never as one record per chunk."""
+    async with _operation(rollout_id, f"{stream_name}_stream", stream=True) as context:
+        iterator = stream.__aiter__()
+        while True:
+            try:
+                chunk = await context.sdk(anext(iterator), phase=f"{stream_name}_read")
+            except StopAsyncIteration:
+                return
+            context.last_stream_activity = time.monotonic()
+            context.phase = f"{stream_name}_yield"
+            yield chunk
+
+
+async def _wait_for_process(process: Any, rollout_id: str) -> int:
+    async with _operation(rollout_id, "process_wait") as context:
+        return await context.sdk(process.wait())
 
 
 BASE_LABELS: list[str] = []
@@ -118,16 +252,21 @@ class PrimeRuntimeInfo(PrimeConfig, BaseRuntimeInfo):
 
 
 class PrimeProcess(RuntimeProcess):
-    def __init__(self, process) -> None:
+    def __init__(self, process, rollout_id: str) -> None:
         self._process = process
-        self.stdout: AsyncIterator[bytes] = process.stdout
-        self.stderr: AsyncIterator[bytes] = process.stderr
+        self._rollout_id = rollout_id
+        self.stdout: AsyncIterator[bytes] = _stream_chunks(
+            process.stdout, rollout_id, "stdout"
+        )
+        self.stderr: AsyncIterator[bytes] = _stream_chunks(
+            process.stderr, rollout_id, "stderr"
+        )
 
     async def write(self, data: bytes) -> None:
         await self._process.write_stdin(data)
 
     async def wait(self) -> int:
-        return await self._process.wait()
+        return await _wait_for_process(self._process, self._rollout_id)
 
     async def poll(self) -> int | None:
         return self._process.returncode
@@ -286,37 +425,68 @@ class PrimeBackend(RuntimeBackend):
             policy.get("deny"),
         )
 
+    async def _start_background_job(
+        self, runtime: Runtime, command: str, env: dict[str, str]
+    ) -> Any:
+        async with _operation(self.name, "start_background_job") as context:
+            return await context.sdk(
+                self._client.start_background_job(
+                    self.info.id,
+                    command,
+                    working_dir=self.config.workdir,
+                    env=runtime.process_env(env),
+                    user=runtime.user,
+                )
+            )
+
+    async def _open_process(
+        self, runtime: Runtime, command: str, env: dict[str, str]
+    ) -> Any:
+        async with _operation(self.name, "open_process") as context:
+            return await context.sdk(
+                self._client.open_process(
+                    self.info.id,
+                    command,
+                    working_dir=self.config.workdir,
+                    env=runtime.process_env(env),
+                    user=runtime.user,
+                )
+            )
+
     async def run(
         self, runtime: Runtime, argv: list[str], env: dict[str, str]
     ) -> ProgramResult:
         try:
             # Poll directly so rollout cancellation owns the execution timeout.
-            job = await self._client.start_background_job(
-                self.info.id,
-                shlex.join(argv),
-                working_dir=self.config.workdir,
-                env=runtime.process_env(env),
-                user=runtime.user,
-            )
+            job = await self._start_background_job(runtime, shlex.join(argv), env)
             delay = 0.1
-            output_retries = 0
             missing = None
-            while True:
-                result = await self._client.get_background_job(
-                    self.info.id, job, timeout=_OUTPUT_DEADLINE_SECONDS
-                )
-                # Under load the SDK can see a job finish yet miss its output (its bounded
-                # output reads expire while queued) and reports that as `*_error`. The job
-                # is done, so asking again re-reads the output.
-                missing = result.stdout_error or result.stderr_error
-                if result.completed and (
-                    missing is None or output_retries == _OUTPUT_RETRIES
-                ):
-                    break
-                if result.completed:
-                    output_retries += 1
-                await asyncio.sleep(delay)
-                delay = min(delay * 2, 3)
+            async with _operation(self.name, "poll_output") as context:
+                while True:
+                    context.poll_count += 1
+                    result = await context.sdk(
+                        self._client.get_background_job(
+                            self.info.id, job, timeout=_OUTPUT_DEADLINE_SECONDS
+                        ),
+                        phase=("output_read" if context.output_retries else "polling"),
+                    )
+                    context.phase = "output_read" if result.completed else "polling"
+                    # Under load the SDK can see a job finish yet miss its output (its bounded
+                    # output reads expire while queued) and reports that as `*_error`. The job
+                    # is done, so asking again re-reads the output.
+                    missing = result.stdout_error or result.stderr_error
+                    if result.completed and (
+                        missing is None or context.output_retries == _OUTPUT_RETRIES
+                    ):
+                        break
+                    if result.completed:
+                        context.output_retries += 1
+                    context.phase = "poll_backoff"
+                    await asyncio.sleep(delay)
+                    delay = min(delay * 2, 3)
+                if missing is not None or result.exit_code is None:
+                    # The existing validation below raises after this context closes.
+                    context.terminal_error_type = "SandboxError"
         except (
             Exception
         ) as e:  # a sandbox/API failure is one rollout's problem, not the eval's
@@ -335,16 +505,10 @@ class PrimeBackend(RuntimeBackend):
         self, runtime: Runtime, argv: list[str], env: dict[str, str]
     ) -> RuntimeProcess:
         try:
-            process = await self._client.open_process(
-                self.info.id,
-                shlex.join(argv),
-                working_dir=self.config.workdir,
-                env=runtime.process_env(env),
-                user=runtime.user,
-            )
+            process = await self._open_process(runtime, shlex.join(argv), env)
         except Exception as e:
             raise SandboxError(f"prime streaming process failed to start: {e}") from e
-        return PrimeProcess(process)
+        return PrimeProcess(process, self.name)
 
     async def expose(self, port: int) -> str:
         raise SandboxError(
@@ -358,13 +522,7 @@ class PrimeBackend(RuntimeBackend):
         # A server-owned job runs without a client stream for its whole life.
         command = f"exec {shlex.join(argv)} > {shlex.quote(log)} 2>&1 < /dev/null"
         try:
-            await self._client.start_background_job(
-                self.info.id,
-                command,
-                working_dir=self.config.workdir,
-                env=runtime.process_env(env),
-                user=runtime.user,
-            )
+            await self._start_background_job(runtime, command, env)
         except Exception as e:
             raise SandboxError(f"prime background launch failed: {e}") from e
 
@@ -377,16 +535,14 @@ class PrimeBackend(RuntimeBackend):
             try:
                 # Stream binary output: execute_command buffers base64 text for the
                 # entire file. Bound the source read and the host buffer independently.
-                process = await self._client.open_process(
-                    self.info.id,
-                    f"{reader} -- {shlex.quote(path)}",
-                    working_dir=self.config.workdir,
-                    env=runtime.process_env({}),
-                    user=runtime.user,
+                process = await self._open_process(
+                    runtime, f"{reader} -- {shlex.quote(path)}", {}
                 )
                 async with contextlib.aclosing(process):
                     with io.BytesIO() as data:
-                        async for chunk in process.stdout:
+                        async for chunk in _stream_chunks(
+                            process.stdout, self.name, "stdout"
+                        ):
                             if (
                                 max_bytes is not None
                                 and data.tell() + len(chunk) > max_bytes
@@ -396,9 +552,11 @@ class PrimeBackend(RuntimeBackend):
                                 )
                             data.write(chunk)
                         stderr = b""
-                        async for chunk in process.stderr:
+                        async for chunk in _stream_chunks(
+                            process.stderr, self.name, "stderr"
+                        ):
                             stderr = (stderr + chunk)[-500:]
-                        if await process.wait():
+                        if await _wait_for_process(process, self.name):
                             raise SandboxError(stderr.decode(errors="replace").strip())
                         return data.getvalue()
             except Exception as exc:

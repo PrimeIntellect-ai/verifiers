@@ -1,6 +1,7 @@
 """Shared client plumbing: transport defaults and URL/key utilities."""
 
 import re
+from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 from openai import AsyncOpenAI
@@ -35,6 +36,17 @@ def build_async_openai(config: BaseClientConfig) -> AsyncOpenAI:
         max_retries=MAX_RETRIES,
         http_client=build_async_httpx(config),
     )
+
+
+def safe_url(url: str) -> str:
+    """Remove credentials, query parameters, and fragments from a diagnostic URL."""
+    parts = urlsplit(url)
+    host = parts.hostname or ""
+    if ":" in host:
+        host = f"[{host}]"
+    if parts.port is not None:
+        host = f"{host}:{parts.port}"
+    return urlunsplit((parts.scheme, host, parts.path, "", ""))
 
 
 def join_url(base_url: str, path: str) -> str:

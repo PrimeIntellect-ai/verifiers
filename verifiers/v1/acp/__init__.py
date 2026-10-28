@@ -259,11 +259,26 @@ class ACPHarnessSession(HarnessSession):
                 if future is not None and not future.done():
                     future.set_result(response)
         except BaseException as error:  # noqa: BLE001 - settle callers on disconnect or shutdown
+            detail = f"ACP connection closed: {error}"
+            if isinstance(error, EOFError) and any(
+                not future.done() for future in self._responses.values()
+            ):
+                process = self._process
+                if process is not None:
+                    exit_code = None
+                    with contextlib.suppress(Exception):
+                        exit_code = await process.poll()
+                        if exit_code is None:
+                            exit_code = await asyncio.wait_for(
+                                process.wait(), timeout=1
+                            )
+                    if exit_code is not None:
+                        detail = f"{detail}\nACP process exited with code {exit_code}"
+                if stderr := self._stderr():
+                    detail = f"{detail}\n\nACP process stderr:\n{stderr}"
             for future in self._responses.values():
                 if not future.done():
-                    future.set_exception(
-                        RuntimeError(f"ACP connection closed: {error}")
-                    )
+                    future.set_exception(RuntimeError(detail))
 
     async def _request(self, operation: str, **payload: Any) -> JsonObject:
         process = self._process

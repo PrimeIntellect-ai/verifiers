@@ -27,6 +27,7 @@ class Tunnel(ABC, Generic[ConfigT]):
 
     def __init__(self, config: ConfigT | None = None) -> None:
         self.config = config
+        self.tunnel_id: str | None = None
 
     @property
     def bind_port(self) -> int:

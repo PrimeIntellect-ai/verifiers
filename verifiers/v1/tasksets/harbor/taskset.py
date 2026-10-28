@@ -36,6 +36,7 @@ from verifiers.v1.configs.scoring import ScoringConfig
 from verifiers.v1.configs.task import TaskConfig
 from verifiers.v1.configs.taskset import TasksetConfig
 from verifiers.v1.errors import SandboxError, TaskError
+from verifiers.v1.grading import scoring_phase
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.runtimes.deployment import Deployment
 from verifiers.v1.state import State
@@ -52,6 +53,7 @@ CACHE = Path.home() / ".cache" / "harbor"
 HARBOR_INSTALL_HINT = "uv sync --python 3.12 --extra harbor"
 REWARD_JSON = "/logs/verifier/reward.json"
 MAX_REWARD_BYTES = 1024 * 1024
+MAX_REWARD_ERROR_CHARS = 500
 MAX_VERIFIER_OUTPUT_CHARS = 16 * 1024
 REWARD_JSON_ADAPTER = TypeAdapter(
     dict[str, float],
@@ -443,9 +445,10 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
         # By absolute path, in the runtime's configured workdir: Harbor execs the
         # script the same way, and scripts do grade the agent's work at `$PWD`.
         # The reward file is authoritative even when the script exits nonzero.
-        result = await runtime.run(
-            ["bash", "/tests/test.sh"], resolve_env(self.scoring.env or {})
-        )
+        async with scoring_phase(trace, "verifier_execution"):
+            result = await runtime.run(
+                ["bash", "/tests/test.sh"], resolve_env(self.scoring.env or {})
+            )
         trace.info.setdefault("scoring_diagnostics", {})["harbor"] = {
             "exit_code": result.exit_code,
             "stdout": result.stdout[-MAX_VERIFIER_OUTPUT_CHARS:],
@@ -453,24 +456,28 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
             "stdout_truncated": len(result.stdout) > MAX_VERIFIER_OUTPUT_CHARS,
             "stderr_truncated": len(result.stderr) > MAX_VERIFIER_OUTPUT_CHARS,
         }
-        scores = await self.read_reward_json(runtime)
+        async with scoring_phase(trace, "reward_read"):
+            scores = await self.read_reward_json(runtime)
         if scores is None:
             try:
-                value = (
-                    (
-                        await runtime.read(
-                            "/logs/verifier/reward.txt", max_bytes=MAX_REWARD_BYTES
+                async with scoring_phase(trace, "reward_read"):
+                    value = (
+                        (
+                            await runtime.read(
+                                "/logs/verifier/reward.txt", max_bytes=MAX_REWARD_BYTES
+                            )
                         )
+                        .decode()
+                        .strip()
                     )
-                    .decode()
-                    .strip()
-                )
                 scores = {"reward": REWARD_SCALAR_ADAPTER.validate_python(float(value))}
             except (SandboxError, OSError, ValueError) as exc:
+                fallback_error = f"{type(exc).__name__}: {exc}"[:MAX_REWARD_ERROR_CHARS]
                 raise TaskError(
                     "Harbor verifier produced no reward.json and no valid reward.txt "
                     f"(exit {result.exit_code}): "
-                    f"{(result.stderr or result.stdout).strip()[-500:]}"
+                    f"{(result.stderr or result.stdout).strip()[-500:]}; "
+                    f"reward.txt fallback: {fallback_error}"
                 ) from exc
         key = self.config.reward_key
         if key not in scores:

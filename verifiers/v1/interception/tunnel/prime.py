@@ -124,6 +124,7 @@ class PrimeTunnel(Tunnel[PrimeTunnelConfig]):
                     client = TunnelClient(local_port=port)
                     async with tunnel_limiter():
                         url = str(await client.start()).rstrip("/")
+                self.tunnel_id = getattr(client, "tunnel_id", None)
                 await _require_registered(client, label)
         except Exception as e:
             raise TunnelError(f"{label} failed: {e}") from e
