@@ -127,9 +127,11 @@ def response_from_generate(
             # re-rendered history keeps the model's own spacing.
             arguments=tc.arguments_text
             if tc.arguments_text is not None
-            else tc.arguments
-            if isinstance(tc.arguments, str)
-            else json.dumps(tc.arguments or {}),
+            else (
+                tc.arguments
+                if isinstance(tc.arguments, str)
+                else json.dumps(tc.arguments or {})
+            ),
         )
         for i, tc in enumerate(result.get("tool_calls") or [])
         if getattr(tc, "name", None)

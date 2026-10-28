@@ -4371,8 +4371,8 @@ wheels = [
 
 [[package]]
 name = "renderers"
-version = "0.1.13.dev20"
-source = { git = "https://github.com/PrimeIntellect-ai/renderers?rev=c3ef65392cb9be21d7b221379624d06a3944446f#c3ef65392cb9be21d7b221379624d06a3944446f" }
+version = "0.1.13.dev21"
+source = { git = "https://github.com/PrimeIntellect-ai/renderers?rev=55070de848dd2c7d17adc4f1509370fceaa6c358#55070de848dd2c7d17adc4f1509370fceaa6c358" }
 dependencies = [
     { name = "jinja2" },
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
