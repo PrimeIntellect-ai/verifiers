@@ -253,8 +253,11 @@ async def _request_digest(raw: bytes) -> bytes:
     return await asyncio.to_thread(_body_digest, raw)
 
 
-LEAKED_TOOL_CALL = "<tool_call>"
-"""Raw tool-call markup a provider's parser left in a reply's reasoning."""
+LEAKED_TOOL_CALL = ("<tool_call>", "</tool_call>", "<arg_key>", "<arg_value>")
+"""Raw tool-call markup a provider's parser left in a reply's reasoning: GLM's tool call
+whole, or only its arguments and closing tag when the opening one was consumed (GLM 5.3
+on Prime, 2026-10-25: a PostTrainBench turn whose reasoning ends in
+`</arg_value></tool_call>`, the agent writing out Qwen3's own `<tool_call>` template)."""
 
 
 DROPPED_OUTPUT_TOKENS = 3
@@ -311,7 +314,7 @@ def _check_tool_call_leak(response: Response) -> None:
     if content:
         _check_unsent_tail(response, content)
         return
-    if LEAKED_TOOL_CALL in (message.reasoning_content or ""):
+    if any(markup in (message.reasoning_content or "") for markup in LEAKED_TOOL_CALL):
         raise model_error(
             "malformed upstream response: an empty turn whose reasoning holds "
             "unparsed tool-call markup",
