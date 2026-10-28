@@ -425,7 +425,11 @@ class InterceptionServer(Interception):
             if matched_route is None or isinstance(matched_route, SystemRoute)
             else "routed"
         )
-        probe = self._health_scope(request) if request.path == "/healthz" else None
+        probe = (
+            self._health_scope(request)
+            if request.path in ("/healthz", "/__interception/healthz")
+            else None
+        )
         logger.log(
             logging.WARNING if status >= 400 else logging.INFO,
             "interception access: method=%s path=%r status=%d route=%s probe=%s "
@@ -467,7 +471,9 @@ class InterceptionServer(Interception):
 
     async def _probe_health(self, scope: str, base_url: str) -> bool:
         """Return whether this exact server and tunnel are reachable at `base_url`."""
-        url = f"{base_url.rstrip('/')}/healthz"
+        # Prime tunnels answer `/healthz` themselves with plain-text `OK`.
+        # Use an application-owned path so the public probe reaches this server.
+        url = f"{base_url.rstrip('/')}/__interception/healthz"
         try:
             async with httpx.AsyncClient(
                 timeout=httpx.Timeout(5.0, connect=2.0)
@@ -546,6 +552,7 @@ class InterceptionServer(Interception):
                 app.router.add_post(aux, self._aux_handler_for(dialect, aux))
         app.router.add_get("/v1/models", self.handle_models)
         app.router.add_get("/healthz", self.handle_health)
+        app.router.add_get("/__interception/healthz", self.handle_health)
         # Tool servers use a state-only capability; the model bearer cannot reach these.
         app.router.add_get("/state", self.handle_state_get)
         app.router.add_put("/state", self.handle_state_put)

@@ -31,12 +31,17 @@ async def test_local_and_public_health_probes_report_server_and_tunnel(caplog):
         async with server:
             async with httpx.AsyncClient() as client:
                 response = await client.get(f"{server.base_url}/healthz")
+                app_health = await client.get(
+                    f"{server.base_url}/__interception/healthz"
+                )
             assert response.status_code == 200
             assert response.json() == {
                 "status": "ok",
                 "server_id": server.server_id,
                 "tunnel_id": "tunnel-test",
             }
+            assert app_health.status_code == 200
+            assert app_health.json()["server_id"] == server.server_id
     assert "scope=local" in caplog.text
     assert "scope=public" in caplog.text
     assert "probe=local" in caplog.text
