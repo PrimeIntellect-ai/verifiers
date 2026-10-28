@@ -100,7 +100,21 @@ async def snapshot_untracked(runtime: Runtime, env: dict | None = None) -> list[
     )
     if result.exit_code != 0:
         return []
-    return [path for path in (result.stdout or "").split("\0") if path]
+    stdout = result.stdout or ""
+    # Runtimes decode stdout with errors="replace", so a filename that isn't
+    # valid UTF-8 reaches us with U+FFFD substituted — it can never match the
+    # real file again, and capture_patch would credit the agent with an image
+    # file it didn't create. A wrong patch is worse than a loud setup failure.
+    # (A filename legitimately containing U+FFFD trips this too; that is the
+    # price of the runtimes' lossy text contract.)
+    if "�" in stdout:
+        raise ValueError(
+            "snapshot_untracked: `git ls-files` returned a filename that is not "
+            "valid UTF-8; it cannot round-trip through the runtime's text "
+            "decoding, so the pre-agent untracked set would be wrong. Rename "
+            "the offending file in the image or exclude it via .gitignore."
+        )
+    return [path for path in stdout.split("\0") if path]
 
 
 async def capture_patch(
@@ -142,9 +156,14 @@ async def capture_patch(
     nonce = uuid.uuid4().hex
     full, capped = f"{_FULL}_{nonce}", f"{_CAPPED}_{nonce}"
     cmd = _DIFF.format(full=full, capped=capped, cap=PATCH_CAP_BYTES + 1)
+    # `git reset -- <path>` treats arguments as pathspecs, so a file named
+    # `*.py` would unstage every Python file the agent touched. `:(literal)`
+    # makes git match the name byte-for-byte (and also neutralizes names that
+    # start with `:`, which git would otherwise parse as pathspec magic).
+    ignore_pathspecs = [f":(literal){path}" for path in ignore or []]
     try:
         result = await runtime.run(
-            ["sh", "-c", cmd, "vf-capture-patch", *(ignore or [])],
+            ["sh", "-c", cmd, "vf-capture-patch", *ignore_pathspecs],
             {**(env or {}), "VF_DIFF_BASE": base_commit or "HEAD"},
         )
         if result.exit_code != 0:
