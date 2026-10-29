@@ -107,6 +107,8 @@ _CAPABILITIES = (
 
 # Bound task files travel with each rollout; larger inputs belong in an image.
 _BIND_MAX_BYTES = 256 * 1024**2
+# Mount sources stage here; no Compose target can contain it, as `/` is never one.
+_STAGING = PurePosixPath("/.vf-compose")
 
 
 @dataclass
@@ -208,6 +210,10 @@ def validate_native(project) -> None:
                     f"Native Compose dependency {name!r} -> {dependency!r} is unsupported"
                 )
         for volume in service.get("volumes", []):
+            if PurePosixPath(volume["target"]).is_relative_to(_STAGING):
+                raise SandboxError(
+                    f"Native Compose service {name!r} cannot mount at {_STAGING}"
+                )
             if volume["type"] == "bind":
                 source = Path(volume["source"]).resolve()
                 options = {
@@ -516,14 +522,13 @@ def _archive(source: Path, hidden: list[PurePosixPath], budget: int) -> bytes:
 
 async def _mount(runtime, name: str, mounts: list[NativeMount]) -> None:
     """Mount task binds and initialized service volumes as Docker would."""
-    staging = "/var/lib/vf-compose"
-    unpack, attach, protect = [], [], []
+    unpack, attach, protect = [f"mkdir -p {_STAGING}"], [], []
     for index, mount in enumerate(mounts):
-        source, target = f"{staging}/{index}", shlex.quote(mount.target)
+        source, target = f"{_STAGING}/{index}", shlex.quote(mount.target)
         if mount.archive is None:
-            # Docker seeds a new volume from the image's directory.
+            # Docker seeds a new volume from the image's directory, owner and mode.
             unpack.append(
-                f"mkdir -p {source} && if [ -d {target} ]; then cp -a {target}/. {source}/; fi"
+                f"if [ -d {target} ]; then cp -a {target}/. {source}; else mkdir {source}; fi"
             )
         else:
             await runtime.write(f"{source}.tar", mount.archive)
@@ -541,7 +546,7 @@ async def _mount(runtime, name: str, mounts: list[NativeMount]) -> None:
     # Read-only last, so nested mount points can still be made; then hide the staged
     # copies, which would otherwise bypass read-only mounts.
     script = " && ".join(
-        [*unpack, *attach, *protect, f"mount -t tmpfs tmpfs {staging}"]
+        [*unpack, *attach, *protect, f"mount -t tmpfs tmpfs {_STAGING}"]
     )
     result = await runtime.run(["sh", "-c", script], {})
     if result.exit_code:
