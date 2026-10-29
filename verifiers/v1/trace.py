@@ -110,6 +110,8 @@ class TimeSplit(BaseModel):
 class AgentSpan(TimeSpan):
     model: TimeSplit = Field(default_factory=TimeSplit)
     harness: TimeSplit = Field(default_factory=TimeSplit)
+    checkpoint: TimeSplit = Field(default_factory=TimeSplit)
+    """Time the model replies waited for checkpoint captures (`Checkpoint.held`)."""
 
 
 class Timing(BaseModel):
@@ -925,16 +927,22 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
             self.dropped = reason
 
     def split_agent_time(self) -> None:
-        """Split the agent span into model and harness time."""
+        """Split the agent span into model, checkpoint and harness time."""
         span = self.timing.agent
         if not span.end:
             return
-        # A restored trace keeps the calls of the attempts before this span.
-        model = sum(
+        # A restored trace keeps the calls and checkpoints of the attempts before
+        # this span.
+        calls = sum(
             call.time.duration for call in self.calls if call.time.start >= span.start
         )
-        span.model.duration = min(model, span.duration)
-        span.harness.duration = span.duration - span.model.duration
+        # A call's span includes the time its reply waited for the capture.
+        held = sum(c.held for c in self.checkpoints if c.captured >= span.start)
+        span.checkpoint.duration = min(held, calls, span.duration)
+        span.model.duration = min(calls, span.duration) - span.checkpoint.duration
+        span.harness.duration = (
+            span.duration - span.model.duration - span.checkpoint.duration
+        )
 
     def record_timeout(self, stage: str) -> None:
         """Record a stage deadline's expiry, and stop the trace as `<stage>_timeout`.

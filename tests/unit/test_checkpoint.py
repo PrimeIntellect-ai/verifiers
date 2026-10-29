@@ -75,6 +75,20 @@ def test_restored_span_counts_only_its_own_calls():
     assert trace.timing.agent.harness.duration == 15.0
 
 
+def test_agent_time_splits_off_the_checkpoint_hold():
+    trace = make_trace()
+    trace.timing.agent.start, trace.timing.agent.end = 100.0, 120.0
+    trace.calls.append(ModelCall(time=TimeSpan(start=105.0, end=110.0)))
+    trace.checkpoints += [
+        Checkpoint(id="old", captured=90.0, held=3.0),
+        Checkpoint(id="new", captured=106.0, held=1.5),
+    ]
+    trace.split_agent_time()
+    assert trace.timing.agent.checkpoint.duration == 1.5
+    assert trace.timing.agent.model.duration == 3.5
+    assert trace.timing.agent.harness.duration == 15.0
+
+
 async def test_restored_tail_is_not_intercepted_twice():
     trace = make_trace()
     seen: list[str] = []

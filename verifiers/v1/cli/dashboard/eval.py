@@ -432,7 +432,7 @@ def _breakdown(
     have_cost = have_cached = have_reasoning = have_judge = False
     phase_secs: dict[str, float] = {}
     phase_count: dict[str, int] = {}
-    model_secs = harness_secs = 0.0
+    model_secs = harness_secs = checkpoint_secs = 0.0
     for trace in done:
         stats = completed[trace.id]
         total_in += stats.num_input_tokens
@@ -463,6 +463,7 @@ def _breakdown(
                 phase_count[phase] = phase_count.get(phase, 0) + 1
         model_secs += trace.timing.agent.model.duration
         harness_secs += trace.timing.agent.harness.duration
+        checkpoint_secs += trace.timing.agent.checkpoint.duration
     if (
         total_in
         or total_out
@@ -499,8 +500,11 @@ def _breakdown(
         if phase == "agent":
             segment += (
                 f" (model {format_time(model_secs / count)}"
-                f" + harness {format_time(harness_secs / count)})"
+                f" + harness {format_time(harness_secs / count)}"
             )
+            if checkpoint_secs:
+                segment += f" + checkpoint {format_time(checkpoint_secs / count)}"
+            segment += ")"
         time_segments.append(segment)
     if time_segments:
         grid.add_row("time", "  ·  ".join(time_segments))
