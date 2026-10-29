@@ -8,15 +8,11 @@ NODE_VERSION = "22.23.4"
 INSTALL = r"""
 set -e
 node=/var/tmp/vf-node
-node_ok() { "$node/bin/node" -e 'const [a,b]=process.versions.node.split(".").map(Number); process.exit(a>22 || a===22 && b>=19 ? 0 : 1)'; }
+# Node bundles Brotli; a newer major alone does not prove CVE-2026-111497 is fixed.
+node_ok() { "$1" -e 'const [a,b,c]=process.versions.node.split(".").map(Number); const f={22:[23,4],24:[22,1],26:[12,1]}[a]; process.exit(f && (b>f[0] || b===f[0] && c>=f[1]) ? 0 : 1)'; }
 
 if [ -f /etc/alpine-release ]; then
-    apk add --no-cache curl ca-certificates nodejs-current npm >/dev/null
-    if ! node -e 'const [a,b]=process.versions.node.split(".").map(Number); process.exit(a>22 || a===22 && b>=19 ? 0 : 1)'; then
-        sed -E -i 's/v[0-9]+\.[0-9]+/v3.22/g' /etc/apk/repositories
-        apk upgrade --available --no-cache >/dev/null
-        apk add --no-cache nodejs-current npm >/dev/null
-    fi
+    apk add --upgrade --no-cache curl ca-certificates nodejs-current npm >/dev/null
     mkdir -p "$node/bin"
     ln -sf "$(command -v node)" "$node/bin/node"
     ln -sf "$(command -v npm)" "$node/bin/npm"
@@ -74,7 +70,7 @@ else
             | tar -xz -C "$node" --strip-components=1
     fi
 fi
-node_ok || { echo "ACP adapters require Node.js 22.19 or newer" >&2; exit 1; }
+node_ok "$node/bin/node" || { echo "ACP adapters require patched Node.js (22.23.4, 24.22.1 or 26.12.1 minimum)" >&2; exit 1; }
 """
 
 
