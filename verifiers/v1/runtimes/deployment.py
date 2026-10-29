@@ -46,22 +46,39 @@ _WORKER_PORTS = range(20000, 32000)
 connection's."""
 _HOLD = 'echo $$ > "$1.pid"; while [ ! -e "$1.joined" ]; do sleep 0.05; done; shift; exec "$@"'
 """Wait, as the worker's user, until root has moved this process into its cgroup."""
+_PORT_TAKEN = 2
 _JOIN = """
 set -e
 group=/sys/fs/cgroup/$1 files=$2 port=$3
-mkdir "$group"
+printf -v hex '%04X' "$port"
+listening() {
+    cat /proc/net/tcp /proc/net/tcp6 2>/dev/null | while read -r _ address _ state _ _ _ _ _ inode _; do
+        if [ "$state" = 0A ] && [ "${address##*:}" = "$hex" ]; then echo "$inode"; fi
+    done
+}
 for _ in $(seq 300); do [ -s "$files.pid" ] && break; sleep 0.1; done
 pid=$(cat "$files.pid")
+[ -z "$(listening)" ] || exit 2
+mkdir "$group"
 echo "$pid" > "$group/cgroup.procs"
 : > "$files.joined"
 for _ in $(seq 600); do
-    (exec 3<>"/dev/tcp/127.0.0.1/$port") 2>/dev/null && exit 0
+    for inode in $(listening); do
+        for proc in $(cat "$group/cgroup.procs"); do
+            for fd in /proc/"$proc"/fd/*; do
+                [ "$(readlink "$fd")" = "socket:[$inode]" ] && exit 0
+            done
+        done
+    done
     kill -0 "$pid" 2>/dev/null || { echo "worker exited" >&2; exit 1; }
     sleep 0.1
 done
 echo "worker did not listen on port $port" >&2
 exit 1
 """
+"""Move the held worker into its cgroup, then wait until a process in that cgroup
+listens on the port. Exits `_PORT_TAKEN` before releasing the worker if another
+process already listens there."""
 _KILL = """
 group=/sys/fs/cgroup/$1 files=$2
 if [ -e "$files.joined" ]; then
@@ -92,32 +109,42 @@ class ExecutionConnection:
         env: dict[str, str],
     ) -> int:
         """Start `argv(port)` through `runtime`, a workspace view, and return the port
-        once the worker accepts connections on it."""
-        port = random.choice(_WORKER_PORTS)
-        group = f"vf-exec-{uuid.uuid4().hex[:12]}"
-        files = f"/tmp/{group}"
+        once the worker itself listens on it."""
         root = runtime.with_user(None)
-        self._workers.append((root, group))
-        await runtime.run_background(
-            ["sh", "-c", _HOLD, "sh", files, *argv(port)], env, f"{files}.log"
-        )
-        result = await root.run(
-            ["bash", "-c", _JOIN, "bash", group, files, str(port)], {}
-        )
-        if result.exit_code:
-            log = await root.run(["tail", "-c", "2000", f"{files}.log"], {})
-            raise SandboxError(
-                f"execution worker failed to start: {result.stderr.strip()[-500:]}\n"
-                f"{log.stdout}"
+        for _ in range(3):
+            port = random.choice(_WORKER_PORTS)
+            group = f"vf-exec-{uuid.uuid4().hex[:12]}"
+            files = f"/tmp/{group}"
+            self._workers.append((root, group))
+            await runtime.run_background(
+                ["sh", "-c", _HOLD, "sh", files, *argv(port)], env, f"{files}.log"
             )
-        return port
+            result = await root.run(
+                ["bash", "-c", _JOIN, "bash", group, files, str(port)], {}
+            )
+            if not result.exit_code:
+                return port
+            if result.exit_code != _PORT_TAKEN:
+                log = await root.run(["tail", "-c", "2000", f"{files}.log"], {})
+                raise SandboxError(
+                    "execution worker failed to start: "
+                    f"{result.stderr.strip()[-500:]}\n{log.stdout}"
+                )
+            # A workspace service holds the port: release the held worker, try another.
+            self._workers.remove((root, group))
+            await _stop(root, group)
+        raise SandboxError("execution worker found no free port in the workspace")
 
     async def close(self) -> None:
         """Stop every worker and the processes they started."""
         workers, self._workers = self._workers, []
         for root, group in workers:
-            with contextlib.suppress(Exception):
-                await root.run(["sh", "-c", _KILL, "sh", group, f"/tmp/{group}"], {})
+            await _stop(root, group)
+
+
+async def _stop(root: Runtime, group: str) -> None:
+    with contextlib.suppress(Exception):
+        await root.run(["sh", "-c", _KILL, "sh", group, f"/tmp/{group}"], {})
 
 
 class _DeploymentStrategy:

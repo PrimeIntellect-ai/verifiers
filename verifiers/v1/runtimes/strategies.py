@@ -212,7 +212,11 @@ def _harness_config(harness: PrimeConfig, workspace: PrimeConfig) -> PrimeConfig
         update={
             "labels": list(dict.fromkeys([*workspace.labels, *harness.labels])),
             "region": harness.region or workspace.region,
-            "creates_per_min": harness.creates_per_min or workspace.creates_per_min,
+            "creates_per_min": (
+                harness.creates_per_min
+                if harness.creates_per_min is not None
+                else workspace.creates_per_min
+            ),
             "allow": workspace.allow,
             "block": workspace.block,
         }
