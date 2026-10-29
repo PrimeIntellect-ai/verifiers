@@ -133,6 +133,11 @@ SAVE_CHECKPOINT_ATTEMPTS = 3
 """Checkpoints tried for one per-call save: the platform fails one now and then."""
 SAVE_RETRY_DELAY = 1.0
 """Seconds before the second checkpoint try; the third waits twice as long."""
+BOX_SIDE_FAILURES = frozenset({"HarnessKilled", "HarnessError"})
+"""Errors a run ends on when its harness was killed in the box or failed there: the box
+keeps its files, but its processes (the task's services, a tool server its setup
+started) may be gone with the harness. A continuation on the same live box restores the
+task (`Task.restore`) instead of taking it as that run left it (`Box.hosted`)."""
 
 
 class Rollout:
@@ -203,6 +208,10 @@ class Rollout:
         """This run continues a trace: on a box started from a checkpoint, it restores
         the task (`Task.restore`) instead of setting it up."""
         self._resumes_id = resumes.id if resumes is not None else None
+        ended = resumes.last_error if resumes is not None else None
+        self._box_side_failure = ended is not None and ended.type in BOX_SIDE_FAILURES
+        """The run this one continues ended failing on the box's side: the box's
+        processes may not be as it left them (`Box.hosted`)."""
         position: int | None = None
         if resumes is None:
             self.trace: Trace = Trace(
@@ -524,7 +533,8 @@ class Rollout:
                 # such a box (a task of another seat, a judge) sets its own task up.
                 # A continuation of a run that ran on this very box (a borrowed box,
                 # not replaced since) finds the task as that run left it, its processes
-                # included: neither setup nor restore runs (`Box.hosted`).
+                # included: neither setup nor restore runs (`Box.hosted`), unless that
+                # run failed on the box's side (`BOX_SIDE_FAILURES`): then it restores.
                 live = (
                     self._box is not None
                     and self._resumes_id is not None
@@ -537,10 +547,20 @@ class Rollout:
                     left = self._box.hosted[self._resumes_id]
                     if type(left) is type(self.task.config):
                         self.task.config = left
-                else:
+                    if self._box_side_failure:
+                        # The run before ended with its harness killed or failing on the
+                        # box: whatever killed it (a memory limit, a grader killing
+                        # every process of its user) may have taken the task's
+                        # services with it. Its files stay, so the task restarts them
+                        # as on a box restored from a checkpoint.
+                        setup = self.task.restore
+                if not live or self._box_side_failure:
                     async with (
                         boundary(
-                            TaskError, "task restore" if restored else "task setup"
+                            TaskError,
+                            "task restore"
+                            if setup == self.task.restore
+                            else "task setup",
                         ),
                     ):
                         await invoke(
