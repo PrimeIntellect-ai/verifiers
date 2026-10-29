@@ -149,6 +149,8 @@ class AgentInfo(BaseModel, Generic[AgentConfigT]):
     """The resolved config that rebuilds the agent (`Agent(trace.agent.config)`)."""
     runtime: RuntimeInfo | None = None
     """The box the rollout ran in; None until provisioning."""
+    harness_runtime: RuntimeInfo | None = None
+    """A split deployment's harness VM, where the program ran apart from `runtime`."""
     name: str = "agent"
     """The env agent that produced this trace (the config field name, e.g. `solver`)."""
     trainable: bool = True

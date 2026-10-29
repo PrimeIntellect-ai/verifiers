@@ -29,6 +29,7 @@ from verifiers.v1.utils.decorators import (
 if TYPE_CHECKING:
     # Annotation-only: `Trace` appears in signatures only, so this module stays
     # importable below the trace record.
+    from verifiers.v1.runtimes.deployment import ExecutionConnection
     from verifiers.v1.trace import Trace
 
 logger = logging.getLogger(__name__)
@@ -58,6 +59,9 @@ class Harness(ABC, Generic[ConfigT]):
     """Whether the program discovers SKILL.md skills — it calls
     `install_skills` with a run-scoped discovery location; configuring
     `skills` on a harness without support is rejected up front."""
+    SUPPORTS_SPLIT_EXECUTION: ClassVar[bool] = False
+    """Whether the program can run on a VM of its own while its tools execute in the
+    task workspace (`deployment.mode = "split"`), set up by `setup_execution`."""
     NEEDS_CONTAINER: ClassVar[bool] = True
     """Whether the program must run in a container runtime: True for every harness
     that installs and drives a third-party program — on the host (subprocess) it
@@ -113,6 +117,23 @@ class Harness(ABC, Generic[ConfigT]):
 
     async def setup(self, runtime: Runtime) -> None:
         """Provision this harness through `runtime` before its execution timeout starts."""
+
+    def validate_split_execution(self) -> None:
+        """Reject a split deployment this harness cannot run before provisioning."""
+        if not self.SUPPORTS_SPLIT_EXECUTION:
+            raise ValueError(
+                f"harness {self.config.id!r} does not support split deployment"
+            )
+
+    async def setup_execution(
+        self, runtime: Runtime, workspace: Runtime, connection: ExecutionConnection
+    ) -> None:
+        """In a split deployment, concurrently with `setup(runtime)` on the harness's own
+        VM: make the program's tools execute in `workspace`, through workers
+        `connection` starts there."""
+        raise HarnessError(
+            f"harness {self.config.id!r} does not support split deployment"
+        )
 
     async def install_skills(self, runtime: Runtime, dest: str) -> None:
         """Install `config.skills` in the program's discovery directory.

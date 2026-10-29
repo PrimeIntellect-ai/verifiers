@@ -22,6 +22,7 @@ from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
 from verifiers.v1.runtimes import Runtime
+from verifiers.v1.runtimes.deployment import ExecutionConnection
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
 
@@ -70,7 +71,7 @@ class CompactionConfig(BaseConfig):
 class RLMHarnessConfig(HarnessConfig):
     dialect: Literal["chat_completions"] = "chat_completions"
     version: str = Field(
-        default="e4d4407f1fe6f4bd82b2c1da26ccd737627a6543", min_length=1
+        default="ff8767d3bdc311ca55a98fea2c6d4438c006741a", min_length=1
     )
     """Git ref (branch, tag, or commit) of nano-rlm to install. Must know every
     field this harness puts on the wire, i.e. be at least the default ref."""
@@ -137,13 +138,19 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
     SUPPORTS_SKILLS = True
+    SUPPORTS_SPLIT_EXECUTION = True
     _skills_install_dir: str | None = None
+    _execution: JsonObject | None = None
 
     async def setup(self, runtime: Runtime) -> None:
         if self.config.skills:
             # Editable skill packages and uv's tool environment must belong to this run.
             self._skills_install_dir = f"{RLM_CACHE_DIR}-skills-{secrets.token_hex(16)}"
             await self.install_skills(runtime, f"{self._skills_home()}/skills")
+        await self._install(runtime)
+        await super().setup(runtime)
+
+    async def _install(self, runtime: Runtime) -> None:
         directory = self._install_dir()
         binary = f"{directory}/bin/rlm"
         checkout = f"{directory}/checkout"
@@ -178,7 +185,37 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
             env=env,
             label="rlm",
         )
-        await super().setup(runtime)
+
+    def validate_split_execution(self) -> None:
+        super().validate_split_execution()
+        if self.config.skills:
+            raise ValueError("RLM split deployment supports builtin skills only")
+
+    async def setup_execution(
+        self, runtime: Runtime, workspace: Runtime, connection: ExecutionConnection
+    ) -> None:
+        # The same pinned nano-rlm runs the tools in the workspace; the agent loop and
+        # the model credentials stay on the harness's VM.
+        await self._install(workspace)
+        token = secrets.token_urlsafe(32)
+        port = await connection.serve(
+            workspace,
+            lambda port: [
+                f"{self._install_dir()}/tools/rlm/bin/python",
+                "-m",
+                "rlm.execution",
+                "--listen",
+                "0.0.0.0",
+                "--port",
+                str(port),
+            ],
+            {"RLM_EXECUTION_TOKEN": token},
+        )
+        self._execution = {
+            "execution_tcp": {"host": connection.host, "port": port, "token": token},
+            "execution_cwd": workspace.config.workdir,
+            "kernel_env": dict(workspace.env),
+        }
 
     def _runtime_metadata(
         self,
@@ -249,6 +286,8 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
             payload["network_block"] = runtime.config.block
         if self.config.builtin_tools is not None:
             payload["builtin_tools"] = list(self.config.builtin_tools)
+        if self._execution is not None:
+            payload.update(self._execution)
         return {RLM_RUNTIME_METADATA_KEY: payload}
 
     async def prepare_acp(

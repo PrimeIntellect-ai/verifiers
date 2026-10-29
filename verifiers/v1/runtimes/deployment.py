@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
-from collections.abc import AsyncIterator, Mapping
+import random
+import uuid
+from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import AsyncExitStack, asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from verifiers.v1.configs.deployment import DeploymentConfig
+from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes import (
     PrimeConfig,
     Runtime,
@@ -35,6 +39,85 @@ class ServicesSpec:
     """
 
     services: dict[str, PrimeConfig]
+
+
+_WORKER_PORTS = range(20000, 32000)
+"""Below Linux's ephemeral range, so a worker's port cannot collide with an outgoing
+connection's."""
+_HOLD = 'echo $$ > "$1.pid"; while [ ! -e "$1.joined" ]; do sleep 0.05; done; shift; exec "$@"'
+"""Wait, as the worker's user, until root has moved this process into its cgroup."""
+_JOIN = """
+set -e
+group=/sys/fs/cgroup/$1 files=$2 port=$3
+mkdir "$group"
+for _ in $(seq 300); do [ -s "$files.pid" ] && break; sleep 0.1; done
+pid=$(cat "$files.pid")
+echo "$pid" > "$group/cgroup.procs"
+: > "$files.joined"
+for _ in $(seq 600); do
+    (exec 3<>"/dev/tcp/127.0.0.1/$port") 2>/dev/null && exit 0
+    kill -0 "$pid" 2>/dev/null || { echo "worker exited" >&2; exit 1; }
+    sleep 0.1
+done
+echo "worker did not listen on port $port" >&2
+exit 1
+"""
+_KILL = """
+group=/sys/fs/cgroup/$1 files=$2
+if [ -e "$files.joined" ]; then
+    echo 1 > "$group/cgroup.kill"
+    for _ in $(seq 50); do rmdir "$group" 2>/dev/null && break; sleep 0.1; done
+elif [ -s "$files.pid" ]; then
+    kill -9 "$(cat "$files.pid")"
+fi
+rm -f "$files.pid" "$files.joined"
+"""
+
+
+@dataclass
+class ExecutionConnection:
+    """A split deployment's way into the workspace for the harness's tools: workers
+    started there listen on the rollout's private network, where the harness reaches
+    the workspace at `host`. Each worker runs in a cgroup of its own, so `close` stops
+    every process its tools started, detached or not."""
+
+    host: str
+    """The workspace's name on the private network."""
+    _workers: list[tuple[Runtime, str]] = field(default_factory=list)
+
+    async def serve(
+        self,
+        runtime: Runtime,
+        argv: Callable[[int], list[str]],
+        env: dict[str, str],
+    ) -> int:
+        """Start `argv(port)` through `runtime`, a workspace view, and return the port
+        once the worker accepts connections on it."""
+        port = random.choice(_WORKER_PORTS)
+        group = f"vf-exec-{uuid.uuid4().hex[:12]}"
+        files = f"/tmp/{group}"
+        root = runtime.with_user(None)
+        self._workers.append((root, group))
+        await runtime.run_background(
+            ["sh", "-c", _HOLD, "sh", files, *argv(port)], env, f"{files}.log"
+        )
+        result = await root.run(
+            ["bash", "-c", _JOIN, "bash", group, files, str(port)], {}
+        )
+        if result.exit_code:
+            log = await root.run(["tail", "-c", "2000", f"{files}.log"], {})
+            raise SandboxError(
+                f"execution worker failed to start: {result.stderr.strip()[-500:]}\n"
+                f"{log.stdout}"
+            )
+        return port
+
+    async def close(self) -> None:
+        """Stop every worker and the processes they started."""
+        workers, self._workers = self._workers, []
+        for root, group in workers:
+            with contextlib.suppress(Exception):
+                await root.run(["sh", "-c", _KILL, "sh", group, f"/tmp/{group}"], {})
 
 
 class _DeploymentStrategy:
@@ -132,6 +215,22 @@ class Deployment:
                     "deployment teardown failed after startup error", exc_info=True
                 )
             raise
+
+    @property
+    def split(self) -> bool:
+        """Whether the harness runs apart from the workspace, on a VM of its own."""
+        return (
+            self.harness_backend is not None
+            and self.harness_backend is not self.execution_backend
+        )
+
+    def connection(self) -> ExecutionConnection:
+        """A split harness's way into the workspace, over the rollout's private network."""
+        from verifiers.v1.runtimes.private_network import lan_host
+
+        if not self.split:
+            raise ValueError("only a split deployment connects its harness's tools")
+        return ExecutionConnection(lan_host(self.execution_backend))
 
     @property
     def execution_name(self) -> str:
