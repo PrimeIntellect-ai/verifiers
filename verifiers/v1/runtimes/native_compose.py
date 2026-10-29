@@ -336,16 +336,23 @@ async def _import_image(client, project, container: str, config: PrimeConfig) ->
                 break
             except BlockingIOError:
                 await asyncio.sleep(1)
-        existing = await client.list(search=name)
-        for image in existing.data:
-            if (
-                image.image_name == name
-                and image.image_tag == "v4"
-                and image.artifact_type == "VM_SANDBOX"
-                and image.status == "COMPLETED"
-                and image.display_ref
-            ):
-                return image.display_ref
+        async with asyncio.timeout(1800):
+            while True:
+                existing = [
+                    image
+                    for image in (await client.list(search=name)).data
+                    if image.image_name == name
+                    and image.image_tag == "v4"
+                    and image.artifact_type == "VM_SANDBOX"
+                ]
+                for image in existing:
+                    if image.status == "COMPLETED" and image.display_ref:
+                        return image.display_ref
+                # Another host or an earlier rollout is building it; a build ends on
+                # its own. A PENDING upload may be abandoned, so it is not awaited.
+                if not any(image.status == "BUILDING" for image in existing):
+                    break
+                await asyncio.sleep(5)
         rootfs = project.directory / "rootfs.tar"
         result = await cli(
             "docker", "export", "--output", str(rootfs), container, env=project.env
