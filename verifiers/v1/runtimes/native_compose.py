@@ -306,27 +306,38 @@ async def prepare_native(config: PrimeConfig, spec: ComposeSpec, env: dict[str, 
         raise SandboxError("Native Compose requires a CPU image workspace named 'main'")
     async with compose_project(config, spec, env) as project:
         validate_native(project)
-        overlay = {
+        prepared = {
+            **project.config,
+            "networks": {},
             "services": {
-                name: {"platform": "linux/amd64"} for name in project.config["services"]
-            }
+                name: {
+                    **{
+                        key: value
+                        for key, value in service.items()
+                        if key != "networks"
+                    },
+                    "platform": "linux/amd64",
+                    "network_mode": "none",
+                }
+                for name, service in project.config["services"].items()
+            },
         }
         for name, service in project.config["services"].items():
             if "container_name" in service:
                 # Container names are global on the build host; rollouts must not collide.
-                overlay["services"][name]["container_name"] = (
+                prepared["services"][name]["container_name"] = (
                     f"{project.config['name']}-{name}"
                 )
-        main = overlay["services"]["main"]
+        main = prepared["services"]["main"]
         if spec.image_override:
             main["image"] = config.image
             main["pull_policy"] = "always"
         if config.workdir is not None:
             main["working_dir"] = config.workdir
-        overlay_path = project.directory / "native.json"
-        overlay_path.write_text(json.dumps(overlay))
-        project.argv += ["-f", str(overlay_path)]
-        # No task process runs on the build host.
+        prepared_path = project.directory / "native.json"
+        prepared_path.write_text(json.dumps(prepared))
+        project.argv[project.argv.index("-f") :] = ["-f", str(prepared_path)]
+        # Stopped preparation containers need no networks; preserve the VM topology in project.config.
         await project.run("create")
         containers = await project.run(
             "ps", "--all", "--format", "{{.ID}} {{.Service}}"
