@@ -304,7 +304,7 @@ async def _import_image(client, project, container: str, identity: str) -> str:
         for image in existing.data:
             if (
                 image.image_name == name
-                and image.image_tag == "v1"
+                and image.image_tag == "v2"
                 and image.artifact_type == "VM_SANDBOX"
                 and image.status == "COMPLETED"
                 and image.display_ref
@@ -317,7 +317,11 @@ async def _import_image(client, project, container: str, identity: str) -> str:
         if result.exit_code:
             raise SandboxError(f"Compose filesystem export failed: {result.stderr}")
         dockerfile = project.directory / "Dockerfile"
-        dockerfile.write_text("FROM scratch\nADD rootfs.tar /\n")
+        # Prime's command API launches /bin/bash, which minimal Alpine images omit.
+        dockerfile.write_text(
+            "FROM scratch\nADD rootfs.tar /\n"
+            "RUN test -x /bin/bash || apk add --no-cache bash\n"
+        )
         context = project.directory / "context.tar.gz"
 
         def package():
@@ -329,7 +333,7 @@ async def _import_image(client, project, container: str, identity: str) -> str:
         build = await client.initiate_build(
             BuildImageRequest(
                 image_name=name,
-                image_tag="v1",
+                image_tag="v2",
                 visibility="PRIVATE",
                 team_id=client.client.config.team_id,
             )
@@ -449,6 +453,18 @@ class NativeProcesses:
                     raise SandboxError(f"Native Compose VM {name!r} lacks SYS_PTRACE")
         started = {name: asyncio.Event() for name in self.services}
         healthy = {}
+        completed = {
+            dependency
+            for service in self.services.values()
+            for dependency, options in service.definition.get("depends_on", {}).items()
+            if options["condition"] == "service_completed_successfully"
+        }
+        completion_only = completed - {
+            dependency
+            for service in self.services.values()
+            for dependency, options in service.definition.get("depends_on", {}).items()
+            if options["condition"] == "service_healthy"
+        }
 
         async def launch(name, service):
             for dependency, options in service.definition.get("depends_on", {}).items():
@@ -478,7 +494,8 @@ class NativeProcesses:
         async def ready(name, service):
             await started[name].wait()
             test = service.health.get("Test", ["NONE"])
-            if test[0] == "NONE":
+            # Completion-only jobs are ready when they exit successfully, not healthy.
+            if test[0] == "NONE" or name in completion_only:
                 return
             argv = [*service.shell, test[1]] if test[0] == "CMD-SHELL" else test[1:]
             interval = (service.health.get("Interval") or 30_000_000_000) / 1e9
@@ -527,12 +544,6 @@ class NativeProcesses:
                     healthy[name] = group.create_task(ready(name, service))
         except ExceptionGroup as failed:
             raise failed.exceptions[0]
-        completed = {
-            dependency
-            for service in self.services.values()
-            for dependency, options in service.definition.get("depends_on", {}).items()
-            if options["condition"] == "service_completed_successfully"
-        }
         for name, process in self.processes.items():
             if (code := await process.poll()) is not None and (
                 code != 0 or name not in completed
