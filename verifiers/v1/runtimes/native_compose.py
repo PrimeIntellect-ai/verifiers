@@ -345,7 +345,7 @@ async def prepare_native(config: PrimeConfig, spec: ComposeSpec, env: dict[str, 
             item["Config"]["Labels"]["com.docker.compose.service"]: item
             for item in json.loads(result.stdout)
         }
-        services = {}
+        services, bound = {}, 0
         for name in ids:
             item = inspected[name]
             metadata = item["Config"]
@@ -402,15 +402,9 @@ async def prepare_native(config: PrimeConfig, spec: ComposeSpec, env: dict[str, 
                 user,
                 metadata.get("StopSignal") or "SIGTERM",
                 internal,
-                await asyncio.to_thread(_mounts, definition),
+                await asyncio.to_thread(_mounts, definition, _BIND_MAX_BYTES - bound),
             )
-        if (
-            sum(len(m.archive or b"") for s in services.values() for m in s.mounts)
-            > _BIND_MAX_BYTES
-        ):
-            raise SandboxError(
-                "Native Compose binds more than 256 MiB of task files; build them into an image"
-            )
+            bound += sum(len(mount.archive or b"") for mount in services[name].mounts)
         for name, service in services.items():
             for dependency, options in service.definition.get("depends_on", {}).items():
                 if options["condition"] == "service_healthy" and (
@@ -437,7 +431,7 @@ async def prepare_native(config: PrimeConfig, spec: ComposeSpec, env: dict[str, 
         return services
 
 
-def _mounts(definition: dict) -> list[NativeMount]:
+def _mounts(definition: dict, budget: int) -> list[NativeMount]:
     """A service's bound task files and the volumes over them, in Docker's order."""
     volumes = definition.get("volumes", [])
     targets = [PurePosixPath(volume["target"]) for volume in volumes]
@@ -454,11 +448,13 @@ def _mounts(definition: dict) -> list[NativeMount]:
                 for other in targets
                 if other != target and other.is_relative_to(target)
             ]
+            archive = _archive(source, hidden, budget)
+            budget -= len(archive)
             mounts.append(
                 NativeMount(
                     str(target),
                     bool(volume.get("read_only")),
-                    _archive(source, hidden),
+                    archive,
                     source.is_file(),
                 )
             )
@@ -470,25 +466,25 @@ def _mounts(definition: dict) -> list[NativeMount]:
     )
 
 
-def _archive(source: Path, hidden: list[PurePosixPath]) -> bytes:
+def _archive(source: Path, hidden: list[PurePosixPath], budget: int) -> bytes:
+    """Pack a bind's source, including its own mode and owner as Docker shows them."""
     buffer = io.BytesIO()
+
+    def include(info: tarfile.TarInfo) -> tarfile.TarInfo | None:
+        if any(PurePosixPath(info.name).is_relative_to(path) for path in hidden):
+            return None
+        # Checked before each file is read, so oversized binds never fill memory.
+        if buffer.tell() + info.size > budget:
+            raise SandboxError(
+                "Native Compose binds more than 256 MiB of task files; build them into an image"
+            )
+        return info
+
     with tarfile.open(fileobj=buffer, mode="w") as archive:
-        if source.is_file():
-            archive.add(source, arcname="file")
-        elif source.is_dir():
-            for child in sorted(source.iterdir()):
-                archive.add(
-                    child,
-                    arcname=child.name,
-                    filter=lambda info: (
-                        None
-                        if any(
-                            PurePosixPath(info.name).is_relative_to(path)
-                            for path in hidden
-                        )
-                        else info
-                    ),
-                )
+        if source.exists():
+            archive.add(
+                source, arcname="file" if source.is_file() else ".", filter=include
+            )
         # Docker creates a missing source as an empty directory.
     return buffer.getvalue()
 
@@ -507,7 +503,7 @@ async def _mount(runtime, name: str, mounts: list[NativeMount]) -> None:
         else:
             await runtime.write(f"{source}.tar", mount.archive)
             unpack.append(
-                f"mkdir -p {source} && tar -xf {source}.tar -C {source} && rm {source}.tar"
+                f"mkdir -p {source} && tar --numeric-owner -xf {source}.tar -C {source} && rm {source}.tar"
             )
         if mount.file:
             source += "/file"
