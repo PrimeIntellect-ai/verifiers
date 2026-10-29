@@ -28,6 +28,7 @@ from verifiers.v1.runtimes.base import (
     ProgramResult,
     RuntimeBackend,
     RuntimeProcess,
+    TargetStatus,
     register,
 )
 from verifiers.v1.runtimes.runtime import Runtime
@@ -111,6 +112,7 @@ __all__ = [
     "SubprocessBackend",
     "SubprocessConfig",
     "SubprocessRuntimeInfo",
+    "TargetStatus",
     "backend_cls",
     "make_backend",
     "provision_backend",
