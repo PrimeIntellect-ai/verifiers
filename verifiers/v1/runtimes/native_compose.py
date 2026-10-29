@@ -195,8 +195,10 @@ async def prepare_native(config: PrimeConfig, spec: ComposeSpec, env: dict[str, 
         }
         main = prepared["services"]["main"]
         if spec.image_override:
+            # The task image replaces an authored build; Compose pulls it only when missing.
             main["image"] = config.image
-            main["pull_policy"] = "always"
+            main.pop("build", None)
+            main.pop("pull_policy", None)
         if config.workdir is not None:
             main["working_dir"] = config.workdir
         prepared_path = project.directory / "native.json"
