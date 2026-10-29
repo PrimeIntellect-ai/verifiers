@@ -134,7 +134,7 @@ def validate_native(project) -> None:
             "Native Compose supports bridge project networks with optional internal isolation"
         )
     aliases = {}
-    mounts: dict[str, set[str]] = {}
+    mounts: dict[str, set[tuple[str, str]]] = {}
     for name, service in config["services"].items():
         unsupported = set(service) - _SERVICE_FIELDS
         if unsupported:
@@ -189,11 +189,17 @@ def validate_native(project) -> None:
                     f"Native Compose dependency {name!r} -> {dependency!r} is unsupported"
                 )
         for volume in service.get("volumes", []):
-            if volume["type"] != "volume" or not volume.get("source"):
+            # The VM keeps the image's directory: no read-only, nocopy or subpath mount.
+            if (
+                volume["type"] != "volume"
+                or not volume.get("source")
+                or volume.get("read_only")
+                or any(volume.get("volume", {}).values())
+            ):
                 raise SandboxError(
-                    f"Native Compose service {name!r} supports only named volumes"
+                    f"Native Compose service {name!r} supports only plain named volumes"
                 )
-            mounts.setdefault(volume["source"], set()).add(name)
+            mounts.setdefault(volume["source"], set()).add((name, volume["target"]))
         # Docker's default bridge network: no project network, so no service names.
         mode = service.get("network_mode")
         if mode not in {None, "bridge", "default"}:
@@ -233,12 +239,18 @@ def validate_native(project) -> None:
                     f"Native Compose has an invalid or ambiguous alias: {alias!r}"
                 )
             aliases[alias] = name
-    # A volume one service mounts is a directory on that service's VM disk.
-    for volume, names in mounts.items():
+    # A volume one service mounts at one path is a directory on that service's VM disk.
+    for volume, targets in mounts.items():
+        names = sorted({name for name, _ in targets})
         if len(names) > 1:
             raise SandboxError(
-                f"Native Compose services {', '.join(sorted(names))} share volume "
+                f"Native Compose services {', '.join(names)} share volume "
                 f"{volume!r}; each service VM has its own disk"
+            )
+        if len(targets) > 1:
+            raise SandboxError(
+                f"Native Compose service {names[0]!r} mounts volume {volume!r} at "
+                "more than one path"
             )
 
 
