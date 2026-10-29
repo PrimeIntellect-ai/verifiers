@@ -499,6 +499,15 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     """The messages of the request in flight that no node holds yet (the harness's tool
     results and user turns): a preview for live watchers until the turn commits."""
 
+    def __deepcopy__(self, memo: dict[int, Any] | None = None) -> Trace:
+        # The watcher and the replay view are callbacks bound to live objects (the
+        # episode stream with its in-flight sends, the harness): a copy shares them.
+        memo = {} if memo is None else memo
+        for callback in (self._on_change, self._replay_view):
+            if callback is not None:
+                memo[id(callback)] = callback
+        return super().__deepcopy__(memo)
+
     def watch(self, on_change: Callable[[Trace], None]) -> None:
         """Have `on_change` called at each of this trace's phase changes and turns."""
         self._on_change = on_change
