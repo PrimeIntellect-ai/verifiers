@@ -34,7 +34,7 @@ dependencies = [
     "openai>=2.54.0,<3.0.0",
     "prime-tunnel>=0.1.14",
     "prime-sandboxes>=0.5.1",
-    "prime-runs>=0.1.4",
+    "prime-runs>=0.1.5",
     "pydantic>=2.12.3",
     "rich>=11.0.0",
     "tenacity>=8.5.0",
@@ -105,12 +105,6 @@ preview = true
 required-version = ">=0.11.1"
 exclude-newer = "7 days"
 default-groups = ["dev", "examples"]
-# TODO: replace with the prime-runs/prime-traces PyPI release that has PrimeIntellect-ai/prime#1109
-# (orjson-encoded records, numpy streams) asap, and raise the prime-runs minimum above to it. Until
-# then prime-traces (prime-runs' dependency) is pinned to the same commit on prime main.
-override-dependencies = [
-    "prime-traces @ git+https://github.com/PrimeIntellect-ai/prime@adf8d25c3e34df8e039674fae9e0e4bf9cee27f3#subdirectory=packages/prime-traces",
-]
 
 [[tool.uv.index]]
 name = "pypi"
@@ -136,8 +130,6 @@ interception = { path = "environments/interception", editable = true }
 grayscale-interception = { path = "environments/grayscale_interception", editable = true }
 bash-interception = { path = "environments/bash_interception", editable = true }
 web-search-interception = { path = "environments/web_search_interception", editable = true }
-# TODO: PyPI release of prime-runs with PrimeIntellect-ai/prime#1109 asap (see override-dependencies).
-prime-runs = { git = "https://github.com/PrimeIntellect-ai/prime", subdirectory = "packages/prime-runs", rev = "adf8d25c3e34df8e039674fae9e0e4bf9cee27f3" }
 
 [tool.uv.exclude-newer-package]
 # CA bundle: security fixes (e.g. 2026.10.19 for the eMudhra compromise) must not wait out the cooldown
@@ -152,6 +144,7 @@ ty = "2026-07-28T00:00:00Z"
 prime-tunnel = false
 prime-sandboxes = false
 prime-runs = false
+prime-traces = false
 prime-pydantic-config = false
 renderers = false
 

@@ -1,5 +1,5 @@
 version = 1
-revision = 4
+revision = 5
 requires-python = ">=3.11, <3.15"
 resolution-markers = [
     "python_full_version >= '3.14' and sys_platform == 'win32'",
@@ -26,13 +26,11 @@ harbor = "2026-10-08T00:00:00Z"
 prime-pydantic-config = false
 prime-runs = false
 prime-sandboxes = false
+prime-traces = false
 prime-tunnel = false
 renderers = false
 ruff = "2026-07-28T00:00:00Z"
 ty = "2026-07-28T00:00:00Z"
-
-[manifest]
-overrides = [{ name = "prime-traces", git = "https://github.com/PrimeIntellect-ai/prime?subdirectory=packages%2Fprime-traces&rev=adf8d25c3e34df8e039674fae9e0e4bf9cee27f3" }]
 
 [[package]]
 name = "aiofile"
@@ -3303,25 +3301,17 @@ toml = [
 
 [[package]]
 name = "prime-runs"
-version = "0.1.4"
-source = { git = "https://github.com/PrimeIntellect-ai/prime?subdirectory=packages%2Fprime-runs&rev=adf8d25c3e34df8e039674fae9e0e4bf9cee27f3#adf8d25c3e34df8e039674fae9e0e4bf9cee27f3" }
+version = "0.1.5"
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "httpx" },
     { name = "orjson" },
     { name = "prime-traces" },
 ]
-
-[package.metadata]
-requires-dist = [
-    { name = "httpx", specifier = ">=0.25.0" },
-    { name = "orjson", specifier = ">=3.10.0" },
-    { name = "prime-traces", git = "https://github.com/PrimeIntellect-ai/prime?subdirectory=packages%2Fprime-traces&rev=adf8d25c3e34df8e039674fae9e0e4bf9cee27f3" },
-    { name = "pyarrow", marker = "extra == 'train'", specifier = ">=15.0.0" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.0.0" },
-    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23.0" },
-    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.13.1" },
+sdist = { url = "https://files.pythonhosted.org/packages/3b/85/78a77c31ab994605b433f9594b2dedfdd92c6e0e0c015db3a3bdcd229cad/prime_runs-0.1.5.tar.gz", hash = "sha256:feddd70d3deaf83f242747e8b845d00ef30b15a6cdc3dcc78eaa299a51d9a57b", size = 67663, upload-time = "2026-10-29T17:56:49.718Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/9f/a3/43c9773f431f0d7a9f3af6b4cf2c69a3ba9af7abf189f29cd2a493419ab5/prime_runs-0.1.5-py3-none-any.whl", hash = "sha256:f2bf5099a942eb254f98ffaf5c53f3fbc91b3b5a4a655914e99a4f06e5ed3ead", size = 46374, upload-time = "2026-10-29T17:56:48.14Z" },
 ]
-provides-extras = ["dev", "train"]
 
 [[package]]
 name = "prime-sandboxes"
@@ -3344,24 +3334,17 @@ wheels = [
 
 [[package]]
 name = "prime-traces"
-version = "0.0.10"
-source = { git = "https://github.com/PrimeIntellect-ai/prime?subdirectory=packages%2Fprime-traces&rev=adf8d25c3e34df8e039674fae9e0e4bf9cee27f3#adf8d25c3e34df8e039674fae9e0e4bf9cee27f3" }
+version = "0.0.11"
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "httpx" },
     { name = "orjson" },
     { name = "pydantic" },
 ]
-
-[package.metadata]
-requires-dist = [
-    { name = "httpx", specifier = ">=0.25.0" },
-    { name = "orjson", specifier = ">=3.10.0" },
-    { name = "pydantic", specifier = ">=2.0.0" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.0.0" },
-    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23.0" },
-    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.13.1" },
+sdist = { url = "https://files.pythonhosted.org/packages/e7/6c/0c1be7958d7e98b7168bcc48ce51c2743caae2daff92cab717c6b83cb331/prime_traces-0.0.11.tar.gz", hash = "sha256:a5933843e5ed2bf18279225f03539d6a85adeb86f9f906df4c8eff819f79b874", size = 60137, upload-time = "2026-10-29T17:56:49.936Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/10/a4/82298907c004527930892f096fdb0f539434666091e898492caae65b17a4/prime_traces-0.0.11-py3-none-any.whl", hash = "sha256:eefaf69409bbf639ca4972b7248eee0dcd31b17b204aefcc7fc20204fa6b234f", size = 43734, upload-time = "2026-10-29T17:56:48.691Z" },
 ]
-provides-extras = ["dev"]
 
 [[package]]
 name = "prime-tunnel"
@@ -5193,6 +5176,7 @@ wheels = [
 [[package]]
 name = "verifiers"
 source = { editable = "." }
+default-groups = ["dev", "examples"]
 dependencies = [
     { name = "aiohttp" },
     { name = "anthropic" },
