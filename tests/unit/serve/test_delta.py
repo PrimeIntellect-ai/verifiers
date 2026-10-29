@@ -258,6 +258,26 @@ async def test_discarded_attempt_drops_its_trace():
     assert list(assembly.traces) == [second.id]
 
 
+@pytest.mark.asyncio
+async def test_watched_trace_copies_while_a_send_is_in_flight():
+    """Grading deep-copies the live trace. The copy shares its watcher rather than
+    copying the stream, whose in-flight flush is a task that can't be copied."""
+    sent = asyncio.Event()
+
+    async def send(data: dict) -> None:
+        await sent.wait()
+
+    trace = make_trace()
+    async with DeltaStreamer(lambda: [trace], send) as streamer:
+        streamer.watch(trace)
+        await settle()
+        assert streamer._flushes
+        copied = copy.deepcopy(trace)
+        sent.set()
+    assert copied is not trace
+    assert copied._on_change.__self__ is streamer
+
+
 def test_finish_refuses_a_gap():
     assembly = EpisodeAssembly()
     assembly.apply({"trace": "t", "open": {"id": "t"}, "nodes": [{}]})
