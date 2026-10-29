@@ -45,7 +45,7 @@ class RolloutCheckpointConfig(BaseConfig):
     trace keeps its turns up to there, and a new harness process continues in a box
     restored to that state, told that the box was restored. Needs a runtime with
     checkpoints (prime) and a harness that can restore one
-    (`SUPPORTS_CHECKPOINT_RESTORE`); elsewhere no snapshot is taken. The snapshot runs
+    (both set `SUPPORTS_CHECKPOINTS`); elsewhere no snapshot is taken. The snapshot runs
     alongside the model call, and the reply waits only until its content is fixed.
 
     Known limits: a harness with concurrent sub-agents can be snapshotted while one of

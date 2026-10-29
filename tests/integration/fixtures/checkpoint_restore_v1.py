@@ -9,8 +9,8 @@ harness with MCP tools can drive them. A request `@intercept` raises a `Provider
 once the first attempt has made two turns — after the checkpoint of turn 2 exists. The
 restored attempt continues from that checkpoint in a new harness process: it never sees
 the injected failure again (it fires once per task), finds the earlier calls' files, and
-finishes. Needs a harness that can restore a checkpoint (`SUPPORTS_CHECKPOINT_RESTORE`)
-on a runtime with checkpoints (prime).
+finishes. Needs a harness that can restore a checkpoint on a runtime with checkpoints
+(prime): both set `SUPPORTS_CHECKPOINTS`.
 """
 
 import shutil

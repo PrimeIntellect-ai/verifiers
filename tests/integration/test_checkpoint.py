@@ -1,7 +1,7 @@
 """A retry restores the box's newest filesystem checkpoint (checkpoint-restore-v1: the
 first attempt dies as turn 3 goes upstream; the retry restores the turn-2 snapshot,
 keeps the turns before it, and finishes in a new harness process). Every harness that
-declares `SUPPORTS_CHECKPOINT_RESTORE` runs it on prime, the one runtime with
+declares `SUPPORTS_CHECKPOINTS` runs it on prime, the one runtime with
 checkpoints; the others are collected as skips. The retention policies run on one
 harness: what they keep or delete does not depend on it."""
 

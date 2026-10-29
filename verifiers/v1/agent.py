@@ -695,7 +695,7 @@ class Agent:
         retry_state = RetryState(retry)
         checkpointing = (
             self.config.checkpoint
-            if runtime is None and self.harness.SUPPORTS_CHECKPOINT_RESTORE
+            if runtime is None and self.harness.SUPPORTS_CHECKPOINTS
             else None
         )
         history: list[Error] = []  # errors of the attempts started over from

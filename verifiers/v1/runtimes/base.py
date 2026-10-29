@@ -188,7 +188,7 @@ class RuntimeBackend(ABC):
     """Whether `checkpoint` snapshots the box's filesystem for a new box of this config
     to boot from (its config's `checkpoint`). A rollout checkpoints before each model
     turn, so a retry restores the newest turn instead of replaying the run (see
-    `RetryConfig.checkpoint`)."""
+    `AgentConfig.checkpoint`)."""
 
     info: BaseRuntimeInfo
 
