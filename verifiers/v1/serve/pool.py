@@ -285,16 +285,17 @@ class EnvServerPool:
                         except zmq.ZMQError:
                             # The client cannot take this episode. Free it at the worker;
                             # the empty request id leaves the cancel reply untracked.
-                            await w["dealer"].send_multipart(
-                                [
-                                    b"",
-                                    b"cancel",
-                                    msgpack.packb(
-                                        {"request_id": request_id.bytes.decode()},
-                                        use_bin_type=True,
-                                    ),
-                                ]
-                            )
+                            with contextlib.suppress(UnicodeDecodeError):
+                                await w["dealer"].send_multipart(
+                                    [
+                                        b"",
+                                        b"cancel",
+                                        msgpack.packb(
+                                            {"request_id": request_id.bytes.decode()},
+                                            use_bin_type=True,
+                                        ),
+                                    ]
+                                )
         except (asyncio.CancelledError, KeyboardInterrupt):
             pass
         finally:
