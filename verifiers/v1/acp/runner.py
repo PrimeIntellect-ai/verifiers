@@ -268,7 +268,7 @@ class ACPSession:
                 "steering", {}
             ).get("supported") is True
             session = await self.connection.new_session(
-                cwd=os.getcwd(),
+                cwd=config.get("cwd") or os.getcwd(),
                 mcp_servers=mcp_servers(config),
                 **config["session_meta"],
             )

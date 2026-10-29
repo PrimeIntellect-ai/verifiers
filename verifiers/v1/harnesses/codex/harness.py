@@ -3,6 +3,7 @@
 import hashlib
 import json
 import logging
+import re
 import tomllib
 from pathlib import Path
 from typing import Literal
@@ -15,6 +16,7 @@ from verifiers.v1.configs.harness import HarnessConfig, PinnedVersion
 from verifiers.v1.harnesses.node import NODE_BIN_DIR, ensure_node
 from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
 from verifiers.v1.runtimes import Runtime
+from verifiers.v1.runtimes.deployment import ExecutionConnection
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
 
@@ -63,6 +65,10 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
     SUPPORTS_MCP = True
     SUPPORTS_SKILLS = True
     SUPPORTS_TOOL_INTERCEPTION = True
+    SUPPORTS_SPLIT_EXECUTION = True
+    _executor: str | None = None
+    """A split deployment's exec-server URL in the workspace."""
+    _executor_cwd: str | None = None
 
     def acp_turn_result(self, trace: Trace, result: ACPTurn) -> None:
         # codex-acp returns terminal failures in metadata with stop_reason=end_turn; a
@@ -76,6 +82,10 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
             raise RuntimeError(f"Codex {failure['category']}: {failure['title']}")
 
     async def setup(self, runtime: Runtime) -> None:
+        await self._install(runtime)
+        await super().setup(runtime)
+
+    async def _install(self, runtime: Runtime) -> None:
         await ensure_node(runtime)
         logger.info(
             "codex: ensuring Codex %s and codex-acp %s are installed",
@@ -101,7 +111,39 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
             },
             label="codex",
         )
-        await super().setup(runtime)
+
+    def validate_split_execution(self) -> None:
+        super().validate_split_execution()
+        if self.config.skills:
+            raise ValueError("Codex split deployment does not support custom skills")
+
+    async def setup_execution(
+        self, runtime: Runtime, workspace: Runtime, connection: ExecutionConnection
+    ) -> None:
+        # Codex's own executor runs the native shell and file tools in the workspace.
+        # Its client sends credentials only over TLS or loopback, so the listener takes
+        # none; the LAN admits the harness's VM and the workspace's own services.
+        await self._install(workspace)
+        codex = CODEX_BIN.format(version=self.config.version, acp_version=ACP_VERSION)
+        port = await connection.serve(
+            workspace,
+            [
+                f"{NODE_BIN_DIR}/node",
+                codex,
+                "exec-server",
+                "--listen",
+                "ws://0.0.0.0:0",
+            ],
+            {},
+            re.compile(r"^ws://\S+:(\d+)$", re.MULTILINE),
+        )
+        cwd = await workspace.run(["pwd", "-P"], {})
+        if cwd.exit_code:
+            raise RuntimeError(
+                f"could not resolve the workspace directory: {cwd.stderr}"
+            )
+        self._executor = f"ws://{connection.host}:{port}"
+        self._executor_cwd = cwd.stdout.strip()
 
     async def prepare_acp(
         self,
@@ -125,6 +167,7 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
                 ACP_BIN.format(version=self.config.version, acp_version=ACP_VERSION),
             ],
             prompt=prompt,
+            cwd=self._executor_cwd,
             # Codex reads MCP servers from the config written by build_env().
             mcp_urls={},
             system_prompt=system_prompt,
@@ -201,6 +244,18 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
             else ""
         )
         await runtime.write(f"{home}/config.toml", mcp_config.encode())
+        if self._executor is not None:
+            # The workspace's executor is the only one: the harness's VM runs no tools.
+            await runtime.write(
+                f"{home}/environments.toml",
+                tomli_w.dumps(
+                    {
+                        "default": "workspace",
+                        "include_local": False,
+                        "environments": [{"id": "workspace", "url": self._executor}],
+                    }
+                ).encode(),
+            )
 
         features: dict[str, object] = {
             "apps": False,
