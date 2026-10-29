@@ -4,11 +4,15 @@ import json
 import logging
 import shlex
 from pathlib import Path
-from typing import Literal
 
 from verifiers.v1.acp import ACPConfig, ACPHarness
 from verifiers.v1.clients import ModelContext
-from verifiers.v1.configs.harness import HarnessConfig, PinnedVersion, skill_destination
+from verifiers.v1.configs.harness import (
+    DialectName,
+    HarnessConfig,
+    PinnedVersion,
+    skill_destination,
+)
 from verifiers.v1.harnesses.node import NODE_BIN_DIR, ensure_node
 from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
 from verifiers.v1.harnesses.utils.replay import drop_blank_text
@@ -24,9 +28,7 @@ KEY_VAR = "PI_INTERCEPT_KEY"
 PI_DIR = "/var/tmp/vf-pi"
 PACKAGES_DIR = f"{PI_DIR}/mcp"
 PI_BIN = f"{PACKAGES_DIR}/node_modules/.bin/pi"
-MCP_VERSION = "2.34.0"
-ACP_VERSION = "0.0.33"
-MCP_ADAPTER = f"{PACKAGES_DIR}/node_modules/pi-mcp-adapter/index.ts"
+ACP_VERSION = "0.0.34"
 ACP_BIN = f"{PACKAGES_DIR}/node_modules/.bin/pi-acp"
 ACP_COMMAND = [f"{NODE_BIN_DIR}/node", ACP_BIN]
 
@@ -37,11 +39,10 @@ set -e
 packages=/var/tmp/vf-pi/mcp
 export PATH="/var/tmp/vf-node/bin:$PATH"
 
-versions="$VF_PI_VERSION:$VF_PI_MCP_VERSION:$VF_PI_ACP_VERSION"
+versions="$VF_PI_VERSION:$VF_PI_ACP_VERSION"
 if [ "$(cat "$packages/.versions" 2>/dev/null)" != "$versions" ]; then
     npm install --prefix "$packages" --ignore-scripts --no-audit --no-fund --omit=dev \
         "@earendil-works/pi-coding-agent@$VF_PI_VERSION" \
-        "pi-mcp-adapter@$VF_PI_MCP_VERSION" \
         "pi-acp@$VF_PI_ACP_VERSION" >/dev/null
     printf %s "$versions" > "$packages/.versions"
 fi
@@ -49,12 +50,9 @@ fi
 
 
 class PiHarnessConfig(HarnessConfig):
-    version: PinnedVersion = "0.86.1"
+    version: PinnedVersion = "1.4.0"
     """Pi release to install, pinned for reproducibility."""
-    transport: Literal["chat_completions", "responses", "anthropic_messages"] = (
-        "chat_completions"
-    )
-    """Model API transport."""
+    dialect: DialectName = "chat_completions"
     supports_developer_role: bool | None = None
     """Override Pi's chat-completions role detection for custom model endpoints."""
 
@@ -67,10 +65,14 @@ class PiHarness(ACPHarness[PiHarnessConfig]):
     # so the installed skills are passed explicitly via `--skill` at launch.
     SUPPORTS_SKILLS = True
 
-    # pi-ai drops whitespace-only assistant text on replay. Recheck on version bumps:
-    # https://github.com/earendil-works/pi/blob/v0.86.1/packages/ai/src/api/openai-completions.ts#L1290
-    def replay_view(self, message: Message) -> Message:
-        return drop_blank_text(message)
+    # pi-ai drops whitespace-only assistant text on replay over chat completions and
+    # Anthropic messages, not over Responses. Recheck on version bumps:
+    # https://github.com/earendil-works/pi/blob/v1.4.0/packages/ai/src/api/openai-completions.ts#L1310
+    # https://github.com/earendil-works/pi/blob/v1.4.0/packages/ai/src/api/anthropic-messages.ts#L1437
+    def replay_view(self, message: Message, dialect: DialectName | None) -> Message:
+        if dialect in ("chat_completions", "anthropic_messages"):
+            return drop_blank_text(message)
+        return message
 
     async def setup(self, runtime: Runtime) -> None:
         await ensure_node(runtime)
@@ -85,7 +87,6 @@ class PiHarness(ACPHarness[PiHarnessConfig]):
             install=INSTALL,
             env={
                 "VF_PI_VERSION": self.config.version,
-                "VF_PI_MCP_VERSION": MCP_VERSION,
                 "VF_PI_ACP_VERSION": ACP_VERSION,
             },
             label="pi",
@@ -117,10 +118,10 @@ class PiHarness(ACPHarness[PiHarnessConfig]):
             "chat_completions": "openai-completions",
             "responses": "openai-responses",
             "anthropic_messages": "anthropic-messages",
-        }[self.config.transport]
+        }[self.config.dialect]
         base_url = (
             endpoint.removesuffix("/v1")
-            if self.config.transport == "anthropic_messages"
+            if self.config.dialect == "anthropic_messages"
             else endpoint
         )
         model_config = {
@@ -129,12 +130,12 @@ class PiHarness(ACPHarness[PiHarnessConfig]):
             "input": ["text", "image"],
             **(
                 {"compat": {"sessionAffinityFormat": "openai-nosession"}}
-                if self.config.transport == "responses"
+                if self.config.dialect == "responses"
                 else {}
             ),
         }
         if (
-            self.config.transport == "chat_completions"
+            self.config.dialect == "chat_completions"
             and self.config.supports_developer_role is not None
         ):
             model_config["compat"] = {
@@ -152,22 +153,14 @@ class PiHarness(ACPHarness[PiHarnessConfig]):
         }
         await runtime.write(f"{agent_dir}/models.json", json.dumps(models).encode())
 
-        mcp_args: list[str] = []
         if mcp_urls:
-            extension_path = f"{agent_dir}/mcp.js"
             mcp = {
                 "mcpServers": {
-                    name: {"url": url, "lifecycle": "eager", "directTools": True}
+                    name: {"url": url, "exposure": "direct"}
                     for name, url in mcp_urls.items()
                 }
             }
-            extension = (
-                f'import {{ createMcpAdapter }} from "{MCP_ADAPTER}";\n'
-                "export default createMcpAdapter({ config: "
-                f"JSON.parse({json.dumps(json.dumps(mcp))}) }});\n"
-            )
-            await runtime.write(extension_path, extension.encode())
-            mcp_args = ["--extension", extension_path]
+            await runtime.write(f"{agent_dir}/mcp.json", json.dumps(mcp).encode())
 
         env = {
             **self.config.resolved_env,
@@ -188,7 +181,6 @@ class PiHarness(ACPHarness[PiHarnessConfig]):
             provider,
             "--model",
             model,
-            *mcp_args,
             *skill_args,
         ]
         if self.config.disabled_tools:
@@ -206,7 +198,7 @@ class PiHarness(ACPHarness[PiHarnessConfig]):
             env=env,
             command=ACP_COMMAND,
             prompt=prompt,
-            # Pi's extension owns the task-scoped MCP configuration.
+            # Pi reads the task-scoped MCP configuration from its agent directory.
             mcp_urls={},
         )
 

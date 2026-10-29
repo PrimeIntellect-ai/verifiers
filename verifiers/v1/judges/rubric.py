@@ -2,19 +2,20 @@
 
 import asyncio
 import json
+import math
 import re
 import tomllib
 from functools import cached_property
 from pathlib import Path
 from typing import Annotated, cast
 
-from pydantic import BaseModel, Field, TypeAdapter, field_validator
+from pydantic import BaseModel, Field, TypeAdapter, field_validator, model_validator
 
+from verifiers.v1.configs.harness import ID
 from verifiers.v1.configs.judge import JudgeConfig
 from verifiers.v1.judge import Judge, JudgeView, judge_question, judge_response
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
-from verifiers.v1.types import ID
 
 CriterionWeight = Annotated[float, Field(ge=0, allow_inf_nan=False)]
 
@@ -33,10 +34,6 @@ JSON_SUFFIX = (
     "one-sentence reason grounded in the response, then set verdict to exactly one of the options "
     "listed in parentheses after that criterion."
 )
-
-
-def normalize_choice(choice: str, choices: list[str]) -> float:
-    return choices.index(choice) / (len(choices) - 1)
 
 
 def first_verdicts_object(text: str) -> dict | None:
@@ -63,16 +60,69 @@ class Criterion(BaseModel):
     text: str
     weight: CriterionWeight = 1.0
     """The criterion's share of the reward (overridable per name via `weights` in config)."""
-    choices: list[str] = Field(default_factory=lambda: ["no", "yes"], min_length=2)
-    """Allowed answers, ordered **worst → best**: the first scores 0.0, the last 1.0, the rest
-    evenly spaced by rank. Default `["no", "yes"]` is a binary check. Needs >= 2, no duplicates."""
+    choices: list[str] | dict[str, float] = Field(
+        default_factory=lambda: ["no", "yes"], min_length=1
+    )
+    """Scored answers. A list is ordered **worst → best**: the first scores 0.0, the last 1.0,
+    the rest evenly spaced by rank (needs >= 2). A mapping gives each answer its own finite
+    score, in any order. Default `["no", "yes"]` is a binary check. No duplicates."""
+    drop: list[str] = Field(default_factory=list)
+    """Answers that drop the trace (`Trace.dropped`) instead of scoring it, whatever the
+    criterion's weight: a verdict the trace carries no reward signal for, such as a task
+    defect."""
 
     @field_validator("choices")
     @classmethod
-    def _check_choices(cls, v: list[str]) -> list[str]:
-        if len(set(v)) != len(v):
+    def _check_choices(
+        cls, v: list[str] | dict[str, float]
+    ) -> list[str] | dict[str, float]:
+        if isinstance(v, list) and len(set(v)) != len(v):
             raise ValueError(f"`choices` has duplicate options: {v}")
+        if isinstance(v, list) and len(v) < 2:
+            raise ValueError(f"a ranked `choices` list needs at least 2 options: {v}")
+        if isinstance(v, dict) and not all(math.isfinite(s) for s in v.values()):
+            raise ValueError(f"`choices` scores must be finite: {v}")
         return v
+
+    @model_validator(mode="after")
+    def _check_drop(self) -> "Criterion":
+        if len(set(self.drop)) != len(self.drop):
+            raise ValueError(f"`drop` has duplicate answers: {self.drop}")
+        if both := sorted(set(self.drop) & set(self.choices)):
+            raise ValueError(f"answers {both} are in both `choices` and `drop`")
+        if len(self.answers) < 2:
+            raise ValueError(f"criterion {self.name!r} needs at least 2 answers")
+        return self
+
+    @property
+    def answers(self) -> list[str]:
+        """Every answer the judge may give: the scored choices, then the drop answers."""
+        return [*self.choices, *self.drop]
+
+    def score(self, choice: str) -> float:
+        """The score of `choice`, one of `choices`."""
+        if isinstance(self.choices, dict):
+            return self.choices[choice]
+        return self.choices.index(choice) / (len(self.choices) - 1)
+
+    def render(self) -> str:
+        """The criterion as a prompt line, with its allowed answers."""
+        if isinstance(self.choices, dict):
+            return (
+                f"- {self.name}: {self.text} (answer one of: {', '.join(self.answers)})"
+            )
+        listing = f"answer one of, worst to best: {', '.join(self.choices)}"
+        if self.drop:
+            listing += f"; or one of: {', '.join(self.drop)}"
+        return f"- {self.name}: {self.text} ({listing})"
+
+
+def weighted_score(scores: dict[str, float], criteria: list[Criterion]) -> float:
+    """The criteria's weighted mean score, for a verdict that drops nothing (`drop_reason`).
+    Zero-weight criteria never contribute."""
+    weighted = [c for c in criteria if c.weight]
+    total = sum(c.weight for c in weighted)
+    return sum(c.weight * scores[c.name] for c in weighted) / total
 
 
 CRITERIA_ADAPTER = TypeAdapter(list[Criterion])
@@ -158,7 +208,8 @@ def score_verdicts(
     criteria: list[Criterion],
     expected: str,
 ) -> dict[str, float]:
-    """Validate a complete named verdict set and normalize its ordered choices."""
+    """Validate a complete named verdict set and score each answer that scores: a criterion
+    answered with one of its `drop` answers has no score."""
     by_criterion = {criterion.name: criterion for criterion in criteria}
     answers: dict[str, str] = {}
     for verdict in verdicts:
@@ -174,13 +225,51 @@ def score_verdicts(
         )
     scores: dict[str, float] = {}
     for name, answer in answers.items():
-        choices = by_criterion[name].choices
-        if answer not in choices:
+        criterion = by_criterion[name]
+        if answer not in criterion.answers:
             raise ValueError(
-                f"judge answered {answer!r} for '{name}', expected one of {choices}"
+                f"judge answered {answer!r} for '{name}', expected one of "
+                f"{criterion.answers}"
             )
-        scores[name] = normalize_choice(answer, choices)
+        if answer in criterion.choices:
+            scores[name] = criterion.score(answer)
     return scores
+
+
+def criterion_metrics(
+    prefix: str,
+    verdicts: list[CriterionVerdict],
+    criteria: list[Criterion],
+    scores: dict[str, float],
+) -> dict[str, float]:
+    """Each criterion's score as `<prefix>/<name>` when it scored, and for a criterion with
+    scored choices (a mapping) or drop answers an indicator per answer,
+    `<prefix>/<name>/<answer>`, since several answers can share a score or have none."""
+    answers = {verdict.name: verdict.verdict for verdict in verdicts}
+    metrics: dict[str, float] = {}
+    for criterion in criteria:
+        if criterion.name in scores:
+            metrics[f"{prefix}/{criterion.name}"] = scores[criterion.name]
+        if isinstance(criterion.choices, dict) or criterion.drop:
+            for answer in criterion.answers:
+                metrics[f"{prefix}/{criterion.name}/{answer}"] = float(
+                    answers[criterion.name] == answer
+                )
+    return metrics
+
+
+def drop_reason(
+    prefix: str, verdicts: list[CriterionVerdict], criteria: list[Criterion]
+) -> str | None:
+    """`<prefix>: <name>=<answer>, ...` for each criterion answered with one of its `drop`
+    answers; None when the verdict drops nothing."""
+    answers = {verdict.name: verdict.verdict for verdict in verdicts}
+    dropped = [
+        f"{criterion.name}={answers[criterion.name]}"
+        for criterion in criteria
+        if answers[criterion.name] in criterion.drop
+    ]
+    return f"{prefix}: {', '.join(dropped)}" if dropped else None
 
 
 class RubricJudge(Judge[RubricVerdicts, RubricJudgeConfig]):
@@ -193,10 +282,7 @@ class RubricJudge(Judge[RubricVerdicts, RubricJudgeConfig]):
 
     async def grade_batch(
         self, task: TaskData, trace: Trace, batch: list[Criterion]
-    ) -> dict[str, float]:
-        def render(c: Criterion) -> str:
-            return f"- {c.name}: {c.text} (answer one of, worst to best: {', '.join(c.choices)})"
-
+    ) -> list[CriterionVerdict]:
         reference = ""
         if self.config.answer_field:
             answer = getattr(task, self.config.answer_field, None)
@@ -224,7 +310,7 @@ class RubricJudge(Judge[RubricVerdicts, RubricJudgeConfig]):
         fields = {
             "question": judge_question(task, self.config.question_field),
             "response": judge_response(trace, self.config.view),
-            "criteria": "\n".join(render(c) for c in batch),
+            "criteria": "\n".join(c.render() for c in batch),
             "reference": reference,
         }
         if self.config.structured_output:
@@ -240,9 +326,14 @@ class RubricJudge(Judge[RubricVerdicts, RubricJudgeConfig]):
                 )
             verdicts = RubricVerdicts.model_validate(obj).verdicts
         # A malformed verdict is a judge failure and must error the rollout, not score the model.
-        return score_verdicts(verdicts, batch, "the batch's")
+        scores = score_verdicts(verdicts, batch, "the batch's")
+        trace.record_metrics(
+            criterion_metrics(self.reward_name, verdicts, batch, scores)
+        )
+        return verdicts
 
-    async def score(self, task: TaskData, trace: Trace) -> float:
+    async def score(self, task: TaskData, trace: Trace) -> float | None:
+        """The weighted score, or None when an answer drops the trace."""
         criteria = self.criteria
         k = self.config.max_criteria
         batches = (
@@ -263,15 +354,13 @@ class RubricJudge(Judge[RubricVerdicts, RubricJudgeConfig]):
                 t.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
             raise
-        by_name: dict[str, float] = {}
-        for batch_verdicts in results:
-            by_name.update(batch_verdicts)
-        for criterion in criteria:
-            trace.record_metric(
-                f"{self.reward_name}/{criterion.name}", by_name[criterion.name]
-            )
-        total = sum(criterion.weight for criterion in criteria)
-        return sum(c.weight * by_name[c.name] for c in criteria) / total
+        verdicts = [verdict for batch_verdicts in results for verdict in batch_verdicts]
+        if (reason := drop_reason(self.reward_name, verdicts, criteria)) is not None:
+            trace.drop(reason)
+            return None
+        return weighted_score(
+            score_verdicts(verdicts, criteria, "the rubric's"), criteria
+        )
 
 
 __all__ = [
@@ -280,4 +369,7 @@ __all__ = [
     "RubricJudge",
     "RubricJudgeConfig",
     "RubricVerdicts",
+    "criterion_metrics",
+    "drop_reason",
+    "weighted_score",
 ]

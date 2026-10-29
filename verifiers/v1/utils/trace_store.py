@@ -14,6 +14,7 @@ from verifiers.v1.state import StateT
 from verifiers.v1.task import DataT
 from verifiers.v1.trace import AgentConfigT, Trace
 from verifiers.v1.utils.aio import run_shielded
+from verifiers.v1.utils.artifacts import save_artifacts
 
 TRACES_FILE = "traces.jsonl"
 type_adapter = cache(TypeAdapter)
@@ -25,6 +26,18 @@ def write_episode(
     """Serialize and append one rollout episode in the worker thread."""
     # Preserve fields declared by typed Trace subclasses nested in the episode.
     data = type_adapter(type(episode)).dump_json(episode, exclude_none=True)
+    for trace in episode.traces:
+        if trace.state.artifacts:
+            if trace.id == ".." or Path(trace.id).parts != (trace.id,):
+                raise ValueError(
+                    f"trace ID must be a single path component: {trace.id!r}"
+                )
+            save_artifacts(
+                results_dir / "artifacts" / trace.id,
+                trace.state.artifacts,
+                trace.task.data.artifacts,
+                workdir=getattr(trace.agent.runtime, "workdir", None) or "/",
+            )
     with (results_dir / TRACES_FILE).open("ab") as f:
         f.write(data + b"\n")
 

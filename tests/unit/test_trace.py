@@ -2,13 +2,17 @@
 
 import json
 
+import numpy as np
+import orjson
 import pytest
 
 import verifiers.v1 as vf
 from verifiers.v1.configs.agent import resolve_agent
 from verifiers.v1.dialects.chat import ChatDialect
 from verifiers.v1.dialects.responses import ResponsesDialect, fold_assistant
-from verifiers.v1.graph import MessageNode, prepare_turn
+from verifiers.v1.graph import MessageNode, prepare_turn, round_stream
+from verifiers.v1.session import RolloutLimits
+from verifiers.v1.trace import EXCLUDE_FIELDS
 from verifiers.v1.types import AssistantMessage, UserMessage
 from verifiers.v1.utils.trace_store import write_episode
 
@@ -70,6 +74,87 @@ def test_bare_trace_round_trip(sampling):
         assert rt.reward == 0.0 and rt.errors == []
         assert rt.agent.config == tr.agent.config
         assert rt.agent.config.sampling.model_dump() == resolved.sampling.model_dump()
+
+
+def _streamed_trace() -> vf.Trace:
+    return vf.Trace(
+        agent=vf.AgentInfo(config=vf.AgentConfig()),
+        task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt="q")),
+        nodes=[
+            MessageNode(
+                message=UserMessage(content="q"),
+                token_ids=[1, 2, 3],
+                is_content=[False, True, True],
+            ),
+            MessageNode(
+                parent=0,
+                message=AssistantMessage(content="a"),
+                sampled=True,
+                token_ids=[4, 5, 6],
+                mask=[False, True, True],
+                logprobs=[-0.123456, -1.00005],
+                advantages=[0.333333, 0.333333],
+                loss_weights={"policy": [0.0, 1 / 3, 1 / 3]},
+            ),
+        ],
+    )
+
+
+@pytest.mark.parametrize("float_decimals", [4, None])
+def test_record_streams_are_arrays_with_json_dump_content(float_decimals):
+    tr = _streamed_trace()
+    episode = vf.Episode(task=tr.task, traces=[tr], ok=True)
+    context = {"float_decimals": float_decimals}
+    cases = [
+        (
+            tr.to_record(float_decimals),
+            tr.model_dump(mode="json", exclude=EXCLUDE_FIELDS, context=context),
+        ),
+        (
+            episode.to_record(float_decimals),
+            episode.model_dump(
+                mode="json",
+                exclude={"traces": {"__all__": EXCLUDE_FIELDS}},
+                exclude_none=True,
+                context=context,
+            ),
+        ),
+    ]
+    for record, json_dump in cases:
+        nodes = (record["traces"][0] if "traces" in record else record)["nodes"]
+        assert isinstance(nodes[1]["token_ids"], np.ndarray)
+        assert isinstance(nodes[1]["loss_weights"]["policy"], np.ndarray)
+        assert orjson.loads(
+            orjson.dumps(record, option=orjson.OPT_SERIALIZE_NUMPY)
+        ) == orjson.loads(json.dumps(json_dump))
+    assert orjson.loads(tr.to_json(float_decimals)) == orjson.loads(
+        json.dumps(cases[0][1])
+    )
+    assert orjson.loads(episode.to_json(float_decimals)) == orjson.loads(
+        json.dumps(cases[1][1])
+    )
+
+
+def test_record_exclude_merges_with_the_record_excludes():
+    tr = _streamed_trace()
+    tr.nodes[1].message.reasoning_content = "hidden"
+    exclude = {"ok": True, "nodes": {"__all__": {"message": {"reasoning_content"}}}}
+    record = tr.to_record(exclude=exclude)
+    assert "ok" not in record
+    assert "reasoning_content" not in record["nodes"][1]["message"]
+    assert record["nodes"][1]["message"]["content"] == "a"
+    assert "top_logprobs" not in record["nodes"][1]
+    assert record["nodes"][1]["token_ids"].tolist() == [4, 5, 6]
+    assert orjson.loads(tr.to_json(exclude=exclude)) == orjson.loads(
+        orjson.dumps(record, option=orjson.OPT_SERIALIZE_NUMPY)
+    )
+
+
+def test_round_stream_matches_round():
+    values = np.random.default_rng(0).standard_normal(100_000).astype(np.float32) * 10
+    values = np.concatenate([values, np.float32([0.00005, -0.00015, 1.23445, 2.5e-5])])
+    expected = [round(value, 4) for value in values.tolist()]
+    assert round_stream(values, 4).tolist() == expected
 
 
 def test_custom_task_state_round_trip(tmp_path):
@@ -266,3 +351,43 @@ def test_sampling_mask_from_packed_matches_lists():
     ):
         np.testing.assert_array_equal(mask.ids, ids)
         np.testing.assert_array_equal(mask.counts, counts)
+
+
+def test_max_turn_tokens_limit():
+    limits = RolloutLimits(max_turn_tokens=16)
+    trace = vf.Trace(
+        agent=vf.AgentInfo(config=vf.AgentConfig()),
+        task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt=None)),
+    )
+    trace.calls.append(vf.ModelCall(finish_reason="stop"))
+    assert limits.reached(trace) is None
+    # A length finish below the cap ran out of context: not this limit.
+    usage = vf.Usage(prompt_tokens=100, completion_tokens=8)
+    trace.calls.append(vf.ModelCall(finish_reason="length", usage=usage))
+    assert limits.reached(trace) is None
+    usage = vf.Usage(prompt_tokens=100, completion_tokens=16)
+    trace.calls.append(vf.ModelCall(finish_reason="length", usage=usage))
+    assert limits.reached(trace) == "max_turn_tokens"
+    trace.stop("max_turn_tokens")
+    assert trace.is_truncated
+
+
+@pytest.mark.parametrize("max_tokens,expected", [(None, 16), (8, 8), (64, 16)])
+def test_max_turn_tokens_caps_sampling(max_tokens, expected):
+    spec = vf.AgentConfig(max_turn_tokens=16)
+    sampling = vf.SamplingConfig(max_tokens=max_tokens)
+    assert resolve_agent(spec, sampling=sampling).sampling.max_tokens == expected
+
+
+@pytest.mark.parametrize("pinned", [False, True])
+def test_run_sampling_stays_with_run_client(pinned):
+    run_sampling = vf.SamplingConfig(temperature=0.8, top_k=20)
+    client = vf.EvalClientConfig(base_url="http://judge.invalid/v1") if pinned else None
+    spec = vf.AgentConfig(client=client, sampling={"reasoning_effort": "high"})
+    resolved = resolve_agent(
+        spec, client=vf.TrainClientConfig(), sampling=run_sampling
+    ).sampling
+    expected = {"reasoning_effort": "high"}
+    if not pinned:
+        expected |= {"temperature": 0.8, "top_k": 20}
+    assert resolved.model_dump(exclude_none=True) == expected

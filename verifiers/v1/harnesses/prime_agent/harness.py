@@ -7,11 +7,11 @@ from typing import Literal
 
 from verifiers.v1.acp import ACPConfig, ACPHarness, ACPTurn
 from verifiers.v1.clients import ModelContext
-from verifiers.v1.configs.harness import HarnessConfig, skill_destination
-from verifiers.v1.harnesses.node import NODE_BIN_DIR, ensure_node
+from verifiers.v1.configs.harness import DialectName, HarnessConfig, skill_destination
 from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
 from verifiers.v1.harnesses.utils.replay import drop_blank_text
 from verifiers.v1.runtimes import Runtime
+from verifiers.v1.runtimes.base import _ENSURE_UV
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
 from verifiers.v1.types import Message
@@ -21,10 +21,10 @@ logger = logging.getLogger(__name__)
 GITHUB_RELEASE_URL = (
     "https://github.com/PrimeIntellect-ai/prime-agent/releases/download"
 )
-PRIME_AGENT_COMMIT: Literal["a7d791bc1be09793ed5f3ec05bf4cccbc60679ea"] = (
-    "a7d791bc1be09793ed5f3ec05bf4cccbc60679ea"
+PRIME_AGENT_COMMIT: Literal["8aac8692456c00c01d4e53e60e6d3347a3506559"] = (
+    "8aac8692456c00c01d4e53e60e6d3347a3506559"
 )
-PRIME_AGENT_VERSION = "0.9.5"
+PRIME_AGENT_VERSION = "0.10.1"
 PRIME_AGENT_DIR = "/var/tmp/vf-prime-agent"
 STATE_ROOT = "/tmp/vf-prime-agent-runs"
 PROVIDER = "intercept"
@@ -33,67 +33,57 @@ KEY_VAR = "PRIME_AGENT_INTERCEPT_KEY"
 ENV_AGENT_DIR = "PRIME_AGENT_CODING_AGENT_DIR"
 
 
-INSTALL = r"""
-set -e
-export PATH="/var/tmp/vf-node/bin:$PATH"
+INSTALL = (
+    "set -e\n"
+    + _ENSURE_UV
+    + r"""
 prefix="$VF_PRIME_AGENT_DIR/$PRIME_AGENT_COMMIT"
-[ -x "$prefix/bin/prime-agent" ] && [ -f "$PRIME_AGENT_KERNEL_VENV/.bootstrap-version" ] && exit 0
-export NPM_CONFIG_PREFIX="$prefix"
-export PRIME_AGENT_BOOTSTRAP_KERNEL_ON_INSTALL=1
-release_url="$VF_PRIME_AGENT_GITHUB_RELEASE_URL/v$PRIME_AGENT_RELEASE_VERSION"
-agent_tarball="prime-agent-$PRIME_AGENT_RELEASE_VERSION.tgz"
-ai_tarball="prime-agent-ai-$PRIME_AGENT_RELEASE_VERSION.tgz"
-core_tarball="prime-agent-core-$PRIME_AGENT_RELEASE_VERSION.tgz"
-tui_tarball="prime-agent-tui-$PRIME_AGENT_RELEASE_VERSION.tgz"
-download_dir="$(mktemp -d "$VF_PRIME_AGENT_DIR/install.XXXXXX")"
-trap 'rm -rf "$download_dir"' EXIT
-for tarball in "$agent_tarball" "$ai_tarball" "$core_tarball" "$tui_tarball"; do
-    curl -fsSL --retry 5 --retry-all-errors \
-        "$release_url/$tarball" -o "$download_dir/$tarball"
+if [ ! -x "$prefix/bin/prime-agent" ]; then
+    case "$(uname -s)-$(uname -m)" in
+        Linux-x86_64) platform=linux-x64; sha=21ec219183f4134dd23dce9572102e69456066fe374846525561c776d4d1945c ;;
+        Linux-aarch64|Linux-arm64) platform=linux-arm64; sha=5af68c10a088538fd4990fd18778d8c7fe28c0491083dc069c5177f733770e91 ;;
+        Darwin-x86_64) platform=darwin-x64; sha=9e2812084acead5a2c44209ffac350f762da67a27f4abcc5b417b7a6ef436632 ;;
+        Darwin-arm64) platform=darwin-arm64; sha=2b47bd9cefa0b531151aaeb7295073ba0a16cf694177c18b4f9f74a54b24e279 ;;
+        *) echo "unsupported prime-agent platform: $(uname -s)-$(uname -m)" >&2; exit 1 ;;
+    esac
+    command -v curl >/dev/null || { apt-get update -qq && apt-get install -y -qq curl ca-certificates; } || apk add --no-cache curl ca-certificates
+    release_url="$VF_PRIME_AGENT_GITHUB_RELEASE_URL/v$PRIME_AGENT_RELEASE_VERSION"
+    tarball="prime-agent-$PRIME_AGENT_RELEASE_VERSION-$platform.tar.gz"
+    download_dir="$(mktemp -d "$VF_PRIME_AGENT_DIR/install.XXXXXX")"
+    trap 'rm -rf "$download_dir"' EXIT
+    curl -fsSL --retry 5 --retry-all-errors "$release_url/$tarball" -o "$download_dir/$tarball"
+    printf '%s  %s\n' "$sha" "$tarball" > "$download_dir/SHA256SUMS"
+    if command -v sha256sum >/dev/null; then
+        (cd "$download_dir" && sha256sum -c SHA256SUMS)
+    else
+        (cd "$download_dir" && shasum -a 256 -c SHA256SUMS)
+    fi
+    mkdir "$download_dir/bin"
+    tar -xzf "$download_dir/$tarball" -C "$download_dir/bin"
+    [ "$("$download_dir/bin/prime-agent" --version)" = "$PRIME_AGENT_RELEASE_VERSION" ]
+    mkdir -p "$prefix"
+    mv "$download_dir/bin" "$prefix/bin"
+fi
+# Let the released binary validate the kernel cache and prepare its Python runtime.
+"$prefix/bin/prime-agent" --prime-agent-bootstrap
+# Bootstrap installs only the runtime; sessions also import the bundled Python skills.
+set --
+for pyproject in "$prefix/bin/skills/"*/pyproject.toml; do
+    set -- "$@" --editable "${pyproject%/pyproject.toml}"
 done
-printf '%s  %s\n' \
-    '349f1682c7909550842f1b04a71ba95814341b136474ade736df93f8ec006876' "$agent_tarball" \
-    '9ad0184b7b5f3d5c3b1677c0663335de32c092cbdb72697aeaf997f17910bb92' "$ai_tarball" \
-    '59aafeffb4b64eb997399d56a03f529b2f6604b228e5674372195277db52f04a' "$core_tarball" \
-    'e49f41170edfd1d0e72418729d2c117969ccf8df784dc55fe8c1a9d91778e103' "$tui_tarball" \
-    > "$download_dir/SHA256SUMS"
-(cd "$download_dir" && sha256sum -c SHA256SUMS)
-mkdir "$download_dir/package-root"
-tar -xzf "$download_dir/$agent_tarball" -C "$download_dir/package-root"
-node - \
-    "$download_dir/package-root/package/package.json" \
-    "$download_dir" \
-    "$ai_tarball" \
-    "$core_tarball" \
-    "$tui_tarball" <<'NODE'
-const fs = require("node:fs");
-const [manifestPath, downloadDir, ai, core, tui] = process.argv.slice(2);
-const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
-for (const [name, file] of [
-    ["@earendil-works/pi-ai", ai],
-    ["@earendil-works/pi-agent-core", core],
-    ["@earendil-works/pi-tui", tui],
-]) {
-    manifest.dependencies[name] = `file:${downloadDir}/${file}`;
-}
-fs.writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
-NODE
-mkdir "$download_dir/repacked"
-repacked="$(npm pack "$download_dir/package-root/package" \
-    --pack-destination "$download_dir/repacked" --silent)"
-PRIME_AGENT_BOOTSTRAP_TOOLS_ON_INSTALL=1 npm install -g \
-    --no-fund --no-audit --loglevel=error --progress=false \
-    "$download_dir/repacked/$repacked"
-[ -f "$PRIME_AGENT_KERNEL_VENV/.bootstrap-version" ]
+uv pip install --python "$PRIME_AGENT_KERNEL_VENV/bin/python" "$@"
 """
+)
 
 
 class PrimeAgentHarnessConfig(HarnessConfig):
-    commit: Literal["a7d791bc1be09793ed5f3ec05bf4cccbc60679ea"] = PRIME_AGENT_COMMIT
+    commit: Literal["8aac8692456c00c01d4e53e60e6d3347a3506559"] = PRIME_AGENT_COMMIT
     """Prime Agent release commit to install."""
 
     autonomous: bool = False
     """Enable Prime Agent's autonomous continuation loop."""
+    # Over Responses it replays an earlier turn without its reasoning.
+    dialect: Literal["chat_completions", "anthropic_messages"] = "chat_completions"
 
 
 class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
@@ -101,9 +91,9 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
     SUPPORTS_MCP = True
     SUPPORTS_SKILLS = True
 
-    # Its pi-ai fork drops whitespace-only assistant text on replay. Recheck on bumps:
-    # https://github.com/PrimeIntellect-ai/prime-agent/blob/v0.9.5/packages/ai/src/providers/openai-completions.ts#L895
-    def replay_view(self, message: Message) -> Message:
+    # Its chat-completions provider drops whitespace-only assistant text on replay. Recheck on bumps:
+    # https://github.com/PrimeIntellect-ai/prime-agent/blob/v0.10.1/crates/pa-ai/src/providers/openai_completions/convert.rs#L106
+    def replay_view(self, message: Message, dialect: DialectName | None) -> Message:
         return drop_blank_text(message)
 
     def acp_turn_result(self, trace: Trace, result: ACPTurn) -> None:
@@ -161,7 +151,6 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
         statuses.append(status)
 
     async def setup(self, runtime: Runtime) -> None:
-        await ensure_node(runtime)
         logger.info("prime-agent: ensuring commit %s is installed", self.config.commit)
         await ensure_installed(
             runtime,
@@ -222,8 +211,15 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
         models = {
             "providers": {
                 PROVIDER: {
-                    "baseUrl": endpoint,
-                    "api": "openai-completions",
+                    # Its Anthropic provider appends `/v1/messages` to the base URL.
+                    "baseUrl": endpoint.removesuffix("/v1")
+                    if self.config.dialect == "anthropic_messages"
+                    else endpoint,
+                    "api": {
+                        "chat_completions": "openai-completions",
+                        "responses": "openai-responses",
+                        "anthropic_messages": "anthropic-messages",
+                    }[self.config.dialect],
                     "apiKey": KEY_VAR,
                     "models": [
                         {
@@ -248,6 +244,7 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
             self._bin(),
             "--mode",
             "acp",
+            "--no-session",  # The ACP connection owns the session's lifetime.
             "--provider",
             PROVIDER,
             "--model",
@@ -262,6 +259,18 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
             args += ["--skill", skill_destination(skill, skills_dir)]
         if system_prompt:
             args += ["--append-system-prompt", system_prompt]
+        if mcp_urls:
+            # ACP servers need discovery guidance; importing the SDK shadows the REPL helper.
+            args += [
+                "--append-system-prompt",
+                (
+                    f"Connected MCP servers: {json.dumps(list(mcp_urls))}. "
+                    "Use the pre-imported `mcp` helper in `ipython`, or `from rlm import mcp`. "
+                    "Do not `import mcp`: that loads the unrelated SDK and overwrites the helper. "
+                    "Discover tools with `print(await mcp.list_tools(server))`, then call them "
+                    "with `print(await mcp.call_tool(server, tool, arguments))`."
+                ),
+            ]
 
         return ACPConfig(
             env=self._env(trace, secret),
@@ -270,7 +279,7 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
                 "/bin/sh",
                 "-eu",
                 "-c",
-                f'export PATH="{NODE_BIN_DIR}:$HOME/.local/bin:$PATH"; exec "$@"',
+                'export PATH="$HOME/.local/bin:$PATH"; exec "$@"',
                 "prime-agent",
                 *args,
             ],
@@ -301,6 +310,7 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
             KEY_VAR: secret,
             ENV_AGENT_DIR: f"{root}/agent",
             "TMPDIR": f"{root}/tmp",
-            "PRIME_AGENT_KERNEL_VENV": self._kernel_venv(),
+            # Sessions use the installed interpreter without writing to the shared venv.
+            "PRIME_AGENT_KERNEL_PYTHON": f"{self._kernel_venv()}/bin/python",
             "PRIME_AGENT_TELEMETRY": "0",
         }

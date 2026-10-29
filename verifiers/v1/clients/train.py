@@ -9,6 +9,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Any, ClassVar, TypeVar
 
+import numpy as np
 from openai import OpenAIError
 from renderers import OverlongPromptError, RenderedTokens, Renderer, RendererConfig
 from renderers.base import ToolCallParseStatus, is_multimodal
@@ -16,6 +17,7 @@ from renderers.base import ToolCallParseStatus, is_multimodal
 from verifiers.v1.clients.base import build_async_openai
 from verifiers.v1.clients.client import SESSION_ID_HEADER, Client
 from verifiers.v1.configs.client import TrainClientConfig
+from verifiers.v1.configs.sampling import SamplingConfig
 from verifiers.v1.dialects import FINISH_REASONS, ChatDialect, Dialect
 from verifiers.v1.dialects.chat import message_to_wire
 from verifiers.v1.errors import ProviderError, model_error
@@ -24,12 +26,13 @@ from verifiers.v1.types import (
     AssistantMessage,
     FinishReason,
     Response,
-    SamplingConfig,
     SamplingMask,
     Tool,
     ToolCall,
+    TopLogprobs,
     TurnTokens,
     Usage,
+    WeightVersionSpan,
 )
 
 logger = logging.getLogger(__name__)
@@ -129,8 +132,11 @@ def response_from_generate(
         # TODO: we need a better way for renderers to expose this
         and getattr(tc, "status", None) != ToolCallParseStatus.UNKNOWN_TOOL
     ] or None
-    prompt_ids = result.get("prompt_ids") or []
-    completion_ids = result.get("completion_ids") or []
+    # The renderer tokenizes into lists; the turn's streams hold one array each from here on.
+    prompt_ids = np.asarray(result.get("prompt_ids") or (), dtype=np.int32)
+    completion_ids = np.asarray(result.get("completion_ids") or (), dtype=np.int32)
+    renderer_prompt_ids = result.get("renderer_prompt_ids")
+    completion_logprobs = result.get("completion_logprobs")
     # Per-message token spans (the renderer's attribution) let the trace graph store each
     # message's tokens once; carried transiently on TurnTokens and consumed by turn.commit().
     attribution = result.get("prompt_attribution")
@@ -156,7 +162,7 @@ def response_from_generate(
         model=model,
         message=AssistantMessage(
             content=result.get("content") or None,
-            reasoning_content=result.get("reasoning_content"),
+            reasoning_content=result.get("reasoning_content") or None,
             tool_calls=tool_calls,
         ),
         finish_reason=finish,
@@ -165,37 +171,47 @@ def response_from_generate(
         usage=Usage(
             prompt_tokens=len(prompt_ids), completion_tokens=len(completion_ids)
         ),
-        # generate() returns owned, typed lists. Skip revalidation here to avoid copying
-        # million-token contexts synchronously on the event loop.
+        # The streams are already typed arrays, so skip revalidation.
         tokens=TurnTokens.model_construct(
             prompt_ids=prompt_ids,
-            renderer_prompt_ids=result.get("renderer_prompt_ids"),
+            renderer_prompt_ids=np.asarray(renderer_prompt_ids, dtype=np.int32)
+            if renderer_prompt_ids is not None
+            else None,
             bridged=bridged_turn is not None,
             completion_ids=completion_ids,
-            completion_logprobs=result.get("completion_logprobs") or [],
+            completion_logprobs=np.asarray(
+                () if completion_logprobs is None else completion_logprobs,
+                dtype=np.float32,
+            ),
             message_spans=message_spans,
-            is_content=attribution.is_content if attribution is not None else None,
+            is_content=np.asarray(attribution.is_content, dtype=np.bool_)
+            if attribution is not None and attribution.is_content is not None
+            else None,
             mm_placeholders=mm_placeholders,
             mm_token_type_id_map=mm_token_type_id_map,
             routed_experts=result.get("routed_experts"),
             sampling_mask=SamplingMask.from_sampling_mask(mask)
             if (mask := result.get("sampling_mask"))
             else None,
+            weight_versions=[WeightVersionSpan(**span) for span in spans]
+            if (spans := result.get("weight_versions"))
+            else None,
+            top_logprobs=(
+                TopLogprobs.from_top_logprobs(
+                    result["completion_top_ids"], result["completion_top_logprobs"]
+                )
+                if result.get("completion_top_ids") is not None
+                else None
+            ),
         ),
     )
 
 
 def _is_valid_incremental_tail(messages: list[dict[str, Any]]) -> bool:
-    """Renderer bridges may extend sampled assistant turns with tool calls and/or a new user."""
-    if not messages:
-        return False
-    roles = []
-    for message in messages:
-        role = message.get("role")
-        roles.append(role if isinstance(role, str) else None)
-    if roles[-1] == "user":
-        return all(role == "tool" for role in roles[:-1])
-    return all(role == "tool" for role in roles)
+    """Let the renderer extend append-only tool results and user messages."""
+    return bool(messages) and all(
+        message.get("role") in ("tool", "user") for message in messages
+    )
 
 
 def _has_multimodal_content(messages) -> bool:
@@ -375,7 +391,13 @@ class TrainClient(Client):
         prompt_ids: list[int] | None = None
         prompt_attribution: RenderedTokens | None = None
         model = body["model"]
-        sampling_params = sampling.model_dump(exclude_none=True)
+        # Neutral defaults stop vLLM from applying the model's generation_config
+        # top_k/min_p, so the sampled distribution is the one the trainer replays.
+        sampling_params = {
+            "top_k": -1,
+            "min_p": 0.0,
+            **sampling.model_dump(exclude_none=True),
+        }
         chat_template_kwargs = sampling_params.pop("chat_template_kwargs", None)
         cache_salt = sampling_params.pop("cache_salt", None)
         pool = ElasticRendererPool(

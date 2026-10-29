@@ -14,7 +14,7 @@ export default {
     yield* ctx.session.hook(
       "prompt",
       Effect.fn(function* () {
-        // OpenCode 2.0.26's public plugin API omits discovered MCP tools. Read
+        // OpenCode 2.1.4's public plugin API omits discovered MCP tools. Read
         // its native service in the prompt's location context, including empty servers.
         const mcp = yield* Context.Service()("@opencode/MCP");
         const servers = yield* mcp.servers();

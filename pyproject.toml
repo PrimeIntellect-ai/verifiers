@@ -33,7 +33,7 @@ dependencies = [
     "math-verify>=0.8.0",
     "openai>=2.54.0,<3.0.0",
     "prime-tunnel>=0.1.14",
-    "prime-sandboxes>=0.4.2",
+    "prime-sandboxes>=0.5.1",
     "prime-runs>=0.1.4",
     "pydantic>=2.12.3",
     "rich>=11.0.0",
@@ -41,6 +41,7 @@ dependencies = [
     "gepa>=0.0.6",
     "pyzmq>=27.1.0",
     "msgpack>=1.1.2",
+    "orjson>=3.10.0",
     "httpx>=0.27.0",
     "httpx2>=2.12.0",
     "h11>=0.16.0",
@@ -49,9 +50,9 @@ dependencies = [
     "prime-pydantic-config[toml]>=0.4.3",
     "loguru>=0.7.0",
     "tomli-w>=1.0.0",
-    "renderers[multimodal]>=0.1.12",
+    "renderers[multimodal]>=0.1.13.dev17",
     "typing_extensions>=4.12.2",
-    "mcp==2.0.0",
+    "mcp==2.2.0",
 ]
 
 [dependency-groups]
@@ -96,14 +97,6 @@ harbor = [
     # Harbor currently publishes Python 3.12+ packages; keep core verifiers installable on 3.11.
     "harbor==0.24.0 ; python_full_version >= '3.12'",
 ]
-modal = [
-    "modal>=1.5.4",
-]
-e2b = [
-    # <3: the runtime swaps the SDK command handle's private stream decoders for
-    # byte-accurate live output (see runtimes/e2b.py _byte_handle).
-    "e2b>=2.35.0,<3",
-]
 openenv = [
     "openenv>=0.4.1",
 ]
@@ -112,6 +105,12 @@ preview = true
 required-version = ">=0.11.1"
 exclude-newer = "7 days"
 default-groups = ["dev", "examples"]
+# TODO: replace with the prime-runs/prime-traces PyPI release that has PrimeIntellect-ai/prime#1109
+# (orjson-encoded records, numpy streams) asap, and raise the prime-runs minimum above to it. Until
+# then prime-traces (prime-runs' dependency) is pinned to the same commit on prime main.
+override-dependencies = [
+    "prime-traces @ git+https://github.com/PrimeIntellect-ai/prime@adf8d25c3e34df8e039674fae9e0e4bf9cee27f3#subdirectory=packages/prime-traces",
+]
 
 [[tool.uv.index]]
 name = "pypi"
@@ -137,8 +136,12 @@ interception = { path = "environments/interception", editable = true }
 grayscale-interception = { path = "environments/grayscale_interception", editable = true }
 bash-interception = { path = "environments/bash_interception", editable = true }
 web-search-interception = { path = "environments/web_search_interception", editable = true }
+# TODO: PyPI release of prime-runs with PrimeIntellect-ai/prime#1109 asap (see override-dependencies).
+prime-runs = { git = "https://github.com/PrimeIntellect-ai/prime", subdirectory = "packages/prime-runs", rev = "adf8d25c3e34df8e039674fae9e0e4bf9cee27f3" }
 
 [tool.uv.exclude-newer-package]
+# CA bundle: security fixes (e.g. 2026.10.19 for the eMudhra compromise) must not wait out the cooldown
+certifi = false
 # Bounded cutoffs for the explicitly requested tool upgrades.
 # Full UTC timestamps: bare dates resolve to local-tz midnight and churn the
 # lockfile across timezones.
@@ -225,11 +228,7 @@ markers = [
     # is applied per axis, so it matches every cell touching that value on any axis.
     "subprocess: integration cells touching the subprocess (host) runtime",
     "docker: integration cells touching the docker runtime",
-    "podman: integration cells touching the podman runtime (needs the engine on the host; local-only)",
-    "apptainer: integration cells touching the apptainer runtime (needs the engine on the host; local-only)",
     "prime: integration cells touching the prime runtime (real sandbox + tunnel)",
-    "modal: integration cells touching the modal runtime (external sandbox; local-only, excluded in CI)",
-    "e2b: integration cells touching the e2b runtime (external sandbox; local-only, excluded in CI)",
     "colocated: integration cells with a tool server colocated in the harness runtime",
     "service: integration cells with a tool server in a Compose service beside the harness",
     "null: integration cells on the null harness",

@@ -4,11 +4,24 @@ from typing import Annotated
 
 from pydantic import Field
 
-from verifiers.v1.configs.runtime import NetworkPolicyConfig
-from verifiers.v1.runtimes.apptainer import (
-    ApptainerBackend,
-    ApptainerConfig,
-    ApptainerRuntimeInfo,
+from verifiers.v1.configs.runtime import (
+    CustomRuntimeConfig,
+    DockerConfig,
+    NetworkPolicyConfig,
+    PrimeConfig,
+    RuntimeConfig,
+    SubprocessConfig,
+)
+from verifiers.v1.runtimes.backends.custom import CustomRuntimeInfo, import_backend
+from verifiers.v1.runtimes.backends.docker import DockerBackend, DockerRuntimeInfo
+from verifiers.v1.runtimes.backends.prime import (
+    PrimeBackend,
+    PrimeRuntimeInfo,
+    set_base_sandbox_labels,
+)
+from verifiers.v1.runtimes.backends.subprocess import (
+    SubprocessBackend,
+    SubprocessRuntimeInfo,
 )
 from verifiers.v1.runtimes.base import (
     BaseRuntimeInfo,
@@ -17,66 +30,27 @@ from verifiers.v1.runtimes.base import (
     RuntimeProcess,
     register,
 )
-from verifiers.v1.runtimes.docker import (
-    DockerBackend,
-    DockerConfig,
-    DockerRuntimeInfo,
-    PodmanBackend,
-    PodmanConfig,
-    PodmanRuntimeInfo,
-)
-from verifiers.v1.runtimes.e2b import E2BBackend, E2BConfig, E2BRuntimeInfo
-from verifiers.v1.runtimes.modal import ModalBackend, ModalConfig, ModalRuntimeInfo
-from verifiers.v1.runtimes.prime import (
-    PrimeBackend,
-    PrimeConfig,
-    PrimeRuntimeInfo,
-    set_base_sandbox_labels,
-)
 from verifiers.v1.runtimes.runtime import Runtime
-from verifiers.v1.runtimes.subprocess import (
-    SubprocessBackend,
-    SubprocessConfig,
-    SubprocessRuntimeInfo,
-)
-
-RuntimeConfig = Annotated[
-    SubprocessConfig
-    | DockerConfig
-    | PodmanConfig
-    | ApptainerConfig
-    | PrimeConfig
-    | ModalConfig
-    | E2BConfig,
-    Field(discriminator="type"),
-]
 
 RuntimeInfo = Annotated[
-    SubprocessRuntimeInfo
-    | DockerRuntimeInfo
-    | PodmanRuntimeInfo
-    | ApptainerRuntimeInfo
-    | PrimeRuntimeInfo
-    | ModalRuntimeInfo
-    | E2BRuntimeInfo,
+    SubprocessRuntimeInfo | DockerRuntimeInfo | PrimeRuntimeInfo | CustomRuntimeInfo,
     Field(discriminator="type"),
 ]
 
 
-def _backend_cls(config: RuntimeConfig) -> type[RuntimeBackend]:
+def backend_cls(config: RuntimeConfig) -> type[RuntimeBackend]:
+    """The backend class for `config`, whose class attributes declare its capabilities."""
+    if isinstance(config, CustomRuntimeConfig):
+        return import_backend(config.import_path)
     return {
         "subprocess": SubprocessBackend,
         "docker": DockerBackend,
-        "podman": PodmanBackend,
-        "apptainer": ApptainerBackend,
         "prime": PrimeBackend,
-        "modal": ModalBackend,
-        "e2b": E2BBackend,
     }[config.type]
 
 
 def make_backend(config: RuntimeConfig, name: str | None = None) -> RuntimeBackend:
-    backend = _backend_cls(config)(config, name)
+    backend = backend_cls(config)(config, name)
     register(backend)
     return backend
 
@@ -114,27 +88,17 @@ async def provision_runtime(
 def runtime_is_local(config: RuntimeConfig) -> bool:
     """Whether a runtime of this config exchanges host-local URLs without a public
     tunnel, read off the runtime class without provisioning one."""
-    return _backend_cls(config).is_local
+    return backend_cls(config).is_local
 
 
 __all__ = [
-    "ApptainerBackend",
-    "ApptainerConfig",
-    "ApptainerRuntimeInfo",
     "BaseRuntimeInfo",
+    "CustomRuntimeConfig",
+    "CustomRuntimeInfo",
     "DockerBackend",
     "DockerConfig",
     "DockerRuntimeInfo",
-    "E2BBackend",
-    "E2BConfig",
-    "E2BRuntimeInfo",
-    "ModalBackend",
-    "ModalConfig",
-    "ModalRuntimeInfo",
     "NetworkPolicyConfig",
-    "PodmanBackend",
-    "PodmanConfig",
-    "PodmanRuntimeInfo",
     "PrimeBackend",
     "PrimeConfig",
     "PrimeRuntimeInfo",
@@ -147,6 +111,7 @@ __all__ = [
     "SubprocessBackend",
     "SubprocessConfig",
     "SubprocessRuntimeInfo",
+    "backend_cls",
     "make_backend",
     "provision_backend",
     "provision_runtime",

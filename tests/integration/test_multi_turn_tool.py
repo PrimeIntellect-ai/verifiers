@@ -1,11 +1,12 @@
 """One task, one MCP tool: the model calls a tool whose output carries a stamp the prompt
-never reveals (echo-tool-v1), so reward 1.0 proves the tool ran. Every MCP harness reaches
+never reveals (echo-tool), so reward 1.0 proves the tool ran. Every MCP harness reaches
 it colocated across the harness x runtime grid; the chat loop reaches it across its
 placements (colocated in the harness's box, in a Compose service beside it, or its own
-runtime) on the runtime x runtime grid."""
+runtime) on the runtime x runtime grid. A tool that raises (tool-error) reports its message
+to the model; that is server-side, so the chat loop covers it."""
 
 import pytest
-from grid import RUNTIMES, grid, placements
+from grid import assert_one_branch, grid, placements
 
 import verifiers.v1 as vf
 
@@ -14,7 +15,7 @@ import verifiers.v1 as vf
 async def test_tool(run, harness, harness_runtime):
     """Every MCP-capable harness reaches a tool colocated in its runtime."""
     (episode,) = await run(
-        "echo-tool-v1",
+        "echo-tool",
         harness=harness,
         runtime=harness_runtime,
         max_turns=6,
@@ -22,18 +23,22 @@ async def test_tool(run, harness, harness_runtime):
         taskset_overrides={"task": {"tools": {"colocated": True}}},
     )
     (trace,) = episode.traces
-    assert trace.num_branches == 1
+    assert_one_branch(trace, harness, forks=("openclaw",))
     assert trace.ok, [error.message for error in trace.errors]
     assert trace.num_turns >= 1
     # Reward 1.0 is the proof the tool ran. How a program surfaces an MCP tool to the
     # model is its own business (rlm calls it from code; chat loops advertise it), so
     # the advertised schema is checked on the chat loop in `test_tool_placement`.
-    assert trace.reward == 1.0
+    assert trace.reward == 1.0, "\n".join(
+        message.model_dump_json(exclude_none=True)
+        for message in trace.messages
+        if message.role in {"assistant", "tool"}
+    )
 
 
 @pytest.mark.parametrize(
     "harness_runtime,tool_runtime",
-    placements(tool_runtimes=("colocated", "service", *RUNTIMES)),
+    placements(tool_runtimes=("colocated", "service", "subprocess", "prime")),
     indirect=True,
 )
 async def test_tool_placement(run, harness_runtime, tool_runtime):
@@ -42,7 +47,7 @@ async def test_tool_placement(run, harness_runtime, tool_runtime):
     on the chat loop. Eval-wide SHARED servers are a different scope (`Taskset.toolsets`),
     covered by `test_shared_tool`."""
     (episode,) = await run(
-        "echo-tool-v1",
+        "echo-tool",
         harness="null",
         runtime=harness_runtime,
         max_turns=6,
@@ -58,6 +63,16 @@ async def test_tool_placement(run, harness_runtime, tool_runtime):
     assert trace.tools
     (echo_tool,) = [tool for tool in trace.tools if tool.name.endswith("back")]
     assert "message" in echo_tool.parameters.get("properties", {})
+
+
+async def test_tool_error(run):
+    """A tool's exception message comes back to the model, not just that the call failed."""
+    (episode,) = await run("tool-error", max_turns=4)
+    (trace,) = episode.traces
+    assert trace.ok, [error.message for error in trace.errors]
+    assert trace.reward == 1.0, [
+        message.model_dump_json(exclude_none=True) for message in trace.tool_messages
+    ]
 
 
 @pytest.mark.parametrize(

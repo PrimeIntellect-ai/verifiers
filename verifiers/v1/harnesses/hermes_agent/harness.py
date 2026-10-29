@@ -2,10 +2,11 @@
 
 import json
 from pathlib import Path
+from typing import Literal
 
 from verifiers.v1.acp import ACPConfig, ACPHarness
 from verifiers.v1.clients import ModelContext
-from verifiers.v1.configs.harness import HarnessConfig, PinnedVersion
+from verifiers.v1.configs.harness import DialectName, HarnessConfig, PinnedVersion
 from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
 from verifiers.v1.harnesses.utils.replay import strip_text
 from verifiers.v1.runtimes import Runtime
@@ -22,16 +23,24 @@ set -e
 command -v curl >/dev/null || (apt-get update -qq && apt-get install -y -qq curl ca-certificates >/dev/null)
 curl -fsSL "https://github.com/NousResearch/hermes-agent/archive/refs/tags/$VF_HERMES_VERSION.tar.gz" \\
     | tar -xz --strip-components=1 -C "$VF_HERMES_DIR"
-uv sync --project "$VF_HERMES_DIR" --locked --no-dev --extra acp --extra mcp
+# Replay one reasoning key: strict providers reject Hermes' duplicated aliases on custom routes.
+# Recheck: https://github.com/NousResearch/hermes-agent/blob/v0.22.3/agent/message_sanitization.py#L660
+sed -i '/^_REASONING_CARRIER_ROUTES: tuple = (/a\\
+    (_DEFAULT_CARRIERS, frozenset({{"custom"}}), ()),' "$VF_HERMES_DIR/agent/message_sanitization.py"
+uv sync --project "$VF_HERMES_DIR" --python 3.14 --locked --no-dev --extra acp --extra mcp --extra anthropic
 touch "$VF_HERMES_DIR/.ready"
 """
 
 
 class HermesAgentHarnessConfig(HarnessConfig):
-    version: PinnedVersion = "v2026.9.14"
+    version: PinnedVersion = "v0.22.3"
     """Hermes Agent Git release tag to install, pinned for reproducibility."""
     use_bundled_skill: bool = False
-    """Enable Hermes Agent's bundled skill catalog in addition to uploaded skills."""
+    """Enable optional bundled skills; Hermes always includes its own operating manual."""
+    # Over Responses it replays an earlier turn without its reasoning.
+    dialect: Literal["chat_completions", "anthropic_messages", "auto"] = "auto"
+    """`auto` lets Hermes pick the transport from the model name on eval clients, and
+    chat completions on others."""
 
 
 class HermesAgentHarness(ACPHarness[HermesAgentHarnessConfig]):
@@ -39,11 +48,11 @@ class HermesAgentHarness(ACPHarness[HermesAgentHarnessConfig]):
     SUPPORTS_MCP = True
     SUPPORTS_SKILLS = True
 
-    # Hermes stores assistant text stripped and pads missing reasoning with " " on
-    # replay. Recheck on version bumps:
-    # https://github.com/NousResearch/hermes-agent/blob/v2026.9.14/agent/chat_completion_helpers.py#L1444
-    # https://github.com/NousResearch/hermes-agent/blob/v2026.9.14/agent/message_sanitization.py#L545
-    def replay_view(self, message: Message) -> Message:
+    # Hermes strips stored assistant text and pads missing reasoning with " " on
+    # routes requiring reasoning replay. Recheck on version bumps:
+    # https://github.com/NousResearch/hermes-agent/blob/v0.22.3/agent/chat_completion_helpers.py#L1583
+    # https://github.com/NousResearch/hermes-agent/blob/v0.22.3/agent/message_sanitization.py#L867
+    def replay_view(self, message: Message, dialect: DialectName | None) -> Message:
         return strip_text(message)
 
     async def setup(self, runtime: Runtime) -> None:
@@ -94,8 +103,11 @@ class HermesAgentHarness(ACPHarness[HermesAgentHarnessConfig]):
             "api_key": secret,
             "discover_models": False,
         }
-        if ctx.client.type == "eval":
+        if self.config.dialect != "auto":
+            provider["transport"] = self.config.dialect
+        elif ctx.client.type == "eval":
             provider["transport"] = "${HERMES_INTERCEPT_TRANSPORT}"
+        mcp_headers = self.config.resolve_mcp_headers(mcp_urls)
         config = {
             "model": model,
             # The ACP client already approves tool requests. Avoid routing Hermes'
@@ -104,6 +116,16 @@ class HermesAgentHarness(ACPHarness[HermesAgentHarnessConfig]):
             # Session titles are UI metadata, not part of the agent conversation.
             "auxiliary": {"title_generation": {"enabled": False}},
             "providers": {"openai": provider},
+            # The gateway owns MCP connections and snapshots tools before the first turn.
+            "mcp_discovery_timeout": self.config.tool_timeout,
+            "mcp_servers": {
+                name: {
+                    "url": url,
+                    "headers": mcp_headers.get(name, {}),
+                    "timeout": self.config.tool_timeout,
+                }
+                for name, url in mcp_urls.items()
+            },
         }
         await runtime.write(f"{home}/config.yaml", json.dumps(config).encode())
         if not self.config.use_bundled_skill:
@@ -126,6 +148,7 @@ class HermesAgentHarness(ACPHarness[HermesAgentHarnessConfig]):
             ],
             prompt=prompt,
             system_prompt=system_prompt,
+            mcp_urls={},
         )
 
     async def cleanup(self, trace: Trace, runtime: Runtime) -> None:

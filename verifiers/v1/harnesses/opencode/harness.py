@@ -2,16 +2,17 @@
 
 import json
 from pathlib import Path
-from typing import Literal
 
 from verifiers.v1.acp import ACPConfig, ACPHarness
 from verifiers.v1.clients import ModelContext
-from verifiers.v1.configs.harness import HarnessConfig, PinnedVersion
+from verifiers.v1.configs.harness import DialectName, HarnessConfig, PinnedVersion
 from verifiers.v1.harnesses.node import ensure_node
 from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
+from verifiers.v1.harnesses.utils.replay import drop_blank_text
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
+from verifiers.v1.types import Message
 
 OPENCODE_DIR = "/var/tmp/vf-opencode"
 STATE_ROOT = "/tmp/vf-opencode-runs"
@@ -27,12 +28,9 @@ npm install --prefix "$VF_OPENCODE_DIR" --no-audit --no-fund --omit=dev \
 
 
 class OpenCodeHarnessConfig(HarnessConfig):
-    version: PinnedVersion = "2.0.26"
+    version: PinnedVersion = "2.1.4"
     """OpenCode 2 release to install, pinned for reproducibility."""
-    transport: Literal["chat_completions", "responses", "anthropic_messages"] = (
-        "chat_completions"
-    )
-    """Model API transport."""
+    dialect: DialectName = "chat_completions"
     disabled_tools: list[str] | None = None
     """OpenCode permission actions to deny, such as shell, read, or edit."""
 
@@ -41,6 +39,14 @@ class OpenCodeHarness(ACPHarness[OpenCodeHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
     SUPPORTS_SKILLS = True
+
+    # OpenCode drops whitespace-only assistant text on replay over Anthropic messages.
+    # Recheck on version bumps:
+    # https://github.com/anomalyco/opencode/blob/v2.1.4/packages/ai/src/protocols/anthropic-messages.ts#L929
+    def replay_view(self, message: Message, dialect: DialectName | None) -> Message:
+        if dialect == "anthropic_messages":
+            return drop_blank_text(message)
+        return message
 
     async def setup(self, runtime: Runtime) -> None:
         await ensure_node(runtime)
@@ -80,7 +86,7 @@ class OpenCodeHarness(ACPHarness[OpenCodeHarnessConfig]):
             "chat_completions": "openai-compatible",
             "responses": "openai-compatible/responses",
             "anthropic_messages": "anthropic-compatible",
-        }[self.config.transport]
+        }[self.config.dialect]
         settings = {
             "model": "intercept/model",
             "providers": {

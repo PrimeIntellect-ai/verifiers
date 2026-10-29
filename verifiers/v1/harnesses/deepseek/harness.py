@@ -2,6 +2,7 @@
 
 import json
 from pathlib import Path
+from typing import Literal
 
 from verifiers.v1.acp import ACPConfig, ACPHarness
 from verifiers.v1.clients import ModelContext
@@ -25,7 +26,10 @@ touch "$VF_DEEPSEEK_DIR/.ready"
 
 
 class DeepSeekHarnessConfig(HarnessConfig):
-    version: PinnedVersion = "0.2.1-alpha.3"
+    # The `deepseek-official` route speaks Anthropic messages:
+    # https://github.com/deepseek-ai/deepseek-harness/blob/dsh-v0.2.1-rc.3/packages/llm/llm-deepseek/src/messages-api.ts#L14-L17
+    dialect: Literal["anthropic_messages"] = "anthropic_messages"
+    version: PinnedVersion = "0.2.1-rc.3"
     """DeepSeek CLI release, pinned to its shipped sdk-minimal composition."""
 
 
@@ -66,7 +70,7 @@ class DeepSeekHarness(ACPHarness[DeepSeekHarnessConfig]):
         home = f"/tmp/vf-deepseek/{trace.id}"
         system_prompt, prompt = self.resolve_prompt(data)
         # Keep the upstream minimal tree; replace only its SDK stdio front door.
-        # https://github.com/deepseek-ai/deepseek-harness/tree/master/packages/bundle/sdk-minimal
+        # https://github.com/deepseek-ai/deepseek-harness/tree/dsh-v0.2.1-rc.3/packages/bundle/sdk-minimal
         patches = [
             {"id": "sdk-app-startup", "disabled": True},
             {"id": "sdk-jsonrpc-server", "disabled": True},

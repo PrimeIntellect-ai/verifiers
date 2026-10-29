@@ -15,6 +15,7 @@ from anthropic.types import Message as AnthropicMessage
 from anthropic.types import Usage as AnthropicUsage
 
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
+from verifiers.v1.configs.sampling import Sampling, SamplingConfig
 from verifiers.v1.dialects.base import (
     Dialect,
     RawRequest,
@@ -34,8 +35,6 @@ from verifiers.v1.types import (
     Messages,
     Request,
     Response,
-    Sampling,
-    SamplingConfig,
     SystemMessage,
     TextContentPart,
     Tool,
@@ -63,6 +62,7 @@ ERROR_TYPES = {
     529: "overloaded_error",
 }
 ERROR_STATUSES = {kind: status for status, kind in ERROR_TYPES.items()}
+
 
 # Claude may reorder mixed thinking block types between a response and its replay.
 # Native tool events share the final rank, preserving their relative order.
@@ -116,6 +116,12 @@ _SAFE_CONTENT_TYPES = (
     "advisor_redacted_result",
     "advisor_tool_result_error",
 )
+
+
+def _error_type(status_code: int) -> str:
+    return ERROR_TYPES.get(
+        status_code, "api_error" if status_code >= 500 else "invalid_request_error"
+    )
 
 
 def parse_content(content) -> str | list[ContentPart]:
@@ -437,6 +443,7 @@ class ModdedAnthropicMessage(AnthropicMessage):
 
 
 class AnthropicDialect(Dialect[AnthropicMessage]):
+    name = "anthropic_messages"
     sampling_fields = frozenset(
         {
             "temperature",
@@ -524,10 +531,10 @@ class AnthropicDialect(Dialect[AnthropicMessage]):
         # The SDK sends the key as `x-api-key`; an ANTHROPIC_AUTH_TOKEN arrives as Bearer.
         return headers.get("x-api-key") or super().secret(headers)
 
-    def error_body(self, message: str) -> dict:
+    def error_body(self, message: str, *, status_code: int = 400) -> dict:
         return {
             "type": "error",
-            "error": {"type": "invalid_request_error", "message": message},
+            "error": {"type": _error_type(status_code), "message": message},
         }
 
     def stream_keepalive(self, first: bool) -> bytes:
@@ -537,10 +544,7 @@ class AnthropicDialect(Dialect[AnthropicMessage]):
     def stream_error(self, error: dict, *, status_code: int | None = None) -> bytes:
         # Once HTTP 200 is committed, clients classify retries from the SSE error type.
         if status_code is not None:
-            kind = ERROR_TYPES.get(
-                status_code,
-                "api_error" if status_code >= 500 else "invalid_request_error",
-            )
+            kind = _error_type(status_code)
             error = {**error, "error": {**error.get("error", {}), "type": kind}}
         # The Anthropic SDKs raise only on a named `error` event.
         return b"event: error\ndata: " + json.dumps(error).encode() + b"\n\n"

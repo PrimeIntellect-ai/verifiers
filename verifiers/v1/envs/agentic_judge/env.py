@@ -6,7 +6,6 @@ The judge has its own non-training trace and writes rubric verdicts to a file.
 """
 
 import copy
-import json
 import re
 from pathlib import Path
 
@@ -18,13 +17,19 @@ from verifiers.v1.configs.scoring import resolve_scoring
 from verifiers.v1.judges.rubric import (
     Criterion,
     RubricVerdicts,
+    criterion_metrics,
+    drop_reason,
     load_criteria,
     score_verdicts,
+    weighted_score,
 )
 from verifiers.v1.utils.compile import validate_pairing
 
 VERDICT_FILE = "/tmp/verdict.json"
 TRACE_FILE = "/tmp/trace.json"
+HIDDEN_REASONING = {"reasoning_content", "provider_state"}
+"""Message fields a judge's trace file leaves out by default: hidden reasoning and
+provider-only state."""
 
 GRADE_PROMPT = """\
 You are grading another agent's attempt at a task. Verify the work EMPIRICALLY:
@@ -45,10 +50,7 @@ SOLVED = Criterion(
 
 
 def _verdict_section(criteria: list[Criterion]) -> str:
-    listing = "\n".join(
-        f"- {c.name}: {c.text} (answer one of, worst to best: {', '.join(c.choices)})"
-        for c in criteria
-    )
+    listing = "\n".join(c.render() for c in criteria)
     return f"""\
 ## Your verdict
 
@@ -138,16 +140,12 @@ class JudgeTask(vf.Task):
     ) -> "JudgeTask":
         """Build the verdict task for the already prepared scoring workspace."""
         solved = solution.task.data
-        record = solution.to_record()
         # This snapshot is evidence for verification, not its final outcome.
         # stop() marks the agent loop completed before rollout scoring finishes.
-        record.pop("ok", None)
+        exclude: dict = {"ok": True}
         if not config.include_hidden_reasoning:
-            for node in record["nodes"]:
-                message = node["message"]
-                message.pop("reasoning_content", None)
-                message.pop("provider_state", None)
-        files = {TRACE_FILE: json.dumps(record).encode()}
+            exclude["nodes"] = {"__all__": {"message": HIDDEN_REASONING}}
+        files = {TRACE_FILE: solution.to_json(exclude=exclude)}
         template = config.build_prompt()
         body = _render(template, prompt=solved.prompt_text)
         if "{prompt}" not in template:
@@ -165,8 +163,7 @@ class JudgeTask(vf.Task):
                 image=solved.image,
                 workdir=solved.workdir,
                 resources=solved.resources,
-                network_allow=solved.network_allow,
-                network_block=solved.network_block,
+                network=solved.network,
             ),
             files=files,
         )
@@ -301,15 +298,19 @@ class AgenticJudgeEnv(vf.Env[AgenticJudgeEnvConfig]):
         verdicts = RubricVerdicts.model_validate(verdict.info.get("verdict")).verdicts
         criteria = self.config.task.criteria()
         scores = score_verdicts(verdicts, criteria, "the rubric's")
-        for criterion in criteria:
-            solution.record_metric(f"judge/{criterion.name}", scores[criterion.name])
+        solution.record_metrics(criterion_metrics("judge", verdicts, criteria, scores))
         if self.config.score.task_weight != 1.0:
             for reward in solution.rewards.values():
                 if reward is not None:
                     reward.weight *= self.config.score.task_weight
-        total = sum(criterion.weight for criterion in criteria)
-        reward = sum(c.weight * scores[c.name] for c in criteria) / total
-        solution.record_reward("judge", reward, weight=self.config.score.judge_weight)
+        if (reason := drop_reason("judge", verdicts, criteria)) is not None:
+            solution.drop(reason)
+            return
+        solution.record_reward(
+            "judge",
+            weighted_score(scores, criteria),
+            weight=self.config.score.judge_weight,
+        )
 
     async def run(self, task: vf.Task, agents: vf.Agents) -> None:
         policy = resolve_scoring(task.scoring, self.config.solver.scoring)
@@ -334,9 +335,8 @@ class AgenticJudgeEnv(vf.Env[AgenticJudgeEnvConfig]):
                 "workdir": runtime.config.workdir,
             }
             if isinstance(runtime.config, NetworkPolicyConfig):
-                updates.update(
-                    network_allow=runtime.config.allow,
-                    network_block=runtime.config.block,
+                updates["network"] = NetworkPolicyConfig(
+                    allow=runtime.config.allow, block=runtime.config.block
                 )
             judge_task = judge_task.with_data(**updates)
             # A per-invocation view retains episode accounting and concurrency while
