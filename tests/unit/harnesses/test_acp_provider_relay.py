@@ -169,3 +169,39 @@ def test_the_host_hands_the_runner_its_endpoint():
     """The session's prompt config names the endpoint the runner's relay fronts."""
     source = Path(acp_harness.__file__).read_text()
     assert '"provider_url": self.endpoint' in source
+
+
+async def test_an_answer_that_goes_silent_is_cut_and_stops_counting(
+    runner, monkeypatch
+):
+    """An upstream that streams once and then sends nothing (a connection dead half-open
+    after a network drop) is cut after the read-idle limit: the agent sees the cut, and
+    the request no longer counts as in flight, so a stalled turn can be noticed."""
+    import asyncio
+
+    monkeypatch.setattr(runner, "RELAY_READ_IDLE_SECONDS", 1.0)
+
+    async def completions(request: web.Request) -> web.StreamResponse:
+        response = web.StreamResponse()
+        await response.prepare(request)
+        await response.write(b"data: {}\n\n")
+        await asyncio.sleep(30)
+        return response
+
+    app = web.Application()
+    app.router.add_post("/v1/chat/completions", completions)
+    server, upstream = await serve(app)
+    relay = await relayed(runner, upstream)
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            with pytest.raises(httpx.HTTPError):
+                async with client.stream(
+                    "POST", f"{relay.local_origin}/v1/chat/completions", content=b"{}"
+                ) as response:
+                    async for _ in response.aiter_raw():
+                        pass
+        await asyncio.sleep(0.2)
+        assert relay.activity.requests == 0
+    finally:
+        await relay.close()
+        await server.cleanup()

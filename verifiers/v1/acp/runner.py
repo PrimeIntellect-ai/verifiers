@@ -58,6 +58,14 @@ WATCH_SECONDS = float(os.environ.get("VF_ACP_WATCH_SECONDS", "5"))
 TUNNEL_NOT_FOUND = b"Tunnel Not Found"
 # How long the relay keeps resending a request the gateway turned away.
 RELAY_RETRY_SECONDS = 120.0
+# How long a relayed answer may send nothing before the relay cuts it. A generation
+# streams the whole time it runs, so silence this long means the connection died
+# half-open (the host's network dropped, the tunnel with it): without a cut the agent
+# waits on it forever and the turn never counts as stalled (`watch`). The agent sees
+# the cut and asks again.
+RELAY_READ_IDLE_SECONDS = float(
+    os.environ.get("VF_ACP_RELAY_READ_IDLE_SECONDS", "1800")
+)
 _HOP_HEADERS = {
     "connection",
     "content-length",
@@ -206,7 +214,7 @@ class ProviderRelay:
         parts = urlsplit(upstream)
         self.origin = f"{parts.scheme}://{parts.netloc}"
         self.client = httpx.AsyncClient(
-            timeout=httpx.Timeout(None, connect=30),
+            timeout=httpx.Timeout(None, connect=30, read=RELAY_READ_IDLE_SECONDS),
             limits=httpx.Limits(max_connections=None, max_keepalive_connections=32),
         )
         self.server: asyncio.Server | None = None
