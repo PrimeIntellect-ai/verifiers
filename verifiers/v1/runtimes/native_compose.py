@@ -421,7 +421,7 @@ async def prepare_native(config: PrimeConfig, spec: ComposeSpec, env: dict[str, 
                 identity = f"{service.config.image}\n{service.config.workdir}"
                 if identity not in images:
                     images[identity] = await _import_image(
-                        client, project, ids[name], identity
+                        client, project, ids[name], service.config
                     )
                 service.config = service.config.model_copy(
                     update={"image": images[identity]}
@@ -525,8 +525,9 @@ async def _mount(runtime, name: str, mounts: list[NativeMount]) -> None:
         )
 
 
-async def _import_image(client, project, container: str, identity: str) -> str:
+async def _import_image(client, project, container: str, config: PrimeConfig) -> str:
     """Cache a private VM image by the exact local image and container workdir."""
+    identity = f"{config.image}\n{config.workdir}"
     name = "vf-compose-" + hashlib.sha256(identity.encode()).hexdigest()
     locks = CACHE_DIR / "compose-images"
     locks.mkdir(parents=True, exist_ok=True)
@@ -542,12 +543,27 @@ async def _import_image(client, project, container: str, identity: str) -> str:
         for image in existing.data:
             if (
                 image.image_name == name
-                and image.image_tag == "v2"
+                and image.image_tag == "v3"
                 and image.artifact_type == "VM_SANDBOX"
                 and image.status == "COMPLETED"
                 and image.display_ref
             ):
                 return image.display_ref
+        # Keep baked-in environment for fresh verifiers, never rollout overrides.
+        result = await cli(
+            "docker",
+            "image",
+            "inspect",
+            config.image,
+            "--format",
+            "{{json .Config.Env}}",
+            env=project.env,
+        )
+        if result.exit_code:
+            raise SandboxError(f"Compose image inspection failed: {result.stderr}")
+        environment = dict(
+            entry.split("=", 1) for entry in json.loads(result.stdout) or []
+        )
         rootfs = project.directory / "rootfs.tar"
         result = await cli(
             "docker", "export", "--output", str(rootfs), container, env=project.env
@@ -559,6 +575,10 @@ async def _import_image(client, project, container: str, identity: str) -> str:
         dockerfile.write_text(
             "FROM scratch\nADD rootfs.tar /\n"
             "RUN test -x /bin/bash || apk add --no-cache bash\n"
+            + "".join(
+                f"ENV {key}={shlex.quote(value)}\n"
+                for key, value in environment.items()
+            )
         )
         context = project.directory / "context.tar.gz"
 
@@ -571,7 +591,7 @@ async def _import_image(client, project, container: str, identity: str) -> str:
         build = await client.initiate_build(
             BuildImageRequest(
                 image_name=name,
-                image_tag="v2",
+                image_tag="v3",
                 visibility="PRIVATE",
                 team_id=client.client.config.team_id,
             )
