@@ -111,7 +111,7 @@ _BIND_MAX_BYTES = 256 * 1024**2
 
 @dataclass
 class NativeMount:
-    """A bind of task files, or a volume Docker mounts over bound files."""
+    """A bind of task files, or a service-local volume seeded from the image."""
 
     target: str
     read_only: bool = False
@@ -224,7 +224,7 @@ def validate_native(project) -> None:
                     (name, volume["target"], source, bool(volume.get("read_only")))
                 )
                 continue
-            # The VM keeps the image's directory: no read-only, nocopy or subpath mount.
+            # Volumes copy image contents: no read-only, nocopy or subpath mount.
             if (
                 volume["type"] != "volume"
                 or volume.get("read_only")
@@ -449,12 +449,9 @@ async def prepare_native(config: PrimeConfig, spec: ComposeSpec, env: dict[str, 
 
 
 def _mounts(definition: dict, budget: int) -> list[NativeMount]:
-    """A service's bound task files and the volumes over them, in Docker's order."""
+    """A service's task binds and volumes, in Docker's mount order."""
     volumes = definition.get("volumes", [])
     targets = [PurePosixPath(volume["target"]) for volume in volumes]
-    binds = [
-        target for target, volume in zip(targets, volumes) if volume["type"] == "bind"
-    ]
     mounts = []
     for target, volume in zip(targets, volumes):
         if volume["type"] == "bind":
@@ -475,8 +472,8 @@ def _mounts(definition: dict, budget: int) -> list[NativeMount]:
                     source.is_file(),
                 )
             )
-        elif any(target != bind and target.is_relative_to(bind) for bind in binds):
-            # Elsewhere a volume is the image's directory; over bound files it is mounted.
+        else:
+            # Exporting a stopped container omits newly created volume directories.
             mounts.append(NativeMount(str(target)))
     return sorted(
         mounts, key=lambda mount: (len(PurePosixPath(mount.target).parts), mount.target)
@@ -507,7 +504,7 @@ def _archive(source: Path, hidden: list[PurePosixPath], budget: int) -> bytes:
 
 
 async def _mount(runtime, name: str, mounts: list[NativeMount]) -> None:
-    """Mount bound task files, and the volumes over them, as Docker would."""
+    """Mount task binds and initialized service volumes as Docker would."""
     staging = "/var/lib/vf-compose"
     unpack, attach, protect = [], [], []
     for index, mount in enumerate(mounts):
@@ -689,7 +686,7 @@ class NativeProcesses:
                 )
             hostname = service.definition.get("hostname")
             if hostname:
-                names.append(f"127.0.1.1 {hostname}")
+                names.append(f"127.0.0.1 {hostname}")
             host_entries = "\n".join(names) + "\n"
             backend.env = service.env
             backend.user = service.user
