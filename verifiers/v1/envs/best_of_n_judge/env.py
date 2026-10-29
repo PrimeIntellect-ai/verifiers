@@ -9,7 +9,6 @@ score averaged across them.
 """
 
 import asyncio
-import json
 import random
 import shlex
 import statistics
@@ -19,6 +18,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 import verifiers.v1 as vf
 from verifiers.v1.envs.agentic_judge.env import (
+    HIDDEN_REASONING,
     VERDICT_FILE,
     JudgeTaskConfig,
     ScoreConfig,
@@ -130,13 +130,10 @@ class RankTask(vf.Task):
 
     @staticmethod
     def record(attempt: vf.Trace) -> bytes:
-        record = attempt.to_record()
         # This snapshot is evidence for verification, not its final outcome.
-        record.pop("ok", None)
-        for node in record["nodes"]:
-            node["message"].pop("reasoning_content", None)
-            node["message"].pop("provider_state", None)
-        return json.dumps(record).encode()
+        return attempt.to_json(
+            exclude={"ok": True, "nodes": {"__all__": {"message": HIDDEN_REASONING}}}
+        )
 
     async def setup(self, trace: vf.Trace, runtime: vf.Runtime) -> None:
         # Archive bytes are the attempts': confine every member to its declared
