@@ -142,7 +142,8 @@ class ValidationHarness(Harness[ValidationHarnessConfig]):
         """Make the gold solution's `GOLD_REPLY`, when it left one, the trace's final
         assistant message, after the task's prompt. Neither message was sampled."""
         path = str(PurePosixPath(self.config.target_dir, GOLD_REPLY))
-        probe = await runtime.run(["test", "-f", path], {})
+        # The shell's builtin `test`: an image may delete /usr/bin/test.
+        probe = await runtime.run(["sh", "-c", 'test -f "$1"', "sh", path], {})
         if probe.exit_code:
             return
         reply = (await runtime.read(path, max_bytes=MAX_GOLD_REPLY_BYTES)).decode(

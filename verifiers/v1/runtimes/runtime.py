@@ -225,13 +225,16 @@ class Runtime:
         if path in self.backend.cache.uv_interpreters:
             # A borrowed box's earlier runs may have deleted the script or its
             # environment (an agent's `rm -rf /tmp/vf*`): prepare it again then.
+            # The shell's builtin `test`: an image may delete /usr/bin/test (a task
+            # to reimplement it), and a missed check prepares again after the task's
+            # network is cut, which cannot reach the index.
             present = await self.run(
                 [
-                    "test",
-                    "-f",
+                    "sh",
+                    "-c",
+                    'test -f "$1" && test -x "$2"',
+                    "sh",
                     path,
-                    "-a",
-                    "-x",
                     self.backend.cache.uv_interpreters[path],
                 ],
                 {},

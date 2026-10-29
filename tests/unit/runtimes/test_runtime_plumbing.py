@@ -383,6 +383,47 @@ async def test_a_prepared_script_deleted_on_the_box_is_prepared_again(
     assert (result.exit_code, result.stdout) == (0, "ran\n")
 
 
+class NoTestBinaryBox:
+    """A box whose image deleted /usr/bin/test (Abundant's shell-test asks the agent
+    to reimplement it): `test` as a program is not found; the shell's builtin works."""
+
+    scripts_dir = "/box/scripts"
+
+    def __init__(self):
+        from verifiers.v1.runtimes.base import RuntimeCache
+
+        self.cache = RuntimeCache()
+        self.files: set[str] = set()
+        self.prepares = 0
+
+    async def write(self, runtime, path, data):
+        self.files.add(path)
+
+    async def run(self, runtime, argv, env):
+        if argv[0] == "test":
+            return ProgramResult(127, "", 'exec: "test": executable file not found')
+        script = argv[2]
+        if script.startswith("test "):
+            return ProgramResult(0, "", "")  # script and interpreter are in place
+        self.prepares += 1
+        return ProgramResult(0, "/box/env/bin/python\n", "")
+
+
+async def test_a_prepared_script_is_reused_in_a_box_without_a_test_binary():
+    # Setup prepares the ACP program with the network open; the first turn prepares it
+    # again after the task's no-network policy applies. A reuse check that ran
+    # /usr/bin/test found nothing in such an image, so the turn prepared from PyPI
+    # offline and every rollout died before turn 1.
+    from verifiers.v1.runtimes.runtime import Runtime
+
+    box = NoTestBinaryBox()
+    runtime = Runtime(box)  # type: ignore[arg-type]
+    await runtime.prepare_uv_script("print(1)\n")
+    argv = await runtime.prepare_uv_script("print(1)\n", activate=False)
+    assert argv[0] == "/box/env/bin/python"
+    assert box.prepares == 1
+
+
 @pytest.mark.parametrize("source", ["image", "binding", "call", "backend"])
 async def test_uv_scripts_respect_runtime_temporary_directory(
     tmp_path, monkeypatch, source
