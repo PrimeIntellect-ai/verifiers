@@ -12,14 +12,14 @@ node_ok() { "$node/bin/node" -e 'const [a,b]=process.versions.node.split(".").ma
 
 if [ -f /etc/alpine-release ]; then
     apk add --no-cache curl ca-certificates nodejs-current npm >/dev/null
-    if ! node -e 'const [a,b]=process.versions.node.split(".").map(Number); process.exit(a>22 || a===22 && b>=19 ? 0 : 1)'; then
+    if ! /usr/bin/node -e 'const [a,b]=process.versions.node.split(".").map(Number); process.exit(a>22 || a===22 && b>=19 ? 0 : 1)'; then
         sed -E -i 's/v[0-9]+\.[0-9]+/v3.22/g' /etc/apk/repositories
         apk upgrade --available --no-cache >/dev/null
         apk add --no-cache nodejs-current npm >/dev/null
     fi
     mkdir -p "$node/bin"
-    ln -sf "$(command -v node)" "$node/bin/node"
-    ln -sf "$(command -v npm)" "$node/bin/npm"
+    ln -sf /usr/bin/node "$node/bin/node"
+    ln -sf /usr/bin/npm "$node/bin/npm"
 else
     if ! command -v curl >/dev/null 2>&1 \
         && ! (apt-get update -qq && apt-get install -y -qq curl ca-certificates >/dev/null); then
