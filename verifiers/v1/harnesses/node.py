@@ -68,10 +68,15 @@ else
     case "$(uname -s)" in Linux) node_os=linux ;; Darwin) node_os=darwin ;; *) echo "unsupported os: $(uname -s)" >&2; exit 1 ;; esac
     if [ ! -x "$node/bin/node" ] || [ "$("$node/bin/node" --version 2>/dev/null)" != "v$VF_NODE_VERSION" ]; then
         case "$(uname -m)" in aarch64|arm64) node_arch=arm64 ;; *) node_arch=x64 ;; esac
+        # Finish downloading and extracting before replacing the shared installation.
+        download_dir=$(mktemp -d "$node.XXXXXX")
+        trap 'rm -rf "$download_dir"' EXIT
+        curl -fsSL --retry 5 --retry-all-errors "https://nodejs.org/dist/v$VF_NODE_VERSION/node-v$VF_NODE_VERSION-${node_os}-${node_arch}.tar.gz" \
+            -o "$download_dir/node.tar.gz"
+        mkdir "$download_dir/node"
+        tar -xzf "$download_dir/node.tar.gz" -C "$download_dir/node" --strip-components=1
         rm -rf "$node"
-        mkdir -p "$node"
-        curl -fsSL "https://nodejs.org/dist/v$VF_NODE_VERSION/node-v$VF_NODE_VERSION-${node_os}-${node_arch}.tar.gz" \
-            | tar -xz -C "$node" --strip-components=1
+        mv "$download_dir/node" "$node"
     fi
 fi
 node_ok || { echo "ACP adapters require Node.js 22.19 or newer" >&2; exit 1; }

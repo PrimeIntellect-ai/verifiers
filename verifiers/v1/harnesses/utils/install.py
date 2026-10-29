@@ -47,7 +47,7 @@ async def ensure_installed(
         f'trap \'[ "$(readlink {lock} 2>/dev/null)" != "$me" ] || rm -f {lock}\' EXIT; {run}'
     )
     guarded = (
-        f"mkdir -p {shlex.quote(directory)} && "
+        f'mkdir -p "$(dirname {lock})" && '
         f'if l=$(command -v flock || command -v lockf); then "$l" {lock} {run}; else {spinlock}; fi'
     )
     if runtime.user is None:
