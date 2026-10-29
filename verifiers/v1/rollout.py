@@ -388,6 +388,7 @@ class Rollout:
                         self._agent_runtime,
                         shared=self._shared_tools,
                         state_secret=state_secret,
+                        proxy_mcp=self._session.proxy_mcp,
                         state_route=self.trace.id,
                         state_base=base_url,
                         services=services,

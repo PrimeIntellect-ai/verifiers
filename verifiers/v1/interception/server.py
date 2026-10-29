@@ -12,8 +12,10 @@ server (and, behind a remote runtime, one tunnel) per pool member rather than on
 see `interception.pool`. The server also owns the model clients (one per distinct endpoint
 config, assigned to each session at register and closed with the server), so its rollouts
 share one bounded keepalive connection pool upstream instead of churning per-rollout TCP.
+Local MCP servers also share this listener through separate capability URLs, while their
+processes, tool registries, and state remain scoped to each rollout.
 
-The server is a pure model boundary: one request, one turn — refusal checks (limits,
+For model calls, the server is a model boundary: one request, one turn — refusal checks (limits,
 `@stop`s), the model call, the graph commit, retry atomicity. A run's user exchange
 lives a layer up, between harness segments (see `verifiers.v1.rollout`); nothing
 conversational happens here. Tools are handled out-of-band (run by the harness).
@@ -29,7 +31,8 @@ import time
 import traceback
 from collections.abc import AsyncIterator, Awaitable, Collection, Mapping
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from functools import partial
 
 import httpx
 from aiohttp import web
@@ -63,6 +66,7 @@ from verifiers.v1.semantic import ACPInfo, extract_acp_info
 from verifiers.v1.session import IdempotentRequest, ReplayResponse, RolloutSession
 from verifiers.v1.trace import Error, ModelCall, PolicyEvent, TimeSpan
 from verifiers.v1.types import FinishReason, Response, Usage
+from verifiers.v1.utils.aio import run_shielded
 
 logger = logging.getLogger(__name__)
 
@@ -87,6 +91,25 @@ RETRY_COUNT_HEADER = "x-stainless-retry-count"
 IDEMPOTENCY_KEY_HEADER = "Idempotency-Key"
 IDEMPOTENCY_CACHE_TTL_SECONDS = 600
 IDEMPOTENCY_CACHE_MAX_COMPLETED = 64
+_HOP_HEADERS = {
+    "connection",
+    "keep-alive",
+    "proxy-authenticate",
+    "proxy-authorization",
+    "proxy-connection",
+    "te",
+    "trailer",
+    "transfer-encoding",
+    "upgrade",
+}
+
+
+@dataclass
+class _MCPRoute:
+    session: RolloutSession
+    url: str
+    client: httpx.AsyncClient
+    handlers: set[asyncio.Task] = field(default_factory=set)
 
 
 def is_retried_request(headers: Mapping[str, str]) -> bool:
@@ -332,6 +355,7 @@ class InterceptionServer(Interception):
         self.clients: dict[str, Client] = {}
         self.state_sessions: dict[str, RolloutSession] = {}
         self.state_routes: dict[str, RolloutSession] = {}
+        self.mcp_routes: dict[str, _MCPRoute] = {}
         self.state_service_secrets = frozenset(state_service_secrets)
         self.config = config or InterceptionServerConfig()
         self.tunnel: Tunnel | None = (
@@ -368,13 +392,18 @@ class InterceptionServer(Interception):
         self.sessions[model_secret] = session
         self.state_sessions[state_secret] = session
         self.state_routes[session.trace.id] = session
+        session.proxy_mcp = partial(self.proxy_mcp, model_secret)
         return model_secret, state_secret
 
     def unregister(self, model_secret: str, state_secret: str) -> None:
         session = self.sessions.pop(model_secret, None)
         self.state_sessions.pop(state_secret, None)
         if session is not None:
+            session.proxy_mcp = None
             self.state_routes.pop(session.trace.id, None)
+            for capability, route in list(self.mcp_routes.items()):
+                if route.session is session:
+                    del self.mcp_routes[capability]
             # The rollout concluded; its trace is sealed. Cancel straggler handlers
             # (aiohttp keeps them alive past client death) so a slow upstream call
             # can't commit a late turn onto the concluded trace.
@@ -387,6 +416,107 @@ class InterceptionServer(Interception):
             yield self.base_url, model_secret, state_secret
         finally:
             self.unregister(model_secret, state_secret)
+
+    @asynccontextmanager
+    async def proxy_mcp(self, model_secret: str, url: str) -> AsyncIterator[str]:
+        """Expose one fixed host backend with its own capability, revoked before reuse.
+
+        All harnesses accept URLs, including ACP consumers. A fresh URL capability
+        grants only this MCP endpoint, never the private task/state or model channels.
+        Only the launcher can register destinations; request paths cannot select one.
+        """
+        session = self.sessions[model_secret]
+        capability = secrets.token_urlsafe(32)
+        # Long-lived MCP streams use the consumer's timeout and rollout cancellation.
+        # No redirects, environment proxies, cookies from other routes, or retries.
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(None, connect=5.0),
+            limits=httpx.Limits(max_connections=None, max_keepalive_connections=8),
+            trust_env=False,
+        ) as client:
+            route = _MCPRoute(session, url, client)
+            self.mcp_routes[capability] = route
+            try:
+                yield f"{self.base_url.rstrip('/')}/mcp/{capability}"
+            finally:
+                self.mcp_routes.pop(capability, None)
+                handlers = list(route.handlers)
+                for handler in handlers:
+                    handler.cancel()
+                await run_shielded(asyncio.gather(*handlers, return_exceptions=True))
+
+    async def handle_mcp(self, request: web.Request) -> web.StreamResponse:
+        route = self.mcp_routes.get(request.match_info["capability"])
+        if route is None or route.session.released:
+            return web.json_response({"error": "unauthorized"}, status=401)
+        handler = asyncio.current_task()
+        assert handler is not None
+        route.session.adopt(handler)
+        route.handlers.add(handler)
+        pending = asyncio.create_task(self._forward_mcp(request, route))
+        try:
+            # Model handlers intentionally survive disconnects for coalesced retries.
+            # MCP handlers must instead close even an idle SSE stream on disconnect.
+            while not pending.done():
+                await asyncio.wait({pending}, timeout=0.25)
+                if request.transport is None or request.transport.is_closing():
+                    raise asyncio.CancelledError
+            return await pending
+        finally:
+            pending.cancel()
+            await run_shielded(asyncio.gather(pending, return_exceptions=True))
+            route.handlers.discard(handler)
+
+    async def _forward_mcp(
+        self, request: web.Request, route: _MCPRoute
+    ) -> web.StreamResponse:
+        headers = httpx.Headers(request.headers.items())
+        blocked = _HOP_HEADERS | set(
+            map(str.strip, headers.get("connection", "").lower().split(","))
+        )
+        # aiohttp decodes incoming bodies; HTTPX supplies backend Host and framing.
+        for name in blocked | {"host", "content-length", "content-encoding"}:
+            headers.pop(name, None)
+        upstream = httpx.Request(
+            request.method,
+            httpx.URL(route.url).copy_with(
+                query=request.rel_url.raw_query_string.encode()
+            ),
+            headers=headers,
+            content=request.content.iter_any() if request.can_read_body else b"",
+        )
+        stream = web.StreamResponse()
+        response = None
+        try:
+            # send(Request) forwards only this request's headers, without stored cookies.
+            response = await route.client.send(upstream, stream=True)
+            stream.set_status(response.status_code)
+            blocked = _HOP_HEADERS | set(
+                map(
+                    str.strip, response.headers.get("connection", "").lower().split(",")
+                )
+            )
+            for name, value in response.headers.multi_items():
+                if name.lower() not in blocked:
+                    stream.headers.add(name, value)
+            await stream.prepare(request)
+            async for chunk in response.aiter_raw():
+                await stream.write(chunk)
+            await stream.write_eof()
+            return stream
+        except httpx.TransportError as error:
+            if stream.prepared:
+                # A truncated response is a failed call, never a successful partial result.
+                if request.transport is not None:
+                    request.transport.close()
+                return stream
+            return web.json_response(
+                {"error": "MCP backend unavailable"},
+                status=504 if isinstance(error, httpx.TimeoutException) else 502,
+            )
+        finally:
+            if response is not None:
+                await run_shielded(response.aclose())
 
     def _handler_for(self, dialect: Dialect):
         """Bind a route's dialect to the request handler — the route the SDK posts to is what
@@ -429,7 +559,9 @@ class InterceptionServer(Interception):
         # A launched tool server fetches its rollout's task here to run `setup_task` — the task
         # is never passed via env, only over this channel, keyed by the state bearer.
         app.router.add_get("/task", self.handle_task_get)
-        self.runner = web.AppRunner(app)
+        app.router.add_route("*", "/mcp/{capability}", self.handle_mcp)
+        # MCP paths are bearer capabilities, so do not write them to access logs.
+        self.runner = web.AppRunner(app, access_log=None)
         await self.runner.setup()
         self.stack.push_async_callback(self.runner.cleanup)
         # Without a tunnel, local URL translation reaches an ephemeral loopback port.
