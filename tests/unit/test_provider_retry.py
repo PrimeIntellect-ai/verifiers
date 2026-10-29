@@ -53,12 +53,14 @@ class Provider:
     def __init__(self, *script) -> None:
         self.script = list(script)
         self.requests: list[dict] = []
+        self.sessions: list[str | None] = []
         self.times: list[float] = []
         self.url = ""
 
     async def handle(self, request: web.Request) -> web.StreamResponse:
         body = await request.json()
         self.requests.append(body)
+        self.sessions.append(request.headers.get("X-Session-ID"))
         self.times.append(time.monotonic())
         failure = self.script.pop(0) if self.script else None
         if isinstance(failure, tuple):
@@ -615,6 +617,34 @@ async def test_a_provider_cutting_every_stream_still_gives_up(monkeypatch):
     assert trace.last_error is not None and "terminal event" in trace.last_error.message
     # the first cut, then MAX_STREAM_CUT_OFFS - 1 that restart the budget, then one past it
     assert len(provider.requests) == server.MAX_STREAM_CUT_OFFS + 1
+
+
+async def test_a_session_whose_calls_never_start_is_rerouted(monkeypatch):
+    """A provider routing by session keeps a rollout on the replica that served it; on
+    2026-10-29 a wedged GLM replica held three rollouts for hours (every call waited out
+    the 300 s first-token timeout, fresh sessions answered in seconds). After
+    `REROUTE_STALLS` long failures with nothing streamed, the rollout is sent under a new
+    routing id, which the trace keeps for its later turns."""
+    monkeypatch.setattr(server, "REROUTE_AFTER_SECONDS", 0.05)
+    async with Provider((0.1, 503), (0.1, 503), "ok", "ok", "ok") as provider:
+        agent = make(provider, StreamHarness, retry={"budget": 30})
+        trace = await agent.run(task())
+    assert trace.ok, trace.errors
+    first = provider.sessions[0]
+    assert first and provider.sessions[1] == first
+    assert provider.sessions[2] == f"{first}~r1"
+    assert all(s == f"{first}~r1" for s in provider.sessions[2:])
+    assert trace.info["reroutes"] == 1
+
+
+async def test_quick_failures_keep_the_session(monkeypatch):
+    """Failures the provider answers at once (no first-token wait) are no wedged replica."""
+    async with Provider(503, 503, 503, "ok") as provider:
+        agent = make(provider, StreamHarness, retry={"budget": 30})
+        trace = await agent.run(task())
+    assert trace.ok, trace.errors
+    assert len(set(provider.sessions)) == 1
+    assert "reroutes" not in trace.info
 
 
 async def test_an_error_event_inside_a_stream_is_retried_in_place():
