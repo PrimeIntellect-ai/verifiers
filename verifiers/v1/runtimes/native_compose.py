@@ -3,6 +3,7 @@
 import asyncio
 import fcntl
 import hashlib
+import io
 import ipaddress
 import json
 import logging
@@ -11,7 +12,7 @@ import shlex
 import tarfile
 import time
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import httpx
 from prime_sandboxes import AsyncImageClient
@@ -104,6 +105,20 @@ _CAPABILITIES = (
 )
 
 
+# Bound task files travel with each rollout; larger inputs belong in an image.
+_BIND_MAX_BYTES = 256 * 1024**2
+
+
+@dataclass
+class NativeMount:
+    """A bind of task files, or a volume Docker mounts over bound files."""
+
+    target: str
+    read_only: bool = False
+    archive: bytes | None = None
+    file: bool = False
+
+
 @dataclass
 class NativeService:
     config: PrimeConfig
@@ -115,6 +130,7 @@ class NativeService:
     user: str | None = None
     stop_signal: str = "SIGTERM"
     internal: bool = False
+    mounts: list[NativeMount] = field(default_factory=list)
 
 
 def validate_native(project) -> None:
@@ -135,6 +151,8 @@ def validate_native(project) -> None:
         )
     aliases = {}
     mounts: dict[str, set[tuple[str, str]]] = {}
+    binds: list[tuple[str, str, Path, bool]] = []
+    task = (project.directory / "task").resolve()
     for name, service in config["services"].items():
         unsupported = set(service) - _SERVICE_FIELDS
         if unsupported:
@@ -189,17 +207,33 @@ def validate_native(project) -> None:
                     f"Native Compose dependency {name!r} -> {dependency!r} is unsupported"
                 )
         for volume in service.get("volumes", []):
+            if volume["type"] == "bind":
+                source = Path(volume["source"]).resolve()
+                options = {
+                    key for key, value in volume.get("bind", {}).items() if value
+                }
+                if not source.is_relative_to(task) or options - {
+                    "create_host_path",
+                    "selinux",
+                }:
+                    raise SandboxError(
+                        f"Native Compose service {name!r} can bind only task files"
+                    )
+                binds.append(
+                    (name, volume["target"], source, bool(volume.get("read_only")))
+                )
+                continue
             # The VM keeps the image's directory: no read-only, nocopy or subpath mount.
             if (
                 volume["type"] != "volume"
-                or not volume.get("source")
                 or volume.get("read_only")
                 or any(volume.get("volume", {}).values())
             ):
                 raise SandboxError(
-                    f"Native Compose service {name!r} supports only plain named volumes"
+                    f"Native Compose service {name!r} supports only task binds and plain volumes"
                 )
-            mounts.setdefault(volume["source"], set()).add((name, volume["target"]))
+            if volume.get("source"):
+                mounts.setdefault(volume["source"], set()).add((name, volume["target"]))
         # Docker's default bridge network: no project network, so no service names.
         mode = service.get("network_mode")
         if mode not in {None, "bridge", "default"}:
@@ -252,6 +286,17 @@ def validate_native(project) -> None:
                 f"Native Compose service {names[0]!r} mounts volume {volume!r} at "
                 "more than one path"
             )
+    # Each mount gets its own copy of bound files, so only read-only copies may overlap.
+    for index, (name, target, source, read_only) in enumerate(binds):
+        for other, other_target, other_source, other_read_only in binds[index + 1 :]:
+            if not (read_only and other_read_only) and (
+                source.is_relative_to(other_source)
+                or other_source.is_relative_to(source)
+            ):
+                raise SandboxError(
+                    f"Native Compose binds overlapping task files writable at "
+                    f"{name}:{target} and {other}:{other_target}"
+                )
 
 
 async def prepare_native(config: PrimeConfig, spec: ComposeSpec, env: dict[str, str]):
@@ -357,6 +402,14 @@ async def prepare_native(config: PrimeConfig, spec: ComposeSpec, env: dict[str, 
                 user,
                 metadata.get("StopSignal") or "SIGTERM",
                 internal,
+                await asyncio.to_thread(_mounts, definition),
+            )
+        if (
+            sum(len(m.archive or b"") for s in services.values() for m in s.mounts)
+            > _BIND_MAX_BYTES
+        ):
+            raise SandboxError(
+                "Native Compose binds more than 256 MiB of task files; build them into an image"
             )
         for name, service in services.items():
             for dependency, options in service.definition.get("depends_on", {}).items():
@@ -382,6 +435,98 @@ async def prepare_native(config: PrimeConfig, spec: ComposeSpec, env: dict[str, 
         finally:
             await run_shielded(client.client.aclose())
         return services
+
+
+def _mounts(definition: dict) -> list[NativeMount]:
+    """A service's bound task files and the volumes over them, in Docker's order."""
+    volumes = definition.get("volumes", [])
+    targets = [PurePosixPath(volume["target"]) for volume in volumes]
+    binds = [
+        target for target, volume in zip(targets, volumes) if volume["type"] == "bind"
+    ]
+    mounts = []
+    for target, volume in zip(targets, volumes):
+        if volume["type"] == "bind":
+            source = Path(volume["source"]).resolve()
+            # Nested mounts hide these files on Docker; they never reach the VM.
+            hidden = [
+                other.relative_to(target)
+                for other in targets
+                if other != target and other.is_relative_to(target)
+            ]
+            mounts.append(
+                NativeMount(
+                    str(target),
+                    bool(volume.get("read_only")),
+                    _archive(source, hidden),
+                    source.is_file(),
+                )
+            )
+        elif any(target != bind and target.is_relative_to(bind) for bind in binds):
+            # Elsewhere a volume is the image's directory; over bound files it is mounted.
+            mounts.append(NativeMount(str(target)))
+    return sorted(
+        mounts, key=lambda mount: (len(PurePosixPath(mount.target).parts), mount.target)
+    )
+
+
+def _archive(source: Path, hidden: list[PurePosixPath]) -> bytes:
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w") as archive:
+        if source.is_file():
+            archive.add(source, arcname="file")
+        elif source.is_dir():
+            for child in sorted(source.iterdir()):
+                archive.add(
+                    child,
+                    arcname=child.name,
+                    filter=lambda info: (
+                        None
+                        if any(
+                            PurePosixPath(info.name).is_relative_to(path)
+                            for path in hidden
+                        )
+                        else info
+                    ),
+                )
+        # Docker creates a missing source as an empty directory.
+    return buffer.getvalue()
+
+
+async def _mount(runtime, name: str, mounts: list[NativeMount]) -> None:
+    """Mount bound task files, and the volumes over them, as Docker would."""
+    staging = "/var/lib/vf-compose"
+    unpack, attach, protect = [], [], []
+    for index, mount in enumerate(mounts):
+        source, target = f"{staging}/{index}", shlex.quote(mount.target)
+        if mount.archive is None:
+            # Docker seeds a new volume from the image's directory.
+            unpack.append(
+                f"mkdir -p {source} && if [ -d {target} ]; then cp -a {target}/. {source}/; fi"
+            )
+        else:
+            await runtime.write(f"{source}.tar", mount.archive)
+            unpack.append(
+                f"mkdir -p {source} && tar -xf {source}.tar -C {source} && rm {source}.tar"
+            )
+        if mount.file:
+            source += "/file"
+            attach.append(f'mkdir -p "$(dirname {target})" && touch {target}')
+        else:
+            attach.append(f"mkdir -p {target}")
+        attach.append(f"mount --bind {source} {target}")
+        if mount.read_only:
+            protect.append(f"mount -o remount,bind,ro {target}")
+    # Read-only last, so nested mount points can still be made; then hide the staged
+    # copies, which would otherwise bypass read-only mounts.
+    script = " && ".join(
+        [*unpack, *attach, *protect, f"mount -t tmpfs tmpfs {staging}"]
+    )
+    result = await runtime.run(["sh", "-c", script], {})
+    if result.exit_code:
+        raise SandboxError(
+            f"Native Compose could not mount task files on {name!r}: {result.stderr}"
+        )
 
 
 async def _import_image(client, project, container: str, identity: str) -> str:
@@ -541,6 +686,8 @@ class NativeProcesses:
                 raise SandboxError(
                     f"Native Compose could not install service names on {name!r}"
                 )
+            if service.mounts:
+                await _mount(runtime, name, service.mounts)
             if size := service.definition.get("shm_size"):
                 result = await runtime.run(
                     ["mount", "-o", f"remount,size={int(size)}", "/dev/shm"], {}
