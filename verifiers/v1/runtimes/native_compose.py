@@ -63,6 +63,7 @@ class NativeService:
     user: str | None = None
     stop_signal: str = "SIGTERM"
     internal: bool = False
+    image_env: dict[str, str] = field(default_factory=dict)
 
 
 def validate_native(project) -> None:
@@ -205,6 +206,21 @@ async def prepare_native(config: PrimeConfig, spec: ComposeSpec, env: dict[str, 
             item["Config"]["Labels"]["com.docker.compose.service"]: item
             for item in json.loads(result.stdout)
         }
+        result = await cli(
+            "docker",
+            "image",
+            "inspect",
+            *dict.fromkeys(item["Image"] for item in inspected.values()),
+            env=project.env,
+        )
+        if result.exit_code:
+            raise SandboxError(f"Compose image inspection failed: {result.stderr}")
+        image_envs = {
+            image["Id"]: dict(
+                entry.split("=", 1) for entry in image["Config"].get("Env") or []
+            )
+            for image in json.loads(result.stdout)
+        }
         services = {}
         for name in ids:
             item = inspected[name]
@@ -260,6 +276,7 @@ async def prepare_native(config: PrimeConfig, spec: ComposeSpec, env: dict[str, 
                 user,
                 metadata.get("StopSignal") or "SIGTERM",
                 internal,
+                image_env=image_envs[item["Image"]],
             )
         for name, service in services.items():
             for dependency, options in service.definition.get("depends_on", {}).items():
@@ -305,27 +322,12 @@ async def _import_image(client, project, container: str, config: PrimeConfig) ->
         for image in existing.data:
             if (
                 image.image_name == name
-                and image.image_tag == "v3"
+                and image.image_tag == "v4"
                 and image.artifact_type == "VM_SANDBOX"
                 and image.status == "COMPLETED"
                 and image.display_ref
             ):
                 return image.display_ref
-        # Keep baked-in environment for fresh verifiers, never rollout overrides.
-        result = await cli(
-            "docker",
-            "image",
-            "inspect",
-            config.image,
-            "--format",
-            "{{json .Config.Env}}",
-            env=project.env,
-        )
-        if result.exit_code:
-            raise SandboxError(f"Compose image inspection failed: {result.stderr}")
-        environment = dict(
-            entry.split("=", 1) for entry in json.loads(result.stdout) or []
-        )
         rootfs = project.directory / "rootfs.tar"
         result = await cli(
             "docker", "export", "--output", str(rootfs), container, env=project.env
@@ -337,10 +339,6 @@ async def _import_image(client, project, container: str, config: PrimeConfig) ->
         dockerfile.write_text(
             "FROM scratch\nADD rootfs.tar /\n"
             "RUN test -x /bin/bash || apk add --no-cache bash\n"
-            + "".join(
-                f"ENV {key}={shlex.quote(value)}\n"
-                for key, value in environment.items()
-            )
         )
         context = project.directory / "context.tar.gz"
 
@@ -353,7 +351,7 @@ async def _import_image(client, project, container: str, config: PrimeConfig) ->
         build = await client.initiate_build(
             BuildImageRequest(
                 image_name=name,
-                image_tag="v3",
+                image_tag="v4",
                 visibility="PRIVATE",
                 team_id=client.client.config.team_id,
             )
@@ -414,7 +412,9 @@ class NativeProcesses:
                 for peer in peers
                 if peer != name
             }
-            # Prime's LAN DNS resolves peers, not the VM itself.
+            # LAN DNS returns peer-specific proxy addresses, not local interfaces.
+            # Prime forwards incoming TCP to loopback listeners, so self aliases
+            # remain bindable and reachable by peers without resolving self in DNS.
             addresses = {name: "127.0.0.1"}
             if hosts:
                 result = await runtime.run(["getent", "hosts", *hosts], {})
