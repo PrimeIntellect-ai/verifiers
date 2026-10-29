@@ -1,11 +1,12 @@
-"""Restoring a trace from a checkpoint: what `rewind` restores and what a restored
-attempt must not redo."""
+"""Rollout checkpointing: when a rollout takes checkpoints, what `rewind` restores, and
+what a restored attempt must not redo."""
 
 import asyncio
 from types import SimpleNamespace
 from typing import Literal
 
 import verifiers.v1 as vf
+import verifiers.v1.agent as agent_module
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.agent import RolloutCheckpointConfig
 from verifiers.v1.configs.client import EvalClientConfig
@@ -272,3 +273,43 @@ def test_a_restore_point_round_trips():
     assert back.info == {"nonce": "n"}
     assert back.pins == checkpoint.pins
     assert back.state == checkpoint.state
+
+
+def gated(harness: str, runtime: vf.RuntimeConfig, **checkpoint) -> vf.Agent:
+    return vf.Agent(
+        vf.AgentConfig(
+            model="test-model",
+            harness={"id": harness},
+            runtime=runtime,
+            checkpoint=RolloutCheckpointConfig(**checkpoint),
+        )
+    )
+
+
+def test_checkpointing_is_on_by_default():
+    assert vf.AgentConfig().checkpoint == RolloutCheckpointConfig()
+    assert gated("bash", vf.PrimeConfig())._checkpointing() is not None
+
+
+def test_unsupported_checkpointing_warns_once(caplog, monkeypatch):
+    monkeypatch.setattr(agent_module, "_checkpointing_warned", set())
+    for _ in range(2):
+        assert gated("bash", vf.SubprocessConfig())._checkpointing() is None
+        assert gated("terminus-2", vf.PrimeConfig())._checkpointing() is None
+    warnings = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+    assert warnings == [
+        (
+            "rollout checkpointing is off: the 'subprocess' runtime takes no "
+            "snapshots; a failed rollout retries from the start"
+        ),
+        (
+            "rollout checkpointing is off: harness 'terminus-2' does not support it; "
+            "a failed rollout retries from the start"
+        ),
+    ]
+
+
+def test_boxless_checkpointing_is_opt_in():
+    assert gated("null", vf.SubprocessConfig())._checkpointing() is None
+    assert gated("null", vf.SubprocessConfig(), boxless=True)._checkpointing()
+    assert gated("bash", vf.SubprocessConfig(), boxless=True)._checkpointing() is None

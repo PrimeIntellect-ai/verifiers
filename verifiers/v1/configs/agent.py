@@ -40,13 +40,14 @@ class TimeoutConfig(BaseConfig):
 
 
 class RolloutCheckpointConfig(BaseConfig):
-    """Experimental. Snapshot the rollout's box (its filesystem) as model turns go
-    upstream, so a retry restores the newest snapshot instead of starting over: the
-    trace keeps its turns up to there, and a new harness process continues in a box
-    restored to that state, told that the box was restored. Needs a runtime with
-    checkpoints (prime) and a harness that can restore one
-    (both set `SUPPORTS_CHECKPOINTS`); elsewhere no snapshot is taken. The snapshot runs
-    alongside the model call, and the reply waits only until its content is fixed.
+    """Rollout checkpointing. Snapshot the rollout's box (its filesystem) as model
+    turns go upstream, so a retry restores the newest snapshot instead of starting
+    over: the trace keeps its turns up to there, and a new harness process continues
+    in a box restored to that state, told that the box was restored. Needs a runtime
+    with checkpoints (prime) and a harness that can restore one (both set
+    `SUPPORTS_CHECKPOINTS`); elsewhere the agent warns once and a retry starts over.
+    The snapshot runs alongside the model call, and the reply waits only until its
+    content is fixed.
 
     Known limits: a harness with concurrent sub-agents can be snapshotted while one of
     them is mid-tool, and processes the agent left running (background jobs,
@@ -65,6 +66,10 @@ class RolloutCheckpointConfig(BaseConfig):
     """What happens to the kept snapshots when the rollout's run is final (it succeeded,
     or its retries ran out): `"delete"` deletes them once the box is gone; `"keep"`
     leaves them for their owner (forks, inspection), who must delete them."""
+    boxless: bool = False
+    """Also checkpoint a harness that runs no code (null) on a runtime without
+    snapshots, from the trace alone. Off by default: such a run records a checkpoint
+    on its trace at every snapshot turn."""
 
 
 class AgentConfig(BaseConfig):
@@ -104,9 +109,12 @@ class AgentConfig(BaseConfig):
 
     timeout: TimeoutConfig = TimeoutConfig()
     retries: RetryConfig = RetryConfig()
-    checkpoint: RolloutCheckpointConfig | None = None
-    """Snapshot the box as turns go upstream, so a retry restores the newest snapshot
-    instead of starting over (see `RolloutCheckpointConfig`). None takes no snapshots."""
+    checkpoint: RolloutCheckpointConfig | None = Field(
+        default_factory=RolloutCheckpointConfig
+    )
+    """Rollout checkpointing, on by default: snapshot the box as turns go upstream, so
+    a retry restores the newest snapshot instead of starting over (see
+    `RolloutCheckpointConfig`). None turns it off."""
 
     network_notice: bool = True
     """Include the runtime's network restrictions in the agent's prompt."""

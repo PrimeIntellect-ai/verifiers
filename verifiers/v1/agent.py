@@ -63,6 +63,9 @@ __all__ = ["Agent", "AgentConfig", "Agents", "TimeoutConfig", "make_agent"]
 
 logger = logging.getLogger(__name__)
 
+# (harness id, runtime type) pairs already warned that they take no checkpoints.
+_checkpointing_warned: set[tuple[str, str]] = set()
+
 # Only nested runs in this scoring attempt participate in its rollback.
 _scoring_runs: ContextVar[list[tuple["_EpisodeAgent", Trace]] | None] = ContextVar(
     "scoring_runs", default=None
@@ -644,6 +647,34 @@ class Agent:
             return self._server
         return None
 
+    def _checkpointing(self) -> RolloutCheckpointConfig | None:
+        """The checkpoint config when this harness on this runtime can take and restore
+        checkpoints; otherwise None, with a warning once per harness and runtime."""
+        config = self.config.checkpoint
+        if config is None:
+            return None
+        harness = self.harness
+        backend = backend_cls(self.config.runtime)
+        if harness.SUPPORTS_CHECKPOINTS and (
+            backend.SUPPORTS_CHECKPOINTS
+            or (config.boxless and not harness.EXECUTES_CODE)
+        ):
+            return config
+        key = (harness.config.id, self.config.runtime.type)
+        if key not in _checkpointing_warned:
+            _checkpointing_warned.add(key)
+            reason = (
+                f"harness {harness.config.id!r} does not support it"
+                if not harness.SUPPORTS_CHECKPOINTS
+                else f"the {self.config.runtime.type!r} runtime takes no snapshots"
+            )
+            logger.warning(
+                "rollout checkpointing is off: %s; a failed rollout retries from the "
+                "start",
+                reason,
+            )
+        return None
+
     def _check_resume_support(self) -> None:
         # Multi-turn capability is derived: a harness needs transcript replay, a
         # native resume implementation, or a rollout-scoped session implementation.
@@ -693,11 +724,7 @@ class Agent:
             restore, self.pending_restore = self.pending_restore, None
         retry = self.config.retries
         retry_state = RetryState(retry)
-        checkpointing = (
-            self.config.checkpoint
-            if runtime is None and self.harness.SUPPORTS_CHECKPOINTS
-            else None
-        )
+        checkpointing = self._checkpointing() if runtime is None else None
         history: list[Error] = []  # errors of the attempts started over from
         # `restore` continues a trace another process ran (an orchestrator resuming its
         # run): its first attempt restores it, and `on_trace` sees it as the run's trace.
