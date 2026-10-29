@@ -278,9 +278,22 @@ class EnvServerPool:
                             entry = pending.get(request_id.bytes)
                             if entry is None:
                                 continue
-                        with contextlib.suppress(zmq.ZMQError):
+                        try:
                             await self.frontend.send_multipart(
                                 [entry["client_id"], request_id, kind, data], copy=False
+                            )
+                        except zmq.ZMQError:
+                            # The client cannot take this episode. Free it at the worker;
+                            # the empty request id leaves the cancel reply untracked.
+                            await w["dealer"].send_multipart(
+                                [
+                                    b"",
+                                    b"cancel",
+                                    msgpack.packb(
+                                        {"request_id": request_id.bytes.decode()},
+                                        use_bin_type=True,
+                                    ),
+                                ]
                             )
         except (asyncio.CancelledError, KeyboardInterrupt):
             pass
