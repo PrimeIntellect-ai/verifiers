@@ -63,6 +63,9 @@ class ACPConfig:
     prompt: str | Messages | None
     mcp_urls: dict[str, str] | None = None
     system_prompt: str | None = None
+    cwd: str | None = None
+    """The session's working directory, when it is not the process's own, such as a
+    split deployment's workspace."""
     session_meta: JsonObject | None = None
     client_capabilities: JsonObject | None = None
 
@@ -330,6 +333,7 @@ class ACPHarnessSession(HarnessSession):
             "mcp_urls": self.mcp_urls,
             "mcp_headers": self.harness.config.resolve_mcp_headers(self.mcp_urls),
             "system_prompt": self.config.system_prompt or "",
+            "cwd": self.config.cwd,
             "session_meta": self.config.session_meta or {},
             "client_capabilities": self.config.client_capabilities or {},
             "tool_interception": {
