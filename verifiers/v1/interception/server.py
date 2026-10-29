@@ -106,6 +106,14 @@ SHOULD_RETRY_HEADER = "x-should-retry"
 MAX_STREAM_CUT_OFFS = 5
 """Streams a provider cuts mid-turn that each restart the call's retry budget; past it, the
 budget runs on as for any failure (a provider that cuts every stream still gives up)."""
+REROUTE_AFTER_SECONDS = 120.0
+REROUTE_STALLS = 2
+"""A provider that routes by session (`SESSION_ID_HEADER`) keeps sending a rollout to the
+replica that served it; when that replica wedges, every exchange of the rollout waits out
+the provider's first-token timeout with nothing streamed, for hours, while fresh sessions
+are served in seconds (GLM 5.3, 2026-10-29). After `REROUTE_STALLS` such exchanges in a row,
+each at least `REROUTE_AFTER_SECONDS` long, the rollout continues under a new routing id
+(`_reroute`): its prefix cache is lost, the rollout is not."""
 
 
 def _retry_wait(
@@ -295,6 +303,35 @@ def _check_unsent_tail(response: Response, content: str) -> None:
             "arrived",
             status_code=502,
         )
+
+
+def _reroute(session, ctx):
+    """The rollout's next exchanges under a new routing id (`REROUTE_STALLS`): the
+    rollout's trace id with `~r<n>`, kept on the trace (its model binding and agent
+    config) so later turns and a resume stay off the wedged replica too."""
+    from dataclasses import replace
+
+    from verifiers.v1.model_routing import MODEL_BINDING
+
+    n = int(session.trace.info.get("reroutes") or 0) + 1
+    base = (ctx.session_id or session.trace.id).split("~r")[0]
+    routing = f"{base}~r{n}"
+    ctx = replace(ctx, session_id=routing)
+    session.ctx = ctx
+    session.trace.info["reroutes"] = n
+    binding = session.trace.info.get(MODEL_BINDING)
+    if isinstance(binding, dict):
+        binding["session_id"] = routing
+    config = session.trace.agent.config
+    session.trace.agent.config = config.model_copy(update={"session_id": routing})
+    session.trace.notify()
+    logger.warning(
+        "model call never started %d times in a row; rerouting: id=%s session=%s",
+        REROUTE_STALLS,
+        session.trace.id,
+        routing,
+    )
+    return ctx
 
 
 def _check_tool_call_leak(response: Response) -> None:
@@ -1242,7 +1279,7 @@ class InterceptionServer(Interception):
                 return await send()
 
         async def sample() -> web.Response:
-            nonlocal upstream
+            nonlocal upstream, ctx
             session.error = None
             call_response: Response | None = None
             events: bytes | None = None
@@ -1258,6 +1295,7 @@ class InterceptionServer(Interception):
                     first_failure = 0.0
                     cut_offs = 0
                     refitted = False
+                    stalled_starts = 0
                     while True:
                         try:
                             call_response, events = await exchange(
@@ -1304,6 +1342,16 @@ class InterceptionServer(Interception):
                                 first_failure = now
                             if getattr(e, "streamed", False):
                                 cut_offs += 1
+                            if (
+                                not getattr(e, "streamed", False)
+                                and time.time() - started >= REROUTE_AFTER_SECONDS
+                            ):
+                                stalled_starts += 1
+                            else:
+                                stalled_starts = 0
+                            if stalled_starts >= REROUTE_STALLS:
+                                stalled_starts = 0
+                                ctx = _reroute(session, ctx)
                             wait = (
                                 None
                                 if session.released or session.stopped
