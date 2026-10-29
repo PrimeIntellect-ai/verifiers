@@ -68,7 +68,12 @@ class NativeService:
 
 def validate_native(project) -> None:
     config = project.config
-    if set(config) - {"name", "services", "networks"}:
+    # Compose keeps top-level `x-*` extension blocks (YAML anchors); they configure nothing.
+    if {key for key in config if not key.startswith("x-")} - {
+        "name",
+        "services",
+        "networks",
+    }:
         raise SandboxError(
             "Native Compose does not support volumes, secrets or configs"
         )
