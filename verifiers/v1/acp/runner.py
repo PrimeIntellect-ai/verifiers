@@ -47,7 +47,8 @@ HEARTBEAT_SECONDS = float(os.environ.get("VF_ACP_HEARTBEAT_SECONDS", "15"))
 ANSWERS_KEPT = 8
 # A turn whose agent does nothing (no model request in flight, no ACP update) for this
 # long is stalled (`watch`): on a full disk after DISK_FULL_IDLE_SECONDS, else, with no
-# tool call open, after AGENT_IDLE_SECONDS.
+# tool call open, after AGENT_IDLE_SECONDS. Only an agent the runner has seen at work is
+# judged (`Activity.sees_requests`, `Activity.sees_tools`).
 AGENT_IDLE_SECONDS = float(os.environ.get("VF_ACP_AGENT_IDLE_SECONDS", "600"))
 DISK_FULL_IDLE_SECONDS = float(os.environ.get("VF_ACP_DISK_FULL_IDLE_SECONDS", "120"))
 DISK_FULL_BYTES = 8 * 1024 * 1024
@@ -91,12 +92,25 @@ class AgentStalled(Exception):
 class Activity:
     """What the agent is doing, as the runner sees it: its model requests in flight
     (through the relay), its open tool calls (from ACP updates), and when it last did
-    anything."""
+    anything.
+
+    Not every agent shows both. RLM takes its provider from session metadata, which the
+    relay doesn't rewrite, so its requests go straight to the endpoint, and it sends no
+    tool call updates, only its final answer: on 2026-10-28/29 every CyberStrike RLM turn
+    still working 600 s in was failed as stalled, a model request or tool run in flight.
+    So `sees_requests` and `sees_tools` record whether this session has shown either."""
 
     def __init__(self) -> None:
         self.requests = 0
         self.tools: set[str] = set()
         self.last = time.monotonic()
+        self.sees_requests = False
+        self.sees_tools = False
+
+    def request(self) -> None:
+        self.requests += 1
+        self.sees_requests = True
+        self.touch()
 
     def touch(self) -> None:
         self.last = time.monotonic()
@@ -108,6 +122,7 @@ class Activity:
         if kind not in ("tool_call", "tool_call_update") or tool_call_id is None:
             return
         status = getattr(update, "status", None)
+        self.sees_tools = True
         if status in ("completed", "failed"):
             self.tools.discard(tool_call_id)
         elif kind == "tool_call" or status is not None:
@@ -131,10 +146,13 @@ async def watch(activity: Activity, path: str) -> AgentStalled:
     the tool's result back to the model nor answered the prompt, while this runner kept
     beating its heartbeat, so the turn held its rollout until the 24 h timeout. A model
     request in flight is never a stall (a generation can take hours), nor is an open
-    tool call short of a full disk (a command may run as long as the model allows)."""
+    tool call short of a full disk (a command may run as long as the model allows).
+    Idleness is judged only from what the runner can see: no request in flight means
+    nothing only for an agent whose requests come through the relay, and no tool call
+    open only for one that reports its tool calls."""
     while True:
         await asyncio.sleep(WATCH_SECONDS)
-        if activity.requests:
+        if activity.requests or not activity.sees_requests:
             continue
         idle = time.monotonic() - activity.last
         free = free_bytes(path)
@@ -148,7 +166,7 @@ async def watch(activity: Activity, path: str) -> AgentStalled:
                 f"done nothing for {idle:.0f}s: OpenCode cannot write its session",
                 "disk_full",
             )
-        if not activity.tools and idle >= AGENT_IDLE_SECONDS:
+        if activity.sees_tools and not activity.tools and idle >= AGENT_IDLE_SECONDS:
             return AgentStalled(
                 f"the agent has done nothing for {idle:.0f}s mid-turn: no model request, "
                 f"no tool call open, no update ({free} bytes free at {path})",
@@ -244,8 +262,7 @@ class ProviderRelay:
         try:
             request = await _read_request(reader)
             if request is not None:
-                self.activity.requests += 1
-                self.activity.touch()
+                self.activity.request()
                 counted = True
                 await self._forward(*request, writer)
         except (
