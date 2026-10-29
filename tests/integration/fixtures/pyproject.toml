@@ -15,7 +15,6 @@ build-backend = "hatchling.build"
 [tool.hatch.build]
 include = [
     "agent_user.py",
-    "checkpoint_restore_v1.py",
     "counter_tool.py",
     "echo_acp_resume.py",
     "echo_tool.py",

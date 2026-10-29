@@ -11,7 +11,7 @@ the code.
 
 A harness without a capability the behavior needs is collected as a skip with its
 reason (`Harness.EXECUTES_CODE`, `SUPPORTS_MCP`, `SUPPORTS_SKILLS`, resume support via
-`SUPPORTS_RESUME` or a native session, `SUPPORTS_CHECKPOINTS`).
+`SUPPORTS_RESUME` or a native session).
 
 A runtime without a feature the behavior needs (`RuntimeBackend.SUPPORTS_*`, or a
 `NetworkPolicyConfig` for a network policy) skips the cell the same way. That a runtime
@@ -64,7 +64,6 @@ RUNTIME_FEATURES = {
     "network": "network policies",
     "expose": "port exposure",
     "compose": "Compose services",
-    "checkpoint": "filesystem checkpoints",
 }
 
 # Harness dialects that cannot run against the CI model yet.
@@ -142,7 +141,6 @@ def supports(runtime: str, feature: str) -> bool:
         "user": "SUPPORTS_USER_SWITCHING",
         "expose": "SUPPORTS_PORT_EXPOSURE",
         "compose": "SUPPORTS_COMPOSE",
-        "checkpoint": "SUPPORTS_CHECKPOINTS",
     }[feature]
     return getattr(runtime_cls(runtime), flag)
 
@@ -172,8 +170,6 @@ def unsupported(
         return f"{name} has no native skill support"
     if "resume" in needs and not resumes(cls):
         return f"{name} cannot resume an exchange"
-    if "restore" in needs and not cls.SUPPORTS_CHECKPOINTS:
-        return f"{name} cannot restore a checkpoint"
     runtime_needs = (*(("container",) if cls.NEEDS_CONTAINER else ()), *needs)
     for feature in runtime_needs:
         if feature in RUNTIME_FEATURES and not supports(runtime, feature):
