@@ -189,8 +189,10 @@ async def compose_project(
                 "dockerfile": "Dockerfile",
             }
         (directory / "base.json").write_text(json.dumps(base))
+        # env.json is a Compose file: escape `$` so values reach the service verbatim.
+        escaped = {key: value.replace("$", "$$") for key, value in environment.items()}
         (directory / "env.json").write_text(
-            json.dumps({"services": {spec.workspace: {"environment": environment}}})
+            json.dumps({"services": {spec.workspace: {"environment": escaped}}})
         )
 
         root = str(directory)

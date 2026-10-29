@@ -7,6 +7,7 @@ import io
 import ipaddress
 import json
 import logging
+import math
 import re
 import shlex
 import tarfile
@@ -138,7 +139,13 @@ class NativeService:
 
 def validate_native(project) -> None:
     config = project.config
-    if set(config) - {"name", "services", "networks", "volumes"}:
+    # Compose keeps top-level `x-*` extension blocks (YAML anchors); they configure nothing.
+    if {key for key in config if not key.startswith("x-")} - {
+        "name",
+        "services",
+        "networks",
+        "volumes",
+    }:
         raise SandboxError("Native Compose does not support secrets or configs")
     if any(set(volume) - {"name"} for volume in config.get("volumes", {}).values()):
         raise SandboxError("Native Compose supports project volumes without drivers")
@@ -336,8 +343,10 @@ async def prepare_native(config: PrimeConfig, spec: ComposeSpec, env: dict[str, 
                 )
         main = prepared["services"]["main"]
         if spec.image_override:
+            # The task image replaces an authored build; Compose pulls it only when missing.
             main["image"] = config.image
-            main["pull_policy"] = "always"
+            main.pop("build", None)
+            main.pop("pull_policy", None)
         if config.workdir is not None:
             main["working_dir"] = config.workdir
         prepared_path = project.directory / "native.json"
@@ -372,12 +381,14 @@ async def prepare_native(config: PrimeConfig, spec: ComposeSpec, env: dict[str, 
         )
         if result.exit_code:
             raise SandboxError(f"Compose image inspection failed: {result.stderr}")
+        images = json.loads(result.stdout)
         image_envs = {
             image["Id"]: dict(
                 entry.split("=", 1) for entry in image["Config"].get("Env") or []
             )
-            for image in json.loads(result.stdout)
+            for image in images
         }
+        image_sizes = {image["Id"]: image["Size"] for image in images}
         services, bound = {}, 0
         for name in ids:
             item = inspected[name]
@@ -413,16 +424,30 @@ async def prepare_native(config: PrimeConfig, spec: ComposeSpec, env: dict[str, 
                 exclude={"image", "workdir", "cpu", "memory", "disk"}
             )
             options.update(
-                image=item["Image"],
-                workdir=metadata.get("WorkingDir") or "/",
-                cpu=float(definition.get("cpus", limits.get("cpus", 1))),
-                memory=float(
-                    definition.get("mem_limit", limits.get("memory", 2 * 1024**3))
-                )
-                / 1024**3,
+                image=item["Image"], workdir=metadata.get("WorkingDir") or "/"
             )
-            if name == "main":
-                options.update(cpu=config.cpu, memory=config.memory, disk=config.disk)
+            authored = {
+                "cpu": definition.get("cpus", limits.get("cpus")),
+                "memory": definition.get("mem_limit", limits.get("memory")),
+            }
+            for resource, scale in (("cpu", 1), ("memory", 1024**3)):
+                default = PrimeConfig.model_fields[resource].default
+                # The runtime config sizes main as it does task resources: an explicit
+                # setting wins over Compose, which wins over the default.
+                size = getattr(config, resource) if name == "main" else default
+                if authored[resource] is not None and size == default:
+                    # The VM also runs its OS: a container limit never shrinks it.
+                    size = max(float(authored[resource]) / scale, default)
+                options[resource] = size
+            disk = (
+                config.disk
+                if name == "main"
+                else PrimeConfig.model_fields["disk"].default
+            )
+            # The VM's disk holds its image, with room to write.
+            options["disk"] = max(
+                disk, math.ceil(image_sizes[item["Image"]] / 1024**3) + 1
+            )
             if internal:
                 options.update(allow=[], block=["*"])
             services[name] = NativeService(
@@ -569,16 +594,23 @@ async def _import_image(client, project, container: str, config: PrimeConfig) ->
                 break
             except BlockingIOError:
                 await asyncio.sleep(1)
-        existing = await client.list(search=name)
-        for image in existing.data:
-            if (
-                image.image_name == name
-                and image.image_tag == "v4"
-                and image.artifact_type == "VM_SANDBOX"
-                and image.status == "COMPLETED"
-                and image.display_ref
-            ):
-                return image.display_ref
+        async with asyncio.timeout(1800):
+            while True:
+                existing = [
+                    image
+                    for image in (await client.list(search=name)).data
+                    if image.image_name == name
+                    and image.image_tag == "v4"
+                    and image.artifact_type == "VM_SANDBOX"
+                ]
+                for image in existing:
+                    if image.status == "COMPLETED" and image.display_ref:
+                        return image.display_ref
+                # Another host or an earlier rollout is building it; a build ends on
+                # its own. A PENDING upload may be abandoned, so it is not awaited.
+                if not any(image.status == "BUILDING" for image in existing):
+                    break
+                await asyncio.sleep(5)
         rootfs = project.directory / "rootfs.tar"
         result = await cli(
             "docker", "export", "--output", str(rootfs), container, env=project.env
