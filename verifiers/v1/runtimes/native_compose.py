@@ -6,6 +6,7 @@ import hashlib
 import ipaddress
 import json
 import logging
+import math
 import re
 import shlex
 import tarfile
@@ -233,12 +234,14 @@ async def prepare_native(config: PrimeConfig, spec: ComposeSpec, env: dict[str, 
         )
         if result.exit_code:
             raise SandboxError(f"Compose image inspection failed: {result.stderr}")
+        images = json.loads(result.stdout)
         image_envs = {
             image["Id"]: dict(
                 entry.split("=", 1) for entry in image["Config"].get("Env") or []
             )
-            for image in json.loads(result.stdout)
+            for image in images
         }
+        image_sizes = {image["Id"]: image["Size"] for image in images}
         services = {}
         for name in ids:
             item = inspected[name]
@@ -272,16 +275,30 @@ async def prepare_native(config: PrimeConfig, spec: ComposeSpec, env: dict[str, 
                 exclude={"image", "workdir", "cpu", "memory", "disk"}
             )
             options.update(
-                image=item["Image"],
-                workdir=metadata.get("WorkingDir") or "/",
-                cpu=float(definition.get("cpus", limits.get("cpus", 1))),
-                memory=float(
-                    definition.get("mem_limit", limits.get("memory", 2 * 1024**3))
-                )
-                / 1024**3,
+                image=item["Image"], workdir=metadata.get("WorkingDir") or "/"
             )
-            if name == "main":
-                options.update(cpu=config.cpu, memory=config.memory, disk=config.disk)
+            authored = {
+                "cpu": definition.get("cpus", limits.get("cpus")),
+                "memory": definition.get("mem_limit", limits.get("memory")),
+            }
+            for resource, scale in (("cpu", 1), ("memory", 1024**3)):
+                default = PrimeConfig.model_fields[resource].default
+                # The runtime config sizes main as it does task resources: an explicit
+                # setting wins over Compose, which wins over the default.
+                size = getattr(config, resource) if name == "main" else default
+                if authored[resource] is not None and size == default:
+                    # The VM also runs its OS: a container limit never shrinks it.
+                    size = max(float(authored[resource]) / scale, default)
+                options[resource] = size
+            disk = (
+                config.disk
+                if name == "main"
+                else PrimeConfig.model_fields["disk"].default
+            )
+            # The VM's disk holds its image, with room to write.
+            options["disk"] = max(
+                disk, math.ceil(image_sizes[item["Image"]] / 1024**3) + 1
+            )
             if internal:
                 options.update(allow=[], block=["*"])
             services[name] = NativeService(
