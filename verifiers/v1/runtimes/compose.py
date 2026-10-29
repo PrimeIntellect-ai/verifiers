@@ -148,7 +148,8 @@ async def compose_project(
                 for value in authored.get(kind, {}).values()
             ):
                 raise SandboxError(f"Compose {kind} must use project-scoped names")
-        if any(
+        # Native Compose renames containers on the build host and keeps the name as an alias.
+        if isinstance(config, DockerConfig) and any(
             service.get("container_name") for service in authored["services"].values()
         ):
             raise SandboxError(

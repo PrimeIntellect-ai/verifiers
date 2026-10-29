@@ -49,6 +49,13 @@ _SERVICE_FIELDS = {
     "shm_size",
     "cap_add",
     "volumes",
+    "network_mode",
+    "container_name",
+    "hostname",
+    # No effect: peers reach any port, and processes run without a terminal.
+    "ports",
+    "tty",
+    "stdin_open",
 }
 _BUILD_FIELDS = {"context", "dockerfile", "args", "target", "no_cache", "pull"}
 # Linux capability names in bit order (linux/capability.h).
@@ -117,12 +124,14 @@ def validate_native(project) -> None:
     if any(set(volume) - {"name"} for volume in config.get("volumes", {}).values()):
         raise SandboxError("Native Compose supports project volumes without drivers")
     networks = config.get("networks", {})
-    if not networks or any(
-        set(network) - {"name", "internal", "ipam"} or network.get("ipam")
+    if any(
+        set(network) - {"name", "internal", "ipam", "driver"}
+        or network.get("ipam")
+        or network.get("driver", "bridge") != "bridge"
         for network in networks.values()
     ):
         raise SandboxError(
-            "Native Compose supports project networks with optional internal isolation"
+            "Native Compose supports bridge project networks with optional internal isolation"
         )
     aliases = {}
     mounts: dict[str, set[str]] = {}
@@ -185,17 +194,29 @@ def validate_native(project) -> None:
                     f"Native Compose service {name!r} supports only named volumes"
                 )
             mounts.setdefault(volume["source"], set()).add(name)
+        # Docker's default bridge network: no project network, so no service names.
+        mode = service.get("network_mode")
+        if mode not in {None, "bridge", "default"}:
+            raise SandboxError(
+                f"Native Compose service {name!r} does not support network_mode {mode!r}"
+            )
         attached = service.get("networks", {})
         if (
             not attached
+            and mode is None
             or set(attached) - set(networks)
             or any(set(options or {}) - {"aliases"} for options in attached.values())
         ):
             raise SandboxError(
                 f"Native Compose service {name!r} requires project networks with optional aliases"
             )
+        if not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9.-]*", service.get("hostname", "x")):
+            raise SandboxError(
+                f"Native Compose service {name!r} has an invalid hostname"
+            )
         for alias in [
             name,
+            *([service["container_name"]] if "container_name" in service else []),
             *(
                 alias
                 for options in attached.values()
@@ -232,6 +253,12 @@ async def prepare_native(config: PrimeConfig, spec: ComposeSpec, env: dict[str, 
                 name: {"platform": "linux/amd64"} for name in project.config["services"]
             }
         }
+        for name, service in project.config["services"].items():
+            if "container_name" in service:
+                # Container names are global on the build host; rollouts must not collide.
+                overlay["services"][name]["container_name"] = (
+                    f"{project.config['name']}-{name}"
+                )
         main = overlay["services"]["main"]
         if spec.image_override:
             main["image"] = config.image
@@ -281,7 +308,9 @@ async def prepare_native(config: PrimeConfig, spec: ComposeSpec, env: dict[str, 
                     f"Native Compose service {name!r} has an unsupported health check"
                 )
             definition = project.config["services"][name]
-            internal = all(
+            # Bridge-mode services join no project network and keep their internet.
+            definition.setdefault("networks", {})
+            internal = bool(definition["networks"]) and all(
                 project.config["networks"][network].get("internal", False)
                 for network in definition["networks"]
             )
@@ -463,25 +492,39 @@ class NativeProcesses:
                     )
             names = []
             for peer, shared in peers.items():
+                definition = self.services[peer].definition
                 aliases = [
-                    alias
-                    for network in sorted(shared)
-                    for alias in (
-                        self.services[peer].definition["networks"][network] or {}
-                    ).get("aliases", [])
+                    *(
+                        [definition["container_name"]]
+                        if "container_name" in definition
+                        else []
+                    ),
+                    *(
+                        alias
+                        for network in sorted(shared)
+                        for alias in (definition["networks"][network] or {}).get(
+                            "aliases", []
+                        )
+                    ),
                 ]
                 names.append(
                     f"{addresses[peer]} {' '.join(dict.fromkeys([peer, *aliases]))}"
                 )
+            hostname = service.definition.get("hostname")
+            if hostname:
+                names.append(f"127.0.1.1 {hostname}")
             host_entries = "\n".join(names) + "\n"
             backend.env = service.env
             backend.user = service.user
             if service.internal:
                 # Internal-only services have no internet, including during setup.
                 await backend.prepare_execution([])
-            result = await runtime.run(
-                ["sh", "-c", f"printf %s {shlex.quote(host_entries)} >> /etc/hosts"], {}
-            )
+            install = f"printf %s {shlex.quote(host_entries)} >> /etc/hosts"
+            if hostname:
+                install += (
+                    f" && printf %s {shlex.quote(hostname)} > /proc/sys/kernel/hostname"
+                )
+            result = await runtime.run(["sh", "-c", install], {})
             if result.exit_code:
                 raise SandboxError(
                     f"Native Compose could not install service names on {name!r}"
