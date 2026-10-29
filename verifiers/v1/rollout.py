@@ -259,10 +259,13 @@ class Rollout:
         if backend is None:
             return None
         status = await backend.execution_status()
-        if status.state == "running" and not await backend.bind().alive():
-            # A guest that just powered itself off still reads as running for a while.
+        if status.state == "running":
+            # A guest that just powered itself off still reads as running for a while,
+            # and a wedged one may never answer, which proves nothing either way.
             with contextlib.suppress(TimeoutError):
                 async with asyncio.timeout(60):
+                    if await backend.bind().alive():
+                        return None
                     while status.state == "running":
                         await asyncio.sleep(2)
                         status = await backend.execution_status()
@@ -707,6 +710,8 @@ class Rollout:
             # expired deadline stays the raw failure.
             if self.deadline_at is not None and (loop.time() >= self.deadline_at):
                 self._agent_deadline()
+            elif lost := await self._workspace_lost():
+                self._terminate(lost)
             else:
                 self.fail(e)
             return False
