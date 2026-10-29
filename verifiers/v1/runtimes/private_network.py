@@ -13,7 +13,7 @@ import asyncio
 import contextlib
 import logging
 import uuid
-from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Collection, Mapping
 from contextlib import AsyncExitStack, asynccontextmanager
 
 from verifiers.v1.runtimes import (
@@ -81,11 +81,12 @@ async def private_network(
     networks: Mapping[str, list[str]] | None = None,
     harness: RuntimeBackend | None = None,
     start_harness: Callable[[], Awaitable[object]] | None = None,
+    harness_peers: Collection[str] = (),
 ) -> AsyncIterator[dict[str, RuntimeBackend]]:
     """Boot the workspace's VM and one VM per member together, each joining a LAN
     network of the rollout's own as it boots. A split deployment's `harness` VM joins
-    too: it may open connections to the workspace and the tool servers' VMs, and
-    nothing may open one to it."""
+    too: it may open connections to the workspace, to tool servers' VMs and to the
+    task services in `harness_peers`, and nothing may open one to it."""
     if not isinstance(workspace, PrimeBackend):
         raise TypeError(
             "tool servers on Prime runtimes of their own join the workspace over a "
@@ -118,12 +119,15 @@ async def private_network(
         ]
     if harness is not None:
         rules.append(LanRule(from_=f"tag:{HARNESS_TAG}", to=f"tag:{WORKSPACE_TAG}"))
-        if networks is None and not interconnect:
-            # The harness consumes the tool servers.
-            rules += [
-                LanRule(from_=f"tag:{HARNESS_TAG}", to=f"tag:{tag}")
-                for tag in tags.values()
-            ]
+        # The harness consumes the tool servers, on VMs of their own or in services.
+        consumed = (
+            tags.values()
+            if networks is None and not interconnect
+            else [tags[name] for name in harness_peers if name in tags]
+        )
+        rules += [
+            LanRule(from_=f"tag:{HARNESS_TAG}", to=f"tag:{tag}") for tag in consumed
+        ]
     async with AsyncExitStack() as stack:
         client = await stack.enter_async_context(leased_client())
         # Install connectivity before boot: Compose peers must share a network;

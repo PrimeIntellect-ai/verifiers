@@ -7,7 +7,7 @@ import contextlib
 import logging
 import random
 import uuid
-from collections.abc import AsyncIterator, Callable, Mapping
+from collections.abc import AsyncIterator, Callable, Collection, Mapping
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass, field
 
@@ -189,6 +189,7 @@ class Deployment:
         *,
         spec: ComposeSpec | ServicesSpec | None = None,
         tool_vms: Mapping[str, PrimeConfig] | None = None,
+        tool_services: Collection[str] = (),
         env: dict[str, str] | None = None,
         config: DeploymentConfig | None = None,
         borrowed_runtime: Runtime | None = None,
@@ -198,6 +199,8 @@ class Deployment:
         self.tool_vms = dict(tool_vms or {})
         """Tool servers on Prime runtimes of their own, by server name, which join the
         workspace over the rollout's private network."""
+        self.tool_services = frozenset(tool_services)
+        """Task services that host tool servers, which a split harness connects to."""
         self.env = dict(env or {})
         self.config = config or DeploymentConfig()
         self.borrowed_runtime = borrowed_runtime

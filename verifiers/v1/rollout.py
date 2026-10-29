@@ -306,6 +306,11 @@ class Rollout:
                         composed=spec is not None,
                         borrowed=self._borrowed_runtime is not None,
                     ),
+                    tool_services={
+                        service
+                        for toolset in toolsets
+                        if (service := getattr(toolset.config, "service", None))
+                    },
                     env=runtime.env,
                     config=self._deployment_config,
                     borrowed_runtime=self._borrowed_runtime,

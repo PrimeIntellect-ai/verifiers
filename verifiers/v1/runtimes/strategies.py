@@ -89,6 +89,7 @@ class _PrivateNetworkDeployment(_DeploymentStrategy):
                 networks=self._networks,
                 harness=harness,
                 start_harness=harness and partial(d.own, harness),
+                harness_peers=d.tool_services,
             )
         )
         d.target_backends = {"main": d.backend, **vms}
