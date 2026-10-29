@@ -30,6 +30,7 @@ import traceback
 from collections.abc import AsyncIterator, Awaitable, Collection, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from typing import NoReturn
 
 import httpx
 from aiohttp import web
@@ -457,21 +458,27 @@ class InterceptionServer(Interception):
         session: RolloutSession,
         dialect: Dialect,
         error: RolloutError,
-        *,
-        hook: bool = False,
     ) -> web.Response:
-        """Stash a model-turn-adjacent failure (such as a hook raising) so the rollout
-        re-raises it as the real cause, and report it to the harness as an HTTP error.
-        A `hook` failure fails the rollout even if the harness survives it."""
+        """Stash a model-turn-adjacent failure so the rollout re-raises it as the real
+        cause, and report it to the harness as an HTTP error."""
         session.error = error
-        if hook:
-            session.hook_error = error
         logger.warning(
             "rollout %s failed: %s: %s", session.trace.id, type(error).__name__, error
         )
         return _error_response(
             dialect, str(error), status=getattr(error, "status_code", 502)
         )
+
+    async def _abort(self, session: RolloutSession, error: RolloutError) -> NoReturn:
+        """End the rollout's segment with a request hook's failure. The harness gets no
+        reply: the rollout cancels its turn, and releasing the session cancels this
+        handler."""
+        logger.warning(
+            "rollout %s failed: %s: %s", session.trace.id, type(error).__name__, error
+        )
+        session.abort(error)
+        await asyncio.get_running_loop().create_future()
+        raise AssertionError("unreachable")
 
     def mediate_capabilities(
         self, session: RolloutSession, dialect: Dialect, body: dict
@@ -722,15 +729,13 @@ class InterceptionServer(Interception):
             if stopped is None and model_request != original_request:
                 dialect.rewrite_request(body, original_request, model_request)
         except RolloutError as error:
-            return self._fail(session, dialect, error, hook=True)
+            return await self._abort(session, error)
         except Exception as error:  # noqa: BLE001 - surface task hook failures
-            return self._fail(
+            return await self._abort(
                 session,
-                dialect,
                 TaskError(
                     f"model boundary hook failed: {type(error).__name__}: {error}"
                 ),
-                hook=True,
             )
         except BaseException:
             raise

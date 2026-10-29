@@ -697,26 +697,21 @@ class Rollout:
                         return False
                 self._session.on_turn_input = on_input
                 assert self.deployment is not None
-                await self._harness_session.turn(messages)
+                if await self._turn(messages):
+                    assert self._session.aborted is not None
+                    self.fail(self._session.aborted, stage="agent")
+                    return False
         except TimeoutError as e:
             # An expired rollout deadline is the agent breaking its time budget: a
-            # timeout stop — unless a request hook failed first, and the harness spent
-            # the budget retrying it. A TimeoutError from the harness's own I/O with no
-            # expired deadline stays the raw failure.
-            if self._session.hook_error is not None:
-                self.fail(self._session.hook_error, stage="agent")
-            elif self.deadline_at is not None and (loop.time() >= self.deadline_at):
+            # timeout stop. A TimeoutError from the harness's own I/O with no expired
+            # deadline stays the raw failure.
+            if self.deadline_at is not None and (loop.time() >= self.deadline_at):
                 self.timeout("agent")
             else:
                 self.fail(e, stage="agent")
             return False
         except Exception as e:  # noqa: BLE001 - harness boundary records every rollout failure
             if self._session.stopped:
-                return False
-            hook_error = self._session.hook_error
-            if hook_error is not None:
-                hook_error.__cause__ = e
-                self.fail(hook_error, stage="agent")
                 return False
             # A runtime can report the cancellation the deadline caused as its own
             # error (Prime's SDK raises one for a cancelled request); the expired
@@ -743,15 +738,32 @@ class Rollout:
         # A harness that completes cleanly after a failed model call handled it (e.g. it
         # ends its run on context overflow); the failure stays recorded on the call. A
         # harness that dies on it surfaces the stashed error through the except above.
-        # A request hook's failure is the task's verdict, which no harness can handle.
-        if self._session.hook_error is not None:
-            self.fail(self._session.hook_error, stage="agent")
-            return False
         self._session.error = None
         # A segment that committed nothing can't be waiting on the user; treating
         # it as continuable would consult the user against a conversation that
         # never moved, forever.
         return self.ok and trace.num_turns > turns_before
+
+    async def _turn(self, messages: Messages | None) -> bool:
+        """Run one harness segment. A request hook that fails ends it at once (the
+        session aborts): the harness's turn is cancelled, so the harness never handles
+        the failure. Returns whether the segment was aborted."""
+        assert self._harness_session is not None
+        turn = asyncio.ensure_future(self._harness_session.turn(messages))
+        aborted = asyncio.ensure_future(self._session.abort_event.wait())
+        try:
+            await asyncio.wait({turn, aborted}, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            aborted.cancel()
+            if not turn.done():
+                turn.cancel()
+                await asyncio.wait({turn})
+        if self._session.aborted is not None:
+            if not turn.cancelled():
+                turn.exception()  # the abort decides the outcome, whatever the turn did
+            return True
+        turn.result()
+        return False
 
     async def restore(self) -> bool:
         """Run the restored attempt's first segment: a new harness process in the box

@@ -179,10 +179,10 @@ class RolloutSession:
     when its program dies on it the rollout records this original error instead of a secondary
     `HarnessError`. A harness that completes cleanly after the failure handled it. Reset before
     each model turn, so a successful retry clears it."""
-    hook_error: "RolloutError | None" = None
-    """A request hook's failure: the task, not the provider, refused a turn. It ends the
-    rollout even when the harness carries on past the HTTP error (retries, then ends its
-    turn cleanly); never reset."""
+    aborted: "RolloutError | None" = None
+    """A request hook's failure: the task, not the provider, refused a turn. The rollout
+    ends the running segment with it (`Rollout.step`); the harness never sees it."""
+    abort_event: asyncio.Event = field(default_factory=asyncio.Event)
     idempotent_requests: dict[str, IdempotentRequest] = field(default_factory=dict)
     """Explicit keys or marked SDK retries mapped to their replay state."""
     released: bool = False
@@ -624,6 +624,12 @@ class RolloutSession:
             return
         self.tasks.add(task)
         task.add_done_callback(self.tasks.discard)
+
+    def abort(self, error: "RolloutError") -> None:
+        """End the running segment with `error`. The first abort wins."""
+        if self.aborted is None:
+            self.aborted = error
+            self.abort_event.set()
 
     def release(self) -> None:
         """Seal the session: no further trace mutation, and in-flight handlers cancel."""
