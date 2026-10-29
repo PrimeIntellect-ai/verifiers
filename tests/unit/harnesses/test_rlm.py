@@ -5,6 +5,7 @@ import asyncio
 import shutil
 import subprocess
 import tarfile
+from types import SimpleNamespace
 
 import pytest
 
@@ -68,7 +69,9 @@ async def _install_script(monkeypatch, tmp_path) -> str:
     monkeypatch.setattr(harness, "RLM_CACHE_DIR", str(tmp_path / "rlm"))
     monkeypatch.setattr(harness, "ensure_installed", installed)
     monkeypatch.setattr(harness.ACPHarness, "setup", acp_setup)
-    await RLMHarness(RLMHarnessConfig(version="abc123")).setup(object())  # type: ignore[arg-type]
+    await RLMHarness(RLMHarnessConfig(version="abc123")).setup(
+        SimpleNamespace(user=None)
+    )  # type: ignore[arg-type]
     return scripts[0]
 
 

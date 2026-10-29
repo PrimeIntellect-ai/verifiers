@@ -168,6 +168,28 @@ class RLMHarnessConfig(HarnessConfig):
         return self
 
 
+_USER_PYTHON = (
+    'IFS=:; for d in $PATH; do for n in python3 python; do p="$d/$n"; '
+    '[ -x "$p" ] && "$p" -c "import sys; raise SystemExit(sys.version_info < (3, 10))" '
+    '>/dev/null 2>&1 && { printf %s "$p"; exit 0; }; done; done; exit 1'
+)
+USER_PYTHON_FALLBACK = "3.12"
+"""What `uv tool install --python` gets when the user can run no Python 3.10+: uv
+installs it into the install directory, which `ensure_installed` opens to the user."""
+
+
+async def user_python(runtime: Runtime) -> str:
+    """The first Python 3.10+ on PATH that the runtime's user can run, which install.sh
+    (run as root) would otherwise choose for itself. Root's first `python3` can be
+    one the agent cannot run: CyberStrike's langgraph-checkpoint-isolation-defensive
+    puts /opt/rk/bin first, a venv on uv's Python 3.13 under root's 0700 home, and the
+    `auditor` agent's `rlm` failed with "Permission denied" before turn 1."""
+    result = await runtime.run(["sh", "-c", _USER_PYTHON], {})
+    if result.exit_code == 0 and result.stdout.strip():
+        return result.stdout.strip()
+    return USER_PYTHON_FALLBACK
+
+
 class RLMHarness(ACPHarness[RLMHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
@@ -227,10 +249,21 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
         env = self.config.resolved_env.copy()
         extra_uv_args = env.get("RLM_EXTRA_UV_ARGS", "")
         env["RLM_EXTRA_UV_ARGS"] = f"{extra_uv_args} --with mcp~=1.28".strip()
+        installed = f"[ -f {ready} ] && [ -x {binary} ]"
+        if runtime.user is not None and "RLM_TOOL_PYTHON" not in env:
+            # Root installs rlm for the agent user; the tool's venv runs on the Python
+            # install.sh picks, which must be one the user can run (see `user_python`).
+            # An install on another Python, left by an earlier run, is not reused.
+            python = await user_python(runtime)
+            env["RLM_TOOL_PYTHON"] = python
+            install = install.replace(
+                f"touch {ready})", f"printf %s {shlex.quote(python)} > {ready})"
+            )
+            installed += f' && [ "$(cat {ready})" = {shlex.quote(python)} ]'
         await ensure_installed(
             runtime,
             directory=directory,
-            ready=f"[ -f {ready} ] && [ -x {binary} ]",
+            ready=installed,
             install=install,
             env=env,
             label="rlm",
