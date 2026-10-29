@@ -63,6 +63,7 @@ SCALAR_FIELDS = (
     "is_completed",
     "ok",
     "stop_condition",
+    "termination",
     "is_timeout",
     "dropped",
     "timing",

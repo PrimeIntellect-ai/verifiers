@@ -72,3 +72,13 @@ max_turn_tokens = 4096
 skip_on_truncated = true
 skip_on_timeout = true
 ```
+
+### Workspace loss and agent deadlines
+
+`agent.execution_failure` decides how a rollout ends when execution stops before the agent finishes. `workspace_loss` covers a workspace its provider reports gone while the agent runs, such as a Prime VM the agent powered off or a Docker container that exited; the provider is asked after a harness failure, never polled, and an unreachable provider is not proof of loss. `agent_timeout` covers an expired agent deadline, which includes model latency. `error` fails the rollout, and `zero` keeps it as a valid sample with a single `execution_failure` reward of 0 and no grading; `agent_timeout = "grade"` (the default) scores the workspace as the agent left it. A loss the provider attributes to its own infrastructure stays an error. `Trace.termination` records the kind, cause, provider evidence and applied policy.
+
+```toml
+[env.agent.execution_failure]
+workspace_loss = "zero"
+agent_timeout = "zero"
+```
