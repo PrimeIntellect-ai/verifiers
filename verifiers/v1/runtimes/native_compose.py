@@ -111,7 +111,7 @@ _BIND_MAX_BYTES = 256 * 1024**2
 
 @dataclass
 class NativeMount:
-    """A bind of task files, or a volume Docker mounts over bound files."""
+    """A bind of task files, or a service-local volume seeded from the image."""
 
     target: str
     read_only: bool = False
@@ -131,6 +131,7 @@ class NativeService:
     stop_signal: str = "SIGTERM"
     internal: bool = False
     mounts: list[NativeMount] = field(default_factory=list)
+    image_env: dict[str, str] = field(default_factory=dict)
 
 
 def validate_native(project) -> None:
@@ -223,7 +224,7 @@ def validate_native(project) -> None:
                     (name, volume["target"], source, bool(volume.get("read_only")))
                 )
                 continue
-            # The VM keeps the image's directory: no read-only, nocopy or subpath mount.
+            # Volumes copy image contents: no read-only, nocopy or subpath mount.
             if (
                 volume["type"] != "volume"
                 or volume.get("read_only")
@@ -345,6 +346,21 @@ async def prepare_native(config: PrimeConfig, spec: ComposeSpec, env: dict[str, 
             item["Config"]["Labels"]["com.docker.compose.service"]: item
             for item in json.loads(result.stdout)
         }
+        result = await cli(
+            "docker",
+            "image",
+            "inspect",
+            *dict.fromkeys(item["Image"] for item in inspected.values()),
+            env=project.env,
+        )
+        if result.exit_code:
+            raise SandboxError(f"Compose image inspection failed: {result.stderr}")
+        image_envs = {
+            image["Id"]: dict(
+                entry.split("=", 1) for entry in image["Config"].get("Env") or []
+            )
+            for image in json.loads(result.stdout)
+        }
         services, bound = {}, 0
         for name in ids:
             item = inspected[name]
@@ -403,6 +419,7 @@ async def prepare_native(config: PrimeConfig, spec: ComposeSpec, env: dict[str, 
                 metadata.get("StopSignal") or "SIGTERM",
                 internal,
                 await asyncio.to_thread(_mounts, definition, _BIND_MAX_BYTES - bound),
+                image_env=image_envs[item["Image"]],
             )
             bound += sum(len(mount.archive or b"") for mount in services[name].mounts)
         for name, service in services.items():
@@ -432,12 +449,9 @@ async def prepare_native(config: PrimeConfig, spec: ComposeSpec, env: dict[str, 
 
 
 def _mounts(definition: dict, budget: int) -> list[NativeMount]:
-    """A service's bound task files and the volumes over them, in Docker's order."""
+    """A service's task binds and volumes, in Docker's mount order."""
     volumes = definition.get("volumes", [])
     targets = [PurePosixPath(volume["target"]) for volume in volumes]
-    binds = [
-        target for target, volume in zip(targets, volumes) if volume["type"] == "bind"
-    ]
     mounts = []
     for target, volume in zip(targets, volumes):
         if volume["type"] == "bind":
@@ -458,8 +472,8 @@ def _mounts(definition: dict, budget: int) -> list[NativeMount]:
                     source.is_file(),
                 )
             )
-        elif any(target != bind and target.is_relative_to(bind) for bind in binds):
-            # Elsewhere a volume is the image's directory; over bound files it is mounted.
+        else:
+            # Exporting a stopped container omits newly created volume directories.
             mounts.append(NativeMount(str(target)))
     return sorted(
         mounts, key=lambda mount: (len(PurePosixPath(mount.target).parts), mount.target)
@@ -490,7 +504,7 @@ def _archive(source: Path, hidden: list[PurePosixPath], budget: int) -> bytes:
 
 
 async def _mount(runtime, name: str, mounts: list[NativeMount]) -> None:
-    """Mount bound task files, and the volumes over them, as Docker would."""
+    """Mount task binds and initialized service volumes as Docker would."""
     staging = "/var/lib/vf-compose"
     unpack, attach, protect = [], [], []
     for index, mount in enumerate(mounts):
@@ -543,27 +557,12 @@ async def _import_image(client, project, container: str, config: PrimeConfig) ->
         for image in existing.data:
             if (
                 image.image_name == name
-                and image.image_tag == "v3"
+                and image.image_tag == "v4"
                 and image.artifact_type == "VM_SANDBOX"
                 and image.status == "COMPLETED"
                 and image.display_ref
             ):
                 return image.display_ref
-        # Keep baked-in environment for fresh verifiers, never rollout overrides.
-        result = await cli(
-            "docker",
-            "image",
-            "inspect",
-            config.image,
-            "--format",
-            "{{json .Config.Env}}",
-            env=project.env,
-        )
-        if result.exit_code:
-            raise SandboxError(f"Compose image inspection failed: {result.stderr}")
-        environment = dict(
-            entry.split("=", 1) for entry in json.loads(result.stdout) or []
-        )
         rootfs = project.directory / "rootfs.tar"
         result = await cli(
             "docker", "export", "--output", str(rootfs), container, env=project.env
@@ -575,10 +574,6 @@ async def _import_image(client, project, container: str, config: PrimeConfig) ->
         dockerfile.write_text(
             "FROM scratch\nADD rootfs.tar /\n"
             "RUN test -x /bin/bash || apk add --no-cache bash\n"
-            + "".join(
-                f"ENV {key}={shlex.quote(value)}\n"
-                for key, value in environment.items()
-            )
         )
         context = project.directory / "context.tar.gz"
 
@@ -591,7 +586,7 @@ async def _import_image(client, project, container: str, config: PrimeConfig) ->
         build = await client.initiate_build(
             BuildImageRequest(
                 image_name=name,
-                image_tag="v3",
+                image_tag="v4",
                 visibility="PRIVATE",
                 team_id=client.client.config.team_id,
             )
@@ -652,7 +647,9 @@ class NativeProcesses:
                 for peer in peers
                 if peer != name
             }
-            # Prime's LAN DNS resolves peers, not the VM itself.
+            # LAN DNS returns peer-specific proxy addresses, not local interfaces.
+            # Prime forwards incoming TCP to loopback listeners, so self aliases
+            # remain bindable and reachable by peers without resolving self in DNS.
             addresses = {name: "127.0.0.1"}
             if hosts:
                 result = await runtime.run(["getent", "hosts", *hosts], {})
@@ -689,7 +686,7 @@ class NativeProcesses:
                 )
             hostname = service.definition.get("hostname")
             if hostname:
-                names.append(f"127.0.1.1 {hostname}")
+                names.append(f"127.0.0.1 {hostname}")
             host_entries = "\n".join(names) + "\n"
             backend.env = service.env
             backend.user = service.user

@@ -2,7 +2,7 @@
 
 import asyncio
 import logging
-from contextlib import AsyncExitStack
+from contextlib import AsyncExitStack, asynccontextmanager
 from functools import partial
 
 from verifiers.v1.runtimes import PrimeBackend, PrimeConfig
@@ -126,6 +126,16 @@ class _PrivateNetworkDeployment(_DeploymentStrategy):
 
 class _NativeComposeDeployment(_PrivateNetworkDeployment):
     _processes = None
+
+    @asynccontextmanager
+    async def verifier(self, deployment, config, env):
+        main = self._processes.services["main"]
+        if isinstance(config, PrimeConfig) and config.image == main.config.image:
+            # Dockerfile ENV cannot preserve multiline values; pass image defaults
+            # directly, excluding the solver's Compose and rollout overrides.
+            env = main.image_env | env
+        async with super().verifier(deployment, config, env) as backend:
+            yield backend
 
     async def start(self, d):
         from verifiers.v1.runtimes.native_compose import NativeProcesses, prepare_native
