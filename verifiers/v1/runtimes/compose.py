@@ -68,10 +68,17 @@ async def compose_project(
     started = False
 
     def down() -> None:
-        # Compose finds the project by its labels; the atexit backstop stays until
-        # removal succeeds.
+        # Find the project by its labels without reading the evaluator's .env.
+        # The atexit backstop stays until removal succeeds.
         subprocess.run(
-            [*project, "down", "--volumes", "--remove-orphans"],
+            [
+                *project,
+                "--env-file",
+                os.devnull,
+                "down",
+                "--volumes",
+                "--remove-orphans",
+            ],
             env=compose_env,
             capture_output=True,
             timeout=60,
