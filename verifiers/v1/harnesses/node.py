@@ -14,8 +14,10 @@ node_ok() { "$1" -e 'const [a,b,c]=process.versions.node.split(".").map(Number);
 if [ -f /etc/alpine-release ]; then
     apk add --upgrade --no-cache curl ca-certificates nodejs-current npm >/dev/null
     mkdir -p "$node/bin"
-    ln -sf "$(command -v node)" "$node/bin/node"
-    ln -sf "$(command -v npm)" "$node/bin/npm"
+    # apk installs into /usr/bin. An image-provided /usr/local/bin/node may
+    # appear first on PATH, so link the binaries that apk just installed.
+    ln -sf /usr/bin/node "$node/bin/node"
+    ln -sf /usr/bin/npm "$node/bin/npm"
 else
     if ! command -v curl >/dev/null 2>&1 \
         && ! (apt-get update -qq && apt-get install -y -qq curl ca-certificates >/dev/null); then
@@ -64,10 +66,28 @@ else
     case "$(uname -s)" in Linux) node_os=linux ;; Darwin) node_os=darwin ;; *) echo "unsupported os: $(uname -s)" >&2; exit 1 ;; esac
     if [ ! -x "$node/bin/node" ] || [ "$("$node/bin/node" --version 2>/dev/null)" != "v$VF_NODE_VERSION" ]; then
         case "$(uname -m)" in aarch64|arm64) node_arch=arm64 ;; *) node_arch=x64 ;; esac
+        # Download completely before extraction so curl can detect and retry
+        # truncated transfers.
+        archive="$node.tar.gz"
+        url="https://nodejs.org/dist/v$VF_NODE_VERSION/node-v$VF_NODE_VERSION-${node_os}-${node_arch}.tar.gz"
+        rm -f "$archive"
+        attempt=1
+        until curl -fsSL "$url" -o "$archive"; do
+            if [ "$attempt" -ge 5 ]; then
+                rm -f "$archive"
+                echo "Node.js download failed after $attempt attempts: $url" >&2
+                exit 1
+            fi
+            attempt=$((attempt + 1))
+            sleep "$attempt"
+        done
         rm -rf "$node"
         mkdir -p "$node"
-        curl -fsSL "https://nodejs.org/dist/v$VF_NODE_VERSION/node-v$VF_NODE_VERSION-${node_os}-${node_arch}.tar.gz" \
-            | tar -xz -C "$node" --strip-components=1
+        if ! tar -xzf "$archive" -C "$node" --strip-components=1; then
+            rm -f "$archive"
+            exit 1
+        fi
+        rm -f "$archive"
     fi
 fi
 node_ok "$node/bin/node" || { echo "ACP adapters require patched Node.js (22.23.4, 24.22.1 or 26.12.1 minimum)" >&2; exit 1; }
