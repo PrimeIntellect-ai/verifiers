@@ -592,6 +592,11 @@ class SharedToolServer:
     external: bool = False
     runtime: Runtime | None = field(default=None, repr=False)
     state_secret: str = field(default="", repr=False)
+    header_env: dict[str, str] = field(default_factory=dict)
+    """Headers the harness sends this server, each read from the named host env var, as
+    `HarnessConfig.mcp_header_env` names them for every rollout: for a credential that
+    differs per rollout (each rollout its own account on the server). Only the variable
+    names are held; the values never enter a config, a task or a trace."""
 
 
 @contextlib.asynccontextmanager

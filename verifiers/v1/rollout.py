@@ -131,6 +131,12 @@ class Rollout:
         self._timeouts = timeouts
         self._agent_time_remaining = self._timeouts.agent
         self._shared_tools = shared_tools or {}
+        if header_env := {
+            name: server.header_env
+            for name, server in self._shared_tools.items()
+            if server.header_env
+        }:
+            self.harness = harness.with_mcp_header_env(header_env)
         self._interception = interception
         self.runtime = runtime
         self._borrowed_runtime = runtime
