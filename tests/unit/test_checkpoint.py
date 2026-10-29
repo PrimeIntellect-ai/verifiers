@@ -144,6 +144,7 @@ def make_rollout(
     run._checkpointing = RolloutCheckpointConfig(interval=interval, keep=keep)
     run._durable = {}
     run._captures = set()
+    run._closed = False
     run._pruning = asyncio.Lock()
     run.deleted_checkpoints = set()
     run.rewound_checkpoints = []
@@ -191,6 +192,15 @@ async def test_settling_without_a_retry_stops_waiting():
     await asyncio.wait_for(run._settle_checkpoints(wait=False), timeout=1)
     assert run._durable == {}
     assert run.trace.checkpoints == [checkpoint] and checkpoint.time.end == 0
+
+
+async def test_a_closing_run_takes_no_checkpoint():
+    run, backend = make_rollout(interval=1)
+    capture = asyncio.create_task(run._checkpoint(TURN))
+    run._closed = True
+    await run._settle_checkpoints(wait=True)
+    assert await capture is None
+    assert backend.taken == 0 and run.trace.checkpoints == []
 
 
 def durable(*ids: str, deleted: tuple[str, ...] = ()) -> list[Checkpoint]:

@@ -772,6 +772,10 @@ class Rollout:
         return await self.step(messages, intercepted=len(messages) - 1)
 
     async def _checkpoint(self, turn: graph.PendingTurn) -> Checkpoint | None:
+        if self._closed:
+            # Settling may have drained `_captures` already: a snapshot taken now
+            # would start its upload after the box is gone.
+            return None
         task = asyncio.current_task()
         if task is not None:
             self._captures.add(task)
