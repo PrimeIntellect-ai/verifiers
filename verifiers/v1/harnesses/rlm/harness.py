@@ -19,6 +19,7 @@ from pydantic_config import BaseConfig
 from verifiers.v1.acp import ACPConfig, ACPHarness, ACPTurn, JsonObject
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
+from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import TaskData
@@ -69,7 +70,7 @@ class CompactionConfig(BaseConfig):
 class RLMHarnessConfig(HarnessConfig):
     dialect: Literal["chat_completions"] = "chat_completions"
     version: str = Field(
-        default="84110bcb73e3c1acaf69047fda50aa4dff15eea1", min_length=1
+        default="684ea9069eadaf855596c3fa49e529566de7d1af", min_length=1
     )
     """Git ref (branch, tag, or commit) of nano-rlm to install. Must know every
     field this harness puts on the wire, i.e. be at least the default ref."""
@@ -240,6 +241,12 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
             "kernel_env": dict(runtime.env),
             "search_api_key": self.config.resolved_env.get("SERPER_API_KEY"),
         }
+        if (
+            "search" in self.config.builtin_skills
+            and isinstance(runtime.config, NetworkPolicyConfig)
+            and runtime.config.block
+        ):
+            payload["network_block"] = runtime.config.block
         if self.config.builtin_tools is not None:
             payload["builtin_tools"] = list(self.config.builtin_tools)
         return {RLM_RUNTIME_METADATA_KEY: payload}
