@@ -19,7 +19,7 @@ if TYPE_CHECKING:
 from verifiers.v1 import graph
 from verifiers.v1.configs.agent import AgentConfig, WireAgentConfig
 from verifiers.v1.configs.sampling import Sampling
-from verifiers.v1.errors import ProviderError, stop_condition
+from verifiers.v1.errors import ProviderError, error_kind, stop_condition
 from verifiers.v1.graph import RECORD_FLOAT_DECIMALS, MessageNode
 from verifiers.v1.runtimes import RuntimeInfo
 from verifiers.v1.semantic import ACPInfo, ParentLink, SemanticEdgeSet
@@ -126,6 +126,9 @@ class Error(BaseModel):
     message: str
     status_code: int | None = None
     traceback: str | None = None
+    kind: str | None = Field(default=None, exclude_if=lambda kind: kind is None)
+    """A `SandboxError`'s kind (`errors.SandboxErrorKind`) when it is known; left out
+    of the record otherwise."""
 
 
 class VersionInfo(BaseModel):
@@ -822,6 +825,7 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
                 type=type(error).__name__,
                 message=str(error),
                 status_code=getattr(error, "status_code", None),
+                kind=error_kind(error),
                 # Provider errors already carry the actionable upstream diagnostic.
                 # Keep full tracebacks for every other failure.
                 traceback=None
