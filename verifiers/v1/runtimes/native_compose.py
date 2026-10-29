@@ -48,8 +48,53 @@ _SERVICE_FIELDS = {
     "deploy",
     "shm_size",
     "cap_add",
+    "volumes",
 }
 _BUILD_FIELDS = {"context", "dockerfile", "args", "target", "no_cache", "pull"}
+# Linux capability names in bit order (linux/capability.h).
+_CAPABILITIES = (
+    "CHOWN",
+    "DAC_OVERRIDE",
+    "DAC_READ_SEARCH",
+    "FOWNER",
+    "FSETID",
+    "KILL",
+    "SETGID",
+    "SETUID",
+    "SETPCAP",
+    "LINUX_IMMUTABLE",
+    "NET_BIND_SERVICE",
+    "NET_BROADCAST",
+    "NET_ADMIN",
+    "NET_RAW",
+    "IPC_LOCK",
+    "IPC_OWNER",
+    "SYS_MODULE",
+    "SYS_RAWIO",
+    "SYS_CHROOT",
+    "SYS_PTRACE",
+    "SYS_PACCT",
+    "SYS_ADMIN",
+    "SYS_BOOT",
+    "SYS_NICE",
+    "SYS_RESOURCE",
+    "SYS_TIME",
+    "SYS_TTY_CONFIG",
+    "MKNOD",
+    "LEASE",
+    "AUDIT_WRITE",
+    "AUDIT_CONTROL",
+    "SETFCAP",
+    "MAC_OVERRIDE",
+    "MAC_ADMIN",
+    "SYSLOG",
+    "WAKE_ALARM",
+    "BLOCK_SUSPEND",
+    "AUDIT_READ",
+    "PERFMON",
+    "BPF",
+    "CHECKPOINT_RESTORE",
+)
 
 
 @dataclass
@@ -67,10 +112,10 @@ class NativeService:
 
 def validate_native(project) -> None:
     config = project.config
-    if set(config) - {"name", "services", "networks"}:
-        raise SandboxError(
-            "Native Compose does not support volumes, secrets or configs"
-        )
+    if set(config) - {"name", "services", "networks", "volumes"}:
+        raise SandboxError("Native Compose does not support secrets or configs")
+    if any(set(volume) - {"name"} for volume in config.get("volumes", {}).values()):
+        raise SandboxError("Native Compose supports project volumes without drivers")
     networks = config.get("networks", {})
     if not networks or any(
         set(network) - {"name", "internal", "ipam"} or network.get("ipam")
@@ -80,6 +125,7 @@ def validate_native(project) -> None:
             "Native Compose supports project networks with optional internal isolation"
         )
     aliases = {}
+    mounts: dict[str, set[str]] = {}
     for name, service in config["services"].items():
         unsupported = set(service) - _SERVICE_FIELDS
         if unsupported:
@@ -106,16 +152,13 @@ def validate_native(project) -> None:
             raise SandboxError(
                 f"Native Compose Dockerfile for {name!r} must be inside the task"
             )
-        if set(service.get("cap_add", [])) - {"SYS_PTRACE"}:
-            raise SandboxError(
-                f"Native Compose service {name!r} only supports cap_add SYS_PTRACE"
-            )
         deploy = service.get("deploy", {})
         resources = deploy.get("resources", {})
+        # Compose adds empty sections, such as `placement: {}`, to every deploy block.
         if (
-            set(deploy) - {"resources", "replicas"}
+            {key for key, value in deploy.items() if value} - {"resources", "replicas"}
             or deploy.get("replicas", 1) != 1
-            or set(resources) - {"limits"}
+            or {key for key, value in resources.items() if value} - {"limits"}
             or set(resources.get("limits", {})) - {"cpus", "memory"}
         ):
             raise SandboxError(
@@ -136,6 +179,12 @@ def validate_native(project) -> None:
                 raise SandboxError(
                     f"Native Compose dependency {name!r} -> {dependency!r} is unsupported"
                 )
+        for volume in service.get("volumes", []):
+            if volume["type"] != "volume" or not volume.get("source"):
+                raise SandboxError(
+                    f"Native Compose service {name!r} supports only named volumes"
+                )
+            mounts.setdefault(volume["source"], set()).add(name)
         attached = service.get("networks", {})
         if (
             not attached
@@ -163,6 +212,13 @@ def validate_native(project) -> None:
                     f"Native Compose has an invalid or ambiguous alias: {alias!r}"
                 )
             aliases[alias] = name
+    # A volume one service mounts is a directory on that service's VM disk.
+    for volume, names in mounts.items():
+        if len(names) > 1:
+            raise SandboxError(
+                f"Native Compose services {', '.join(sorted(names))} share volume "
+                f"{volume!r}; each service VM has its own disk"
+            )
 
 
 async def prepare_native(config: PrimeConfig, spec: ComposeSpec, env: dict[str, str]):
@@ -231,7 +287,7 @@ async def prepare_native(config: PrimeConfig, spec: ComposeSpec, env: dict[str, 
             )
             if definition.get("cap_add") and user not in {None, "root"}:
                 raise SandboxError(
-                    f"Native Compose service {name!r} requires root for SYS_PTRACE"
+                    f"Native Compose service {name!r} requires root for cap_add"
                 )
             limits = definition.get("deploy", {}).get("resources", {}).get("limits", {})
             options = config.model_dump(
@@ -438,15 +494,27 @@ class NativeProcesses:
                     raise SandboxError(
                         f"Native Compose could not resize /dev/shm on {name!r}: {result.stderr}"
                     )
-            if service.definition.get("cap_add"):
+            if requested := service.definition.get("cap_add"):
                 result = await runtime.run(["cat", "/proc/self/status"], {})
-                capabilities = next(
-                    line.split()[1]
-                    for line in result.stdout.splitlines()
-                    if line.startswith("CapEff:")
+                effective = int(
+                    next(
+                        line.split()[1]
+                        for line in result.stdout.splitlines()
+                        if line.startswith("CapEff:")
+                    ),
+                    16,
                 )
-                if not int(capabilities, 16) & (1 << 19):
-                    raise SandboxError(f"Native Compose VM {name!r} lacks SYS_PTRACE")
+                names = {cap.upper().removeprefix("CAP_") for cap in requested}
+                # Docker already rejected names it does not know.
+                missing = [
+                    cap
+                    for bit, cap in enumerate(_CAPABILITIES)
+                    if ("ALL" in names or cap in names) and not effective >> bit & 1
+                ]
+                if missing:
+                    raise SandboxError(
+                        f"Native Compose VM {name!r} lacks {', '.join(missing)}"
+                    )
         started = {name: asyncio.Event() for name in self.services}
         healthy = {}
 
