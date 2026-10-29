@@ -101,6 +101,7 @@ openenv = [
     "openenv>=0.4.1",
 ]
 [tool.uv]
+constraint-dependencies = ["brotli>=1.2.1", "brotlicffi>=1.2.1.0"]
 preview = true
 required-version = ">=0.11.1"
 exclude-newer = "7 days"
@@ -132,6 +133,9 @@ bash-interception = { path = "environments/bash_interception", editable = true }
 web-search-interception = { path = "environments/web_search_interception", editable = true }
 
 [tool.uv.exclude-newer-package]
+# Admit the reviewed CVE-2026-111497 fixes without exempting future uploads.
+brotli = "2026-10-23T00:00:00Z"
+brotlicffi = "2026-10-23T00:00:00Z"
 # CA bundle: security fixes (e.g. 2026.10.19 for the eMudhra compromise) must not wait out the cooldown
 certifi = false
 # Bounded cutoffs for the explicitly requested tool upgrades.
