@@ -40,6 +40,7 @@ from verifiers.v1.utils.aio import run_shielded
 
 if TYPE_CHECKING:
     from verifiers.v1.mcp.toolset import Toolset
+    from verifiers.v1.session import MCPProxy
 
 logger = logging.getLogger(__name__)
 
@@ -443,6 +444,7 @@ async def _serve(
     *,
     state_secret: str = "",
     state_base: str | None = None,
+    proxy_mcp: MCPProxy | None = None,
     services: Mapping[str, Runtime] | None = None,
     hosts: Mapping[str, str] | None = None,
     placements: Mapping[str, Runtime] | None = None,
@@ -538,6 +540,19 @@ async def _serve(
             if harness_runtime is not None
             else harness_is_local
         )
+        if (
+            proxy_mcp is not None
+            and runtime.is_local
+            and not colocated
+            and not consumer_is_local
+        ):
+            backend = await runtime.expose(port)
+            # Register after startup, and revoke/drain before releasing the runtime.
+            url = await stack.enter_async_context(
+                proxy_mcp(f"{backend.rstrip('/')}/mcp")
+            )
+            yield _ServedServer(url, runtime)
+            return
         base = await stack.enter_async_context(
             reachable_url(
                 runtime, port, colocated=colocated, consumer_is_local=consumer_is_local
@@ -558,6 +573,7 @@ async def serve(
     *,
     state_secret: str = "",
     state_base: str | None = None,
+    proxy_mcp: MCPProxy | None = None,
     services: Mapping[str, Runtime] | None = None,
     hosts: Mapping[str, str] | None = None,
     placements: Mapping[str, Runtime] | None = None,
@@ -569,6 +585,7 @@ async def serve(
         harness_is_local,
         state_secret=state_secret,
         state_base=state_base,
+        proxy_mcp=proxy_mcp,
         services=services,
         hosts=hosts,
         placements=placements,
@@ -679,6 +696,7 @@ async def serve_tools(
     state_secret: str = "",
     state_route: str = "",
     state_base: str | None = None,
+    proxy_mcp: MCPProxy | None = None,
     services: Mapping[str, Runtime] | None = None,
     hosts: Mapping[str, str] | None = None,
     placements: Mapping[str, Runtime] | None = None,
@@ -722,10 +740,11 @@ async def serve_tools(
                         harness_runtime,
                         state_secret=state_secret,
                         state_base=state_base,
+                        proxy_mcp=proxy_mcp,
                         services=services,
                         hosts=hosts,
                         placements=placements,
                     )
                 )
-                logger.info("tool server '%s': %s", name, urls[name])
+                logger.info("tool server '%s' ready", name)
         yield urls
