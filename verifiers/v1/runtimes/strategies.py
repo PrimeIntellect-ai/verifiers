@@ -146,7 +146,11 @@ class _NativeComposeDeployment(_PrivateNetworkDeployment):
         d.env = main.env
         self._networks = {}
         for name, service in services.items():
-            for network in service.definition["networks"]:
+            # Default-bridge peers share IP connectivity without Compose aliases.
+            networks = [
+                f"project:{network}" for network in service.definition["networks"]
+            ]
+            for network in networks or ["bridge"]:
                 self._networks.setdefault(network, []).append(name)
         self._internal = frozenset(
             name for name, service in services.items() if service.internal
