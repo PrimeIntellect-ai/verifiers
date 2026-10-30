@@ -241,6 +241,7 @@ class ACPSession:
         self.connection: Any = None
         self.capabilities: Any = None
         self.supports_steering = False
+        self.supports_notify = False
         self.session_id: str | None = None
         self.is_new = True
 
@@ -264,9 +265,9 @@ class ACPSession:
                 ),
             )
             self.capabilities = initialized.agent_capabilities
-            self.supports_steering = (initialized.field_meta or {}).get(
-                "steering", {}
-            ).get("supported") is True
+            meta = initialized.field_meta or {}
+            self.supports_steering = meta.get("steering", {}).get("supported") is True
+            self.supports_notify = meta.get("notify", {}).get("supported") is True
             session = await self.connection.new_session(
                 cwd=os.getcwd(),
                 mcp_servers=mcp_servers(config),
@@ -311,6 +312,19 @@ class ACPSession:
         if message_id is not None:
             params["messageId"] = message_id
         return await self.connection.ext_method("session/steering", params)
+
+    async def notify(self, message: str, message_id: str | None = None) -> dict:
+        if self.connection is None or self.session_id is None:
+            return {"outcome": "promptRequired", "reason": "noRunningTurn"}
+        if not self.supports_notify:
+            raise NotImplementedError("ACP agent does not advertise notify support")
+        params = {
+            "sessionId": self.session_id,
+            "prompt": [{"type": "text", "text": message}],
+        }
+        if message_id is not None:
+            params["messageId"] = message_id
+        return await self.connection.ext_method("session/notify", params)
 
     async def close(self) -> dict[str, Any]:
         response_metadata: dict[str, Any] = {}
@@ -379,6 +393,10 @@ async def serve_stream() -> None:
                     result = asdict(await session.run(request["config"]))
             elif operation == "steer":
                 result = await session.steer(
+                    request["message"], request.get("message_id")
+                )
+            elif operation == "notify":
+                result = await session.notify(
                     request["message"], request.get("message_id")
                 )
             elif operation == "shutdown":

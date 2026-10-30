@@ -365,6 +365,13 @@ class HarnessSession:
             f"harness {self.harness.config.id!r} does not support steering"
         )
 
+    async def notify(self, message: str, *, message_id: str | None = None) -> dict:
+        """Show a notice to a running turn at its next model call, after its tool
+        results, rather than as a user message, if supported by the harness."""
+        raise NotImplementedError(
+            f"harness {self.harness.config.id!r} does not support notices"
+        )
+
     async def turn(self, messages: Messages | None = None) -> None:
         """Run one harness segment while retaining session state for the next."""
         if self._closed:
