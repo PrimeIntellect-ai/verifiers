@@ -121,6 +121,7 @@ SandboxErrorKind = Literal[
     "box_lost",
     "missing",
     "checkpoint_missing",
+    "checkpoint_chain_broken",
     "disk_full",
     "io",
     "exec",
@@ -140,6 +141,10 @@ SandboxErrorKind = Literal[
   provider no longer has the checkpoint a box starts from (a 404 or 410 on a restore),
   or no checkpoint was recorded where a replay needs its box. Another try fails the
   same way; the caller starts the work again without it.
+- `checkpoint_chain_broken`: a running box cannot be checkpointed again because the
+  checkpoint it chains on (its previous one, which failed or hung on the platform) is
+  unavailable. Every later try fails the same way for the box's life; its latest good
+  checkpoint stays the resume point.
 - `disk_full`: the box's disk is full (ENOSPC, 507). Repeating waits for nothing.
 - `io`: a transfer or the platform failed in transit (a dropped connection, a timeout,
   a gateway 5xx, the platform unavailable). Retryable; an outage is held through.

@@ -403,6 +403,14 @@ _TERMINAL_CHECKPOINT = re.compile(
 )
 
 
+def checkpoint_parent_unavailable(error: BaseException) -> bool:
+    """A checkpoint create refused because the box's previous checkpoint, the parent the
+    platform chains the new one on, failed, hung or was deleted (`409 Checkpoint parent
+    is unavailable`). The platform keeps that checkpoint as the box's tip, so the refusal
+    repeats on every later try."""
+    return http_status(error) == 409 and "parent is unavailable" in str(error).lower()
+
+
 def checkpoint_missing(error: BaseException) -> bool:
     """A restore create refused a gone checkpoint, including its terminal 409 state.
     Other conflicts (in use, not ready yet), quota and account errors stand as-is.
@@ -1318,7 +1326,12 @@ class PrimeBackend(RuntimeBackend):
             requested = await run_shielded(self._client.checkpoint(self.info.id))
         except Exception as e:
             raise SandboxError(
-                f"prime checkpoint failed: {e}", kind=self._kind(e)
+                f"prime checkpoint failed: {e}",
+                kind=(
+                    "checkpoint_chain_broken"
+                    if checkpoint_parent_unavailable(e)
+                    else self._kind(e)
+                ),
             ) from e
         try:
             durable = await self._client.wait_for_checkpoint(
