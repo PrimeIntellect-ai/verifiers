@@ -85,3 +85,27 @@ def test_a_service_on_a_restored_host_is_restored():
 async def test_a_local_container_refuses_a_checkpoint():
     with pytest.raises(NotImplementedError):
         await DockerBackend(DockerConfig()).checkpoint()
+
+
+async def test_process_pid_files_go_where_the_user_can_write(monkeypatch):
+    """A task may lock /tmp and give its user a private TMPDIR (CyberStrike
+    mitmproxy-boundary-hardening): PID files go to the first directory the user can
+    write, probed once per user, else /tmp."""
+    from verifiers.v1.runtimes.base import ProgramResult
+
+    backend = DockerBackend(DockerConfig())
+    backend._container = "vf-test"
+    probes = []
+
+    async def run_host(*argv):
+        probes.append(argv)
+        user = argv[argv.index("--user") + 1] if "--user" in argv else None
+        if user == "agent":
+            return ProgramResult(exit_code=0, stdout="/home/agent/.tmp\n", stderr="")
+        return ProgramResult(exit_code=1, stdout="", stderr="")
+
+    monkeypatch.setattr(backend, "_run_host", run_host)
+    assert await backend._pid_dir("agent") == "/home/agent/.tmp"
+    assert await backend._pid_dir("agent") == "/home/agent/.tmp"
+    assert await backend._pid_dir("nobody") == "/tmp"
+    assert len(probes) == 2

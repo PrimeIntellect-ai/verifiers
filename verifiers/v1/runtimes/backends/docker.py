@@ -237,6 +237,8 @@ class DockerBackend(RuntimeBackend):
         self._service_url: str | None = None
         self._image_env: dict[str, str] = {}
         self._stopped = False
+        # per user: where its process bookkeeping (PID files) goes (`_pid_dir`)
+        self._pid_dirs: dict[str | None, str] = {}
         self._proxy: EgressProxy | None = None
         self._cut = False
 
@@ -768,10 +770,30 @@ class DockerBackend(RuntimeBackend):
             *self._exec_argv(runtime.process_env(env), user=runtime.user), *argv
         )
 
+    async def _pid_dir(self, user: str | None) -> str:
+        """A directory `user` can write in the container, for its processes' PID files:
+        its `$TMPDIR`, else /tmp, /dev/shm or its home. A task may lock /tmp and give its
+        user a private TMPDIR (CyberStrike mitmproxy-boundary-hardening chmods /tmp 0755),
+        and a PID file under /tmp failed every rollout before its first turn."""
+        directory = self._pid_dirs.get(user)
+        if directory is None:
+            probe = (
+                'for d in "${TMPDIR:-}" /tmp /dev/shm "${HOME:-}"; do '
+                '[ -n "$d" ] && [ -d "$d" ] && [ -w "$d" ] && { echo "$d"; exit 0; }; '
+                "done; exit 1"
+            )
+            found = await self._run_host(
+                *self._exec_argv({}, user=user), "sh", "-c", probe
+            )
+            directory = found.stdout.strip() if found.exit_code == 0 else ""
+            directory = self._pid_dirs[user] = directory or "/tmp"
+        return directory
+
     async def exec(
         self, runtime: Runtime, argv: list[str], env: dict[str, str]
     ) -> RuntimeProcess:
-        pidfile = f"/tmp/vf-process-{uuid.uuid4().hex}.pid"
+        directory = await self._pid_dir(runtime.user)
+        pidfile = f"{directory.rstrip('/')}/vf-process-{uuid.uuid4().hex}.pid"
         # Give the target its own process group when `setsid -w` is available so
         # terminate()/kill() reap its descendants while the CLI client remains
         # attached if setsid needs to fork. The inner shell records the
