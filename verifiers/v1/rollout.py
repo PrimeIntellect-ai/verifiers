@@ -15,6 +15,7 @@ from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.configs.scoring import resolve_scoring
 from verifiers.v1.errors import (
     HarnessError,
+    ProviderError,
     RolloutError,
     SandboxError,
     TaskError,
@@ -636,8 +637,14 @@ class Rollout:
             self.deadline_at = None
         # A harness that completes cleanly after a failed model call handled it (e.g. it
         # ends its run on context overflow); the failure stays recorded on the call. A
-        # harness that dies on it surfaces the stashed error through the except above.
-        self._session.error = None
+        # provider outage it gave up on is still the rollout's failure. A harness that
+        # dies on it surfaces the stashed error through the except above.
+        error, self._session.error = self._session.error, None
+        if isinstance(error, ProviderError) and (
+            error.status_code >= 500 or error.status_code in (408, 429)
+        ):
+            self.fail(error)
+            return False
         # A segment that committed nothing can't be waiting on the user; treating
         # it as continuable would consult the user against a conversation that
         # never moved, forever.
