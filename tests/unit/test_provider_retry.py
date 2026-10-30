@@ -645,6 +645,28 @@ async def test_a_stream_too_slow_is_cut_and_rerouted(monkeypatch):
     assert trace.info["reroutes"] == 1
 
 
+async def test_a_turn_too_slow_on_its_new_replica_too_is_not_cut_again(monkeypatch):
+    """When the regeneration streams as slowly (the model's own rate on every replica:
+    DeepSeek QC at ~5 events/s, cut each 600 s six times over, 2026-10-30), cutting it again
+    only throws its work away: a turn is cut for slowness once and then runs to its end."""
+    monkeypatch.setattr(server, "SLOW_STREAM_AFTER_SECONDS", 0.3)
+    monkeypatch.setattr(server, "SLOW_STREAM_EVENTS_PER_SECOND", 100.0)
+    monkeypatch.setattr(server, "REROUTE_AFTER_SECONDS", 0.2)
+    async with Provider("slow", "slow", "ok") as provider:
+        agent = make(provider, StreamHarness, retry={"budget": 30})
+        trace = await agent.run(task())
+    assert trace.ok, trace.errors
+    slow = [
+        c
+        for c in trace.calls
+        if c.error and c.error.message.startswith("upstream stream too slow")
+    ]
+    assert (
+        len(slow) == 1 and len(provider.sessions) == 2
+    )  # the slow regeneration finished
+    assert trace.info["reroutes"] == 1
+
+
 async def test_a_quick_cut_keeps_the_session():
     """A stream cut early is no slow replica: the regeneration keeps its prefix cache."""
     async with Provider((0.01, "cut"), "ok") as provider:
