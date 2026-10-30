@@ -196,6 +196,11 @@ class Provider:
         }
         stream = web.StreamResponse(headers={"Content-Type": "text/event-stream"})
         await stream.prepare(request)
+        if failure == "silent":
+            # a stream that only keeps alive, no event, for longer than a turn is watched
+            for _ in range(50):
+                await stream.write(b": keepalive\n\n")
+                await asyncio.sleep(0.1)
         if failure == "slow":
             # a long generation: each event comes well inside the read timeout, the
             # whole turn takes longer than it
@@ -701,6 +706,21 @@ async def test_a_turn_too_slow_on_its_new_replica_too_is_not_cut_again(monkeypat
         len(slow) == 1 and len(provider.sessions) == 2
     )  # the slow regeneration finished
     assert trace.info["reroutes"] == 1
+
+
+async def test_a_silent_stream_is_cut_however_often_its_turn_was_cut(monkeypatch):
+    """A regeneration that sends no event at all (a replica in an outage: GLM 5.3,
+    2026-10-30, both regenerations silent) is no slow model: it is cut every time, not
+    left to the read timeout once its turn was cut."""
+    monkeypatch.setattr(server, "SLOW_STREAM_AFTER_SECONDS", 0.3)
+    monkeypatch.setattr(server, "SLOW_STREAM_EVENTS_PER_SECOND", 100.0)
+    monkeypatch.setattr(server, "REROUTE_AFTER_SECONDS", 0.2)
+    async with Provider("silent", "silent", "ok") as provider:
+        agent = make(provider, StreamHarness, retry={"budget": 30})
+        trace = await agent.run(task())
+    assert trace.ok, trace.errors
+    silent = [c for c in trace.calls if c.error and "0 events" in c.error.message]
+    assert len(silent) == 2 and len(provider.requests) == 3
 
 
 async def test_a_quick_cut_keeps_the_session():
