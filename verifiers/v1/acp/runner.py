@@ -626,18 +626,62 @@ class ACPSession:
             self.supports_steering = (initialized.field_meta or {}).get(
                 "steering", {}
             ).get("supported") is True
-            session = await self.connection.new_session(
-                cwd=os.getcwd(),
-                mcp_servers=mcp_servers(config),
-                **config["session_meta"],
-            )
+            continues = bool(config.get("continues"))
+            if continues:
+                session_id = config.get("load_session_id") or await self.latest()
+                await self.load(session_id, config)
+            else:
+                session = await self.connection.new_session(
+                    cwd=os.getcwd(),
+                    mcp_servers=mcp_servers(config),
+                    **config["session_meta"],
+                )
+                session_id = session.session_id
+            if path := config.get("session_file"):
+                record_session(path, session_id)
         except BaseException:
             with suppress(BaseException):
                 await self.stack.aclose()
             self._reset()
             raise
-        self.session_id = session.session_id
-        self.is_new = True
+        self.session_id = session_id
+        self.is_new = not continues
+
+    async def latest(self) -> str:
+        """The agent's most recently updated session in this directory."""
+        session_capabilities = (
+            self.capabilities and self.capabilities.session_capabilities
+        )
+        if not (session_capabilities and session_capabilities.list is not None):
+            raise RuntimeError("the ACP agent cannot list its sessions to continue one")
+        listed = await self.connection.list_sessions(cwd=os.getcwd())
+        if not listed.sessions:
+            raise RuntimeError(
+                "the ACP agent has no session in this directory to continue"
+            )
+        return listed.sessions[0].session_id
+
+    async def load(self, session_id: str, config: dict) -> None:
+        """Attach to the agent's own session `session_id`, kept on the box's disk (a box
+        restored from a checkpoint): `session/resume` when the agent has it (no history
+        replay), else `session/load`."""
+        capabilities = self.capabilities
+        session_capabilities = capabilities and capabilities.session_capabilities
+        kwargs = {
+            "session_id": session_id,
+            "cwd": os.getcwd(),
+            "mcp_servers": mcp_servers(config),
+            **config["session_meta"],
+        }
+        if session_capabilities and session_capabilities.resume is not None:
+            await self.connection.resume_session(**kwargs)
+        elif capabilities and capabilities.load_session:
+            await self.connection.load_session(**kwargs)
+        else:
+            raise RuntimeError(
+                "the ACP agent can neither resume nor load a session, so it cannot "
+                f"continue session {session_id!r}"
+            )
 
     async def run(self, config: dict) -> ACPTurn:
         gate = config.get("tool_interception")
@@ -700,6 +744,18 @@ class ACPSession:
                     self.relay = None
                 self._reset()
         return response_metadata
+
+
+def record_session(path: str, session_id: str) -> None:
+    """Keep the agent's session id next to its state, so a box restored from a
+    checkpoint names the session to continue (`ACPConfig.session_file`)."""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    partial = f"{path}.partial"
+    with open(partial, "w") as file:
+        file.write(session_id)
+        file.flush()
+        os.fsync(file.fileno())
+    os.replace(partial, path)
 
 
 async def read_packet(stream: asyncio.StreamReader) -> dict | None:
