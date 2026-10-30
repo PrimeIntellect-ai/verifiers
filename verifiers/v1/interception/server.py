@@ -565,7 +565,7 @@ async def _collect_completion(dialect: Dialect, reply: RelayReply) -> Response:
 
 
 async def _collect_stream(
-    dialect: Dialect, reply: RelayReply
+    dialect: Dialect, reply: RelayReply, *, watch_slow: bool = True
 ) -> tuple[Response, bytes]:
     """Read a relayed provider stream whole: the assembled response and the events to serve
     for it. Comment-only events (the provider's own keepalives) are dropped; the served
@@ -580,7 +580,8 @@ async def _collect_stream(
         async for chunk in reply.chunks:
             elapsed = time.monotonic() - started
             if (
-                elapsed >= SLOW_STREAM_AFTER_SECONDS
+                watch_slow
+                and elapsed >= SLOW_STREAM_AFTER_SECONDS
                 and count < SLOW_STREAM_EVENTS_PER_SECOND * elapsed
             ):
                 error = ProviderError(
@@ -1059,6 +1060,10 @@ class InterceptionServer(Interception):
         # A streamed request is served whole once its turn commits: the eval client's
         # provider stream is read to the end, and the train client generates the response.
         relay = streaming and not isinstance(ctx.client, TrainClientConfig)
+        # The slow-stream watchdog cuts a turn once: the cut reroutes it, and when the next
+        # replica is as slow the model is (DeepSeek QC streams ~5 events/s on every replica,
+        # cut and regenerated each 600 s six times over, 2026-10-30), so it runs to the end.
+        watch_slow = True
         req_hash = await _request_digest(raw)
         # Keep `read()` for aiohttp's size guard, then release its cache and our local
         # alias after parsing so the wire body does not survive model inference.
@@ -1246,7 +1251,9 @@ class InterceptionServer(Interception):
                     headers=upstream_headers,
                     session_id=ctx.session_id or session.trace.id,
                 )
-                response, events = await _collect_stream(dialect, reply)
+                response, events = await _collect_stream(
+                    dialect, reply, watch_slow=watch_slow
+                )
             elif _streams_upstream(dialect, ctx.client):
                 # A non-streaming request still streams from the provider: bytes keep
                 # arriving through a long generation, which a client read timeout would
@@ -1259,7 +1266,9 @@ class InterceptionServer(Interception):
                     session_id=ctx.session_id or session.trace.id,
                 )
                 if "text/event-stream" in (reply.content_type or ""):
-                    response, _ = await _collect_stream(dialect, reply)
+                    response, _ = await _collect_stream(
+                        dialect, reply, watch_slow=watch_slow
+                    )
                 else:
                     response = await _collect_completion(dialect, reply)
                 events = None
@@ -1309,7 +1318,7 @@ class InterceptionServer(Interception):
                 return await send()
 
         async def sample() -> web.Response:
-            nonlocal upstream, ctx
+            nonlocal upstream, ctx, watch_slow
             session.error = None
             call_response: Response | None = None
             events: bytes | None = None
@@ -1372,6 +1381,8 @@ class InterceptionServer(Interception):
                                 first_failure = now
                             if getattr(e, "streamed", False):
                                 cut_offs += 1
+                            if str(e).startswith("upstream stream too slow"):
+                                watch_slow = False
                             long_exchange = (
                                 time.time() - started >= REROUTE_AFTER_SECONDS
                             )
