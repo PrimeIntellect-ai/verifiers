@@ -593,3 +593,27 @@ async def test_subprocess_reads_and_writes_raise_typed_errors(tmp_path):
         assert clash.value.kind == "io"
     finally:
         await backend.stop()
+
+
+async def test_prime_checkpoint_refused_for_its_parent_is_a_broken_chain(runtime):
+    """After a checkpoint failed or hung on the platform, it stays the box's tip: every
+    later create is refused for its parent, for the box's life."""
+
+    class Refusing:
+        async def checkpoint(self, sandbox_id):
+            raise APIError("HTTP 409: Checkpoint parent is unavailable")
+
+    runtime.info.id = "sb1"
+    runtime._client = Refusing()
+    with pytest.raises(SandboxError) as caught:
+        await runtime.checkpoint()
+    assert caught.value.kind == "checkpoint_chain_broken"
+
+    class Busy:
+        async def checkpoint(self, sandbox_id):
+            raise APIError("HTTP 409: another checkpoint is in progress")
+
+    runtime._client = Busy()
+    with pytest.raises(SandboxError) as caught:
+        await runtime.checkpoint()
+    assert caught.value.kind != "checkpoint_chain_broken"

@@ -366,6 +366,33 @@ async def test_a_checkpoint_refused_every_time_is_skipped(model, monkeypatch):
     ]
 
 
+async def test_a_broken_checkpoint_chain_stops_the_saves(model, monkeypatch):
+    """A box the platform can no longer checkpoint is not retried on every call: the
+    break is recorded once on the trace and the last good checkpoint stands."""
+    monkeypatch.setattr(rollout_module, "SAVE_RETRY_DELAY", 0.0)
+    broken = vf.SandboxError(
+        "prime checkpoint failed: HTTP 409: Checkpoint parent is unavailable",
+        kind="checkpoint_chain_broken",
+    )
+    original = FakeBackend.checkpoint
+
+    async def checkpoint(self) -> str:
+        if FakeBackend.attempts >= 1:
+            FakeBackend.attempts += 1
+            raise broken
+        return await original(self)
+
+    monkeypatch.setattr(FakeBackend, "checkpoint", checkpoint)
+    saves: list[vf.Checkpoint] = []
+    agent = make(model, save="per_call")
+    trace = await agent.run(task(), on_save=lambda t, c: saves.append(c))
+    assert trace.ok, trace.errors
+    assert [c.id for c in trace.checkpoints] == ["ckpt-1"]
+    # one refused try, not SAVE_CHECKPOINT_ATTEMPTS per call, and none afterwards
+    assert FakeBackend.attempts == 2
+    assert trace.info["checkpoint_chain_broken"]["after"] == "ckpt-1"
+
+
 async def test_a_trace_saved_in_on_save_resumes_from_what_the_box_holds(model):
     """on_save runs once the call has committed, so a trace persisted right there cuts
     at the new checkpoint to exactly the conversation the box matches."""

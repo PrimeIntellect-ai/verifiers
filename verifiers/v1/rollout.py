@@ -25,6 +25,7 @@ from verifiers.v1.errors import (
     TaskError,
     ToolsetError,
     boundary,
+    error_kind,
 )
 from verifiers.v1.grading import (
     bind_scoring_env,
@@ -293,6 +294,8 @@ class Rollout:
         self._save_interval = agent_config.save_interval
         self._saved_at = time.monotonic()
         """When the box was last checkpointed by a per-call save, or the run began."""
+        self._chain_broken = False
+        """The box's checkpoint chain broke: per-call saves are no longer tried."""
         if runtime is None:
             saves = agent_config.save == "per_call"
         else:
@@ -837,8 +840,13 @@ class Rollout:
         final reply (`Checkpoint` has the rule). Installed only on a box whose runtime
         restores checkpoints (`Agent` checks the config before provisioning). A
         checkpoint failing every try is logged and skipped, so the previous one
-        stands."""
+        stands. A box whose checkpoint chain broke (`checkpoint_chain_broken`: the
+        platform keeps its failed or hung last checkpoint as the parent of every later
+        one) is not tried again: it is recorded once on the trace and the last good
+        checkpoint stands for the rest of the run."""
         trace = self.trace
+        if self._chain_broken:
+            return
         if (
             response.message.tool_calls
             and self._save_interval
@@ -853,6 +861,23 @@ class Rollout:
                 checkpoint = await self.checkpoint(turns)
                 break
             except Exception as error:  # noqa: BLE001 - a missed save only makes a later continuation start further back
+                if error_kind(error) == "checkpoint_chain_broken":
+                    self._chain_broken = True
+                    trace.info["checkpoint_chain_broken"] = {
+                        "after": trace.checkpoints[-1].id
+                        if trace.checkpoints
+                        else None,
+                        "turns": trace.num_turns,
+                        "error": str(error),
+                    }
+                    logger.error(
+                        "rollout %s: the box can no longer be checkpointed (%s); "
+                        "its last good checkpoint %s stands for the rest of the run",
+                        trace.id,
+                        error,
+                        trace.checkpoints[-1].id if trace.checkpoints else None,
+                    )
+                    return
                 if attempt < SAVE_CHECKPOINT_ATTEMPTS:
                     await asyncio.sleep(SAVE_RETRY_DELAY * attempt)
                     continue
