@@ -109,6 +109,8 @@ jobs:
             tests: tests/integration/test_native_compose.py
           - behavior: Tool VMs
             tests: tests/integration/test_tool_vms.py
+          - behavior: Split Execution
+            tests: tests/integration/test_split_execution.py
           - behavior: Mounts
             tests: tests/integration/test_mounts.py
           - behavior: Sampling

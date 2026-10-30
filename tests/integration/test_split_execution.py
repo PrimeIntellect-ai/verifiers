@@ -1,9 +1,16 @@
-"""Split deployment: the harness on a Prime VM of its own, its tools in the workspace."""
+"""Split deployment: the harness on a Prime VM of its own, its tools in the workspace,
+for every harness that declares `SUPPORTS_SPLIT_EXECUTION`."""
 
 import pytest
+from grid import grid
 
 import verifiers.v1 as vf
 from verifiers.v1.rollout import Rollout
+
+SPLIT = {
+    "deployment": {"mode": "split"},
+    "timeout": {"setup": 900, "rollout": 300, "scoring": 60},
+}
 
 
 @pytest.mark.parametrize("entrypoint", ["run", "interaction"])
@@ -31,21 +38,17 @@ async def test_split_preflight_before_rollout(monkeypatch, entrypoint):
                 pytest.fail("unsupported interaction was opened")
 
 
-@pytest.mark.prime
-@pytest.mark.rlm
-async def test_rlm_split_execution(run):
-    """RLM's loop runs on the harness's VM; its tools act on the workspace's files,
+@pytest.mark.parametrize(
+    "harness,harness_runtime", grid(needs=("shell", "split")), indirect=True
+)
+async def test_split_execution(run, harness, harness_runtime):
+    """The agent loop runs on the harness's VM; its tools act on the workspace's files,
     working directory and environment over the rollout's private network."""
     (episode,) = await run(
         "split-execution-v1",
-        harness="rlm",
-        runtime={"type": "prime", "workdir": "/workspace"},
-        env={
-            "agent": {
-                "deployment": {"mode": "split"},
-                "timeout": {"setup": 900, "rollout": 300, "scoring": 60},
-            },
-        },
+        harness=harness,
+        runtime={**harness_runtime, "workdir": "/workspace"},
+        env={"agent": SPLIT},
         max_turns=10,
         max_tokens=8192,
     )
