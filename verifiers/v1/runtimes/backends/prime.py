@@ -196,19 +196,25 @@ saved gateway. Uses `ip`, else Python's or Perl's route ioctls; with none of the
 the platform's filter is left alone."""
 
 IMAGE_RUN = (
-    '{ m=$(mktemp -d) && mount --bind / "$m" && '
-    'for d in $(find "$m/run" -mindepth 1 -maxdepth 1 -type d -printf "%f\\n"); do '
-    '[ -e "/run/$d" ] || { mkdir "/run/$d" && mount --bind "$m/run/$d" "/run/$d"; }; done; '
-    'cp -an "$m/run/." /run/; umount "$m"; rmdir "$m"; } >/dev/null 2>&1;'
+    '{ [ "$(stat -f -c %T /run)" = tmpfs ] && [ -d /run ] && m=$(mktemp -d) && '
+    'mount --bind / "$m" && { [ -d "$m/run" ] && [ ! -L "$m/run" ] && '
+    'rm -f "$m/run/vf-egress-gateway" "$m/run/vf-pid-namespace" '
+    '"$m/run/vf-pid-namespace.parent" && cp -a /run/. "$m/run/" && '
+    'mount --bind "$m/run" /run; umount "$m"; }; rmdir "$m"; } >/dev/null 2>&1;'
 )
 """Give back what the image keeps under /run (a service's socket directory, a checker's
 private work directory, made at build time), which the tmpfs Prime mounts there hides,
 as a container started from the image would have it: the image's /run is still on the
-root filesystem, under the mount, and a non-recursive bind of / reaches it. Each of the
-image's directories is bound from the disk, as Docker leaves it, so a checker that
-copies a workspace into its /run directory has the disk's room, not the tmpfs's few
-hundred MB; its other files are copied in. What Prime itself put in the tmpfs is kept;
-a box without `mount` keeps the empty tmpfs."""
+root filesystem, under the mount, and a non-recursive bind of / reaches it. That
+directory itself is bound over the tmpfs, as Docker leaves it: what is under it is
+plain directories on the disk, which a grader can `rm -rf` and recreate (binding each
+one made it a mount point, EBUSY), and a checker that copies a workspace into its /run
+directory has the disk's room, not the tmpfs's few hundred MB. What Prime itself put
+in the tmpfs is copied over. /run then lives on the box's disk, so a checkpoint keeps
+it, as Docker keeps /run across a container's restart; the box's own state there that
+describes the box it was written on (the saved egress gateway, the PID namespace's
+init) is dropped first. A /run that is no longer a tmpfs (already bound) is left as it
+is; a box without `mount` keeps the empty tmpfs."""
 
 _PID_NAMESPACE_FILE = "/run/vf-pid-namespace"
 _REAPER = """
