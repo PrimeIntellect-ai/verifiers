@@ -588,7 +588,8 @@ async def _collect_stream(
                     f"upstream stream too slow: {count / elapsed:.1f} events/s "
                     f"(after {elapsed:.0f}s, {count} events, {len(events)} bytes)"
                 )
-                error.streamed = True
+                error.streamed = count > 0
+                error.events = count
                 raise error
             if not any(line.startswith(b"data:") for line in chunk.splitlines()):
                 continue
@@ -1383,7 +1384,12 @@ class InterceptionServer(Interception):
                                 first_failure = now
                             if getattr(e, "streamed", False):
                                 cut_offs += 1
-                            if str(e).startswith("upstream stream too slow"):
+                            if str(e).startswith(
+                                "upstream stream too slow"
+                            ) and getattr(e, "events", 0):
+                                # A replica that streams slowly would be cut again for
+                                # nothing; one that sent no event at all (an outage,
+                                # 2026-10-30) is cut every time.
                                 watch_slow = False
                             long_exchange = (
                                 time.time() - started >= REROUTE_AFTER_SECONDS
