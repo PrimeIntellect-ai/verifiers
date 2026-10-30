@@ -11,7 +11,7 @@ import shlex
 import tempfile
 import time
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -151,14 +151,16 @@ class PrimeProcess(RuntimeProcess):
 
 class PrimeBackend(RuntimeBackend):
     SUPPORTS_TASK_IMAGES: ClassVar[bool] = True
-    SUPPORTS_COMPOSE: ClassVar[bool] = True
     SUPPORTS_USER_SWITCHING: ClassVar[bool] = True
+    SUPPORTS_COMPOSE: ClassVar[bool] = True
     SUPPORTS_PORT_EXPOSURE: ClassVar[bool] = True
     SUPPORTS_CHECKPOINTS: ClassVar[bool] = True
 
     def __init__(self, config: PrimeConfig, name: str | None = None) -> None:
         ensure_prime_auth()
         super().__init__(name)
+        self.user: str | None = None
+        self._workdir_override = config.workdir
         self.config = config.model_copy(update={"workdir": config.workdir or "/app"})
         self.info = PrimeRuntimeInfo(**self.config.model_dump())
         self._client = None
@@ -176,6 +178,9 @@ class PrimeBackend(RuntimeBackend):
         # Any port can be exposed, but the public URL reaches only servers bound to
         # 0.0.0.0, which `launch` arranges for a fixed published port.
         return SERVICE_PORT
+
+    def bind(self, *, env: Mapping[str, str] | None = None) -> Runtime:
+        return super().bind(env=env).with_user(self.user)
 
     async def start(self) -> None:
         from prime_sandboxes import APIError, CreateSandboxRequest
@@ -264,7 +269,7 @@ class PrimeBackend(RuntimeBackend):
                     self.config.image,
                     self.info.id,
                 )
-            await self._client.wait_for_creation(self.info.id, max_attempts=180)
+            await self._client.wait_for_creation(self.info.id, max_attempts=900)
             logger.info(
                 "prime: sandbox %s up (image=%s%s)",
                 self.info.id,
@@ -275,6 +280,12 @@ class PrimeBackend(RuntimeBackend):
             )
             await self._client.execute_command(
                 self.info.id, f"mkdir -p {shlex.quote(self.config.workdir)}"
+            )
+            # Imported image filesystems may not map the VM's generated hostname.
+            await self._client.execute_command(
+                self.info.id,
+                'getent hosts "$(cat /proc/sys/kernel/hostname)" >/dev/null || '
+                'printf "127.0.1.1 %s\\n" "$(cat /proc/sys/kernel/hostname)" >> /etc/hosts',
             )
             await validate_runtime_mounts(self.bind(), [])
         except (

@@ -1,10 +1,10 @@
-"""Tool servers on Prime runtimes of their own, reached from the workspace over a LAN.
+"""Prime task services and tool servers, reached over a rollout's private LAN.
 
 A Prime VM's egress policy covers the whole VM, so a tool server whose egress or
 isolation differs from the workspace's, such as one that calls public APIs beside a
 workspace with none, or one that runs agent-submitted code with none, runs on a Prime
-runtime of its own (`ToolsetConfig.runtime`). Each rollout gets a LAN network on which
-the workspace's VM may open connections to those VMs and nothing may open one to the
+runtime of its own (`ToolsetConfig.runtime`). Independent tool VMs accept connections
+only from the workspace; task-declared services can also call each other and the
 workspace. The harness reaches a server at its VM's LAN name,
 `<sandbox-id>.sandbox.internal`, which the LAN's DNS keeps current.
 """
@@ -35,7 +35,7 @@ def tool_vms(
 ) -> dict[str, PrimeConfig]:
     """The task's tool servers that join the workspace over the rollout's private
     network, by server name: those on Prime runtimes of their own beside a Prime
-    workspace of the rollout's own, without Compose services. Any other server keeps its
+    workspace of the rollout's own, without a task service spec. Any other server keeps its
     runtime's published port, which takes no network policy."""
     if composed or borrowed or not isinstance(workspace, PrimeConfig):
         return {}
@@ -74,6 +74,9 @@ async def private_network(
     workspace: RuntimeBackend,
     members: Mapping[str, PrimeConfig],
     start_workspace: Callable[[], Awaitable[object]],
+    *,
+    interconnect: bool = False,
+    networks: Mapping[str, list[str]] | None = None,
 ) -> AsyncIterator[dict[str, RuntimeBackend]]:
     """Boot the workspace's VM and one VM per member together, each joining a LAN
     network of the rollout's own as it boots."""
@@ -86,17 +89,32 @@ async def private_network(
     from prime_sandboxes import LanRule
 
     tags = {name: _tag(index) for index, name in enumerate(members)}
+    memberships = {
+        "main": [WORKSPACE_TAG],
+        **{name: [tag] for name, tag in tags.items()},
+    }
+    rules = (
+        [LanRule(from_="*", to="*")]
+        if interconnect
+        else [
+            LanRule(from_=f"tag:{WORKSPACE_TAG}", to=f"tag:{tag}")
+            for tag in tags.values()
+        ]
+    )
+    if networks is not None:
+        rules = []
+        for index, names in enumerate(networks.values()):
+            tag = f"vf-network-{index}"
+            rules.append(LanRule(from_=f"tag:{tag}", to=f"tag:{tag}"))
+            for name in names:
+                memberships[name].append(tag)
     async with AsyncExitStack() as stack:
         client = await stack.enter_async_context(leased_client())
-        # The network starts with its rules: only the workspace may open connections,
-        # to the servers' VMs. A member's join completes only once the network exists
-        # on the platform, so its first members already join under these rules.
+        # Install connectivity before boot: Compose peers must share a network;
+        # independent tool servers accept only workspace connections.
         network = await client.create_lan_network(
             f"vf-{uuid.uuid4().hex[:16]}",
-            rules=[
-                LanRule(from_=f"tag:{WORKSPACE_TAG}", to=f"tag:{tag}")
-                for tag in tags.values()
-            ],
+            rules=rules,
         )
 
         async def delete_network() -> None:
@@ -108,6 +126,8 @@ async def private_network(
                 )
 
         stack.push_async_callback(lambda: run_shielded(delete_network()))
+        # Failed startup unwinds this stack before the deployment's workspace owner.
+        stack.push_async_callback(workspace.stop)
 
         backends: dict[str, RuntimeBackend] = {}
 
@@ -118,7 +138,7 @@ async def private_network(
         async def provision(name: str, config: PrimeConfig) -> None:
             backend = make_backend(config, f"{workspace.name}-{tags[name]}")
             assert isinstance(backend, PrimeBackend)
-            backend.lan = (network.id, [tags[name]])
+            backend.lan = (network.id, memberships[name])
             # Pushed before `start()`: a failed start may already hold a paid sandbox.
             stack.push_async_callback(backend.stop)
             await backend.start()  # running, and joined to the network
@@ -131,7 +151,7 @@ async def private_network(
                     stop, asyncio.create_task(_keepalive(backend.bind(), every))
                 )
 
-        workspace.lan = (network.id, [WORKSPACE_TAG])
+        workspace.lan = (network.id, memberships["main"])
         try:
             async with asyncio.TaskGroup() as group:
                 group.create_task(start_workspace())

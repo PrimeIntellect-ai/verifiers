@@ -1,16 +1,13 @@
-"""Compose deployment on local Docker, or on a VM runtime that hosts the Docker daemon."""
+"""Task services on local Docker Compose."""
 
 import asyncio
 import atexit
-import io
 import json
 import logging
 import os
-import shlex
 import shutil
 import subprocess
 import sys
-import tarfile
 import tempfile
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
@@ -20,15 +17,9 @@ from functools import partial
 from pathlib import Path
 
 from verifiers.v1.errors import SandboxError
-from verifiers.v1.runtimes import (
-    DockerBackend,
-    DockerConfig,
-    RuntimeBackend,
-    RuntimeConfig,
-    provision_backend,
-)
+from verifiers.v1.runtimes import DockerBackend, DockerConfig, PrimeConfig
 from verifiers.v1.runtimes.backends.docker import cli
-from verifiers.v1.runtimes.base import SERVICE_PORT, ProgramResult
+from verifiers.v1.runtimes.base import SERVICE_PORT
 from verifiers.v1.utils.aio import run_shielded
 
 logger = logging.getLogger(__name__)
@@ -44,21 +35,14 @@ DOCKER_ENV = (
     "DOCKER_TLS_VERIFY",
     "DOCKER_CERT_PATH",
 )
-# One VM hosts the Docker daemon and every service.
-VM_HOST = {"image": "python:3.11-slim-trixie", "workdir": "/"}
-INSTALL_DOCKER = (
-    "command -v dockerd >/dev/null || { export DEBIAN_FRONTEND=noninteractive; "
-    "apt-get update -qq && apt-get install -y -qq --no-install-recommends docker.io "
-    "docker-cli docker-compose iptables > /tmp/docker-install.log 2>&1 "
-    "|| { tail -40 /tmp/docker-install.log; exit 1; }; }"
-)
-# A host image can ship `docker save` archives here so services need no registry.
-# Each archive is removed once loaded, returning its disk space to the services.
-COMPOSE_IMAGES = "/opt/verifiers/compose-images"
-LOAD_IMAGES = (
-    f'for f in {COMPOSE_IMAGES}/*.tar; do [ -e "$f" ] || continue; '
-    'docker load -q -i "$f" && rm -f "$f" || exit 1; done'
-)
+# Harbor's Compose templates mount its log directories as `${HOST_<NAME>_PATH}:
+# ${ENV_<NAME>_PATH}`. Harbor binds one host directory per name, so every service
+# that mounts a name shares it; a project volume per name keeps that sharing.
+HARBOR_LOG_MOUNTS = {
+    "VERIFIER_LOGS": "/logs/verifier",
+    "AGENT_LOGS": "/logs/agent",
+    "ARTIFACTS": "/logs/artifacts",
+}
 
 
 @dataclass(frozen=True)
@@ -72,59 +56,41 @@ class ComposeSpec:
     directory: str
     file: str = "environment/docker-compose.yaml"
     workspace: str = "main"
-    host_image: str | None = None
     image_override: bool = False
+    build_dockerfile: bool = False
+
+
+def _harbor_volume(name: str) -> str:
+    return "harbor-" + name.lower().replace("_", "-")
 
 
 @asynccontextmanager
-async def compose_services(
-    config: RuntimeConfig,
+async def compose_project(
+    config: DockerConfig | PrimeConfig,
     spec: ComposeSpec,
     environment: dict[str, str],
-    *,
-    trust_compose: bool = False,
-    setup_timeout: float | None = None,
-) -> AsyncIterator[
-    tuple[
-        dict[str, DockerBackend],
-        Callable[[], Awaitable[str]],
-        RuntimeBackend | None,
-        str | None,
-    ]
-]:
-    """Own one Compose attempt and lend its services until the context exits."""
-    local = isinstance(config, DockerConfig)
-    if local and not trust_compose:
-        raise ValueError(
-            "Local Compose tasks can access host files and Docker privileges; "
-            "only run trusted tasks with --env.agent.deployment.trust-compose"
-        )
-    if getattr(config, "mounts", {}):
+) -> AsyncIterator["ComposeProject"]:
+    """Resolve a private copy of a task and own any local preparation containers."""
+    if config.mounts:
         raise ValueError("Runtime mounts are not supported for Compose tasks")
-    if local and config.network_restricted:
-        raise ValueError(
-            "Local Compose does not enforce network policies; run the task on prime"
-        )
-    if getattr(config, "gpu", None):
-        raise ValueError("Compose currently supports CPU tasks")
     project = ["docker", "compose", "--project-name", f"vf-{uuid.uuid4().hex}"]
     compose_argv = list(project)
-    compose_env = {
-        key: os.environ[key] for key in DOCKER_ENV if local and key in os.environ
-    }
-    host_backend: RuntimeBackend | None = None
+    compose_env = {key: os.environ[key] for key in DOCKER_ENV if key in os.environ}
     stack = AsyncExitStack()
-
-    async def run_host(*argv: str) -> ProgramResult:
-        if host_backend is None:
-            return await cli(*argv, env=compose_env)
-        return await host_backend.bind().run(list(argv), compose_env)
+    started = False
 
     def down() -> None:
-        # Compose finds the project by its labels; the atexit backstop stays until
-        # removal succeeds.
+        # Find the project by its labels without reading the evaluator's .env.
+        # The atexit backstop stays until removal succeeds.
         subprocess.run(
-            [*project, "down", "--volumes", "--remove-orphans"],
+            [
+                *project,
+                "--env-file",
+                os.devnull,
+                "down",
+                "--volumes",
+                "--remove-orphans",
+            ],
             env=compose_env,
             capture_output=True,
             timeout=60,
@@ -144,8 +110,13 @@ async def compose_services(
             )
 
     async def compose(*args: str, timeout: float | None = None) -> str:
+        nonlocal started
+        if args[0] in {"create", "up"} and not started:
+            started = True
+            atexit.register(down)
+            stack.push_async_callback(release)
         async with asyncio.timeout(timeout):
-            result = await run_host(*compose_argv, *args)
+            result = await cli(*compose_argv, *args, env=compose_env)
         if result.exit_code:
             raise SandboxError(
                 f"Compose {args[0]} failed: {result.stderr or result.stdout}"
@@ -153,115 +124,191 @@ async def compose_services(
         return result.stdout
 
     try:
-        async with asyncio.timeout(setup_timeout):
-            import yaml
+        import yaml
 
-            directory = Path(
-                stack.enter_context(tempfile.TemporaryDirectory(prefix="vf-compose-"))
+        directory = Path(
+            stack.enter_context(tempfile.TemporaryDirectory(prefix="vf-compose-"))
+        )
+        # Relative binds and builds write into this rollout's copy of the task.
+        await run_shielded(
+            asyncio.to_thread(
+                shutil.copytree,
+                Path(spec.directory).resolve(),
+                directory / "task",
+                symlinks=isinstance(config, PrimeConfig),
             )
-            # Relative binds and builds write into this rollout's copy of the task.
-            await run_shielded(
-                asyncio.to_thread(
-                    shutil.copytree,
-                    Path(spec.directory).resolve(),
-                    directory / "task",
-                )
-            )
-            authored = yaml.safe_load((directory / "task" / spec.file).read_text())
-            for kind in ("volumes", "networks"):
-                if any(
-                    value and (value.get("name") or value.get("external"))
-                    for value in authored.get(kind, {}).values()
-                ):
-                    raise SandboxError(f"Compose {kind} must use project-scoped names")
+        )
+        task_dir = (directory / "task").resolve()
+        if isinstance(config, PrimeConfig) and not (
+            task_dir / spec.file
+        ).resolve().is_relative_to(task_dir):
+            raise SandboxError("Native Compose files must be inside the task")
+        authored = yaml.safe_load((directory / "task" / spec.file).read_text())
+        if isinstance(config, PrimeConfig) and (
+            authored.get("include")
+            or any(service.get("extends") for service in authored["services"].values())
+        ):
+            raise SandboxError("Native Compose does not support include or extends")
+        for kind in ("volumes", "networks"):
             if any(
-                service.get("container_name")
-                for service in authored["services"].values()
+                value and (value.get("name") or value.get("external"))
+                for value in authored.get(kind, {}).values()
             ):
-                raise SandboxError(
-                    "Remove container_name so Compose can name each rollout's services"
-                )
-            base = {
-                "services": {
-                    spec.workspace: {
-                        "image": config.image,
-                        "command": [
-                            "sh",
-                            "-c",
-                            "trap 'exit 0' TERM; while :; do sleep 3600 & wait $!; done",
-                        ],
-                    }
+                raise SandboxError(f"Compose {kind} must use project-scoped names")
+        # Native Compose renames containers on the build host and keeps the name as an alias.
+        if isinstance(config, DockerConfig) and any(
+            service.get("container_name") for service in authored["services"].values()
+        ):
+            raise SandboxError(
+                "Remove container_name so Compose can name each rollout's services"
+            )
+        base = {
+            "services": {
+                spec.workspace: {
+                    "image": config.image,
+                    "command": [
+                        "sh",
+                        "-c",
+                        "trap 'exit 0' TERM; while :; do sleep 3600 & wait $!; done",
+                    ],
                 }
+            },
+            "volumes": {_harbor_volume(name): {} for name in HARBOR_LOG_MOUNTS},
+        }
+        if {"image", "build"} & authored["services"].get(spec.workspace, {}).keys():
+            # A template default must not replace an authored image or skip its build.
+            del base["services"][spec.workspace]["image"]
+        elif (
+            spec.build_dockerfile
+            and not spec.image_override
+            and (directory / "task" / Path(spec.file).parent / "Dockerfile").is_file()
+        ):
+            del base["services"][spec.workspace]["image"]
+            base["services"][spec.workspace]["build"] = {
+                "context": ".",
+                "dockerfile": "Dockerfile",
             }
-            main = authored["services"].get(spec.workspace, {})
-            if {"image", "build"} & main.keys():
-                # A template default must not replace an authored image or skip its build.
-                del base["services"][spec.workspace]["image"]
-            elif (
-                not spec.image_override
-                and (
-                    directory / "task" / Path(spec.file).parent / "Dockerfile"
-                ).is_file()
-            ):
-                main = base["services"][spec.workspace]
-                del main["image"]
-                main["build"] = {"context": "${CONTEXT_DIR}"}
-                main["pull_policy"] = "build"
-            (directory / "base.json").write_text(json.dumps(base))
-            (directory / "env.json").write_text(
-                json.dumps({"services": {spec.workspace: {"environment": environment}}})
-            )
+        (directory / "base.json").write_text(json.dumps(base))
+        # env.json is a Compose file: escape `$` so values reach the service verbatim.
+        escaped = {key: value.replace("$", "$$") for key, value in environment.items()}
+        (directory / "env.json").write_text(
+            json.dumps({"services": {spec.workspace: {"environment": escaped}}})
+        )
 
+        root = str(directory)
+        probe = await cli("docker", "compose", "version", env=compose_env)
+        if probe.exit_code:
+            raise SandboxError(
+                "Docker Compose v2 (`docker compose`) is required on the Docker "
+                "host; install the Compose v2 plugin. "
+                "Standalone `docker-compose` v1 is unsupported."
+            )
+        project_dir = f"{root}/task/{Path(spec.file).parent}"
+        compose_argv += ["--project-directory", project_dir]
+        if isinstance(config, PrimeConfig):
+            env_file = Path(project_dir) / ".env"
+            if not env_file.resolve().is_relative_to(task_dir):
+                raise SandboxError("Native Compose .env must be inside the task")
+            compose_argv += [
+                "--env-file",
+                str(env_file) if env_file.exists() else os.devnull,
+            ]
+        for file in (
+            "base.json",
+            f"task/{spec.file}",
+            "env.json",
+        ):
+            compose_argv += ["-f", f"{root}/{file}"]
+        compose_env.update(
+            (key, value)
+            for key, value in environment.items()
+            if key not in DOCKER_ENV and not key.startswith(("DOCKER_", "COMPOSE_"))
+        )
+        compose_env.update(
+            {
+                "MAIN_IMAGE_NAME": project[-1],
+                "CONTEXT_DIR": project_dir,
+                "PREBUILT_IMAGE_NAME": config.image,
+                "TEST_DIR": "/tests",
+            }
+        )
+        for name, path in HARBOR_LOG_MOUNTS.items():
+            compose_env[f"HOST_{name}_PATH"] = _harbor_volume(name)
+            compose_env[f"ENV_{name}_PATH"] = path
+        # Harbor's templates size services from these; Compose rejects them empty.
+        if config.cpu is not None:
+            compose_env["CPUS"] = f"{config.cpu:g}"
+        if config.memory is not None:
+            compose_env["MEMORY"] = f"{round(config.memory * 1024)}M"
+
+        if isinstance(config, PrimeConfig):
+            # Resolve filenames without loading them: task env files cannot read host secrets.
+            unresolved = json.loads(
+                await compose("config", "--no-env-resolution", "--format", "json")
+            )
+            for service in unresolved["services"].values():
+                for env_file in service.get("env_file", []):
+                    if not Path(env_file["path"]).resolve().is_relative_to(task_dir):
+                        raise SandboxError(
+                            "Native Compose env_file must be inside the task"
+                        )
+        resolved = json.loads(await compose("config", "--format", "json"))
+        yield ComposeProject(
+            directory,
+            compose_argv,
+            compose_env,
+            resolved,
+            compose,
+            "build" in base["services"][spec.workspace],
+        )
+    finally:
+        await run_shielded(stack.aclose())
+
+
+@dataclass
+class ComposeProject:
+    directory: Path
+    argv: list[str]
+    env: dict[str, str]
+    config: dict
+    run: Callable[..., Awaitable[str]]
+    implicit_build: bool
+
+
+@asynccontextmanager
+async def compose_services(
+    config: DockerConfig,
+    spec: ComposeSpec,
+    environment: dict[str, str],
+    *,
+    trust_compose: bool = False,
+    setup_timeout: float | None = None,
+) -> AsyncIterator[tuple[dict[str, DockerBackend], Callable[[], Awaitable[str]]]]:
+    """Own one Compose attempt and lend its services until the context exits."""
+    if not isinstance(config, DockerConfig):
+        raise TypeError("Local Compose requires DockerConfig")
+    if not trust_compose:
+        raise ValueError(
+            "Local Compose tasks can access host files and Docker privileges; "
+            "only run trusted tasks with --env.agent.deployment.trust-compose"
+        )
+    if config.network_restricted:
+        raise ValueError(
+            "Local Compose does not enforce network policies; use ServicesSpec on Prime"
+        )
+    if config.gpu:
+        raise ValueError("Compose currently supports CPU tasks")
+    stack = AsyncExitStack()
+    try:
+        async with asyncio.timeout(setup_timeout):
+            project = await stack.enter_async_context(
+                compose_project(config, spec, environment)
+            )
+            compose = project.run
+            directory, compose_argv = project.directory, project.argv
             root = str(directory)
-            if not local:
-                host_backend = await stack.enter_async_context(
-                    provision_vm_host(config, spec)
-                )
-                root = "/vf-deployment"
-                await host_backend.bind().write(
-                    "/tmp/vf-deployment.tar.gz",
-                    pack_directory(directory),
-                )
-                staged = await run_host(
-                    "sh",
-                    "-c",
-                    f"mkdir -p {shlex.quote(root)} && tar -xzf /tmp/vf-deployment.tar.gz -C {shlex.quote(root)}",
-                )
-                if staged.exit_code:
-                    raise SandboxError(
-                        f"Compose environment staging failed: {staged.stderr}"
-                    )
-            probe = await run_host("docker", "compose", "version")
-            if probe.exit_code:
-                raise SandboxError(
-                    "Docker Compose v2 (`docker compose`) is required on the Docker "
-                    "host; install the Compose v2 plugin or use a host image that "
-                    "includes it. Standalone `docker-compose` v1 is unsupported."
-                )
-            project_dir = f"{root}/task/{Path(spec.file).parent}"
-            compose_argv += ["--project-directory", project_dir]
-            for file in (
-                "base.json",
-                f"task/{spec.file}",
-                "env.json",
-            ):
-                compose_argv += ["-f", f"{root}/{file}"]
-            compose_env.update(
-                (key, value)
-                for key, value in environment.items()
-                if key not in DOCKER_ENV and not key.startswith(("DOCKER_", "COMPOSE_"))
-            )
-            compose_env.update(
-                {
-                    "MAIN_IMAGE_NAME": project[-1],
-                    "CONTEXT_DIR": project_dir,
-                    "PREBUILT_IMAGE_NAME": config.image,
-                }
-            )
-
             # Validate authored services after interpolation, before adding our own.
-            resolved = json.loads(await compose("config", "--format", "json"))
-            services = resolved["services"]
+            services = project.config["services"]
             for service in services.values():
                 if service.get("network_mode") == "host":
                     raise SandboxError("Compose requires an isolated service network")
@@ -295,44 +342,41 @@ async def compose_services(
             )
             if spec.image_override:
                 main["image"] = config.image
+            elif project.implicit_build:
+                main.pop("image", None)
             if "workdir" in main:
                 main["working_dir"] = main.pop("workdir")
             overlay = {"services": {spec.workspace: main}}
-            if local:
-                assert isinstance(config, DockerConfig)
-                if config.cpu is not None:
-                    main["cpus"] = config.cpu
-                if config.memory is not None:
-                    main["mem_limit"] = f"{config.memory}g"
-                # Port publication belongs to the service that owns main's network.
-                publish = overlay["services"].setdefault(owner, {})
-                publish["ports"] = [f"127.0.0.1::{SERVICE_PORT}"]
-                if sys.platform != "linux":
-                    publish["extra_hosts"] = {"host.docker.internal": "host-gateway"}
-            if host_backend is None:
-                (directory / "overlay.json").write_text(json.dumps(overlay))
-            else:
-                await host_backend.bind().write(
-                    f"{root}/overlay.json", json.dumps(overlay).encode()
-                )
+            # Port publication belongs to the service that owns main's network.
+            publish = overlay["services"].setdefault(owner, {})
+            if config.cpu is not None:
+                main["cpus"] = config.cpu
+            if config.memory is not None:
+                main["mem_limit"] = f"{config.memory}g"
+            limits = {
+                key: main[field]
+                for key, field in (("cpus", "cpus"), ("memory", "mem_limit"))
+                if field in main
+            }
+            if limits:
+                main["deploy"] = {"resources": {"limits": limits}}
+            publish["ports"] = [f"127.0.0.1::{SERVICE_PORT}"]
+            if sys.platform != "linux":
+                publish["extra_hosts"] = {"host.docker.internal": "host-gateway"}
+            (directory / "overlay.json").write_text(json.dumps(overlay))
             compose_argv += ["-f", f"{root}/overlay.json"]
 
-            if local:
-                atexit.register(down)
-                stack.push_async_callback(release)
-            # Cancellation stops the CLI; the stack removes the project or the VM.
+            # Cancellation stops the CLI; the stack removes the project.
             await compose("up", "--detach", "--wait")
             containers = await compose(
                 "ps", "--all", "--format", "{{.ID}} {{.Service}}"
             )
-            service_url = None
-            if local:
-                published = await compose("port", owner, str(SERVICE_PORT))
-                service_url = "http://" + next(
-                    address
-                    for address in published.splitlines()
-                    if address.startswith("127.0.0.1:")
-                )
+            published = await compose("port", owner, str(SERVICE_PORT))
+            service_url = "http://" + next(
+                address
+                for address in published.splitlines()
+                if address.startswith("127.0.0.1:")
+            )
             backends: dict[str, DockerBackend] = {}
             for line in containers.splitlines():
                 container, service = line.split()
@@ -340,7 +384,6 @@ async def compose_services(
                     DockerBackend.attach(
                         config,
                         container,
-                        host_backend=host_backend,
                         service_url=service_url if service == spec.workspace else None,
                     )
                 )
@@ -351,47 +394,6 @@ async def compose_services(
         yield (
             backends,
             partial(compose, "stop", spec.workspace, timeout=60),
-            host_backend,
-            backends[spec.workspace].config.image
-            if services[spec.workspace].get("build")
-            else None,
         )
     finally:
         await run_shielded(stack.aclose())
-
-
-@asynccontextmanager
-async def provision_vm_host(
-    config: RuntimeConfig, spec: ComposeSpec
-) -> AsyncIterator[RuntimeBackend]:
-    """Provision the VM that hosts the Docker daemon and every service."""
-    host_config = VM_HOST
-    if spec.host_image is not None:
-        host_config = {**host_config, "image": spec.host_image}
-    async with provision_backend(config.model_copy(update=host_config)) as host:
-        runtime = host.bind()
-        install = await runtime.run(["sh", "-c", INSTALL_DOCKER], {})
-        if install.exit_code:
-            raise SandboxError(
-                f"Docker bootstrap failed: {install.stderr} {install.stdout}"
-            )
-        await runtime.run_background(
-            ["dockerd", "--host=unix:///var/run/docker.sock"], {}, "/tmp/dockerd.log"
-        )
-        async with asyncio.timeout(60):
-            while (await runtime.run(["docker", "info"], {})).exit_code:
-                await asyncio.sleep(1)
-        loaded = await runtime.run(["sh", "-c", LOAD_IMAGES], {})
-        if loaded.exit_code:
-            raise SandboxError(
-                f"Loading host images failed: {loaded.stderr or loaded.stdout}"
-            )
-        yield host
-
-
-def pack_directory(directory: Path) -> bytes:
-    buffer = io.BytesIO()
-    with tarfile.open(fileobj=buffer, mode="w:gz") as archive:
-        for item in directory.iterdir():
-            archive.add(item, arcname=item.name)
-    return buffer.getvalue()

@@ -1,12 +1,13 @@
-"""Colocated execution, composed task services, and tool servers on VMs of their own."""
+"""Colocated execution, local Compose, and native Prime service VMs."""
 
 import asyncio
 import logging
 from contextlib import AsyncExitStack, asynccontextmanager
 from functools import partial
 
+from verifiers.v1.runtimes import PrimeBackend, PrimeConfig
 from verifiers.v1.runtimes.compose import compose_services
-from verifiers.v1.runtimes.deployment import _DeploymentStrategy
+from verifiers.v1.runtimes.deployment import ServicesSpec, _DeploymentStrategy
 from verifiers.v1.runtimes.private_network import lan_host, private_network
 
 logger = logging.getLogger(__name__)
@@ -37,19 +38,13 @@ class _ContainerDeployment(_DeploymentStrategy):
         if d.borrowed_runtime is not None:
             raise ValueError("a composed deployment cannot borrow a single target")
         self._services = await d.enter(AsyncExitStack())
-        (
-            services,
-            self._stop_main,
-            host,
-            built_image,
-        ) = await self._services.enter_async_context(
+        services, self._stop_main = await self._services.enter_async_context(
             compose_services(
                 d.backend.config, d.spec, d.env, trust_compose=d.config.trust_compose
             )
         )
         d.target_backends = dict(services)
         d.execution_backend = d.harness_backend = services[d.spec.workspace]
-        self._remote_built_image = built_image if host is not None else None
 
     async def stop_execution(self, d):
         await self._stop_main()
@@ -63,66 +58,65 @@ class _ContainerDeployment(_DeploymentStrategy):
                 "solver services teardown failed before grading", exc_info=True
             )
 
-    @asynccontextmanager
-    async def verifier(self, deployment, config, env):
-        if self._remote_built_image is None or config.image != self._remote_built_image:
-            async with super().verifier(deployment, config, env) as backend:
-                yield backend
-            return
-        # Rebuild from trusted task inputs on a fresh host: the solver's Docker tag
-        # is local to its released VM, and its modified container must never travel.
-        async with compose_services(
-            config,
-            deployment.spec,
-            env,
-            trust_compose=deployment.config.trust_compose,
-        ) as (services, _, _, _):
-            yield services[deployment.spec.workspace]
-
 
 class _PrivateNetworkDeployment(_DeploymentStrategy):
+    _networks: dict[str, list[str]] | None = None
+    _internal: frozenset[str] = frozenset()
+
     async def start(self, d):
         if d.borrowed_runtime is not None:
             raise ValueError(
-                "a deployment with tool servers on VMs of their own cannot borrow a "
+                "a deployment with services on VMs of their own cannot borrow a "
                 "single target"
             )
         d.backend.env = d.env
+        native = isinstance(d.spec, ServicesSpec)
+        members = d.spec.services if native else d.tool_vms
         self._services = await d.enter(AsyncExitStack())
         vms = await self._services.enter_async_context(
-            private_network(d.backend, d.tool_vms, partial(d.own, d.backend))
+            private_network(
+                d.backend,
+                members,
+                partial(d.own, d.backend),
+                interconnect=native,
+                networks=self._networks,
+            )
         )
         d.target_backends = {"main": d.backend, **vms}
         d.hosts = {name: lan_host(backend) for name, backend in vms.items()}
+        if native:
+            d.hosts["main"] = lan_host(d.backend)
         d.execution_backend = d.harness_backend = d.backend
-        self._service_backends = list(vms.values())
 
     async def prepare_execution(self, d, routes, state_route=None):
         # Each VM enforces its own policy. A tool server's VM keeps only its state
         # channel, reached as the server reaches it; LAN traffic is unaffected by either.
-        def own(backend):
+        def own(name, backend):
+            if name == "main":
+                return routes
+            if name in self._internal:
+                return []
             return [backend.host_url(state_route)] if state_route else []
 
         await asyncio.gather(
-            d.harness_backend.prepare_execution(routes),
             *(
-                backend.prepare_execution(own(backend))
-                for backend in self._service_backends
+                backend.prepare_execution(own(name, backend))
+                for name, backend in d.target_backends.items()
             ),
         )
 
     async def stop_execution(self, d):
-        # As Compose stops its workspace: nothing the agent left running may reach the
-        # tool servers' VMs while their evidence is collected.
+        # Nothing the agent left running may reach services while their evidence is
+        # collected.
         await d.execution_backend.stop()
 
     async def prepare_verifier(self, deployment):
         # Evidence is collected; release the solver's VMs before the verifier clock
-        # starts, the workspace's even if the tool server VMs' or the network's release
+        # starts, the workspace's even if the service VMs' or the network's release
         # fails.
         for release, what in (
             (deployment.execution_backend.stop, "workspace VM"),
-            (self._services.aclose, "tool server VMs"),
+            (self._services.aclose, "service VMs"),
         ):
             try:
                 await release()
@@ -130,12 +124,93 @@ class _PrivateNetworkDeployment(_DeploymentStrategy):
                 logger.warning("%s teardown failed before grading", what, exc_info=True)
 
 
+class _NativeComposeDeployment(_PrivateNetworkDeployment):
+    _processes = None
+
+    @asynccontextmanager
+    async def verifier(self, deployment, config, env):
+        main = self._processes.services["main"]
+        if isinstance(config, PrimeConfig) and config.image == main.config.image:
+            # Dockerfile ENV cannot preserve multiline values; pass image defaults
+            # directly, excluding the solver's Compose and rollout overrides.
+            env = main.image_env | env
+        async with super().verifier(deployment, config, env) as backend:
+            yield backend
+
+    async def start(self, d):
+        from verifiers.v1.runtimes.native_compose import NativeProcesses, prepare_native
+
+        if d.borrowed_runtime is not None:
+            raise ValueError("a composed deployment cannot borrow a single target")
+        services = await prepare_native(
+            d.backend.config.model_copy(
+                update={"workdir": d.backend._workdir_override}
+            ),
+            d.spec,
+            d.env,
+        )
+        main = services["main"]
+        d.backend.config = main.config
+        for field, value in main.config.model_dump().items():
+            setattr(d.backend.info, field, value)
+        d.env = main.env
+        self._networks = {}
+        for name, service in services.items():
+            # Default-bridge peers share IP connectivity without Compose aliases.
+            networks = [
+                f"project:{network}" for network in service.definition["networks"]
+            ]
+            for network in networks or ["bridge"]:
+                self._networks.setdefault(network, []).append(name)
+        self._internal = frozenset(
+            name for name, service in services.items() if service.internal
+        )
+        d.spec = ServicesSpec(
+            {
+                name: service.config
+                for name, service in services.items()
+                if name != "main"
+            }
+        )
+        await super().start(d)
+        self._processes = NativeProcesses(services)
+        await self._processes.start(d)
+
+    async def stop_execution(self, d):
+        await self._processes.stop(d, ["main"])
+        await super().stop_execution(d)
+
+    async def prepare_verifier(self, deployment):
+        await self.close(deployment)
+        await super().prepare_verifier(deployment)
+
+    async def close(self, deployment):
+        if self._processes is not None:
+            await self._processes.stop(
+                deployment, reversed(list(self._processes.processes))
+            )
+
+
 def _deployment_strategy(config, backend, spec, tool_vms=None):
+    if isinstance(spec, ServicesSpec):
+        if not isinstance(backend, PrimeBackend):
+            raise TypeError("Native service VMs require a Prime workspace")
+        if "main" in spec.services:
+            raise ValueError(
+                "'main' is the task workspace; name its services separately"
+            )
+        if any(
+            not isinstance(runtime, PrimeConfig) for runtime in spec.services.values()
+        ):
+            raise ValueError("Native services require PrimeConfig runtimes")
+        return _PrivateNetworkDeployment()
     if spec is not None:
+        if isinstance(backend, PrimeBackend):
+            return _NativeComposeDeployment()
         if not backend.SUPPORTS_COMPOSE:
             raise ValueError(
                 f"the task deploys Compose services, but the {backend.type} runtime "
-                "cannot run Compose services; use a supported runtime"
+                "cannot run Compose services; use ServicesSpec on Prime or local Docker"
             )
         return _ContainerDeployment()
     if tool_vms:

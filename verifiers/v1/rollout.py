@@ -476,12 +476,13 @@ class Rollout:
                         self._agent_runtime,
                         shared=self._shared_tools,
                         state_secret=state_secret,
+                        proxy_mcp=self._session.proxy_mcp,
                         state_route=self.trace.id,
                         state_base=base_url,
                         services=services,
                         hosts=self.deployment.hosts,
                         # Tool servers on VMs of their own, by server name; an explicit
-                        # `service` names only a Compose service.
+                        # `service` names a task-declared service.
                         placements={
                             name: self.deployment.target(name)
                             for name in self.deployment.tool_vms
