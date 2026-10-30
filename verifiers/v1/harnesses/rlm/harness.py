@@ -70,7 +70,7 @@ class CompactionConfig(BaseConfig):
 class RLMHarnessConfig(HarnessConfig):
     dialect: Literal["chat_completions"] = "chat_completions"
     version: str = Field(
-        default="684ea9069eadaf855596c3fa49e529566de7d1af", min_length=1
+        default="15513ae8ea3ad007a3d940b30252cb14de5e2caf", min_length=1
     )
     """Git ref (branch, tag, or commit) of nano-rlm to install. Must know every
     field this harness puts on the wire, i.e. be at least the default ref."""
@@ -104,6 +104,10 @@ class RLMHarnessConfig(HarnessConfig):
     """Allow unrestricted Git history queries (e.g. `git log --all`); `None` uses
     nano-rlm's default (false). Ordinary Git commands remain allowed either way;
     this is not filesystem or process isolation."""
+    network_guidance: bool | None = None
+    """Keep nano-rlm's prompt guidance that assumes outbound network access (installing
+    extra kernel packages, the online-solutions warning). `None` turns it off when the
+    box allows no network destinations and otherwise uses nano-rlm's default (on)."""
     max_total_turns: PositiveInt | None = None
     """Tree-total turn budget (one turn = one work-loop model call, any engine); every
     engine stops before its next call once spent. `None` = uncapped."""
@@ -197,6 +201,7 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
             "delegation_prompt": self.config.delegation_prompt,
             "exec_timeout": self.config.exec_timeout,
             "allow_git": self.config.allow_git,
+            "network_guidance": self._network_guidance(runtime),
             "max_total_turns": self.config.max_total_turns,
             "max_total_tokens": self.config.max_total_tokens or None,
             "max_tool_output_bytes": self.config.max_tool_output_bytes,
@@ -250,6 +255,15 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
         if self.config.builtin_tools is not None:
             payload["builtin_tools"] = list(self.config.builtin_tools)
         return {RLM_RUNTIME_METADATA_KEY: payload}
+
+    def _network_guidance(self, runtime: Runtime) -> bool | None:
+        if self.config.network_guidance is not None:
+            return self.config.network_guidance
+        # The rollout's runtime config already carries the task's network policy.
+        policy = runtime.config
+        if isinstance(policy, NetworkPolicyConfig) and not policy.allow:
+            return False
+        return None
 
     async def prepare_acp(
         self,
