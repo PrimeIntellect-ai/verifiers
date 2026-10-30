@@ -309,7 +309,7 @@ class Rollout:
             self.fail(
                 SandboxError(f"workspace lost during execution ({lost.cause})")
                 if lost is not None
-                else TimeoutError("agent deadline exceeded")
+                else HarnessError("agent deadline exceeded")
             )
 
     async def open(self) -> bool:
