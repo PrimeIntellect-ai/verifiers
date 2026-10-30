@@ -48,6 +48,7 @@ from verifiers.v1.types import (
     FloatStream,
     IntStream,
     Message,
+    MMPlaceholders,
     Response,
     SamplingMask,
     TextContentPart,
@@ -165,6 +166,12 @@ class MessageNode(BaseModel):
     renderer_token_ids: IntStream | None = Field(default=None, exclude=True)
     """Logical renderer tokens retained only while extending a live rollout.
     None means they are identical to `token_ids`; an empty array is a real empty slice."""
+    mm_placeholders: MMPlaceholders = Field(
+        default_factory=dict, exclude_if=lambda placeholders: not placeholders
+    )
+    """Media placeholder ranges per modality, `(offset, length)` into this node's `token_ids`:
+    where the renderer placed each media item, as the engine expanded it. A token with a
+    placeholder id outside these ranges (sampled, or in text) is plain text."""
 
     mask: BoolStream = Field(default_factory=empty_stream(np.bool_))
     """Per-token, parallel to `token_ids`: True for trainable, model-sampled tokens (only an
@@ -227,6 +234,23 @@ class MessageNode(BaseModel):
             if self.renderer_token_ids is None
             else self.renderer_token_ids
         )
+
+    @property
+    def logical_mm_placeholders(self) -> MMPlaceholders:
+        """`mm_placeholders` over `logical_ids`: each expanded range is one logical token."""
+        if self.renderer_token_ids is None:
+            return self.mm_placeholders
+        flat = sorted(
+            (offset, length, modality)
+            for modality, ranges in self.mm_placeholders.items()
+            for offset, length in ranges
+        )
+        logical: MMPlaceholders = {}
+        shift = 0
+        for offset, length, modality in flat:
+            logical.setdefault(modality, []).append((offset - shift, 1))
+            shift += length - 1
+        return logical
 
     def record_streams(
         self, float_decimals: int | None, exclude_none: bool
@@ -627,6 +651,19 @@ class PendingTurn:
             return None
         return ids[:-num_sampled].tolist(), ids[-num_sampled:].tolist()
 
+    def previous_mm_placeholders(self) -> MMPlaceholders:
+        """Media placeholder ranges over the bridge anchor's logical renderer stream."""
+        placeholders: MMPlaceholders = {}
+        offset = 0
+        for nid in self.prefix_node_ids:
+            node = self.trace.nodes[nid]
+            for modality, ranges in node.logical_mm_placeholders.items():
+                placeholders.setdefault(modality, []).extend(
+                    (offset + start, length) for start, length in ranges
+                )
+            offset += len(node.logical_ids)
+        return placeholders
+
     def prompt_message_spans(
         self, tail_attribution: RenderedTokens
     ) -> list[tuple[int, int] | None]:
@@ -819,6 +856,48 @@ def _attribute_routed_experts(
         off = end
 
 
+def _attribute_mm_placeholders(
+    trace: Trace,
+    prefix_node_ids: list[int],
+    new_node_ids: list[int],
+    placeholders: MMPlaceholders | None,
+) -> None:
+    """Hand each node created this turn the placeholder ranges inside its tokens. The new
+    nodes tile the prompt after the reused prefix, which must already hold exactly the
+    ranges that fall inside it."""
+    flat = _flat_placeholders(placeholders)
+    stored: list[tuple[int, int, str]] = []
+    off = 0
+    for nid in prefix_node_ids:
+        node = trace.nodes[nid]
+        stored.extend(
+            (off + offset, length, modality)
+            for modality, ranges in node.mm_placeholders.items()
+            for offset, length in ranges
+        )
+        off += len(node.token_ids)
+    if [p for p in flat if p[0] < off] != sorted(stored):
+        raise ValueError(
+            f"multimodal placeholders {flat} do not match the stored rollout prefix "
+            f"{sorted(stored)}"
+        )
+    remaining = [p for p in flat if p[0] >= off]
+    for nid in new_node_ids:
+        node = trace.nodes[nid]
+        end = off + len(node.token_ids)
+        while remaining and remaining[0][0] < end:
+            offset, length, modality = remaining.pop(0)
+            if offset + length > end:
+                raise ValueError(
+                    f"multimodal placeholder ({offset}, {length}) crosses a message "
+                    f"boundary at token {end}"
+                )
+            node.mm_placeholders.setdefault(modality, []).append((offset - off, length))
+        off = end
+    if remaining:
+        raise ValueError(f"multimodal placeholders {remaining} lie past the prompt")
+
+
 def _attribute_sampling_mask(
     trace: Trace, assistant_id: int, payload: SamplingMask | None
 ) -> None:
@@ -833,39 +912,51 @@ def _attribute_sampling_mask(
     node.sampling_mask = payload
 
 
+def _flat_placeholders(
+    placeholders: MMPlaceholders | None,
+) -> list[tuple[int, int, str]]:
+    """`(offset, length, modality)` across modalities, in prompt order."""
+    return sorted(
+        (offset, length, modality)
+        for modality, ranges in (placeholders or {}).items()
+        for offset, length in ranges
+    )
+
+
 def _project_prompt_attribution(
     renderer_prompt_ids: np.ndarray,
     prompt_ids: np.ndarray,
-    mm_token_type_id_map: dict[int, int],
-    mm_placeholders: list[tuple[int, int]] | None,
+    renderer_mm_placeholders: MMPlaceholders | None,
+    mm_placeholders: MMPlaceholders | None,
     message_spans: list[tuple[int, int] | None] | None,
     is_content: np.ndarray | None,
 ) -> tuple[list[tuple[int, int] | None] | None, np.ndarray | None]:
-    """Project logical attribution using vLLM's multimodal placeholder ranges."""
+    """Project logical attribution onto the expanded prompt: each logical placeholder the
+    renderer placed covers its whole vLLM placeholder range; every other token covers one."""
     if renderer_prompt_ids is prompt_ids or same_tokens(
         renderer_prompt_ids, prompt_ids
     ):
         return message_spans, is_content
-    if not mm_token_type_id_map or mm_placeholders is None:
+    logical = _flat_placeholders(renderer_mm_placeholders)
+    expanded = _flat_placeholders(mm_placeholders)
+    if not expanded or [m for *_, m in logical] != [m for *_, m in expanded]:
         raise ValueError(
-            "cannot align renderer and vLLM prompt tokens without multimodal placeholders"
+            f"renderer placed {len(logical)} media placeholders but vLLM expanded "
+            f"{len(expanded)}: {logical} vs {expanded}"
         )
-
-    # Each logical token covers one prompt token, or one placeholder's whole range.
-    is_mm = np.isin(renderer_prompt_ids, list(mm_token_type_id_map))
-    placeholders = np.asarray(mm_placeholders, dtype=np.int64).reshape(-1, 2)
-    if np.count_nonzero(is_mm) > len(placeholders):
+    if any(length != 1 for _, length, _ in logical) or any(
+        length < 1 for _, length, _ in expanded
+    ):
         raise ValueError(
             "vLLM multimodal placeholders do not align with renderer prompt"
         )
-    if np.count_nonzero(is_mm) < len(placeholders):
-        raise ValueError("renderer prompt does not align with vLLM prompt tokens")
+
+    is_mm = np.zeros(len(renderer_prompt_ids), dtype=np.bool_)
+    is_mm[[offset for offset, _, _ in logical]] = True
     lengths = np.ones(len(renderer_prompt_ids), dtype=np.int64)
-    lengths[is_mm] = placeholders[:, 1]
+    lengths[is_mm] = [length for _, length, _ in expanded]
     offsets = np.concatenate([[0], np.cumsum(lengths)])
-    if (placeholders[:, 1] < 1).any() or not np.array_equal(
-        placeholders[:, 0], offsets[:-1][is_mm]
-    ):
+    if not np.array_equal([offset for offset, _, _ in expanded], offsets[:-1][is_mm]):
         raise ValueError(
             "vLLM multimodal placeholders do not align with renderer prompt"
         )
@@ -917,9 +1008,6 @@ def _commit_turn(turn: PendingTurn, response: Response) -> int:
     trace = turn.trace
     prompt = turn.prompt
     tokens = response.tokens
-    # Constant per renderer, so re-stamping every turn is idempotent.
-    if tokens is not None and tokens.mm_token_type_id_map:
-        trace.mm_token_type_id_map = tokens.mm_token_type_id_map
     prompt_ids = np.asarray(tokens.prompt_ids if tokens else (), dtype=np.int32)
     # Logical renderer ids differ from `prompt_ids` only after multimodal expansion; otherwise
     # the nodes keep none and read `token_ids` (`MessageNode.logical_ids`).
@@ -969,7 +1057,7 @@ def _commit_turn(turn: PendingTurn, response: Response) -> int:
     spans, is_content = _project_prompt_attribution(
         renderer_prompt_ids,
         prompt_ids,
-        trace.mm_token_type_id_map,
+        tokens.renderer_mm_placeholders if tokens else None,
         tokens.mm_placeholders if tokens else None,
         renderer_spans,
         renderer_is_content,
@@ -1117,6 +1205,9 @@ def _commit_turn(turn: PendingTurn, response: Response) -> int:
     assistant_id = len(trace.nodes) - 1
     _index_node(trace, assistant_id)
     new_node_ids.append(assistant_id)
+
+    if tokens is not None:
+        _attribute_mm_placeholders(trace, prefix, new_node_ids, tokens.mm_placeholders)
 
     # Attribute this turn's expert-routing array onto the nodes created this turn (new input
     # nodes in creation order, then the assistant node), each getting the routing for its tokens.

@@ -657,8 +657,8 @@ def test_expanded_prompt_is_attributed_while_bridge_uses_logical_tokens():
                 completion_ids=[4],
                 message_spans=[(0, 2)],
                 is_content=[False, True, False],
-                mm_placeholders=[(1, 2)],
-                mm_token_type_id_map={9: 1},
+                mm_placeholders={"image": [(1, 2)]},
+                renderer_mm_placeholders={"image": [(1, 1)]},
             ),
         )
     )
@@ -666,9 +666,11 @@ def test_expanded_prompt_is_attributed_while_bridge_uses_logical_tokens():
     assert list(trace.branches[0].token_ids) == [1, 9, 9, 3, 4]
     assert list(trace.branches[0].mm_token_type_ids) == [0, 1, 1, 0, 0]
     assert list(trace.nodes[0].token_ids) == [1, 9, 9]
+    assert trace.nodes[0].mm_placeholders == {"image": [(1, 2)]}
     assert list(trace.nodes[0].is_content) == [False, True, True]
     turn = graph.prepare_turn(trace, [user, assistant, vf.UserMessage(content="next")])
     assert turn.previous_renderer_token_ids() == ([1, 9, 3], [4])
+    assert turn.previous_mm_placeholders() == {"image": [(1, 1)]}
 
     with pytest.raises(ValueError, match="exactly extend"):
         turn.commit(
@@ -703,8 +705,8 @@ def test_expanded_prompt_is_attributed_while_bridge_uses_logical_tokens():
                 completion_ids=[8],
                 message_spans=[None, None, (4, 6)],
                 is_content=[False, True, False, True, False, True, False],
-                mm_placeholders=[(1, 2)],
-                mm_token_type_id_map={9: 1},
+                mm_placeholders={"image": [(1, 2)]},
+                renderer_mm_placeholders={"image": [(1, 1)]},
             ),
         )
     )
@@ -714,6 +716,60 @@ def test_expanded_prompt_is_attributed_while_bridge_uses_logical_tokens():
     assert list(tool_node.token_ids) == [5, 6]
     assert tool_node.renderer_token_ids.tolist() == [5, 6]
     assert list(tool_node.is_content) == [False, True]
+
+
+def test_placeholder_token_ids_outside_placed_media_are_text():
+    """A sampled placeholder id (9) and one in tool text stay text; only the image the
+    renderer placed is a placeholder, even where the text one comes first."""
+    trace = vf.Trace(
+        agent=vf.AgentInfo(config=vf.AgentConfig()),
+        task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt="x")),
+    )
+    user = vf.UserMessage(content="image")
+    assistant = vf.AssistantMessage(content="sampled pad")
+    graph.prepare_turn(trace, [user]).commit(
+        vf.Response(
+            id="a",
+            created=0,
+            model="t",
+            message=assistant,
+            finish_reason="stop",
+            tokens=TurnTokens(
+                prompt_ids=[1, 9, 9, 3],
+                renderer_prompt_ids=[1, 9, 3],
+                completion_ids=[9, 4],
+                message_spans=[(0, 2)],
+                mm_placeholders={"image": [(1, 2)]},
+                renderer_mm_placeholders={"image": [(1, 1)]},
+            ),
+        )
+    )
+    assert list(trace.branches[0].mm_token_type_ids) == [0, 1, 1, 0, 0, 0]
+
+    # The tool result has a literal placeholder (9) before its image (logical 7).
+    tool = vf.ToolMessage(content="pad text, then image", tool_call_id="call_0")
+    graph.prepare_turn(trace, [user, assistant, tool]).commit(
+        vf.Response(
+            id="b",
+            created=0,
+            model="t",
+            message=vf.AssistantMessage(content="done"),
+            finish_reason="stop",
+            tokens=TurnTokens(
+                prompt_ids=[1, 9, 9, 3, 9, 4, 5, 9, 6, 7, 7, 7, 2],
+                renderer_prompt_ids=[1, 9, 3, 9, 4, 5, 9, 6, 7, 2],
+                bridged=True,
+                completion_ids=[8],
+                message_spans=[None, None, (5, 9)],
+                mm_placeholders={"image": [(1, 2), (9, 3)]},
+                renderer_mm_placeholders={"image": [(1, 1), (8, 1)]},
+            ),
+        )
+    )
+    [branch] = trace.branches
+    assert branch.mm_placeholders == {"image": [(1, 2), (9, 3)]}
+    assert list(branch.mm_token_type_ids) == [0, 1, 1, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0]
+    assert trace.nodes[-2].mm_placeholders == {"image": [(3, 3)]}
 
 
 def test_prompt_supplied_assistant_messages_are_not_sampled_turns():

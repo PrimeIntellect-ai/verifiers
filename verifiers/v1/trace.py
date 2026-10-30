@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any, Generic
 
 import numpy as np
 import orjson
-from pydantic import BaseModel, Field, PrivateAttr, computed_field, field_serializer
+from pydantic import BaseModel, Field, PrivateAttr, computed_field
 from typing_extensions import TypeVar
 
 if TYPE_CHECKING:
@@ -30,6 +30,7 @@ from verifiers.v1.types import (
     FinishReason,
     Message,
     Messages,
+    MMPlaceholders,
     SamplingMask,
     Tool,
     ToolMessage,
@@ -40,6 +41,9 @@ from verifiers.v1.types import (
 
 TRACE_VERSION = 1
 """Current version of the trace schema."""
+
+MM_TOKEN_TYPES = {"image": 1, "video": 2}
+"""`Branch.mm_token_type_ids` marker per placeholder modality; 0 is text."""
 
 
 EXCLUDE_FIELDS: dict = {
@@ -244,8 +248,6 @@ class Branch(BaseModel):
     calls: list[ModelCall] = Field(default_factory=list)
     trainable: bool = True
     """Whether this physical path contributes a training sample."""
-    mm_token_type_id_map: dict[int, int] = Field(default_factory=dict)
-    """The trace's `mm_token_type_id_map`, carried so `mm_token_type_ids` is self-contained."""
 
     @property
     def messages(self) -> Messages:
@@ -342,15 +344,31 @@ class Branch(BaseModel):
         return _concat(parts, np.float32)
 
     @property
+    def mm_placeholders(self) -> MMPlaceholders:
+        """Media placeholder ranges per modality, `(offset, length)` into `token_ids`."""
+        placeholders: MMPlaceholders = {}
+        offset = 0
+        for node in self.nodes:
+            for modality, ranges in node.mm_placeholders.items():
+                placeholders.setdefault(modality, []).extend(
+                    (offset + start, length) for start, length in ranges
+                )
+            offset += len(node.token_ids)
+        return placeholders
+
+    @property
     def mm_token_type_ids(self) -> np.ndarray | None:
         """Per-token int32 modality markers aligned to `token_ids` (0 = text, 1 = image
-        placeholder, 2 = video placeholder); None when none are present."""
-        if not self.mm_token_type_id_map:
+        placeholder, 2 = video placeholder) from `mm_placeholders`; None when there are none."""
+        placeholders = self.mm_placeholders
+        if not placeholders:
             return None
-        token_ids = self.token_ids
-        token_types = np.zeros(len(token_ids), dtype=np.int32)
-        for token, token_type in self.mm_token_type_id_map.items():
-            token_types[token_ids == token] = token_type
+        token_types = np.zeros(
+            sum(len(n.token_ids) for n in self.nodes), dtype=np.int32
+        )
+        for modality, ranges in placeholders.items():
+            for offset, length in ranges:
+                token_types[offset : offset + length] = MM_TOKEN_TYPES.get(modality, 0)
         return token_types if token_types.any() else None
 
     @property
@@ -450,10 +468,6 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     """The message graph, including physical and semantic parent links."""
     calls: list[ModelCall] = Field(default_factory=list)
     """Every model call; automatically recorded at intercept time + linked into `nodes`."""
-    mm_token_type_id_map: dict[int, int] = Field(default_factory=dict)
-    """Special-token id -> modality marker (1 = image placeholder, 2 = video placeholder)
-    from the renderer that tokenized this trace, stamped at turn commit. Applied to a
-    branch's `token_ids` by `Branch.mm_token_type_ids`; empty for text-only renderers."""
     request_rewrites: list[InterceptRecord] = Field(default_factory=list)
     """Request changes made by `@intercept`, in execution order."""
     response_rewrites: list[InterceptRecord] = Field(default_factory=list)
@@ -523,12 +537,6 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     def clear_preview(self, key: object) -> None:
         """The request's previewed messages are committed (or abandoned)."""
         self._pending.pop(id(key), None)
-
-    @field_serializer("mm_token_type_id_map")
-    def serialize_mm_token_type_id_map(self, mapping: dict[int, int]) -> dict[str, int]:
-        """The wire unpacks with msgpack's `strict_map_key`, which forbids int map keys —
-        dump str keys; validation coerces them back to int."""
-        return {str(k): v for k, v in mapping.items()}
 
     @property
     def reward(self) -> float:
@@ -612,7 +620,6 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
                         not is_compaction_attempt
                         or leaf in accepted_compaction_attempts
                     ),
-                    mm_token_type_id_map=self.mm_token_type_id_map,
                 )
             )
         return branches

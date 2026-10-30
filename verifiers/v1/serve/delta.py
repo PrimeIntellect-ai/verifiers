@@ -55,7 +55,6 @@ LIST_FIELDS = (
 SCALAR_FIELDS = (
     "agent",
     "tools",
-    "mm_token_type_id_map",
     "rewards",
     "metrics",
     "info",
