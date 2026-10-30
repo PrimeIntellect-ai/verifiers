@@ -44,12 +44,33 @@ class ServicesSpec:
 _WORKER_PORTS = range(20000, 32000)
 """Below Linux's ephemeral range, so a worker's port cannot collide with an outgoing
 connection's."""
-_HOLD = 'echo $$ > "$1.pid"; while [ ! -e "$1.joined" ]; do sleep 0.05; done; shift; exec "$@"'
+_HOLD = (
+    'echo $$ > "$1.pid"; while [ ! -e "$2" ]; do sleep 0.05; done; shift 2; exec "$@"'
+)
 """Wait, as the worker's user, until root has moved this process into its cgroup."""
+_FLAGS = "/run/vf-exec"
+"""Root-owned, so the worker's user can neither forge nor redirect a release flag."""
+_HELD = """
+uid=$(id -u "${user:-root}")
+held() {
+    # Whether $1 is this launch's held worker, running as the worker's user: root
+    # only acts on a process that user could signal itself.
+    local key real arg
+    [[ $1 =~ ^[0-9]+$ ]] || return 1
+    while read -r key real _; do [ "$key" = Uid: ] && break; done < "/proc/$1/status" || return 1
+    [ "$real" = "$uid" ] || return 1
+    while IFS= read -r -d '' arg; do [ "$arg" = "$flag" ] && return 0; done < "/proc/$1/cmdline"
+    return 1
+}
+"""
 _PORT_TAKEN = 2
-_JOIN = """
+_JOIN = (
+    """
 set -e
-group=/sys/fs/cgroup/$1 files=$2 port=$3
+group=/sys/fs/cgroup/$1 files=$2 flag=$3 port=$4 user=$5
+"""
+    + _HELD
+    + """
 printf -v hex '%04X' "$port"
 listening() {
     cat /proc/net/tcp /proc/net/tcp6 2>/dev/null | while read -r _ address _ state _ _ _ _ _ inode _; do
@@ -58,10 +79,14 @@ listening() {
 }
 for _ in $(seq 300); do [ -s "$files.pid" ] && break; sleep 0.1; done
 pid=$(cat "$files.pid")
+held "$pid" || { echo "worker identity check failed" >&2; exit 1; }
+echo "$pid"
 [ -z "$(listening)" ] || exit 2
 mkdir "$group"
 echo "$pid" > "$group/cgroup.procs"
-: > "$files.joined"
+mkdir -p -m 755 "${flag%/*}"
+[ "$(stat -c '%u %a' "${flag%/*}")" = "0 755" ] || { echo "unsafe flag directory" >&2; exit 1; }
+: > "$flag"
 for _ in $(seq 600); do
     for inode in $(listening); do
         for proc in $(cat "$group/cgroup.procs"); do
@@ -76,19 +101,42 @@ done
 echo "worker did not listen on port $port" >&2
 exit 1
 """
-"""Move the held worker into its cgroup, then wait until a process in that cgroup
-listens on the port. Exits `_PORT_TAKEN` before releasing the worker if another
-process already listens there."""
-_KILL = """
-group=/sys/fs/cgroup/$1 files=$2
-if [ -e "$files.joined" ]; then
+)
+"""Validate the held worker and print its PID, move it into its cgroup and release
+it, then wait until a process in that cgroup listens on the port. Exits
+`_PORT_TAKEN` before moving the worker if another process already listens there."""
+_KILL = (
+    """
+group=/sys/fs/cgroup/$1 files=$2 flag=$3 pid=$4 user=$5
+"""
+    + _HELD
+    + """
+if [ -e "$group/cgroup.kill" ]; then
     echo 1 > "$group/cgroup.kill"
     for _ in $(seq 50); do rmdir "$group" 2>/dev/null && break; sleep 0.1; done
-elif [ -s "$files.pid" ]; then
-    kill -9 "$(cat "$files.pid")"
 fi
-rm -f "$files.pid" "$files.joined"
+if held "$pid"; then kill -9 "$pid"; fi
+rm -f "$flag" "$files.pid"
 """
+)
+"""Kill the worker's cgroup, or a worker never released into it by the PID that
+`_JOIN` validated, checked again."""
+
+
+@dataclass
+class _Worker:
+    root: Runtime
+    group: str
+    user: str
+    pid: str = ""
+
+    @property
+    def files(self) -> str:
+        return f"/tmp/{self.group}"
+
+    @property
+    def flag(self) -> str:
+        return f"{_FLAGS}/{self.group}"
 
 
 @dataclass
@@ -100,7 +148,7 @@ class ExecutionConnection:
 
     host: str
     """The workspace's name on the private network."""
-    _workers: list[tuple[Runtime, str]] = field(default_factory=list)
+    _workers: list[_Worker] = field(default_factory=list)
 
     async def serve(
         self,
@@ -110,41 +158,73 @@ class ExecutionConnection:
     ) -> int:
         """Start `argv(port)` through `runtime`, a workspace view, and return the port
         once the worker itself listens on it."""
-        root = runtime.with_user(None)
         for _ in range(3):
             port = random.choice(_WORKER_PORTS)
-            group = f"vf-exec-{uuid.uuid4().hex[:12]}"
-            files = f"/tmp/{group}"
-            self._workers.append((root, group))
+            worker = _Worker(
+                runtime.with_user(None),
+                f"vf-exec-{uuid.uuid4().hex[:12]}",
+                runtime.user or "",
+            )
+            self._workers.append(worker)
             await runtime.run_background(
-                ["sh", "-c", _HOLD, "sh", files, *argv(port)], env, f"{files}.log"
+                ["sh", "-c", _HOLD, "sh", worker.files, worker.flag, *argv(port)],
+                env,
+                f"{worker.files}.log",
             )
-            result = await root.run(
-                ["bash", "-c", _JOIN, "bash", group, files, str(port)], {}
+            result = await worker.root.run(
+                [
+                    "bash",
+                    "-c",
+                    _JOIN,
+                    "bash",
+                    worker.group,
+                    worker.files,
+                    worker.flag,
+                    str(port),
+                    worker.user,
+                ],
+                {},
             )
+            worker.pid = result.stdout.strip()
             if not result.exit_code:
                 return port
             if result.exit_code != _PORT_TAKEN:
-                log = await root.run(["tail", "-c", "2000", f"{files}.log"], {})
+                # Read as the worker's user: the log lives where that user can write.
+                log = await runtime.run(
+                    ["tail", "-c", "2000", f"{worker.files}.log"], {}
+                )
                 raise SandboxError(
                     "execution worker failed to start: "
                     f"{result.stderr.strip()[-500:]}\n{log.stdout}"
                 )
             # A workspace service holds the port: release the held worker, try another.
-            self._workers.remove((root, group))
-            await _stop(root, group)
+            self._workers.remove(worker)
+            await _stop(worker)
         raise SandboxError("execution worker found no free port in the workspace")
 
     async def close(self) -> None:
         """Stop every worker and the processes they started."""
         workers, self._workers = self._workers, []
-        for root, group in workers:
-            await _stop(root, group)
+        for worker in workers:
+            await _stop(worker)
 
 
-async def _stop(root: Runtime, group: str) -> None:
+async def _stop(worker: _Worker) -> None:
     with contextlib.suppress(Exception):
-        await root.run(["sh", "-c", _KILL, "sh", group, f"/tmp/{group}"], {})
+        await worker.root.run(
+            [
+                "bash",
+                "-c",
+                _KILL,
+                "bash",
+                worker.group,
+                worker.files,
+                worker.flag,
+                worker.pid,
+                worker.user,
+            ],
+            {},
+        )
 
 
 class _DeploymentStrategy:
