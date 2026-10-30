@@ -403,3 +403,27 @@ def test_root_login_directory_is_roots_own_whatever_the_images_home():
         check=True,
     )
     assert run.stdout.splitlines()[1] == pwd.getpwnam("root").pw_dir
+
+
+async def test_a_failed_command_never_quotes_its_env_values(monkeypatch):
+    """The SDK's error quotes the command with its env exported inline: the recorded
+    error and its traceback carry neither the secret nor the SDK error holding it."""
+    import traceback
+
+    secret = "hf_" + "s3cr3t" * 4
+
+    class Quoting(Client):
+        async def start_background_job(self, sandbox_id, command, **kwargs):
+            env = kwargs.get("env") or {}
+            raise RuntimeError(
+                f"Command '(export HF_TOKEN={env['HF_TOKEN']}; {command})' failed"
+            )
+
+    install(monkeypatch, Quoting())
+    runtime = make(monkeypatch)
+    await runtime.start()
+    with pytest.raises(SandboxError) as caught:
+        await runtime.bind().run(["true"], {"HF_TOKEN": secret})
+    assert "***" in str(caught.value) and secret not in str(caught.value)
+    assert secret not in "".join(traceback.format_exception(caught.value))
+    await runtime.teardown()
