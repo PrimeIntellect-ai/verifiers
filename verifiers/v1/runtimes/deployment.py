@@ -5,9 +5,9 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-import random
+import re
 import uuid
-from collections.abc import AsyncIterator, Callable, Collection, Mapping
+from collections.abc import AsyncIterator, Collection, Mapping
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass, field
 
@@ -41,190 +41,69 @@ class ServicesSpec:
     services: dict[str, PrimeConfig]
 
 
-_WORKER_PORTS = range(20000, 32000)
-"""Below Linux's ephemeral range, so a worker's port cannot collide with an outgoing
-connection's."""
-_HOLD = (
-    'echo $$ > "$1.pid"; while [ ! -e "$2" ]; do sleep 0.05; done; shift 2; exec "$@"'
-)
-"""Wait, as the worker's user, until root has moved this process into its cgroup."""
-_FLAGS = "/run/vf-exec"
-"""Root-owned, so the worker's user can neither forge nor redirect a release flag."""
-_HELD = """
-uid=$(id -u "${user:-root}")
-held() {
-    # Whether $1 is this launch's held worker, running as the worker's user: root
-    # only acts on a process that user could signal itself.
-    local key real arg
-    [[ $1 =~ ^[0-9]+$ ]] || return 1
-    while read -r key real _; do [ "$key" = Uid: ] && break; done < "/proc/$1/status" || return 1
-    [ "$real" = "$uid" ] || return 1
-    while IFS= read -r -d '' arg; do [ "$arg" = "$flag" ] && return 0; done < "/proc/$1/cmdline"
-    return 1
-}
-"""
-_PORT_TAKEN = 2
-_JOIN = (
-    """
-set -e
-group=/sys/fs/cgroup/$1 files=$2 flag=$3 port=$4 user=$5
-"""
-    + _HELD
-    + """
-printf -v hex '%04X' "$port"
-listening() {
-    cat /proc/net/tcp /proc/net/tcp6 2>/dev/null | while read -r _ address _ state _ _ _ _ _ inode _; do
-        if [ "$state" = 0A ] && [ "${address##*:}" = "$hex" ]; then echo "$inode"; fi
-    done
-}
-for _ in $(seq 300); do [ -s "$files.pid" ] && break; sleep 0.1; done
-pid=$(cat "$files.pid")
-held "$pid" || { echo "worker identity check failed" >&2; exit 1; }
-echo "$pid"
-[ -z "$(listening)" ] || exit 2
-mkdir "$group"
-echo "$pid" > "$group/cgroup.procs"
-mkdir -p -m 755 "${flag%/*}"
-[ "$(stat -c '%u %a' "${flag%/*}")" = "0 755" ] || { echo "unsafe flag directory" >&2; exit 1; }
-: > "$flag"
-for _ in $(seq 600); do
-    for inode in $(listening); do
-        for proc in $(cat "$group/cgroup.procs"); do
-            for fd in /proc/"$proc"/fd/*; do
-                [ "$(readlink "$fd")" = "socket:[$inode]" ] && exit 0
-            done
-        done
-    done
-    kill -0 "$pid" 2>/dev/null || { echo "worker exited" >&2; exit 1; }
-    sleep 0.1
+_MARK = "VF_EXEC_ID"
+"""Environment variable that marks a worker and every process its tools start, which
+inherit it through detaching and reparenting."""
+_EXITED = "vf-exec: worker exited"
+_STOP = """
+for proc in /proc/[0-9]*; do
+    while IFS= read -r -d '' entry; do
+        if [ "$entry" = "$1" ]; then kill -9 "${proc#/proc/}" 2>/dev/null; break; fi
+    done 2>/dev/null < "$proc/environ"
 done
-echo "worker did not listen on port $port" >&2
-exit 1
 """
-)
-"""Validate the held worker and print its PID, move it into its cgroup and release
-it, then wait until a process in that cgroup listens on the port. Exits
-`_PORT_TAKEN` before moving the worker if another process already listens there."""
-_KILL = (
-    """
-group=/sys/fs/cgroup/$1 files=$2 flag=$3 pid=$4 user=$5
-"""
-    + _HELD
-    + """
-if [ -e "$group/cgroup.kill" ]; then
-    echo 1 > "$group/cgroup.kill"
-    for _ in $(seq 50); do rmdir "$group" 2>/dev/null && break; sleep 0.1; done
-fi
-if held "$pid"; then kill -9 "$pid"; fi
-rm -f "$flag" "$files.pid"
-"""
-)
-"""Kill the worker's cgroup, or a worker never released into it by the PID that
-`_JOIN` validated, checked again."""
-
-
-@dataclass
-class _Worker:
-    root: Runtime
-    group: str
-    user: str
-    pid: str = ""
-
-    @property
-    def files(self) -> str:
-        return f"/tmp/{self.group}"
-
-    @property
-    def flag(self) -> str:
-        return f"{_FLAGS}/{self.group}"
+"""Kill every process whose environment holds the marker `$1`, as the worker's user,
+so it reaches nothing that user could not signal itself."""
 
 
 @dataclass
 class ExecutionConnection:
     """A split deployment's way into the workspace for the harness's tools: workers
     started there listen on the rollout's private network, where the harness reaches
-    the workspace at `host`. Each worker runs in a cgroup of its own, so `close` stops
-    every process its tools started, detached or not."""
+    the workspace at `host`. A worker and every process its tools start carry a marker
+    in their environment, so `close` stops them, detached or not."""
 
     host: str
     """The workspace's name on the private network."""
-    _workers: list[_Worker] = field(default_factory=list)
+    _workers: list[tuple[Runtime, str]] = field(default_factory=list)
 
     async def serve(
         self,
         runtime: Runtime,
-        argv: Callable[[int], list[str]],
+        argv: list[str],
         env: dict[str, str],
+        announce: re.Pattern[str],
     ) -> int:
-        """Start `argv(port)` through `runtime`, a workspace view, and return the port
-        once the worker itself listens on it."""
-        for _ in range(3):
-            port = random.choice(_WORKER_PORTS)
-            worker = _Worker(
-                runtime.with_user(None),
-                f"vf-exec-{uuid.uuid4().hex[:12]}",
-                runtime.user or "",
-            )
-            self._workers.append(worker)
-            await runtime.run_background(
-                ["sh", "-c", _HOLD, "sh", worker.files, worker.flag, *argv(port)],
-                env,
-                f"{worker.files}.log",
-            )
-            result = await worker.root.run(
-                [
-                    "bash",
-                    "-c",
-                    _JOIN,
-                    "bash",
-                    worker.group,
-                    worker.files,
-                    worker.flag,
-                    str(port),
-                    worker.user,
-                ],
-                {},
-            )
-            worker.pid = result.stdout.strip()
-            if not result.exit_code:
-                return port
-            if result.exit_code != _PORT_TAKEN:
-                # Read as the worker's user: the log lives where that user can write.
-                log = await runtime.run(
-                    ["tail", "-c", "2000", f"{worker.files}.log"], {}
-                )
-                raise SandboxError(
-                    "execution worker failed to start: "
-                    f"{result.stderr.strip()[-500:]}\n{log.stdout}"
-                )
-            # A workspace service holds the port: release the held worker, try another.
-            self._workers.remove(worker)
-            await _stop(worker)
-        raise SandboxError("execution worker found no free port in the workspace")
+        """Start `argv` through `runtime`, a workspace view, and return the port it
+        listens on. The worker binds a port the kernel picks and prints it in a line
+        that `announce` matches, with the port as its first group."""
+        worker = uuid.uuid4().hex
+        log = f"/tmp/vf-exec-{worker}.log"
+        self._workers.append((runtime, f"{_MARK}={worker}"))
+        await runtime.run_background(
+            ["sh", "-c", f'"$@"; echo "{_EXITED} ($?)"', "sh", *argv],
+            {**env, _MARK: worker},
+            log,
+        )
+        output = ""
+        with contextlib.suppress(TimeoutError):
+            async with asyncio.timeout(60):
+                while True:
+                    with contextlib.suppress(SandboxError):  # not written yet
+                        output = (await runtime.read(log)).decode(errors="replace")
+                    if found := announce.search(output):
+                        return int(found.group(1))
+                    if _EXITED in output:
+                        break
+                    await asyncio.sleep(0.2)
+        raise SandboxError(f"execution worker did not start: {output[-2000:]}")
 
     async def close(self) -> None:
-        """Stop every worker and the processes they started."""
+        """Stop every worker and the processes their tools started."""
         workers, self._workers = self._workers, []
-        for worker in workers:
-            await _stop(worker)
-
-
-async def _stop(worker: _Worker) -> None:
-    with contextlib.suppress(Exception):
-        await worker.root.run(
-            [
-                "bash",
-                "-c",
-                _KILL,
-                "bash",
-                worker.group,
-                worker.files,
-                worker.flag,
-                worker.pid,
-                worker.user,
-            ],
-            {},
-        )
+        for runtime, marker in workers:
+            with contextlib.suppress(Exception):
+                await runtime.run(["bash", "-c", _STOP, "bash", marker], {})
 
 
 class _DeploymentStrategy:

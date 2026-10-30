@@ -2,6 +2,7 @@
 
 import hashlib
 import logging
+import re
 import secrets
 import shlex
 from typing import Any, Literal
@@ -200,16 +201,17 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
         token = secrets.token_urlsafe(32)
         port = await connection.serve(
             workspace,
-            lambda port: [
+            [
                 f"{self._install_dir()}/tools/rlm/bin/python",
                 "-m",
                 "rlm.execution",
                 "--listen",
                 "0.0.0.0",
                 "--port",
-                str(port),
+                "0",
             ],
             {"RLM_EXECUTION_TOKEN": token},
+            re.compile(r"^listening on \S+:(\d+)$", re.MULTILINE),
         )
         self._execution = {
             "execution_tcp": {"host": connection.host, "port": port, "token": token},
