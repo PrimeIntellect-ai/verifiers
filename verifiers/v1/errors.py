@@ -62,17 +62,29 @@ dropped. Replicas of one deployment can differ (2026-10-26: most Nemotron 3.5 Su
 replicas serve 262,144 tokens of prompt plus max_tokens, some more), so the same request
 is refused by one replica and served by the next: 3 of 8 identical sends got through."""
 
+GATEWAY_NOT_FOUND = (
+    '"message":"Not Found"',
+    '"code":"not_found"',
+)
+"""Prime inference's bare 404 for a model it is serving: during a deployment's outage
+(GLM 5.3 high-throughput, 2026-10-30 20:24-20:34) its gateway answered calls in flight with
+it for ten minutes, then served them again. Final, it ended 114 rollouts. A model that does
+not exist is named in its 404, so this one is retried within the call's budget."""
+
 
 def transient(error: BaseException) -> bool:
     """Whether `error` is a provider failure that sending the same call again can get past:
     a 5xx (which includes a dropped connection, a timeout, and a truncated or malformed
-    response), a 408, a 429, or a replica's opaque rejection (`OPAQUE_REPLICA_REJECTION`).
+    response), a 408, a 429, a replica's opaque rejection (`OPAQUE_REPLICA_REJECTION`), or
+    the gateway's bare 404 for a deployment that is briefly gone (`GATEWAY_NOT_FOUND`).
     Every other 4xx (an invalid request, a context overflow, auth) fails the same way
     again."""
     if not isinstance(error, ProviderError):
         return False
     status = error.status_code
     if status == 400 and all(part in str(error) for part in OPAQUE_REPLICA_REJECTION):
+        return True
+    if status == 404 and all(part in str(error) for part in GATEWAY_NOT_FOUND):
         return True
     return status >= 500 or status in (408, 429)
 

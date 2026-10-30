@@ -793,6 +793,21 @@ def test_a_replicas_opaque_rejection_is_transient():
     assert not transient(ProviderError(other, status_code=400))
 
 
+def test_the_gateways_bare_not_found_is_transient():
+    """Prime inference answered calls to a deployment in an outage with a bare 404 for ten
+    minutes (GLM 5.3, 2026-10-30), then served them again: it is retried. A 404 that names
+    what is missing stays final."""
+    from verifiers.v1.errors import ProviderError, transient
+
+    bare = (
+        'upstream 404: {"error":{"message":"Not Found","type":"not_found_error","param":null,'
+        '"code":"not_found"},"request_id":"a52d29aa5b9eadd0-IAD"}'
+    )
+    assert transient(ProviderError(bare, status_code=404))
+    named = 'upstream 404: {"error":{"message":"model internal/nope does not exist","code":"model_not_found"}}'
+    assert not transient(ProviderError(named, status_code=404))
+
+
 def test_an_output_over_the_window_is_refitted():
     """A prompt that fits the window only without the output asked for is resent asking
     for what fits; anything else (another 400, a prompt over the window) is left alone."""
