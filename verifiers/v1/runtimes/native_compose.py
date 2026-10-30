@@ -18,6 +18,7 @@ from pathlib import Path, PurePosixPath
 import httpx
 from prime_sandboxes import AsyncImageClient
 from prime_sandboxes.models import BuildImageRequest
+from pydantic import ByteSize, TypeAdapter
 
 from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes import PrimeConfig
@@ -47,6 +48,7 @@ _SERVICE_FIELDS = {
     "networks",
     "cpus",
     "mem_limit",
+    "storage_opt",
     "deploy",
     "shm_size",
     "cap_add",
@@ -172,6 +174,26 @@ def validate_native(project) -> None:
             )
         if service.get("platform", "linux/amd64") != "linux/amd64":
             raise SandboxError(f"Native Compose service {name!r} requires linux/amd64")
+        storage = service.get("storage_opt", {})
+        if set(storage) - {"size"}:
+            raise SandboxError(
+                f"Native Compose service {name!r} supports only storage_opt.size"
+            )
+        if "size" in storage:
+            size = str(storage["size"])
+            if not re.fullmatch(
+                r"\d*\.?\d+\s*(?:[kmgtp](?:i?b)?|b)?", size, re.IGNORECASE
+            ):
+                raise SandboxError(
+                    f"Native Compose service {name!r} has an invalid storage_opt.size"
+                )
+            # Docker's K/KB/KiB suffixes all use powers of 1024.
+            size = re.sub(r"([kmgtp])(?:i?b)?$", r"\1iB", size, flags=re.IGNORECASE)
+            storage["size"] = TypeAdapter(ByteSize).validate_python(size)
+            if not storage["size"]:
+                raise SandboxError(
+                    f"Native Compose service {name!r} requires positive storage_opt.size"
+                )
         build = service.get("build", {})
         if set(build) - _BUILD_FIELDS:
             raise SandboxError(
@@ -327,7 +349,7 @@ async def prepare_native(config: PrimeConfig, spec: ComposeSpec, env: dict[str, 
                     **{
                         key: value
                         for key, value in service.items()
-                        if key != "networks"
+                        if key not in {"networks", "storage_opt"}
                     },
                     "platform": "linux/amd64",
                     "network_mode": "none",
@@ -352,7 +374,8 @@ async def prepare_native(config: PrimeConfig, spec: ComposeSpec, env: dict[str, 
         prepared_path = project.directory / "native.json"
         prepared_path.write_text(json.dumps(prepared))
         project.argv[project.argv.index("-f") :] = ["-f", str(prepared_path)]
-        # Stopped preparation containers need no networks; preserve the VM topology in project.config.
+        # Stopped inspection containers need neither networks nor disk quotas.
+        # Preserve the VM topology and storage settings in project.config.
         await project.run("create")
         containers = await project.run(
             "ps", "--all", "--format", "{{.ID}} {{.Service}}"
@@ -429,8 +452,9 @@ async def prepare_native(config: PrimeConfig, spec: ComposeSpec, env: dict[str, 
             authored = {
                 "cpu": definition.get("cpus", limits.get("cpus")),
                 "memory": definition.get("mem_limit", limits.get("memory")),
+                "disk": definition.get("storage_opt", {}).get("size"),
             }
-            for resource, scale in (("cpu", 1), ("memory", 1024**3)):
+            for resource, scale in (("cpu", 1), ("memory", 1024**3), ("disk", 1024**3)):
                 default = PrimeConfig.model_fields[resource].default
                 # The runtime config sizes main as it does task resources: an explicit
                 # setting wins over Compose, which wins over the default.
@@ -439,9 +463,9 @@ async def prepare_native(config: PrimeConfig, spec: ComposeSpec, env: dict[str, 
                     # The VM also runs its OS: a container limit never shrinks it.
                     size = max(float(authored[resource]) / scale, default)
                 options[resource] = size
-            # Sidecars also need the configured disk budget for writable state and artifacts.
+            # The VM's disk also holds its image, with room to write.
             options["disk"] = max(
-                config.disk, math.ceil(image_sizes[item["Image"]] / 1024**3) + 1
+                options["disk"], math.ceil(image_sizes[item["Image"]] / 1024**3) + 1
             )
             if internal:
                 options.update(allow=[], block=["*"])
