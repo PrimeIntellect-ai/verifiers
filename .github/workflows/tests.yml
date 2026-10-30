@@ -105,6 +105,8 @@ jobs:
             tests: tests/integration/test_network_policy.py
           - behavior: Service VMs
             tests: tests/integration/test_service_scoring.py
+          - behavior: Native Compose
+            tests: tests/integration/test_native_compose.py
           - behavior: Tool VMs
             tests: tests/integration/test_tool_vms.py
           - behavior: Mounts
