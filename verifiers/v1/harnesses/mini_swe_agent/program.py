@@ -1,5 +1,5 @@
 # /// script
-# requires-python = ">=3.10"
+# requires-python = ">=3.10,<3.15"
 # dependencies = ["mini-swe-agent=={version}", "litellm[proxy]==1.106.6"]
 # ///
 
