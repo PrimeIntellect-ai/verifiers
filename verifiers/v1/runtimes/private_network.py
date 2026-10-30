@@ -76,6 +76,7 @@ async def private_network(
     start_workspace: Callable[[], Awaitable[object]],
     *,
     interconnect: bool = False,
+    networks: Mapping[str, list[str]] | None = None,
 ) -> AsyncIterator[dict[str, RuntimeBackend]]:
     """Boot the workspace's VM and one VM per member together, each joining a LAN
     network of the rollout's own as it boots."""
@@ -88,20 +89,32 @@ async def private_network(
     from prime_sandboxes import LanRule
 
     tags = {name: _tag(index) for index, name in enumerate(members)}
+    memberships = {
+        "main": [WORKSPACE_TAG],
+        **{name: [tag] for name, tag in tags.items()},
+    }
+    rules = (
+        [LanRule(from_="*", to="*")]
+        if interconnect
+        else [
+            LanRule(from_=f"tag:{WORKSPACE_TAG}", to=f"tag:{tag}")
+            for tag in tags.values()
+        ]
+    )
+    if networks is not None:
+        rules = []
+        for index, names in enumerate(networks.values()):
+            tag = f"vf-network-{index}"
+            rules.append(LanRule(from_=f"tag:{tag}", to=f"tag:{tag}"))
+            for name in names:
+                memberships[name].append(tag)
     async with AsyncExitStack() as stack:
         client = await stack.enter_async_context(leased_client())
-        # Task services may call each other and the workspace. Independent tool
-        # servers only accept workspace connections. Both policies exist before boot.
+        # Install connectivity before boot: Compose peers must share a network;
+        # independent tool servers accept only workspace connections.
         network = await client.create_lan_network(
             f"vf-{uuid.uuid4().hex[:16]}",
-            rules=(
-                [LanRule(from_="*", to="*")]
-                if interconnect
-                else [
-                    LanRule(from_=f"tag:{WORKSPACE_TAG}", to=f"tag:{tag}")
-                    for tag in tags.values()
-                ]
-            ),
+            rules=rules,
         )
 
         async def delete_network() -> None:
@@ -125,7 +138,7 @@ async def private_network(
         async def provision(name: str, config: PrimeConfig) -> None:
             backend = make_backend(config, f"{workspace.name}-{tags[name]}")
             assert isinstance(backend, PrimeBackend)
-            backend.lan = (network.id, [tags[name]])
+            backend.lan = (network.id, memberships[name])
             # Pushed before `start()`: a failed start may already hold a paid sandbox.
             stack.push_async_callback(backend.stop)
             await backend.start()  # running, and joined to the network
@@ -138,7 +151,7 @@ async def private_network(
                     stop, asyncio.create_task(_keepalive(backend.bind(), every))
                 )
 
-        workspace.lan = (network.id, [WORKSPACE_TAG])
+        workspace.lan = (network.id, memberships["main"])
         try:
             async with asyncio.TaskGroup() as group:
                 group.create_task(start_workspace())
