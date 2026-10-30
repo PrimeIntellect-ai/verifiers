@@ -206,13 +206,24 @@ class Provider:
                     b'"delta": {"reasoning_content": "."}, "finish_reason": null}]}\n\n'
                 )
                 await asyncio.sleep(0.2)
-        await stream.write(f"data: {json.dumps(chunk)}\n\n".encode())
+        if failure != "error-first":
+            await stream.write(f"data: {json.dumps(chunk)}\n\n".encode())
         if failure == "truncate":
             assert request.transport is not None
             request.transport.abort()
             return stream
         if failure == "cut":
             # the provider closes the stream cleanly, its terminal event never sent
+            return stream
+        if failure == "error-first":
+            # an overloaded gateway refuses the turn with an error event before any content
+            error = {
+                "error": {
+                    "message": "Service temporarily unavailable. Please retry shortly."
+                }
+            }
+            await stream.write(f"data: {json.dumps(error)}\n\n".encode())
+            await stream.write(b"data: [DONE]\n\n")
             return stream
         if failure == "error-event":
             # the provider fails the turn inside the stream, then ends it as if done
@@ -724,6 +735,23 @@ async def test_an_error_event_inside_a_stream_is_retried_in_place():
     error = trace.calls[0].error
     assert error is not None and "Service error. Please retry shortly." in error.message
     assert_committed_once(trace, sampled=1)
+
+
+async def test_an_error_event_before_any_content_does_not_restart_the_budget():
+    """An overloaded gateway (the free Nemotron route, 2026-10-30) refuses turns with an SSE
+    error event before any content. That is a refusal, not a cut stream the provider was
+    serving: its time is failing time, so the budget runs on and a call against a route
+    that is down gives up when it runs out (counted as cuts, each refusal restarted the
+    budget, `MAX_STREAM_CUT_OFFS` times)."""
+    async with Provider(*[(0.2, "error-first")] * 50) as provider:
+        agent = make(provider, StreamHarness, retry={"budget": 0.3})
+        trace = await agent.run(task())
+    assert not trace.ok
+    assert trace.last_error is not None
+    assert "Service temporarily unavailable" in trace.last_error.message
+    assert "0 events" in trace.last_error.message
+    # refused at 0.2 s, 0.4 s (0.2 s failing: retried) and 0.6 s (0.4 s: past the budget)
+    assert len(provider.requests) == 3
 
 
 async def test_a_non_streaming_call_streams_from_the_provider():

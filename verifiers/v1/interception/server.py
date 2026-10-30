@@ -595,12 +595,14 @@ async def _collect_stream(
             if message := _stream_error(chunk):
                 # The provider failed the turn mid-stream with an error event (Nemotron's
                 # gateway: "Service error. Please retry shortly.", then [DONE]): a cut, not
-                # an answer to forward, so the turn is sampled again in place.
+                # an answer to forward, so the turn is sampled again in place. An error event
+                # before any content (an overloaded gateway's 503 as its stream's first event)
+                # is a refusal, not a cut: it does not restart the call's retry budget.
                 error = ProviderError(
                     f"upstream stream sent an error event: {message} "
                     f"(after {time.monotonic() - started:.0f}s, {count} events, {len(events)} bytes)"
                 )
-                error.streamed = True
+                error.streamed = count > 0
                 raise error
             events += chunk
             count += 1
