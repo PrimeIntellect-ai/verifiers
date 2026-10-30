@@ -295,6 +295,15 @@ upload overwrites, a download rewrites its file)."""
 BASE_LABELS: list[str] = []
 
 
+def _redacted(text: str, env: dict[str, str]) -> str:
+    """`text` with every env value of 8 or more characters replaced by `***`."""
+    for value in sorted(
+        {v for v in env.values() if len(v) >= 8}, key=len, reverse=True
+    ):
+        text = text.replace(value, "***")
+    return text
+
+
 class _JobDied(Exception):
     """A background job's wrapper died before it wrote the job's exit status."""
 
@@ -1155,13 +1164,13 @@ class PrimeBackend(RuntimeBackend):
                 delay = min(delay * 2, 3)
         except _JobDied as e:
             raise SandboxError(f"prime exec failed: {e}", kind="io") from None
-        except (
-            Exception
-        ) as e:  # a sandbox/API failure is one rollout's problem, not the eval's
+        except Exception as e:  # noqa: BLE001 - a sandbox/API failure is one rollout's problem
+            # the SDK's error quotes the command with its env exported inline (HF_TOKEN
+            # and other secrets): neither the message nor its cause may carry them
             raise SandboxError(
-                f"prime exec failed: {e}",
+                f"prime exec failed: {_redacted(str(e), runtime.process_env(env))}",
                 kind="io" if _wrapper_lost(e) else self._kind(e, "exec"),
-            ) from e
+            ) from None
         _call_stats.record("exec", time.monotonic() - began)
         if missing is not None:
             raise SandboxError(f"prime exec output unavailable: {missing}", kind="io")
