@@ -251,6 +251,10 @@ class RoutedExperts(TypedDict):
     start: int
 
 
+MMPlaceholders = dict[str, list[tuple[int, int]]]
+"""Media placeholder ranges per modality: `(offset, length)` token positions, in order."""
+
+
 class WeightVersionSpan(BaseModel):
     """Completion tokens `[start, end)` were sampled by the engine weights labelled `version`."""
 
@@ -356,12 +360,11 @@ class TurnTokens(BaseModel):
         default=None, exclude=True
     )
     is_content: BoolStream | None = Field(default=None, exclude=True)
-    # Authoritative effective-prompt ranges returned by vLLM, flattened across modalities.
-    mm_placeholders: list[tuple[int, int]] | None = Field(default=None, exclude=True)
-    # Transient carrier (excluded): the renderer's special-token id -> modality marker map,
-    # stamped onto `Trace.mm_token_type_id_map` by the turn's `commit`. None unless the
-    # rendering renderer is multimodal.
-    mm_token_type_id_map: dict[int, int] | None = Field(default=None, exclude=True)
+    # Transient carriers (excluded): media placeholder ranges per modality, consumed by the
+    # turn's `commit`. `mm_placeholders` covers `prompt_ids` (vLLM's ranges after expansion);
+    # `renderer_mm_placeholders` covers `renderer_prompt_ids` (where the renderer placed media).
+    mm_placeholders: MMPlaceholders | None = Field(default=None, exclude=True)
+    renderer_mm_placeholders: MMPlaceholders | None = Field(default=None, exclude=True)
     # Transient carrier (excluded): the MoE expert-routing data from `generate` (expert ids
     # per token), attributed per node by the turn's `commit` into `MessageNode.routed_experts`,
     # then dropped. None unless the engine ran with `enable_return_routed_experts`.
