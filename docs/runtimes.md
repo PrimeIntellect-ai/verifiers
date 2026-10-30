@@ -199,6 +199,8 @@ mode = "split"
 harness = { cpu = 2, memory = 4 }
 ```
 
+A harness with a prebuilt install (`Harness.prebuilt()`; RLM and Codex) does not install itself per rollout in split mode. The first split rollout to need it starts a Prime VM in the background that runs the harness's own install, copies the install's directories into a Prime volume of the team's named after everything that shapes the install, checks that the copy runs on its own, and publishes it. Once published, split deployments mount the volume read-only at `/opt/vf-prebuilt/<name>` on the harness's VM and the workspace, and the harness links its install directories into it. Where the linked install does not run, such as on a musl image, the harness installs as usual; rollouts also install as usual until the first build publishes. A new harness version builds a new volume.
+
 On Prime, return a `ServicesSpec` from `deployment_spec()` to provision one native VM per named service beside the task's `main` workspace. Each service has its own image, resources, filesystem, and egress policy. The VMs join a private LAN for the rollout; they can call each other and the workspace through the names in `deployment.hosts`. Services bind to `0.0.0.0`, since each VM has its own loopback interface. No Docker daemon runs inside these VMs.
 
 Task setup starts processes with `deployment.target(name).run_background()` and waits for readiness before returning. Image entrypoints do not start services automatically. Pass process environment variables to `run_background`; the workspace's environment is not copied into service VMs. For example:

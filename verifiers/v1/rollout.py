@@ -11,7 +11,7 @@ from urllib.parse import urlsplit
 
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.agent import AgentConfig
-from verifiers.v1.configs.runtime import NetworkPolicyConfig
+from verifiers.v1.configs.runtime import NetworkPolicyConfig, PrimeVolume
 from verifiers.v1.configs.scoring import resolve_scoring
 from verifiers.v1.errors import (
     HarnessError,
@@ -29,6 +29,7 @@ from verifiers.v1.grading import (
     verifier_runtime,
 )
 from verifiers.v1.harness import Harness, HarnessSession
+from verifiers.v1.harnesses.utils.prebuilt import published
 from verifiers.v1.interception import Interception, serve_interception
 from verifiers.v1.mcp import SharedToolServer, serve_tools
 from verifiers.v1.runtimes import (
@@ -334,6 +335,12 @@ class Rollout:
                 async with boundary(ToolsetError, "building tool servers"):
                     toolsets = self.task.toolsets(self.task.config)
                 spec = self.task.deployment_spec()
+                # A published prebuilt install replaces the harness's per-rollout one.
+                prebuilt = None
+                if self._deployment_config.mode == "split":
+                    prebuilt = self.harness.prebuilt()
+                    if not await published(prebuilt):
+                        prebuilt = None
                 self.deployment = runtime.backend.deploy(
                     spec=spec,
                     # Tool servers on Prime VMs of their own boot with the workspace.
@@ -348,6 +355,11 @@ class Rollout:
                         for toolset in toolsets
                         if (service := getattr(toolset.config, "service", None))
                     },
+                    harness_mounts=(
+                        {prebuilt.mount: PrimeVolume(name=prebuilt.name)}
+                        if prebuilt is not None
+                        else None
+                    ),
                     env=runtime.env,
                     config=self._deployment_config,
                     borrowed_runtime=self._borrowed_runtime,

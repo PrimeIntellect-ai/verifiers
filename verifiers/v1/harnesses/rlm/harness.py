@@ -22,6 +22,8 @@ from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
+from verifiers.v1.harnesses.utils.prebuilt import Prebuilt, prebuilt_name
+from verifiers.v1.harnesses.utils.prebuilt import link as link_prebuilt
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.runtimes.deployment import ExecutionConnection
 from verifiers.v1.task import TaskData
@@ -37,6 +39,8 @@ RLM_CACHE_DIR = "/tmp/vf-rlm"
 RLM_STATE_DIR = "/tmp/vf-rlm-state"
 RLM_RUNTIME_METADATA_KEY = "ai.prime.rlm/runtime-v1"
 RLM_SESSION_METADATA_KEY = "ai.prime.rlm/session-v1"
+PREBUILT_PYTHON = "3.12"
+"""The Python a prebuilt install carries, so that it runs on any glibc image."""
 
 
 class _SessionSnapshot(BaseModel):
@@ -151,9 +155,43 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
         await self._install(runtime)
         await super().setup(runtime)
 
-    async def _install(self, runtime: Runtime) -> None:
+    def prebuilt(self) -> Prebuilt | None:
+        if self.config.skills:
+            return None  # skill packages install per run
         directory = self._install_dir()
-        binary = f"{directory}/bin/rlm"
+        install, env = self._install_script()
+        return Prebuilt(
+            name=prebuilt_name(
+                "rlm", install, env["RLM_EXTRA_UV_ARGS"], PREBUILT_PYTHON
+            ),
+            dirs=(directory,),
+            probe=f"{directory}/tools/rlm/bin/python -c 'import rlm'",
+            install=self._install,
+            # A managed Python inside the install, not the builder image's own.
+            env={
+                "UV_PYTHON_INSTALL_DIR": f"{directory}/python",
+                "UV_PYTHON_PREFERENCE": "only-managed",
+                "RLM_TOOL_PYTHON": PREBUILT_PYTHON,
+            },
+        )
+
+    async def _install(self, runtime: Runtime) -> None:
+        if await link_prebuilt(runtime, self.prebuilt()):
+            return
+        directory = self._install_dir()
+        install, env = self._install_script()
+        logger.info("rlm: ensuring rlm is installed (version=%s)", self.config.version)
+        await ensure_installed(
+            runtime,
+            directory=directory,
+            ready=f"[ -f {directory}/.ready ] && [ -x {directory}/bin/rlm ]",
+            install=install,
+            env=env,
+            label="rlm",
+        )
+
+    def _install_script(self) -> tuple[str, dict[str, str]]:
+        directory = self._install_dir()
         checkout = f"{directory}/checkout"
         ready = f"{directory}/.ready"
         # install.sh installs the Python skill packages under $RLM_HOME/skills.
@@ -174,18 +212,10 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
             f"RLM_CHECKOUT_PATH={checkout} bash {checkout}/install.sh && "
             f"touch {ready})"
         )
-        logger.info("rlm: ensuring rlm is installed (version=%s)", self.config.version)
         env = self.config.resolved_env.copy()
         extra_uv_args = env.get("RLM_EXTRA_UV_ARGS", "")
         env["RLM_EXTRA_UV_ARGS"] = f"{extra_uv_args} --with mcp~=1.28".strip()
-        await ensure_installed(
-            runtime,
-            directory=directory,
-            ready=f"[ -f {ready} ] && [ -x {binary} ]",
-            install=install,
-            env=env,
-            label="rlm",
-        )
+        return install, env
 
     def validate_split_execution(self) -> None:
         super().validate_split_execution()
