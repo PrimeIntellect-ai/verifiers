@@ -870,7 +870,7 @@ def parse_verifier_extras(
     )
 
     verifier = parsed.verifier
-    if verifier.user not in (None, "root", 0):
+    if verifier.user is not None:
         raise ValueError(f"{task_dir.name}: [verifier].user is not supported")
 
     artifacts: list[HarborArtifact] = []
