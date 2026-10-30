@@ -118,6 +118,15 @@ at least `REROUTE_AFTER_SECONDS` reroutes at once: a slow replica streams for an
 before the cut, and the regeneration would go back to it."""
 
 
+SLOW_STREAM_AFTER_SECONDS = 600.0
+SLOW_STREAM_EVENTS_PER_SECOND = 6.0
+"""A stream that has run `SLOW_STREAM_AFTER_SECONDS` at under `SLOW_STREAM_EVENTS_PER_SECOND`
+(about a token each) is cut here as the provider would cut it: a slow GLM 5.3 replica streams
+~4 tok/s (the others ~19) for up to 100 minutes before the provider cuts it, and its rollout
+waits all that time (2026-10-30). The cut is a long one, so the rollout reroutes at once
+(`REROUTE_AFTER_SECONDS`) and the turn is sampled again on another replica."""
+
+
 def _retry_wait(
     error: ProviderError,
     failures: int,
@@ -561,6 +570,17 @@ async def _collect_stream(
     last = b""
     try:
         async for chunk in reply.chunks:
+            elapsed = time.monotonic() - started
+            if (
+                elapsed >= SLOW_STREAM_AFTER_SECONDS
+                and count < SLOW_STREAM_EVENTS_PER_SECOND * elapsed
+            ):
+                error = ProviderError(
+                    f"upstream stream too slow: {count / elapsed:.1f} events/s "
+                    f"(after {elapsed:.0f}s, {count} events, {len(events)} bytes)"
+                )
+                error.streamed = True
+                raise error
             if not any(line.startswith(b"data:") for line in chunk.splitlines()):
                 continue
             if message := _stream_error(chunk):

@@ -626,6 +626,25 @@ async def test_a_long_stream_cut_short_is_rerouted(monkeypatch):
     assert trace.info["reroutes"] == 1
 
 
+async def test_a_stream_too_slow_is_cut_and_rerouted(monkeypatch):
+    """A slow replica streams far under the others' rate (4 tok/s against ~19, GLM 5.3
+    2026-10-30) for up to 100 minutes before the provider cuts it. Past
+    `SLOW_STREAM_AFTER_SECONDS` under `SLOW_STREAM_EVENTS_PER_SECOND` the stream is cut
+    here, and as a long cut the rollout reroutes to sample the turn again elsewhere."""
+    monkeypatch.setattr(server, "SLOW_STREAM_AFTER_SECONDS", 0.3)
+    monkeypatch.setattr(server, "SLOW_STREAM_EVENTS_PER_SECOND", 100.0)
+    monkeypatch.setattr(server, "REROUTE_AFTER_SECONDS", 0.2)
+    async with Provider("slow", "ok", "ok") as provider:
+        agent = make(provider, StreamHarness, retry={"budget": 30})
+        trace = await agent.run(task())
+    assert trace.ok, trace.errors
+    cut = trace.calls[0].error
+    assert cut is not None and cut.message.startswith("upstream stream too slow")
+    first = provider.sessions[0]
+    assert all(s == f"{first}~r1" for s in provider.sessions[1:])
+    assert trace.info["reroutes"] == 1
+
+
 async def test_a_quick_cut_keeps_the_session():
     """A stream cut early is no slow replica: the regeneration keeps its prefix cache."""
     async with Provider((0.01, "cut"), "ok") as provider:
