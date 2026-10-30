@@ -113,7 +113,9 @@ replica that served it; when that replica wedges, every exchange of the rollout 
 the provider's first-token timeout with nothing streamed, for hours, while fresh sessions
 are served in seconds (GLM 5.3, 2026-10-29). After `REROUTE_STALLS` such exchanges in a row,
 each at least `REROUTE_AFTER_SECONDS` long, the rollout continues under a new routing id
-(`_reroute`): its prefix cache is lost, the rollout is not."""
+(`_reroute`): its prefix cache is lost, the rollout is not. A stream the provider cuts after
+at least `REROUTE_AFTER_SECONDS` reroutes at once: a slow replica streams for an hour or more
+before the cut, and the regeneration would go back to it."""
 
 
 def _retry_wait(
@@ -1350,10 +1352,18 @@ class InterceptionServer(Interception):
                                 first_failure = now
                             if getattr(e, "streamed", False):
                                 cut_offs += 1
-                            if (
-                                not getattr(e, "streamed", False)
-                                and time.time() - started >= REROUTE_AFTER_SECONDS
-                            ):
+                            long_exchange = (
+                                time.time() - started >= REROUTE_AFTER_SECONDS
+                            )
+                            if getattr(e, "streamed", False):
+                                stalled_starts = 0
+                                if long_exchange:
+                                    # A long stream the provider cut: its replica served
+                                    # slowly (4 tok/s against ~19 elsewhere, cut after up
+                                    # to 100 minutes, GLM 5.3 2026-10-30) and would serve
+                                    # the regeneration the same way.
+                                    ctx = _reroute(session, ctx)
+                            elif long_exchange:
                                 stalled_starts += 1
                             else:
                                 stalled_starts = 0
