@@ -38,7 +38,7 @@ fi
 
 
 class KimiCodeHarnessConfig(HarnessConfig):
-    version: PinnedVersion = "2.3.1"
+    version: PinnedVersion = "2.4.1"
     """Kimi Code release to install, pinned for reproducibility."""
     dialect: DialectName = "chat_completions"
 
@@ -51,7 +51,8 @@ class KimiCodeHarness(ACPHarness[KimiCodeHarnessConfig]):
 
     # Kimi Code drops whitespace-only assistant text when it stores a step, so every
     # transport replays it without. Recheck on version bumps:
-    # https://github.com/MoonshotAI/kimi-code/blob/@moonshot-ai/kimi-code@2.3.1/packages/agent-core-v2/src/agent/loop/loopService.ts#L1740
+    # https://github.com/MoonshotAI/kimi-code/blob/@moonshot-ai/kimi-code@2.4.1/packages/agent-core-v2/src/agent/loop/loopService.ts#L1819
+    # https://github.com/MoonshotAI/kimi-code/blob/@moonshot-ai/kimi-code@2.4.1/packages/agent-core-v2/src/agent/contextMemory/vacuousContent.ts#L6
     def replay_view(self, message: Message, dialect: DialectName | None) -> Message:
         return drop_blank_text(message)
 
