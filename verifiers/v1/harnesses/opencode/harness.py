@@ -106,6 +106,9 @@ class OpenCodeHarness(ACPHarness[OpenCodeHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
     SUPPORTS_SKILLS = True
+    SUPPORTS_RESUME = True
+    """OpenCode keeps its session in its data directory on the box, which a checkpoint
+    keeps: a run continued on a restored box resumes that session (`session_file`)."""
 
     # OpenCode drops whitespace-only assistant text on replay over Anthropic messages.
     # Recheck on version bumps:
@@ -248,6 +251,8 @@ class OpenCodeHarness(ACPHarness[OpenCodeHarnessConfig]):
                 "OPENCODE_DISABLE_MODELS_FETCH": "1",
             },
             prompt=prompt,
+            # The state root is the trace's, and a continuation keeps its trace's id.
+            session_file=f"{root}/acp-session",
         )
 
     async def cleanup(self, trace: Trace, runtime: Runtime) -> None:

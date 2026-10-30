@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import shlex
 from abc import abstractmethod
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
@@ -28,8 +29,9 @@ from verifiers.v1.semantic import (
 )
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
-from verifiers.v1.types import Messages
+from verifiers.v1.types import Messages, UserMessage
 from verifiers.v1.utils.aio import run_shielded
+from verifiers.v1.utils.retries import RETRY_NOTE
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +80,16 @@ class ACPConfig:
     system_prompt: str | None = None
     session_meta: JsonObject | None = None
     client_capabilities: JsonObject | None = None
+    session_file: str | None = None
+    """Where on the box the runner keeps the agent's session id: a harness whose agent
+    keeps its sessions on the box's disk sets it (with `SUPPORTS_RESUME`), and a run
+    continued on a box restored from a checkpoint attaches to that session
+    (`ACPHarness.session`) instead of opening a new one."""
+    continues: bool = False
+    """This run continues the agent's session on the box instead of opening one."""
+    load_session_id: str | None = None
+    """The session it continues (read from `session_file`); None continues the agent's
+    most recent session (a run started before its session was recorded)."""
 
 
 class ACPHarness(Harness[ConfigT]):
@@ -140,6 +152,8 @@ class ACPHarness(Harness[ConfigT]):
         )
         if tool_interception_url is not None:
             await self.gate_tools(config, runtime, tool_interception_url, secret)
+        if config.session_file is not None:
+            await self._continue_session(config, runtime)
         return ACPHarnessSession(
             self,
             ctx,
@@ -152,6 +166,37 @@ class ACPHarness(Harness[ConfigT]):
             config,
             tool_interception_url,
         )
+
+    async def _continue_session(self, config: ACPConfig, runtime: Runtime) -> None:
+        """Attach a continued run to the agent's own session. A continuation opens on the
+        trace's conversation (`Agent._opening`): the turns it holds, then the host's note.
+        On a box restored from a checkpoint the agent's session already holds those
+        turns, as of that checkpoint, with the box's files: it is continued
+        (`session/resume`) and sent only the user messages past its last turn. A run with
+        no session on its box and only user messages opens one on them."""
+        found = await runtime.run(
+            ["sh", "-c", f"cat {shlex.quote(config.session_file or '')} 2>/dev/null"],
+            {},
+        )
+        session_id = found.stdout.strip() if found.exit_code == 0 else ""
+        prompt = config.prompt
+        if not isinstance(prompt, list):
+            return
+        turns = any(m.role != "user" for m in prompt)
+        if not session_id and not turns:
+            return
+        # A box with turns and no recorded session is from a run started before
+        # sessions were recorded: its agent's most recent session continues.
+        config.continues = True
+        config.load_session_id = session_id or None
+        if not turns:
+            # The session holds the task's prompt: only the message after it is new.
+            config.prompt = prompt[-1:]
+            return
+        end = len(prompt)
+        while end and prompt[end - 1].role == "user":
+            end -= 1
+        config.prompt = prompt[end:] or [UserMessage(content=RETRY_NOTE)]
 
     async def launch(
         self,
@@ -412,6 +457,9 @@ class ACPHarnessSession(HarnessSession):
             "system_prompt": self.config.system_prompt or "",
             "session_meta": self.config.session_meta or {},
             "client_capabilities": self.config.client_capabilities or {},
+            "session_file": self.config.session_file,
+            "continues": self.config.continues,
+            "load_session_id": self.config.load_session_id,
             "tool_interception": {
                 "url": self.tool_interception_url,
                 "secret": self.secret,
