@@ -439,14 +439,9 @@ async def prepare_native(config: PrimeConfig, spec: ComposeSpec, env: dict[str, 
                     # The VM also runs its OS: a container limit never shrinks it.
                     size = max(float(authored[resource]) / scale, default)
                 options[resource] = size
-            disk = (
-                config.disk
-                if name == "main"
-                else PrimeConfig.model_fields["disk"].default
-            )
-            # The VM's disk holds its image, with room to write.
+            # Sidecars also need the configured disk budget for writable state and artifacts.
             options["disk"] = max(
-                disk, math.ceil(image_sizes[item["Image"]] / 1024**3) + 1
+                config.disk, math.ceil(image_sizes[item["Image"]] / 1024**3) + 1
             )
             if internal:
                 options.update(allow=[], block=["*"])
