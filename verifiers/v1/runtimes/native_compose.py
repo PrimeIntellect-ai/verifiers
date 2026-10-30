@@ -3,6 +3,7 @@
 import asyncio
 import fcntl
 import hashlib
+import io
 import ipaddress
 import json
 import logging
@@ -12,7 +13,7 @@ import shlex
 import tarfile
 import time
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import httpx
 from prime_sandboxes import AsyncImageClient
@@ -49,8 +50,76 @@ _SERVICE_FIELDS = {
     "deploy",
     "shm_size",
     "cap_add",
+    "volumes",
+    "network_mode",
+    "container_name",
+    "hostname",
+    # No effect: peers reach any port, and processes run without a terminal.
+    "ports",
+    "tty",
+    "stdin_open",
 }
 _BUILD_FIELDS = {"context", "dockerfile", "args", "target", "no_cache", "pull"}
+# Linux capability names in bit order (linux/capability.h).
+_CAPABILITIES = (
+    "CHOWN",
+    "DAC_OVERRIDE",
+    "DAC_READ_SEARCH",
+    "FOWNER",
+    "FSETID",
+    "KILL",
+    "SETGID",
+    "SETUID",
+    "SETPCAP",
+    "LINUX_IMMUTABLE",
+    "NET_BIND_SERVICE",
+    "NET_BROADCAST",
+    "NET_ADMIN",
+    "NET_RAW",
+    "IPC_LOCK",
+    "IPC_OWNER",
+    "SYS_MODULE",
+    "SYS_RAWIO",
+    "SYS_CHROOT",
+    "SYS_PTRACE",
+    "SYS_PACCT",
+    "SYS_ADMIN",
+    "SYS_BOOT",
+    "SYS_NICE",
+    "SYS_RESOURCE",
+    "SYS_TIME",
+    "SYS_TTY_CONFIG",
+    "MKNOD",
+    "LEASE",
+    "AUDIT_WRITE",
+    "AUDIT_CONTROL",
+    "SETFCAP",
+    "MAC_OVERRIDE",
+    "MAC_ADMIN",
+    "SYSLOG",
+    "WAKE_ALARM",
+    "BLOCK_SUSPEND",
+    "AUDIT_READ",
+    "PERFMON",
+    "BPF",
+    "CHECKPOINT_RESTORE",
+)
+
+
+# Bound task files travel with each rollout; larger inputs belong in an image.
+_BIND_MAX_BYTES = 256 * 1024**2
+# Mount sources stage here; no Compose target can contain it, as `/` is never one.
+_STAGING = PurePosixPath("/.vf-compose")
+
+
+@dataclass
+class NativeMount:
+    """A bind of task files, or a service-local volume seeded from the image."""
+
+    target: str
+    read_only: bool = False
+    archive: bytes | None = None
+    file: bool = False
 
 
 @dataclass
@@ -64,6 +133,7 @@ class NativeService:
     user: str | None = None
     stop_signal: str = "SIGTERM"
     internal: bool = False
+    mounts: list[NativeMount] = field(default_factory=list)
     image_env: dict[str, str] = field(default_factory=dict)
 
 
@@ -74,19 +144,25 @@ def validate_native(project) -> None:
         "name",
         "services",
         "networks",
+        "volumes",
     }:
-        raise SandboxError(
-            "Native Compose does not support volumes, secrets or configs"
-        )
+        raise SandboxError("Native Compose does not support secrets or configs")
+    if any(set(volume) - {"name"} for volume in config.get("volumes", {}).values()):
+        raise SandboxError("Native Compose supports project volumes without drivers")
     networks = config.get("networks", {})
-    if not networks or any(
-        set(network) - {"name", "internal", "ipam"} or network.get("ipam")
+    if any(
+        set(network) - {"name", "internal", "ipam", "driver"}
+        or network.get("ipam")
+        or network.get("driver", "bridge") != "bridge"
         for network in networks.values()
     ):
         raise SandboxError(
-            "Native Compose supports project networks with optional internal isolation"
+            "Native Compose supports bridge project networks with optional internal isolation"
         )
     aliases = {}
+    mounts: dict[str, set[tuple[str, str]]] = {}
+    binds: list[tuple[str, str, Path, bool]] = []
+    task = (project.directory / "task").resolve()
     for name, service in config["services"].items():
         unsupported = set(service) - _SERVICE_FIELDS
         if unsupported:
@@ -113,16 +189,13 @@ def validate_native(project) -> None:
             raise SandboxError(
                 f"Native Compose Dockerfile for {name!r} must be inside the task"
             )
-        if set(service.get("cap_add", [])) - {"SYS_PTRACE"}:
-            raise SandboxError(
-                f"Native Compose service {name!r} only supports cap_add SYS_PTRACE"
-            )
         deploy = service.get("deploy", {})
         resources = deploy.get("resources", {})
+        # Compose adds empty sections, such as `placement: {}`, to every deploy block.
         if (
-            set(deploy) - {"resources", "replicas"}
+            {key for key, value in deploy.items() if value} - {"resources", "replicas"}
             or deploy.get("replicas", 1) != 1
-            or set(resources) - {"limits"}
+            or {key for key, value in resources.items() if value} - {"limits"}
             or set(resources.get("limits", {})) - {"cpus", "memory"}
         ):
             raise SandboxError(
@@ -143,17 +216,61 @@ def validate_native(project) -> None:
                 raise SandboxError(
                     f"Native Compose dependency {name!r} -> {dependency!r} is unsupported"
                 )
+        for volume in service.get("volumes", []):
+            if PurePosixPath(volume["target"]).is_relative_to(_STAGING):
+                raise SandboxError(
+                    f"Native Compose service {name!r} cannot mount at {_STAGING}"
+                )
+            if volume["type"] == "bind":
+                source = Path(volume["source"]).resolve()
+                options = {
+                    key for key, value in volume.get("bind", {}).items() if value
+                }
+                if not source.is_relative_to(task) or options - {
+                    "create_host_path",
+                    "selinux",
+                }:
+                    raise SandboxError(
+                        f"Native Compose service {name!r} can bind only task files"
+                    )
+                binds.append(
+                    (name, volume["target"], source, bool(volume.get("read_only")))
+                )
+                continue
+            # Volumes copy image contents: no read-only, nocopy or subpath mount.
+            if (
+                volume["type"] != "volume"
+                or volume.get("read_only")
+                or any(volume.get("volume", {}).values())
+            ):
+                raise SandboxError(
+                    f"Native Compose service {name!r} supports only task binds and plain volumes"
+                )
+            if volume.get("source"):
+                mounts.setdefault(volume["source"], set()).add((name, volume["target"]))
+        # Docker's default bridge network: no project network, so no service names.
+        mode = service.get("network_mode")
+        if mode not in {None, "bridge", "default"}:
+            raise SandboxError(
+                f"Native Compose service {name!r} does not support network_mode {mode!r}"
+            )
         attached = service.get("networks", {})
         if (
             not attached
+            and mode is None
             or set(attached) - set(networks)
             or any(set(options or {}) - {"aliases"} for options in attached.values())
         ):
             raise SandboxError(
                 f"Native Compose service {name!r} requires project networks with optional aliases"
             )
+        if not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9.-]*", service.get("hostname", "x")):
+            raise SandboxError(
+                f"Native Compose service {name!r} has an invalid hostname"
+            )
         for alias in [
             name,
+            *([service["container_name"]] if "container_name" in service else []),
             *(
                 alias
                 for options in attached.values()
@@ -170,6 +287,30 @@ def validate_native(project) -> None:
                     f"Native Compose has an invalid or ambiguous alias: {alias!r}"
                 )
             aliases[alias] = name
+    # A volume one service mounts at one path is a directory on that service's VM disk.
+    for volume, targets in mounts.items():
+        names = sorted({name for name, _ in targets})
+        if len(names) > 1:
+            raise SandboxError(
+                f"Native Compose services {', '.join(names)} share volume "
+                f"{volume!r}; each service VM has its own disk"
+            )
+        if len(targets) > 1:
+            raise SandboxError(
+                f"Native Compose service {names[0]!r} mounts volume {volume!r} at "
+                "more than one path"
+            )
+    # Each mount gets its own copy of bound files, so only read-only copies may overlap.
+    for index, (name, target, source, read_only) in enumerate(binds):
+        for other, other_target, other_source, other_read_only in binds[index + 1 :]:
+            if not (read_only and other_read_only) and (
+                source.is_relative_to(other_source)
+                or other_source.is_relative_to(source)
+            ):
+                raise SandboxError(
+                    f"Native Compose binds overlapping task files writable at "
+                    f"{name}:{target} and {other}:{other_target}"
+                )
 
 
 async def prepare_native(config: PrimeConfig, spec: ComposeSpec, env: dict[str, str]):
@@ -194,6 +335,12 @@ async def prepare_native(config: PrimeConfig, spec: ComposeSpec, env: dict[str, 
                 for name, service in project.config["services"].items()
             },
         }
+        for name, service in project.config["services"].items():
+            if "container_name" in service:
+                # Container names are global on the build host; rollouts must not collide.
+                prepared["services"][name]["container_name"] = (
+                    f"{project.config['name']}-{name}"
+                )
         main = prepared["services"]["main"]
         if spec.image_override:
             # The task image replaces an authored build; Compose pulls it only when missing.
@@ -242,7 +389,7 @@ async def prepare_native(config: PrimeConfig, spec: ComposeSpec, env: dict[str, 
             for image in images
         }
         image_sizes = {image["Id"]: image["Size"] for image in images}
-        services = {}
+        services, bound = {}, 0
         for name in ids:
             item = inspected[name]
             metadata = item["Config"]
@@ -262,13 +409,15 @@ async def prepare_native(config: PrimeConfig, spec: ComposeSpec, env: dict[str, 
                     f"Native Compose service {name!r} has an unsupported health check"
                 )
             definition = project.config["services"][name]
-            internal = all(
+            # Bridge-mode services join no project network and keep their internet.
+            definition.setdefault("networks", {})
+            internal = bool(definition["networks"]) and all(
                 project.config["networks"][network].get("internal", False)
                 for network in definition["networks"]
             )
             if definition.get("cap_add") and user not in {None, "root"}:
                 raise SandboxError(
-                    f"Native Compose service {name!r} requires root for SYS_PTRACE"
+                    f"Native Compose service {name!r} requires root for cap_add"
                 )
             limits = definition.get("deploy", {}).get("resources", {}).get("limits", {})
             options = config.model_dump(
@@ -311,8 +460,10 @@ async def prepare_native(config: PrimeConfig, spec: ComposeSpec, env: dict[str, 
                 user,
                 metadata.get("StopSignal") or "SIGTERM",
                 internal,
+                await asyncio.to_thread(_mounts, definition, _BIND_MAX_BYTES - bound),
                 image_env=image_envs[item["Image"]],
             )
+            bound += sum(len(mount.archive or b"") for mount in services[name].mounts)
         for name, service in services.items():
             for dependency, options in service.definition.get("depends_on", {}).items():
                 if options["condition"] == "service_healthy" and (
@@ -337,6 +488,96 @@ async def prepare_native(config: PrimeConfig, spec: ComposeSpec, env: dict[str, 
         finally:
             await run_shielded(client.client.aclose())
         return services
+
+
+def _mounts(definition: dict, budget: int) -> list[NativeMount]:
+    """A service's task binds and volumes, in Docker's mount order."""
+    volumes = definition.get("volumes", [])
+    targets = [PurePosixPath(volume["target"]) for volume in volumes]
+    mounts = []
+    for target, volume in zip(targets, volumes):
+        if volume["type"] == "bind":
+            source = Path(volume["source"]).resolve()
+            # Nested mounts hide these files on Docker; they never reach the VM.
+            hidden = [
+                other.relative_to(target)
+                for other in targets
+                if other != target and other.is_relative_to(target)
+            ]
+            archive = _archive(source, hidden, budget)
+            budget -= len(archive)
+            mounts.append(
+                NativeMount(
+                    str(target),
+                    bool(volume.get("read_only")),
+                    archive,
+                    source.is_file(),
+                )
+            )
+        else:
+            # Exporting a stopped container omits newly created volume directories.
+            mounts.append(NativeMount(str(target)))
+    return sorted(
+        mounts, key=lambda mount: (len(PurePosixPath(mount.target).parts), mount.target)
+    )
+
+
+def _archive(source: Path, hidden: list[PurePosixPath], budget: int) -> bytes:
+    """Pack a bind's source, including its own mode and owner as Docker shows them."""
+    buffer = io.BytesIO()
+
+    def include(info: tarfile.TarInfo) -> tarfile.TarInfo | None:
+        if any(PurePosixPath(info.name).is_relative_to(path) for path in hidden):
+            return None
+        # Checked before each file is read, so oversized binds never fill memory.
+        if buffer.tell() + info.size > budget:
+            raise SandboxError(
+                "Native Compose binds more than 256 MiB of task files; build them into an image"
+            )
+        return info
+
+    with tarfile.open(fileobj=buffer, mode="w") as archive:
+        if source.exists():
+            archive.add(
+                source, arcname="file" if source.is_file() else ".", filter=include
+            )
+        # Docker creates a missing source as an empty directory.
+    return buffer.getvalue()
+
+
+async def _mount(runtime, name: str, mounts: list[NativeMount]) -> None:
+    """Mount task binds and initialized service volumes as Docker would."""
+    unpack, attach, protect = [f"mkdir -p {_STAGING}"], [], []
+    for index, mount in enumerate(mounts):
+        source, target = f"{_STAGING}/{index}", shlex.quote(mount.target)
+        if mount.archive is None:
+            # Docker seeds a new volume from the image's directory, owner and mode.
+            unpack.append(
+                f"if [ -d {target} ]; then cp -a {target}/. {source}; else mkdir {source}; fi"
+            )
+        else:
+            await runtime.write(f"{source}.tar", mount.archive)
+            unpack.append(
+                f"mkdir -p {source} && tar --numeric-owner -xf {source}.tar -C {source} && rm {source}.tar"
+            )
+        if mount.file:
+            source += "/file"
+            attach.append(f'mkdir -p "$(dirname {target})" && touch {target}')
+        else:
+            attach.append(f"mkdir -p {target}")
+        attach.append(f"mount --bind {source} {target}")
+        if mount.read_only:
+            protect.append(f"mount -o remount,bind,ro {target}")
+    # Read-only last, so nested mount points can still be made; then hide the staged
+    # copies, which would otherwise bypass read-only mounts.
+    script = " && ".join(
+        [*unpack, *attach, *protect, f"mount -t tmpfs tmpfs {_STAGING}"]
+    )
+    result = await runtime.run(["sh", "-c", script], {})
+    if result.exit_code:
+        raise SandboxError(
+            f"Native Compose could not mount task files on {name!r}: {result.stderr}"
+        )
 
 
 async def _import_image(client, project, container: str, config: PrimeConfig) -> str:
@@ -473,29 +714,45 @@ class NativeProcesses:
                     )
             names = []
             for peer, shared in peers.items():
+                definition = self.services[peer].definition
                 aliases = [
-                    alias
-                    for network in sorted(shared)
-                    for alias in (
-                        self.services[peer].definition["networks"][network] or {}
-                    ).get("aliases", [])
+                    *(
+                        [definition["container_name"]]
+                        if "container_name" in definition
+                        else []
+                    ),
+                    *(
+                        alias
+                        for network in sorted(shared)
+                        for alias in (definition["networks"][network] or {}).get(
+                            "aliases", []
+                        )
+                    ),
                 ]
                 names.append(
                     f"{addresses[peer]} {' '.join(dict.fromkeys([peer, *aliases]))}"
                 )
+            hostname = service.definition.get("hostname")
+            if hostname:
+                names.append(f"127.0.0.1 {hostname}")
             host_entries = "\n".join(names) + "\n"
             backend.env = service.env
             backend.user = service.user
             if service.internal:
                 # Internal-only services have no internet, including during setup.
                 await backend.prepare_execution([])
-            result = await runtime.run(
-                ["sh", "-c", f"printf %s {shlex.quote(host_entries)} >> /etc/hosts"], {}
-            )
+            install = f"printf %s {shlex.quote(host_entries)} >> /etc/hosts"
+            if hostname:
+                install += (
+                    f" && printf %s {shlex.quote(hostname)} > /proc/sys/kernel/hostname"
+                )
+            result = await runtime.run(["sh", "-c", install], {})
             if result.exit_code:
                 raise SandboxError(
                     f"Native Compose could not install service names on {name!r}"
                 )
+            if service.mounts:
+                await _mount(runtime, name, service.mounts)
             if size := service.definition.get("shm_size"):
                 result = await runtime.run(
                     ["mount", "-o", f"remount,size={int(size)}", "/dev/shm"], {}
@@ -504,15 +761,27 @@ class NativeProcesses:
                     raise SandboxError(
                         f"Native Compose could not resize /dev/shm on {name!r}: {result.stderr}"
                     )
-            if service.definition.get("cap_add"):
+            if requested := service.definition.get("cap_add"):
                 result = await runtime.run(["cat", "/proc/self/status"], {})
-                capabilities = next(
-                    line.split()[1]
-                    for line in result.stdout.splitlines()
-                    if line.startswith("CapEff:")
+                effective = int(
+                    next(
+                        line.split()[1]
+                        for line in result.stdout.splitlines()
+                        if line.startswith("CapEff:")
+                    ),
+                    16,
                 )
-                if not int(capabilities, 16) & (1 << 19):
-                    raise SandboxError(f"Native Compose VM {name!r} lacks SYS_PTRACE")
+                names = {cap.upper().removeprefix("CAP_") for cap in requested}
+                # Docker already rejected names it does not know.
+                missing = [
+                    cap
+                    for bit, cap in enumerate(_CAPABILITIES)
+                    if ("ALL" in names or cap in names) and not effective >> bit & 1
+                ]
+                if missing:
+                    raise SandboxError(
+                        f"Native Compose VM {name!r} lacks {', '.join(missing)}"
+                    )
         started = {name: asyncio.Event() for name in self.services}
         healthy = {}
         completed = {

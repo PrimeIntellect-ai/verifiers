@@ -35,6 +35,14 @@ DOCKER_ENV = (
     "DOCKER_TLS_VERIFY",
     "DOCKER_CERT_PATH",
 )
+# Harbor's Compose templates mount its log directories as `${HOST_<NAME>_PATH}:
+# ${ENV_<NAME>_PATH}`. Harbor binds one host directory per name, so every service
+# that mounts a name shares it; a project volume per name keeps that sharing.
+HARBOR_LOG_MOUNTS = {
+    "VERIFIER_LOGS": "/logs/verifier",
+    "AGENT_LOGS": "/logs/agent",
+    "ARTIFACTS": "/logs/artifacts",
+}
 
 
 @dataclass(frozen=True)
@@ -50,6 +58,10 @@ class ComposeSpec:
     workspace: str = "main"
     image_override: bool = False
     build_dockerfile: bool = False
+
+
+def _harbor_volume(name: str) -> str:
+    return "harbor-" + name.lower().replace("_", "-")
 
 
 @asynccontextmanager
@@ -143,7 +155,8 @@ async def compose_project(
                 for value in authored.get(kind, {}).values()
             ):
                 raise SandboxError(f"Compose {kind} must use project-scoped names")
-        if any(
+        # Native Compose renames containers on the build host and keeps the name as an alias.
+        if isinstance(config, DockerConfig) and any(
             service.get("container_name") for service in authored["services"].values()
         ):
             raise SandboxError(
@@ -159,7 +172,8 @@ async def compose_project(
                         "trap 'exit 0' TERM; while :; do sleep 3600 & wait $!; done",
                     ],
                 }
-            }
+            },
+            "volumes": {_harbor_volume(name): {} for name in HARBOR_LOG_MOUNTS},
         }
         if {"image", "build"} & authored["services"].get(spec.workspace, {}).keys():
             # A template default must not replace an authored image or skip its build.
@@ -215,8 +229,17 @@ async def compose_project(
                 "MAIN_IMAGE_NAME": project[-1],
                 "CONTEXT_DIR": project_dir,
                 "PREBUILT_IMAGE_NAME": config.image,
+                "TEST_DIR": "/tests",
             }
         )
+        for name, path in HARBOR_LOG_MOUNTS.items():
+            compose_env[f"HOST_{name}_PATH"] = _harbor_volume(name)
+            compose_env[f"ENV_{name}_PATH"] = path
+        # Harbor's templates size services from these; Compose rejects them empty.
+        if config.cpu is not None:
+            compose_env["CPUS"] = f"{config.cpu:g}"
+        if config.memory is not None:
+            compose_env["MEMORY"] = f"{round(config.memory * 1024)}M"
 
         if isinstance(config, PrimeConfig):
             # Resolve filenames without loading them: task env files cannot read host secrets.
