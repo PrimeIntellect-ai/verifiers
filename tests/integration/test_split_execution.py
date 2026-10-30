@@ -5,7 +5,9 @@ import pytest
 from grid import grid
 
 import verifiers.v1 as vf
+from verifiers.v1.harnesses.utils import prebuilt
 from verifiers.v1.rollout import Rollout
+from verifiers.v1.utils.loaders import harness_class
 
 SPLIT = {
     "deployment": {"mode": "split"},
@@ -48,7 +50,11 @@ async def test_split_preflight_before_rollout(
 )
 async def test_split_execution(run, harness, harness_runtime):
     """The agent loop runs on the harness's VM; its tools act on the workspace's files,
-    working directory and environment over the rollout's private network."""
+    working directory and environment over the rollout's private network. A harness
+    with a prebuilt install runs from it on both VMs instead of installing."""
+    install = harness_class(harness.id)(harness).prebuilt()
+    if install is not None:
+        await prebuilt.build(install)
     (episode,) = await run(
         "split-execution-v1",
         harness=harness,
@@ -61,6 +67,9 @@ async def test_split_execution(run, harness, harness_runtime):
     assert not trace.errors
     assert trace.agent.runtime.type == trace.agent.harness_runtime.type == "prime"
     assert trace.agent.runtime.id != trace.agent.harness_runtime.id
+    if install is not None:
+        assert install.mount in trace.agent.runtime.mounts
+        assert install.mount in trace.agent.harness_runtime.mounts
     assert trace.reward == 1.0, trace.info.get("workspace_report")
 
 
