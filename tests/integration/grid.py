@@ -41,6 +41,7 @@ from verifiers.v1.utils.loaders import harness_class, harness_config_type
 
 HARNESSES: list[str | dict] = [
     "null",
+    "inline-chat",
     "bash",
     "rlm",
     "codex",
