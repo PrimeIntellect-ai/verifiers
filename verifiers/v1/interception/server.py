@@ -315,7 +315,7 @@ def _check_unsent_tail(response: Response, content: str) -> None:
         )
 
 
-def _reroute(session, ctx):
+def _reroute(session, ctx, reason: str):
     """The rollout's next exchanges under a new routing id (`REROUTE_STALLS`): the
     rollout's trace id with `~r<n>`, kept on the trace (its model binding and agent
     config) so later turns and a resume stay off the wedged replica too."""
@@ -336,8 +336,8 @@ def _reroute(session, ctx):
     session.trace.agent.config = config.model_copy(update={"session_id": routing})
     session.trace.notify()
     logger.warning(
-        "model call never started %d times in a row; rerouting: id=%s session=%s",
-        REROUTE_STALLS,
+        "%s; rerouting: id=%s session=%s",
+        reason,
         session.trace.id,
         routing,
     )
@@ -1362,14 +1362,23 @@ class InterceptionServer(Interception):
                                     # slowly (4 tok/s against ~19 elsewhere, cut after up
                                     # to 100 minutes, GLM 5.3 2026-10-30) and would serve
                                     # the regeneration the same way.
-                                    ctx = _reroute(session, ctx)
+                                    ctx = _reroute(
+                                        session,
+                                        ctx,
+                                        "a stream ran %.0fs before the provider cut it"
+                                        % (time.time() - started),
+                                    )
                             elif long_exchange:
                                 stalled_starts += 1
                             else:
                                 stalled_starts = 0
                             if stalled_starts >= REROUTE_STALLS:
                                 stalled_starts = 0
-                                ctx = _reroute(session, ctx)
+                                ctx = _reroute(
+                                    session,
+                                    ctx,
+                                    f"model call never started {REROUTE_STALLS} times in a row",
+                                )
                             wait = (
                                 None
                                 if session.released or session.stopped
