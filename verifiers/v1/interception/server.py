@@ -33,6 +33,7 @@ from collections.abc import AsyncIterator, Awaitable, Collection, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from functools import partial
+from typing import NoReturn
 
 import httpx
 from aiohttp import web
@@ -585,10 +586,13 @@ class InterceptionServer(Interception):
             )
 
     def _fail(
-        self, session: RolloutSession, dialect: Dialect, error: RolloutError
+        self,
+        session: RolloutSession,
+        dialect: Dialect,
+        error: RolloutError,
     ) -> web.Response:
-        """Stash a model-turn-adjacent failure (such as a hook raising) so the rollout
-        re-raises it as the real cause, and report it to the harness as an HTTP error."""
+        """Stash a model-turn-adjacent failure so the rollout re-raises it as the real
+        cause, and report it to the harness as an HTTP error."""
         session.error = error
         logger.warning(
             "rollout %s failed: %s: %s", session.trace.id, type(error).__name__, error
@@ -596,6 +600,17 @@ class InterceptionServer(Interception):
         return _error_response(
             dialect, str(error), status=getattr(error, "status_code", 502)
         )
+
+    async def _abort(self, session: RolloutSession, error: RolloutError) -> NoReturn:
+        """End the rollout's segment with a request hook's failure. The harness gets no
+        reply: the rollout cancels its turn, and releasing the session cancels this
+        handler."""
+        logger.warning(
+            "rollout %s failed: %s: %s", session.trace.id, type(error).__name__, error
+        )
+        session.abort(error)
+        await asyncio.get_running_loop().create_future()
+        raise AssertionError("unreachable")
 
     def mediate_capabilities(
         self, session: RolloutSession, dialect: Dialect, body: dict
@@ -846,11 +861,10 @@ class InterceptionServer(Interception):
             if stopped is None and model_request != original_request:
                 dialect.rewrite_request(body, original_request, model_request)
         except RolloutError as error:
-            return self._fail(session, dialect, error)
+            return await self._abort(session, error)
         except Exception as error:  # noqa: BLE001 - surface task hook failures
-            return self._fail(
+            return await self._abort(
                 session,
-                dialect,
                 TaskError(
                     f"model boundary hook failed: {type(error).__name__}: {error}"
                 ),
@@ -908,6 +922,14 @@ class InterceptionServer(Interception):
             node: int | None = None
             error: Exception | None = None
             started = time.time()
+            # The box is idle while the harness awaits this turn, so a snapshot captured
+            # before the reply returns matches the prompt exactly (tool results in, this
+            # reply not yet). It runs alongside the model call; the reply waits for it.
+            capture = (
+                asyncio.create_task(session.checkpointer(turn))
+                if session.checkpointer is not None
+                else None
+            )
             try:
                 try:
                     # What actually goes upstream: the native body with the rollout's model +
@@ -1000,6 +1022,18 @@ class InterceptionServer(Interception):
                     error = e
                     raise
             finally:
+                if capture is not None:
+                    held = time.monotonic()
+                    try:
+                        checkpoint = await capture
+                    # A lost snapshot never fails the turn.
+                    except Exception:
+                        logger.warning(
+                            "checkpoint failed: id=%s", session.trace.id, exc_info=True
+                        )
+                    else:
+                        if checkpoint is not None:
+                            checkpoint.held = time.monotonic() - held
                 if node is None:
                     turn.abandon()
                 # The turn's one per-exchange record: settings, timing, outcome, and

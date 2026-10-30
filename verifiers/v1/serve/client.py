@@ -28,12 +28,16 @@ from verifiers.v1.configs.client import ClientConfig
 from verifiers.v1.configs.sampling import SamplingConfig
 from verifiers.v1.episode import WireEpisode
 from verifiers.v1.serve.delta import EpisodeAssembly, unpack
+from verifiers.v1.serve.encoding import msgpack_encoder
 from verifiers.v1.serve.types import (
     BaseRequest,
     BaseResponse,
     CancelRequest,
+    DiscardRequest,
+    DiscardResponse,
     HealthRequest,
     HealthResponse,
+    RestoreRequest,
     RunRequest,
     RunResponse,
 )
@@ -180,7 +184,10 @@ class EnvClient:
         self._pending[request_id] = future
         if on_delta is not None:
             self._deltas[request_id] = on_delta
-        payload = msgpack.packb(request.model_dump(mode="json"), use_bin_type=True)
+        raw = set(request.RAW_FIELDS)
+        data = request.model_dump(mode="json", exclude=raw)
+        data.update(request.model_dump(mode="python", include=raw))
+        payload = msgpack.packb(data, default=msgpack_encoder, use_bin_type=True)
         await self.socket.send_multipart(
             [request_id.encode(), request.method.encode(), payload]
         )
@@ -264,14 +271,19 @@ class EnvClient:
         sampling: SamplingConfig,
         task_data: dict,
         on_delta: Callable[[dict], None] | None = None,
+        restore: RestoreRequest | None = None,
+        assembly: EpisodeAssembly | None = None,
     ) -> WireEpisode:
         """Run one rollout; return its episode record — flat traces (typed
         `Trace[WireTaskData]`) plus the shared stamp. The server takes the task
         itself (`task_data`, its dumped `TaskData`). The traces stream in as the
         rollout runs, one delta per turn or phase change (`serve.delta`); `on_delta`
         sees each as it lands, so a caller can relay or persist the stream. The
-        episode returned is assembled from the same deltas."""
-        assembly = EpisodeAssembly()
+        episode returned is assembled from the same deltas, into `assembly` when the
+        caller passes one: it then holds the partial traces and their newest restore
+        points while the run is in flight. `restore` continues a trace from one of
+        those restore points instead of starting one."""
+        assembly = assembly if assembly is not None else EpisodeAssembly()
 
         def apply(delta: dict) -> None:
             assembly.apply(delta)
@@ -285,6 +297,7 @@ class EnvClient:
                 client=client,
                 model=model,
                 sampling=sampling,
+                restore=restore,
             ),
             RunResponse,
             on_delta=apply,
@@ -301,6 +314,14 @@ class EnvClient:
             # tell it this caller never got the episode.
             self._cancel_run(request_id)
             raise
+
+    async def discard(self, checkpoints: list[str]) -> list[str]:
+        """Delete box snapshots this client owns and no longer needs; returns the ones
+        deleted (the newest snapshot of a running box is refused)."""
+        response = await self._request(
+            DiscardRequest(checkpoints=checkpoints), DiscardResponse
+        )
+        return response.deleted
 
     async def close(self) -> None:
         if self._receiver is not None:

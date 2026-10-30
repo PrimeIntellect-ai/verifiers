@@ -26,6 +26,7 @@ class NullHarness(Harness[NullHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
     SUPPORTS_RESUME = True
+    SUPPORTS_CHECKPOINTS = True
     SUPPORTS_TOOL_INTERCEPTION = True
     EXECUTES_CODE = False
     NEEDS_CONTAINER = False

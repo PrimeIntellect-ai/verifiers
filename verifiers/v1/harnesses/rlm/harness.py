@@ -31,8 +31,8 @@ BuiltinSkill = Literal["bash", "edit", "fetch", "search"]
 BuiltinTool = Literal["bash", "edit", "fetch", "ipython"]
 
 RLM_REPO = "github.com/PrimeIntellect-ai/nano-rlm.git"
-RLM_CACHE_DIR = "/tmp/vf-rlm"
-RLM_STATE_DIR = "/tmp/vf-rlm-state"
+RLM_CACHE_DIR = "/var/tmp/vf-rlm"
+STATE_ROOT = "/tmp/vf-rlm-runs"
 RLM_RUNTIME_METADATA_KEY = "ai.prime.rlm/runtime-v1"
 RLM_SESSION_METADATA_KEY = "ai.prime.rlm/session-v1"
 
@@ -70,7 +70,7 @@ class CompactionConfig(BaseConfig):
 class RLMHarnessConfig(HarnessConfig):
     dialect: Literal["chat_completions"] = "chat_completions"
     version: str = Field(
-        default="684ea9069eadaf855596c3fa49e529566de7d1af", min_length=1
+        default="3d16eb588008f1525f8dca24120b5d31128c4f5c", min_length=1
     )
     """Git ref (branch, tag, or commit) of nano-rlm to install. Must know every
     field this harness puts on the wire, i.e. be at least the default ref."""
@@ -137,12 +137,18 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
     SUPPORTS_SKILLS = True
+    SUPPORTS_CHECKPOINTS = True
     _skills_install_dir: str | None = None
 
     async def setup(self, runtime: Runtime) -> None:
         if self.config.skills:
             # Editable skill packages and uv's tool environment must belong to this run.
-            self._skills_install_dir = f"{RLM_CACHE_DIR}-skills-{secrets.token_hex(16)}"
+            # A retry keeps the directory: it holds `RLM_HOME`, whose session a box
+            # restored from a checkpoint loads.
+            if self._skills_install_dir is None:
+                self._skills_install_dir = (
+                    f"{RLM_CACHE_DIR}-skills-{secrets.token_hex(16)}"
+                )
             await self.install_skills(runtime, f"{self._skills_home()}/skills")
         directory = self._install_dir()
         binary = f"{directory}/bin/rlm"
@@ -289,14 +295,14 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
             self._consume_snapshot(trace, response_metadata)
 
     async def cleanup(self, trace: Trace, runtime: Runtime) -> None:
-        await runtime.run(["rm", "-rf", f"{RLM_STATE_DIR}/{trace.id}"], {})
+        await runtime.run(["rm", "-rf", f"{STATE_ROOT}/{trace.id}"], {})
         if self._skills_install_dir is not None:
             await remove_dir(
                 runtime, self._skills_install_dir, "RLM skill installation"
             )
 
     def _home(self, trace: Trace) -> str:
-        return self._skills_home() or f"{RLM_STATE_DIR}/{trace.id}/home"
+        return self._skills_home() or f"{STATE_ROOT}/{trace.id}/home"
 
     def _skills_home(self) -> str | None:
         """rlm's home for a run that carries skills: they sit in its `skills/`, where

@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 
 CODEX_DIR = "/var/tmp/vf-codex-{version}-{acp_version}"
 PACKAGES_DIR = f"{CODEX_DIR}/acp"
+STATE_ROOT = "/tmp/vf-codex-runs"
 ACP_VERSION = "2.2.2"
 CODEX_BIN = f"{PACKAGES_DIR}/node_modules/.bin/codex"
 ACP_BIN = f"{PACKAGES_DIR}/node_modules/.bin/codex-acp"
@@ -62,6 +63,7 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = False  # TODO
     SUPPORTS_MCP = True
     SUPPORTS_SKILLS = True
+    SUPPORTS_CHECKPOINTS = True
     SUPPORTS_TOOL_INTERCEPTION = True
 
     def acp_turn_result(self, trace: Trace, result: ACPTurn) -> None:
@@ -174,7 +176,7 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
 
     @staticmethod
     def trace_home(trace: Trace) -> str:
-        return f"/tmp/vf-codex-home-{trace.id}"
+        return f"{STATE_ROOT}/{trace.id}"
 
     async def build_env(
         self,

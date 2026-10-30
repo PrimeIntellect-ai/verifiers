@@ -184,6 +184,12 @@ class RuntimeBackend(ABC):
     """Digest-keyed PEP 723 scripts inside the runtime. Sandboxes own their `/tmp`;
     the host subprocess runtime overrides this with its per-user cache."""
 
+    SUPPORTS_CHECKPOINTS: ClassVar[bool] = False
+    """Whether `checkpoint` snapshots the box's filesystem for a new box of this config
+    to boot from (its config's `checkpoint`). A rollout checkpoints before each model
+    turn, so a retry restores the newest turn instead of replaying the run (see
+    `AgentConfig.checkpoint`)."""
+
     info: BaseRuntimeInfo
 
     def __init__(self, name: str | None = None) -> None:
@@ -192,6 +198,9 @@ class RuntimeBackend(ABC):
         # Explicit process values (model credentials, proxy settings, etc.) override these.
         self.env: dict[str, str] = {}
         self.cache = RuntimeCache()
+        self.stray_checkpoints: list[str] = []
+        """Checkpoints this box took that never became restorable (a failed or cancelled
+        durability wait), so no trace records them; freed after the box is gone."""
         self._setup_claimed = False
         self._background: list[RuntimeProcess] = []
         self.stopped = False
@@ -217,6 +226,24 @@ class RuntimeBackend(ABC):
     @abstractmethod
     async def start(self) -> None:
         pass
+
+    async def checkpoint(self) -> str:
+        """Snapshot the filesystem and return the checkpoint's id once its content is
+        fixed: writes after this returns are not in it. It becomes restorable only later
+        (`wait_checkpoint`); the box keeps running."""
+        raise NotImplementedError(f"{type(self).__name__} does not support checkpoints")
+
+    async def wait_checkpoint(self, checkpoint: str) -> int | None:
+        """Wait until `checkpoint` is restorable and return its stored size in bytes,
+        when the provider reports it. Raises if it never becomes restorable. The box
+        must stay alive until then: its teardown fails a pending checkpoint."""
+        raise NotImplementedError(f"{type(self).__name__} does not support checkpoints")
+
+    async def discard_checkpoints(self, ids: list[str]) -> list[str]:
+        """Free checkpoints nothing will restore from and return the ids it freed.
+        Best-effort: a provider may refuse one a live box still needs (prime: the
+        newest one of a running box)."""
+        return []
 
     async def stop(self) -> None:
         """Free the provisioned resource on the normal path (the owner's `finally`),

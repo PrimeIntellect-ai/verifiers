@@ -9,21 +9,28 @@ import zmq
 import zmq.asyncio
 
 from verifiers.v1.clients import ModelContext
+from verifiers.v1.configs.agent import agent_config_fields
 from verifiers.v1.configs.client import ClientConfig
 from verifiers.v1.configs.env import EnvConfig
 from verifiers.v1.configs.sampling import SamplingConfig
 from verifiers.v1.episode import Episode
+from verifiers.v1.runtimes import backend_cls, make_backend
 from verifiers.v1.serve.delta import DeltaStreamer, TraceSummary, dump, pack
 from verifiers.v1.serve.encoding import msgpack_encoder
 from verifiers.v1.serve.types import (
     BaseResponse,
     CancelRequest,
     CancelResponse,
+    DiscardRequest,
+    DiscardResponse,
     HealthResponse,
+    RestoreRequest,
     RunRequest,
     RunResponse,
 )
+from verifiers.v1.state import state_cls
 from verifiers.v1.task import Task
+from verifiers.v1.trace import Checkpoint, RestorePoint, Trace
 from verifiers.v1.utils.loaders import load_environment
 
 logger = logging.getLogger(__name__)
@@ -39,6 +46,13 @@ class EpisodeHook(Protocol):
 
     def discard(self, episode: Episode) -> None:
         """Free what `keep` kept for an episode that was not delivered."""
+
+    def watch(self, trace: Trace) -> None:
+        """See a trace as it is minted, or restored, before its first delta streams."""
+
+    def restore(self, trace: Trace) -> None:
+        """Give a restored trace's nodes back their arrays (a client's assembly never
+        has them). Runs before the rollout rewinds the trace to its restore point."""
 
 
 _episode_hook: EpisodeHook | None = None
@@ -162,11 +176,42 @@ class EnvServer:
         endpoint (and a training run's changing model) leaves nothing behind."""
         return ModelContext(client=client_config, model=model, sampling=sampling)
 
+    def _restore(self, restore: RestoreRequest, task: Task) -> tuple[Trace, Checkpoint]:
+        """The trace to continue and the checkpoint to continue it from: the trace as
+        the client assembled it, typed for this taskset, and its restore point with
+        the live-only fields back."""
+        trace = Trace.model_validate(restore.trace)
+        trace.task.data = task.data
+        if _episode_hook is not None:
+            _episode_hook.restore(trace)
+        checkpoint = RestorePoint.model_validate(restore.point).live(
+            state_cls(type(task))
+        )
+        # The trace's own record of the checkpoint lacks the live fields.
+        trace.checkpoints = [
+            checkpoint if c.id == checkpoint.id else c for c in trace.checkpoints
+        ]
+        if checkpoint not in trace.checkpoints:
+            trace.checkpoints.append(checkpoint)
+        return trace, checkpoint
+
+    async def _discard(self, req: DiscardRequest) -> DiscardResponse:
+        """Delete snapshots through the backend of the env's agents' runtime."""
+        for agent in agent_config_fields(self.env.config).values():
+            if backend_cls(agent.runtime).SUPPORTS_CHECKPOINTS:
+                backend = make_backend(agent.runtime)
+                return DiscardResponse(
+                    deleted=await backend.discard_checkpoints(req.checkpoints)
+                )
+        return DiscardResponse()
+
     async def _run(
         self, req: RunRequest, client_id: bytes, request_id: bytes
     ) -> RunResponse:
         ctx = self._context(req.client, req.model, req.sampling)
-        (slot,) = self.env.slots(self._build_task(req.task_data))
+        task = self._build_task(req.task_data)
+        restore = self._restore(req.restore, task) if req.restore is not None else None
+        (slot,) = self.env.slots(task)
 
         async def send_delta(delta: dict) -> None:
             await self.frontend.send_multipart(
@@ -178,8 +223,14 @@ class EnvServer:
         # ships each trace as it changes; the reply below carries only the rest.
         hook = _episode_hook
         async with DeltaStreamer(lambda: slot.traces, send_delta) as streamer:
+
+            def watch(trace: Trace) -> None:
+                if hook is not None:
+                    hook.watch(trace)
+                streamer.watch(trace)
+
             episode = await self.env.run_slot(
-                slot, ctx, self._gate, on_trace=streamer.watch
+                slot, ctx, self._gate, on_trace=watch, restore=restore
             )
             if hook is not None:
                 # Before the final flush, so what the hook writes to the traces streams.
@@ -206,7 +257,7 @@ class EnvServer:
     ) -> None:
         try:
             route = method.decode()
-            raw = msgpack.unpackb(payload, raw=False)
+            raw = msgpack.unpackb(payload, raw=False, strict_map_key=False)
             if route == "health":
                 response: BaseResponse = HealthResponse()
             elif route == "run":
@@ -217,6 +268,8 @@ class EnvServer:
                     )
                 finally:
                     self._running.pop(request_id.decode(), None)
+            elif route == "discard":
+                response = await self._discard(DiscardRequest.model_validate(raw))
             elif route == "cancel":
                 target = CancelRequest.model_validate(raw).request_id
                 running = self._running.get(target)
