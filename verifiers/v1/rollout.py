@@ -259,14 +259,16 @@ class Rollout:
         if backend is None:
             return None
         status = await backend.execution_status()
-        if status.state == "running":
+        if status.state != "lost":
             # A guest that just powered itself off still reads as running for a while,
-            # and a wedged one may never answer, which proves nothing either way.
+            # a single status poll can fail, and a wedged guest may never answer: none
+            # of these proves anything, so a workspace that no longer executes is
+            # watched until its provider reports it lost.
             with contextlib.suppress(TimeoutError):
                 async with asyncio.timeout(60):
                     if await backend.bind().alive():
                         return None
-                    while status.state == "running":
+                    while status.state != "lost":
                         await asyncio.sleep(2)
                         status = await backend.execution_status()
         return status if status.state == "lost" else None
