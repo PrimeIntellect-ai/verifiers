@@ -190,6 +190,9 @@ class Rollout:
         self._urls: dict[str, str] = {}
         self._harness_session: HarnessSession | None = None
         self._agent_runtime: Runtime | None = None
+        self._split_runtime: Runtime | None = None
+        """A split deployment's harness VM, where the program runs apart from the
+        workspace; None when it runs in the workspace."""
         self.deadline_at: float | None = None
         """The active harness segment's absolute deadline (event-loop clock), or
         None between segments / when unbounded. An interaction spends one cumulative
@@ -303,6 +306,11 @@ class Rollout:
                         composed=spec is not None,
                         borrowed=self._borrowed_runtime is not None,
                     ),
+                    tool_services={
+                        service
+                        for toolset in toolsets
+                        if (service := getattr(toolset.config, "service", None))
+                    },
                     env=runtime.env,
                     config=self._deployment_config,
                     borrowed_runtime=self._borrowed_runtime,
@@ -311,6 +319,11 @@ class Rollout:
                     await self.deployment.start()
                     self._deployment_started = True
                     runtime = self.runtime = self.deployment.workspace
+                    if self.deployment.split:
+                        self._split_runtime = self.deployment.harness_backend.bind()
+                        self.trace.agent.harness_runtime = (
+                            self._split_runtime.info.model_copy()
+                        )
                 finally:
                     # Providers may assign an ID before startup fails; retain it for diagnostics.
                     self.trace.agent.runtime = runtime.info.model_copy()
@@ -354,7 +367,11 @@ class Rollout:
                     self._agent_runtime = await resolve_agent_runtime(
                         runtime, self.task.data.agent_user
                     )
-                    await self.harness.setup(self._agent_runtime)
+                    if self._split_runtime is None:
+                        await self.harness.setup(self._agent_runtime)
+                    else:
+                        await self._setup_split_harness()
+                harness_host = self._split_runtime or runtime
                 # `base_url` is the interception server's reachable URL for this rollout.
                 # The harness reaches the model at `{base_url}/v1`; tool servers reach this
                 # rollout's `/state` + `/task` at `base_url` — it's universally reachable
@@ -366,13 +383,13 @@ class Rollout:
                 ) = await self._stack.enter_async_context(
                     serve_interception(
                         self._interception,
-                        runtime,
+                        harness_host,
                         self._session,
                         toolsets,
                         self._shared_tools,
                     )
                 )
-                self._endpoint = runtime.host_url(f"{base_url.rstrip('/')}/v1")
+                self._endpoint = harness_host.host_url(f"{base_url.rstrip('/')}/v1")
                 self._secret = model_secret
                 services = (
                     {
@@ -385,7 +402,7 @@ class Rollout:
                 self._urls = await self._stack.enter_async_context(
                     serve_tools(
                         toolsets,
-                        self._agent_runtime,
+                        self._split_runtime or self._agent_runtime,
                         shared=self._shared_tools,
                         state_secret=state_secret,
                         proxy_mcp=self._session.proxy_mcp,
@@ -503,7 +520,7 @@ class Rollout:
                     if not self._session.stopped:
                         session_kwargs = (
                             {
-                                "tool_interception_url": runtime.host_url(
+                                "tool_interception_url": harness_host.host_url(
                                     f"{base_url.rstrip('/')}/tool"
                                 )
                             }
@@ -517,7 +534,7 @@ class Rollout:
                         self._harness_session = await self.harness.session(
                             self.ctx,
                             self.trace,
-                            self._agent_runtime,
+                            self._split_runtime or self._agent_runtime,
                             self._endpoint,
                             self._secret,
                             self._urls,
@@ -550,6 +567,23 @@ class Rollout:
         self.trace.timing.agent.start = now
         self.trace.notify()
         return not self._session.stopped
+
+    async def _setup_split_harness(self) -> None:
+        """Install the harness on its own VM while its tools' workers start in the
+        workspace. The workers stop with the harness session, before the tool servers
+        and interception that follow them onto the stack."""
+        connection = self.deployment.connection()
+        self._stack.push_async_callback(connection.close)
+        try:
+            async with asyncio.TaskGroup() as group:
+                group.create_task(self.harness.setup(self._split_runtime))
+                group.create_task(
+                    self.harness.setup_execution(
+                        self._split_runtime, self._agent_runtime, connection
+                    )
+                )
+        except ExceptionGroup as failed:
+            raise failed.exceptions[0]  # typed for retries
 
     async def steer(self, message: str, *, message_id: str | None = None) -> dict:
         if self._closed or not self.ok:
@@ -647,7 +681,7 @@ class Rollout:
         if self._harness_cleaned:
             return
         try:
-            await self.harness.cleanup(self.trace, runtime)
+            await self.harness.cleanup(self.trace, self._split_runtime or runtime)
         except Exception:
             logger.warning(
                 "harness cleanup failed (rollout %s)", self.trace.id, exc_info=True
@@ -683,7 +717,9 @@ class Rollout:
         """Collect best-effort metrics without replacing a task failure."""
         try:
             async with asyncio.timeout_at(deadline):
-                await self.harness.score(self.trace, self._agent_runtime or runtime)
+                await self.harness.score(
+                    self.trace, self._split_runtime or self._agent_runtime or runtime
+                )
         except Exception as error:
             self.trace.info["harness_scoring_error"] = {
                 "type": type(error).__name__,

@@ -191,6 +191,14 @@ A `Deployment` coordinates all execution resources for a single rollout attempt:
 
 The **workspace** (`deployment.workspace`) is the `Runtime` where task commands run and task files live; setting `agent.deployment.mode = "colocated"` places the harness and colocated tools inside that same workspace.
 
+With `agent.deployment.mode = "split"`, the harness runs on a Prime VM of its own (`agent.deployment.harness`, 1 CPU and 2 GB by default) beside a Prime workspace, and its tools execute in the workspace. The workspace is placed exactly as in colocated mode, including `ServicesSpec` services, Compose services and tool server VMs. The harness's VM joins the rollout's private LAN, where it may open connections to the workspace and to tool server VMs, and nothing may open one to it. It takes the task's network policy plus the model and tool routes; the workspace keeps no route to the model, and never holds its credentials. Tools run in a worker that the harness starts in the workspace through `ExecutionConnection.serve`. The worker listens on the LAN at a port the kernel picks and announces, and carries a `VF_EXEC_ID` marker in its environment that every process its tools start inherits. When the harness session closes, every process carrying the marker is killed, detached ones included, unless it emptied its environment. Each tool call crosses the LAN. Harnesses opt in with `SUPPORTS_SPLIT_EXECUTION` and `setup_execution()`; RLM supports its native tools and builtin skills. Borrowed runtimes and colocated task tools are rejected.
+
+```toml
+[env.agent.deployment]
+mode = "split"
+harness = { cpu = 2, memory = 4 }
+```
+
 On Prime, return a `ServicesSpec` from `deployment_spec()` to provision one native VM per named service beside the task's `main` workspace. Each service has its own image, resources, filesystem, and egress policy. The VMs join a private LAN for the rollout; they can call each other and the workspace through the names in `deployment.hosts`. Services bind to `0.0.0.0`, since each VM has its own loopback interface. No Docker daemon runs inside these VMs.
 
 Task setup starts processes with `deployment.target(name).run_background()` and waits for readiness before returning. Image entrypoints do not start services automatically. Pass process environment variables to `run_background`; the workspace's environment is not copied into service VMs. For example:
