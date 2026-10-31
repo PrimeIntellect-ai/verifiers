@@ -3353,7 +3353,7 @@ wheels = [
 
 [[package]]
 name = "prime-sandboxes"
-version = "0.5.1"
+version = "0.5.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiofiles" },
@@ -3365,9 +3365,9 @@ dependencies = [
     { name = "pyqwest" },
     { name = "tenacity" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/de/78/304ac19c37884f4e0346f8dd810b8e1490027adb8d0c33e9c904e3ee62ac/prime_sandboxes-0.5.1.tar.gz", hash = "sha256:5f2978bec15f2b9b93cdadec0d2b0d2e5722167fef5eb68138cad94ae3fc4b17", size = 158790, upload-time = "2026-10-26T14:55:45.529Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/0d/6c/ab62399b6f3caa3174ea8a29fcdce345b7410118c381a60d258c80a1ac5d/prime_sandboxes-0.5.2.tar.gz", hash = "sha256:8113f687eef702f5c09474d1547c6f240452eacfd4f72f533847f9b92d7214c8", size = 161037, upload-time = "2026-10-30T15:30:23.215Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/fa/48/4cf79a666cd2dd605df52e9d61410b4bdf7e322616ffdf9b40a318ed5de4/prime_sandboxes-0.5.1-py3-none-any.whl", hash = "sha256:d6960aaa0a2c9eed05f114f8061a29c23254b27a5c7de03978d767ec465e28d8", size = 85795, upload-time = "2026-10-26T14:55:43.718Z" },
+    { url = "https://files.pythonhosted.org/packages/3a/ee/7e6367556b2dc8b6da5b9432e89e509d33fb09cb22580822facbaee16b9c/prime_sandboxes-0.5.2-py3-none-any.whl", hash = "sha256:7a78a25e8c205da90ae39ace4b84864e40d5dd1b7e1ebdc4f4045078325b844f", size = 87340, upload-time = "2026-10-30T15:30:21.722Z" },
 ]
 
 [[package]]
