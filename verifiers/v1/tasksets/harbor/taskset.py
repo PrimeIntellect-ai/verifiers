@@ -463,11 +463,14 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
     def entrypoint_dockerfile(self) -> Path | None:
         """The Dockerfile whose ENTRYPOINT this box's image starts with, when nothing
         else runs it: a Compose service's runs under the VM's Docker, and a box on the
-        harness image (no pullable image, or the environment uploaded) has none."""
+        harness image (no pullable image or checkpoint, or the environment uploaded) has
+        none. A box from a checkpoint is the box that Dockerfile describes (the image
+        with the task's layer applied), so it starts as that image starts: its services
+        come up as they would under Docker, and come back after a restore."""
         task_dir = Path(self.data.task_dir)
         if (
             not self.data.task_dir
-            or self.data.image is None
+            or (self.data.image is None and self.data.checkpoint is None)
             or self.data.upload_environment
             or isinstance(self.deployment_spec(), ComposeSpec)
         ):
