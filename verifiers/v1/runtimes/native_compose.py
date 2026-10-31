@@ -17,12 +17,13 @@ from pathlib import Path, PurePosixPath
 
 import httpx
 from prime_sandboxes import AsyncImageClient
-from prime_sandboxes.models import BuildImageRequest
+from prime_sandboxes.models import BuildImageRequest, LocalhostForward
 from pydantic import ByteSize, TypeAdapter
 
 from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes import PrimeConfig
 from verifiers.v1.runtimes.backends.docker import cli
+from verifiers.v1.runtimes.backends.prime import leased_client
 from verifiers.v1.runtimes.base import RuntimeBackend, RuntimeProcess
 from verifiers.v1.runtimes.compose import ComposeSpec, compose_project
 from verifiers.v1.runtimes.private_network import lan_host
@@ -137,9 +138,10 @@ class NativeService:
     internal: bool = False
     mounts: list[NativeMount] = field(default_factory=list)
     image_env: dict[str, str] = field(default_factory=dict)
+    localhost_forwards: dict[int, str] = field(default_factory=dict)
 
 
-def validate_native(project) -> None:
+def validate_native(project) -> dict[str, str]:
     config = project.config
     # Compose keeps top-level `x-*` extension blocks (YAML anchors); they configure nothing.
     if {key for key in config if not key.startswith("x-")} - {
@@ -165,6 +167,23 @@ def validate_native(project) -> None:
     mounts: dict[str, set[tuple[str, str]]] = {}
     binds: list[tuple[str, str, Path, bool]] = []
     task = (project.directory / "task").resolve()
+    services = config["services"]
+    network_owners = {}
+    for name, service in services.items():
+        owner, seen = name, {name}
+        while (mode := services[owner].get("network_mode", "")).startswith("service:"):
+            owner = mode.removeprefix("service:")
+            if owner not in services or owner in seen:
+                raise SandboxError(
+                    f"Native Compose service {name!r} has an invalid or cyclic network_mode"
+                )
+            seen.add(owner)
+        network_owners[name] = owner
+        if owner != name:
+            # Separate VMs join the owner's LANs; declared ports are forwarded below.
+            service["networks"] = {
+                network: {} for network in services[owner].get("networks", {})
+            }
     for name, service in config["services"].items():
         unsupported = set(service) - _SERVICE_FIELDS
         if unsupported:
@@ -272,7 +291,7 @@ def validate_native(project) -> None:
                 mounts.setdefault(volume["source"], set()).add((name, volume["target"]))
         # Docker's default bridge network: no project network, so no service names.
         mode = service.get("network_mode")
-        if mode not in {None, "bridge", "default"}:
+        if mode not in {None, "bridge", "default"} and network_owners[name] == name:
             raise SandboxError(
                 f"Native Compose service {name!r} does not support network_mode {mode!r}"
             )
@@ -333,6 +352,7 @@ def validate_native(project) -> None:
                     f"Native Compose binds overlapping task files writable at "
                     f"{name}:{target} and {other}:{other_target}"
                 )
+    return network_owners
 
 
 async def prepare_native(config: PrimeConfig, spec: ComposeSpec, env: dict[str, str]):
@@ -340,7 +360,7 @@ async def prepare_native(config: PrimeConfig, spec: ComposeSpec, env: dict[str, 
     if spec.workspace != "main" or config.checkpoint or config.gpu:
         raise SandboxError("Native Compose requires a CPU image workspace named 'main'")
     async with compose_project(config, spec, env) as project:
-        validate_native(project)
+        network_owners = validate_native(project)
         prepared = {
             **project.config,
             "networks": {},
@@ -412,6 +432,7 @@ async def prepare_native(config: PrimeConfig, spec: ComposeSpec, env: dict[str, 
             for image in images
         }
         image_sizes = {image["Id"]: image["Size"] for image in images}
+        image_filesystems = {image["Id"]: image["RootFS"] for image in images}
         services, bound = {}, 0
         for name in ids:
             item = inspected[name]
@@ -483,6 +504,30 @@ async def prepare_native(config: PrimeConfig, spec: ComposeSpec, env: dict[str, 
                 image_env=image_envs[item["Image"]],
             )
             bound += sum(len(mount.archive or b"") for mount in services[name].mounts)
+        for owner in dict.fromkeys(network_owners.values()):
+            members = [name for name in services if network_owners[name] == owner]
+            if len(members) == 1:
+                continue
+            ports = {}
+            for name in members:
+                for exposed in inspected[name]["Config"].get("ExposedPorts") or {}:
+                    port, protocol = exposed.split("/")
+                    if protocol != "tcp" or int(port) in ports:
+                        raise SandboxError(
+                            "Native Compose localhost groups require unique exposed TCP ports"
+                        )
+                    ports[int(port)] = name
+            if not ports:
+                raise SandboxError(
+                    "Native Compose network_mode service requires ports declared by expose or Dockerfile EXPOSE"
+                )
+            for name in members:
+                forwards = {port: peer for port, peer in ports.items() if peer != name}
+                if len(forwards) > 64:
+                    raise SandboxError(
+                        f"Native Compose service {name!r} exceeds 64 localhost forwards"
+                    )
+                services[name].localhost_forwards = forwards
         for name, service in services.items():
             for dependency, options in service.definition.get("depends_on", {}).items():
                 if options["condition"] == "service_healthy" and (
@@ -496,10 +541,14 @@ async def prepare_native(config: PrimeConfig, spec: ComposeSpec, env: dict[str, 
         try:
             images = {}
             for name, service in services.items():
-                identity = f"{service.config.image}\n{service.config.workdir}"
+                # Compose's per-project labels change image IDs without changing files.
+                identity = json.dumps(
+                    [image_filesystems[service.config.image], service.config.workdir],
+                    sort_keys=True,
+                )
                 if identity not in images:
                     images[identity] = await _import_image(
-                        client, project, ids[name], service.config
+                        client, project, ids[name], identity
                     )
                 service.config = service.config.model_copy(
                     update={"image": images[identity]}
@@ -599,9 +648,8 @@ async def _mount(runtime, name: str, mounts: list[NativeMount]) -> None:
         )
 
 
-async def _import_image(client, project, container: str, config: PrimeConfig) -> str:
-    """Cache a private VM image by the exact local image and container workdir."""
-    identity = f"{config.image}\n{config.workdir}"
+async def _import_image(client, project, container: str, identity: str) -> str:
+    """Cache a private VM image by its filesystem layers and container workdir."""
     name = "vf-compose-" + hashlib.sha256(identity.encode()).hexdigest()
     locks = CACHE_DIR / "compose-images"
     locks.mkdir(parents=True, exist_ok=True)
@@ -701,6 +749,18 @@ class NativeProcesses:
         for name, backend in deployment.target_backends.items():
             service = self.services[name]
             runtime = backend.bind().with_user(None).with_env({})
+            if service.localhost_forwards:
+                async with leased_client() as client:
+                    await client.set_localhost_forwards(
+                        backend.info.id,
+                        [
+                            LocalhostForward(
+                                port=port,
+                                sandbox_id=deployment.target_backends[peer].info.id,
+                            )
+                            for port, peer in service.localhost_forwards.items()
+                        ],
+                    )
             peers = {
                 peer: shared
                 for peer, other in self.services.items()
