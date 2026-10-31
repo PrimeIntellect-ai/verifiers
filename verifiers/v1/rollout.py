@@ -247,8 +247,7 @@ class Rollout:
     async def _workspace_lost(self) -> RuntimeLoss | None:
         """The workspace's loss as its provider reports it, when the scoring policy
         keeps such a rollout as a sample. Checked after a failure rather than polled:
-        an unreachable provider proves nothing. A loss the provider attributes to its
-        own infrastructure is not the agent's, so the rollout fails as usual."""
+        an unreachable provider proves nothing."""
         backend = self.deployment and self.deployment.execution_backend
         if backend is None or not self._scoring_policy.skip_on_workspace_loss:
             return None
@@ -264,15 +263,19 @@ class Rollout:
                 while loss is None:
                     await asyncio.sleep(2)
                     loss = await backend.lost()
-                return None if loss.infra else loss
+                return loss
         return None
 
     def _workspace_gone(self, loss: RuntimeLoss) -> None:
-        """End the agent's execution on a lost workspace: nothing is left to finalize
-        or score, so the trace keeps no rewards."""
+        """End the agent's execution on a lost workspace. A loss the provider attributes
+        to its own infrastructure fails the rollout, so that it can be retried; any
+        other leaves nothing to finalize or score, so the trace keeps no rewards."""
+        self.trace.info["workspace_loss"] = {"cause": loss.cause, **loss.evidence}
+        if loss.infra:
+            self.fail(SandboxError(f"workspace lost by its provider ({loss.cause})"))
+            return
         logger.info("rollout %s: workspace lost (%s)", self.trace.id, loss.cause)
         self._lost = loss
-        self.trace.info["workspace_loss"] = {"cause": loss.cause, **loss.evidence}
         self.trace.stop("workspace_lost", override=True)
         self._session.release()
 
