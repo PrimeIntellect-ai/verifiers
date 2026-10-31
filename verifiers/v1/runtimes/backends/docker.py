@@ -41,7 +41,6 @@ from verifiers.v1.runtimes.base import (
     ProgramResult,
     RuntimeBackend,
     RuntimeProcess,
-    TargetStatus,
     parse_gpu,
 )
 from verifiers.v1.runtimes.egress import EgressProxy, NetworkPolicy, is_loopback_host
@@ -620,30 +619,6 @@ class DockerBackend(RuntimeBackend):
         if self._proxy is not None:
             await self._proxy.stop()
         await super().teardown()
-
-    async def execution_status(self) -> TargetStatus:
-        if self._container is None or self.stopped:
-            return TargetStatus("unknown")
-        try:
-            async with asyncio.timeout(10):
-                result = await cli(
-                    "docker", "inspect", "--format", "{{json .State}}", self._container
-                )
-        except Exception:  # noqa: BLE001 - a failed observation is not a confirmed loss
-            return TargetStatus("unknown")
-        if result.exit_code:
-            return TargetStatus("unknown", evidence={"detail": result.stderr[-1000:]})
-        state = json.loads(result.stdout)
-        if state.get("Running"):
-            return TargetStatus("running")
-        return TargetStatus(
-            "lost",
-            "oom" if state.get("OOMKilled") else "container_exited",
-            {
-                key: state.get(key)
-                for key in ("Status", "ExitCode", "OOMKilled", "Error", "FinishedAt")
-            },
-        )
 
     def _exec_argv(
         self, env: dict[str, str], *, stdin: bool = False, user: str | None = None

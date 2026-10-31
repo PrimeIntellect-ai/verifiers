@@ -19,7 +19,6 @@ class FailingSegmentRollout:
     fail = Rollout.fail
     step = Rollout.step
     timeout = Rollout.timeout
-    _agent_deadline = Rollout._agent_deadline
     _workspace_lost = Rollout._workspace_lost
 
 
@@ -48,8 +47,7 @@ def make_rollout(trace: vf.Trace, session, time_remaining=None):
     run._timeouts = RolloutTimeouts()
     run._harness_session = session
     run.deployment = SimpleNamespace(run=lambda turn: turn, execution_backend=None)
-    run._failure_policy = vf.ExecutionFailurePolicy()
-    run._terminated = False
+    run._scoring_policy = vf.ScoringConfig()
     run._session = SimpleNamespace(
         request_interceptors=[],
         error=None,

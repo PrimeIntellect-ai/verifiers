@@ -69,15 +69,13 @@ async def test_split_workspace_loss(run, harness, harness_runtime):
         harness=harness,
         taskset_overrides={"scenario": "loss"},
         runtime={**harness_runtime, "workdir": "/workspace"},
-        env={
-            "agent": {**SPLIT, "execution_failure": {"workspace_loss": "zero"}},
-        },
+        env={"agent": {**SPLIT, "scoring": {"skip_on_workspace_loss": True}}},
         max_turns=10,
         max_tokens=8192,
     )
     (trace,) = episode.traces
     assert trace.ok
-    assert trace.stop_condition == "execution_failed"
-    assert trace.termination.kind == "target_lost"
-    assert trace.termination.valid_sample
-    assert trace.rewards == {"execution_failure": vf.Reward(score=0.0)}
+    assert trace.stop_condition == "workspace_lost"
+    assert trace.info["scoring_skipped"] == "workspace_lost"
+    assert trace.info["workspace_loss"]["status"] == "TERMINATED"
+    assert not trace.rewards and trace.reward == 0.0

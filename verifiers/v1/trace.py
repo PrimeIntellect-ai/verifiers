@@ -6,7 +6,7 @@ import time
 import traceback
 import uuid
 from collections.abc import Callable, Iterable, Iterator, Mapping
-from typing import TYPE_CHECKING, Any, Generic, Literal
+from typing import TYPE_CHECKING, Any, Generic
 
 import numpy as np
 import orjson
@@ -172,23 +172,6 @@ class TraceTask(BaseModel, Generic[DataT]):
 
 class InterceptRecord(BaseModel):
     handler: str
-
-
-class Termination(BaseModel):
-    """Execution that ended before the agent finished, and the policy applied to it."""
-
-    kind: Literal["target_lost", "timeout"]
-    target: str = "main"
-    """The deployment target that was lost."""
-    attribution: Literal["agent", "infra", "unknown"] = "unknown"
-    cause: str = "unknown"
-    evidence: dict = Field(default_factory=dict)
-    """The provider's own report, as observed."""
-    policy: Literal["error", "zero"]
-    valid_sample: bool
-    """Whether the trace stays a completed training sample."""
-    reward: float | None = None
-    rule: str = "execution-v1"
 
 
 class Reward(BaseModel):
@@ -499,8 +482,6 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     """Whether the trace completed successfully."""
     stop_condition: str | None = None
     """What stopped the trace."""
-    termination: Termination | None = None
-    """Set when execution ended early under `agent.execution_failure`."""
     is_timeout: bool = False
     """Whether a stage deadline (setup, agent, finalize, or scoring) expired."""
     errors: list[Error] = Field(default_factory=list)

@@ -27,8 +27,8 @@ from verifiers.v1.runtimes.base import (
     BaseRuntimeInfo,
     ProgramResult,
     RuntimeBackend,
+    RuntimeLoss,
     RuntimeProcess,
-    TargetStatus,
     register,
 )
 from verifiers.v1.runtimes.runtime import Runtime
@@ -108,11 +108,11 @@ __all__ = [
     "RuntimeBackend",
     "RuntimeConfig",
     "RuntimeInfo",
+    "RuntimeLoss",
     "RuntimeProcess",
     "SubprocessBackend",
     "SubprocessConfig",
     "SubprocessRuntimeInfo",
-    "TargetStatus",
     "backend_cls",
     "make_backend",
     "provision_backend",

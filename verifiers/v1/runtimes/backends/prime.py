@@ -26,8 +26,8 @@ from verifiers.v1.runtimes.base import (
     BaseRuntimeInfo,
     ProgramResult,
     RuntimeBackend,
+    RuntimeLoss,
     RuntimeProcess,
-    TargetStatus,
     parse_gpu,
 )
 from verifiers.v1.runtimes.limiters import creation_limiter
@@ -284,39 +284,36 @@ class PrimeBackend(RuntimeBackend):
         ) as e:  # provisioning failure is one rollout's problem, not the eval's
             raise SandboxError(f"prime sandbox provisioning failed: {e}") from e
 
-    async def execution_status(self) -> TargetStatus:
+    async def lost(self) -> RuntimeLoss | None:
         if self._client is None or self.info.id is None or self.stopped:
-            return TargetStatus("unknown")
+            return None
         try:
             async with asyncio.timeout(10):
                 sandbox = await self._client.get(self.info.id)
         except Exception:  # noqa: BLE001 - a failed observation is not a confirmed loss
-            return TargetStatus("unknown")
-        if sandbox.status == "RUNNING":
-            return TargetStatus("running")
+            return None
         if sandbox.status not in {"TERMINATED", "ERROR", "TIMEOUT"}:
-            return TargetStatus("unknown")
-        evidence = {
-            key: getattr(sandbox, key, None)
-            for key in (
-                "status",
-                "termination_reason",
-                "exit_code",
-                "error_type",
-                "error_message",
-            )
-        }
+            return None
         cause = str(
             sandbox.error_type or sandbox.termination_reason or "sandbox_terminated"
         )
         # A guest that powers itself off or crashes reports TERMINATED with no reason;
         # an idle timeout or a lost host is the platform's doing.
-        infra = sandbox.status == "TIMEOUT" or cause.upper() in {
-            "HOST_OOM",
-            "NODE_LOST",
-            "PROVIDER_FAILED",
-        }
-        return TargetStatus("lost", cause, evidence, "infra" if infra else "unknown")
+        return RuntimeLoss(
+            cause,
+            infra=sandbox.status == "TIMEOUT"
+            or cause.upper() in {"HOST_OOM", "NODE_LOST", "PROVIDER_FAILED"},
+            evidence={
+                key: getattr(sandbox, key, None)
+                for key in (
+                    "status",
+                    "termination_reason",
+                    "exit_code",
+                    "error_type",
+                    "error_message",
+                )
+            },
+        )
 
     async def prepare_execution(
         self, routes: list[str] | None, network: NetworkPolicyConfig | None = None

@@ -63,6 +63,8 @@ A truncated or timed-out run is often not worth grading. Set `agent.scoring.skip
 
 `Trace.is_truncated` only checks the run's last model response. Some harnesses keep going after a response hits its per-turn token cap: they compact, or answer a cut-off tool call. Set `agent.max_turn_tokens` to cap each response and stop the run before the next model call once a response hits that cap. The stop condition is `max_turn_tokens`. The run is then truncated, so `skip_on_truncated` applies.
 
+Set `agent.scoring.skip_on_workspace_loss` to keep a rollout whose workspace is gone, such as a Prime VM the agent powered off, as a sample with reward 0 instead of failing it. The provider is asked after a harness failure, never polled, and an unreachable provider is no proof of loss; a loss the provider attributes to its own infrastructure, such as an idle timeout or a lost host, still fails. Such a trace stops with `workspace_lost` and skips task finalization as well as scoring; `trace.info["scoring_skipped"]` is `"workspace_lost"`, and `trace.info["workspace_loss"]` holds the provider's report.
+
 ```toml
 [env.agent]
 max_turns = 10
@@ -71,14 +73,5 @@ max_turn_tokens = 4096
 [env.agent.scoring]
 skip_on_truncated = true
 skip_on_timeout = true
-```
-
-### Workspace loss and agent deadlines
-
-`agent.execution_failure` decides how a rollout ends when execution stops before the agent finishes. `workspace_loss` covers a workspace its provider reports gone while the agent runs, such as a Prime VM the agent powered off or a Docker container that exited; the provider is asked after a harness failure, never polled, and an unreachable provider is not proof of loss. `agent_timeout` covers an expired agent deadline, which includes model latency. `error` fails the rollout, and `zero` keeps it as a valid sample with a single `execution_failure` reward of 0 and no grading; `agent_timeout = "grade"` (the default) scores the workspace as the agent left it. A loss the provider attributes to its own infrastructure stays an error. `Trace.termination` records the kind, cause, provider evidence and applied policy.
-
-```toml
-[env.agent.execution_failure]
-workspace_loss = "zero"
-agent_timeout = "zero"
+skip_on_workspace_loss = true
 ```

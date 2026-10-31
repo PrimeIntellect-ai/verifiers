@@ -23,7 +23,7 @@ if TYPE_CHECKING:
         EvalClientConfig,
         TrainClientConfig,
     )
-    from verifiers.v1.configs.deployment import DeploymentConfig, ExecutionFailurePolicy
+    from verifiers.v1.configs.deployment import DeploymentConfig
     from verifiers.v1.configs.env import (
         EnvConfig,
         SharedEnvConfig,
@@ -141,7 +141,6 @@ if TYPE_CHECKING:
         ModelCall,
         PolicyEvent,
         Reward,
-        Termination,
         TimeSpan,
         TimeSplit,
         Timing,
@@ -243,7 +242,6 @@ _NAME_TO_MODULE = {
     "EvalRunInfo": "verifiers.v1.episode",
     "EvalWorkInfo": "verifiers.v1.episode",
     "ExecutionConnection": "verifiers.v1.runtimes.deployment",
-    "ExecutionFailurePolicy": "verifiers.v1.configs.deployment",
     "GroupInfo": "verifiers.v1.episode",
     "Harness": "verifiers.v1.harness",
     "HarnessConfig": "verifiers.v1.configs.harness",
@@ -324,7 +322,6 @@ _NAME_TO_MODULE = {
     "TaskTimeout": "verifiers.v1.task",
     "Taskset": "verifiers.v1.taskset",
     "TasksetConfig": "verifiers.v1.configs.taskset",
-    "Termination": "verifiers.v1.trace",
     "TextContentPart": "verifiers.v1.types",
     "TimeSpan": "verifiers.v1.trace",
     "TimeSplit": "verifiers.v1.trace",
@@ -422,7 +419,6 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "TraceTask",
     "WireTrace",
     "Reward",
-    "Termination",
     "EnvInfo",
     "Episode",
     "WireEpisode",
@@ -591,7 +587,6 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "Deployment",
     "DeploymentConfig",
     "ExecutionConnection",
-    "ExecutionFailurePolicy",
     "ServicesSpec",
     "ScoringConfig",
 ]
