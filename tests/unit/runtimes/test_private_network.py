@@ -1,11 +1,12 @@
 import asyncio
+import re
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
 import pytest
 
 import verifiers.v1 as vf
-from verifiers.v1.errors import ToolsetError
+from verifiers.v1.errors import SandboxError, ToolsetError
 from verifiers.v1.mcp import launch
 from verifiers.v1.runtimes import (
     DockerBackend,
@@ -15,6 +16,7 @@ from verifiers.v1.runtimes import (
     private_network,
 )
 from verifiers.v1.runtimes.backends import prime
+from verifiers.v1.runtimes.deployment import ExecutionConnection
 from verifiers.v1.runtimes.strategies import (
     _ColocatedDeployment,
     _ContainerDeployment,
@@ -254,3 +256,31 @@ def test_an_explicit_service_needs_a_task_service_spec(monkeypatch, service):
 def test_a_restricted_runtime_without_a_private_network_is_refused(monkeypatch):
     with pytest.raises(ToolsetError, match="joins the rollout's private network"):
         served_url(monkeypatch, toolset("forth", runtime=FORTH))
+
+
+@pytest.mark.parametrize("exited", [False, True])
+async def test_an_execution_worker_is_ready_only_while_it_runs(exited):
+    """A worker that crashed right after announcing its port leaves both lines in its
+    log by the first read; it is not ready."""
+    log = b"listening on 0.0.0.0:41234\n" + (
+        b"vf-exec: worker exited (1)\n" if exited else b""
+    )
+
+    class Workspace:
+        async def run_background(self, argv, env, path):
+            pass
+
+        async def read(self, path):
+            return log
+
+    serve = ExecutionConnection("10.0.0.2").serve(
+        Workspace(),
+        ["worker"],
+        {},
+        re.compile(r"^listening on \S+:(\d+)$", re.MULTILINE),
+    )
+    if exited:
+        with pytest.raises(SandboxError, match="did not start"):
+            await serve
+    else:
+        assert await serve == 41234

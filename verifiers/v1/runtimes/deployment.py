@@ -91,10 +91,11 @@ class ExecutionConnection:
                 while True:
                     with contextlib.suppress(SandboxError):  # not written yet
                         output = (await runtime.read(log)).decode(errors="replace")
-                    if found := announce.search(output):
-                        return int(found.group(1))
+                    # A worker that crashed right after announcing has both lines.
                     if _EXITED in output:
                         break
+                    if found := announce.search(output):
+                        return int(found.group(1))
                     await asyncio.sleep(0.2)
         raise SandboxError(f"execution worker did not start: {output[-2000:]}")
 
