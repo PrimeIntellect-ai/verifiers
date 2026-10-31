@@ -432,6 +432,7 @@ async def prepare_native(config: PrimeConfig, spec: ComposeSpec, env: dict[str, 
             for image in images
         }
         image_sizes = {image["Id"]: image["Size"] for image in images}
+        image_filesystems = {image["Id"]: image["RootFS"] for image in images}
         services, bound = {}, 0
         for name in ids:
             item = inspected[name]
@@ -540,10 +541,14 @@ async def prepare_native(config: PrimeConfig, spec: ComposeSpec, env: dict[str, 
         try:
             images = {}
             for name, service in services.items():
-                identity = f"{service.config.image}\n{service.config.workdir}"
+                # Compose's per-project labels change image IDs without changing files.
+                identity = json.dumps(
+                    [image_filesystems[service.config.image], service.config.workdir],
+                    sort_keys=True,
+                )
                 if identity not in images:
                     images[identity] = await _import_image(
-                        client, project, ids[name], service.config
+                        client, project, ids[name], identity
                     )
                 service.config = service.config.model_copy(
                     update={"image": images[identity]}
@@ -643,9 +648,8 @@ async def _mount(runtime, name: str, mounts: list[NativeMount]) -> None:
         )
 
 
-async def _import_image(client, project, container: str, config: PrimeConfig) -> str:
-    """Cache a private VM image by the exact local image and container workdir."""
-    identity = f"{config.image}\n{config.workdir}"
+async def _import_image(client, project, container: str, identity: str) -> str:
+    """Cache a private VM image by its filesystem layers and container workdir."""
     name = "vf-compose-" + hashlib.sha256(identity.encode()).hexdigest()
     locks = CACHE_DIR / "compose-images"
     locks.mkdir(parents=True, exist_ok=True)
