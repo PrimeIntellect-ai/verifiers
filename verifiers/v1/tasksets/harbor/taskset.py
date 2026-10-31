@@ -65,7 +65,11 @@ from verifiers.v1.tasksets.harbor.criteria import (
     grade_criteria,
     load_task_criteria,
 )
-from verifiers.v1.tasksets.harbor.entrypoint import restart_services, start_entrypoint
+from verifiers.v1.tasksets.harbor.entrypoint import (
+    reruns_on_restore,
+    restart_services,
+    start_entrypoint,
+)
 from verifiers.v1.toolbundles import ToolMount
 from verifiers.v1.trace import Trace
 from verifiers.v1.utils.artifacts import MAX_ARTIFACT_BYTES, Artifact, collect
@@ -510,10 +514,16 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
     ) -> None:
         """A box from a checkpoint keeps its files but no process: start the tool
         servers again over the state they left on disk, in a PID namespace again,
-        after the services the image's entrypoint had started (`restart_services`)."""
+        after the services the image's entrypoint had started (`restart_services`, or
+        the entrypoint itself when its Dockerfile labels it safe to rerun),
+        and hand the box on once the task's healthcheck passes, as setup does: a
+        resumed agent finds its services answering, not still starting."""
         await runtime.backend.isolate_processes()
-        if self.entrypoint_dockerfile() is not None:
-            restarted = await restart_services(runtime)
+        if (dockerfile := self.entrypoint_dockerfile()) is not None:
+            if reruns_on_restore(dockerfile):
+                restarted = await start_entrypoint(runtime, dockerfile)
+            else:
+                restarted = await restart_services(runtime)
             if restarted is not None and trace is not None:
                 trace.info["entrypoint_restart"] = restarted
         await toolbundles.start(
@@ -521,6 +531,8 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
         )
         for target, mount in self._sidecars(deployment):
             await toolbundles.start(target, [mount])
+        if self.data.healthcheck is not None:
+            await self.wait_for_health(runtime, self.data.healthcheck)
 
     async def wait_for_health(self, runtime: Runtime, healthcheck: dict) -> None:
         from harbor.environments.base import HealthcheckError

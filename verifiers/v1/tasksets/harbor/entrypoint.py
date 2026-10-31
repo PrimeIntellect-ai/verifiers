@@ -9,6 +9,9 @@ anything else the task sets up — and waits until it reaches the command it was
 handed, or execs into something else (`exec sleep infinity` after starting services,
 a server in the foreground), or exits.
 
+An image whose entrypoint only starts services can say so (`RERUN_LABEL`): a restore
+then starts that entrypoint again instead of replaying what it left running.
+
 A box started from a checkpoint keeps its files but no process, and its /run is a new
 tmpfs: running the entrypoint again would redo its file setup over the agent's work (a
 starter tree copied over the workdir). So setup records what the entrypoint left
@@ -129,6 +132,33 @@ def exec_form(arguments: str) -> list[str] | None:
     if isinstance(value, list) and all(isinstance(item, str) for item in value):
         return value
     return None
+
+
+RERUN_LABEL = "ai.primeintellect.harbor.entrypoint.restore"
+"""A Dockerfile `LABEL <this>=rerun` says its entrypoint is safe to start again over a
+used box (it only starts services, idempotently, and sets no files up): a restore then
+starts it again, as setup does, instead of replaying the processes it left running. A
+replay runs each recorded argv as it was, which fails for a service that rewrote its
+own command line (`npm exec directus start`) or needs its start script's steps."""
+
+
+def reruns_on_restore(dockerfile: Path) -> bool:
+    """Whether the Dockerfile labels its entrypoint `RERUN_LABEL=rerun` (a task with
+    no Dockerfile does not)."""
+    if not dockerfile.is_file():
+        return False
+    for keyword, arguments in instructions(dockerfile.read_text(errors="replace")):
+        if keyword != "LABEL":
+            continue
+        try:
+            items = shlex.split(arguments)
+        except ValueError:
+            continue
+        for item in items:
+            name, sep, value = item.partition("=")
+            if sep and name == RERUN_LABEL and value == "rerun":
+                return True
+    return False
 
 
 def image_start(dockerfile: Path) -> tuple[list[str] | None, bool, str | None]:
