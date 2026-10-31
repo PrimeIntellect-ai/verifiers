@@ -13,7 +13,7 @@ import weakref
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, ClassVar, Literal
+from typing import TYPE_CHECKING, ClassVar
 
 from pydantic_config import BaseConfig
 
@@ -64,14 +64,13 @@ class ProgramResult:
 
 
 @dataclass(frozen=True)
-class TargetStatus:
-    """A runtime's lifecycle state as its provider reports it. A failed observation is
-    `unknown`: an unreachable provider is no proof that the runtime is gone."""
+class RuntimeLoss:
+    """A runtime its provider reports gone, as the provider explains it."""
 
-    state: Literal["running", "lost", "unknown"]
-    cause: str = "unknown"
+    cause: str
+    infra: bool
+    """Whether the provider's own infrastructure lost it, such as a lost host."""
     evidence: dict = field(default_factory=dict)
-    attribution: Literal["agent", "infra", "unknown"] = "unknown"
 
 
 class RuntimeProcess(ABC):
@@ -350,10 +349,10 @@ class RuntimeBackend(ABC):
             await self.prepare_execution(None)
         self._setup_claimed = True
 
-    async def execution_status(self) -> TargetStatus:
-        """The provider's report of whether this runtime still runs. Runtimes without
-        one stay `unknown`."""
-        return TargetStatus("unknown")
+    async def lost(self) -> RuntimeLoss | None:
+        """The provider's report that this runtime is gone; None while it runs, and
+        whenever the provider cannot say: an unreachable provider proves nothing."""
+        return None
 
     async def prepare_execution(
         self, routes: list[str] | None, network: NetworkPolicyConfig | None = None

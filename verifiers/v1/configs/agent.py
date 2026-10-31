@@ -13,7 +13,7 @@ from pydantic import (
 from pydantic_config import BaseConfig
 
 from verifiers.v1.configs.client import ClientConfig
-from verifiers.v1.configs.deployment import DeploymentConfig, ExecutionFailurePolicy
+from verifiers.v1.configs.deployment import DeploymentConfig
 from verifiers.v1.configs.harness import HarnessConfig, WireHarnessConfig
 from verifiers.v1.configs.retries import RetryConfig
 from verifiers.v1.configs.runtime import PrimeConfig, RuntimeConfig
@@ -50,8 +50,6 @@ class AgentConfig(BaseConfig):
 
     deployment: DeploymentConfig = DeploymentConfig()
     """Workspace and service placement, including trust for local Compose tasks."""
-    execution_failure: ExecutionFailurePolicy = ExecutionFailurePolicy()
-    """How a rollout ends when its workspace is lost or the agent's deadline expires."""
 
     model: str | None = None
     """Model id (None = the run's model, i.e. the policy under evaluation/training)."""
