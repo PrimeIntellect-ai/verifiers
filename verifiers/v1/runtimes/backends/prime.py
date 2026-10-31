@@ -297,12 +297,14 @@ class PrimeBackend(RuntimeBackend):
         cause = str(
             sandbox.error_type or sandbox.termination_reason or "sandbox_terminated"
         )
-        # A guest that powers itself off or crashes reports TERMINATED with no reason;
-        # an idle timeout or a lost host is the platform's doing.
+        # A guest that powers itself off, crashes or kills its own init reports
+        # TERMINATED with neither a reason nor an error. Anything Prime explains, such
+        # as an idle timeout, a lost host or an OOM kill, is its own doing or can't be
+        # told apart from it.
         return RuntimeLoss(
             cause,
-            infra=sandbox.status == "TIMEOUT"
-            or cause.upper() in {"HOST_OOM", "NODE_LOST", "PROVIDER_FAILED"},
+            infra=sandbox.status != "TERMINATED"
+            or bool(sandbox.error_type or sandbox.termination_reason),
             evidence={
                 key: getattr(sandbox, key, None)
                 for key in (
