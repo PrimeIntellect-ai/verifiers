@@ -1,5 +1,6 @@
-"""`Interaction` segments: a failed segment reports its own partial reply, and an
-expired agent deadline stops the rollout as a timeout."""
+"""`Interaction` segments: a failed segment reports its own partial reply, an expired
+agent deadline stops the rollout as a timeout, and a lost workspace ends it as a sample
+unless its provider lost it."""
 
 import asyncio
 from types import SimpleNamespace
@@ -10,6 +11,7 @@ import verifiers.v1 as vf
 from verifiers.v1.agent import Interaction
 from verifiers.v1.graph import MessageNode
 from verifiers.v1.rollout import Rollout, RolloutTimeouts
+from verifiers.v1.runtimes import RuntimeLoss
 from verifiers.v1.types import AssistantMessage
 
 
@@ -20,6 +22,7 @@ class FailingSegmentRollout:
     step = Rollout.step
     timeout = Rollout.timeout
     _workspace_lost = Rollout._workspace_lost
+    _workspace_gone = Rollout._workspace_gone
 
 
 def make_trace() -> vf.Trace:
@@ -48,10 +51,12 @@ def make_rollout(trace: vf.Trace, session, time_remaining=None):
     run._harness_session = session
     run.deployment = SimpleNamespace(run=lambda turn: turn, execution_backend=None)
     run._scoring_policy = vf.ScoringConfig()
+    run._lost = None
     run._session = SimpleNamespace(
         request_interceptors=[],
         error=None,
         stopped=False,
+        release=lambda: None,
     )
     run.deadline_at = None
     return run
@@ -101,3 +106,35 @@ async def test_expired_deadline_is_a_timeout_when_the_runtime_reports_an_error()
 
     assert trace.is_timeout and not trace.errors
     assert trace.stop_condition == "agent_timeout"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("infra", [False, True])
+async def test_lost_workspace_is_a_sample_unless_its_provider_lost_it(infra):
+    """With `skip_on_workspace_loss`, a harness that dies with its workspace ends the
+    rollout as a sample with no rewards; a loss the provider attributes to its own
+    infrastructure still fails it."""
+    trace = make_trace()
+    loss = RuntimeLoss("HOST_OOM" if infra else "sandbox_terminated", infra=infra)
+
+    class DyingSession:
+        async def turn(self, messages):
+            raise RuntimeError("process stream RPC failed: the sandbox was terminated")
+
+    class LostBackend:
+        async def lost(self):
+            return loss
+
+    run = make_rollout(trace, DyingSession())
+    run._scoring_policy = vf.ScoringConfig(skip_on_workspace_loss=True)
+    run.deployment.execution_backend = LostBackend()
+
+    await Interaction(run).turn("next")
+
+    assert trace.info["workspace_loss"] == {"cause": loss.cause}
+    if infra:
+        assert run._failed and run._lost is None
+        assert trace.stop_condition != "workspace_lost"
+    else:
+        assert not run._failed and run._lost is loss
+        assert trace.stop_condition == "workspace_lost" and not trace.errors
