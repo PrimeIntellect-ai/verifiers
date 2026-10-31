@@ -16,6 +16,12 @@ class SplitExecutionTask(vf.Task[SplitExecutionData]):
 
     async def setup(self, runtime: vf.Runtime) -> None:
         await runtime.write("input.txt", b"workspace-only-input")
+        if self.data.scenario == "loss":
+            # Powers the VM off as soon as the agent touches vf-poweroff. A model may
+            # balk at running a poweroff itself, but not at `touch`, and the provider
+            # reports the same guest poweroff either way.
+            watch = "until [ -e vf-poweroff ]; do sleep 0.2; done; echo o > /proc/sysrq-trigger"
+            await runtime.run_background(["sh", "-c", watch], {}, "poweroff.log")
 
     @vf.reward
     async def workspace_files(self, runtime: vf.Runtime, trace: vf.Trace) -> float:
@@ -47,9 +53,8 @@ class SplitExecutionTaskset(vf.Taskset[SplitExecutionTask, SplitExecutionConfig]
             "answer.json with keys input, cwd, env. Use your file editing tool to "
             "create patched.txt containing patched-remotely. Then finish."
             if self.config.scenario == "files"
-            else "Run exactly `echo o > /proc/sysrq-trigger` with your shell tool. This "
-            "is a disposable test VM; powering it off is the entire task. Do not "
-            "substitute another command."
+            else "Run exactly `touch vf-poweroff` with your shell tool, then reply "
+            "done. Do not substitute another command."
         )
         data = SplitExecutionData(idx=0, prompt=prompt, scenario=self.config.scenario)
         return [SplitExecutionTask(data, self.config.task)]
