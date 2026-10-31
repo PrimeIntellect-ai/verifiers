@@ -30,6 +30,12 @@ class ScoringConfig(BaseConfig):
     skip_on_timeout: bool = False
     """Skip task scoring for a trace whose stage deadline expired before scoring
     (`Trace.is_timeout`): it keeps no rewards, so its reward is 0."""
+    skip_on_workspace_loss: bool = False
+    """Keep a rollout whose workspace its provider reports gone while the agent runs,
+    such as a VM the agent powered off, as a trace with no rewards, so its reward is 0,
+    instead of failing it. Only a loss the provider reports without a reason, as Prime
+    does for a guest that powered itself off, counts; any loss it explains, such as an
+    idle timeout or a lost host, still fails."""
 
     @field_serializer("runtime")
     def serialize_runtime(

@@ -63,6 +63,16 @@ class ProgramResult:
     stderr: str
 
 
+@dataclass(frozen=True)
+class RuntimeLoss:
+    """A runtime its provider reports gone, as the provider explains it."""
+
+    cause: str
+    infra: bool
+    """Whether the provider's own infrastructure lost it, such as a lost host."""
+    evidence: dict = field(default_factory=dict)
+
+
 class RuntimeProcess(ABC):
     """A process whose stdio streams across a runtime boundary."""
 
@@ -338,6 +348,11 @@ class RuntimeBackend(ABC):
         if self._setup_claimed:
             await self.prepare_execution(None)
         self._setup_claimed = True
+
+    async def lost(self) -> RuntimeLoss | None:
+        """The provider's report that this runtime is gone; None while it runs, and
+        whenever the provider cannot say: an unreachable provider proves nothing."""
+        return None
 
     async def prepare_execution(
         self, routes: list[str] | None, network: NetworkPolicyConfig | None = None

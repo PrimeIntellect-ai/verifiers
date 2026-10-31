@@ -34,6 +34,7 @@ from verifiers.v1.mcp import SharedToolServer, serve_tools
 from verifiers.v1.runtimes import (
     Runtime,
     RuntimeConfig,
+    RuntimeLoss,
     make_backend,
 )
 from verifiers.v1.runtimes.private_network import tool_vms
@@ -127,6 +128,7 @@ class Rollout:
         self._grader = None
         self.deployment = None
         self._deployment_config = agent_config.deployment
+        self._lost: RuntimeLoss | None = None
         self._has_user = has_user
         self._timeouts = timeouts
         self._agent_time_remaining = self._timeouts.agent
@@ -241,6 +243,41 @@ class Rollout:
         a failure — no further segments run, but finalize and scoring still do."""
         logger.info("rollout %s: %s timeout", self.trace.id, stage)
         self.trace.record_timeout(stage)
+
+    async def _workspace_lost(self) -> RuntimeLoss | None:
+        """The workspace's loss as its provider reports it, when the scoring policy
+        keeps such a rollout as a sample. Checked after a failure rather than polled:
+        an unreachable provider proves nothing."""
+        backend = self.deployment and self.deployment.execution_backend
+        if backend is None or not self._scoring_policy.skip_on_workspace_loss:
+            return None
+        # A guest that just powered itself off still reads as running for a while, a
+        # status poll can fail, and a wedged guest may never answer: none of these
+        # proves anything, so a workspace that no longer executes is watched until its
+        # provider reports it lost.
+        with contextlib.suppress(TimeoutError):
+            async with asyncio.timeout(60):
+                loss = await backend.lost()
+                if loss is None and await backend.bind().alive():
+                    return None
+                while loss is None:
+                    await asyncio.sleep(2)
+                    loss = await backend.lost()
+                return loss
+        return None
+
+    def _workspace_gone(self, loss: RuntimeLoss) -> None:
+        """End the agent's execution on a lost workspace. A loss the provider attributes
+        to its own infrastructure fails the rollout, so that it can be retried; any
+        other leaves nothing to finalize or score, so the trace keeps no rewards."""
+        self.trace.info["workspace_loss"] = {"cause": loss.cause, **loss.evidence}
+        if loss.infra:
+            self.fail(SandboxError(f"workspace lost by its provider ({loss.cause})"))
+            return
+        logger.info("rollout %s: workspace lost (%s)", self.trace.id, loss.cause)
+        self._lost = loss
+        self.trace.stop("workspace_lost", override=True)
+        self._session.release()
 
     async def open(self) -> bool:
         """Boot the rollout's world up to the point where segments can run: start
@@ -640,6 +677,8 @@ class Rollout:
             # expired deadline stays the raw failure.
             if self.deadline_at is not None and (loop.time() >= self.deadline_at):
                 self.timeout("agent")
+            elif loss := await self._workspace_lost():
+                self._workspace_gone(loss)
             else:
                 self.fail(e)
             return False
@@ -651,6 +690,11 @@ class Rollout:
             # deadline is still the outcome.
             if deadline.expired():
                 self.timeout("agent")
+                return False
+            # A harness that dies with its workspace, or loses its tools' worker
+            # there, fails here; the provider says whether the workspace is gone.
+            if loss := await self._workspace_lost():
+                self._workspace_gone(loss)
                 return False
             real = self._session.error
             if real is not None and isinstance(e, RolloutError):
@@ -805,8 +849,21 @@ class Rollout:
                 trace.timing.agent.end = time.time()
             if not self._agent_finished():
                 await self._close_harness()
+            # A harness can finish on its own after its tools lost the workspace, and
+            # a timed-out agent's workspace can be gone too: neither can be graded, so
+            # the loss decides the outcome (is_timeout stays). Loss before the agent
+            # started is a setup outcome, not an execution one.
+            if (
+                not self._failed
+                and self._lost is None
+                and trace.timing.agent.start
+                and (loss := await self._workspace_lost())
+            ):
+                self._workspace_gone(loss)
             trace.notify()
-            if not self._failed and self._opened:
+            if self._lost is not None:
+                trace.info["scoring_skipped"] = "workspace_lost"
+            elif not self._failed and self._opened:
                 assert runtime is not None
                 assert self.deployment is not None
                 grader = self._grader

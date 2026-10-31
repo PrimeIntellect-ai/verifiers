@@ -1,19 +1,32 @@
 """Check that a split harness's tools act on the workspace, not the harness's VM."""
 
 import json
+from typing import Literal
 
 import verifiers.v1 as vf
 
 
-class SplitExecutionTask(vf.Task):
+class SplitExecutionData(vf.TaskData):
+    scenario: Literal["files", "loss"] = "files"
+
+
+class SplitExecutionTask(vf.Task[SplitExecutionData]):
     def runtime_env(self) -> dict[str, str]:
         return {"VF_WORKSPACE_PROBE": "workspace-value"}
 
     async def setup(self, runtime: vf.Runtime) -> None:
         await runtime.write("input.txt", b"workspace-only-input")
+        if self.data.scenario == "loss":
+            # Powers the VM off as soon as the agent touches vf-poweroff. A model may
+            # balk at running a poweroff itself, but not at `touch`, and the provider
+            # reports the same guest poweroff either way.
+            watch = "until [ -e vf-poweroff ]; do sleep 0.2; done; echo o > /proc/sysrq-trigger"
+            await runtime.run_background(["sh", "-c", watch], {}, "poweroff.log")
 
     @vf.reward
     async def workspace_files(self, runtime: vf.Runtime, trace: vf.Trace) -> float:
+        if self.data.scenario == "loss":
+            raise AssertionError("a lost workspace must not be graded")
         report = json.loads((await runtime.read("answer.json")).decode())
         patched = (await runtime.read("patched.txt")).decode().strip()
         trace.info["workspace_report"] = report
@@ -28,15 +41,23 @@ class SplitExecutionTask(vf.Task):
         )
 
 
-class SplitExecutionTaskset(vf.Taskset[SplitExecutionTask, vf.TasksetConfig]):
+class SplitExecutionConfig(vf.TasksetConfig):
+    scenario: Literal["files", "loss"] = "files"
+
+
+class SplitExecutionTaskset(vf.Taskset[SplitExecutionTask, SplitExecutionConfig]):
     def load(self) -> list[SplitExecutionTask]:
         prompt = (
             "Use your shell tool to read input.txt, your current directory, and the "
             "VF_WORKSPACE_PROBE environment variable. Write these actual values to "
             "answer.json with keys input, cwd, env. Use your file editing tool to "
             "create patched.txt containing patched-remotely. Then finish."
+            if self.config.scenario == "files"
+            else "Run exactly `touch vf-poweroff` with your shell tool, then reply "
+            "done. Do not substitute another command."
         )
-        return [SplitExecutionTask(vf.TaskData(idx=0, prompt=prompt), self.config.task)]
+        data = SplitExecutionData(idx=0, prompt=prompt, scenario=self.config.scenario)
+        return [SplitExecutionTask(data, self.config.task)]
 
 
 __all__ = ["SplitExecutionTaskset"]
