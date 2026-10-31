@@ -849,8 +849,10 @@ class Rollout:
                 trace.timing.agent.end = time.time()
             if not self._agent_finished():
                 await self._close_harness()
-            # A harness can finish on its own after its tools lost the workspace. Loss
-            # before the agent started is a setup outcome, not an execution one.
+            # A harness can finish on its own after its tools lost the workspace, and
+            # a timed-out agent's workspace can be gone too: neither can be graded, so
+            # the loss decides the outcome (is_timeout stays). Loss before the agent
+            # started is a setup outcome, not an execution one.
             if (
                 not self._failed
                 and self._lost is None
