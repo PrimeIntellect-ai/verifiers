@@ -80,9 +80,9 @@ FORKS = {
     # Acts only through tool calls: it drops a tool-less reply from its history and
     # resends only its format error.
     "mini-swe-agent": "https://github.com/SWE-agent/mini-swe-agent/blob/v2.4.6/src/minisweagent/models/litellm_model.py#L79-L90",
-    # Moves its runtime-context message to the tail of every request and drops the
-    # earlier one, unless the provider's replay policy is append-only.
-    "openclaw": "https://github.com/openclaw/openclaw/blob/v2026.10.6/src/agents/internal-runtime-context.ts#L402-L443",
+    # Drops historical runtime-context messages and can relocate the current
+    # prompt's context around user turns.
+    "openclaw": "https://github.com/openclaw/openclaw/blob/v2026.10.9/src/agents/internal-runtime-context.ts#L403-L513",
 }
 
 
