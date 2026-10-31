@@ -411,7 +411,8 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
             )
         command = (
             "rm -f /logs/verifier/reward.json /logs/verifier/reward.txt && "
-            f"mkdir -p /logs/verifier {ARTIFACTS_DIR} && {stage}"
+            f"mkdir -p /logs/verifier {ARTIFACTS_DIR} && "
+            f"chmod 777 /logs/verifier && {stage}"
         )
         result = await runtime.run(["sh", "-c", command], {})
         if result.exit_code:
