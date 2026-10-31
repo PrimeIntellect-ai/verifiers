@@ -13,8 +13,16 @@ import tomli_w
 from verifiers.v1.acp import ACPConfig, ACPHarness, ACPTurn
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig, PinnedVersion
-from verifiers.v1.harnesses.node import NODE_BIN_DIR, ensure_node
+from verifiers.v1.harnesses.node import INSTALL as NODE_INSTALL
+from verifiers.v1.harnesses.node import (
+    NODE_BIN_DIR,
+    NODE_DIR,
+    NODE_VERSION,
+    ensure_node,
+)
 from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
+from verifiers.v1.harnesses.utils.prebuilt import Prebuilt, prebuilt_name
+from verifiers.v1.harnesses.utils.prebuilt import link as link_prebuilt
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.runtimes.deployment import ExecutionConnection
 from verifiers.v1.task import TaskData
@@ -85,7 +93,28 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
         await self._install(runtime)
         await super().setup(runtime)
 
+    def prebuilt(self) -> Prebuilt | None:
+        if self.config.skills:
+            return None  # skills install per run
+        versions = {"version": self.config.version, "acp_version": ACP_VERSION}
+        codex_bin = CODEX_BIN.format(**versions)
+        return Prebuilt(
+            name=prebuilt_name(
+                "codex",
+                NODE_INSTALL,
+                NODE_VERSION,
+                INSTALL,
+                self.config.version,
+                ACP_VERSION,
+            ),
+            dirs=(NODE_DIR, CODEX_DIR.format(**versions)),
+            probe=f"{NODE_BIN_DIR}/node {codex_bin} --version",
+            install=self._install,
+        )
+
     async def _install(self, runtime: Runtime) -> None:
+        if await link_prebuilt(runtime, self.prebuilt()):
+            return
         await ensure_node(runtime)
         logger.info(
             "codex: ensuring Codex %s and codex-acp %s are installed",

@@ -2,9 +2,11 @@
 
 import asyncio
 import logging
+from collections.abc import Mapping
 from contextlib import AsyncExitStack, asynccontextmanager
 from functools import partial
 
+from verifiers.v1.configs.runtime import PrimeVolume
 from verifiers.v1.runtimes import PrimeBackend, PrimeConfig, make_backend
 from verifiers.v1.runtimes.compose import compose_services
 from verifiers.v1.runtimes.deployment import ServicesSpec, _DeploymentStrategy
@@ -75,8 +77,14 @@ class _PrivateNetworkDeployment(_DeploymentStrategy):
         members = d.spec.services if native else d.tool_vms
         harness = self._harness = None
         if d.config.mode == "split":
+            if d.harness_mounts:
+                mounts = {**d.backend.config.mounts, **d.harness_mounts}
+                d.backend.config = d.backend.config.model_copy(
+                    update={"mounts": mounts}
+                )
+                d.backend.info.mounts = mounts
             harness = self._harness = make_backend(
-                _harness_config(d.config.harness, d.backend.config),
+                _harness_config(d.config.harness, d.backend.config, d.harness_mounts),
                 f"{d.backend.name}-harness",
             )
         self._services = await d.enter(AsyncExitStack())
@@ -206,11 +214,15 @@ class _NativeComposeDeployment(_PrivateNetworkDeployment):
             )
 
 
-def _harness_config(harness: PrimeConfig, workspace: PrimeConfig) -> PrimeConfig:
-    """A split harness's VM: placed and labelled like the workspace unless set, and
-    under the task's network policy, which the harness would share colocated."""
+def _harness_config(
+    harness: PrimeConfig, workspace: PrimeConfig, mounts: Mapping[str, PrimeVolume]
+) -> PrimeConfig:
+    """A split harness's VM: placed and labelled like the workspace unless set, under
+    the task's network policy, which the harness would share colocated, and with the
+    deployment's harness mounts."""
     return harness.model_copy(
         update={
+            "mounts": {**harness.mounts, **mounts},
             "labels": list(dict.fromkeys([*workspace.labels, *harness.labels])),
             "region": harness.region or workspace.region,
             "creates_per_min": (

@@ -12,6 +12,7 @@ from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass, field
 
 from verifiers.v1.configs.deployment import DeploymentConfig
+from verifiers.v1.configs.runtime import PrimeVolume
 from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes import (
     PrimeConfig,
@@ -150,6 +151,7 @@ class Deployment:
         spec: ComposeSpec | ServicesSpec | None = None,
         tool_vms: Mapping[str, PrimeConfig] | None = None,
         tool_services: Collection[str] = (),
+        harness_mounts: Mapping[str, PrimeVolume] | None = None,
         env: dict[str, str] | None = None,
         config: DeploymentConfig | None = None,
         borrowed_runtime: Runtime | None = None,
@@ -161,6 +163,9 @@ class Deployment:
         workspace over the rollout's private network."""
         self.tool_services = frozenset(tool_services)
         """Task services that host tool servers, which a split harness connects to."""
+        self.harness_mounts = dict(harness_mounts or {})
+        """Volumes a split deployment mounts on the harness's VM and the workspace, such
+        as the harness's prebuilt install."""
         self.env = dict(env or {})
         self.config = config or DeploymentConfig()
         self.borrowed_runtime = borrowed_runtime
