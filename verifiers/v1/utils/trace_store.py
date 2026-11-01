@@ -16,8 +16,8 @@ from collections.abc import Iterable, Iterator
 from functools import cache
 from pathlib import Path
 
+import orjson
 from pydantic import TypeAdapter
-from pydantic_core import to_json
 
 from verifiers.v1.episode import EnvInfo, Episode, WireEpisode
 from verifiers.v1.state import StateT
@@ -306,7 +306,7 @@ class TraceStore:
 
     @staticmethod
     def _append(db, file, row: dict) -> None:
-        data = to_json(row, inf_nan_mode="null") + b"\n"
+        data = orjson.dumps(row, option=orjson.OPT_SERIALIZE_NUMPY) + b"\n"
         file.seek(0, os.SEEK_END)
         offset = file.tell()
         file.write(data)
@@ -467,7 +467,9 @@ class TraceStore:
                             "num_total_tokens",
                         ):
                             row[key] = sum(t.get(key, 0) for t in row["traces"])
-                        yield to_json(row, inf_nan_mode="null") + b"\n"
+                        yield (
+                            orjson.dumps(row, option=orjson.OPT_SERIALIZE_NUMPY) + b"\n"
+                        )
 
             _replace(self.file, lines())
             for trace_id in deleted:

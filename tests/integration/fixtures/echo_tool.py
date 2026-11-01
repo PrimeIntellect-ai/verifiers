@@ -4,21 +4,18 @@ The v1 tool fixture for the integration grid. The task constructs an `EchoToolse
 (`vf.Toolset`) in `Task.toolsets`, with one `@vf.tool` method whose placement is
 CLI-tunable (`--taskset.task.tools.colocated`, `--taskset.task.tools.service`,
 `--taskset.task.tools.runtime.type`): it runs colocated in the harness's runtime, in the
-task's `tools` Compose service (echo_tool_compose), or in its own runtime, and the
+task's native `tools` service VM, or in its own runtime, and the
 harness must reach it wherever it lives. The tool stamps its output with a token the prompt
 never reveals, so the reward is 1.0 only if the model actually called the tool —
 trivial when the infra works, impossible when it doesn't. The tool is task-agnostic,
 so it would also serve taskset-scoped (`Taskset.toolsets`).
 """
 
-from pathlib import Path
-
 import verifiers.v1 as vf
 from verifiers.v1.types import content_text
 
 PHRASE = "hello world"
 ECHO_TOKEN = "ok-7f3"  # the tool stamps this; only a real tool call can surface it
-COMPOSE = Path(__file__).with_name("echo_tool_compose")
 
 
 class EchoToolset(vf.Toolset[vf.ToolsetConfig]):
@@ -39,10 +36,10 @@ class EchoToolTask(vf.Task[vf.TaskData, vf.State, EchoToolTaskConfig]):
     def toolsets(cls, config: EchoToolTaskConfig) -> list[vf.Toolset]:
         return [EchoToolset(config.tools)]
 
-    def deployment_spec(self) -> vf.ComposeSpec | None:
+    def deployment_spec(self) -> vf.ServicesSpec | None:
         if self.config.tools.service is None:
             return None
-        return vf.ComposeSpec(directory=str(COMPOSE), file="docker-compose.yaml")
+        return vf.ServicesSpec({"tools": vf.PrimeConfig()})
 
     @vf.reward(weight=1.0)
     async def echoed(self, trace: vf.Trace) -> float:

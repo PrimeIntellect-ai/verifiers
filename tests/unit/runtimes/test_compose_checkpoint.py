@@ -42,7 +42,12 @@ async def test_composition_preserves_the_declared_workspace(
 
     monkeypatch.setattr(strategies, "compose_services", services)
     backend = backend_type(config_type(workdir=workdir))
-    deployment = backend.deploy(spec=ComposeSpec(directory=str(tmp_path)))
+    deployment = backend.deploy(
+        spec=ComposeSpec(
+            directory=str(tmp_path),
+            host_image="prepared-host" if backend_type is PrimeBackend else None,
+        )
+    )
     try:
         await deployment.start()
         assert seen == [workdir]

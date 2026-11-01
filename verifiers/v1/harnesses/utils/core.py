@@ -25,6 +25,7 @@ from openai import (
     omit,
 )
 from openai.lib.streaming.chat import AsyncChatCompletionStream
+from pydantic import AnyHttpUrl, ValidationError
 from tenacity import (
     AsyncRetrying,
     before_sleep_log,
@@ -49,6 +50,7 @@ if TYPE_CHECKING:
         is_context_overflow,
     )
     from verifiers.v1.harnesses.utils.mcp import call_mcp, connect_mcp  # noqa: TC004
+    from verifiers.v1.utils.network import network_rule_matches  # noqa: TC004
 
 # Mirror of verifiers.v1.errors.MODEL_TRANSPORT_ERROR_EXIT_CODE;
 # this bundled script cannot import verifiers.
@@ -154,7 +156,9 @@ def excluded(link: str, sites) -> bool:
     return False
 
 
-def run_search(query: str, api_key: str, num_results: int = 5, exclude=()) -> str:
+def run_search(
+    query: str, api_key: str, num_results: int = 5, exclude=(), network_block=None
+) -> str:
     """Serper Google web search -> formatted organic results, without the `exclude` sites.
 
     The key arrives as an argument (read from the launch file, like the interception secret)
@@ -182,6 +186,25 @@ def run_search(query: str, api_key: str, num_results: int = 5, exclude=()) -> st
             for result in response.json().get("organic") or []
             if not excluded(str(result.get("link") or ""), exclude)
         ]
+        if network_block:
+            filtered = []
+            for result in organic:
+                try:
+                    url = AnyHttpUrl(result.get("link", ""))
+                except ValidationError:
+                    continue
+                if not any(
+                    network_rule_matches(
+                        rule,
+                        url.scheme,
+                        url.host.strip("[]"),
+                        url.port,
+                        subdomains=True,
+                    )
+                    for rule in network_block
+                ):
+                    filtered.append(result)
+            organic = filtered
         return format_results(organic[:num_results], query)
     except Exception as e:  # noqa: BLE001 - tool failures are returned to the model
         return f"search failed ({e}). Try again or rephrase the query."
@@ -569,6 +592,7 @@ async def run_chat_loop(
                         args.serper_key,
                         tool_args.get("num_results", 5),
                         args.search_exclude,
+                        args.search_block,
                     )
                 else:
                     content = f"error: unknown tool {name!r}"
@@ -614,6 +638,7 @@ def parse_args() -> argparse.Namespace:
     args.serper_key = launch.get("serper_key", "")
     args.search_exclude = [s for s in launch.get("search_exclude", "").split("\n") if s]
     args.initial_messages = launch.get("messages", [])
+    args.search_block = json.loads(launch.get("search_block", "[]"))
     return args
 
 

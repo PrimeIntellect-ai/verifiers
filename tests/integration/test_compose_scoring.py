@@ -182,6 +182,7 @@ def compose_task(
     return ComposeTask(
         HarborData(
             prompt="Copy the sidecar answer",
+            compose_host_image="python:3.11-slim-trixie",
             tags=["build-main"] if build_main else [],
             task_dir=str(tmp_path),
             env={"COLLECTION_SCOPE": "workspace"},
@@ -223,6 +224,7 @@ async def test_a_model_free_compose_run_grades_through_its_deployment(tmp_path):
     task = ComposeTask(
         HarborData(
             prompt="Copy the sidecar answer",
+            compose_host_image="python:3.11-slim-trixie",
             task_dir=str(tmp_path),
             scoring=vf.ScoringConfig(
                 mode="isolated", retries=vf.RetryConfig(max_retries=0)

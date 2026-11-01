@@ -30,6 +30,7 @@ import os
 import signal
 import tempfile
 import threading
+import time
 from collections.abc import Callable
 
 import msgpack
@@ -37,7 +38,7 @@ import zmq
 import zmq.asyncio
 
 from verifiers.v1.configs.env import EnvConfig
-from verifiers.v1.serve.server import EnvServer
+from verifiers.v1.serve.server import LATE_CANCEL_SECONDS, EnvServer
 from verifiers.v1.serve.types import (
     BaseResponse,
     CancelResponse,
@@ -198,6 +199,10 @@ class EnvServerPool:
         # request the client, the parts still out, and whether it was answered.
         steer_parts: dict[bytes, bytes] = {}
         steers: dict[bytes, dict] = {}
+        # request_id -> (replied_at, worker), oldest first: a late cancel still reaches
+        # the worker that may hold the run's kept arrays (`LATE_CANCEL_SECONDS`).
+        replied: dict[bytes, tuple[float, dict]] = {}
+        self._replied = replied
         logger.info(
             "EnvServerPool up: address=%s workers=%d/%s multiplex=%d elastic=%s",
             self.address,
@@ -237,8 +242,10 @@ class EnvServerPool:
                                     [part, method, payload]
                                 )
                         elif method == b"cancel":
-                            # Route the cancel to the worker holding the target run;
-                            # an unknown/finished target (or an unparseable payload
+                            # Route the cancel to the worker holding the target run,
+                            # or to the one that replied to it within
+                            # `LATE_CANCEL_SECONDS` (it may hold the run's kept
+                            # arrays); any other target (or an unparseable payload
                             # — one bad frame must not tear down the broker) is
                             # answered inline
                             try:
@@ -247,12 +254,22 @@ class EnvServerPool:
                             except Exception:  # noqa: BLE001 - one bad frame must not kill the broker
                                 target = b""
                             target_entry = pending.get(target)
-                            if target_entry is None:
+                            late = replied.get(target)
+                            if target_entry is not None:
+                                worker = target_entry["worker"]
+                            elif (
+                                late is not None
+                                and late[1] in self.workers
+                                and time.monotonic() - late[0] < LATE_CANCEL_SECONDS
+                            ):
+                                worker = late[1]
+                            else:
+                                worker = None
+                            if worker is None:
                                 await self.frontend.send_multipart(
                                     [client_id, request_id, b"reply", _CANCEL_MISS]
                                 )
                             else:
-                                worker = target_entry["worker"]
                                 worker["active"] += 1
                                 pending[request_id] = {
                                     "client_id": client_id,
@@ -312,14 +329,33 @@ class EnvServerPool:
             entry = pending.pop(request_id.bytes, None)
             if entry is not None:
                 entry["worker"]["active"] -= 1
+                replied = getattr(self, "_replied", None)
+                if replied is not None:
+                    now = time.monotonic()
+                    replied[request_id.bytes] = (now, entry["worker"])
+                    for old, (replied_at, _) in list(replied.items()):
+                        if now - replied_at < LATE_CANCEL_SECONDS:
+                            break
+                        del replied[old]
         else:
             entry = pending.get(request_id.bytes)
         if entry is None:
             return False
-        with contextlib.suppress(zmq.ZMQError):
+        try:
             await self.frontend.send_multipart(
                 [entry["client_id"], request_id, kind, data], copy=False
             )
+        except zmq.ZMQError:
+            with contextlib.suppress(UnicodeDecodeError):
+                await entry["worker"]["dealer"].send_multipart(
+                    [
+                        b"",
+                        b"cancel",
+                        msgpack.packb(
+                            {"request_id": request_id.bytes.decode()}, use_bin_type=True
+                        ),
+                    ]
+                )
         return closed
 
     async def _drop_worker(

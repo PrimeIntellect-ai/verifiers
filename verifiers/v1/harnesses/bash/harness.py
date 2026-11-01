@@ -1,3 +1,4 @@
+import json
 import os
 import shlex
 from typing import Literal
@@ -6,6 +7,7 @@ from pydantic import Field, NonNegativeInt, PositiveInt, field_validator
 
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig, skill_destination
+from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.harness import Harness
 from verifiers.v1.harnesses.utils.launch import (
     CHAT_PROGRAM_SOURCE,
@@ -214,6 +216,8 @@ class BashHarness(Harness[BashHarnessConfig]):
             credentials["serper_key"] = serper_key
             if self.config.search_exclude:
                 credentials["search_exclude"] = "\n".join(self.config.search_exclude)
+            if isinstance(runtime.config, NetworkPolicyConfig) and runtime.config.block:
+                credentials["search_block"] = json.dumps(runtime.config.block)
         return await launch_chat_program(
             CHAT_PROGRAM_SOURCE,
             self.config,

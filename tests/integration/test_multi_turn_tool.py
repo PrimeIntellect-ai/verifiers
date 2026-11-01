@@ -1,8 +1,9 @@
 """One task, one MCP tool: the model calls a tool whose output carries a stamp the prompt
 never reveals (echo-tool), so reward 1.0 proves the tool ran. Every MCP harness reaches
 it colocated across the harness x runtime grid; the chat loop reaches it across its
-placements (colocated in the harness's box, in a Compose service beside it, or its own
-runtime) on the runtime x runtime grid."""
+placements (colocated in the harness's box, in a native service VM beside it, or its own
+runtime) on the runtime x runtime grid. A tool that raises (tool-error) reports its message
+to the model; that is server-side, so the chat loop covers it."""
 
 import pytest
 from grid import assert_one_branch, grid, placements
@@ -42,7 +43,7 @@ async def test_tool(run, harness, harness_runtime):
 )
 async def test_tool_placement(run, harness_runtime, tool_runtime):
     """A `vf.Toolset` across its placement (`tool_runtime`: colocated in the harness's
-    runtime, in a Compose service beside it, or its own runtime) x the harness `runtime`,
+    runtime, in a native service VM beside it, or its own runtime) x the harness `runtime`,
     on the chat loop. Eval-wide SHARED servers are a different scope (`Taskset.toolsets`),
     covered by `test_shared_tool`."""
     (episode,) = await run(
@@ -64,6 +65,16 @@ async def test_tool_placement(run, harness_runtime, tool_runtime):
     assert "message" in echo_tool.parameters.get("properties", {})
 
 
+async def test_tool_error(run):
+    """A tool's exception message comes back to the model, not just that the call failed."""
+    (episode,) = await run("tool-error", max_turns=4)
+    (trace,) = episode.traces
+    assert trace.ok, [error.message for error in trace.errors]
+    assert trace.reward == 1.0, [
+        message.model_dump_json(exclude_none=True) for message in trace.tool_messages
+    ]
+
+
 @pytest.mark.parametrize(
     "placement",
     [
@@ -73,7 +84,7 @@ async def test_tool_placement(run, harness_runtime, tool_runtime):
     ],
 )
 def test_service_placement_is_exclusive(placement):
-    """A server in a Compose service runs there: not colocated, remote or in a runtime of
+    """A server in a named service runs there: not colocated, remote or in a runtime of
     its own."""
     with pytest.raises(ValueError):
         vf.ToolsetConfig(service="tools", **placement)

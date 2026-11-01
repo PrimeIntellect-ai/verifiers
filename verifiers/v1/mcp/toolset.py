@@ -18,13 +18,12 @@ class ToolsetConfig(BaseConfig):
     colocated: bool = False
     runtime: RuntimeConfig = SubprocessConfig()
     """Where the server runs: the evaluator by default. A Prime runtime beside a Prime
-    workspace without Compose services is a VM of the server's own that joins the
+    workspace without a task service spec is a VM of the server's own that joins the
     workspace over the rollout's private network, under its own egress policy."""
     url: str | None = None
     service: str | None = None
-    """Run the server in this service of the task's Compose services (on a Prime
-    VM). The harness reaches it over the Compose network by the service's name, so the
-    workspace needs no access to whatever the server fronts."""
+    """Run the server in a named native Prime service VM. The harness reaches it
+    over the deployment's private network, using its LAN hostname."""
 
     @model_validator(mode="after")
     def _one_placement(self):
@@ -32,12 +31,12 @@ class ToolsetConfig(BaseConfig):
             return self
         if self.colocated or self.url:
             raise ValueError(
-                "a tool server placed in a Compose service is neither colocated nor remote"
+                "a tool server placed in a service is neither colocated nor remote"
             )
         # The service is the server's runtime; another one, or its policy, would go unused.
         if not isinstance(self.runtime, SubprocessConfig):
             raise ValueError(  # noqa: TRY004 - Pydantic validators must raise ValueError
-                "a tool server placed in a Compose service runs in that service and "
+                "a tool server placed in a service runs in that service and "
                 f"takes no runtime of its own (got {self.runtime.type})"
             )
         return self

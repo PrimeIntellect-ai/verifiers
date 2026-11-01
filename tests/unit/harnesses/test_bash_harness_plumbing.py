@@ -43,6 +43,8 @@ class Launched:
 
 
 async def launch(monkeypatch, runtime=None, prompt: Any = "go", **config) -> Launched:
+    if runtime is None:
+        runtime = SimpleNamespace(config=SubprocessConfig())
     launched = Launched()
 
     async def fake_launch(

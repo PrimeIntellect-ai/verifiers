@@ -36,7 +36,7 @@ from pydantic import TypeAdapter
 import verifiers.v1 as vf
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.harness import Harness
-from verifiers.v1.runtimes import RuntimeConfig, backend_cls
+from verifiers.v1.runtimes import PrimeBackend, RuntimeConfig, backend_cls
 from verifiers.v1.utils.loaders import harness_class, harness_config_type
 
 HARNESSES: list[str | dict] = [
@@ -64,12 +64,13 @@ RUNTIME_FEATURES = {
     "network": "network policies",
     "expose": "port exposure",
     "compose": "Compose services",
+    "services": "native service VMs",
 }
 
-# Harnesses that cannot run against the CI model yet.
+# Harness dialects that cannot run against the CI model yet.
 # TODO: drop each entry once its fix lands.
 CI_MODEL_GAPS = {
-    "kimi-code": "Prime chat completions rejects kimi-code's prompt_cache_key",
+    ("kimi-code", "chat_completions"): "Prime rejects Kimi chat prompt_cache_key",
 }
 
 
@@ -78,10 +79,10 @@ CI_MODEL_GAPS = {
 FORKS = {
     # Acts only through tool calls: it drops a tool-less reply from its history and
     # resends only its format error.
-    "mini-swe-agent": "https://github.com/SWE-agent/mini-swe-agent/blob/v2.4.6/src/minisweagent/agents/default.py#L114",
-    # Moves its runtime-context message to the tail of every request and drops the
-    # earlier one, unless the provider's replay policy is append-only.
-    "openclaw": "https://github.com/openclaw/openclaw/blob/v2026.9.5/src/agents/internal-runtime-context.ts#L402-L408",
+    "mini-swe-agent": "https://github.com/SWE-agent/mini-swe-agent/blob/v2.4.6/src/minisweagent/models/litellm_model.py#L79-L90",
+    # Drops historical runtime-context messages and can relocate the current
+    # prompt's context around user turns.
+    "openclaw": "https://github.com/openclaw/openclaw/blob/v2026.10.9/src/agents/internal-runtime-context.ts#L403-L513",
 }
 
 
@@ -136,6 +137,8 @@ def supports(runtime: str, feature: str) -> bool:
     if feature == "network":
         config = TypeAdapter(RuntimeConfig).validate_python(runtime_config(runtime))
         return isinstance(config, NetworkPolicyConfig)
+    if feature == "services":
+        return issubclass(runtime_cls(runtime), PrimeBackend)
     flag = {
         "container": "SUPPORTS_TASK_IMAGES",
         "user": "SUPPORTS_USER_SWITCHING",
@@ -174,7 +177,10 @@ def unsupported(
     for feature in runtime_needs:
         if feature in RUNTIME_FEATURES and not supports(runtime, feature):
             return f"{runtime} does not support {RUNTIME_FEATURES[feature]}"
-    return CI_MODEL_GAPS.get(name)
+    dialect = harness_config_type(name).model_fields["dialect"].default
+    if isinstance(harness, dict):
+        dialect = harness.get("dialect", dialect)
+    return CI_MODEL_GAPS.get((name, dialect))
 
 
 def cell_marks(
@@ -276,7 +282,7 @@ def placements(
     shared: bool = False,
 ) -> list:
     """`(harness_runtime, tool_runtime)` cells for a tool server placed colocated in the
-    harness's box, in a Compose service beside it (`service`), or in its own runtime
+    harness's box, in a native service VM beside it (`service`), or in its own runtime
     (on Prime beside a Prime harness, a VM on the rollout's private network). A
     `subprocess` tool runtime is a server on the host, reached from the sandbox through
     the tunnel. A `shared` server runs once per eval, so it joins no rollout's network."""
@@ -286,7 +292,7 @@ def placements(
             marks = [mark(harness_runtime), mark(tool_runtime)]
             reason = None
             if tool_runtime == "service":
-                reason = unsupported("null", harness_runtime, ("compose",))
+                reason = unsupported("null", harness_runtime, ("services",))
             # Beside a Prime harness, a rollout's Prime server joins its private network.
             elif tool_runtime != "colocated" and not (
                 not shared and tool_runtime == harness_runtime == "prime"

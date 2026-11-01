@@ -79,6 +79,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
+import orjson
 from pydantic import BaseModel
 
 from verifiers.v1.task import identity_data, source_hash
@@ -617,7 +618,11 @@ def _replace(path: Path, record: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
     with os.fdopen(fd, "w") as f:
-        f.write(json.dumps(record, default=str))
+        f.write(
+            orjson.dumps(
+                record, option=orjson.OPT_SERIALIZE_NUMPY, default=str
+            ).decode()
+        )
     os.replace(tmp, path)
 
 

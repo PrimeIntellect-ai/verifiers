@@ -67,7 +67,7 @@ class OpenCodeCompactionConfig(BaseConfig):
 
 
 class OpenCodeHarnessConfig(HarnessConfig):
-    version: PinnedVersion = "2.0.26"
+    version: PinnedVersion = "2.2.5"
     """OpenCode 2 release to install, pinned for reproducibility."""
     dialect: DialectName = "chat_completions"
     disabled_tools: list[str] | None = None
@@ -109,7 +109,7 @@ class OpenCodeHarness(ACPHarness[OpenCodeHarnessConfig]):
 
     # OpenCode drops whitespace-only assistant text on replay over Anthropic messages.
     # Recheck on version bumps:
-    # https://github.com/anomalyco/opencode/blob/v2.0.26/packages/ai/src/protocols/anthropic-messages.ts#L929
+    # https://github.com/anomalyco/opencode/blob/v2.2.5/packages/ai/src/protocols/anthropic-messages.ts#L961
     def replay_view(self, message: Message, dialect: DialectName | None) -> Message:
         if dialect == "anthropic_messages":
             return drop_blank_text(message)

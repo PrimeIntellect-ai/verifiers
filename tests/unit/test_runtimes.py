@@ -18,6 +18,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import socket
 import subprocess
 import tempfile
@@ -44,8 +45,10 @@ from verifiers.v1.runtimes import (
     RuntimeConfig,
     RuntimeProcess,
     backend_cls,
+    make_backend,
     provision_runtime,
 )
+from verifiers.v1.runtimes.backends.subprocess import signal_process
 from verifiers.v1.runtimes.compose import ComposeSpec, compose_services
 from verifiers.v1.runtimes.strategies import _deployment_strategy
 from verifiers.v1.utils.compile import resolve_runtime_config
@@ -290,6 +293,8 @@ async def test_compose(runtime, tmp_path) -> None:
             _deployment_strategy(None, backend, ComposeSpec(directory="."))
         return
     skip_unavailable(runtime)
+    if not docker_available():
+        pytest.skip("Compose image preparation needs a reachable Docker daemon")
     (tmp_path / "docker-compose.yaml").write_text(
         "services:\n"
         "  main: {}\n"
@@ -298,10 +303,13 @@ async def test_compose(runtime, tmp_path) -> None:
         "    command: [sleep, infinity]\n"
     )
     spec = ComposeSpec(directory=str(tmp_path), file="docker-compose.yaml")
-    async with (
-        asyncio.timeout(TIMEOUT),
-        compose_services(runtime, spec, {}, trust_compose=True) as (services, _, _, _),
-    ):
+    deployment = make_backend(runtime).deploy(
+        spec=spec, config=vf.DeploymentConfig(trust_compose=True)
+    )
+    try:
+        async with asyncio.timeout(TIMEOUT):
+            await deployment.start()
+        services = deployment.target_backends
         assert set(services) == {"main", "sidecar"}
         resolved = await services["main"].bind().run(["getent", "hosts", "sidecar"], {})
         assert resolved.exit_code == 0, resolved
@@ -316,6 +324,8 @@ async def test_compose(runtime, tmp_path) -> None:
                     [*PYTHON, "-c", FETCH, workspace.host_url(url)], {}
                 )
                 assert fetched.stdout.strip() == "callback", fetched
+    finally:
+        await deployment.close()
 
 
 async def test_local_compose_needs_trust() -> None:
@@ -385,12 +395,10 @@ class HostProcess(RuntimeProcess):
         return self._process.returncode
 
     async def terminate(self) -> None:
-        if self._process.returncode is None:
-            self._process.terminate()
+        signal_process(self._process, signal.SIGTERM)
 
     async def kill(self) -> None:
-        if self._process.returncode is None:
-            self._process.kill()
+        signal_process(self._process, signal.SIGKILL)
 
 
 class HostConfig(CustomRuntimeConfig):
@@ -427,6 +435,7 @@ class HostBackend(RuntimeBackend):
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            start_new_session=True,
         )
         return HostProcess(process)
 

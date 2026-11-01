@@ -14,7 +14,7 @@ import tempfile
 import time
 import uuid
 from collections import defaultdict
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -633,13 +633,15 @@ is."""
 
 class PrimeBackend(RuntimeBackend):
     SUPPORTS_TASK_IMAGES: ClassVar[bool] = True
-    SUPPORTS_COMPOSE: ClassVar[bool] = True
     SUPPORTS_USER_SWITCHING: ClassVar[bool] = True
+    SUPPORTS_COMPOSE: ClassVar[bool] = True
     SUPPORTS_PORT_EXPOSURE: ClassVar[bool] = True
 
     def __init__(self, config: PrimeConfig, name: str | None = None) -> None:
         ensure_prime_auth()
         super().__init__(name)
+        self.user: str | None = None
+        self._workdir_override = config.workdir
         self.config = config
         self.info = PrimeRuntimeInfo(**self.config.model_dump())
         self._client = None
@@ -729,6 +731,9 @@ class PrimeBackend(RuntimeBackend):
                 )
             await asyncio.sleep(delay)
             delay = min(delay * 2, HOLD_MAX_S)
+
+    def bind(self, *, env: Mapping[str, str] | None = None) -> Runtime:
+        return super().bind(env=env).with_user(self.user)
 
     async def start(self) -> None:
         from prime_sandboxes import CreateSandboxRequest

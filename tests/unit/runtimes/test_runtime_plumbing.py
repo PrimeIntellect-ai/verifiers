@@ -36,6 +36,7 @@ from verifiers.v1.types import UserMessage
 
 class RecordingRuntime:
     def __init__(self):
+        self.config = PrimeConfig()
         self.files: dict[str, bytes] = {}
         self.argv: list[str] = []
         self.env: dict[str, str] = {}

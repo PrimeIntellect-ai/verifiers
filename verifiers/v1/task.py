@@ -41,7 +41,7 @@ if TYPE_CHECKING:
     from verifiers.v1.mcp import Toolset
     from verifiers.v1.runtimes import Runtime, RuntimeConfig
     from verifiers.v1.runtimes.compose import ComposeSpec
-    from verifiers.v1.runtimes.deployment import Deployment
+    from verifiers.v1.runtimes.deployment import Deployment, ServicesSpec
     from verifiers.v1.trace import Trace
     from verifiers.v1.validation import ValidationResult
 
@@ -60,7 +60,10 @@ _SCORING_DEFAULTS = {
 }
 """Scoring fields left out of task identity at these values (`identity_data`)."""
 
-_IDENTITY_DEFAULTS: dict[str, Any] = {"checkpoint": None}
+_IDENTITY_DEFAULTS: dict[str, Any] = {
+    "checkpoint": None,
+    "compose_build_dockerfile": True,
+}
 """Task data fields left out of task identity at these values (`identity_data`). A call's
 fingerprint hashes every key of the dumped data, so a field added with a default would
 change it, and every in-flight call and finished result of every task would be lost with
@@ -283,7 +286,7 @@ class Task(Generic[DataT, StateT, ConfigT]):
         """Live-only process environment; unlike TaskData, it is not traced."""
         return {}
 
-    def deployment_spec(self) -> ComposeSpec | None:
+    def deployment_spec(self) -> ComposeSpec | ServicesSpec | None:
         """Optional service composition for each independent attempt."""
         return
 

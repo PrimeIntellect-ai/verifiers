@@ -6,6 +6,7 @@ import asyncio
 import logging
 from collections.abc import AsyncIterator, Mapping
 from contextlib import AsyncExitStack, asynccontextmanager
+from dataclasses import dataclass
 
 from verifiers.v1.configs.deployment import DeploymentConfig
 from verifiers.v1.runtimes import (
@@ -22,6 +23,18 @@ from verifiers.v1.runtimes.compose import ComposeSpec
 from verifiers.v1.utils.aio import run_shielded
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class ServicesSpec:
+    """Named Prime VMs beside the task's `main` workspace, on one private LAN.
+
+    Each config selects a service's image and resources. Task setup starts its
+    processes through `deployment.target(name)` and waits for them to be ready.
+    `deployment.hosts` maps every target, including `main`, to its LAN hostname.
+    """
+
+    services: dict[str, PrimeConfig]
 
 
 class _DeploymentStrategy:
@@ -64,7 +77,7 @@ class Deployment:
         self,
         backend: RuntimeBackend,
         *,
-        spec: ComposeSpec | None = None,
+        spec: ComposeSpec | ServicesSpec | None = None,
         tool_vms: Mapping[str, PrimeConfig] | None = None,
         env: dict[str, str] | None = None,
         config: DeploymentConfig | None = None,
@@ -83,8 +96,7 @@ class Deployment:
         self._strategy = _deployment_strategy(self.config, backend, spec, self.tool_vms)
         self.target_backends: dict[str, RuntimeBackend] = {}
         self.hosts: dict[str, str] = {}
-        """The hostname the workspace reaches a named target by, where it is not the
-        target's name (a tool server VM's LAN name)."""
+        """LAN hostnames of native services or tool servers on their own VMs."""
         self.harness_backend: RuntimeBackend | None = None
         self.execution_backend: RuntimeBackend | None = None
         self._stack = AsyncExitStack()
@@ -144,7 +156,7 @@ class Deployment:
         return self.execution_backend.bind(env=self.env)
 
     def target(self, name: str) -> Runtime:
-        """Access a named runtime, such as a Compose service, through an execution view."""
+        """Access a named service or workspace through an execution view."""
         return (
             self.workspace
             if self.target_backends[name] is self.execution_backend
