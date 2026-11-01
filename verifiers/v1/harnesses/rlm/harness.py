@@ -212,6 +212,9 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
             ],
             {"RLM_EXECUTION_TOKEN": token},
             re.compile(r"^listening on \S+:(\d+)$", re.MULTILINE),
+            # A session that closes stops what is still attached to its kernel, as it
+            # does colocated; a daemon the agent started outlives the harness.
+            keep_detached=True,
         )
         self._execution = {
             "execution_tcp": {"host": connection.host, "port": port, "token": token},
