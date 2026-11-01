@@ -9,12 +9,13 @@ import logging
 import math
 import shlex
 import tempfile
+import time
 import uuid
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Any, ClassVar
+from typing import Any, ClassVar, TypeVar
 from urllib.parse import urlsplit
 
 from prime_sandboxes.models import validate_egress_lists
@@ -55,9 +56,15 @@ _PUBLIC_DOMAIN = "sandbox-v2-prod.pinfra.io"
 """Domain of the public URLs `https://<port>-<sandbox-id>.<domain>` that a LAN network's
 `internet` rule publishes ports at."""
 _EXPOSE_TAG = "vf-exposed"
+_PAUSE_REFUSALS = ("is paused", "being placed on a node")
+"""How exec refuses while the box is paused, or resuming onto its node. The SDK raises
+these as plain `APIError`s, so the message is the only signal."""
+_RESET_SOCKETS = (Path(__file__).resolve().parent / "reset_sockets.py").read_text()
 
 
 BASE_LABELS: list[str] = []
+
+T = TypeVar("T")
 
 
 @dataclass
@@ -145,11 +152,16 @@ class PrimeProcess(RuntimeProcess):
         await self._process.kill()
 
 
+def _refused_while_paused(error: Exception) -> bool:
+    return any(refusal in str(error) for refusal in _PAUSE_REFUSALS)
+
+
 class PrimeBackend(RuntimeBackend):
     SUPPORTS_TASK_IMAGES: ClassVar[bool] = True
     SUPPORTS_USER_SWITCHING: ClassVar[bool] = True
     SUPPORTS_COMPOSE: ClassVar[bool] = True
     SUPPORTS_PORT_EXPOSURE: ClassVar[bool] = True
+    SUPPORTS_PAUSE: ClassVar[bool] = True
 
     def __init__(self, config: PrimeConfig, name: str | None = None) -> None:
         ensure_prime_auth()
@@ -167,6 +179,10 @@ class PrimeBackend(RuntimeBackend):
         self._expose_network_id: str | None = None
         self._exposed_ports: list[int] = []
         self._expose_lock = asyncio.Lock()
+        # Pauses recovered from (dead sockets reset), whether this side paused the box or
+        # someone else did; the lock makes the first to notice a pause its only resetter.
+        self._recovered = 0
+        self._recover_lock = asyncio.Lock()
 
     @property
     def published_port(self) -> int:
@@ -335,19 +351,23 @@ class PrimeBackend(RuntimeBackend):
     ) -> ProgramResult:
         try:
             # Poll directly so rollout cancellation owns the execution timeout.
-            job = await self._client.start_background_job(
-                self.info.id,
-                shlex.join(argv),
-                working_dir=self.config.workdir,
-                env=runtime.process_env(env),
-                user=runtime.user,
+            job = await self._through_pause(
+                lambda: self._client.start_background_job(
+                    self.info.id,
+                    shlex.join(argv),
+                    working_dir=self.config.workdir,
+                    env=runtime.process_env(env),
+                    user=runtime.user,
+                )
             )
             delay = 0.1
             output_retries = 0
             missing = None
             while True:
-                result = await self._client.get_background_job(
-                    self.info.id, job, timeout=_OUTPUT_DEADLINE_SECONDS
+                result = await self._through_pause(
+                    lambda: self._client.get_background_job(
+                        self.info.id, job, timeout=_OUTPUT_DEADLINE_SECONDS
+                    )
                 )
                 # Under load the SDK can see a job finish yet miss its output (its bounded
                 # output reads expire while queued) and reports that as `*_error`. The job
@@ -374,6 +394,107 @@ class PrimeBackend(RuntimeBackend):
             stdout=result.stdout or "",
             stderr=result.stderr or "",
         )
+
+    async def pause(self) -> None:
+        try:
+            await self._client.pause(self.info.id)
+            await self._reach("PAUSED")
+        except Exception as e:
+            raise SandboxError(f"prime pause failed: {e}") from e
+        logger.info("prime: sandbox %s paused", self.info.id)
+
+    async def resume(self) -> None:
+        recovered = self._recovered
+        try:
+            await self._client.resume(self.info.id)
+            await self._reach("RUNNING")
+        except Exception as e:
+            raise SandboxError(f"prime resume failed: {e}") from e
+        logger.info("prime: sandbox %s resumed", self.info.id)
+        await self._recover(recovered)
+
+    async def _reach(self, status: str) -> None:
+        """Wait, unbounded like the pause itself, until the sandbox reports `status`."""
+        delay = 0.25
+        while (current := (await self._client.get(self.info.id)).status) != status:
+            if current in ("ERROR", "TERMINATED", "TIMEOUT"):
+                raise SandboxError(f"sandbox {self.info.id} is {current}")
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, 2)
+
+    async def _through_pause(self, call: Callable[[], Awaitable[T]]) -> T:
+        """Await `call`, repeating it while the box refuses exec for being paused: its
+        processes are frozen, not failed, and carry on once it resumes. Unbounded, since
+        whoever paused the box decides when it resumes. A pause someone else resumed
+        (`prime sandbox resume`) is recovered from here, as `resume` does."""
+        paused = None
+        while True:
+            try:
+                result = await call()
+            except Exception as e:
+                if not _refused_while_paused(e):
+                    raise
+                if paused is None:
+                    paused = (time.monotonic(), self._recovered)
+                    logger.info(
+                        "prime: sandbox %s is paused; waiting for it to resume",
+                        self.info.id,
+                    )
+                await asyncio.sleep(1)
+                continue
+            if paused is not None:
+                started, recovered = paused
+                logger.info(
+                    "prime: sandbox %s answered again after %.0fs paused",
+                    self.info.id,
+                    time.monotonic() - started,
+                )
+                await self._recover(recovered)
+            return result
+
+    async def _recover(self, recovered: int) -> None:
+        """Reset the outbound connections a pause left dead (`reset_sockets.py`), once
+        per pause: `recovered` is the count of pauses recovered from when the caller saw
+        this one, so whoever comes second finds it done. Best-effort: a box without a
+        Python keeps its dead connections, which then fail on their owners' timeouts."""
+        async with self._recover_lock:
+            if self._recovered != recovered:
+                return
+            self._recovered += 1
+            # The chat program's interpreter, if a uv script ran here, else the image's.
+            pythons = [*dict.fromkeys(self.cache.uv_interpreters.values()), "python3"]
+            started = time.monotonic()
+            for python in pythons:
+                command = f"{shlex.quote(python)} -I -c {shlex.quote(_RESET_SOCKETS)}"
+                while True:
+                    try:
+                        # Straight to the SDK: `run` would wait on a pause under our lock.
+                        result = await self._client.execute_command(
+                            self.info.id, command, timeout=60
+                        )
+                        break
+                    except Exception as e:  # noqa: BLE001 - exec settles after a resume
+                        if time.monotonic() - started > 120:
+                            logger.warning(
+                                "prime: could not reset sockets on sandbox %s after a "
+                                "pause: %s",
+                                self.info.id,
+                                e,
+                            )
+                            return
+                        await asyncio.sleep(1)
+                if result.exit_code == 0:
+                    logger.info(
+                        "prime: reset %s dead connection(s) on sandbox %s after a pause",
+                        result.stdout.strip(),
+                        self.info.id,
+                    )
+                    return
+            logger.warning(
+                "prime: could not reset dead connections on sandbox %s after a pause: %s",
+                self.info.id,
+                result.stderr.strip()[-500:],
+            )
 
     async def exec(
         self, runtime: Runtime, argv: list[str], env: dict[str, str]
@@ -430,12 +551,14 @@ class PrimeBackend(RuntimeBackend):
         # A server-owned job runs without a client stream for its whole life.
         command = f"exec {shlex.join(argv)} > {shlex.quote(log)} 2>&1 < /dev/null"
         try:
-            await self._client.start_background_job(
-                self.info.id,
-                command,
-                working_dir=self.config.workdir,
-                env=runtime.process_env(env),
-                user=runtime.user,
+            await self._through_pause(
+                lambda: self._client.start_background_job(
+                    self.info.id,
+                    command,
+                    working_dir=self.config.workdir,
+                    env=runtime.process_env(env),
+                    user=runtime.user,
+                )
             )
         except Exception as e:
             raise SandboxError(f"prime background launch failed: {e}") from e

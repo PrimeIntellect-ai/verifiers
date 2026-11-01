@@ -156,8 +156,8 @@ class RuntimeBackend(ABC):
     """Provider implementation for one container, VM, or local execution environment.
 
     A backend implements `start`, `exec`, `write`, and `cleanup` or `teardown`, and
-    may override `run`, `read`, `expose`, `prepare_execution`, and `host_url`. Its
-    `SUPPORTS_*` flags declare optional features. Tasks and harnesses use it through
+    may override `run`, `read`, `expose`, `prepare_execution`, `host_url`, and `pause`
+    with `resume`. Its `SUPPORTS_*` flags declare optional features. Tasks and harnesses use it through
     `Runtime` views (`bind`), which add user and environment bindings.
     """
 
@@ -179,6 +179,10 @@ class RuntimeBackend(ABC):
 
     SUPPORTS_COMPOSE: ClassVar[bool] = False
     """Whether the runtime can run a task's Docker Compose services."""
+
+    SUPPORTS_PAUSE: ClassVar[bool] = False
+    """Whether `pause` can freeze the runtime, processes and memory included, for
+    `resume` to continue it."""
 
     scripts_dir: ClassVar[str] = "/tmp/vf-scripts"
     """Digest-keyed PEP 723 scripts inside the runtime. Sandboxes own their `/tmp`;
@@ -371,6 +375,17 @@ class RuntimeBackend(ABC):
         down with the sandbox in `stop()`. The reverse of a
         host `Tunnel` (interception.tunnel, which reaches a host port from inside a runtime)."""
         return f"http://127.0.0.1:{port}"
+
+    async def pause(self) -> None:
+        """Freeze the runtime, processes and memory included, and return once it is
+        frozen. A program mid-`run` waits through the pause instead of failing."""
+        raise NotImplementedError(f"the {self.type} runtime cannot pause")
+
+    async def resume(self) -> None:
+        """Continue a runtime frozen by `pause`, and return once its programs run again
+        and the connections the pause left dead are reset, so their owners reconnect
+        instead of waiting on them."""
+        raise NotImplementedError(f"the {self.type} runtime cannot resume")
 
 
 async def _drain(stream: AsyncIterator[bytes]) -> bytes:
