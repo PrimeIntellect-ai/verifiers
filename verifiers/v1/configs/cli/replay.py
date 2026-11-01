@@ -51,13 +51,22 @@ class ReplayConfig(BaseConfig):
     @model_validator(mode="before")
     @classmethod
     def _resolve_taskset(cls, data):
+        from verifiers.v1.utils.generic import deep_merge
         from verifiers.v1.utils.loaders import narrow_plugin_field, taskset_config_type
 
-        if isinstance(data, dict) and not data.get("taskset"):
+        if isinstance(data, dict):
             # The base layer is usually a saved eval config, which keeps its
-            # taskset on the [env] block — lift it onto replay's root surface.
+            # taskset on the [env] block — lift it onto replay's root surface,
+            # under any `--taskset.*` overrides (nested one level so a different
+            # `id` replaces it, as `deep_merge` does for any plugin subtree).
             env = data.get("env")
-            if isinstance(env, dict) and env.get("taskset"):
-                data["taskset"] = env["taskset"]
+            override = data.get("taskset") or {}
+            if (
+                isinstance(env, dict)
+                and env.get("taskset")
+                and isinstance(override, dict)
+            ):
+                merged = deep_merge({"taskset": env["taskset"]}, {"taskset": override})
+                data["taskset"] = merged["taskset"]
         narrow_plugin_field(data, "taskset", taskset_config_type)
         return data
