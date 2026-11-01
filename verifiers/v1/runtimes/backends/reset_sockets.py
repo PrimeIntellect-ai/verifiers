@@ -6,11 +6,16 @@ network state outside the VM is gone, so a reader on one waits until its own tim
 immediate error its owner retries on a fresh connection. Loopback connections survive a
 pause and stay, as do inbound ones (on a listening port) and those of the platform's
 guest agents, which carry exec itself. Stdlib only, Linux 5.6+ (pidfd_getfd), run as
-root: it borrows each process's socket through its pidfd."""
+root: it borrows each process's socket through its pidfd.
+
+`list` prints the outbound connections, by inode, before a pause; given those inodes, a
+reset after the resume shuts down only the ones still open, never a connection opened
+since. Without them (someone else paused the box) it shuts down every outbound one."""
 
 import ctypes
 import os
 import socket
+import sys
 
 SYS_PIDFD_OPEN = 434
 SYS_PIDFD_GETFD = 438
@@ -43,18 +48,28 @@ def loopback(address: str) -> bool:
     return len(host) == 8 and host[6:] == "7F"
 
 
-def main() -> None:
+def outbound() -> set[str]:
+    """The inodes of the established connections this box opened to another host."""
     rows = connections()
     listening = {
         int(local.split(":")[1], 16) for local, _, state, _ in rows if state == LISTEN
     }
-    dead = {
+    return {
         inode
         for local, remote, state, inode in rows
         if state == ESTABLISHED
         and not loopback(remote)
         and int(local.split(":")[1], 16) not in listening
     }
+
+
+def main(args: list[str]) -> None:
+    if args == ["list"]:
+        print(" ".join(sorted(outbound())))
+        return
+    dead = outbound()
+    if args:
+        dead &= set(args)
     libc = ctypes.CDLL(None, use_errno=True)
     me = os.getpid()
     reset = 0
@@ -85,6 +100,8 @@ def main() -> None:
                 continue
             # Shutdown acts on the socket the owner shares, unlike close on our copy.
             with socket.socket(fileno=borrowed) as sock:
+                if os.fstat(borrowed).st_ino != int(link[8:-1]):
+                    continue  # the owner reused the fd since we read its link
                 try:
                     sock.shutdown(socket.SHUT_RDWR)
                     reset += 1
@@ -96,4 +113,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    main(sys.argv[1:])

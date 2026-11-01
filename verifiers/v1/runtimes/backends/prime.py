@@ -227,6 +227,9 @@ class PrimeBackend(RuntimeBackend):
         # someone else did; the lock makes the first to notice a pause its only resetter.
         self._recovered = 0
         self._recover_lock = asyncio.Lock()
+        self._stale: list[str] | None = None
+        """The outbound connections (socket inodes) open as this side paused the box:
+        the only ones its recovery resets. None after a pause someone else made."""
         self._adopt: str | None = None
         """A running sandbox `start` takes over instead of creating one (`adopt`)."""
 
@@ -477,6 +480,8 @@ class PrimeBackend(RuntimeBackend):
         )
 
     async def pause(self) -> None:
+        listed = await self._reset_sockets(["list"], budget=15)
+        self._stale = listed.split() if listed is not None else None
         try:
             await self._client.pause(self.info.id)
             await self._reach("PAUSED")
@@ -536,46 +541,57 @@ class PrimeBackend(RuntimeBackend):
     async def _recover(self, recovered: int) -> None:
         """Reset the outbound connections a pause left dead (`reset_sockets.py`), once
         per pause: `recovered` is the count of pauses recovered from when the caller saw
-        this one, so whoever comes second finds it done. Best-effort: a box without a
-        Python keeps its dead connections, which then fail on their owners' timeouts."""
+        this one, so whoever comes second finds it done. Only the ones open as this side
+        paused the box; after someone else's pause, every outbound one. Best-effort: a
+        box without a Python keeps its dead connections, which then fail on their
+        owners' timeouts."""
         async with self._recover_lock:
             if self._recovered != recovered:
                 return
             self._recovered += 1
-            # The chat program's interpreter, if a uv script ran here, else the image's.
-            pythons = [*dict.fromkeys(self.cache.uv_interpreters.values()), "python3"]
-            started = time.monotonic()
-            for python in pythons:
-                command = f"{shlex.quote(python)} -I -c {shlex.quote(_RESET_SOCKETS)}"
-                while True:
-                    try:
-                        # Straight to the SDK: `run` would wait on a pause under our lock.
-                        result = await self._client.execute_command(
-                            self.info.id, command, timeout=60
-                        )
-                        break
-                    except Exception as e:  # noqa: BLE001 - exec settles after a resume
-                        if time.monotonic() - started > 120:
-                            logger.warning(
-                                "prime: could not reset sockets on sandbox %s after a "
-                                "pause: %s",
-                                self.info.id,
-                                e,
-                            )
-                            return
-                        await asyncio.sleep(1)
-                if result.exit_code == 0:
-                    logger.info(
-                        "prime: reset %s dead connection(s) on sandbox %s after a pause",
-                        result.stdout.strip(),
-                        self.info.id,
+            stale, self._stale = self._stale, None
+            if stale == []:
+                return
+            reset = await self._reset_sockets(stale or [], budget=120)
+            if reset is not None:
+                logger.info(
+                    "prime: reset %s dead connection(s) on sandbox %s after a pause",
+                    reset,
+                    self.info.id,
+                )
+
+    async def _reset_sockets(self, args: list[str], budget: float) -> str | None:
+        """Run `reset_sockets.py` with `args` in the box, retrying exec for up to `budget`
+        seconds while it settles; its output, or None (logged) if it could not run."""
+        # The chat program's interpreter, if a uv script ran here, else the image's.
+        pythons = [*dict.fromkeys(self.cache.uv_interpreters.values()), "python3"]
+        script = shlex.join(["-I", "-c", _RESET_SOCKETS, *args])
+        started = time.monotonic()
+        error = ""
+        for python in pythons:
+            while True:
+                try:
+                    # Straight to the SDK: `run` would wait on a pause under our lock.
+                    result = await self._client.execute_command(
+                        self.info.id, f"{shlex.quote(python)} {script}", timeout=60
                     )
-                    return
-            logger.warning(
-                "prime: could not reset dead connections on sandbox %s after a pause: %s",
-                self.info.id,
-                result.stderr.strip()[-500:],
-            )
+                    break
+                except Exception as e:  # noqa: BLE001 - exec settles after a resume
+                    if time.monotonic() - started > budget:
+                        logger.warning(
+                            "prime: could not reach sandbox %s to reset sockets: %s",
+                            self.info.id,
+                            e,
+                        )
+                        return None
+                    await asyncio.sleep(1)
+            if result.exit_code == 0:
+                return result.stdout.strip()
+            error = result.stderr.strip()[-500:]
+        logger.warning(
+            "prime: could not reset sockets on sandbox %s: %s", self.info.id, error
+        )
+        return None
 
     async def exec(
         self, runtime: Runtime, argv: list[str], env: dict[str, str]
