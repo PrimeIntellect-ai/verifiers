@@ -700,7 +700,9 @@ class Agent:
             trace = run.trace
             if restore is not None and not run.adopted:
                 logger.warning(
-                    "adopting trace %s in its live box failed; starting over", trace.id
+                    "adopting trace %s in its live box failed; starting over: %s",
+                    trace.id,
+                    trace.errors[-1].message if trace.errors else "no error recorded",
                 )
                 history.extend(trace.errors)
                 run = await self._run_once(
