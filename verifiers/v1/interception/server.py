@@ -349,7 +349,10 @@ class InterceptionServer(Interception):
         config: InterceptionServerConfig | None = None,
         requires_tunnel: bool = False,
         state_service_secrets: Collection[str] = (),
+        tunnel: Tunnel | None = None,
     ) -> None:
+        """`tunnel` serves this server through a given tunnel instead of the configured
+        kind (an adopted one, `Interception.adopt`)."""
         super().__init__()
         self.sessions: dict[str, RolloutSession] = {}
         self.clients: dict[str, Client] = {}
@@ -358,7 +361,7 @@ class InterceptionServer(Interception):
         self.mcp_routes: dict[str, _MCPRoute] = {}
         self.state_service_secrets = frozenset(state_service_secrets)
         self.config = config or InterceptionServerConfig()
-        self.tunnel: Tunnel | None = (
+        self.tunnel: Tunnel | None = tunnel or (
             make_tunnel(self.config.tunnel) if requires_tunnel else None
         )
         self.host = "127.0.0.1"
@@ -383,12 +386,17 @@ class InterceptionServer(Interception):
             self.stack.push_async_callback(client.close)
         return client
 
-    def register(self, session: RolloutSession) -> tuple[str, str]:
+    def register(
+        self, session: RolloutSession, keys: tuple[str, str] | None = None
+    ) -> tuple[str, str]:
         """Register separate capabilities for model inference and private task state, and
-        assign the session its server-owned model client."""
+        assign the session its server-owned model client. `keys` registers it under the
+        (model, state) secrets its program already holds (`Interception.adopt`)."""
         session.client = self._client(session.ctx.client)
-        model_secret = secrets.token_urlsafe(16)
-        state_secret = secrets.token_urlsafe(16)
+        model_secret, state_secret = keys or (
+            secrets.token_urlsafe(16),
+            secrets.token_urlsafe(16),
+        )
         self.sessions[model_secret] = session
         self.state_sessions[state_secret] = session
         self.state_routes[session.trace.id] = session

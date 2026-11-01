@@ -44,6 +44,7 @@ class StaticInterceptionPool(Interception):
     ) -> None:
         super().__init__()
         self.config = config
+        self.state_service_secrets = state_service_secrets
         self.servers = [
             InterceptionServer(server, requires_tunnel, state_service_secrets)
             for server in config.servers

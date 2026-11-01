@@ -1,3 +1,4 @@
+import contextlib
 from collections.abc import AsyncIterator, Iterable
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING
@@ -22,6 +23,7 @@ from verifiers.v1.session import RolloutSession
 
 if TYPE_CHECKING:
     from verifiers.v1.mcp import SharedToolServer
+    from verifiers.v1.trace import LiveBox
 
 
 def requires_tunnel(
@@ -71,10 +73,18 @@ async def serve_interception(
     session: RolloutSession,
     servers: list,
     shared_tools: "dict[str, SharedToolServer]",
+    live: "LiveBox | None" = None,
 ) -> AsyncIterator[Slot]:
     """A slot on the shared interception when one was injected (its owner keeps the
     lifecycle), else on a per-rollout `InterceptionServer` owned — brought up and torn
-    down — by the caller's context."""
+    down — by the caller's context. With `live`, the slot a rollout taken over in its
+    live box keeps reaching (`Interception.adopt`)."""
+    if live is not None:
+        async with contextlib.AsyncExitStack() as stack:
+            if interception is None:
+                interception = await stack.enter_async_context(InterceptionServer())
+            yield await stack.enter_async_context(interception.adopt(session, live))
+        return
     if interception is not None:
         async with interception.acquire(session) as slot:
             yield slot

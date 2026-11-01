@@ -238,6 +238,7 @@ class Env(ABC, Generic[ConfigT]):
         *,
         on_trace: Callable[[Trace], None] | None = None,
         on_discard: Callable[[Trace], None] | None = None,
+        restore: Trace | None = None,
     ) -> Episode:
         """One episode of `task`, minted as the wire atom: `setup()` then `run()`
         over fresh agents, then `finalize()`. Its agents run one at a time
@@ -246,7 +247,8 @@ class Env(ABC, Generic[ConfigT]):
         Traces join the episode as runs complete — a hook raising mid-way yields the
         completed subset, its exception on the episode's `errors`. `on_trace` observes
         each agent-run's trace at mint; `on_discard` its abandonment (a per-agent
-        retry mints a replacement)."""
+        retry mints a replacement). `restore` is a trace another process ran, which
+        the episode's one agent continues (`Agent.pending_restore`)."""
         episode = Episode(
             env=EnvInfo(id=self.config.env_id),
             task=TraceTask(
@@ -257,6 +259,17 @@ class Env(ABC, Generic[ConfigT]):
             ),
         )
         agents = self._episode_agents(ctx, episode.traces, on_trace, on_discard)
+        if restore is not None:
+            # A one-seat episode's run is its one trace: its agent's run continues it.
+            agent = agents.only()
+            if agent is None:
+                logger.warning(
+                    "%s has several agent seats; running trace %s from scratch",
+                    type(self).__name__,
+                    restore.id,
+                )
+            else:
+                agent.pending_restore = restore
         try:
             async with asyncio.timeout(self.config.timeout.episode):
                 async with boundary(EnvError, f"{type(self).__name__}.setup()"):
@@ -311,13 +324,17 @@ class Env(ABC, Generic[ConfigT]):
         semaphore: asyncio.Semaphore | None = None,
         on_complete: Callable[[Episode], Awaitable[None]] | None = None,
         on_trace: Callable[[Trace], None] | None = None,
+        restore: Trace | None = None,
     ) -> Episode:
         """Run one planned episode to completion, with whole-episode
         retries per `--env.retries`; `semaphore` bounds concurrent EPISODES — one
         permit for the attempt in flight, held across the whole of it (its agents,
         their boxes, `finalize()`) and released before a retry's backoff and before
         `on_complete` (the runners' persistence hook, which fires when final).
-        `on_trace` sees each trace at mint, after it joined `slot.traces`."""
+        `on_trace` sees each trace at mint, after it joined `slot.traces`. `restore`
+        continues a trace another process ran (one-seat episodes); only the first
+        attempt restores it, a whole-episode retry starts over."""
+        pending = [restore] if restore is not None else []
 
         async def attempt() -> Episode:
             slot.traces = []  # a retry shows the fresh attempt's traces
@@ -339,6 +356,7 @@ class Env(ABC, Generic[ConfigT]):
                     ctx,
                     on_trace=minted,
                     on_discard=discard,
+                    restore=pending.pop() if pending else None,
                 )
 
         episode = await run_episode_with_retry(attempt, self.config.retries)

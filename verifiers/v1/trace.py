@@ -432,6 +432,36 @@ class Branch(BaseModel):
         return sum(increment for _, increment in min_new_input_tokens(self.calls))
 
 
+class LiveBox(BaseModel):
+    """The rollout's box while its harness program runs, with what another process needs
+    to take the rollout over in it (`Rollout` adopts it): the box, the program's job, and
+    the capabilities and tunnel the program reaches the interception through. Its secrets
+    keep it off the trace's record: it travels only in restore points (`Trace.live`)."""
+
+    sandbox_id: str
+    """The runtime's id of the box (`RuntimeBackend.adopt`)."""
+    tunnel_id: str | None = None
+    """The tunnel the program reaches the interception through; rollouts that share it
+    are adopted onto one server (`Interception.adopt`). None when untunneled."""
+    tunnel: dict[str, Any] | None = None
+    """The tunnel's registration (prime_tunnel's `TunnelInfo`), for a new process to
+    serve the same URL."""
+    job: dict[str, Any]
+    """The harness program's handle (`RuntimeBackend.attach`)."""
+    model_secret: str
+    state_secret: str
+    state: dict[str, Any] | None = None
+    """The trace's typed state as the program started: only a rollout whose state no
+    tool server or hook writes mid-run streams a live box."""
+
+
+class RestorePoint(BaseModel):
+    """What another process needs to continue a trace (`RunRequest.restore`), streamed
+    with it (`EpisodeAssembly.restores`): its live box, which the process takes over."""
+
+    live: LiveBox
+
+
 class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     version: int = TRACE_VERSION
     """The trace schema this trace serializes as."""
@@ -470,6 +500,9 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     """The root agent's response when a trace contains descendant branches."""
     state: StateT = Field(default_factory=State, exclude=True)
     """Runtime (possibly, non-serializable) state shared across runtimes; excluded from serialization."""
+    live: LiveBox | None = Field(None, exclude=True)
+    """The box while the harness program runs in it, for another process to take the
+    rollout over (`RestorePoint.live`). Live-only: it holds the rollout's secrets."""
 
     extra_usage: list[Usage] = Field(default_factory=list)
     """Usage from judges and other calls outside the agent's message graph."""

@@ -570,6 +570,9 @@ class Agent:
             sampling=config.sampling,
         )
         self._closed = False
+        self.pending_restore: Trace | None = None
+        """A trace another process ran, which the next `run` continues in its live box
+        (`Trace.live`); consumed by that run."""
         self.runtime_config: RuntimeConfig = config.runtime
         self.interception = interception
         self.limits = RolloutLimits(
@@ -677,16 +680,34 @@ class Agent:
         alive. Retries whole while the trace ends with a retryable error
         (`config.retries`) — never into a borrowed box; the final trace keeps earlier
         attempts' errors. `on_score(trace, runtime)` runs after task scoring in
-        the selected verifier workspace, inside its timeout and retry boundary."""
+        the selected verifier workspace, inside its timeout and retry boundary. A
+        `pending_restore` trace is continued in its live box instead of starting one;
+        when the box cannot be taken over, the run starts over, unbudgeted."""
         if self._closed:
             raise RuntimeError("Agent is closed; create a new agent")
+        restore, self.pending_restore = self.pending_restore, None
+        if restore is not None and not self.harness.SUPPORTS_ADOPT:
+            restore = None  # a new process cannot wait on this harness's program
+        if restore is not None and on_trace is not None:
+            on_trace(restore)
         retry = self.config.retries
         retry_state = RetryState(retry)
         history: list = []
         for attempt in range(retry_state.max_retries + 1):
-            trace = await self._run_once(
-                task, runtime, tools, on_trace, collect_artifacts, on_score
+            run = await self._run_once(
+                task, runtime, tools, on_trace, collect_artifacts, on_score, restore
             )
+            trace = run.trace
+            if restore is not None and not run.adopted:
+                logger.warning(
+                    "adopting trace %s in its live box failed; starting over", trace.id
+                )
+                history.extend(trace.errors)
+                run = await self._run_once(
+                    task, runtime, tools, on_trace, collect_artifacts, on_score
+                )
+                trace = run.trace
+            restore = None
             if attempt == retry_state.max_retries or trace.ok:
                 break
             if runtime is not None:
@@ -722,7 +743,8 @@ class Agent:
         on_trace: Callable[[Trace], None] | None,
         collect_artifacts: bool,
         on_score: Callable[[Trace, Runtime], Awaitable[None]] | None,
-    ) -> Trace:
+        restore: Trace | None = None,
+    ) -> Rollout:
         params = self._rollout_params(task, runtime, dict(shared_tools or {}))
         if (
             collect_artifacts
@@ -737,6 +759,7 @@ class Agent:
             on_trace=on_trace,
             collect_artifacts=collect_artifacts,
             on_score=on_score,
+            restore=restore,
             **params,
         )
         try:
@@ -751,7 +774,7 @@ class Agent:
             raise
         if trace.agent.runtime is not None:
             trace.agent.runtime.borrowed = runtime is not None
-        return trace
+        return run
 
     @asynccontextmanager
     async def interaction(
@@ -1055,6 +1078,11 @@ class Agents(Generic[AgentT]):
             name: cast(AgentT, make_agent(value)) if make is None else make(name, value)
             for name, value in agent_config_fields(config).items()
         }
+
+    def only(self) -> AgentT | None:
+        """The agent of a config with one agent seat; None when it has several."""
+        agents = list(self._agents.values())
+        return agents[0] if len(agents) == 1 else None
 
     def __getattr__(self, name: str) -> AgentT:
         # self.__dict__ directly: attribute lookup re-entering __getattr__ before

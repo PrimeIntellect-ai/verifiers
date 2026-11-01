@@ -20,10 +20,12 @@ from verifiers.v1.serve.types import (
     CancelRequest,
     CancelResponse,
     HealthResponse,
+    RestoreRequest,
     RunRequest,
     RunResponse,
 )
 from verifiers.v1.task import Task
+from verifiers.v1.trace import RestorePoint, Trace
 from verifiers.v1.utils.loaders import load_environment
 
 logger = logging.getLogger(__name__)
@@ -39,6 +41,14 @@ class EpisodeHook(Protocol):
 
     def discard(self, episode: Episode) -> None:
         """Free what `keep` kept for an episode that was not delivered."""
+
+    def watch(self, trace: Trace) -> None:
+        """See a trace as it is minted, or restored, before its first delta streams.
+        Optional."""
+
+    def restore(self, trace: Trace) -> None:
+        """Give a restored trace's nodes back their arrays (a client's assembly never
+        has them). Optional."""
 
 
 _episode_hook: EpisodeHook | None = None
@@ -162,11 +172,23 @@ class EnvServer:
         endpoint (and a training run's changing model) leaves nothing behind."""
         return ModelContext(client=client_config, model=model, sampling=sampling)
 
+    def _restore(self, restore: RestoreRequest, task: Task) -> Trace:
+        """The trace to continue: as the client assembled it, typed for this taskset,
+        with its restore point's live box (`Trace.live`)."""
+        trace = Trace.model_validate(restore.trace)
+        trace.task.data = task.data
+        if _episode_hook is not None and hasattr(_episode_hook, "restore"):
+            _episode_hook.restore(trace)
+        trace.live = RestorePoint.model_validate(restore.point).live
+        return trace
+
     async def _run(
         self, req: RunRequest, client_id: bytes, request_id: bytes
     ) -> RunResponse:
         ctx = self._context(req.client, req.model, req.sampling)
-        (slot,) = self.env.slots(self._build_task(req.task_data))
+        task = self._build_task(req.task_data)
+        restore = self._restore(req.restore, task) if req.restore is not None else None
+        (slot,) = self.env.slots(task)
 
         async def send_delta(delta: dict) -> None:
             await self.frontend.send_multipart(
@@ -178,8 +200,14 @@ class EnvServer:
         # ships each trace as it changes; the reply below carries only the rest.
         hook = _episode_hook
         async with DeltaStreamer(lambda: slot.traces, send_delta) as streamer:
+
+            def watch(trace: Trace) -> None:
+                if hook is not None and hasattr(hook, "watch"):
+                    hook.watch(trace)
+                streamer.watch(trace)
+
             episode = await self.env.run_slot(
-                slot, ctx, self._gate, on_trace=streamer.watch
+                slot, ctx, self._gate, on_trace=watch, restore=restore
             )
             if hook is not None:
                 # Before the final flush, so what the hook writes to the traces streams.
@@ -206,7 +234,7 @@ class EnvServer:
     ) -> None:
         try:
             route = method.decode()
-            raw = msgpack.unpackb(payload, raw=False)
+            raw = msgpack.unpackb(payload, raw=False, strict_map_key=False)
             if route == "health":
                 response: BaseResponse = HealthResponse()
             elif route == "run":
@@ -312,6 +340,8 @@ class EnvServer:
                         )
                         continue
                     client_id, request_id, method, payload = frames
+                    # A pool routes on the affinity (`run@<key>`); a lone server ignores it.
+                    method = method.partition(b"@")[0]
                     task = asyncio.create_task(
                         self._handle(client_id, request_id, method, payload)
                     )

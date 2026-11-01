@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 
 from verifiers.v1.configs.interception import PrimeTunnelConfig
 from verifiers.v1.interception.tunnel.base import Tunnel
+from verifiers.v1.runtimes import suspend
 from verifiers.v1.runtimes.limiters import CreationLimiter
 from verifiers.v1.utils.aio import run_shielded
 from verifiers.v1.utils.prime import ensure_prime_auth
@@ -89,6 +90,44 @@ async def _watch(client: "TunnelClient", url: str) -> None:
             strikes = 0
 
 
+_held: dict[str, "TunnelClient"] = {}
+"""The tunnels this process holds open, by URL (`held_tunnel`)."""
+
+
+def held_tunnel(url: str) -> dict | None:
+    """The registration (prime_tunnel's `TunnelInfo`) of the tunnel this process holds
+    at `url`, for another process to serve the same URL (`AdoptedPrimeTunnel`)."""
+    client = _held.get(url.rstrip("/"))
+    info = client._tunnel_info if client is not None else None
+    return info.model_dump(mode="json") if info is not None else None
+
+
+@contextlib.asynccontextmanager
+async def _hold(client: "TunnelClient", url: str) -> AsyncIterator[str]:
+    """Keep a started tunnel up while held (`_watch`), then tear it down: stop frpc and
+    delete the registration."""
+    _held[url] = client
+    watch = asyncio.create_task(_watch(client, url))
+
+    async def close() -> None:
+        watch.cancel()  # first, so it can't start a new frpc after the stop
+        await asyncio.wait({watch})
+        if suspend.keeps_tunnel(client.tunnel_id):
+            # A suspended box's program reaches it: stop frpc, keep the registration
+            # for the process that adopts the box (`sync_stop` deletes a held one).
+            client._tunnel_info = None
+        await asyncio.to_thread(client.sync_stop)
+
+    try:
+        yield url
+    finally:
+        _held.pop(url, None)
+        # Run the stop to completion even under cancellation (`run_shielded` re-raises
+        # the cancellation after); tunnel-stop failures are best-effort.
+        with contextlib.suppress(Exception):
+            await run_shielded(close())
+
+
 class PrimeTunnel(Tunnel[PrimeTunnelConfig]):
     def __init__(self, config: PrimeTunnelConfig | None = None) -> None:
         ensure_prime_auth()
@@ -115,17 +154,43 @@ class PrimeTunnel(Tunnel[PrimeTunnelConfig]):
                         url = str(await client.start()).rstrip("/")
         except Exception as e:
             raise TunnelError(f"{label} failed: {e}") from e
-        watch = asyncio.create_task(_watch(client, url))
-
-        async def close() -> None:
-            watch.cancel()  # first, so it can't start a new frpc after the stop
-            await asyncio.wait({watch})
-            await asyncio.to_thread(client.sync_stop)
-
-        try:
+        async with _hold(client, url):
             yield url
-        finally:
-            # Run the stop to completion even under cancellation (`run_shielded` re-raises
-            # the cancellation after); tunnel-stop failures are best-effort.
-            with contextlib.suppress(Exception):
-                await run_shielded(close())
+
+
+class AdoptedPrimeTunnel(Tunnel[PrimeTunnelConfig]):
+    """A tunnel another process registered (`held_tunnel`), served from here: its URL
+    reaches this process's port once frpc runs with the registration. A process that
+    died left it registered; the harness programs behind it reach the model at its URL
+    and see the interception again once it is back (`Trace.live`)."""
+
+    def __init__(self, info: dict) -> None:
+        ensure_prime_auth()
+        super().__init__(PrimeTunnelConfig())
+        self.info = info
+
+    @contextlib.asynccontextmanager
+    async def expose(self, port: int) -> AsyncIterator[str]:
+        from prime_tunnel import Tunnel as TunnelClient
+        from prime_tunnel.models import TunnelInfo
+
+        from verifiers.v1.errors import TunnelError
+        from verifiers.v1.utils.retries import retrying
+
+        info = TunnelInfo.model_validate(self.info)
+        label = f"adopted tunnel {info.tunnel_id} (port {port})"
+        try:
+            async for attempt in retrying(retries=3, label=label):
+                with attempt:
+                    client = TunnelClient(local_port=port)
+                    # prime_tunnel restarts frpc for a registration it holds, keeping
+                    # the URL; it has no public way to hold one it did not register.
+                    client._tunnel_info = info
+                    client._config_file = client._write_frpc_config()
+                    client._started = True
+                    url = str(await client.restart()).rstrip("/")
+        except Exception as e:
+            raise TunnelError(f"{label} failed: {e}") from e
+        logger.info("tunnel %s: adopted", url)
+        async with _hold(client, url):
+            yield url

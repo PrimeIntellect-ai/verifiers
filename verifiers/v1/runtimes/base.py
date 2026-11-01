@@ -11,7 +11,8 @@ import shlex
 import uuid
 import weakref
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Callable, Mapping
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, ClassVar
 
@@ -49,6 +50,12 @@ _ENSURE_UV = (
     "|| { pip install -q -U --user uv 2>/dev/null && hash -r && uv_supports_scripts; } "
     f"|| {{ {{ {_INSTALL_CURL}; {_DOWNLOAD_UV}; }} && hash -r && uv_supports_scripts; }}"
 )
+
+program_started: ContextVar[Callable[[dict], None] | None] = ContextVar(
+    "program_started", default=None
+)
+"""Set around a harness segment (`Rollout`): a backend whose `run` starts a job another
+process can wait on (`RuntimeBackend.attach`) reports the job's handle to it."""
 
 # The single port a sandbox runtime forwards out for a server hosted in it, e.g. a host
 # loopback port on Docker. A server placed in such
@@ -184,6 +191,10 @@ class RuntimeBackend(ABC):
     """Whether `pause` can freeze the runtime, processes and memory included, for
     `resume` to continue it."""
 
+    SUPPORTS_ADOPT: ClassVar[bool] = False
+    """Whether another process can take the running box over (`adopt`) and wait on a
+    program started in it (`attach`), so a rollout continues in its live box."""
+
     scripts_dir: ClassVar[str] = "/tmp/vf-scripts"
     """Digest-keyed PEP 723 scripts inside the runtime. Sandboxes own their `/tmp`;
     the host subprocess runtime overrides this with its per-user cache."""
@@ -198,6 +209,9 @@ class RuntimeBackend(ABC):
         self.cache = RuntimeCache()
         self._setup_claimed = False
         self._background: list[RuntimeProcess] = []
+        self.suspended = False
+        """Whether a process shutdown kept the box for another process to adopt
+        (`suspend`): teardown and the atexit backstop leave it."""
         self.stopped = False
         """Whether teardown has begun (set by `stop`). A stopped runtime is dead: a rollout
         refuses to borrow one — the owner tore it down, so any use is a lifetime bug in the
@@ -375,6 +389,16 @@ class RuntimeBackend(ABC):
         down with the sandbox in `stop()`. The reverse of a
         host `Tunnel` (interception.tunnel, which reaches a host port from inside a runtime)."""
         return f"http://127.0.0.1:{port}"
+
+    def adopt(self, box: str) -> None:
+        """Have `start` take over the running box `box`, which another process
+        provisioned (`Trace.live`), instead of provisioning one."""
+        raise NotImplementedError(f"the {self.type} runtime cannot adopt a box")
+
+    async def attach(self, runtime: Runtime, job: dict) -> ProgramResult:
+        """Wait on a program another process started with `run` (its job's handle, as
+        `program_started` saw it) and collect its result as `run` does."""
+        raise NotImplementedError(f"the {self.type} runtime cannot attach to a program")
 
     async def pause(self) -> None:
         """Freeze the runtime, processes and memory included, and return once it is

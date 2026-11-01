@@ -113,6 +113,8 @@ jobs:
             tests: tests/integration/test_mounts.py
           - behavior: Pause
             tests: tests/integration/test_pause.py
+          - behavior: Readopt
+            tests: tests/integration/test_readopt.py
           - behavior: Sampling
             tests: tests/integration/test_sampling.py
           - behavior: Parallel

@@ -115,6 +115,10 @@ class Runtime:
         """Run `argv` to completion and collect its output."""
         return await self.backend.run(self, argv, env)
 
+    async def attach(self, job: dict) -> ProgramResult:
+        """Wait on a program another process started with `run` and collect its result."""
+        return await self.backend.attach(self, job)
+
     async def exec(self, argv: list[str], env: dict[str, str]) -> RuntimeProcess:
         """Start `argv` and return a handle that streams its stdio."""
         return await self.backend.exec(self, argv, env)

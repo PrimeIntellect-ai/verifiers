@@ -22,6 +22,7 @@ from prime_sandboxes.models import validate_egress_lists
 
 from verifiers.v1.configs.runtime import NetworkPolicyConfig, PrimeConfig
 from verifiers.v1.errors import SandboxError
+from verifiers.v1.runtimes import suspend
 from verifiers.v1.runtimes.base import (
     SERVICE_PORT,
     BaseRuntimeInfo,
@@ -29,6 +30,7 @@ from verifiers.v1.runtimes.base import (
     RuntimeBackend,
     RuntimeProcess,
     parse_gpu,
+    program_started,
 )
 from verifiers.v1.runtimes.limiters import creation_limiter
 from verifiers.v1.runtimes.runtime import Runtime
@@ -115,6 +117,47 @@ async def leased_client() -> AsyncIterator[Any]:
         await _release_client(client)
 
 
+async def _each(
+    ids: list[str], call: Callable[[Any, str], Awaitable[Any]]
+) -> list[str]:
+    """Run `call(client, id)` for every id at once; the ids it succeeded for."""
+
+    async def one(client: Any, box: str) -> str | None:
+        try:
+            await call(client, box)
+        except Exception as e:  # noqa: BLE001 - best-effort, per box
+            logger.warning("prime: sandbox %s: %s", box, e)
+            return None
+        return box
+
+    async with leased_client() as client:
+        done = await asyncio.gather(*(one(client, box) for box in ids))
+    return [box for box in done if box is not None]
+
+
+async def pause_boxes(ids: list[str]) -> list[str]:
+    """Pause the sandboxes `ids` (live boxes another process may adopt, `Trace.live`),
+    best-effort: the ids that reached PAUSED. Their processes and memory keep, and a
+    paused box bills only its disk."""
+
+    async def pause(client: Any, box: str) -> None:
+        if (await client.get(box)).status != "PAUSED":
+            await client.pause(box)
+        delay = 0.25
+        while (status := (await client.get(box)).status) != "PAUSED":
+            if status in ("ERROR", "TERMINATED", "TIMEOUT"):
+                raise SandboxError(f"sandbox {box} is {status}")
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, 2)
+
+    return await _each(ids, pause)
+
+
+async def delete_boxes(ids: list[str]) -> list[str]:
+    """Delete the sandboxes `ids`, best-effort: the ids deleted."""
+    return await _each(ids, lambda client, box: client.delete(box))
+
+
 def set_base_sandbox_labels(labels: list[str]) -> None:
     """Set process-wide base labels attached to every Prime sandbox, extended by each
     runtime's ``PrimeConfig.labels``. Call it in the process that creates the sandboxes
@@ -162,6 +205,7 @@ class PrimeBackend(RuntimeBackend):
     SUPPORTS_COMPOSE: ClassVar[bool] = True
     SUPPORTS_PORT_EXPOSURE: ClassVar[bool] = True
     SUPPORTS_PAUSE: ClassVar[bool] = True
+    SUPPORTS_ADOPT: ClassVar[bool] = True
 
     def __init__(self, config: PrimeConfig, name: str | None = None) -> None:
         ensure_prime_auth()
@@ -183,6 +227,8 @@ class PrimeBackend(RuntimeBackend):
         # someone else did; the lock makes the first to notice a pause its only resetter.
         self._recovered = 0
         self._recover_lock = asyncio.Lock()
+        self._adopt: str | None = None
+        """A running sandbox `start` takes over instead of creating one (`adopt`)."""
 
     @property
     def published_port(self) -> int:
@@ -193,10 +239,16 @@ class PrimeBackend(RuntimeBackend):
     def bind(self, *, env: Mapping[str, str] | None = None) -> Runtime:
         return super().bind(env=env).with_user(self.user)
 
+    def adopt(self, box: str) -> None:
+        self._adopt = box
+
     async def start(self) -> None:
         from prime_sandboxes import APIError, CreateSandboxRequest
 
         self._client = _lease_client()
+        if self._adopt is not None:
+            await self._take_over(self._adopt)
+            return
         # Map the resources onto prime's API (minutes, split GPU; memory/disk are already
         # GB). gpu_type/region are only sent when set (else provider-chosen).
         gpu_type, gpu_count = parse_gpu(self.config.gpu)
@@ -299,6 +351,20 @@ class PrimeBackend(RuntimeBackend):
         ) as e:  # provisioning failure is one rollout's problem, not the eval's
             raise SandboxError(f"prime sandbox provisioning failed: {e}") from e
 
+    async def _take_over(self, box: str) -> None:
+        """Bind to `box`, another process's running sandbox, resuming it if paused (its
+        processes then carry on, their dead connections reset)."""
+        self.info.id = box
+        try:
+            status = (await self._client.get(box)).status
+            if status == "PAUSED":
+                await self.resume()
+            elif status != "RUNNING":
+                raise SandboxError(f"sandbox {box} is {status}")
+        except Exception as e:
+            raise SandboxError(f"prime sandbox {box} cannot be adopted: {e}") from e
+        logger.info("prime: sandbox %s adopted", box)
+
     async def prepare_execution(
         self, routes: list[str] | None, network: NetworkPolicyConfig | None = None
     ) -> None:
@@ -360,6 +426,21 @@ class PrimeBackend(RuntimeBackend):
                     user=runtime.user,
                 )
             )
+        except Exception as e:  # a sandbox/API failure is one rollout's problem
+            raise SandboxError(f"prime exec failed: {e}") from e
+        started = program_started.get()
+        if started is not None:
+            started(job.model_dump(mode="json"))
+        return await self._wait(job)
+
+    async def attach(self, runtime: Runtime, job: dict) -> ProgramResult:
+        from prime_sandboxes.models import BackgroundJob
+
+        return await self._wait(BackgroundJob.model_validate(job))
+
+    async def _wait(self, job: Any) -> ProgramResult:
+        """Poll a started job to its end and collect its result."""
+        try:
             delay = 0.1
             output_retries = 0
             missing = None
@@ -646,7 +727,8 @@ class PrimeBackend(RuntimeBackend):
         # Synchronous atexit backstop (the async client can't run once the loop is gone): delete
         # the sandbox via the sync client, so the costly resource isn't left to its max-lifetime.
         # Idempotent — the async `stop` deletes it on the normal path, a second delete 404s.
-        if self.info.id is not None:
+        # A shutdown that suspends keeps the box (`suspend`).
+        if self.info.id is not None and not suspend.suspend_at_exit(self):
             from prime_sandboxes import SandboxClient
             from prime_sandboxes.core import APIClient
 
@@ -659,7 +741,12 @@ class PrimeBackend(RuntimeBackend):
 
     async def teardown(self) -> None:
         # Best-effort, idempotent teardown: delete the sandbox (the costly resource). Runs via
-        # `stop`, shielded from cancellation, so it fires on success, error, and Ctrl-C.
+        # `stop`, shielded from cancellation, so it fires on success, error, and Ctrl-C. A
+        # shutdown that suspends pauses and keeps it instead (`suspend`).
+        if self._client is not None and await suspend.suspend(self):
+            client, self._client = self._client, None
+            await _release_client(client)
+            return
         client, self._client = self._client, None  # `_client` is the idempotency guard
         if client is None:
             return
