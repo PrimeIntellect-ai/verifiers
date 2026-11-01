@@ -29,6 +29,7 @@ from verifiers.v1.utils.decorators import (
 if TYPE_CHECKING:
     # Annotation-only: `Trace` appears in signatures only, so this module stays
     # importable below the trace record.
+    from verifiers.v1.harnesses.utils.prebuilt import Prebuilt
     from verifiers.v1.runtimes.deployment import ExecutionConnection
     from verifiers.v1.trace import Trace
 
@@ -117,6 +118,12 @@ class Harness(ABC, Generic[ConfigT]):
 
     async def setup(self, runtime: Runtime) -> None:
         """Provision this harness through `runtime` before its execution timeout starts."""
+
+    def prebuilt(self) -> Prebuilt | None:
+        """This harness's install, built once on Prime as a volume that split deployments
+        mount on the harness's VM and the workspace instead of installing per rollout;
+        None installs every rollout."""
+        return None
 
     def validate_split_execution(self) -> None:
         """Reject a split deployment this harness cannot run before provisioning."""
