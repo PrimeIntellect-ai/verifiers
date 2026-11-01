@@ -62,6 +62,7 @@ from verifiers.v1.errors import (
 )
 from verifiers.v1.interception.base import Interception, Slot
 from verifiers.v1.interception.tunnel import Tunnel, make_tunnel
+from verifiers.v1.runtimes import suspend
 from verifiers.v1.semantic import ACPInfo, extract_acp_info
 from verifiers.v1.session import IdempotentRequest, ReplayResponse, RolloutSession
 from verifiers.v1.trace import Error, ModelCall, PolicyEvent, TimeSpan
@@ -627,10 +628,11 @@ class InterceptionServer(Interception):
         """`POST /tool`: the harness's gate asks whether to run a tool call — its
         `{tool_call_id, name, arguments}` in, the verdict of `RolloutSession.decide_tool`
         out. The model bearer keys it: it never alters what the model already received."""
-        session = self.sessions.get(
-            request.headers.get("Authorization", "").removeprefix("Bearer ")
-        )
+        secret = request.headers.get("Authorization", "").removeprefix("Bearer ")
+        session = self.sessions.get(secret)
         if session is None:
+            if suspend.held(secret):
+                await asyncio.get_running_loop().create_future()
             return web.json_response({"error": "unauthorized"}, status=401)
         session.adopt(asyncio.current_task())
         if session.released:
@@ -716,8 +718,12 @@ class InterceptionServer(Interception):
     async def handle_request(
         self, request: web.Request, dialect: Dialect
     ) -> web.StreamResponse:
-        session = self.sessions.get(dialect.secret(request.headers))
+        secret = dialect.secret(request.headers)
+        session = self.sessions.get(secret)
         if session is None:
+            if suspend.held(secret):
+                # Its box is being suspended: wait to be frozen with it.
+                await asyncio.get_running_loop().create_future()
             logger.warning("interception: unauthorized request")
             return _error_response(dialect, "unauthorized", status=401)
         session.adopt(asyncio.current_task())

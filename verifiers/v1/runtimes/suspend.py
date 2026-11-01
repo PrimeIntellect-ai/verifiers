@@ -6,8 +6,9 @@ take over in its live box (`Trace.live`) keeps the box instead: its runtime paus
 (processes and memory kept, only the disk billed) and leaves it, recorded one JSON line
 per box in `<dir>/<hostname>-<pid>.jsonl`, for an orchestrator to re-adopt from its
 restore point or delete (`pause_boxes`, `delete_boxes`). The tunnel the box's program
-reaches stays registered with it. A run cancelled on its own still deletes its box:
-only a process shutdown suspends.
+reaches stays registered with it. A run cancelled on its own still deletes its box: only
+a process shutdown suspends, or a run whose client is gone (`run_scope`), which is how a
+dead orchestrator looks from a server that outlives it for a while.
 """
 
 import asyncio
@@ -16,6 +17,7 @@ import logging
 import os
 import socket
 import time
+from contextvars import ContextVar
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -32,6 +34,25 @@ _shutdown_at: float | None = None
 _live: dict[int, tuple[str, str | None]] = {}
 """Per runtime backend (by id) holding an adoptable rollout: its trace and tunnel."""
 _kept_tunnels: set[str] = set()
+_secrets: dict[str, tuple[int, "RunScope | None"]] = {}
+"""Per adoptable rollout's secret: its runtime backend (by id) and server run scope."""
+
+
+class RunScope:
+    """One server run: `lost` once its client is gone."""
+
+    lost = False
+
+
+_scope: ContextVar[RunScope | None] = ContextVar("vf_suspend_scope", default=None)
+
+
+def run_scope() -> RunScope:
+    """Open the scope of the server run in the current task: the tasks it starts share it,
+    so its teardown suspends the box once the scope is `lost`."""
+    scope = RunScope()
+    _scope.set(scope)
+    return scope
 
 
 def shutting_down() -> None:
@@ -43,16 +64,43 @@ def shutting_down() -> None:
 
 
 def suspending() -> bool:
-    return _shutdown_at is not None and bool(os.environ.get(SUSPEND_DIR))
+    if not os.environ.get(SUSPEND_DIR):
+        return False
+    scope = _scope.get()
+    return _shutdown_at is not None or (scope is not None and scope.lost)
 
 
-def track(backend: "RuntimeBackend", trace_id: str, tunnel_id: str | None) -> None:
-    """`backend` holds a rollout another process can adopt (`Trace.live`)."""
+def track(
+    backend: "RuntimeBackend",
+    trace_id: str,
+    tunnel_id: str | None,
+    secrets: tuple[str, ...] = (),
+) -> None:
+    """`backend` holds a rollout another process can adopt (`Trace.live`), whose program
+    authenticates with `secrets`."""
     _live[id(backend)] = (trace_id, tunnel_id)
+    scope = _scope.get()
+    for secret in secrets:
+        _secrets[secret] = (id(backend), scope)
 
 
 def untrack(backend: "RuntimeBackend") -> None:
     _live.pop(id(backend), None)
+    for secret, (owner, _) in list(_secrets.items()):
+        if owner == id(backend):
+            del _secrets[secret]
+
+
+def held(secret: str) -> bool:
+    """Whether a request under `secret` must wait rather than be refused: its rollout's
+    box is being suspended. Between its session closing and its box pausing, its program
+    may still ask; a refusal would end it, a request that never returns is frozen with
+    it and retried on resume against the process that adopts it."""
+    entry = _secrets.get(secret)
+    if entry is None or not os.environ.get(SUSPEND_DIR):
+        return False
+    scope = entry[1]
+    return _shutdown_at is not None or (scope is not None and scope.lost)
 
 
 def keeps_tunnel(tunnel_id: str | None) -> bool:
@@ -69,15 +117,15 @@ def claims(backend: "RuntimeBackend") -> bool:
 
 
 async def suspend(backend: "RuntimeBackend") -> bool:
-    """At a shutdown, pause `backend`'s box instead of deleting it, within what is left
-    of `PAUSE_BUDGET`, and record it. Returns whether the box is kept: a box whose pause
+    """At a shutdown (or once the run's client is gone), pause `backend`'s box instead of
+    deleting it, within what is left of `PAUSE_BUDGET`, and record it. Returns whether the box is kept: a box whose pause
     failed is kept too, unpaused. Marks the backend `suspended` before the first await,
     so the atexit backstop leaves it alone as well."""
     if not claims(backend):
         return False
     backend.suspended = True
-    assert _shutdown_at is not None
-    left = max(0.0, _shutdown_at + PAUSE_BUDGET - time.monotonic())
+    start = _shutdown_at if _shutdown_at is not None else time.monotonic()
+    left = max(0.0, start + PAUSE_BUDGET - time.monotonic())
     try:
         async with asyncio.timeout(left):
             await backend.pause()

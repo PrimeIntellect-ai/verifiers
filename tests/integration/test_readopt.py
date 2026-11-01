@@ -270,14 +270,17 @@ async def test_readopt(harness, harness_runtime, where, gone, tmp_path: Path):
 
 
 @pytest.mark.parametrize("harness,harness_runtime", grid(["bash"]), indirect=True)
+@pytest.mark.parametrize("how", ["shutdown", "client-gone"])
 async def test_suspend_on_shutdown(
-    harness, harness_runtime, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    harness, harness_runtime, how, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    """An env server stopped mid-rollout (SIGTERM) with `VF_SUSPEND_DIR` set pauses the
-    boxes it would delete and records them. Its client detached first, so cancelling
-    its runs did not delete them either. Both rollouts shared the server's tunnel; a
-    pool of two workers re-adopts them, both on the one worker that serves the tunnel,
-    and they finish in their paused boxes with their background processes."""
+    """An env server with `VF_SUSPEND_DIR` set pauses the boxes it would delete and
+    records them: stopped mid-rollout (SIGTERM, `shutdown`), its client detached first
+    so cancelling its runs did not delete them either; or still running while its client
+    is gone (`client-gone`), the runs it cannot deliver anymore. Both rollouts shared the
+    server's tunnel; a pool of two workers re-adopts them, both on the one worker that
+    serves the tunnel, and they finish in their paused boxes with their background
+    processes."""
     model = ScriptedModel("tool", copy=False, rollouts=2)
     suspended = tmp_path / "suspended"
     boxes: list[str] = []
@@ -353,11 +356,21 @@ async def test_suspend_on_shutdown(
                     )
                 )
             boxes = [point["live"]["sandbox_id"] for _, point in copies]
-            # A shutdown: the client detaches, cancels its runs, then the server stops.
             client.detach()
             for task in running:
                 task.cancel()
             await asyncio.gather(*running, return_exceptions=True)
+            if how == "client-gone":
+                # The client dies without a word: the server cannot deliver the runs'
+                # next deltas, and suspends their boxes while it keeps running.
+                client.socket.close(linger=0)
+                async with AsyncSandboxClient() as sandboxes:
+                    async with asyncio.timeout(180):
+                        while [(await sandboxes.get(b)).status for b in boxes] != [
+                            "PAUSED"
+                        ] * 2:
+                            await asyncio.sleep(2)
+            # A shutdown: the client detached and cancelled its runs, the server stops.
             first.terminate()
             first.join(timeout=120)
             assert first.exitcode is not None, "the server did not stop"

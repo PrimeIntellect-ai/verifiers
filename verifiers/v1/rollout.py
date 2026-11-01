@@ -354,7 +354,12 @@ class Rollout:
                     self.trace.agent.runtime = runtime.info.model_copy()
                 if self._adopt is not None:
                     # A shutdown keeps the adopted box for the next process too.
-                    suspend.track(runtime.backend, self.trace.id, self._adopt.tunnel_id)
+                    suspend.track(
+                        runtime.backend,
+                        self.trace.id,
+                        self._adopt.tunnel_id,
+                        (self._adopt.model_secret, self._adopt.state_secret),
+                    )
                 if not self.task.scoring_deferred:
                     isolated = self._scoring_policy.mode == "isolated"
                     self._scoring_task = self.task.grading_task(
@@ -647,7 +652,12 @@ class Rollout:
             else None,
         )
         # A shutdown keeps the box for another process to adopt (`suspend`).
-        suspend.track(self.runtime.backend, self.trace.id, self.trace.live.tunnel_id)
+        suspend.track(
+            self.runtime.backend,
+            self.trace.id,
+            self.trace.live.tunnel_id,
+            (self._secret, self._state_secret),
+        )
         self.trace.notify()
 
     async def steer(self, message: str, *, message_id: str | None = None) -> dict:
