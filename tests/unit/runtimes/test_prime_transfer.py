@@ -322,3 +322,59 @@ async def test_transfers_reach_the_files_the_namespaces_commands_see(
     assert (namespace / str(target).lstrip("/")).read_bytes() == b"{}"
     assert not target.exists()
     assert await runtime.read(str(target)) == b"{}"
+
+
+DEAD = "/proc/4194300/root"  # no such process: a namespace whose init has died
+
+
+def with_dead_namespace(runtime, monkeypatch):
+    """The box's namespace init is gone; renewing it points transfers at the box's own root."""
+    box = runtime.backend
+    box._pid_namespace, box._namespace_root = True, DEAD
+    renewed: list[str | None] = []
+
+    async def isolate(self):
+        renewed.append(self._namespace_root)
+        self._namespace_root = ""
+
+    monkeypatch.setattr(PrimeBackend, "isolate_processes", isolate)
+    return renewed
+
+
+async def test_a_write_renews_a_dead_namespace_and_tries_again(
+    runtime, tmp_path, monkeypatch
+):
+    renewed = with_dead_namespace(runtime, monkeypatch)
+    target = tmp_path / "box" / "f.bin"
+    await runtime.write(str(target), b"abc")
+    assert target.read_bytes() == b"abc"
+    assert renewed == [DEAD]
+
+
+async def test_a_read_and_a_size_renew_a_dead_namespace_too(
+    runtime, tmp_path, monkeypatch
+):
+    target = tmp_path / "f.bin"
+    target.write_bytes(DATA)
+    renewed = with_dead_namespace(runtime, monkeypatch)
+    assert await runtime.read(str(target)) == DATA
+    assert renewed == [DEAD]
+
+
+async def test_a_failure_with_a_live_namespace_is_not_retried(
+    runtime, tmp_path, monkeypatch
+):
+    renewed = with_dead_namespace(runtime, monkeypatch)
+    runtime.backend._namespace_root = f"/proc/{os.getpid()}/root"  # alive
+    with pytest.raises(SandboxError):
+        await runtime.write("/proc/nope/x", b"abc")
+    assert renewed == []
+
+
+async def test_commands_renew_a_dead_namespace_once_per_interval(runtime, monkeypatch):
+    renewed = with_dead_namespace(runtime, monkeypatch)
+    box = runtime.backend
+    box._namespace_checked = -1e9
+    await box._job(runtime, "true")
+    await box._job(runtime, "true")
+    assert renewed == [DEAD]
