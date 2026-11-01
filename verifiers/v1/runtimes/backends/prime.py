@@ -356,7 +356,9 @@ class PrimeBackend(RuntimeBackend):
 
     async def _take_over(self, box: str) -> None:
         """Bind to `box`, another process's running sandbox, resuming it if paused (its
-        processes then carry on, their dead connections reset)."""
+        processes then carry on, their dead connections reset). A failed takeover leaves
+        the box to teardown (it is deleted: a paused box never expires); a cancelled one
+        leaves it be, for the next resume to adopt."""
         self.info.id = box
         try:
             status = (await self._client.get(box)).status
@@ -364,6 +366,9 @@ class PrimeBackend(RuntimeBackend):
                 await self.resume()
             elif status != "RUNNING":
                 raise SandboxError(f"sandbox {box} is {status}")
+        except asyncio.CancelledError:
+            self.info.id = None
+            raise
         except Exception as e:
             raise SandboxError(f"prime sandbox {box} cannot be adopted: {e}") from e
         logger.info("prime: sandbox %s adopted", box)

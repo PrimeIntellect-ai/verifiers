@@ -613,7 +613,8 @@ class Rollout:
         """Whether another process could take this run over in its live box: a program
         it can wait on (`Harness.SUPPORTS_ADOPT`) in an owned, colocated box it can bind
         (`RuntimeBackend.SUPPORTS_ADOPT`), reached through a tunnel it can serve, and no
-        state that tool servers or request hooks write mid-run."""
+        state that tool servers or request and response hooks write mid-run: the live box
+        carries the state as of the program's start."""
         runtime = self.runtime
         return (
             self.harness.SUPPORTS_ADOPT
@@ -625,6 +626,7 @@ class Rollout:
             and not self.deployment.tool_vms
             and not self._urls
             and not self._session.request_interceptors
+            and not self._session.response_interceptors
             and held_tunnel(self._base_url) is not None
         )
 
