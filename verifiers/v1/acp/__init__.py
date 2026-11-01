@@ -442,14 +442,11 @@ class ACPHarnessSession(HarnessSession):
             if stderr := self._stderr():
                 detail = f"{detail}\n\nACP process stderr:\n{stderr}"
             error_data = response.get("error_data")
-            kind = error_data.get("kind") if isinstance(error_data, dict) else None
-            if kind == "model_transport":
+            if (
+                isinstance(error_data, dict)
+                and error_data.get("kind") == "model_transport"
+            ):
                 raise InterceptionError(detail)
-            if kind == "disk_full":
-                # The agent wedged on a full disk (`runner.watch`).
-                raise SandboxError(detail, kind="disk_full")
-            if kind == "agent_stalled":
-                raise HarnessError(detail)
             raise RuntimeError(detail)
         harness = cast(ACPHarness, self.harness)
         harness._consume_protocol_metadata(self.trace, turn.response_metadata)
