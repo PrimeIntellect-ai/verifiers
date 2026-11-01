@@ -8,6 +8,8 @@ from functools import cached_property
 from pathlib import Path
 from typing import Literal
 
+from pydantic import field_validator
+
 from verifiers.v1.acp import ACPConfig, ACPHarness, ACPTurn
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import DialectName, HarnessConfig, skill_destination
@@ -49,6 +51,7 @@ PROVIDER = "intercept"
 LIFECYCLE_META_NAMESPACE = "ai.primeintellect.prime-agent"
 KEY_VAR = "PRIME_AGENT_INTERCEPT_KEY"
 ENV_AGENT_DIR = "PRIME_AGENT_CODING_AGENT_DIR"
+REFERENCE_DIR = "/usr/share/prime-agent/reference"
 
 
 INSTALL = (
@@ -110,6 +113,24 @@ class PrimeAgentHarnessConfig(HarnessConfig):
     supports_developer_role: bool | None = None
     """Override Prime Agent's chat-completions role detection, which sends the system
     prompt as a `developer` message to a reasoning model behind the interception endpoint."""
+    prompt_docs: Path | None = None
+    """A directory, read where the env runs, holding a `SYSTEM.md` and a `docs/` directory of
+    files, to move most of the system prompt into files the agent reads when it needs them.
+    `SYSTEM.md` replaces Prime Agent's static system prompt, the skills inventory is left out
+    of the prompt (the skills stay loaded), and the files in `docs/` are written to
+    `REFERENCE_DIR`, where `SYSTEM.md` can point. Leaving the inventory out needs a `release`
+    built with the `skillsInPrompt` setting; the pinned commit ignores it."""
+
+    @field_validator("prompt_docs")
+    @classmethod
+    def _check_prompt_docs(cls, docs: Path | None) -> Path | None:
+        if docs is not None and not (
+            (docs / "SYSTEM.md").is_file()
+            and (docs / "docs").is_dir()
+            and all(doc.is_file() for doc in (docs / "docs").iterdir())
+        ):
+            raise ValueError(f"{docs} needs a SYSTEM.md and a docs/ directory of files")
+        return docs
 
 
 class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
@@ -313,6 +334,17 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
             raise RuntimeError(
                 f"prime-agent model config chmod failed: {secured.stderr.strip()[-500:]}"
             )
+        if (docs := self.config.prompt_docs) is not None:
+            await runtime.write(
+                f"{agent_dir}/SYSTEM.md", (docs / "SYSTEM.md").read_bytes()
+            )
+            await runtime.write(
+                f"{agent_dir}/settings.json",
+                json.dumps({"skillsInPrompt": False}).encode(),
+            )
+            root = runtime.with_user(None)
+            for doc in sorted((docs / "docs").iterdir()):
+                await root.write(f"{REFERENCE_DIR}/{doc.name}", doc.read_bytes())
 
         system_prompt, prompt = self.resolve_prompt(data)
         args = [
