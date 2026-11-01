@@ -43,7 +43,9 @@ _SCHEMA = """
 def _trace_record(trace: Trace) -> dict:
     # Validation can retain unknown fields on a wire trace whose base serializer
     # ignores extras. Keep those fields; typed fields and computed counts win.
-    return {**(trace.model_extra or {}), **trace.to_record()}
+    # `to_record` keeps per-token streams as numpy arrays; store consumers encode records with plain JSON
+    # encoders, so the record is taken through the trace's own JSON encoding (`to_json`).
+    return {**(trace.model_extra or {}), **orjson.loads(trace.to_json())}
 
 
 def _episode_record(episode: Episode) -> dict:
