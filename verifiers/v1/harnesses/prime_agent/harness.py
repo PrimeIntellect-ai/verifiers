@@ -4,7 +4,7 @@ import hashlib
 import json
 import logging
 import uuid
-from functools import cached_property
+from functools import cache, cached_property
 from pathlib import Path
 from typing import Literal
 
@@ -52,6 +52,14 @@ LIFECYCLE_META_NAMESPACE = "ai.primeintellect.prime-agent"
 KEY_VAR = "PRIME_AGENT_INTERCEPT_KEY"
 ENV_AGENT_DIR = "PRIME_AGENT_CODING_AGENT_DIR"
 REFERENCE_DIR = "/usr/share/prime-agent/reference"
+
+
+@cache
+def _release_file(path: Path) -> bytes:
+    """A local release file, read once per process. Every rollout's harness (a fresh copy
+    when the task adds skills) installs the build the process first read and shares one
+    copy of its archive."""
+    return path.read_bytes()
 
 
 INSTALL = (
@@ -104,7 +112,8 @@ class PrimeAgentHarnessConfig(HarnessConfig):
     release: Path | None = None
     """A locally built Prime Agent release to install instead of `commit`: the directory
     holding its `manifest.json`, such as the `target/release/dist` that
-    `make continuous-dry-run` writes."""
+    `make continuous-dry-run` writes. Its files are read once per process, so every
+    rollout, and every later eval in the same process, installs the build first read."""
 
     autonomous: bool = False
     """Enable Prime Agent's autonomous continuation loop."""
@@ -235,9 +244,7 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
                 archive["PRIME_AGENT_ARCHIVE"] = f"{upload[0]}/{entry['file']}"
         try:
             if upload is not None:
-                await root.write(
-                    archive["PRIME_AGENT_ARCHIVE"], self._archive(upload[1])
-                )
+                await root.write(archive["PRIME_AGENT_ARCHIVE"], _release_file(upload[1]))
             await ensure_installed(
                 runtime,
                 directory=PRIME_AGENT_DIR,
@@ -402,11 +409,7 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
         installs the build the install directory is named for, and a dist rebuilt mid-run
         fails its checksum instead of landing under the old name."""
         release = self.config.release
-        return (
-            None
-            if release is None
-            else (release, (release / "manifest.json").read_bytes())
-        )
+        return None if release is None else (release, _release_file(release / "manifest.json"))
 
     @cached_property
     def _build(self) -> str:
@@ -415,16 +418,6 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
         if self._local_release is None:
             return self.config.commit
         return f"local-{hashlib.sha256(self._local_release[1]).hexdigest()[:16]}"
-
-    @cached_property
-    def _archives(self) -> dict[Path, bytes]:
-        return {}
-
-    def _archive(self, path: Path) -> bytes:
-        """A local release archive, read once and shared by every rollout's upload."""
-        if path not in self._archives:
-            self._archives[path] = path.read_bytes()
-        return self._archives[path]
 
     def _bin(self) -> str:
         return f"{PRIME_AGENT_DIR}/{self._build}/bin/prime-agent"
