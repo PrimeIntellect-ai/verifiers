@@ -19,6 +19,10 @@ class FailingSegmentRollout:
     fail = Rollout.fail
     step = Rollout.step
     timeout = Rollout.timeout
+    _attach = None
+
+    def _adoptable(self) -> bool:
+        return False
 
 
 def make_trace() -> vf.Trace:

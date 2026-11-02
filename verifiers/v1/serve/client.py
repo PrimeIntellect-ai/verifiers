@@ -28,12 +28,14 @@ from verifiers.v1.configs.client import ClientConfig
 from verifiers.v1.configs.sampling import SamplingConfig
 from verifiers.v1.episode import WireEpisode
 from verifiers.v1.serve.delta import EpisodeAssembly, unpack
+from verifiers.v1.serve.encoding import msgpack_encoder
 from verifiers.v1.serve.types import (
     BaseRequest,
     BaseResponse,
     CancelRequest,
     HealthRequest,
     HealthResponse,
+    RestoreRequest,
     RunRequest,
     RunResponse,
 )
@@ -79,6 +81,7 @@ class EnvClient:
         # holds weak references to tasks, so an unreferenced one can be
         # garbage-collected before it ever sends
         self._cancel_tasks: set[asyncio.Task] = set()
+        self._detached = False
         self._receiver: asyncio.Task | None = None
         self._decode_slots = asyncio.BoundedSemaphore(1)
 
@@ -170,19 +173,25 @@ class EnvClient:
         timeout: float | None = None,
         on_delta: Callable[[dict], None] | None = None,
         request_id: str | None = None,
+        affinity: str | None = None,
     ) -> ResponseT:
         """Send a typed request and validate the reply into `response_type`. A
         `timeout` is only used for health polling — rollouts run untimed. `on_delta`
-        receives each decoded `delta` the request streams before its reply."""
+        receives each decoded `delta` the request streams before its reply. Requests
+        with one `affinity` go to one worker of a pool (`EnvServerPool`)."""
         self._ensure_receiver()
         request_id = request_id or uuid.uuid4().hex
         future: asyncio.Future[bytes] = asyncio.get_running_loop().create_future()
         self._pending[request_id] = future
         if on_delta is not None:
             self._deltas[request_id] = on_delta
-        payload = msgpack.packb(request.model_dump(mode="json"), use_bin_type=True)
+        raw = set(request.RAW_FIELDS)
+        data = request.model_dump(mode="json", exclude=raw)
+        data.update(request.model_dump(mode="python", include=raw))
+        payload = msgpack.packb(data, default=msgpack_encoder, use_bin_type=True)
+        method = request.method if affinity is None else f"{request.method}@{affinity}"
         await self.socket.send_multipart(
-            [request_id.encode(), request.method.encode(), payload]
+            [request_id.encode(), method.encode(), payload]
         )
         try:
             data = await asyncio.wait_for(future, timeout)
@@ -217,10 +226,19 @@ class EnvClient:
             )
             raise
 
+    def detach(self) -> None:
+        """Stop telling the server about abandoned runs: a run cancelled from now on
+        keeps going there, its box with it, until the server itself stops — which
+        suspends the box when it is set to (`VF_SUSPEND_DIR`). For a caller shutting
+        down to resume later (`RunRequest.restore`)."""
+        self._detached = True
+
     def _cancel_run(self, run_request_id: str) -> None:
         """Fire-and-forget: tell the server the caller abandoned the run, so it aborts
         the rollout (or frees what it kept for an episode already sent). A task on the
-        loop outlives the cancelled caller."""
+        loop outlives the cancelled caller. A detached client tells it nothing."""
+        if self._detached:
+            return
         task = asyncio.get_running_loop().create_task(self._send_cancel(run_request_id))
         self._cancel_tasks.add(task)
         task.add_done_callback(self._cancel_tasks.discard)
@@ -264,14 +282,19 @@ class EnvClient:
         sampling: SamplingConfig,
         task_data: dict,
         on_delta: Callable[[dict], None] | None = None,
+        restore: RestoreRequest | None = None,
+        assembly: EpisodeAssembly | None = None,
     ) -> WireEpisode:
         """Run one rollout; return its episode record — flat traces (typed
         `Trace[WireTaskData]`) plus the shared stamp. The server takes the task
         itself (`task_data`, its dumped `TaskData`). The traces stream in as the
         rollout runs, one delta per turn or phase change (`serve.delta`); `on_delta`
         sees each as it lands, so a caller can relay or persist the stream. The
-        episode returned is assembled from the same deltas."""
-        assembly = EpisodeAssembly()
+        episode returned is assembled from the same deltas, into `assembly` when the
+        caller passes one: it then holds the partial traces and their newest restore
+        points while the run is in flight. `restore` continues a trace from one of
+        those restore points instead of starting one."""
+        assembly = assembly if assembly is not None else EpisodeAssembly()
 
         def apply(delta: dict) -> None:
             assembly.apply(delta)
@@ -285,10 +308,16 @@ class EnvClient:
                 client=client,
                 model=model,
                 sampling=sampling,
+                restore=restore,
             ),
             RunResponse,
             on_delta=apply,
             request_id=request_id,
+            # Restores that adopt boxes behind one tunnel share a worker: one process
+            # can serve the tunnel (`Interception.adopt`).
+            affinity=(restore.point.get("live") or {}).get("tunnel_id")
+            if restore is not None
+            else None,
         )
         assert response.head is not None
         try:

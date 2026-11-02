@@ -9,6 +9,8 @@ from contextlib import AsyncExitStack
 from dataclasses import dataclass
 from urllib.parse import urlsplit
 
+from pydantic import BaseModel
+
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.agent import AgentConfig
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
@@ -30,17 +32,20 @@ from verifiers.v1.grading import (
 )
 from verifiers.v1.harness import Harness, HarnessSession
 from verifiers.v1.interception import Interception, serve_interception
+from verifiers.v1.interception.tunnel.prime import held_tunnel
 from verifiers.v1.mcp import SharedToolServer, serve_tools
 from verifiers.v1.runtimes import (
     Runtime,
     RuntimeConfig,
     make_backend,
+    suspend,
 )
+from verifiers.v1.runtimes.base import program_started
 from verifiers.v1.runtimes.private_network import tool_vms
 from verifiers.v1.session import RolloutLimits, RolloutSession, hook_boundary
 from verifiers.v1.state import state_cls
 from verifiers.v1.task import Task
-from verifiers.v1.trace import AgentInfo, Trace, TraceTask
+from verifiers.v1.trace import AgentInfo, LiveBox, Trace, TraceTask
 from verifiers.v1.types import Messages, Request, Response, SystemMessage, UserMessage
 from verifiers.v1.utils.artifacts import collect
 from verifiers.v1.utils.decorators import discover_decorated, invoke
@@ -115,7 +120,11 @@ class Rollout:
         on_trace: Callable[[Trace], None] | None = None,
         collect_artifacts: bool = False,
         on_score: Callable[[Trace, Runtime], Awaitable[None]] | None = None,
+        restore: Trace | None = None,
     ) -> None:
+        """`restore` continues a trace another process ran, as it stands, in its live
+        box (`Trace.live`): the run takes the box over and waits on the program still
+        running there instead of setting the task up and launching one."""
         self._on_score = on_score
         self.task = task
         self.harness = harness
@@ -135,20 +144,32 @@ class Rollout:
         self.runtime = runtime
         self._borrowed_runtime = runtime
         self._collect_artifacts = collect_artifacts
-        self.trace: Trace = Trace(
-            task=TraceTask(
-                type=type(task).__name__,
-                data=task.data,
-                key=task.key,
-                hash=task.hash,
-            ),
-            state=state_cls(type(task))(),
-            # The seat's resolved config, role overrides included — the agent
-            # this trace can be reproduced with.
-            agent=AgentInfo(config=agent_config),
-        )
+        self._adopt = restore.live if restore is not None else None
+        """The live box this run takes over (`Trace.live`)."""
+        self._attach = self._adopt.job if self._adopt is not None else None
+        """The program the next segment waits on instead of launching one."""
+        self.adopted = False
+        """Whether the run took its live box over and reaches its program."""
+        self._state_secret: str | None = None
+        self._base_url = ""
+        if restore is not None:
+            self.trace = restore
+        else:
+            self.trace = Trace(
+                task=TraceTask(
+                    type=type(task).__name__,
+                    data=task.data,
+                    key=task.key,
+                    hash=task.hash,
+                ),
+                state=state_cls(type(task))(),
+                # The seat's resolved config, role overrides included — the agent
+                # this trace can be reproduced with.
+                agent=AgentInfo(config=agent_config),
+            )
         self.trace._replay_view = harness.replay_view
-        if on_trace is not None:
+        # A restored trace was seen when it was minted, in its first process.
+        if on_trace is not None and restore is None:
             on_trace(self.trace)
         interceptors = [
             (hook_boundary(fn, allow_trace=False), fn)
@@ -263,13 +284,23 @@ class Rollout:
         runtime = self.runtime
         assert self.trace.agent is not None  # minted with the trace
         self.trace.agent.runtime = runtime.info.model_copy()
-        logger.info(
-            "rollout start: id=%s task=%s harness=%s runtime=%s",
-            self.trace.id,
-            self.task.data.idx,
-            self.harness.config.name,
-            self.runtime_config.type,
-        )
+        if self._adopt is not None:
+            logger.info(
+                "rollout adopt: id=%s task=%s harness=%s sandbox=%s turns=%d",
+                self.trace.id,
+                self.task.data.idx,
+                self.harness.config.name,
+                self._adopt.sandbox_id,
+                self.trace.num_turns,
+            )
+        else:
+            logger.info(
+                "rollout start: id=%s task=%s harness=%s runtime=%s",
+                self.trace.id,
+                self.task.data.idx,
+                self.harness.config.name,
+                self.runtime_config.type,
+            )
         loop = asyncio.get_running_loop()
         setup_timeout: asyncio.Timeout | None = None
         setup_deadline = (
@@ -294,6 +325,13 @@ class Rollout:
                 async with boundary(ToolsetError, "building tool servers"):
                     toolsets = self.task.toolsets(self.task.config)
                 spec = self.task.deployment_spec()
+                if self._adopt is not None:
+                    if spec is not None or toolsets:
+                        raise SandboxError(
+                            "only a box with no services or task tool servers of its "
+                            "own is adopted"
+                        )
+                    runtime.backend.adopt(self._adopt.sandbox_id)
                 self.deployment = runtime.backend.deploy(
                     spec=spec,
                     # Tool servers on Prime VMs of their own boot with the workspace.
@@ -314,6 +352,14 @@ class Rollout:
                 finally:
                     # Providers may assign an ID before startup fails; retain it for diagnostics.
                     self.trace.agent.runtime = runtime.info.model_copy()
+                if self._adopt is not None:
+                    # A shutdown keeps the adopted box for the next process too.
+                    suspend.track(
+                        runtime.backend,
+                        self.trace.id,
+                        self._adopt.tunnel_id,
+                        (self._adopt.model_secret, self._adopt.state_secret),
+                    )
                 if not self.task.scoring_deferred:
                     isolated = self._scoring_policy.mode == "isolated"
                     self._scoring_task = self.task.grading_task(
@@ -337,24 +383,33 @@ class Rollout:
                 self.trace.timing.boot.end = now
                 self.trace.timing.setup.start = now
                 self.trace.notify()
-                async with (
-                    boundary(TaskError, "task setup"),
-                ):
-                    await invoke(
-                        self.task.setup,
-                        {
-                            "trace": self.trace,
-                            "runtime": runtime,
-                            "deployment": self.deployment,
-                        },
-                    )
+                if self._adopt is not None:
+                    # The box holds the task's setup and the program its turns; the
+                    # typed state is the one the program started with.
+                    if self._adopt.state is not None:
+                        self.trace.state = state_cls(type(self.task)).model_validate(
+                            self._adopt.state
+                        )
+                else:
+                    async with (
+                        boundary(TaskError, "task setup"),
+                    ):
+                        await invoke(
+                            self.task.setup,
+                            {
+                                "trace": self.trace,
+                                "runtime": runtime,
+                                "deployment": self.deployment,
+                            },
+                        )
                 async with (
                     boundary(HarnessError, "harness setup"),
                 ):
                     self._agent_runtime = await resolve_agent_runtime(
                         runtime, self.task.data.agent_user
                     )
-                    await self.harness.setup(self._agent_runtime)
+                    if self._adopt is None:
+                        await self.harness.setup(self._agent_runtime)
                 # `base_url` is the interception server's reachable URL for this rollout.
                 # The harness reaches the model at `{base_url}/v1`; tool servers reach this
                 # rollout's `/state` + `/task` at `base_url` — it's universally reachable
@@ -370,10 +425,13 @@ class Rollout:
                         self._session,
                         toolsets,
                         self._shared_tools,
+                        live=self._adopt,
                     )
                 )
                 self._endpoint = runtime.host_url(f"{base_url.rstrip('/')}/v1")
                 self._secret = model_secret
+                self._state_secret = state_secret
+                self._base_url = base_url
                 services = (
                     {
                         name: self.deployment.target(name)
@@ -406,14 +464,16 @@ class Rollout:
                 # Service hosts resolve inside the deployment (Compose names, LAN
                 # names), not as egress.
                 internal = {*services, *self.deployment.hosts.values()}
-                await self.deployment.prepare_execution(
-                    [
-                        url
-                        for url in [self._endpoint, *self._urls.values()]
-                        if urlsplit(url).hostname not in internal
-                    ],
-                    state_route=f"{base_url.rstrip('/')}/state",
-                )
+                # An adopted box already runs under its execution policy.
+                if self._adopt is None:
+                    await self.deployment.prepare_execution(
+                        [
+                            url
+                            for url in [self._endpoint, *self._urls.values()]
+                            if urlsplit(url).hostname not in internal
+                        ],
+                        state_route=f"{base_url.rstrip('/')}/state",
+                    )
                 async with (
                     boundary(HarnessError, "opening harness session"),
                 ):
@@ -461,9 +521,11 @@ class Rollout:
                             harness_data = harness_data.model_copy(
                                 update={"system_prompt": network_prompt}
                             )
+                    # An adopted program's prompt went through them in its first process.
                     if (
                         self._session.request_interceptors
                         and harness_data.prompt is not None
+                        and self._adopt is None
                     ):
                         prompt = harness_data.prompt
                         system_prompt = harness_data.system_prompt
@@ -549,7 +611,54 @@ class Rollout:
         self.trace.timing.setup.end = now
         self.trace.timing.agent.start = now
         self.trace.notify()
+        self.adopted = self._adopt is not None
         return not self._session.stopped
+
+    def _adoptable(self) -> bool:
+        """Whether another process could take this run over in its live box: a program
+        it can wait on (`Harness.SUPPORTS_ADOPT`) in an owned, colocated box it can bind
+        (`RuntimeBackend.SUPPORTS_ADOPT`), reached through a tunnel it can serve, and no
+        state that tool servers or request and response hooks write mid-run: the live box
+        carries the state as of the program's start."""
+        runtime = self.runtime
+        return (
+            self.harness.SUPPORTS_ADOPT
+            and runtime is not None
+            and runtime.backend.SUPPORTS_ADOPT
+            and self._borrowed_runtime is None
+            and self.deployment is not None
+            and self.deployment.spec is None
+            and not self.deployment.tool_vms
+            and not self._urls
+            and not self._session.request_interceptors
+            and not self._session.response_interceptors
+            and held_tunnel(self._base_url) is not None
+        )
+
+    def _program_started(self, job: dict) -> None:
+        tunnel = held_tunnel(self._base_url)
+        assert self.runtime is not None and self.runtime.info.id is not None
+        assert self._secret is not None and self._state_secret is not None
+        state = self.trace.state
+        self.trace.live = LiveBox(
+            sandbox_id=self.runtime.info.id,
+            tunnel_id=tunnel["tunnel_id"] if tunnel is not None else None,
+            tunnel=tunnel,
+            job=job,
+            model_secret=self._secret,
+            state_secret=self._state_secret,
+            state=state.model_dump(mode="json")
+            if isinstance(state, BaseModel)
+            else None,
+        )
+        # A shutdown keeps the box for another process to adopt (`suspend`).
+        suspend.track(
+            self.runtime.backend,
+            self.trace.id,
+            self.trace.live.tunnel_id,
+            (self._secret, self._state_secret),
+        )
+        self.trace.notify()
 
     async def steer(self, message: str, *, message_id: str | None = None) -> dict:
         if self._closed or not self.ok:
@@ -599,7 +708,18 @@ class Rollout:
                         return False
                 self._session.on_turn_input = on_input
                 assert self.deployment is not None
-                await self._harness_session.turn(messages)
+                job, self._attach = self._attach, None
+                if job is not None:
+                    await self._harness_session.attach(job)
+                else:
+                    # The program's job, once started, makes the box adoptable.
+                    watching = program_started.set(
+                        self._program_started if self._adoptable() else None
+                    )
+                    try:
+                        await self._harness_session.turn(messages)
+                    finally:
+                        program_started.reset(watching)
         except TimeoutError as e:
             # An expired rollout deadline is the agent breaking its time budget: a
             # timeout stop. A TimeoutError from the harness's own I/O with no
@@ -678,6 +798,8 @@ class Rollout:
         ):
             with contextlib.suppress(Exception):
                 await self.runtime.backend.stop()
+        if self.runtime is not None:
+            suspend.untrack(self.runtime.backend)
 
     async def _score_harness(self, runtime: Runtime, deadline: float | None) -> None:
         """Collect best-effort metrics without replacing a task failure."""
@@ -971,6 +1093,8 @@ class Rollout:
                     await runtime.backend.stop()
             except Exception:
                 logger.warning("runtime teardown failed", exc_info=True)
+            if runtime is not None:
+                suspend.untrack(runtime.backend)
         logger.info(
             "rollout done: id=%s task=%s reward=%.3f turns=%d stop=%s%s",
             trace.id,

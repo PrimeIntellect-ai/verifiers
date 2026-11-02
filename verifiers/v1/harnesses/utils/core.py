@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import json
 import logging
+import random
 import subprocess
 import traceback
 from contextlib import AsyncExitStack
@@ -47,6 +48,11 @@ if TYPE_CHECKING:
 MODEL_TRANSPORT_ERROR_EXIT_CODE = 97
 
 SERPER_URL = "https://google.serper.dev/search"
+
+# How long a request retries while the tunnel edge answers for the interception server:
+# its tunnel client reconnecting, or the host process restarting behind it. Counted on the
+# box's monotonic clock, which a pause of the box stops.
+TUNNEL_RETRY_SECONDS = 15 * 60
 
 BASH_TOOL = {
     "type": "function",
@@ -278,6 +284,28 @@ def _accumulate_streamed_message(accumulated: dict, delta: dict) -> None:
             reasoning_details.append(dict(detail))
 
 
+def from_tunnel_edge(response) -> bool:
+    """Whether the tunnel edge answered in place of the interception server, which only
+    answers in JSON or SSE: the edge's HTML error pages mean nothing behind the tunnel
+    took the request (404 "Tunnel Not Found": no tunnel client connected) or the origin
+    failed (5xx)."""
+    status = response.status_code
+    return (status == 404 or status >= 500) and response.headers.get(
+        "content-type", ""
+    ).startswith("text/html")
+
+
+async def tunnel_backoff(retries: int, response) -> None:
+    delay = min(2.0**retries, 30.0) * random.uniform(0.5, 1.0)
+    logging.getLogger(__name__).warning(
+        "tunnel edge answered %s for %s; retrying in %.0fs",
+        response.status_code,
+        response.request.url.path,
+        delay,
+    )
+    await asyncio.sleep(delay)
+
+
 async def chat(
     client: AsyncOpenAI,
     model: str,
@@ -301,15 +329,7 @@ async def chat(
         ):
             # Reuse the interception server's body-digest replay guard on stream retries.
             retry_count = attempt.retry_state.attempt_number - 1
-            headers = (
-                {"x-stainless-retry-count": str(retry_count)} if retry_count else omit
-            )
-            raw_stream = await client.chat.completions.create(
-                **kwargs,
-                stream=True,
-                stream_options={"include_usage": True},
-                extra_headers=headers,
-            )
+            raw_stream = await _open_stream(client, kwargs, retry_count)
             # The SDK retries request setup; only stream consumption is retried here.
             with attempt:
                 return await _read_chat_completion(raw_stream)
@@ -317,6 +337,28 @@ async def chat(
         # Preserve the original transport error in stderr for the host's diagnostic.
         traceback.print_exc()
         raise SystemExit(MODEL_TRANSPORT_ERROR_EXIT_CODE) from error
+
+
+async def _open_stream(client: AsyncOpenAI, kwargs: dict, retry_count: int):
+    """Open the completion stream, retrying past the tunnel edge (`from_tunnel_edge`) with
+    backoff for up to `TUNNEL_RETRY_SECONDS`. Each retry is marked one, so the
+    interception server's replay guard joins it to an attempt that did get through."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + TUNNEL_RETRY_SECONDS
+    while True:
+        headers = {"x-stainless-retry-count": str(retry_count)} if retry_count else omit
+        try:
+            return await client.chat.completions.create(
+                **kwargs,
+                stream=True,
+                stream_options={"include_usage": True},
+                extra_headers=headers,
+            )
+        except APIStatusError as error:
+            if not from_tunnel_edge(error.response) or loop.time() > deadline:
+                raise
+            retry_count += 1
+            await tunnel_backoff(retry_count, error.response)
 
 
 async def _read_chat_completion(raw_stream):
@@ -364,15 +406,23 @@ async def gate_tool_call(
         arguments = json.loads(call.function.arguments or "{}")
     except json.JSONDecodeError:
         arguments = call.function.arguments
-    response = await client.post(
-        url,
-        headers={"Authorization": f"Bearer {api_key}"},
-        json={
-            "tool_call_id": call.id,
-            "name": call.function.name,
-            "arguments": arguments,
-        },
-    )
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + TUNNEL_RETRY_SECONDS
+    retries = 0
+    while True:
+        response = await client.post(
+            url,
+            headers={"Authorization": f"Bearer {api_key}"},
+            json={
+                "tool_call_id": call.id,
+                "name": call.function.name,
+                "arguments": arguments,
+            },
+        )
+        if not from_tunnel_edge(response) or loop.time() > deadline:
+            break
+        retries += 1
+        await tunnel_backoff(retries, response)
     response.raise_for_status()
     decision = response.json()
     if decision["action"] == "stop":

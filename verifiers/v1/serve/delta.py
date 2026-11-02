@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import json
 import logging
 from collections.abc import Awaitable, Callable, Iterable
 from typing import TYPE_CHECKING, Any, Self
@@ -33,6 +34,7 @@ import msgpack
 from pydantic import BaseModel
 
 from verifiers.v1.serve.encoding import msgpack_encoder
+from verifiers.v1.trace import RestorePoint
 
 if TYPE_CHECKING:
     from verifiers.v1.trace import Trace
@@ -101,6 +103,8 @@ class TraceCursor:
         """Per sent node, how many of its semantic links went out with or after it."""
         self.scalars: dict[str, bytes] = {}
         self.pending: bytes = pack([])
+        self.restore: str | None = None
+        """The live box (its program's job) whose restore point went out last."""
 
 
 class DeltaStreamer:
@@ -223,6 +227,15 @@ class DeltaStreamer:
                     changed[field] = value
             if changed:
                 delta["set"] = changed
+            live = trace.live
+            key = json.dumps(live.job, sort_keys=True) if live is not None else None
+            if key != cursor.restore:
+                # The live box, with what taking it over needs: a client can continue
+                # the trace in another process.
+                delta["restore"] = (
+                    dump(RestorePoint(live=live)) if live is not None else None
+                )
+                cursor.restore = key
             pending = [dump(message) for message in trace.pending]
             packed = pack(pending)
             if packed != cursor.pending:
@@ -241,14 +254,23 @@ class EpisodeAssembly:
 
     def __init__(self) -> None:
         self.traces: dict[str, dict] = {}
+        self.restores: dict[str, dict] = {}
+        """Per trace, its newest restore point (`RestorePoint`, dumped) as streamed."""
 
     def apply(self, delta: dict) -> None:
         trace_id = delta["trace"]
         if delta.get("discard"):
             self.traces.pop(trace_id, None)
+            self.restores.pop(trace_id, None)
             return
+        if delta.get("restore") is not None:
+            self.restores[trace_id] = delta["restore"]
+        elif "restore" in delta:
+            self.restores.pop(trace_id, None)
         trace = self.traces.get(trace_id)
-        if trace is None:
+        # An `open` starts the trace's copy over, also in an assembly that holds a run
+        # this one restores.
+        if trace is None or "open" in delta:
             trace = self.traces[trace_id] = {
                 **delta["open"],
                 **{field: [] for field in LIST_FIELDS},

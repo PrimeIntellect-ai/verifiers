@@ -36,6 +36,7 @@ import zmq
 import zmq.asyncio
 
 from verifiers.v1.configs.env import EnvConfig
+from verifiers.v1.runtimes import suspend
 from verifiers.v1.serve.server import LATE_CANCEL_SECONDS, EnvServer
 from verifiers.v1.serve.types import CancelResponse, HealthResponse
 
@@ -58,6 +59,7 @@ def _arm_teardown(death_pipe=None) -> None:
 
     def on_sigterm(*_) -> None:
         signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        suspend.shutting_down()
         raise KeyboardInterrupt
 
     signal.signal(signal.SIGTERM, on_sigterm)
@@ -96,6 +98,8 @@ class EnvServerPool:
         self.log_setup = log_setup
         self._ipc_dir = tempfile.mkdtemp(prefix="vf-pool-", dir="/tmp")
         self.workers: list[dict] = []
+        self.affinity: dict[bytes, dict] = {}
+        """Per affinity key (`_worker_for`), the worker its requests go to."""
         self._mpctx = mp.get_context("spawn")
         self._poller: zmq.asyncio.Poller | None = None
 
@@ -142,6 +146,17 @@ class EnvServerPool:
         )
         if self._poller is not None:
             self._poller.register(dealer, zmq.POLLIN)
+
+    def _worker_for(self, key: bytes) -> dict:
+        """The least-busy worker, or for a request with an affinity `key` (`run@<key>`,
+        the tunnel a restore adopts) the live worker that took the key first: one
+        process can serve a tunnel."""
+        worker = self.affinity.get(key) if key else None
+        if worker is None or not worker["process"].is_alive():
+            worker = min(self.workers, key=lambda w: w["active"])
+            if key:
+                self.affinity[key] = worker
+        return worker
 
     def _maybe_scale_up(self, in_flight: int) -> None:
         """Spawn one more worker when in-flight rollout slots reach 90% of capacity.
@@ -240,7 +255,8 @@ class EnvServerPool:
                                     [request_id, method, payload]
                                 )
                         else:
-                            worker = min(self.workers, key=lambda w: w["active"])
+                            method, _, key = method.partition(b"@")
+                            worker = self._worker_for(key)
                             worker["active"] += 1
                             pending[request_id] = {
                                 "client_id": client_id,
@@ -307,9 +323,11 @@ class EnvServerPool:
                 w["pipe"].close()
             with contextlib.suppress(Exception):
                 w["process"].terminate()
+        # Workers that suspend their boxes pause them first (`suspend.PAUSE_BUDGET`).
+        grace = suspend.PAUSE_BUDGET + 15 if os.environ.get(suspend.SUSPEND_DIR) else 10
         for w in self.workers:
             with contextlib.suppress(Exception):
-                w["process"].join(timeout=10)
+                w["process"].join(timeout=grace)
             if w["process"].is_alive():
                 with contextlib.suppress(Exception):
                     w["process"].kill()

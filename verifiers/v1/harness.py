@@ -5,7 +5,7 @@ import logging
 import os
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, ClassVar, Generic, TypeVar
+from typing import TYPE_CHECKING, Any, ClassVar, Generic, TypeVar
 
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import DialectName, HarnessConfig, skill_destination
@@ -49,6 +49,11 @@ class Harness(ABC, Generic[ConfigT]):
     SUPPORTS_RESUME: ClassVar[bool] = False
     """Whether the default `resume()` can relaunch this harness from the
     accumulated Messages transcript."""
+    SUPPORTS_ADOPT: ClassVar[bool] = False
+    """Whether a new process can take a rollout over in its still running box: the
+    program runs as one `Runtime.run` that it waits on in its place
+    (`HarnessSession.attach`), while the program reaches the model through the same
+    secrets and URL (`Trace.live`). Its turns and processes carry on as they were."""
     EXECUTES_CODE: ClassVar[bool] = True
     """Whether the program hands the model local execution in the runtime — true for
     every real harness; the tool-less chat loops (`null`) override to False. Read
@@ -373,6 +378,14 @@ class HarnessSession:
             )
         async with boundary(HarnessError, f"harness {self.harness.config.id!r}"):
             result = await self._run(messages)
+        await self.harness._check_result(self.trace, self.runtime, result)
+
+    async def attach(self, job: dict[str, Any]) -> None:
+        """Run this session's segment by waiting on the program another process
+        launched (`Trace.live`) instead of launching one, and check its result as a
+        launch's. For a harness that `SUPPORTS_ADOPT`."""
+        async with boundary(HarnessError, f"harness {self.harness.config.id!r}"):
+            result = await self.runtime.attach(job)
         await self.harness._check_result(self.trace, self.runtime, result)
 
     async def _run(self, messages: Messages | None) -> ProgramResult:

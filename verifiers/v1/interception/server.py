@@ -62,6 +62,7 @@ from verifiers.v1.errors import (
 )
 from verifiers.v1.interception.base import Interception, Slot
 from verifiers.v1.interception.tunnel import Tunnel, make_tunnel
+from verifiers.v1.runtimes import suspend
 from verifiers.v1.semantic import ACPInfo, extract_acp_info
 from verifiers.v1.session import IdempotentRequest, ReplayResponse, RolloutSession
 from verifiers.v1.trace import Error, ModelCall, PolicyEvent, TimeSpan
@@ -349,7 +350,10 @@ class InterceptionServer(Interception):
         config: InterceptionServerConfig | None = None,
         requires_tunnel: bool = False,
         state_service_secrets: Collection[str] = (),
+        tunnel: Tunnel | None = None,
     ) -> None:
+        """`tunnel` serves this server through a given tunnel instead of the configured
+        kind (an adopted one, `Interception.adopt`)."""
         super().__init__()
         self.sessions: dict[str, RolloutSession] = {}
         self.clients: dict[str, Client] = {}
@@ -358,7 +362,7 @@ class InterceptionServer(Interception):
         self.mcp_routes: dict[str, _MCPRoute] = {}
         self.state_service_secrets = frozenset(state_service_secrets)
         self.config = config or InterceptionServerConfig()
-        self.tunnel: Tunnel | None = (
+        self.tunnel: Tunnel | None = tunnel or (
             make_tunnel(self.config.tunnel) if requires_tunnel else None
         )
         self.host = "127.0.0.1"
@@ -383,12 +387,17 @@ class InterceptionServer(Interception):
             self.stack.push_async_callback(client.close)
         return client
 
-    def register(self, session: RolloutSession) -> tuple[str, str]:
+    def register(
+        self, session: RolloutSession, keys: tuple[str, str] | None = None
+    ) -> tuple[str, str]:
         """Register separate capabilities for model inference and private task state, and
-        assign the session its server-owned model client."""
+        assign the session its server-owned model client. `keys` registers it under the
+        (model, state) secrets its program already holds (`Interception.adopt`)."""
         session.client = self._client(session.ctx.client)
-        model_secret = secrets.token_urlsafe(16)
-        state_secret = secrets.token_urlsafe(16)
+        model_secret, state_secret = keys or (
+            secrets.token_urlsafe(16),
+            secrets.token_urlsafe(16),
+        )
         self.sessions[model_secret] = session
         self.state_sessions[state_secret] = session
         self.state_routes[session.trace.id] = session
@@ -619,10 +628,11 @@ class InterceptionServer(Interception):
         """`POST /tool`: the harness's gate asks whether to run a tool call — its
         `{tool_call_id, name, arguments}` in, the verdict of `RolloutSession.decide_tool`
         out. The model bearer keys it: it never alters what the model already received."""
-        session = self.sessions.get(
-            request.headers.get("Authorization", "").removeprefix("Bearer ")
-        )
+        secret = request.headers.get("Authorization", "").removeprefix("Bearer ")
+        session = self.sessions.get(secret)
         if session is None:
+            if suspend.held(secret):
+                await asyncio.get_running_loop().create_future()
             return web.json_response({"error": "unauthorized"}, status=401)
         session.adopt(asyncio.current_task())
         if session.released:
@@ -708,8 +718,12 @@ class InterceptionServer(Interception):
     async def handle_request(
         self, request: web.Request, dialect: Dialect
     ) -> web.StreamResponse:
-        session = self.sessions.get(dialect.secret(request.headers))
+        secret = dialect.secret(request.headers)
+        session = self.sessions.get(secret)
         if session is None:
+            if suspend.held(secret):
+                # Its box is being suspended: wait to be frozen with it.
+                await asyncio.get_running_loop().create_future()
             logger.warning("interception: unauthorized request")
             return _error_response(dialect, "unauthorized", status=401)
         session.adopt(asyncio.current_task())

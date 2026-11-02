@@ -5,6 +5,7 @@ from verifiers.v1.serve.server import EnvServer, set_episode_hook
 from verifiers.v1.serve.types import (
     HealthRequest,
     HealthResponse,
+    RestoreRequest,
     RunRequest,
     RunResponse,
 )
@@ -16,6 +17,7 @@ __all__ = [
     "EpisodeAssembly",
     "HealthRequest",
     "HealthResponse",
+    "RestoreRequest",
     "RunRequest",
     "RunResponse",
     "env_config_data",

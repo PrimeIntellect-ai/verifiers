@@ -13,6 +13,7 @@ from verifiers.v1.configs.client import ClientConfig
 from verifiers.v1.configs.env import EnvConfig
 from verifiers.v1.configs.sampling import SamplingConfig
 from verifiers.v1.episode import Episode
+from verifiers.v1.runtimes import suspend
 from verifiers.v1.serve.delta import DeltaStreamer, TraceSummary, dump, pack
 from verifiers.v1.serve.encoding import msgpack_encoder
 from verifiers.v1.serve.types import (
@@ -20,10 +21,12 @@ from verifiers.v1.serve.types import (
     CancelRequest,
     CancelResponse,
     HealthResponse,
+    RestoreRequest,
     RunRequest,
     RunResponse,
 )
 from verifiers.v1.task import Task
+from verifiers.v1.trace import RestorePoint, Trace
 from verifiers.v1.utils.loaders import load_environment
 
 logger = logging.getLogger(__name__)
@@ -39,6 +42,14 @@ class EpisodeHook(Protocol):
 
     def discard(self, episode: Episode) -> None:
         """Free what `keep` kept for an episode that was not delivered."""
+
+    def watch(self, trace: Trace) -> None:
+        """See a trace as it is minted, or restored, before its first delta streams.
+        Optional."""
+
+    def restore(self, trace: Trace) -> None:
+        """Give a restored trace's nodes back their arrays (a client's assembly never
+        has them). Optional."""
 
 
 _episode_hook: EpisodeHook | None = None
@@ -116,6 +127,8 @@ class EnvServer:
         self._gate = asyncio.Semaphore(max_concurrent) if max_concurrent else None
         # In-flight run tasks by wire request_id, so a `cancel` can abort them
         self._running: dict[str, asyncio.Task] = {}
+        self._scopes: dict[str, suspend.RunScope] = {}
+        """Each run's `suspend` scope, by wire request_id."""
         # Episodes the hook kept, by run request, until their reply is sent.
         self._kept: dict[bytes, tuple[EpisodeHook, Episode]] = {}
         self._delivered: dict[str, tuple[float, EpisodeHook, Episode]] = {}
@@ -162,24 +175,49 @@ class EnvServer:
         endpoint (and a training run's changing model) leaves nothing behind."""
         return ModelContext(client=client_config, model=model, sampling=sampling)
 
+    def _restore(self, restore: RestoreRequest, task: Task) -> Trace:
+        """The trace to continue: as the client assembled it, typed for this taskset,
+        with its restore point's live box (`Trace.live`)."""
+        trace = Trace.model_validate(restore.trace)
+        trace.task.data = task.data
+        if _episode_hook is not None and hasattr(_episode_hook, "restore"):
+            _episode_hook.restore(trace)
+        trace.live = RestorePoint.model_validate(restore.point).live
+        return trace
+
     async def _run(
         self, req: RunRequest, client_id: bytes, request_id: bytes
     ) -> RunResponse:
+        self._scopes[request_id.decode()] = suspend.run_scope()
         ctx = self._context(req.client, req.model, req.sampling)
-        (slot,) = self.env.slots(self._build_task(req.task_data))
+        task = self._build_task(req.task_data)
+        restore = self._restore(req.restore, task) if req.restore is not None else None
+        (slot,) = self.env.slots(task)
 
         async def send_delta(delta: dict) -> None:
-            await self.frontend.send_multipart(
-                [client_id, request_id, b"delta", pack(delta)], copy=False
-            )
+            try:
+                await self.frontend.send_multipart(
+                    [client_id, request_id, b"delta", pack(delta)], copy=False
+                )
+            except zmq.ZMQError as e:
+                if e.errno == zmq.EHOSTUNREACH:
+                    # The client is gone (a pool's broker cancels such runs itself).
+                    self._lose(request_id.decode())
+                raise
 
         # The gate spans requests: `--max-concurrent` bounds this worker's episodes
         # in flight the same way the in-process eval's semaphore does. The streamer
         # ships each trace as it changes; the reply below carries only the rest.
         hook = _episode_hook
         async with DeltaStreamer(lambda: slot.traces, send_delta) as streamer:
+
+            def watch(trace: Trace) -> None:
+                if hook is not None and hasattr(hook, "watch"):
+                    hook.watch(trace)
+                streamer.watch(trace)
+
             episode = await self.env.run_slot(
-                slot, ctx, self._gate, on_trace=streamer.watch
+                slot, ctx, self._gate, on_trace=watch, restore=restore
             )
             if hook is not None:
                 # Before the final flush, so what the hook writes to the traces streams.
@@ -201,12 +239,23 @@ class EnvServer:
             ],
         )
 
+    def _lose(self, target: str) -> None:
+        """Cancel a run whose client is gone, keeping its box for another process to
+        adopt (`suspend`) rather than deleting it."""
+        scope = self._scopes.get(target)
+        running = self._running.get(target)
+        if scope is None or scope.lost or running is None:
+            return
+        scope.lost = True
+        running.cancel()
+        logger.info("cancelled run %s: its client is gone", target)
+
     async def _handle(
         self, client_id: bytes, request_id: bytes, method: bytes, payload: bytes
     ) -> None:
         try:
             route = method.decode()
-            raw = msgpack.unpackb(payload, raw=False)
+            raw = msgpack.unpackb(payload, raw=False, strict_map_key=False)
             if route == "health":
                 response: BaseResponse = HealthResponse()
             elif route == "run":
@@ -217,10 +266,15 @@ class EnvServer:
                     )
                 finally:
                     self._running.pop(request_id.decode(), None)
+                    self._scopes.pop(request_id.decode(), None)
             elif route == "cancel":
                 target = CancelRequest.model_validate(raw).request_id
                 running = self._running.get(target)
-                if running is not None:
+                if not request_id:
+                    # A pool cancels a run its client cannot take anymore with no request
+                    # id of its own: the client is gone.
+                    self._lose(target)
+                elif running is not None:
                     running.cancel()
                     logger.info("cancelled run %s on client request", target)
                 # The client dropped the reply, or will: nothing will take the arrays.
@@ -312,6 +366,8 @@ class EnvServer:
                         )
                         continue
                     client_id, request_id, method, payload = frames
+                    # A pool routes on the affinity (`run@<key>`); a lone server ignores it.
+                    method = method.partition(b"@")[0]
                     task = asyncio.create_task(
                         self._handle(client_id, request_id, method, payload)
                     )
