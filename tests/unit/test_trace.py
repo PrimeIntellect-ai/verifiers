@@ -372,6 +372,31 @@ def test_max_turn_tokens_limit():
     assert trace.is_truncated
 
 
+def test_output_tokens_count_shared_prefix_calls_once():
+    # One shared call (node 1) then two sibling replies (nodes 3 and 4) → 2 branches that
+    # both contain the first call. Its output must count once, as input tokens already do.
+    trace = vf.Trace(
+        agent=vf.AgentInfo(config=vf.AgentConfig()),
+        task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt=None)),
+        nodes=[
+            MessageNode(parent=None, message=UserMessage(content="q"), sampled=False),
+            MessageNode(parent=0, message=AssistantMessage(content="a"), sampled=True),
+            MessageNode(parent=1, message=UserMessage(content="tool"), sampled=False),
+            MessageNode(parent=2, message=AssistantMessage(content="b"), sampled=True),
+            MessageNode(parent=2, message=AssistantMessage(content="c"), sampled=True),
+        ],
+    )
+    for node, prompt in ((1, 10), (3, 120), (4, 120)):
+        usage = vf.Usage(prompt_tokens=prompt, completion_tokens=100 if node == 1 else 50)
+        trace.calls.append(vf.ModelCall(node=node, finish_reason="stop", usage=usage))
+    assert trace.num_branches == 2
+    assert [b.num_output_tokens for b in trace.branches] == [150, 150]
+    assert trace.num_output_tokens == 200
+    assert trace.num_total_tokens == trace.num_input_tokens + 200
+    assert RolloutLimits(max_output_tokens=250).reached(trace) is None
+    assert RolloutLimits(max_output_tokens=200).reached(trace) == "max_output_tokens"
+
+
 @pytest.mark.parametrize("max_tokens,expected", [(None, 16), (8, 8), (64, 16)])
 def test_max_turn_tokens_caps_sampling(max_tokens, expected):
     spec = vf.AgentConfig(max_turn_tokens=16)
