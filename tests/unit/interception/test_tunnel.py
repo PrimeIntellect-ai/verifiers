@@ -1,8 +1,9 @@
-"""The prime tunnel watchdog restarts frpc when the tunnel service has the tunnel
-disconnected or frpc has exited, leaves it alone otherwise, and stops watching a tunnel
-whose registration is gone."""
+"""A prime tunnel with a health path is kept serving by the SDK. Without one, the watchdog
+restarts frpc when the tunnel service has the tunnel disconnected or frpc has exited,
+leaves it alone otherwise, and stops watching a tunnel whose registration is gone."""
 
 import asyncio
+import logging
 from contextlib import asynccontextmanager
 from typing import ClassVar
 
@@ -251,3 +252,59 @@ async def test_watch_callback_can_close_its_own_exposure(monkeypatch):
     await exposure.__aenter__()
     await asyncio.wait_for(closed.wait(), 1)
     assert [client.stops for client in GoneClient.instances] == [1]
+
+
+class KeepServingClient(ExposeClient):
+    outcome: ClassVar[Exception | None] = None
+
+    async def keep_serving(self, health_path):
+        self.health_path = health_path
+        if self.outcome is not None:
+            raise self.outcome
+        await asyncio.Future()
+
+    async def status(self):
+        raise AssertionError("a tunnel with a health path is not polled for status")
+
+
+async def test_health_path_is_kept_serving_by_the_sdk(monkeypatch):
+    install_expose_client(monkeypatch, KeepServingClient)
+    monkeypatch.setattr(prime, "CHECK_SECONDS", 0.01)
+    tunnel = prime.PrimeTunnel()
+    tunnel.health_path = "/health"
+
+    async with tunnel.expose(1234):
+        await asyncio.sleep(0.05)
+        client = KeepServingClient.instances[0]
+        assert client.health_path == "/health"
+        assert client.stops == 0
+
+    assert client.stops == 1
+
+
+async def test_gone_while_kept_serving_can_close_its_own_exposure(monkeypatch):
+    class GoneClient(KeepServingClient):
+        outcome = TunnelGoneError("inactive")
+
+    install_expose_client(monkeypatch, GoneClient)
+    tunnel = prime.PrimeTunnel()
+    tunnel.health_path = "/health"
+    exposure = tunnel.expose(1234)
+    closed = asyncio.Event()
+
+    async def close_from_watch():
+        await exposure.__aexit__(None, None, None)
+        closed.set()
+
+    tunnel.on_gone = close_from_watch
+    await exposure.__aenter__()
+    await asyncio.wait_for(closed.wait(), 1)
+    assert [client.stops for client in GoneClient.instances] == [1]
+
+
+async def test_sdk_restarts_reach_the_run_logs(caplog):
+    with caplog.at_level(logging.WARNING, logger=prime.logger.name):
+        logging.getLogger("prime_tunnel.tunnel").warning(
+            "Tunnel %s: frpc restarted", "https://t"
+        )
+    assert "tunnel https://t: frpc restarted" in caplog.messages

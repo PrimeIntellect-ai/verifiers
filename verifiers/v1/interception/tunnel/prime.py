@@ -28,12 +28,12 @@ class TunnelLogHandler(logging.Handler):
     enables INFO on `prime_tunnel`, the login after a reconnect."""
 
     def emit(self, record: logging.LogRecord) -> None:
-        message = record.getMessage().removeprefix("frpc ")
+        message = record.getMessage().removeprefix("frpc ").removeprefix("Tunnel ")
         if record.levelno >= logging.WARNING or "login to server success" in message:
             logger.log(record.levelno, "tunnel %s", message)
 
 
-logging.getLogger("prime_tunnel.frpc").addHandler(TunnelLogHandler())
+logging.getLogger("prime_tunnel").addHandler(TunnelLogHandler())
 
 # The prime_tunnel service caps tunnel starts at 512/min per API token — a property of the
 # tunnel service, shared by every process of a run that opens one. One run-scoped
@@ -100,6 +100,18 @@ async def _watch(client: "TunnelClient", url: str, on_gone=None) -> None:
             strikes = 0
 
 
+async def _keep_serving(client: "TunnelClient", health_path: str, on_gone=None) -> None:
+    """Have the SDK keep a held tunnel serving, which also catches a tunnel that looks
+    connected but no longer reaches this host. The SDK logs its restarts."""
+    from prime_tunnel import TunnelGoneError
+
+    try:
+        await client.keep_serving(health_path)
+    except TunnelGoneError:
+        if on_gone is not None:
+            await on_gone()
+
+
 class PrimeTunnel(Tunnel[PrimeTunnelConfig]):
     def __init__(self, config: PrimeTunnelConfig | None = None) -> None:
         ensure_prime_auth()
@@ -137,7 +149,11 @@ class PrimeTunnel(Tunnel[PrimeTunnelConfig]):
                         raise
         except Exception as e:
             raise TunnelError(f"{label} failed: {e}") from e
-        watch = asyncio.create_task(_watch(client, url, on_gone=self.on_gone))
+        watch = asyncio.create_task(
+            _keep_serving(client, self.health_path, on_gone=self.on_gone)
+            if self.health_path
+            else _watch(client, url, on_gone=self.on_gone)
+        )
 
         async def close(caller: asyncio.Task | None) -> None:
             # A terminal watch callback can tear down its own server. Never cancel or

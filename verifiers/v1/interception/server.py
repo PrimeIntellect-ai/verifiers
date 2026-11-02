@@ -346,6 +346,7 @@ class InterceptionServer(Interception):
         self.tunnel_id: str | None = None
         if self.tunnel is not None:
             self.tunnel.on_gone = self._handle_tunnel_gone
+            self.tunnel.health_path = "/__interception/healthz"
         self.host = "127.0.0.1"
         self.port = 0
         self.base_url = ""  # set by `start`

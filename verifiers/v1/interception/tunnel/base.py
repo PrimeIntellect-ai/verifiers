@@ -28,6 +28,9 @@ class Tunnel(ABC, Generic[ConfigT]):
     def __init__(self, config: ConfigT | None = None) -> None:
         self.config = config
         self.tunnel_id: str | None = None
+        # A path on the exposed service that answers 2xx. `PrimeTunnel` probes it through
+        # the URL; a service without one, like an MCP tool server, leaves this unset.
+        self.health_path: str | None = None
 
     @property
     def bind_port(self) -> int:
