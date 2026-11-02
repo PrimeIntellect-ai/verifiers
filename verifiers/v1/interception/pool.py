@@ -24,6 +24,7 @@ from verifiers.v1.configs.interception import (
     PrimeTunnelConfig,
     StaticInterceptionPoolConfig,
 )
+from verifiers.v1.errors import TunnelError
 from verifiers.v1.interception.base import Interception, Slot
 from verifiers.v1.interception.server import InterceptionServer
 from verifiers.v1.session import RolloutSession
@@ -57,7 +58,10 @@ class StaticInterceptionPool(Interception):
     async def acquire(self, session: RolloutSession) -> AsyncIterator[Slot]:
         # server.acquire registers before its first yield, so concurrent acquires see the
         # updated load before choosing their own least-loaded server.
-        server = min(self.servers, key=lambda s: s.load)
+        healthy = [server for server in self.servers if server.healthy]
+        if not healthy:
+            raise TunnelError("interception tunnel lost")
+        server = min(healthy, key=lambda s: s.load)
         async with server.acquire(session) as slot:
             yield slot
 
@@ -96,7 +100,7 @@ class ElasticInterceptionPool(Interception):
         one (its own tunnel, on `stack`, torn down with the pool). Acquires hold `_lock`;
         the warm task runs before they reach this path."""
         for server in self.servers:
-            if server.load < self.config.multiplex:
+            if server.healthy and server.load < self.config.multiplex:
                 return server
         # Pin prime explicitly — the only tunnel kind that can be minted on demand.
         server = InterceptionServer(
