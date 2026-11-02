@@ -2,11 +2,13 @@ from pathlib import Path
 from typing import Literal
 
 from verifiers.v1.clients import ModelContext
-from verifiers.v1.configs.harness import HarnessConfig, PinnedVersion
+from verifiers.v1.configs.harness import DialectName, HarnessConfig, PinnedVersion
 from verifiers.v1.harness import Harness
+from verifiers.v1.harnesses.utils.replay import drop_reasoning_details
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
+from verifiers.v1.types import Message
 
 PROGRAM_SOURCE = (Path(__file__).resolve().parent / "program.py").read_text()
 
@@ -20,6 +22,11 @@ class MiniSWEAgentHarnessConfig(HarnessConfig):
 class MiniSWEAgentHarness(Harness[MiniSWEAgentHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = False
     SUPPORTS_MCP = False
+
+    # LiteLLM replays `reasoning_content` but not `reasoning_details`, so OpenRouter-style
+    # text blocks that mirror the reasoning string are dropped on replay.
+    def replay_view(self, message: Message, dialect: DialectName | None) -> Message:
+        return drop_reasoning_details(message)
 
     async def setup(self, runtime: Runtime) -> None:
         source = PROGRAM_SOURCE.replace("{version}", self.config.version)

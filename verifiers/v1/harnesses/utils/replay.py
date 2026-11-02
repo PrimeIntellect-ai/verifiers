@@ -36,5 +36,23 @@ def strip_text(message: Message) -> Message:
     return message.model_copy(update=update) if update else message
 
 
+def drop_reasoning_details(message: Message) -> Message:
+    """Clients that replay only the reasoning string drop OpenRouter-style
+    `reasoning_details` text blocks that mirror it."""
+    if not isinstance(message, AssistantMessage) or not message.provider_state:
+        return message
+    kept = [
+        item
+        for item in message.provider_state
+        if not (
+            item.get("type") == "reasoning.text"
+            and item.get("text") == message.reasoning_content
+        )
+    ]
+    if len(kept) == len(message.provider_state):
+        return message
+    return message.model_copy(update={"provider_state": kept or None})
+
+
 def _blank_thinking(item: dict) -> bool:
     return item.get("type") == "thinking" and not str(item.get("thinking", "")).strip()
