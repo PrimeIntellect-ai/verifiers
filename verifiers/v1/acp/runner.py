@@ -7,8 +7,10 @@
 import asyncio
 import json
 import os
+import random
 import signal
 import sys
+import time
 import traceback
 from contextlib import AsyncExitStack, suppress
 from dataclasses import asdict, dataclass
@@ -36,6 +38,9 @@ from acp.schema import (
 )
 
 MAX_PACKET_BYTES = 128 * 1024 * 1024
+# The rollout stamps its answers; an unstamped one came from a tunnel or proxy in between.
+STAMP_HEADER = "x-verifiers-interception"
+RETRY_SECONDS = 300.0
 
 
 @dataclass(frozen=True)
@@ -49,8 +54,11 @@ class ACPTurn:
 class ToolGate:
     """The rollout's `/tool` gate, asked before every tool call the agent wants to run."""
 
-    def __init__(self, url: str, secret: str) -> None:
+    def __init__(self, url: str, secret: str, failed: str | None = None) -> None:
         self.url = url
+        self.failed = failed
+        """A file the agent's own gate hook writes when it couldn't ask the gate."""
+        self.error: str | None = None
         self.client = httpx.AsyncClient(
             headers={"Authorization": f"Bearer {secret}"},
             timeout=httpx.Timeout(120, connect=5),
@@ -68,14 +76,47 @@ class ToolGate:
                     arguments["title"],
                     json.loads(arguments["message"]),
                 )
-            response = await self.client.post(
-                self.url, json={"tool_call_id": tool_call_id, "arguments": arguments}
+            decision = await self.ask(
+                {"tool_call_id": tool_call_id, "arguments": arguments}
             )
-            response.raise_for_status()
-            return response.json()["action"]
+            return decision["action"]
         except Exception as error:  # noqa: BLE001 - an unreachable gate lets nothing run
-            print(f"tool gate denied {tool_call_id}: {error}", file=sys.stderr)
-            return "deny"
+            # A denial would reach the model as the policy's verdict: fail the turn.
+            print(f"tool gate failed for {tool_call_id}: {error}", file=sys.stderr)
+            self.error = self.error or f"tool gate failed for {tool_call_id}: {error}"
+            return "stop"
+
+    async def ask(self, payload: dict) -> dict:
+        """Retry what a tunnel or proxy dropped or answered, marked so the rollout
+        answers a repeat with its first verdict."""
+        deadline = time.monotonic() + RETRY_SECONDS
+        delay, retry = 0.5, 0
+        while True:
+            try:
+                response = await self.client.post(
+                    self.url,
+                    json=payload,
+                    headers={"x-stainless-retry-count": str(retry)},
+                )
+                status = response.status_code
+                if response.headers.get(STAMP_HEADER) or not (
+                    status in (404, 408, 429) or status >= 500
+                ):
+                    response.raise_for_status()
+                    return response.json()
+                failure = f"HTTP {status}"
+            except httpx.TransportError as error:
+                failure = repr(error)
+            if time.monotonic() + delay > deadline:
+                raise RuntimeError(f"unreachable for {RETRY_SECONDS:.0f}s: {failure}")
+            await asyncio.sleep(delay * random.uniform(0.5, 1.5))
+            delay, retry = min(delay * 2, 10.0), retry + 1
+
+    def failure(self) -> str | None:
+        if self.error is None and self.failed and os.path.exists(self.failed):
+            with open(self.failed, errors="replace") as file:
+                self.error = file.read(2000) or "tool gate hook failed"
+        return self.error
 
 
 class VerifiersACPClient(Client):
@@ -283,7 +324,7 @@ class ACPSession:
     async def run(self, config: dict) -> ACPTurn:
         gate = config.get("tool_interception")
         if gate and self.client.gate is None:
-            self.client.gate = ToolGate(gate["url"], gate["secret"])
+            self.client.gate = ToolGate(gate["url"], gate["secret"], gate.get("failed"))
         if self.connection is None:
             await self.start(config)
         assert self.session_id is not None
@@ -296,6 +337,8 @@ class ACPSession:
             is_new=self.is_new,
         )
         self.is_new = False
+        if self.client.gate is not None and (error := self.client.gate.failure()):
+            raise RuntimeError(error)
         return result
 
     async def steer(self, message: str, message_id: str | None = None) -> dict:
