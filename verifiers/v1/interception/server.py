@@ -76,6 +76,8 @@ logger = logging.getLogger(__name__)
 # and the harness gets a 413. Allow large bodies; the upstream provider and the model's
 # context window are the real limits, this is just a host-OOM backstop.
 MAX_REQUEST_BODY = 1024**3  # 1 GiB (aiohttp's default is 1 MiB)
+HEALTH_CHECK_INTERVAL_SECONDS = 20
+HEALTH_CHECK_FAILURE_THRESHOLD = 2
 KEEPALIVE_INTERVAL_SECONDS = 3
 # A streamed turn commits its SSE stream only after this long: a result within it keeps
 # its HTTP status (so the harness SDK can retry 5xx/429), and a longer one is kept alive
@@ -350,6 +352,7 @@ class InterceptionServer(Interception):
         self.port = 0
         self.base_url = ""  # set by `start`
         self.runner: web.AppRunner | None = None
+        self._health_watch: asyncio.Task[None] | None = None
 
     @property
     def load(self) -> int:
@@ -515,6 +518,42 @@ class InterceptionServer(Interception):
         )
         return matched
 
+    async def _watch_health(self) -> None:
+        """Quarantine a persistently unreachable URL without interrupting its rollouts."""
+        failures = 0
+        while self.healthy:
+            await asyncio.sleep(HEALTH_CHECK_INTERVAL_SECONDS)
+            if not self.healthy:
+                return
+            local_healthy = await self._probe_health(
+                "local", f"http://127.0.0.1:{self.port}"
+            )
+            public_healthy = await self._probe_health("public", self.base_url)
+            # Terminal tunnel loss may have arrived while either probe was pending.
+            if not self.healthy:
+                return
+            failures = 0 if local_healthy and public_healthy else failures + 1
+            if failures >= HEALTH_CHECK_FAILURE_THRESHOLD:
+                self.healthy = False
+                logger.warning(
+                    "interception quarantined: url=%s server_id=%s tunnel_id=%s "
+                    "local_healthy=%s public_healthy=%s failures=%d",
+                    safe_url(self.base_url),
+                    self.server_id,
+                    self.tunnel_id,
+                    local_healthy,
+                    public_healthy,
+                    failures,
+                )
+                return
+
+    async def _stop_health_watch(self) -> None:
+        watch = self._health_watch
+        if watch is not None and watch is not asyncio.current_task():
+            watch.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await watch
+
     def _handler_for(self, dialect: Dialect):
         """Bind a route's dialect to the request handler — the route the SDK posts to is what
         selects the wire format (see `dialects.DIALECTS`)."""
@@ -590,6 +629,9 @@ class InterceptionServer(Interception):
             public_healthy = await self._probe_health("public", self.base_url)
         # Keep a concurrent terminal tunnel-loss verdict; startup must not resurrect it.
         self.healthy = self.healthy and local_healthy and public_healthy
+        if self.tunnel is not None and self.healthy:
+            self._health_watch = asyncio.create_task(self._watch_health())
+            self.stack.push_async_callback(self._stop_health_watch)
 
     def _fail(
         self, session: RolloutSession, dialect: Dialect, error: RolloutError

@@ -16,7 +16,7 @@ import asyncio
 import contextlib
 import logging
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 
 from verifiers.v1.configs.interception import (
     ElasticInterceptionPoolConfig,
@@ -82,6 +82,7 @@ class ElasticInterceptionPool(Interception):
         self.requires_tunnel = requires_tunnel
         self.state_service_secrets = state_service_secrets
         self.servers: list[InterceptionServer] = []
+        self.stack.push_async_callback(self._stop_servers)
         self._lock = asyncio.Lock()
         self._warm_task: asyncio.Task[InterceptionServer] | None = None
 
@@ -95,12 +96,17 @@ class ElasticInterceptionPool(Interception):
                 await self._warm_task
         await super().stop()
 
+    async def _stop_servers(self) -> None:
+        async with AsyncExitStack() as stack:
+            for server in self.servers:
+                stack.push_async_callback(server.stop)
+            self.servers.clear()
+
     async def _prune(self) -> None:
-        """Remove terminal members and release their server/tunnel resources."""
-        dead = [server for server in self.servers if not server.healthy]
-        if not dead:
-            return
-        self.servers[:] = [server for server in self.servers if server.healthy]
+        """Retire unavailable members only after their existing rollouts have drained."""
+        dead = [
+            server for server in self.servers if not server.healthy and server.load == 0
+        ]
         for server in dead:
             try:
                 await server.stop()
@@ -108,11 +114,13 @@ class ElasticInterceptionPool(Interception):
                 logger.warning(
                     "interception pool: dead server cleanup failed", exc_info=True
                 )
+            else:
+                self.servers.remove(server)
 
     async def _server(self) -> InterceptionServer:
         """A server with spare capacity — reuse one under `multiplex`, else bring up a new
-        one (its own tunnel, on `stack`, torn down with the pool). Acquires hold `_lock`;
-        the warm task runs before they reach this path."""
+        one (its own tunnel, owned until retirement or pool shutdown). Acquires hold
+        `_lock`; the warm task runs before they reach this path."""
         await self._prune()
         for server in self.servers:
             if server.healthy and server.load < self.config.multiplex:
@@ -123,12 +131,12 @@ class ElasticInterceptionPool(Interception):
             self.requires_tunnel,
             self.state_service_secrets,
         )
-        await self.stack.enter_async_context(server)
-        if not server.healthy or not server.base_url:
-            with contextlib.suppress(Exception):
-                await server.stop()
-            raise InterceptionError("interception server failed startup health checks")
+        await server.__aenter__()
         self.servers.append(server)
+        if not server.healthy or not server.base_url:
+            server.healthy = False
+            await self._prune()
+            raise InterceptionError("interception server failed startup health checks")
         logger.info(
             "interception pool: %d server(s), multiplex=%d",
             len(self.servers),
@@ -150,3 +158,5 @@ class ElasticInterceptionPool(Interception):
             yield server.base_url, model_secret, state_secret
         finally:
             server.unregister(model_secret, state_secret)
+            async with self._lock:
+                await self._prune()

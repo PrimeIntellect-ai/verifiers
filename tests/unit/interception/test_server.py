@@ -1,11 +1,14 @@
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import httpx
 import pytest
 
 from verifiers.v1.errors import InterceptionError, TunnelError
+from verifiers.v1.interception import server as server_module
 from verifiers.v1.interception.server import InterceptionServer
 
 
@@ -16,11 +19,15 @@ class FakeTunnel:
 
     def __init__(self):
         self.exposures = 0
+        self.closed = False
 
     @asynccontextmanager
     async def expose(self, port):
         self.exposures += 1
-        yield f"http://localhost:{port}"
+        try:
+            yield f"http://localhost:{port}"
+        finally:
+            self.closed = True
 
 
 async def test_local_and_public_health_probes_report_server_and_tunnel(caplog):
@@ -105,6 +112,9 @@ async def test_bad_health_probes_return_false():
 
 async def test_failed_startup_probe_rejects_registration_before_mutation(monkeypatch):
     server = InterceptionServer()
+    server.tunnel = FakeTunnel()
+    watch = AsyncMock()
+    monkeypatch.setattr(server, "_watch_health", watch)
 
     async def failed_probe(scope, base_url):
         return False
@@ -121,6 +131,114 @@ async def test_failed_startup_probe_rejects_registration_before_mutation(monkeyp
                 pytest.fail("unhealthy slot acquired")
     assert session.client is None
     assert server.sessions == {}
+    watch.assert_not_called()
+
+
+@pytest.fixture
+def monitored_server(monkeypatch):
+    server = InterceptionServer()
+    server.tunnel = FakeTunnel()
+    monkeypatch.setattr(server_module, "HEALTH_CHECK_INTERVAL_SECONDS", 0)
+    checks = asyncio.Queue()
+    completed = asyncio.Queue()
+    startup = True
+    public_healthy = True
+
+    async def probe(scope, base_url):
+        nonlocal startup, public_healthy
+        if startup:
+            if scope == "public":
+                startup = False
+            return True
+        if scope == "local":
+            local_healthy, public_healthy = await checks.get()
+            return local_healthy
+        completed.put_nowait(None)
+        return public_healthy
+
+    async def check(local_healthy=True, public_healthy=True):
+        checks.put_nowait((local_healthy, public_healthy))
+        await completed.get()
+
+    monkeypatch.setattr(server, "_probe_health", probe)
+    return server, check
+
+
+async def test_transient_health_failure_resets_consecutive_failures(monitored_server):
+    server, check = monitored_server
+    async with server:
+        await check(public_healthy=False)
+        assert server.healthy
+        await check()
+        await check(public_healthy=False)
+        assert server.healthy
+        await check()
+        assert server.healthy
+
+
+async def test_persistent_public_health_failure_quarantines_without_releasing(
+    monitored_server, monkeypatch
+):
+    server, check = monitored_server
+    monkeypatch.setattr(server, "_client", lambda config: object())
+    session = FakeSession()
+    async with server:
+        async with server.acquire(session):
+            await check(public_healthy=False)
+            assert server.healthy
+            await check(public_healthy=False)
+            assert not server.healthy
+            assert server._health_watch is not None
+            assert server._health_watch.done()
+            assert not session.released
+            assert session.error is None
+            assert server.load == 1
+            assert not server.tunnel.closed
+            replacement = FakeSession("replacement")
+            with pytest.raises(InterceptionError, match="unavailable"):
+                server.register(replacement)
+            assert replacement.client is None
+            async with httpx.AsyncClient() as client:
+                response = await client.get(
+                    f"http://127.0.0.1:{server.port}/__interception/healthz"
+                )
+            assert response.status_code == 503
+            assert response.json()["server_id"] == server.server_id
+        assert session.released
+
+
+async def test_stop_cancels_and_awaits_health_watch(monkeypatch):
+    server = InterceptionServer()
+    server.tunnel = FakeTunnel()
+    monkeypatch.setattr(server, "_probe_health", AsyncMock(return_value=True))
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    async def watch():
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.set()
+
+    monkeypatch.setattr(server, "_watch_health", watch)
+    async with server:
+        await started.wait()
+        assert server._health_watch is not None
+        task = server._health_watch
+    assert cancelled.is_set()
+    assert task.cancelled()
+    assert server.tunnel.closed
+
+
+async def test_local_server_does_not_start_health_watch(monkeypatch):
+    server = InterceptionServer()
+    monkeypatch.setattr(server, "_probe_health", AsyncMock(return_value=True))
+    watch = AsyncMock()
+    monkeypatch.setattr(server, "_watch_health", watch)
+    async with server:
+        assert server.healthy
+    watch.assert_not_called()
 
 
 async def test_tunnel_gone_fails_session_and_direct_reacquisition(monkeypatch):
