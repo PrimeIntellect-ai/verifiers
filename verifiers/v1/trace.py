@@ -1,16 +1,24 @@
 from __future__ import annotations
 
 import copy
+import functools
 import math
 import time
 import traceback
 import uuid
 from collections.abc import Callable, Iterable, Iterator, Mapping
-from typing import TYPE_CHECKING, Any, Generic
+from typing import TYPE_CHECKING, Any, Generic, get_args
 
 import numpy as np
 import orjson
-from pydantic import BaseModel, Field, PrivateAttr, computed_field, field_serializer
+from pydantic import (
+    BaseModel,
+    Field,
+    PrivateAttr,
+    TypeAdapter,
+    computed_field,
+    field_serializer,
+)
 from typing_extensions import TypeVar
 
 if TYPE_CHECKING:
@@ -88,6 +96,74 @@ def add_record_streams(
     """Join a trace's record (dumped with `RECORD_DUMP_EXCLUDE`) with its node streams."""
     for node_record, node in zip(record["nodes"], trace.nodes, strict=True):
         node_record.update(node.record_streams(float_decimals, exclude_none))
+
+
+_SPLICE = f"\x00splice-{uuid.uuid4().hex}"
+"""Holds a list field's place in a record head until its encoded items replace it."""
+_SPLICE_JSON = orjson.dumps(_SPLICE)
+
+
+@functools.cache
+def item_adapter(model: type[BaseModel], field: str) -> TypeAdapter:
+    """Dumps one item of `model`'s list `field` as `model` itself does: as the declared
+    item type, not the item's own class."""
+    return TypeAdapter(get_args(model.model_fields[field].annotation)[0])
+
+
+def item_exclude(exclude: dict, field: str, index: int) -> dict | None:
+    """The part of the pydantic `exclude` spec that applies to item `index` of `field`."""
+    spec = exclude.get(field)
+    if not isinstance(spec, dict):
+        return None
+    return merge_exclude(spec.get("__all__"), spec.get(index)) or None
+
+
+def splice_json(head: dict, field: str, items: Iterable[list[bytes]]) -> list[bytes]:
+    """`head` as JSON parts, with the encoded `items` as the array at its `field`. A head
+    without `field` (excluded whole) is encoded alone."""
+    if field not in head:
+        return [orjson.dumps(head)]
+    head[field] = _SPLICE
+    before, after = orjson.dumps(head).split(_SPLICE_JSON, 1)
+    parts = [before, b"["]
+    for index, item in enumerate(items):
+        if index:
+            parts.append(b",")
+        parts.extend(item)
+    parts += [b"]", after]
+    return parts
+
+
+def trace_json_parts(
+    trace: Trace,
+    dump: Callable[..., dict[str, Any]],
+    exclude: dict,
+    float_decimals: int | None,
+    exclude_none: bool,
+    extra: Mapping[str, Any] | None = None,
+) -> list[bytes]:
+    """A trace's record as JSON parts, one per node: `dump` (the trace's pydantic dump
+    with `exclude`) gives the head, `extra` adds fields to it."""
+    head = dump(
+        mode="json",
+        exclude=merge_exclude(exclude, {"nodes": {"__all__": True}}),
+        exclude_none=exclude_none,
+    )
+    head.update(extra or {})
+    adapter = item_adapter(type(trace), "nodes")
+
+    def nodes() -> Iterator[list[bytes]]:
+        for index, node in enumerate(trace.nodes):
+            record = adapter.dump_python(
+                node,
+                mode="json",
+                exclude=item_exclude(exclude, "nodes", index),
+                exclude_none=exclude_none,
+            )
+            record.update(node.record_streams(float_decimals, exclude_none))
+            yield [orjson.dumps(record, option=orjson.OPT_SERIALIZE_NUMPY)]
+
+    return splice_json(head, "nodes", nodes())
 
 
 class TimeSpan(BaseModel):
@@ -853,10 +929,17 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         float_decimals: int | None = RECORD_FLOAT_DECIMALS,
         exclude: dict | set | None = None,
     ) -> bytes:
-        """`to_record` as compact UTF-8 JSON. NaN and infinity become `null`."""
-        return orjson.dumps(
-            self.to_record(float_decimals, exclude), option=orjson.OPT_SERIALIZE_NUMPY
+        """`to_record` as compact UTF-8 JSON, byte for byte. NaN and infinity become
+        `null`. Encoded one node at a time, like `Episode.to_json`, so a long trace does
+        not stall other threads."""
+        parts = trace_json_parts(
+            self,
+            self.model_dump,
+            merge_exclude(RECORD_DUMP_EXCLUDE, exclude),
+            float_decimals,
+            exclude_none=False,
         )
+        return b"".join(parts)
 
 
 WireTrace = Trace[WireTaskData, State, WireAgentConfig]

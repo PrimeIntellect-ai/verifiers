@@ -1,9 +1,10 @@
 """The episode — one run's traces plus their shared standing, whole."""
 
+import functools
 import uuid
+from collections.abc import Mapping
 from typing import Annotated, Any, Generic, Literal, Self
 
-import orjson
 from pydantic import BaseModel, Field, computed_field, model_validator
 
 from verifiers.v1.configs.agent import WireAgentConfig
@@ -17,7 +18,11 @@ from verifiers.v1.trace import (
     Trace,
     TraceTask,
     add_record_streams,
+    item_adapter,
+    item_exclude,
     merge_exclude,
+    splice_json,
+    trace_json_parts,
 )
 from verifiers.v1.types import Usage
 
@@ -187,11 +192,40 @@ class Episode(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         self,
         float_decimals: int | None = RECORD_FLOAT_DECIMALS,
         exclude: dict | set | None = None,
+        run: Mapping[str, Any] | None = None,
     ) -> bytes:
-        """`to_record` as compact UTF-8 JSON. NaN and infinity become `null`."""
-        return orjson.dumps(
-            self.to_record(float_decimals, exclude), option=orjson.OPT_SERIALIZE_NUMPY
+        """`to_record` as compact UTF-8 JSON, byte for byte. NaN and infinity become
+        `null`. `run` sets fields of the episode's `run`, and puts that `run` on every
+        member trace too, which Prime Traces reads per trace.
+
+        Pydantic's dump and orjson each hold the GIL for a whole call, so encoding a
+        large episode in one call stalls every other thread of the process, such as an
+        asyncio event loop, for as long as it takes. This encodes the episode one node at
+        a time instead: each call is short, so other threads run between them, and the
+        stall no longer grows with the episode. The total work stays the same."""
+        exclude = merge_exclude({"traces": {"__all__": RECORD_DUMP_EXCLUDE}}, exclude)
+        head = self.model_dump(
+            mode="json",
+            exclude=merge_exclude(exclude, {"traces": {"__all__": True}}),
+            exclude_none=True,
         )
+        member: dict[str, Any] = {}
+        if run is not None:
+            head["run"] = member["run"] = {**head.get("run", {}), **run}
+        adapter = item_adapter(type(self), "traces")
+        traces = (
+            trace_json_parts(
+                trace,
+                functools.partial(adapter.dump_python, trace),
+                item_exclude(exclude, "traces", index) or {},
+                float_decimals,
+                exclude_none=True,
+                extra=member,
+            )
+            for index, trace in enumerate(self.traces)
+        )
+        # One join at the end: joining per level would copy the whole record each time.
+        return b"".join(splice_json(head, "traces", traces))
 
 
 WireEpisode = Episode[WireTaskData, State, WireAgentConfig]
