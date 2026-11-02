@@ -101,6 +101,8 @@ def add_record_streams(
 _SPLICE = f"\x00splice-{uuid.uuid4().hex}"
 """Holds a list field's place in a record head until its encoded items replace it."""
 _SPLICE_JSON = orjson.dumps(_SPLICE)
+YIELD_INTERVAL_S = 0.001
+"""How long `to_json` encodes before it releases the GIL to other threads."""
 
 
 @functools.cache
@@ -153,7 +155,14 @@ def trace_json_parts(
     adapter = item_adapter(type(trace), "nodes")
 
     def nodes() -> Iterator[list[bytes]]:
+        last_yield = time.perf_counter()
         for index, node in enumerate(trace.nodes):
+            # A busy thread keeps the GIL until CPython's switch interval forces a
+            # handoff, so another thread (an event loop) waits that long each time it
+            # wakes. Releasing the GIL every millisecond lets it run at once.
+            if time.perf_counter() - last_yield > YIELD_INTERVAL_S:
+                time.sleep(0)
+                last_yield = time.perf_counter()
             record = adapter.dump_python(
                 node,
                 mode="json",

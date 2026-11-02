@@ -201,8 +201,9 @@ class Episode(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         Pydantic's dump and orjson each hold the GIL for a whole call, so encoding a
         large episode in one call stalls every other thread of the process, such as an
         asyncio event loop, for as long as it takes. This encodes the episode one node at
-        a time instead: each call is short, so other threads run between them, and the
-        stall no longer grows with the episode. The total work stays the same."""
+        a time instead, and releases the GIL about every millisecond, so other threads
+        run in between and the stall no longer grows with the episode. The total work
+        stays the same."""
         exclude = merge_exclude({"traces": {"__all__": RECORD_DUMP_EXCLUDE}}, exclude)
         head = self.model_dump(
             mode="json",
