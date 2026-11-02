@@ -26,6 +26,7 @@ from verifiers.v1.runtimes.base import (
     BaseRuntimeInfo,
     ProgramResult,
     RuntimeBackend,
+    RuntimeLoss,
     RuntimeProcess,
     parse_gpu,
 )
@@ -282,6 +283,39 @@ class PrimeBackend(RuntimeBackend):
             Exception
         ) as e:  # provisioning failure is one rollout's problem, not the eval's
             raise SandboxError(f"prime sandbox provisioning failed: {e}") from e
+
+    async def lost(self) -> RuntimeLoss | None:
+        if self._client is None or self.info.id is None or self.stopped:
+            return None
+        try:
+            async with asyncio.timeout(10):
+                sandbox = await self._client.get(self.info.id)
+        except Exception:  # noqa: BLE001 - a failed observation is not a confirmed loss
+            return None
+        if sandbox.status not in {"TERMINATED", "ERROR", "TIMEOUT"}:
+            return None
+        cause = str(
+            sandbox.error_type or sandbox.termination_reason or "sandbox_terminated"
+        )
+        # A guest that powers itself off, crashes or kills its own init reports
+        # TERMINATED with neither a reason nor an error. Anything Prime explains, such
+        # as an idle timeout, a lost host or an OOM kill, is its own doing or can't be
+        # told apart from it.
+        return RuntimeLoss(
+            cause,
+            infra=sandbox.status != "TERMINATED"
+            or bool(sandbox.error_type or sandbox.termination_reason),
+            evidence={
+                key: getattr(sandbox, key, None)
+                for key in (
+                    "status",
+                    "termination_reason",
+                    "exit_code",
+                    "error_type",
+                    "error_message",
+                )
+            },
+        )
 
     async def prepare_execution(
         self, routes: list[str] | None, network: NetworkPolicyConfig | None = None
