@@ -21,7 +21,8 @@ from verifiers.v1.cli.output import output_path, save_config
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.cli.eval import EvalConfig
 from verifiers.v1.env import Env, RunSlot
-from verifiers.v1.episode import Episode, EvalRunInfo
+from verifiers.v1.episode import Episode
+from verifiers.v1.trace import EvalRunInfo
 from verifiers.v1.utils.aio import run_shielded
 from verifiers.v1.utils.eval import plan_rollouts
 from verifiers.v1.utils.platform import (

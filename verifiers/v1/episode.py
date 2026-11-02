@@ -2,10 +2,9 @@
 
 import functools
 import uuid
-from collections.abc import Mapping
-from typing import Annotated, Any, Generic, Literal, Self
+from typing import Any, Generic
 
-from pydantic import BaseModel, Field, computed_field, model_validator
+from pydantic import BaseModel, Field, computed_field
 
 from verifiers.v1.configs.agent import WireAgentConfig
 from verifiers.v1.graph import RECORD_FLOAT_DECIMALS
@@ -15,6 +14,7 @@ from verifiers.v1.trace import (
     RECORD_DUMP_EXCLUDE,
     AgentConfigT,
     Error,
+    RunInfo,
     Trace,
     TraceTask,
     add_record_streams,
@@ -42,62 +42,6 @@ class GroupInfo(BaseModel):
     id: str
 
 
-class PolicySpan(BaseModel):
-    """Live policy versions spanned while generating an episode."""
-
-    start: int
-    end: int
-
-    @model_validator(mode="after")
-    def ordered(self) -> Self:
-        if self.end < self.start:
-            raise ValueError("policy span end must be at least its start")
-        return self
-
-    @property
-    def drift(self) -> int:
-        return self.end - self.start
-
-
-class TrainWorkInfo(BaseModel):
-    type: Literal["train"] = "train"
-    step: int
-    """The training step at which the episode was dispatched."""
-    policy: PolicySpan | None = None
-    """The live policy used for generation; None for frozen-policy work."""
-
-
-class EvalWorkInfo(BaseModel):
-    type: Literal["eval"] = "eval"
-    step: int
-    """The training step at which the episode was dispatched."""
-    policy: PolicySpan | None = None
-    """The live policy used for generation; None for frozen-policy work."""
-
-
-WorkInfo = Annotated[TrainWorkInfo | EvalWorkInfo, Field(discriminator="type")]
-
-
-class TrainRunInfo(BaseModel):
-    """A training run and the kind of work this episode performed for it."""
-
-    type: Literal["train"] = "train"
-    id: str
-    name: str | None = None
-    work: WorkInfo
-
-
-class EvalRunInfo(BaseModel):
-    """A standalone evaluation run."""
-
-    type: Literal["eval"] = "eval"
-    id: str
-    name: str | None = None
-
-
-RunInfo = Annotated[TrainRunInfo | EvalRunInfo, Field(discriminator="type")]
-
-
 class Episode(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     """The artifact Env.run produces. Contains multiple agents' traces."""
 
@@ -122,8 +66,10 @@ class Episode(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     """Every agent's trace, in completion order."""
 
     def record_run(self, run: RunInfo) -> None:
-        """Record the run identity on the dispatched episode."""
+        """Record the run identity on the dispatched episode and each of its traces."""
         self.run = run
+        for trace in self.traces:
+            trace.run = run
 
     @property
     def last_error(self) -> Error | None:
@@ -192,11 +138,9 @@ class Episode(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         self,
         float_decimals: int | None = RECORD_FLOAT_DECIMALS,
         exclude: dict | set | None = None,
-        run: Mapping[str, Any] | None = None,
     ) -> bytes:
         """`to_record` as compact UTF-8 JSON, byte for byte. NaN and infinity become
-        `null`. `run` sets fields of the episode's `run`, and puts that `run` on every
-        member trace too, which Prime Traces reads per trace.
+        `null`.
 
         Pydantic's dump and orjson each hold the GIL for a whole call, so encoding a
         large episode in one call stalls every other thread of the process, such as an
@@ -210,9 +154,6 @@ class Episode(BaseModel, Generic[DataT, StateT, AgentConfigT]):
             exclude=merge_exclude(exclude, {"traces": {"__all__": True}}),
             exclude_none=True,
         )
-        member: dict[str, Any] = {}
-        if run is not None:
-            head["run"] = member["run"] = {**head.get("run", {}), **run}
         adapter = item_adapter(type(self), "traces")
         traces = (
             trace_json_parts(
@@ -221,7 +162,6 @@ class Episode(BaseModel, Generic[DataT, StateT, AgentConfigT]):
                 item_exclude(exclude, "traces", index) or {},
                 float_decimals,
                 exclude_none=True,
-                extra=member,
             )
             for index, trace in enumerate(self.traces)
         )

@@ -169,18 +169,22 @@ def test_episode_json_keeps_task_subclass_fields_like_its_record():
     )
 
 
-def test_episode_json_puts_the_given_run_on_every_trace():
+def test_record_run_stamps_the_episode_and_every_trace():
     work = vf.TrainWorkInfo(step=3, policy=vf.PolicySpan(start=0, end=1))
     episode = vf.Episode(
-        task=_streamed_trace().task,
-        traces=[_streamed_trace(), _streamed_trace()],
-        run=vf.TrainRunInfo(id="local", work=work),
+        task=_streamed_trace().task, traces=[_streamed_trace(), _streamed_trace()]
     )
-    record = orjson.loads(episode.to_json(run={"id": "platform", "type": "train"}))
-    run = {**episode.run.model_dump(mode="json", exclude_none=True), "id": "platform"}
-    assert record["run"] == run
-    assert [trace["run"] for trace in record["traces"]] == [run, run]
-    assert "run" not in orjson.loads(episode.to_json())["traces"][0]
+    run = vf.TrainRunInfo(id="run-1", work=work)
+    episode.record_run(run)
+
+    record = orjson.loads(episode.to_json())
+    expected = run.model_dump(mode="json", exclude_none=True)
+    assert record["run"] == expected
+    assert [trace["run"] for trace in record["traces"]] == [expected, expected]
+    assert episode.to_json() == orjson.dumps(
+        episode.to_record(), option=orjson.OPT_SERIALIZE_NUMPY
+    )
+    assert vf.Episode.model_validate(record).traces[1].run == run
 
 
 def test_round_stream_matches_round():

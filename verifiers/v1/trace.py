@@ -7,7 +7,7 @@ import time
 import traceback
 import uuid
 from collections.abc import Callable, Iterable, Iterator, Mapping
-from typing import TYPE_CHECKING, Any, Generic, get_args
+from typing import TYPE_CHECKING, Annotated, Any, Generic, Literal, Self, get_args
 
 import numpy as np
 import orjson
@@ -18,6 +18,7 @@ from pydantic import (
     TypeAdapter,
     computed_field,
     field_serializer,
+    model_validator,
 )
 from typing_extensions import TypeVar
 
@@ -142,16 +143,14 @@ def trace_json_parts(
     exclude: dict,
     float_decimals: int | None,
     exclude_none: bool,
-    extra: Mapping[str, Any] | None = None,
 ) -> list[bytes]:
     """A trace's record as JSON parts, one per node: `dump` (the trace's pydantic dump
-    with `exclude`) gives the head, `extra` adds fields to it."""
+    with `exclude`) gives the head."""
     head = dump(
         mode="json",
         exclude=merge_exclude(exclude, {"nodes": {"__all__": True}}),
         exclude_none=exclude_none,
     )
-    head.update(extra or {})
     adapter = item_adapter(type(trace), "nodes")
 
     def nodes() -> Iterator[list[bytes]]:
@@ -173,6 +172,62 @@ def trace_json_parts(
             yield [orjson.dumps(record, option=orjson.OPT_SERIALIZE_NUMPY)]
 
     return splice_json(head, "nodes", nodes())
+
+
+class PolicySpan(BaseModel):
+    """Live policy versions spanned while generating an episode."""
+
+    start: int
+    end: int
+
+    @model_validator(mode="after")
+    def ordered(self) -> Self:
+        if self.end < self.start:
+            raise ValueError("policy span end must be at least its start")
+        return self
+
+    @property
+    def drift(self) -> int:
+        return self.end - self.start
+
+
+class TrainWorkInfo(BaseModel):
+    type: Literal["train"] = "train"
+    step: int
+    """The training step at which the episode was dispatched."""
+    policy: PolicySpan | None = None
+    """The live policy used for generation; None for frozen-policy work."""
+
+
+class EvalWorkInfo(BaseModel):
+    type: Literal["eval"] = "eval"
+    step: int
+    """The training step at which the episode was dispatched."""
+    policy: PolicySpan | None = None
+    """The live policy used for generation; None for frozen-policy work."""
+
+
+WorkInfo = Annotated[TrainWorkInfo | EvalWorkInfo, Field(discriminator="type")]
+
+
+class TrainRunInfo(BaseModel):
+    """A training run and the kind of work this episode performed for it."""
+
+    type: Literal["train"] = "train"
+    id: str
+    name: str | None = None
+    work: WorkInfo
+
+
+class EvalRunInfo(BaseModel):
+    """A standalone evaluation run."""
+
+    type: Literal["eval"] = "eval"
+    id: str
+    name: str | None = None
+
+
+RunInfo = Annotated[TrainRunInfo | EvalRunInfo, Field(discriminator="type")]
 
 
 class TimeSpan(BaseModel):
@@ -526,6 +581,9 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     """The verifiers version that produced this trace."""
     task: TraceTask[DataT]
     """The task data that seeded this trace."""
+    run: RunInfo | None = None
+    """The run this trace belongs to, consumer-stamped with its episode's
+    (`Episode.record_run`): trace stores such as Prime Traces key traces by it."""
     agent: AgentInfo[AgentConfigT]
     """The agent (harness x model x runtime) that produced this trace."""
     tools: list[Tool] = Field(default_factory=list)
