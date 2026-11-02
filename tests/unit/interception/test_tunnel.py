@@ -137,6 +137,30 @@ async def test_elastic_pool_keeps_a_retired_server_until_its_rollouts_leave():
         assert pool.servers == [replacement]
 
 
+async def test_cancelling_a_rollout_does_not_interrupt_freeing_a_retired_server():
+    stopping = asyncio.Event()
+    finish = asyncio.Event()
+    stopped = []
+
+    async def stop():
+        stopping.set()
+        await finish.wait()
+        stopped.append(True)
+
+    pool = ElasticInterceptionPool()
+    pool.servers = [SimpleNamespace(healthy=False, load=0, stop=stop)]
+    freeing = asyncio.create_task(pool._free_retired())
+    await asyncio.wait_for(stopping.wait(), 1)
+
+    freeing.cancel()
+    await asyncio.sleep(0)
+    finish.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await freeing
+    assert stopped == [True]
+
+
 async def test_static_pool_with_only_retired_servers_fails_the_rollout():
     pool = StaticInterceptionPool(
         StaticInterceptionPoolConfig(servers=[InterceptionServerConfig()])

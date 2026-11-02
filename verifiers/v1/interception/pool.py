@@ -28,6 +28,7 @@ from verifiers.v1.errors import TunnelError
 from verifiers.v1.interception.base import Interception, Slot
 from verifiers.v1.interception.server import InterceptionServer
 from verifiers.v1.session import RolloutSession
+from verifiers.v1.utils.aio import run_shielded
 
 logger = logging.getLogger(__name__)
 
@@ -97,11 +98,12 @@ class ElasticInterceptionPool(Interception):
 
     async def _free_retired(self) -> None:
         """Stop retired servers whose rollouts have left. A rollout still on one is using
-        its client, so that server waits for a later call."""
+        its client, so that server waits for a later call. Shielded: an acquire cancelled
+        mid-stop would leave the listener open, with nothing left to close it."""
         for server in [s for s in self.servers if not s.healthy and s.load == 0]:
             self.servers.remove(server)
             try:
-                await server.stop()
+                await run_shielded(server.stop())
             except Exception:
                 logger.warning(
                     "interception pool: retired server cleanup failed", exc_info=True
