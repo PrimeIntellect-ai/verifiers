@@ -95,10 +95,23 @@ class ElasticInterceptionPool(Interception):
                 await self._warm_task
         await super().stop()
 
+    async def _free_retired(self) -> None:
+        """Stop retired servers whose rollouts have left. A rollout still on one is using
+        its client, so that server waits for a later call."""
+        for server in [s for s in self.servers if not s.healthy and s.load == 0]:
+            self.servers.remove(server)
+            try:
+                await server.stop()
+            except Exception:
+                logger.warning(
+                    "interception pool: retired server cleanup failed", exc_info=True
+                )
+
     async def _server(self) -> InterceptionServer:
         """A server with spare capacity — reuse one under `multiplex`, else bring up a new
         one (its own tunnel, on `stack`, torn down with the pool). Acquires hold `_lock`;
         the warm task runs before they reach this path."""
+        await self._free_retired()
         for server in self.servers:
             if server.healthy and server.load < self.config.multiplex:
                 return server

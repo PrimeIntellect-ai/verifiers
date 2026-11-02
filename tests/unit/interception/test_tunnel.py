@@ -108,12 +108,33 @@ def test_gone_tunnel_fails_the_servers_rollouts_and_refuses_new_ones():
         server.register(SimpleNamespace())
 
 
-async def test_elastic_pool_skips_a_retired_server():
-    pool = ElasticInterceptionPool()
-    retired = SimpleNamespace(healthy=False, load=0)
-    live = SimpleNamespace(healthy=True, load=0)
-    pool.servers = [retired, live]
-    assert await pool._server() is live
+async def test_elastic_pool_replaces_a_retired_server_and_frees_it():
+    async with ElasticInterceptionPool() as pool:
+        retired = await pool._warm_task
+        health = f"{retired.base_url}{HEALTH_PATH}"
+        retired._handle_tunnel_gone()
+
+        replacement = await pool._server()
+
+        assert replacement is not retired
+        assert pool.servers == [replacement]
+        async with httpx.AsyncClient() as client:
+            with pytest.raises(httpx.ConnectError):
+                await client.get(health)
+
+
+async def test_elastic_pool_keeps_a_retired_server_until_its_rollouts_leave():
+    async with ElasticInterceptionPool() as pool:
+        retired = await pool._warm_task
+        retired.sessions["secret"] = SimpleNamespace(error=None, release=lambda: None)
+        retired._handle_tunnel_gone()
+
+        replacement = await pool._server()
+        assert pool.servers == [retired, replacement]
+
+        retired.sessions.clear()
+        assert await pool._server() is replacement
+        assert pool.servers == [replacement]
 
 
 async def test_static_pool_with_only_retired_servers_fails_the_rollout():
