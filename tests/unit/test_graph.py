@@ -191,6 +191,27 @@ def test_routed_experts_none_when_absent():
     assert trace.branches[-1].routed_experts is None
 
 
+def test_plain_reasoning_details_hash_like_their_reasoning_content():
+    # Routes like OpenRouter return reasoning twice: `reasoning_content` and a mirrored
+    # `reasoning_details` text block. A harness that resends only the string must still
+    # match the stored node, or every turn forks into a new branch.
+    detail = {"type": "reasoning.text", "text": "look", "format": "unknown", "index": 0}
+    stored = vf.AssistantMessage(reasoning_content="look", provider_state=[detail])
+    resent = vf.AssistantMessage(reasoning_content="look")
+    assert graph.message_hash(stored) == graph.message_hash(resent)
+
+    # Continuation state is not mirrored anywhere else, so it still distinguishes.
+    signed = vf.AssistantMessage(
+        reasoning_content="look", provider_state=[detail | {"signature": "sig"}]
+    )
+    assert graph.message_hash(signed) != graph.message_hash(resent)
+    # Reasoning the string does not carry is still hashed.
+    other = vf.AssistantMessage(
+        reasoning_content="look", provider_state=[detail | {"text": "other"}]
+    )
+    assert graph.message_hash(other) != graph.message_hash(resent)
+
+
 def test_tool_call_hash_matches_v0_content_and_arguments_normalization():
     left = vf.AssistantMessage(
         content=None,

@@ -364,10 +364,21 @@ def message_hash(message: Message) -> str:
                 ]
                 if unparsed_content:
                     hashed_state["content"] = unparsed_content
-            represented = kind in ("message", "reasoning") or (
-                kind in ("function_call", "custom_tool_call")
-                and any(
-                    call.id == item.get("call_id") for call in message.tool_calls or []
+            # A plain-text reasoning detail (OpenRouter-style `reasoning_details`) mirrors
+            # `reasoning_content`; harnesses that resend only the string must still match.
+            represented = (
+                kind in ("message", "reasoning")
+                or (
+                    kind == "reasoning.text"
+                    and isinstance(item.get("text"), str)
+                    and item["text"] in (message.reasoning_content or "")
+                )
+                or (
+                    kind in ("function_call", "custom_tool_call")
+                    and any(
+                        call.id == item.get("call_id")
+                        for call in message.tool_calls or []
+                    )
                 )
             )
             if represented and not hashed_state:
