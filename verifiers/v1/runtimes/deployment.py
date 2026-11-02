@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
-from collections.abc import AsyncIterator, Mapping
+import re
+import uuid
+from collections.abc import AsyncIterator, Collection, Mapping
 from contextlib import AsyncExitStack, asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from verifiers.v1.configs.deployment import DeploymentConfig
+from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes import (
     PrimeConfig,
     Runtime,
@@ -35,6 +39,120 @@ class ServicesSpec:
     """
 
     services: dict[str, PrimeConfig]
+
+
+_MARK = "VF_EXEC_ID"
+"""Environment variable that marks a worker and every process its tools start, which
+inherit it through detaching and reparenting."""
+_EXITED = "vf-exec: worker exited"
+_WRAPPER = f'"$@"; echo "{_EXITED} ($?)"'
+"""The script a worker runs under, which reports the worker's exit."""
+_STOP = """
+for proc in /proc/[0-9]*; do
+    while IFS= read -r -d '' entry; do
+        if [ "$entry" = "$1" ]; then kill -9 "${proc#/proc/}" 2>/dev/null; break; fi
+    done 2>/dev/null < "$proc/environ"
+done
+"""
+"""Kill every process whose environment holds the marker `$1`, as the worker's user,
+so it reaches nothing that user could not signal itself."""
+_STOP_GROUP = """
+marker=$1 wrapper=$2 group=
+marked() {
+    while IFS= read -r -d '' entry; do
+        [ "$entry" = "$marker" ] && return 0
+    done 2>/dev/null < "$1/environ"
+    return 1
+}
+group_of() {
+    local stat
+    read -r stat 2>/dev/null < "$1/stat" || return
+    stat=${stat##*) }
+    set -- $stat
+    echo "$3"
+}
+for proc in /proc/[0-9]*; do
+    marked "$proc" || continue
+    while IFS= read -r -d '' arg; do
+        if [ "$arg" = "$wrapper" ]; then group=$(group_of "$proc"); break; fi
+    done 2>/dev/null < "$proc/cmdline"
+    [ -n "$group" ] && break
+done
+[ -n "$group" ] || exit 0
+for proc in /proc/[0-9]*; do
+    if marked "$proc" && [ "$(group_of "$proc")" = "$group" ]; then
+        kill -9 "${proc#/proc/}" 2>/dev/null
+    fi
+done
+exit 0
+"""
+"""Kill the worker whose wrapper runs the script `$2`, with what runs in its process
+group: the processes there whose environment holds the marker `$1`, as the worker's
+user."""
+
+
+@dataclass
+class ExecutionConnection:
+    """A split deployment's way into the workspace for the harness's tools: workers
+    started there listen on the rollout's private network, where the harness reaches
+    the workspace at `host`. A worker and every process its tools start carry a marker
+    in their environment, so `close` finds them wherever they were reparented."""
+
+    host: str
+    """The workspace's name on the private network."""
+    _workers: list[tuple[Runtime, str, bool]] = field(default_factory=list)
+
+    async def serve(
+        self,
+        runtime: Runtime,
+        argv: list[str],
+        env: dict[str, str],
+        announce: re.Pattern[str],
+        *,
+        keep_detached: bool = False,
+    ) -> int:
+        """Start `argv` through `runtime`, a workspace view, and return the port it
+        listens on. The worker binds a port the kernel picks and prints it in a line
+        that `announce` matches, with the port as its first group.
+
+        `close` stops the worker and every process its tools started, detached or not;
+        with `keep_detached`, for a worker that stops what is still attached to a
+        session as the session closes, only the worker and its own process group, so
+        a daemon its tools started keeps running, as after a colocated harness exits."""
+        worker = uuid.uuid4().hex
+        log = f"/tmp/vf-exec-{worker}.log"
+        self._workers.append((runtime, f"{_MARK}={worker}", keep_detached))
+        await runtime.run_background(
+            ["sh", "-c", _WRAPPER, "sh", *argv],
+            {**env, _MARK: worker},
+            log,
+        )
+        output = ""
+        with contextlib.suppress(TimeoutError):
+            async with asyncio.timeout(60):
+                while True:
+                    with contextlib.suppress(SandboxError):  # not written yet
+                        output = (await runtime.read(log)).decode(errors="replace")
+                    # A worker that crashed right after announcing has both lines.
+                    if _EXITED in output:
+                        break
+                    if found := announce.search(output):
+                        return int(found.group(1))
+                    await asyncio.sleep(0.2)
+        raise SandboxError(f"execution worker did not start: {output[-2000:]}")
+
+    async def close(self) -> None:
+        """Stop every worker, with the processes their tools started that `serve` says
+        to stop."""
+        workers, self._workers = self._workers, []
+        for runtime, marker, keep_detached in workers:
+            argv = (
+                ["bash", "-c", _STOP_GROUP, "bash", marker, _WRAPPER]
+                if keep_detached
+                else ["bash", "-c", _STOP, "bash", marker]
+            )
+            with contextlib.suppress(Exception):
+                await runtime.run(argv, {})
 
 
 class _DeploymentStrategy:
@@ -79,6 +197,7 @@ class Deployment:
         *,
         spec: ComposeSpec | ServicesSpec | None = None,
         tool_vms: Mapping[str, PrimeConfig] | None = None,
+        tool_services: Collection[str] = (),
         env: dict[str, str] | None = None,
         config: DeploymentConfig | None = None,
         borrowed_runtime: Runtime | None = None,
@@ -88,6 +207,8 @@ class Deployment:
         self.tool_vms = dict(tool_vms or {})
         """Tool servers on Prime runtimes of their own, by server name, which join the
         workspace over the rollout's private network."""
+        self.tool_services = frozenset(tool_services)
+        """Task services that host tool servers, which a split harness connects to."""
         self.env = dict(env or {})
         self.config = config or DeploymentConfig()
         self.borrowed_runtime = borrowed_runtime
@@ -132,6 +253,22 @@ class Deployment:
                     "deployment teardown failed after startup error", exc_info=True
                 )
             raise
+
+    @property
+    def split(self) -> bool:
+        """Whether the harness runs apart from the workspace, on a VM of its own."""
+        return (
+            self.harness_backend is not None
+            and self.harness_backend is not self.execution_backend
+        )
+
+    def connection(self) -> ExecutionConnection:
+        """A split harness's way into the workspace, over the rollout's private network."""
+        from verifiers.v1.runtimes.private_network import lan_host
+
+        if not self.split:
+            raise ValueError("only a split deployment connects its harness's tools")
+        return ExecutionConnection(lan_host(self.execution_backend))
 
     @property
     def execution_name(self) -> str:

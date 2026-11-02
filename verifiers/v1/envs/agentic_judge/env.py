@@ -285,6 +285,11 @@ class AgenticJudgeEnv(vf.Env[AgenticJudgeEnvConfig]):
                 "that needs no execution is a plugged judge "
                 "(--env.taskset.task.judges), not an agent."
             )
+        if self.config.judge.deployment.mode != "colocated":
+            raise ValueError(
+                "the judge borrows the verifier workspace, so it needs colocated "
+                "deployment"
+            )
         if self.config.judge.scoring.model_fields_set:
             raise ValueError(
                 "configure scoring placement on solver.scoring, not judge.scoring"

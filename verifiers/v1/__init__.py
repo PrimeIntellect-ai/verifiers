@@ -110,7 +110,11 @@ if TYPE_CHECKING:
         RuntimeProcess,
     )
     from verifiers.v1.runtimes.compose import ComposeSpec
-    from verifiers.v1.runtimes.deployment import Deployment, ServicesSpec
+    from verifiers.v1.runtimes.deployment import (
+        Deployment,
+        ExecutionConnection,
+        ServicesSpec,
+    )
     from verifiers.v1.semantic import (
         ACP_SEMANTIC_EDGES_METADATA_KEY,
         ACPInfo,
@@ -237,6 +241,7 @@ _NAME_TO_MODULE = {
     "EvalClientConfig": "verifiers.v1.configs.client",
     "EvalRunInfo": "verifiers.v1.episode",
     "EvalWorkInfo": "verifiers.v1.episode",
+    "ExecutionConnection": "verifiers.v1.runtimes.deployment",
     "GroupInfo": "verifiers.v1.episode",
     "Harness": "verifiers.v1.harness",
     "HarnessConfig": "verifiers.v1.configs.harness",
@@ -581,6 +586,7 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "ComposeSpec",
     "Deployment",
     "DeploymentConfig",
+    "ExecutionConnection",
     "ServicesSpec",
     "ScoringConfig",
 ]

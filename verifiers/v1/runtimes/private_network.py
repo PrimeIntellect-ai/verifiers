@@ -13,7 +13,7 @@ import asyncio
 import contextlib
 import logging
 import uuid
-from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Collection, Mapping
 from contextlib import AsyncExitStack, asynccontextmanager
 
 from verifiers.v1.runtimes import (
@@ -28,6 +28,8 @@ from verifiers.v1.utils.aio import run_shielded
 logger = logging.getLogger(__name__)
 
 WORKSPACE_TAG = "vf-workspace"
+HARNESS_TAG = "vf-harness"
+TASK_TAG = "vf-task"
 
 
 def tool_vms(
@@ -77,9 +79,14 @@ async def private_network(
     *,
     interconnect: bool = False,
     networks: Mapping[str, list[str]] | None = None,
+    harness: RuntimeBackend | None = None,
+    start_harness: Callable[[], Awaitable[object]] | None = None,
+    harness_peers: Collection[str] = (),
 ) -> AsyncIterator[dict[str, RuntimeBackend]]:
     """Boot the workspace's VM and one VM per member together, each joining a LAN
-    network of the rollout's own as it boots."""
+    network of the rollout's own as it boots. A split deployment's `harness` VM joins
+    too: it may open connections to the workspace, to tool servers' VMs and to the
+    task services in `harness_peers`, and nothing may open one to it."""
     if not isinstance(workspace, PrimeBackend):
         raise TypeError(
             "tool servers on Prime runtimes of their own join the workspace over a "
@@ -93,14 +100,6 @@ async def private_network(
         "main": [WORKSPACE_TAG],
         **{name: [tag] for name, tag in tags.items()},
     }
-    rules = (
-        [LanRule(from_="*", to="*")]
-        if interconnect
-        else [
-            LanRule(from_=f"tag:{WORKSPACE_TAG}", to=f"tag:{tag}")
-            for tag in tags.values()
-        ]
-    )
     if networks is not None:
         rules = []
         for index, names in enumerate(networks.values()):
@@ -108,6 +107,27 @@ async def private_network(
             rules.append(LanRule(from_=f"tag:{tag}", to=f"tag:{tag}"))
             for name in names:
                 memberships[name].append(tag)
+    elif interconnect:
+        # Task services and the workspace, not the harness, reach each other.
+        rules = [LanRule(from_=f"tag:{TASK_TAG}", to=f"tag:{TASK_TAG}")]
+        for member_tags in memberships.values():
+            member_tags.append(TASK_TAG)
+    else:
+        rules = [
+            LanRule(from_=f"tag:{WORKSPACE_TAG}", to=f"tag:{tag}")
+            for tag in tags.values()
+        ]
+    if harness is not None:
+        rules.append(LanRule(from_=f"tag:{HARNESS_TAG}", to=f"tag:{WORKSPACE_TAG}"))
+        # The harness consumes the tool servers, on VMs of their own or in services.
+        consumed = (
+            tags.values()
+            if networks is None and not interconnect
+            else [tags[name] for name in harness_peers if name in tags]
+        )
+        rules += [
+            LanRule(from_=f"tag:{HARNESS_TAG}", to=f"tag:{tag}") for tag in consumed
+        ]
     async with AsyncExitStack() as stack:
         client = await stack.enter_async_context(leased_client())
         # Install connectivity before boot: Compose peers must share a network;
@@ -152,13 +172,27 @@ async def private_network(
                 )
 
         workspace.lan = (network.id, memberships["main"])
+        if harness is not None:
+            harness.lan = (network.id, [HARNESS_TAG])
+            stack.push_async_callback(harness.stop)
         try:
             async with asyncio.TaskGroup() as group:
                 group.create_task(start_workspace())
+                if start_harness is not None:
+                    group.create_task(start_harness())
                 for name, config in members.items():
                     group.create_task(provision(name, config))
         except ExceptionGroup as failed:
             raise failed.exceptions[0]  # one VM's failure, typed for retries
+        idle_timeout = workspace.config.idle_timeout
+        if harness is not None and idle_timeout is not None:
+            # The harness's tools reach the workspace over the LAN alone.
+            stack.push_async_callback(
+                stop,
+                asyncio.create_task(
+                    _keepalive(workspace.bind(), max(10.0, idle_timeout / 3))
+                ),
+            )
         logger.info(
             "LAN network %s joins %s to %s",
             network.id,
