@@ -40,6 +40,7 @@ def make_rollout(trace: vf.Trace, session, time_remaining=None):
     run._opened = True
     run._closed = False
     run._segment_running = False
+    run._agent_started = False
     run._saves = set()
     run._failed = False
     run._attempt = 0

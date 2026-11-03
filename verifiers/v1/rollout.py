@@ -221,6 +221,8 @@ class Rollout:
         self._segment_running = False
         """Whether the harness program runs a segment, so a model call may still come
         (`save`)."""
+        self._agent_started = False
+        """Whether a segment started: before, the rollout still sets up (`save`)."""
         self._saves: set[asyncio.Future[bool]] = set()
         """The saves waiting for a model call, which a segment's end resolves."""
         self._paused = False
@@ -781,7 +783,7 @@ class Rollout:
                         return False
                 self._session.on_turn_input = on_input
                 assert self.deployment is not None
-                self._segment_running = True
+                self._segment_running = self._agent_started = True
                 try:
                     aborted = await self._turn(messages, reattach)
                 finally:
@@ -959,21 +961,33 @@ class Rollout:
         finishing, or whose agent is done (it is being scored), or that takes no
         filesystem checkpoints, takes none. A later retry of this attempt restores the
         newest one it took. With `release`, the model call then waits until it is set,
-        or for `hold` seconds at most, before it goes on. Returns whether it took
-        one."""
+        or for `hold` seconds at most, before it goes on. A rollout still setting up
+        has no turn to lose: with `release`, its first model call before the release
+        checkpoints and holds, and the save does not wait for it. Returns whether it
+        took one."""
         if (
             self.trace.stop_condition is not None
             or self._closed
             or self._paused
             or self._checkpointing is None
-            or self._session.checkpointer is None
-            or (not self._segment_running and self.trace.nodes)
+            or (self._agent_started and not self._segment_running)
         ):
+            return False
+        setting_up = not self._agent_started
+        if not setting_up and self._session.checkpointer is None:
+            return False
+        if setting_up and release is None:
             return False
         saved: asyncio.Future[bool] = asyncio.get_running_loop().create_future()
 
         async def take(turn: graph.PendingTurn) -> None:
-            checkpoint = await self._save(turn)
+            if release is not None and release.is_set():
+                return
+            checkpoint = (
+                await self._save(turn)
+                if self._session.checkpointer is not None
+                else None
+            )
             if not saved.done():
                 saved.set_result(checkpoint is not None)
             if checkpoint is not None and release is not None:
@@ -981,6 +995,8 @@ class Rollout:
                     await asyncio.wait_for(release.wait(), hold)
 
         self._session.save_at_turn = take
+        if setting_up:
+            return False
         self._saves.add(saved)
         try:
             return await asyncio.wait_for(asyncio.shield(saved), timeout)
