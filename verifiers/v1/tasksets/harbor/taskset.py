@@ -4,10 +4,10 @@ The Harbor CLI downloads and caches each task directory. Its verifier runs in th
 runtime the harness edited — or, when the task asks for it with
 ``[verifier].environment_mode = "separate"``, in a second box the agent never
 touched, carrying only what the task declared — the rollout provisions and
-grades that box. A script takes precedence over a RewardKit ``judge.toml``.
+grades that box. A script takes precedence over a native ``judge.toml``.
 Scripts write ``/logs/verifier/reward.json`` or the legacy ``reward.txt``.
-RewardKit handles rubric scoring in the runtime, with LLM calls made by ``Judge``;
-agent-backed judges retain RewardKit's own harness and aggregate usage records.
+Judge TOMLs use native judges and rubric scoring; agent-backed judges run a
+native harness inside the grading runtime.
 
 A pullable ``[environment].docker_image`` becomes ``TaskData.image``. Compose can build
 its workspace from ``environment/Dockerfile``. Single-container Dockerfile-only
@@ -19,40 +19,59 @@ or tests build definition, then fall back to the agent environment. Unsupported 
 """
 
 import asyncio
-import contextlib
+import base64
 import hashlib
 import io
-import json
 import logging
+import math
+import mimetypes
 import shutil
 import subprocess
 import sys
 import tarfile
 import tempfile
 import time
-import uuid
+import tomllib
 from collections.abc import Iterator
 from functools import lru_cache
 from pathlib import Path, PurePosixPath
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
+from verifiers.v1.agent import Agent
+from verifiers.v1.configs.agent import AgentConfig
+from verifiers.v1.configs.client import EvalClientConfig
 from verifiers.v1.configs.judge import JudgeConfig
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.configs.scoring import ScoringConfig
 from verifiers.v1.configs.task import TaskConfig
 from verifiers.v1.configs.taskset import TasksetConfig
+from verifiers.v1.envs.agentic_judge.env import JudgeTask, _verdict_section
 from verifiers.v1.errors import SandboxError, TaskError
 from verifiers.v1.judge import Judge, JudgeResponse
+from verifiers.v1.judges.rubric import (
+    JSON_SUFFIX,
+    RUBRIC_PROMPT,
+    Criterion,
+    RubricVerdicts,
+    criterion_metrics,
+    first_verdicts_object,
+    score_verdicts,
+    weighted_score,
+)
 from verifiers.v1.runtimes import Runtime
-from verifiers.v1.runtimes.base import ProgramResult
 from verifiers.v1.runtimes.deployment import Deployment
 from verifiers.v1.state import State
 from verifiers.v1.task import Task, TaskData, TaskResources, TaskTimeout
 from verifiers.v1.taskset import Taskset
 from verifiers.v1.trace import Trace
-from verifiers.v1.types import Messages, Usage
-from verifiers.v1.utils.aio import run_shielded
+from verifiers.v1.types import (
+    ImageUrlContentPart,
+    ImageUrlSource,
+    SystemMessage,
+    Usage,
+    UserMessage,
+)
 from verifiers.v1.utils.artifacts import (
     ARTIFACTS_DIR,
     MAX_ARTIFACT_BYTES,
@@ -61,6 +80,7 @@ from verifiers.v1.utils.artifacts import (
 )
 from verifiers.v1.utils.decorators import reward
 from verifiers.v1.utils.env import resolve_env
+from verifiers.v1.utils.loaders import builtin_harness_ids
 
 logger = logging.getLogger(__name__)
 
@@ -83,7 +103,7 @@ class HarborTaskConfig(TaskConfig):
     reward_key: str = Field("reward", min_length=1)
     """Named verifier value used as the training reward; other values remain metrics."""
     judge: JudgeConfig | None = None
-    """Override the authored LLM judge with a native model, endpoint and sampling config.
+    """Override the authored judge's model, endpoint and sampling with native config.
     None uses the authored model with Verifiers' default endpoint."""
     mcp_servers: list[dict] = Field(default_factory=list)
     """Task-declared connections, bound from HarborData during construction."""
@@ -416,8 +436,7 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
         stage = "{ test -f /tests/test.sh || test -f /tests/judge.toml; }"
         if self.data.verifier is None or self.data.verifier_image is None:
             tests = Path(self.data.task_dir) / "tests"
-            # RewardKit discovers every check in /tests; stale files must not add
-            # criteria or override a judge-only package with a leftover script.
+            # A leftover script must not override a judge-only package.
             wipe = wipe or (
                 (tests / "judge.toml").is_file() and not (tests / "test.sh").is_file()
             )
@@ -428,19 +447,13 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
             )
         command = (
             "rm -f /logs/verifier/reward.json /logs/verifier/reward.txt && "
-            f"mkdir -p /logs/verifier {ARTIFACTS_DIR} && {stage} && "
-            "if test ! -f /tests/test.sh && test -f /tests/judge.toml; then echo judge; fi"
+            f"mkdir -p /logs/verifier {ARTIFACTS_DIR} && {stage}"
         )
         result = await runtime.run(["sh", "-c", command], {})
         if result.exit_code:
             raise TaskError(
                 f"staging tests failed (exit {result.exit_code}): "
                 f"{(result.stderr or result.stdout).strip()[-500:]}"
-            )
-        if result.stdout.strip() == "judge":
-            # Install during verifier setup, before its execution network policy.
-            await runtime.prepare_uv_script(
-                Path(__file__).with_name("rewardkit_worker.py").read_bytes()
             )
 
     @reward(weight=1.0)
@@ -481,184 +494,264 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
             raise TaskError(
                 "Harbor verifier requires /tests/test.sh or /tests/judge.toml"
             )
-        judge = entrypoint.stdout.strip() == "judge"
-        reward_path = REWARD_JSON
-        command = ["bash", "/tests/test.sh"]
-        env = resolve_env(self.scoring.env or {})
-        if judge:
-            # Each judge invocation owns its outputs, so retries cannot accept a
-            # previous reward. Publish the submission atomically for judge readers.
-            directory = f"/logs/verifier/rewardkit/{uuid.uuid4().hex}"
-            reward_path = f"{directory}/reward.json"
-            await runtime.write(
-                f"{directory}/instruction.md", self.data.prompt_text.encode()
-            )
-            await runtime.write(f"{directory}/response.txt", trace.last_reply.encode())
-            worker = await runtime.prepare_uv_script(
-                Path(__file__).with_name("rewardkit_worker.py").read_bytes()
-            )
-            command = [
-                "sh",
-                "-c",
+        if entrypoint.stdout.strip() == "judge":
+            raw = tomllib.loads(
                 (
-                    'mv "$1/instruction.md" /logs/verifier/instruction.md && '
-                    'mv "$1/response.txt" /logs/verifier/response.txt && '
-                    'shift && exec "$@"'
+                    await runtime.read("/tests/judge.toml", max_bytes=MAX_REWARD_BYTES)
+                ).decode()
+            )
+            authored = raw.get("judge", {})
+            scoring = raw.get("scoring", {})
+            entries = raw.get("criterion", [])
+            # Only accept features this native path executes; never silently drop
+            # an authored grading rule or treat an agent backend as a model name.
+            for table, allowed in [
+                (raw, {"judge", "criterion", "scoring"}),
+                (
+                    authored,
+                    {
+                        "judge",
+                        "model",
+                        "prompt_template",
+                        "files",
+                        "timeout",
+                        "reasoning_effort",
+                    },
                 ),
-                "vf-rewardkit",
-                directory,
-                *worker,
-                reward_path,
-            ]
-            process = await runtime.exec(command, env)
-            write_lock = asyncio.Lock()
-            stderr = bytearray()
-            stderr_size = 0
-
-            async def drain_stderr():
-                nonlocal stderr_size
-                async for chunk in process.stderr:
-                    stderr_size += len(chunk)
-                    stderr.extend(chunk)
-                    del stderr[:-MAX_VERIFIER_OUTPUT_CHARS]
-
-            async def complete(request):
-                params = request["request"]
-                model = params.pop("model")
-                messages = TypeAdapter(Messages).validate_python(params.pop("messages"))
-                config = self.config.judge or JudgeConfig(model=model)
-                response = await Judge(
-                    config.model_copy(update={"name": "harbor"})
-                ).complete(
-                    messages,
-                    trace=trace,
-                    **(params | config.sampling.model_dump(exclude_unset=True)),
-                )
-                async with write_lock:
-                    await process.write(
-                        (
-                            json.dumps({"id": request["id"], "text": response.text})
-                            + "\n"
-                        ).encode()
+                (scoring, {"aggregation"}),
+                *(
+                    (
+                        entry,
+                        {"name", "description", "type", "weight", "points", "levels"},
                     )
-
-            try:
-                async with asyncio.TaskGroup() as group:
-                    group.create_task(drain_stderr())
-                    buffer = b""
-                    async for chunk in process.stdout:
-                        buffer += chunk
-                        while b"\n" in buffer:
-                            line, buffer = buffer.split(b"\n", 1)
-                            group.create_task(complete(json.loads(line)))
-                    if buffer:
-                        raise TaskError(
-                            "RewardKit worker returned an incomplete request"
-                        )
-                result = ProgramResult(
-                    await process.wait(), "", stderr.decode(errors="replace")
+                    for entry in entries
+                ),
+            ]:
+                if unknown := table.keys() - allowed:
+                    raise TaskError(f"Unsupported judge.toml fields: {sorted(unknown)}")
+            if scoring.get("aggregation", "weighted-mean") != "weighted-mean":
+                raise TaskError(
+                    "Native Harbor judges require weighted-mean aggregation"
                 )
-            finally:
-                with contextlib.suppress(Exception):
-                    await run_shielded(process.kill())
-                trace.info.setdefault("scoring_diagnostics", {})["harbor"] = {
-                    "stderr": stderr.decode(errors="replace"),
-                    "stderr_truncated": stderr_size > MAX_VERIFIER_OUTPUT_CHARS,
-                }
-        else:
-            # Run in the runtime's configured workdir, as Harbor does. A script's
-            # reward file is authoritative even when it exits nonzero.
-            result = await runtime.run(command, env)
-            trace.info.setdefault("scoring_diagnostics", {})["harbor"] = {}
-        diagnostics = trace.info.setdefault("scoring_diagnostics", {}).setdefault(
-            "harbor", {}
-        )
-        diagnostics.update(
-            {
-                "exit_code": result.exit_code,
-                "stdout": result.stdout[-MAX_VERIFIER_OUTPUT_CHARS:],
-                "stderr": result.stderr[-MAX_VERIFIER_OUTPUT_CHARS:],
-                "stdout_truncated": len(result.stdout) > MAX_VERIFIER_OUTPUT_CHARS,
-                "stderr_truncated": diagnostics.get("stderr_truncated", False)
-                or len(result.stderr) > MAX_VERIFIER_OUTPUT_CHARS,
+            extra = await runtime.run(
+                [
+                    "find",
+                    "/tests",
+                    "-type",
+                    "f",
+                    "(",
+                    "-name",
+                    "*.toml",
+                    "-o",
+                    "-name",
+                    "*.py",
+                    ")",
+                    "!",
+                    "-path",
+                    "/tests/judge.toml",
+                ],
+                {},
+            )
+            if extra.exit_code or extra.stdout.strip():
+                raise TaskError(
+                    "Native judge.toml requires a single rubric; use test.sh for additional graders"
+                )
+
+            criteria = []
+            for index, entry in enumerate(entries):
+                kind = entry.get("type", "binary")
+                if kind == "binary":
+                    choices = ["no", "yes"]
+                elif kind == "likert":
+                    choices = [str(i) for i in range(1, entry.get("points", 5) + 1)]
+                elif kind == "rubric":
+                    choices = entry["levels"]
+                else:
+                    raise TaskError(f"Unsupported judge.toml criterion type: {kind!r}")
+                criteria.append(
+                    Criterion(
+                        name=entry.get("name", f"criterion_{index}"),
+                        text=entry["description"],
+                        weight=entry.get("weight", 1.0),
+                        choices=choices,
+                    )
+                )
+            total = sum(c.weight for c in criteria)
+            if not criteria or not math.isfinite(total) or total <= 0:
+                raise TaskError(
+                    "judge.toml requires criteria with a positive finite total weight"
+                )
+            if len({c.name for c in criteria}) != len(criteria):
+                raise TaskError("judge.toml criterion names must be unique")
+            if self.config.reward_key != "reward":
+                raise TaskError("judge.toml produces only the 'reward' aggregate")
+
+            backend = authored.get("judge", "")
+            agentic = backend in builtin_harness_ids()
+            if backend == "jev" or ("model" in authored and not agentic):
+                raise TaskError(f"Unsupported judge.toml backend: {backend!r}")
+            model = authored.get("model") if agentic else backend
+            if agentic and not model and self.config.judge is None:
+                raise TaskError("Agent-backed judge.toml requires a model")
+            config = self.config.judge or JudgeConfig(
+                **({"model": model} if model else {})
+            )
+            sampling = {
+                **(
+                    {"reasoning_effort": authored["reasoning_effort"]}
+                    if "reasoning_effort" in authored
+                    else {}
+                ),
+                **config.sampling.model_dump(exclude_unset=True),
             }
-        )
-        if judge:
-            if result.exit_code:
-                raise TaskError(
-                    f"RewardKit judge failed (exit {result.exit_code}): "
-                    f"{(result.stderr or result.stdout).strip()[-500:]}"
+            judge = Judge(config.model_copy(update={"name": config.name or "harbor"}))
+            if config.prompt is None:
+                judge.prompt = (
+                    (
+                        await runtime.read(
+                            str(PurePosixPath("/tests") / authored["prompt_template"]),
+                            max_bytes=MAX_REWARD_BYTES,
+                        )
+                    ).decode()
+                    if "prompt_template" in authored
+                    else RUBRIC_PROMPT
                 )
-            try:
-                details = json.loads(
-                    await runtime.read(
-                        f"{directory}/reward-details.json", max_bytes=MAX_REWARD_BYTES
+            template = judge.prompt or ""
+            prompt = judge.build_messages(
+                question=self.data.prompt_text,
+                response=trace.last_reply,
+                criteria="\n".join(c.render() for c in criteria),
+                reference="",
+            )
+            # Custom templates may omit the task, response or rubric placeholders.
+            for placeholder, heading, value in [
+                ("question", "Task", self.data.prompt_text),
+                ("response", "Response", trace.last_reply),
+                ("criteria", "Criteria", "\n".join(c.render() for c in criteria)),
+            ]:
+                if "{" + placeholder + "}" not in template:
+                    prompt += f"\n\n{heading}:\n{value}"
+            submissions = {
+                "/logs/verifier/instruction.md": self.data.prompt_text.encode(),
+                "/logs/verifier/response.txt": trace.last_reply.encode(),
+            }
+            async with asyncio.timeout(authored.get("timeout")):
+                if agentic:
+                    # Reuse the native agentic judge's verdict task and the existing
+                    # grading workspace, so file inspection stays inside the sandbox.
+                    judge_task = JudgeTask(
+                        TaskData(
+                            prompt=prompt + "\n\n" + _verdict_section(criteria),
+                            image=runtime.config.image,
+                            workdir=runtime.config.workdir,
+                            network=NetworkPolicyConfig(
+                                allow=runtime.config.allow, block=runtime.config.block
+                            ),
+                        ),
+                        files=submissions,
                     )
-                )
-                if not isinstance(details, dict):
-                    raise TypeError("expected an object of reward details")
-            except (SandboxError, OSError, ValueError, TypeError) as exc:
-                raise TaskError(
-                    "RewardKit produced no valid reward-details.json"
-                ) from exc
-
-            diagnostics["reward_details"] = details
-            errors = []
-            pending = list(details.items())
-            while pending:
-                name, detail = pending.pop()
-                if "components" in detail:
-                    pending.extend(
-                        (f"{name}/{component['name']}", component["detail"])
-                        for component in detail["components"]
+                    if files := authored.get("files"):
+                        judge_task = judge_task.with_data(
+                            prompt=judge_task.data.prompt_text
+                            + "\n\nInspect these files:\n"
+                            + "\n".join(files)
+                        )
+                    agent = Agent(
+                        AgentConfig(
+                            harness={"id": backend},
+                            runtime=runtime.config,
+                            model=config.model,
+                            client=EvalClientConfig.model_validate(
+                                config.model_dump(
+                                    include=EvalClientConfig.model_fields.keys()
+                                )
+                            ),
+                            sampling=sampling,
+                        )
                     )
-                    continue
-                prefix = f"harbor/{name}"
-                if "judge" in detail and detail.get("kind") != "llm":
-                    usage = detail.get("usage")
-                    # RewardKit reports aggregate usage per component, with cache
-                    # reads included in input_tokens. Do not add per-model totals again.
-                    trace.record_judge_call(
-                        name=prefix,
-                        request={
-                            "model": detail["judge"].get("model"),
-                            "judge": detail["judge"],
-                            "backend": "rewardkit",
-                            "scope": "aggregate",
-                        },
-                        response=JudgeResponse(
-                            text=detail.get("judge_output", ""),
-                            parsed=detail,
-                            usage=Usage(
-                                prompt_tokens=(usage.get("input_tokens") or 0)
-                                - (usage.get("cache_read_input_tokens") or 0),
-                                completion_tokens=usage.get("output_tokens") or 0,
-                                cached_input_tokens=usage.get(
-                                    "cache_read_input_tokens"
+                    agent.trainable = False
+                    traces = []
+                    try:
+                        verdict_trace = await agent.run(
+                            judge_task, runtime=runtime, on_trace=traces.append
+                        )
+                    finally:
+                        if traces:
+                            child = traces[0]
+                            trace.info.setdefault("scoring_diagnostics", {})[
+                                "harbor"
+                            ] = {"judge_trace": child.model_dump(mode="json")}
+                            trace.record_judge_call(
+                                name=judge.reward_name,
+                                request={
+                                    "model": config.model,
+                                    "harness": backend,
+                                    "prompt": judge_task.data.prompt_text,
+                                },
+                                response=JudgeResponse(
+                                    text=child.last_reply,
+                                    parsed=child.info.get("verdict"),
+                                    usage=Usage.aggregate(
+                                        u
+                                        for u in [child.usage, *child.extra_usage]
+                                        if u is not None
+                                    ),
                                 ),
-                                reasoning_tokens=usage.get("reasoning_output_tokens"),
-                                cost=usage.get("cost_usd"),
                             )
-                            if usage
-                            else None,
+                    if not verdict_trace.ok:
+                        raise TaskError(
+                            "Harbor agent judge failed: "
+                            + "; ".join(e.message for e in verdict_trace.errors)
+                        )
+                    verdicts = RubricVerdicts.model_validate(
+                        verdict_trace.info["verdict"]
+                    ).verdicts
+                else:
+                    messages = [SystemMessage(content=prompt + JSON_SUFFIX)]
+                    for path in authored.get("files", []):
+                        data = (
+                            submissions[path]
+                            if path in submissions
+                            else await runtime.read(path, max_bytes=MAX_REWARD_BYTES)
+                        )
+                        media_type = mimetypes.guess_type(path)[0] or "text/plain"
+                        if media_type.startswith("image/"):
+                            content = [
+                                ImageUrlContentPart(
+                                    image_url=ImageUrlSource(
+                                        url=f"data:{media_type};base64,{base64.b64encode(data).decode()}"
+                                    )
+                                )
+                            ]
+                        else:
+                            content = f"File {path}:\n{data.decode()}"
+                        messages.append(UserMessage(content=content))
+                    response = await judge.complete(
+                        messages,
+                        trace=trace,
+                        **sampling,
+                        parse=lambda response: RubricVerdicts.model_validate(
+                            first_verdicts_object(response.text)
                         ),
                     )
-                for criterion in detail["criteria"]:
-                    if criterion.get("error") is not None:
-                        errors.append(criterion["error"])
-                    else:
-                        trace.record_metric(
-                            f"{prefix}/{criterion['name']}", criterion["value"]
-                        )
-                if error := (detail.get("guard") or {}).get("error"):
-                    errors.append(error)
-            # Preserve verdicts and billed usage even when a timed-out criterion makes
-            # the aggregate unusable as a training reward.
-            if errors:
-                raise TaskError(f"RewardKit judge failed: {'; '.join(errors)}")
-        scores = await self.read_reward_json(runtime, reward_path)
-        if judge and scores is None:
-            raise TaskError("RewardKit produced no reward.json")
+                    verdicts = response.parsed.verdicts
+            scores = score_verdicts(verdicts, criteria, "the rubric's")
+            trace.record_metrics(
+                criterion_metrics(judge.reward_name, verdicts, criteria, scores)
+            )
+            return {"reward": weighted_score(scores, criteria)}
+
+        result = await runtime.run(
+            ["bash", "/tests/test.sh"], resolve_env(self.scoring.env or {})
+        )
+        trace.info.setdefault("scoring_diagnostics", {})["harbor"] = {
+            "exit_code": result.exit_code,
+            "stdout": result.stdout[-MAX_VERIFIER_OUTPUT_CHARS:],
+            "stderr": result.stderr[-MAX_VERIFIER_OUTPUT_CHARS:],
+            "stdout_truncated": len(result.stdout) > MAX_VERIFIER_OUTPUT_CHARS,
+            "stderr_truncated": len(result.stderr) > MAX_VERIFIER_OUTPUT_CHARS,
+        }
+        scores = await self.read_reward_json(runtime)
         if scores is None:
             try:
                 value = (
@@ -689,23 +782,21 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
         )
         return {key: scores[key]}
 
-    async def read_reward_json(
-        self, runtime: Runtime, path: str = REWARD_JSON
-    ) -> dict[str, float] | None:
+    async def read_reward_json(self, runtime: Runtime) -> dict[str, float] | None:
         """JSON takes precedence whenever present; invalid or unreadable JSON fails.
 
         Only absence permits text fallback. Reads remain bounded at the source.
         """
         exists = await runtime.run(
-            ["sh", "-c", 'test -e "$1" || test -L "$1"', "vf-reward", path], {}
+            ["sh", "-c", 'test -e "$1" || test -L "$1"', "vf-reward", REWARD_JSON], {}
         )
         if exists.exit_code == 1:
             return None
         if exists.exit_code:
-            raise TaskError(f"Cannot inspect Harbor reward file {path}")
+            raise TaskError(f"Cannot inspect Harbor reward file {REWARD_JSON}")
         try:
             return REWARD_JSON_ADAPTER.validate_json(
-                await runtime.read(path, max_bytes=MAX_REWARD_BYTES)
+                await runtime.read(REWARD_JSON, max_bytes=MAX_REWARD_BYTES)
             )
         except (SandboxError, OSError, ValidationError) as exc:
             raise TaskError(
