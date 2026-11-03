@@ -55,3 +55,48 @@ async def test_the_command_timeout_reaches_mini_swe_agents_environment(monkeypat
 
 def test_the_model_request_timeout_defaults_to_a_day():
     assert MiniSWEAgentHarnessConfig(id="mini_swe_agent").request_timeout == 86400
+
+
+async def test_mcp_servers_are_listed_in_the_task_prompt_as_harbor_does(monkeypatch):
+    # TB4's medical-claims-processing serves a Playwright MCP server; mini-swe-agent
+    # has no MCP client, so Harbor's adapter names each server and URL in the task.
+    from types import SimpleNamespace
+
+    from verifiers.v1.harnesses.mini_swe_agent import harness as module
+
+    written = {}
+
+    class Runtime:
+        async def write(self, path, data):
+            written["args"] = json.loads(data)
+
+        async def run(self, argv, env):
+            return SimpleNamespace(exit_code=0, stdout="", stderr="")
+
+        async def prepare_uv_script(self, source, env):
+            return ["python", "program.py"]
+
+    assert module.MiniSWEAgentHarness.SUPPORTS_MCP
+    assert module.MiniSWEAgentHarness.SUPPORTS_SKILLS
+    harness = module.MiniSWEAgentHarness.__new__(module.MiniSWEAgentHarness)
+    harness.config = MiniSWEAgentHarnessConfig(id="mini_swe_agent")
+    monkeypatch.setattr(
+        harness, "resolve_text_prompt", lambda data: (None, "do it"), raising=False
+    )
+    urls = {"playwright": "http://127.0.0.1:9000/mcp/playwright"}
+    await harness.launch(
+        SimpleNamespace(model="m"),
+        SimpleNamespace(id="t"),
+        Runtime(),
+        "http://x",
+        "k",
+        urls,
+        None,
+    )
+    task = written["args"][written["args"].index("--task") + 1]
+    assert task == (
+        "do it\n\nMCP Servers:\nThe following MCP servers are available for this "
+        "task.\n- playwright: streamable-http transport, "
+        "url: http://127.0.0.1:9000/mcp/playwright\n"
+    )
+    assert module.with_mcp_servers("do it", {}) == "do it"

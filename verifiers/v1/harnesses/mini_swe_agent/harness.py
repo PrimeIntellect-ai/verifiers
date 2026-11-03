@@ -30,9 +30,30 @@ class MiniSWEAgentHarnessConfig(HarnessConfig):
     provider stream alive and retries it, so the rollout timeout stays in charge."""
 
 
+def with_mcp_servers(prompt: str, mcp_urls: dict[str, str]) -> str:
+    """The task prompt with the task's MCP servers listed after it, as Harbor's
+    mini-swe-agent adapter does: mini-swe-agent has no MCP client of its own, so the
+    model reaches a server from the shell at its URL."""
+    if not mcp_urls:
+        return prompt
+    listing = "".join(
+        f"- {name}: streamable-http transport, url: {url}\n"
+        for name, url in mcp_urls.items()
+    )
+    return (
+        f"{prompt}\n\nMCP Servers:\n"
+        f"The following MCP servers are available for this task.\n{listing}"
+    )
+
+
 class MiniSWEAgentHarness(Harness[MiniSWEAgentHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = False
-    SUPPORTS_MCP = False
+    SUPPORTS_MCP = True
+    """Listed in the task prompt (`with_mcp_servers`), as Harbor's adapter does."""
+    SUPPORTS_SKILLS = True
+    """Accepted and not installed, as Harbor's adapter does: a task's skills folder
+    stays readable where the task keeps it (TB4's cumulative-layout-shift keeps its
+    in the repo under .agents/skills)."""
 
     async def setup(self, runtime: Runtime) -> None:
         source = PROGRAM_SOURCE.replace("{version}", self.config.version)
@@ -51,6 +72,7 @@ class MiniSWEAgentHarness(Harness[MiniSWEAgentHarnessConfig]):
         if self.config.disabled_tools:
             raise ValueError("mini-swe-agent does not support disabling tools")
         _, prompt = self.resolve_text_prompt(data)
+        prompt = with_mcp_servers(prompt, mcp_urls)
         source = PROGRAM_SOURCE.replace("{version}", self.config.version)
         args = [
             "--model",

@@ -37,16 +37,14 @@ def test_a_boxed_task_needs_a_container() -> None:
 
 def test_tools_need_an_mcp_harness() -> None:
     with pytest.raises(ValueError, match="does not support MCP tools"):
-        validate_pairing(
-            harness("mini-swe-agent"), vf.Task, DockerConfig(), tools=["echo"]
-        )
-    validate_pairing(harness("mini-swe-agent"), vf.Task, DockerConfig(), tools=[])
+        validate_pairing(harness("terminus-2"), vf.Task, DockerConfig(), tools=["echo"])
+    validate_pairing(harness("terminus-2"), vf.Task, DockerConfig(), tools=[])
 
 
 def test_skills_need_a_harness_that_discovers_them(tmp_path) -> None:
     (tmp_path / "SKILL.md").write_text("# a skill\n")
     with pytest.raises(ValueError, match="no native skill support"):
         validate_pairing(
-            harness("mini-swe-agent", skills=[tmp_path]), vf.Task, DockerConfig()
+            harness("terminus-2", skills=[tmp_path]), vf.Task, DockerConfig()
         )
     validate_pairing(harness("claude-code", skills=[tmp_path]), vf.Task, DockerConfig())
