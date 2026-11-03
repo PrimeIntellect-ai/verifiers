@@ -5,8 +5,9 @@ runtime the harness edited — or, when the task asks for it with
 ``[verifier].environment_mode = "separate"``, in a second box the agent never
 touched, carrying only what the task declared — the rollout provisions and
 grades that box. A script takes precedence over a RewardKit ``judge.toml``.
-Scripts write ``/logs/verifier/reward.json`` or the legacy ``reward.txt``;
-RewardKit results are imported into the trace from a separate output directory.
+Scripts write ``/logs/verifier/reward.json`` or the legacy ``reward.txt``.
+RewardKit handles rubric scoring in the runtime, with LLM calls made by ``Judge``;
+agent-backed judges retain RewardKit's own harness and aggregate usage records.
 
 A pullable ``[environment].docker_image`` becomes ``TaskData.image``. Compose can build
 its workspace from ``environment/Dockerfile``. Single-container Dockerfile-only
@@ -18,6 +19,7 @@ or tests build definition, then fall back to the agent environment. Unsupported 
 """
 
 import asyncio
+import contextlib
 import hashlib
 import io
 import json
@@ -35,19 +37,22 @@ from pathlib import Path, PurePosixPath
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
+from verifiers.v1.configs.judge import JudgeConfig
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.configs.scoring import ScoringConfig
 from verifiers.v1.configs.task import TaskConfig
 from verifiers.v1.configs.taskset import TasksetConfig
 from verifiers.v1.errors import SandboxError, TaskError
-from verifiers.v1.judge import JudgeResponse
+from verifiers.v1.judge import Judge, JudgeResponse
 from verifiers.v1.runtimes import Runtime
+from verifiers.v1.runtimes.base import ProgramResult
 from verifiers.v1.runtimes.deployment import Deployment
 from verifiers.v1.state import State
 from verifiers.v1.task import Task, TaskData, TaskResources, TaskTimeout
 from verifiers.v1.taskset import Taskset
 from verifiers.v1.trace import Trace
-from verifiers.v1.types import Usage
+from verifiers.v1.types import Messages, Usage
+from verifiers.v1.utils.aio import run_shielded
 from verifiers.v1.utils.artifacts import (
     ARTIFACTS_DIR,
     MAX_ARTIFACT_BYTES,
@@ -77,6 +82,9 @@ REWARD_SCALAR_ADAPTER = TypeAdapter(
 class HarborTaskConfig(TaskConfig):
     reward_key: str = Field("reward", min_length=1)
     """Named verifier value used as the training reward; other values remain metrics."""
+    judge: JudgeConfig | None = None
+    """Override the authored LLM judge with a native model, endpoint and sampling config.
+    None uses the authored model with Verifiers' default endpoint."""
     mcp_servers: list[dict] = Field(default_factory=list)
     """Task-declared connections, bound from HarborData during construction."""
 
@@ -420,13 +428,19 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
             )
         command = (
             "rm -f /logs/verifier/reward.json /logs/verifier/reward.txt && "
-            f"mkdir -p /logs/verifier {ARTIFACTS_DIR} && {stage}"
+            f"mkdir -p /logs/verifier {ARTIFACTS_DIR} && {stage} && "
+            "if test ! -f /tests/test.sh && test -f /tests/judge.toml; then echo judge; fi"
         )
         result = await runtime.run(["sh", "-c", command], {})
         if result.exit_code:
             raise TaskError(
                 f"staging tests failed (exit {result.exit_code}): "
                 f"{(result.stderr or result.stdout).strip()[-500:]}"
+            )
+        if result.stdout.strip() == "judge":
+            # Install during verifier setup, before its execution network policy.
+            await runtime.prepare_uv_script(
+                Path(__file__).with_name("rewardkit_worker.py").read_bytes()
             )
 
     @reward(weight=1.0)
@@ -470,6 +484,7 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
         judge = entrypoint.stdout.strip() == "judge"
         reward_path = REWARD_JSON
         command = ["bash", "/tests/test.sh"]
+        env = resolve_env(self.scoring.env or {})
         if judge:
             # Each judge invocation owns its outputs, so retries cannot accept a
             # previous reward. Publish the submission atomically for judge readers.
@@ -479,31 +494,95 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
                 f"{directory}/instruction.md", self.data.prompt_text.encode()
             )
             await runtime.write(f"{directory}/response.txt", trace.last_reply.encode())
+            worker = await runtime.prepare_uv_script(
+                Path(__file__).with_name("rewardkit_worker.py").read_bytes()
+            )
             command = [
                 "sh",
                 "-c",
                 (
                     'mv "$1/instruction.md" /logs/verifier/instruction.md && '
                     'mv "$1/response.txt" /logs/verifier/response.txt && '
-                    'shift && exec rewardkit "$@" --workspace "$PWD"'
+                    'shift && exec "$@"'
                 ),
                 "vf-rewardkit",
                 directory,
-                "/tests",
-                "--output",
+                *worker,
                 reward_path,
             ]
-        # By absolute path, in the runtime's configured workdir: Harbor execs the
-        # script the same way, and scripts do grade the agent's work at `$PWD`.
-        # A script's reward file is authoritative even when it exits nonzero.
-        result = await runtime.run(command, resolve_env(self.scoring.env or {}))
-        trace.info.setdefault("scoring_diagnostics", {})["harbor"] = {
-            "exit_code": result.exit_code,
-            "stdout": result.stdout[-MAX_VERIFIER_OUTPUT_CHARS:],
-            "stderr": result.stderr[-MAX_VERIFIER_OUTPUT_CHARS:],
-            "stdout_truncated": len(result.stdout) > MAX_VERIFIER_OUTPUT_CHARS,
-            "stderr_truncated": len(result.stderr) > MAX_VERIFIER_OUTPUT_CHARS,
-        }
+            process = await runtime.exec(command, env)
+            write_lock = asyncio.Lock()
+            stderr = bytearray()
+            stderr_size = 0
+
+            async def drain_stderr():
+                nonlocal stderr_size
+                async for chunk in process.stderr:
+                    stderr_size += len(chunk)
+                    stderr.extend(chunk)
+                    del stderr[:-MAX_VERIFIER_OUTPUT_CHARS]
+
+            async def complete(request):
+                params = request["request"]
+                model = params.pop("model")
+                messages = TypeAdapter(Messages).validate_python(params.pop("messages"))
+                config = self.config.judge or JudgeConfig(model=model)
+                response = await Judge(
+                    config.model_copy(update={"name": "harbor"})
+                ).complete(
+                    messages,
+                    trace=trace,
+                    **(params | config.sampling.model_dump(exclude_unset=True)),
+                )
+                async with write_lock:
+                    await process.write(
+                        (
+                            json.dumps({"id": request["id"], "text": response.text})
+                            + "\n"
+                        ).encode()
+                    )
+
+            try:
+                async with asyncio.TaskGroup() as group:
+                    group.create_task(drain_stderr())
+                    buffer = b""
+                    async for chunk in process.stdout:
+                        buffer += chunk
+                        while b"\n" in buffer:
+                            line, buffer = buffer.split(b"\n", 1)
+                            group.create_task(complete(json.loads(line)))
+                    if buffer:
+                        raise TaskError(
+                            "RewardKit worker returned an incomplete request"
+                        )
+                result = ProgramResult(
+                    await process.wait(), "", stderr.decode(errors="replace")
+                )
+            finally:
+                with contextlib.suppress(Exception):
+                    await run_shielded(process.kill())
+                trace.info.setdefault("scoring_diagnostics", {})["harbor"] = {
+                    "stderr": stderr.decode(errors="replace"),
+                    "stderr_truncated": stderr_size > MAX_VERIFIER_OUTPUT_CHARS,
+                }
+        else:
+            # Run in the runtime's configured workdir, as Harbor does. A script's
+            # reward file is authoritative even when it exits nonzero.
+            result = await runtime.run(command, env)
+            trace.info.setdefault("scoring_diagnostics", {})["harbor"] = {}
+        diagnostics = trace.info.setdefault("scoring_diagnostics", {}).setdefault(
+            "harbor", {}
+        )
+        diagnostics.update(
+            {
+                "exit_code": result.exit_code,
+                "stdout": result.stdout[-MAX_VERIFIER_OUTPUT_CHARS:],
+                "stderr": result.stderr[-MAX_VERIFIER_OUTPUT_CHARS:],
+                "stdout_truncated": len(result.stdout) > MAX_VERIFIER_OUTPUT_CHARS,
+                "stderr_truncated": diagnostics.get("stderr_truncated", False)
+                or len(result.stderr) > MAX_VERIFIER_OUTPUT_CHARS,
+            }
+        )
         if judge:
             if result.exit_code:
                 raise TaskError(
@@ -523,6 +602,7 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
                     "RewardKit produced no valid reward-details.json"
                 ) from exc
 
+            diagnostics["reward_details"] = details
             errors = []
             pending = list(details.items())
             while pending:
@@ -534,7 +614,7 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
                     )
                     continue
                 prefix = f"harbor/{name}"
-                if "judge" in detail:
+                if "judge" in detail and detail.get("kind") != "llm":
                     usage = detail.get("usage")
                     # RewardKit reports aggregate usage per component, with cache
                     # reads included in input_tokens. Do not add per-model totals again.
@@ -550,9 +630,9 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
                             text=detail.get("judge_output", ""),
                             parsed=detail,
                             usage=Usage(
-                                prompt_tokens=usage.get("input_tokens", 0)
-                                - usage.get("cache_read_input_tokens", 0),
-                                completion_tokens=usage.get("output_tokens", 0),
+                                prompt_tokens=(usage.get("input_tokens") or 0)
+                                - (usage.get("cache_read_input_tokens") or 0),
+                                completion_tokens=usage.get("output_tokens") or 0,
                                 cached_input_tokens=usage.get(
                                     "cache_read_input_tokens"
                                 ),
