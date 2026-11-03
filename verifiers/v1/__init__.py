@@ -90,7 +90,12 @@ if TYPE_CHECKING:
         RubricJudge,
         RubricJudgeConfig,
     )
-    from verifiers.v1.mcp import SharedToolsetConfig, Toolset, ToolsetConfig
+    from verifiers.v1.mcp import (
+        SharedToolsetConfig,
+        Toolset,
+        ToolsetConfig,
+        ToolsetTimeoutConfig,
+    )
     from verifiers.v1.runtimes import (
         ProgramResult,
         Runtime,
@@ -321,6 +326,7 @@ _NAME_TO_MODULE = {
     "ToolMessage": "verifiers.v1.types",
     "Toolset": "verifiers.v1.mcp",
     "ToolsetConfig": "verifiers.v1.mcp",
+    "ToolsetTimeoutConfig": "verifiers.v1.mcp",
     "ToolsetError": "verifiers.v1.errors",
     "TopLogprobs": "verifiers.v1.types",
     "Trace": "verifiers.v1.trace",
@@ -569,6 +575,7 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "Toolset",
     "SharedToolsetConfig",
     "ToolsetConfig",
+    "ToolsetTimeoutConfig",
     # the user channel
     "Interaction",
     "Segment",

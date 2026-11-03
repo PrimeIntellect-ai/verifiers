@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from pydantic import model_validator
+from pydantic import Field, model_validator
 from pydantic_config import BaseConfig
 
 from verifiers.v1.mcp.server import ConfigT, ServerBase
@@ -14,13 +14,28 @@ if TYPE_CHECKING:
     from mcp.server.mcpserver import MCPServer
 
 
-class ToolsetConfig(BaseConfig):
-    colocated: bool = False
+class ToolsetTimeoutConfig(BaseConfig):
+    """Timeouts (in seconds) for a launched tool server; `None` waits indefinitely."""
+
+    startup: float | None = Field(600.0, gt=0)
+    """Time to start serving, including `setup()`, such as to build an index."""
+
+
+class BaseToolsetConfig(BaseConfig):
+    """Settings every tool server has, whether per-task or shared."""
+
     runtime: RuntimeConfig = SubprocessConfig()
-    """Where the server runs: the evaluator by default. A Prime runtime beside a Prime
-    workspace without a task service spec is a VM of the server's own that joins the
-    workspace over the rollout's private network, under its own egress policy."""
+    """Where the server runs: the evaluator by default."""
     url: str | None = None
+    timeout: ToolsetTimeoutConfig = ToolsetTimeoutConfig()
+
+
+class ToolsetConfig(BaseToolsetConfig):
+    """A per-task tool server. A Prime `runtime` beside a Prime workspace without a task
+    service spec is a VM of the server's own that joins the workspace over the rollout's
+    private network, under its own egress policy."""
+
+    colocated: bool = False
     service: str | None = None
     """Run the server in a named native Prime service VM. The harness reaches it
     over the deployment's private network, using its LAN hostname."""
@@ -42,9 +57,8 @@ class ToolsetConfig(BaseConfig):
         return self
 
 
-class SharedToolsetConfig(BaseConfig):
-    runtime: RuntimeConfig = SubprocessConfig()
-    url: str | None = None
+class SharedToolsetConfig(BaseToolsetConfig):
+    pass
 
 
 class Toolset(ServerBase[ConfigT, StateT]):

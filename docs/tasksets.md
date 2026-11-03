@@ -275,6 +275,8 @@ A toolset's config controls where the MCP server runs:
 - **`runtime = { type = "docker", ... }`** — runs the tool server in its own dedicated container.
 - **`url = "https://.../mcp"`** — connects to an already-running streamable-HTTP MCP server instead of launching one.
 
+A launched server has `timeout.startup` seconds (600 by default) to start serving. Raise it for a server that builds a large index in `setup()`, or set it to `None` to wait indefinitely.
+
 For local or containerized servers, put the `Toolset` subclass in a server module that calls `SearchToolset.run()` under `if __name__ == "__main__":`. On startup, the server runs `await self.setup()`, then `await self.setup_task(task)` (for per-task servers, receiving the rollout's `TaskData`), and finally `self.register(mcp)`. Shared servers skip `setup_task`, so keep shared indexes or clients on `self` during `setup()` and store per-rollout state in `self.state`.
 
 ### Stateful tools
