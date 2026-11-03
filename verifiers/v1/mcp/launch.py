@@ -29,6 +29,7 @@ from verifiers.v1.mcp.server import (
     ServerBase,
     state_signature,
 )
+from verifiers.v1.mcp.toolset import DEFAULT_STARTUP_TIMEOUT
 from verifiers.v1.runtimes import (
     Runtime,
     backend_cls,
@@ -63,7 +64,8 @@ _PACKAGE_BUILD_STATES: dict[
 # Any HTTP response, including MCP's 406 to a bare GET, proves the server is listening.
 _PROBE = """
 import sys, time, urllib.error, urllib.request
-for _ in range(180):
+deadline = time.monotonic() + float(sys.argv[2])
+while time.monotonic() < deadline:
     try:
         urllib.request.urlopen(sys.argv[1], timeout=2); sys.exit(0)
     except urllib.error.HTTPError:
@@ -320,9 +322,10 @@ async def log_tail(runtime: Runtime, log: str, limit: int = 2000) -> str:
     return ""
 
 
-async def _read_back_port(runtime: Runtime, path: str) -> int:
+async def _read_back_port(runtime: Runtime, path: str, deadline: float) -> int:
     """Poll the server's port file until the server writes it."""
-    for _ in range(180):
+    loop = asyncio.get_running_loop()
+    while loop.time() < deadline:
         with contextlib.suppress(Exception):
             data = (await runtime.read(path)).decode().strip()
             if data.isdigit():
@@ -384,20 +387,32 @@ async def serve_in_runtime(
     if runtime.user is not None:
         # The agent user may not be able to write the workdir.
         log = f"/tmp/vf_tool_{server.server_name}-{uuid.uuid4().hex[:8]}.log"
+    loop = asyncio.get_running_loop()
+    # Servers without a toolset config, such as custom `ServerBase` subclasses, keep the default.
+    timeout = getattr(server.config, "startup_timeout", DEFAULT_STARTUP_TIMEOUT)
+    deadline = loop.time() + timeout
     await runtime.run_background(command, env, log)
     if fixed is not None:
         port = fixed
     else:
         try:
-            port = await _read_back_port(runtime, port_file)
+            port = await _read_back_port(runtime, port_file, deadline)
         except ToolsetError as e:
             raise ToolsetError(f"{e}: {await log_tail(runtime, log)}") from e
     probe = await runtime.run(
-        [python, "-c", _PROBE, f"http://127.0.0.1:{port}/mcp"], {}
+        [
+            python,
+            "-c",
+            _PROBE,
+            f"http://127.0.0.1:{port}/mcp",
+            str(max(deadline - loop.time(), 1)),
+        ],
+        {},
     )
     if probe.exit_code != 0:
         raise ToolsetError(
-            f"tool server {server.server_name!r} not serving in runtime: {await log_tail(runtime, log)}"
+            f"tool server {server.server_name!r} not serving in runtime after "
+            f"{timeout:g}s (raise its startup_timeout): {await log_tail(runtime, log)}"
         )
     return port
 

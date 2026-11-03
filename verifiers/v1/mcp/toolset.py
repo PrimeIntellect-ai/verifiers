@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from pydantic import model_validator
+from pydantic import Field, model_validator
 from pydantic_config import BaseConfig
 
 from verifiers.v1.mcp.server import ConfigT, ServerBase
@@ -12,6 +12,8 @@ from verifiers.v1.utils.decorators import discover_decorated
 
 if TYPE_CHECKING:
     from mcp.server.mcpserver import MCPServer
+
+DEFAULT_STARTUP_TIMEOUT = 600.0
 
 
 class ToolsetConfig(BaseConfig):
@@ -24,6 +26,8 @@ class ToolsetConfig(BaseConfig):
     service: str | None = None
     """Run the server in a named native Prime service VM. The harness reaches it
     over the deployment's private network, using its LAN hostname."""
+    startup_timeout: float = Field(DEFAULT_STARTUP_TIMEOUT, gt=0)
+    """Seconds the server may take to start serving, such as to build an index."""
 
     @model_validator(mode="after")
     def _one_placement(self):
@@ -45,6 +49,8 @@ class ToolsetConfig(BaseConfig):
 class SharedToolsetConfig(BaseConfig):
     runtime: RuntimeConfig = SubprocessConfig()
     url: str | None = None
+    startup_timeout: float = Field(DEFAULT_STARTUP_TIMEOUT, gt=0)
+    """Seconds the server may take to start serving, such as to build an index."""
 
 
 class Toolset(ServerBase[ConfigT, StateT]):
