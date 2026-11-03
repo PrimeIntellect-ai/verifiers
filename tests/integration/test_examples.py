@@ -93,7 +93,7 @@ def test_eval(taskset: str, tmp_path: Path):
         "uv", "run", "--no-sync", "vf-eval", taskset,
         *model,
         "-n", num_tasks, "-r", "1", *caps,
-        "--sampling.max-tokens", "4096", "--no-rich", "--no-push",
+        "--sampling.max-tokens", "4096", "--no-rich",
         "--output-dir", str(tmp_path), "--run.dir", "run",
         # Recipe envs run their seats one at a time by default; in parallel, a
         # multi-seat episode (proposer + n solvers) fits the timeout.

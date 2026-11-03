@@ -176,7 +176,7 @@ def _eval_config(
 def run():
     """Run a taskset's episodes in-process through the `Env` API: the calls `vf-eval`
     makes (`serving`, `slots`, `run_slot`, retries included), without its run
-    directory, platform push, or dashboard. The Examples job covers that CLI layer."""
+    directory or dashboard. The Examples job covers that CLI layer."""
 
     async def _episodes(taskset: str, **kwargs) -> list[Episode]:
         config = _eval_config(taskset, **kwargs)
