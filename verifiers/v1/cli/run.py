@@ -8,6 +8,7 @@ import asyncio
 import logging
 import os
 import sys
+from pathlib import Path
 
 from pydantic_config import cli
 
@@ -33,6 +34,15 @@ logger = logging.getLogger(__name__)
 USAGE = "usage: uv run vf-run [<taskset-id>] [--env.id <id>] [-m <model>] [-n <tasks>] [-r <rollouts>] [options] [@ file.toml]"
 
 
+def ensure_fresh(out: Path) -> None:
+    """Refuse a run directory that already holds episodes: a new run would truncate them."""
+    traces_file = out / TRACES_FILE
+    if traces_file.exists() and traces_file.stat().st_size > 0:
+        raise FileExistsError(
+            f"{out} already contains results - pick another --run.dir"
+        )
+
+
 async def run_episodes(config: RunnerConfig) -> list[Episode]:
     """Run `num_rollouts` episodes per selected task and append each to `traces.jsonl`
     as it completes."""
@@ -43,6 +53,7 @@ async def run_episodes(config: RunnerConfig) -> list[Episode]:
             f"{type(taskset).__name__} is infinite - bound the run with -n"
         )
     out = output_path(config)
+    ensure_fresh(out)
     save_config(config, out, "run.json")
     ctx = ModelContext(
         client=config.client, model=config.model, sampling=config.sampling
@@ -57,12 +68,16 @@ async def run_episodes(config: RunnerConfig) -> list[Episode]:
         await append_episode(out, episode, write_lock)
 
     async with env.serving():
-        rollouts = [
-            asyncio.ensure_future(env.run_slot(slot, ctx, semaphore, on_complete))
-            for task in taskset
-            for slot in env.slots(task, config.num_rollouts)
-        ]
+        rollouts: list[asyncio.Future[Episode]] = []
         try:
+            # Scheduled inside the try: a lazy taskset can raise after earlier tasks started.
+            for task in taskset:
+                for slot in env.slots(task, config.num_rollouts):
+                    rollouts.append(
+                        asyncio.ensure_future(
+                            env.run_slot(slot, ctx, semaphore, on_complete)
+                        )
+                    )
             return list(await asyncio.gather(*rollouts))
         except BaseException:
             # Unwind every sibling before `serving()` tears down the resources they use.
@@ -93,9 +108,10 @@ def main(argv: list[str] | None = None) -> None:
         config = cli(config_type)
     setup_logging("DEBUG" if config.verbose else "INFO")
     out = output_path(config)
-    traces_file = out / TRACES_FILE
-    if traces_file.exists() and traces_file.stat().st_size > 0:
-        raise SystemExit(f"{out} already contains results - pick another --run.dir")
+    try:
+        ensure_fresh(out)
+    except FileExistsError as e:
+        raise SystemExit(str(e)) from e
     if config.dry_run:
         logger.info("wrote config to %s", write_config(config, out, "run.json"))
         return

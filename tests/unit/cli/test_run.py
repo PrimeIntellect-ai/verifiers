@@ -92,3 +92,60 @@ async def test_failed_rollout_cancels_siblings_before_teardown(tmp_path, monkeyp
     with pytest.raises(RuntimeError, match="boom"):
         await run.run_episodes(config)
     assert events == ["sibling unwound", "teardown"]
+
+
+async def test_run_episodes_keeps_existing_results(tmp_path):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "traces.jsonl").write_text("{}\n")
+    config = RunnerConfig(
+        env={"taskset": {"id": "reverse-text"}}, output_dir=tmp_path, run={"dir": "run"}
+    )
+    with pytest.raises(FileExistsError, match="already contains results"):
+        await run.run_episodes(config)
+    assert (run_dir / "traces.jsonl").read_text() == "{}\n"
+
+
+async def test_taskset_error_cancels_started_rollouts(tmp_path, monkeypatch):
+    events: list[str] = []
+
+    class Taskset:
+        bounded = True
+
+        def select(self, _select):
+            return self
+
+        def __iter__(self):
+            yield "slow"
+            raise RuntimeError("bad task")
+
+    class FakeEnv:
+        taskset = Taskset()
+
+        def slots(self, task, n):
+            return [task] * n
+
+        async def run_slot(self, slot, ctx, semaphore, on_complete):
+            try:
+                await asyncio.sleep(60)
+            finally:
+                events.append("rollout unwound")
+
+        @contextlib.asynccontextmanager
+        async def serving(self):
+            try:
+                yield
+            finally:
+                events.append("teardown")
+
+    monkeypatch.setattr(run, "load_environment", lambda env: FakeEnv())
+    config = RunnerConfig(env={"taskset": {"id": "reverse-text"}}, output_dir=tmp_path)
+    with pytest.raises(RuntimeError, match="bad task"):
+        await run.run_episodes(config)
+    leftover = [
+        task
+        for task in asyncio.all_tasks()
+        if task is not asyncio.current_task() and not task.done()
+    ]
+    assert leftover == []
+    assert events[-1] == "teardown"
