@@ -31,7 +31,7 @@ if TYPE_CHECKING:
         default_agent_harness,
     )
     from verifiers.v1.configs.harness import ID, HarnessConfig
-    from verifiers.v1.configs.judge import JudgeConfig, Judges
+    from verifiers.v1.configs.judge import JudgeConfig, JudgePluginConfig, Judges
     from verifiers.v1.configs.retries import RetryConfig, RetryRule
     from verifiers.v1.configs.runtime import (
         BindMount,
@@ -81,6 +81,9 @@ if TYPE_CHECKING:
         DecisionJudgeConfig,
         ReferenceJudge,
         ReferenceJudgeConfig,
+        RewardKitConfig,
+        RewardKitJudge,
+        RewardKitJudgeConfig,
         RubricJudge,
         RubricJudgeConfig,
     )
@@ -243,6 +246,7 @@ _NAME_TO_MODULE = {
     "InterceptionError": "verifiers.v1.errors",
     "Judge": "verifiers.v1.judge",
     "JudgeConfig": "verifiers.v1.configs.judge",
+    "JudgePluginConfig": "verifiers.v1.configs.judge",
     "JudgeResponse": "verifiers.v1.judge",
     "JudgeView": "verifiers.v1.judge",
     "Judges": "verifiers.v1.configs.judge",
@@ -269,6 +273,9 @@ _NAME_TO_MODULE = {
     "RetryRule": "verifiers.v1.configs.retries",
     "Reward": "verifiers.v1.trace",
     "RewardFunctionConfig": "verifiers.v1.configs.task",
+    "RewardKitConfig": "verifiers.v1.judges",
+    "RewardKitJudge": "verifiers.v1.judges",
+    "RewardKitJudgeConfig": "verifiers.v1.judges",
     "RolloutError": "verifiers.v1.errors",
     "RubricJudge": "verifiers.v1.judges",
     "RubricJudgeConfig": "verifiers.v1.judges",
@@ -530,6 +537,7 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     # judge
     "Judge",
     "JudgeConfig",
+    "JudgePluginConfig",
     "Judges",
     "JudgeResponse",
     "JudgeView",
@@ -537,6 +545,9 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "DecisionJudgeConfig",
     "ReferenceJudge",
     "ReferenceJudgeConfig",
+    "RewardKitConfig",
+    "RewardKitJudge",
+    "RewardKitJudgeConfig",
     "RubricJudge",
     "RubricJudgeConfig",
     "Criterion",

@@ -45,6 +45,9 @@ built-ins and `verifiers.v1.utils.loaders` for resolution). Its config lives on 
 only — judges are config, never row data (`--taskset.task.judges`; a taskset config may
 pre-plug them as class defaults) — and `Task.score` builds and runs it after the task's own
 `@reward`s.
+
+Runtime-backed plugins can use `JudgePluginConfig` without HTTP settings and accept a
+`runtime` argument in `score`; task scoring supplies it through the same argument injection.
 """
 
 from __future__ import annotations
@@ -62,6 +65,7 @@ from typing_extensions import TypeVar
 from verifiers.v1.clients.base import build_async_openai
 from verifiers.v1.configs.judge import (
     JudgeConfig,
+    JudgePluginConfig,
     judge_key,
 )
 from verifiers.v1.configs.sampling import SamplingConfig
@@ -111,12 +115,12 @@ def judge_verdict(text: str, choices: Sequence[str]) -> str:
     return verdict
 
 
-ConfigT = TypeVar("ConfigT", bound=JudgeConfig, default=JudgeConfig)
+ConfigT = TypeVar("ConfigT", bound=JudgePluginConfig, default=JudgeConfig)
 
 
-def judge_config_cls(cls: type) -> type[JudgeConfig]:
+def judge_config_cls(cls: type) -> type[JudgePluginConfig]:
     """Resolve a judge's config specialization through its MRO, else `JudgeConfig`."""
-    return concrete_type(cls, JudgeConfig) or JudgeConfig
+    return concrete_type(cls, JudgePluginConfig) or JudgeConfig
 
 
 class Judge(Generic[ParsedT, ConfigT]):
@@ -126,7 +130,7 @@ class Judge(Generic[ParsedT, ConfigT]):
 
     def __init__(self, config: ConfigT | None = None) -> None:
         self.config = cast(ConfigT, config or judge_config_cls(type(self))())
-        if self.config.prompt is not None:
+        if isinstance(self.config, JudgeConfig) and self.config.prompt is not None:
             self.prompt = self.config.prompt.read_text()
 
     @property
@@ -174,6 +178,8 @@ class Judge(Generic[ParsedT, ConfigT]):
         **sampling: Any,
     ) -> JudgeResponse[Any]:
         """Call the judge and record billed usage even when parsing fails."""
+        if not isinstance(self.config, JudgeConfig):
+            raise TypeError("HTTP completion requires a JudgeConfig endpoint")
         wire = (
             [{"role": "user", "content": messages}]
             if isinstance(messages, str)

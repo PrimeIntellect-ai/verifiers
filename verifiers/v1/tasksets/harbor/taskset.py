@@ -5,8 +5,8 @@ runtime the harness edited — or, when the task asks for it with
 ``[verifier].environment_mode = "separate"``, in a second box the agent never
 touched, carrying only what the task declared — the rollout provisions and
 grades that box. A script takes precedence over a RewardKit ``judge.toml``.
-Either way the score lands in
-``/logs/verifier/reward.json`` or the legacy ``reward.txt``.
+Scripts write ``/logs/verifier/reward.json`` or the legacy ``reward.txt``;
+the native RewardKit judge imports scores and verdicts from its own output directory.
 
 A pullable ``[environment].docker_image`` becomes ``TaskData.image``. Compose can build
 its workspace from ``environment/Dockerfile``. Single-container Dockerfile-only
@@ -20,7 +20,6 @@ or tests build definition, then fall back to the agent environment. Unsupported 
 import asyncio
 import hashlib
 import io
-import json
 import logging
 import shutil
 import subprocess
@@ -39,6 +38,14 @@ from verifiers.v1.configs.scoring import ScoringConfig
 from verifiers.v1.configs.task import TaskConfig
 from verifiers.v1.configs.taskset import TasksetConfig
 from verifiers.v1.errors import SandboxError, TaskError
+from verifiers.v1.judges.rewardkit import (
+    MAX_REWARD_BYTES,
+    MAX_VERIFIER_OUTPUT_CHARS,
+    REWARD_JSON_ADAPTER,
+    RewardKitConfig,
+    RewardKitJudge,
+    RewardKitJudgeConfig,
+)
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.runtimes.deployment import Deployment
 from verifiers.v1.state import State
@@ -59,19 +66,14 @@ logger = logging.getLogger(__name__)
 CACHE = Path.home() / ".cache" / "harbor"
 HARBOR_INSTALL_HINT = "uv sync --python 3.12 --extra harbor"
 REWARD_JSON = "/logs/verifier/reward.json"
-MAX_REWARD_BYTES = 1024 * 1024
-MAX_VERIFIER_OUTPUT_CHARS = 16 * 1024
-REWARD_JSON_ADAPTER = TypeAdapter(
-    dict[str, float],
-    config=ConfigDict(strict=True, allow_inf_nan=False),
-)
-
 REWARD_SCALAR_ADAPTER = TypeAdapter(
     float, config=ConfigDict(strict=True, allow_inf_nan=False)
 )
 
 
 class HarborTaskConfig(TaskConfig):
+    judge: RewardKitConfig = RewardKitConfig()
+    """Overrides for judge.toml grading; script-based verifiers are unaffected."""
     reward_key: str = Field("reward", min_length=1)
     """Named verifier value used as the training reward; other values remain metrics."""
     mcp_servers: list[dict] = Field(default_factory=list)
@@ -465,22 +467,25 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
             raise TaskError(
                 "Harbor verifier requires /tests/test.sh or /tests/judge.toml"
             )
-        judge = entrypoint.stdout.strip() == "judge"
-        command = ["bash", "/tests/test.sh"]
-        if judge:
-            # These inputs also exist in a separate grading box; templates/files
-            # choose what to read without changing the authored judge prompt.
-            await runtime.write(
-                "/logs/verifier/instruction.md", self.data.prompt_text.encode()
+        if entrypoint.stdout.strip() == "judge":
+            judge = RewardKitJudge(
+                RewardKitJudgeConfig(
+                    **self.config.judge.model_dump(),
+                    name="harbor",
+                    reward_key=self.config.reward_key,
+                )
             )
-            await runtime.write(
-                "/logs/verifier/response.txt", trace.last_reply.encode()
-            )
-            command = ["sh", "-c", 'exec rewardkit /tests --workspace "$PWD"']
+            return {
+                self.config.reward_key: await judge.score(
+                    self.data, trace, runtime, env=self.scoring.env
+                )
+            }
         # By absolute path, in the runtime's configured workdir: Harbor execs the
         # script the same way, and scripts do grade the agent's work at `$PWD`.
         # A script's reward file is authoritative even when it exits nonzero.
-        result = await runtime.run(command, resolve_env(self.scoring.env or {}))
+        result = await runtime.run(
+            ["bash", "/tests/test.sh"], resolve_env(self.scoring.env or {})
+        )
         trace.info.setdefault("scoring_diagnostics", {})["harbor"] = {
             "exit_code": result.exit_code,
             "stdout": result.stdout[-MAX_VERIFIER_OUTPUT_CHARS:],
@@ -488,38 +493,7 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
             "stdout_truncated": len(result.stdout) > MAX_VERIFIER_OUTPUT_CHARS,
             "stderr_truncated": len(result.stderr) > MAX_VERIFIER_OUTPUT_CHARS,
         }
-        if judge:
-            if result.exit_code:
-                raise TaskError(
-                    f"Harbor RewardKit judge failed (exit {result.exit_code}): "
-                    f"{(result.stderr or result.stdout).strip()[-500:]}"
-                )
-            try:
-                details = json.loads(
-                    await runtime.read(
-                        "/logs/verifier/reward-details.json", max_bytes=MAX_REWARD_BYTES
-                    )
-                )
-            except (SandboxError, OSError, ValueError) as exc:
-                raise TaskError(
-                    "Harbor RewardKit produced no valid reward-details.json"
-                ) from exc
-            # RewardKit can emit a zero score for a timed-out judge. Surface the
-            # recorded error instead of treating infrastructure failure as a grade.
-            pending = [details]
-            while pending:
-                item = pending.pop()
-                if isinstance(item, dict):
-                    if isinstance(item.get("error"), str):
-                        raise TaskError(
-                            f"Harbor RewardKit judge failed: {item['error']}"
-                        )
-                    pending.extend(item.values())
-                elif isinstance(item, list):
-                    pending.extend(item)
         scores = await self.read_reward_json(runtime)
-        if judge and scores is None:
-            raise TaskError("Harbor RewardKit produced no reward.json")
         if scores is None:
             try:
                 value = (
