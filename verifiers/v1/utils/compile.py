@@ -65,9 +65,9 @@ def resolve_runtime_config(
             if warned is not None and key not in warned:
                 warned.add(key)
                 logger.warning(
-                    "runtime %r doesn't support resource %r; ignoring it",
-                    config.type,
+                    "Ignoring resource %s - the %s runtime does not support it",
                     resource,
+                    config.type,
                 )
         elif (
             getattr(config, resource) == spec.default

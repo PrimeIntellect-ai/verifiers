@@ -230,10 +230,11 @@ class RuntimeBackend(ABC):
         started = time.perf_counter()
         await run_shielded(self.teardown())
         if first:
+            # A local runtime's id is its working directory; its last part is the name.
             logger.debug(
                 "Stopped %s runtime %s in %s",
                 self.config.type,
-                self.info.id or self.name,
+                (self.info.id or self.name).rsplit("/", 1)[-1],
                 seconds(time.perf_counter() - started),
             )
 

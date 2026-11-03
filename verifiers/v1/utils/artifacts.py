@@ -214,7 +214,7 @@ async def collect(
         budget -= len(archive)
         collected[source] = archive
 
-    logger.debug("collected artifact roots: %s", list(collected))
+    logger.debug("Collected artifacts roots=%s", list(collected))
     return collected
 
 
@@ -289,7 +289,9 @@ def save_artifacts(
                         entry["error"] = (
                             "destination overlaps a previously saved artifact"
                         )
-                        logger.warning("artifact %r: %s", source, entry["error"])
+                        logger.warning(
+                            "Skipped artifact %s - %s", source, entry["error"]
+                        )
                         continue
                     with tempfile.TemporaryDirectory(dir=temporary) as unpacked:
                         tar.extractall(unpacked, filter="data")
@@ -303,7 +305,7 @@ def save_artifacts(
                     entry["status"] = "ok"
             except (OSError, ValueError, RuntimeError, tarfile.TarError) as exc:
                 entry.update(status="failed", error=str(exc))
-                logger.warning("failed to save artifact %r: %s", source, exc)
+                logger.warning("Failed to save artifact %s - %s", source, exc)
         (saved / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
         if directory.is_symlink():
             raise ValueError(f"artifact directory must not be a symlink: {directory}")
@@ -374,9 +376,9 @@ async def _tar_out(runtime: Runtime, artifact: Artifact, budget: int) -> bytes:
         )
         if dropped:
             logger.warning(
-                "artifact %r: dropped %d FIFO or device node(s), e.g. %s",
-                artifact.source,
+                "Dropped %d FIFO or device node(s) from artifact %s, e.g. %s",
                 len(dropped),
+                artifact.source,
                 dropped[:3],
             )
         return archive
@@ -385,7 +387,7 @@ async def _tar_out(runtime: Runtime, artifact: Artifact, budget: int) -> bytes:
         try:
             await runtime.run(["rm", "-f", path], {})
         except Exception:
-            logger.debug("failed to remove %s", path, exc_info=True)
+            logger.debug("Failed to remove %s", path, exc_info=True)
 
 
 def _drop_special_files(archive: bytes) -> tuple[bytes, list[str]]:

@@ -20,9 +20,9 @@ def install_interrupt() -> None:
         global _cleaning_up
         first, _cleaning_up = not _cleaning_up, True
         logger.warning(
-            "interrupted — cleaning up, please wait..."
+            "Cleaning up after an interrupt - please wait"
             if first
-            else "cleanup in progress — please wait (ctrl-c ignored)"
+            else "Cleaning up - please wait (ctrl-c ignored)"
         )
         if first:
             raise KeyboardInterrupt

@@ -144,11 +144,11 @@ def _check_borrowed_placement(
     box_image = getattr(runtime.config, "image", None)
     if box_image != task.data.image:
         logger.warning(
-            "task %r requires image %r, but borrowed box %r runs %r; a borrowed box "
-            "is never re-provisioned, so the run proceeds in the box's world",
+            "Running task %s in borrowed box %s on its image - the task requires %s "
+            "but the box runs %s, and a borrowed box is never re-provisioned",
             task.data.idx,
-            task.data.image,
             runtime.name,
+            task.data.image,
             box_image,
         )
 

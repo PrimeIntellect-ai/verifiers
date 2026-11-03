@@ -129,7 +129,8 @@ class Deployment:
                 await self.close()
             except Exception:
                 logger.warning(
-                    "deployment teardown failed after startup error", exc_info=True
+                    "Failed to tear down the deployment after a startup error",
+                    exc_info=True,
                 )
             raise
 

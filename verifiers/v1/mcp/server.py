@@ -176,9 +176,7 @@ class ServerBase(Generic[ConfigT, StateT]):
         try:
             return self._state_adapter.validate_json(response.content)
         except ValidationError as e:
-            logger.warning(
-                "state pull rejected for %s: %s", self._state_cls.__name__, e
-            )
+            logger.warning("Rejected pulled %s state - %s", self._state_cls.__name__, e)
             raise
 
     async def _push_state(self, before: bytes) -> None:

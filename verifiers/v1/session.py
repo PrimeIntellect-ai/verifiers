@@ -628,7 +628,7 @@ class RolloutSession:
         so the interception server holds no opinion about the state's contents."""
         if (limit := self.limits.reached(self.trace)) is not None:
             self.trace.stop(limit)
-            logger.debug("limit %r reached: id=%s", limit, self.trace.id)
+            logger.debug("Reached the %s limit", limit)
             return limit
         for stop in self.trace_stops:
             result = await call_hook(stop, {Trace: self.trace})
@@ -636,6 +636,6 @@ class RolloutSession:
                 raise TaskError(f"@stop must return bool, got {type(result).__name__}")
             if result:
                 self.trace.stop(stop.__name__)
-                logger.debug("stop %r fired: id=%s", stop.__name__, self.trace.id)
+                logger.debug("Stopped by @stop %s", stop.__name__)
                 return stop.__name__
         return None

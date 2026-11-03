@@ -7,6 +7,7 @@ stderr — so logs never mix with the results printed to stdout — and installs
 loguru. Mirrors prime-rl's `intercept_vf_logging`.
 """
 
+import inspect
 import logging
 import sys
 from pathlib import Path
@@ -27,8 +28,9 @@ class InterceptHandler(logging.Handler):
             level = logger.level(record.levelname).name
         except ValueError:
             level = record.levelno
-        frame, depth = logging.currentframe(), 2
-        while frame and frame.f_code.co_filename == logging.__file__:
+        # Step out of this handler, then past stdlib logging's frames, to the call site.
+        frame, depth = inspect.currentframe(), 0
+        while frame and (depth == 0 or frame.f_code.co_filename == logging.__file__):
             frame = frame.f_back
             depth += 1
         logger.opt(depth=depth, exception=record.exc_info).log(

@@ -296,8 +296,9 @@ class Task(Generic[DataT, StateT, ConfigT]):
                     if requires_unavailable_resource(judge.score)
                 ]
                 if skipped:
-                    logger.info(
-                        "score: skipped signals requiring unavailable runtime/deployment: %s",
+                    logger.debug(
+                        "Skipped signals that need an unavailable runtime or deployment "
+                        "signals=%s",
                         skipped,
                     )
                 metrics = [

@@ -76,5 +76,5 @@ class Terminus2Harness(Harness[Terminus2HarnessConfig]):
                 # Runtime teardown is the final backstop; preserve the rollout's
                 # result or original failure when this best-effort cleanup cannot run.
                 logger.warning(
-                    "failed to clean up Terminus 2 tmux server", exc_info=True
+                    "Failed to clean up the Terminus 2 tmux server", exc_info=True
                 )
