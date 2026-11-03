@@ -19,13 +19,6 @@ RESOLVED_DIR = "resolved"
 """Subdirectory of `configs/` holding the resolved per-component JSON dumps."""
 
 
-def saved_config_path(run_dir: Path) -> Path | None:
-    """The run's saved resolved config (`configs/resolved/<cli>.json`), None if absent."""
-    config_dir = run_dir / CONFIG_DIR / RESOLVED_DIR
-    candidates = sorted(config_dir.glob("*.json")) if config_dir.is_dir() else []
-    return candidates[0] if candidates else None
-
-
 class RunOutput(Protocol):
     """A config that owns a run directory: `output_dir / run.dir`."""
 

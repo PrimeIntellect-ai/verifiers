@@ -1,6 +1,6 @@
 # Debugging
 
-verifiers includes CLI tools to validate task setup and scoring before spending model tokens (`vf-validate`, `vf-debug`) and re-score finished runs offline (`vf-replay`).
+verifiers includes CLI tools to validate task setup and scoring before spending model tokens (`vf-validate`, `vf-debug`).
 
 ## Before running an agent
 
@@ -31,13 +31,4 @@ For interactive troubleshooting, `vf-debug` runs `Task.setup` and then executes 
 
 ## Re-score without rerunning the agent
 
-`vf-replay` re-computes offline metrics, rewards, and judge scores against a finished run's saved transcripts without re-running the agent:
-
-```bash
-uv run vf-replay <run-dir> --dry-run
-uv run vf-replay <run-dir> -n 3 -r 2
-```
-
-Replay loads the source run's config and saved `TaskData`, clears the copied scores, and runs any scoring hooks and judges that only depend on the saved `Trace` (writing the results to a new output directory so the original run is never overwritten). Use `-n` to limit how many saved traces are re-scored, `-r` to score each trace multiple times (useful for measuring judge variance), and `--taskset.task.*` to override scoring settings (for example, `--taskset.task.judges.0.model` swaps the model on the first configured judge).
-
-Each trace is re-scored by `Task.rescore(trace)`, which you can call on a trace held anywhere. Because the original sandboxes are already gone, `vf-replay` skips `setup`, `finalize`, and any scoring hooks that request a `runtime`. It only supports runs produced by `SingleAgentEnv` (or its subclasses), since multi-agent environments score interactions across traces rather than per trace.
+`Task.rescore(trace)` re-computes the offline metrics, rewards, and judge scores of a finished `Trace` without re-running the agent. It clears the trace's scores, then runs the scoring hooks and judges that need only the saved `Trace`. The original sandbox is gone, so it skips `setup`, `finalize`, and any scoring hooks that request a `runtime`.
