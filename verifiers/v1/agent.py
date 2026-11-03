@@ -856,10 +856,10 @@ class Agent:
                 await asyncio.sleep(delay)
                 attempt += 1
         finally:
-            # The run is final (or cancelled): delete what `after` does not keep, and
-            # the checkpoint an interrupted run leaves for another process to restore.
-            # Every box is gone by now (a paused one belongs to its checkpoint), so the
-            # platform refuses none of them.
+            # The run is final (or cancelled): delete the checkpoints that `after` does
+            # not leave to their owner, except the one an interrupted run leaves for
+            # another process to restore. Every box is gone by now (a paused one belongs
+            # to its checkpoint), so the platform refuses none of them.
             keep: set[str] = set()
             if run is not None and run.trace.checkpoints:
                 last = run.trace.checkpoints[-1]
@@ -867,14 +867,15 @@ class Agent:
                     run.trace.last_error is not None
                     and run.trace.last_error.type == "RolloutInterrupted"
                 )
-                if last.snapshot is not None and (
-                    interrupted or not run.owns(last.snapshot)
-                ):
+                if last.snapshot is not None and interrupted:
                     keep.add(last.id)
             drop = [
                 snapshot
                 for id, snapshot in sorted(snapshots.items())
-                if id not in deleted and id not in keep
+                if id not in deleted
+                and id not in keep
+                and run is not None
+                and run.owns(snapshot)
             ]
             if drop and run is not None and run.runtime is not None:
                 try:

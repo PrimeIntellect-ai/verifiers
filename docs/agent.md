@@ -84,6 +84,6 @@ A model call that fails gets turn retries first (`[env.agent.turn_retries]`): th
 
 A failed box (`SandboxError`) takes no checkpoint: its retry starts over in a new box. Elsewhere the agent logs a warning once, and each retry starts a fresh attempt from the beginning. `after` sets whether a checkpoint is deleted (`"delete"`) or kept (`"keep"`) when the run is final; a kept memory checkpoint bills as a paused sandbox until it is deleted. Set `--no-env.agent.checkpoint` to turn filesystem checkpoints off.
 
-The rollout's owner can also checkpoint it. `Rollout.interrupt` checkpoints the rollout and ends it with `RolloutInterrupted`, for another process to continue; `interrupt_all` interrupts every open rollout of the process. The trace's `restorable` checkpoint and `RestorePoint.of` give what that process needs.
+The rollout's owner can also checkpoint it. `Rollout.interrupt` checkpoints the rollout and ends it with `RolloutInterrupted`, for another process to continue; `interrupt_all` interrupts every open rollout of the process. `Rollout.save` takes a filesystem checkpoint of the rollout at its next model call, and the rollout goes on; a later retry of the rollout restores the newest one. `save_all` saves every open rollout of the process. The trace's `restorable` checkpoint and `RestorePoint.of` give what that process needs.
 
 To bound how long individual stages or rollouts can run, configure stage timeouts and token limits on the [runtime](runtimes.md); see [debugging](debugging.md) for diagnosing failed episodes.

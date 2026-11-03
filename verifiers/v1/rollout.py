@@ -121,6 +121,22 @@ async def interrupt_all(timeout: float) -> tuple[int, list[str]]:
     return len(runs), [run.trace.id for run, ok in zip(runs, taken) if ok is True]
 
 
+async def save_all(timeout: float) -> tuple[int, list[str]]:
+    """Checkpoint every open rollout of this process while it keeps running
+    (`Rollout.save`), e.g. for an owner that saves its run. Returns how many are
+    open, and the trace ids of those that took a checkpoint."""
+    runs = [run for run in list(_LIVE) if not run._closed]
+    taken = await asyncio.gather(
+        *(run.save(timeout) for run in runs), return_exceptions=True
+    )
+    return len(runs), [run.trace.id for run, ok in zip(runs, taken) if ok is True]
+
+
+SAVED = "Saved"
+"""The `Checkpoint.reason` of a checkpoint its owner took of a running rollout
+(`Rollout.save`)."""
+
+
 class Rollout:
     """Manages one rollout's lifecycle (open, step, close)."""
 
@@ -899,6 +915,50 @@ class Rollout:
         self._session.abort(error)
         return self._checkpointed is not None
 
+    async def save(self, timeout: float) -> bool:
+        """Checkpoint this rollout's filesystem while it keeps running, for another
+        process to continue from (an owner that saves its run). The box must be idle
+        at a model call: the next call to reach the interception, or the one in
+        flight once its reply is back, checkpoints the box before the harness sees
+        the reply. Waits up to `timeout` seconds for that call. A rollout that is
+        finishing, or that takes no filesystem checkpoints, takes none. A later retry
+        of this attempt restores the newest one it took. Returns whether it took
+        one."""
+        if (
+            self.trace.stop_condition is not None
+            or self._closed
+            or self._paused
+            or self._checkpointing is None
+            or self._session.checkpointer is None
+        ):
+            return False
+        saved: asyncio.Future[bool] = asyncio.get_running_loop().create_future()
+
+        async def take(turn: graph.PendingTurn) -> None:
+            checkpoint = await self._save(turn)
+            if not saved.done():
+                saved.set_result(checkpoint is not None)
+
+        self._session.save_at_turn = take
+        try:
+            return await asyncio.wait_for(asyncio.shield(saved), timeout)
+        except TimeoutError:
+            return False
+        finally:
+            if self._session.save_at_turn is take:
+                self._session.save_at_turn = None
+
+    async def _save(self, turn: graph.PendingTurn) -> Checkpoint | None:
+        if self._closed or self._paused:
+            return None
+        task = asyncio.current_task()
+        if task is not None:
+            self._captures.add(task)
+        try:
+            return await self._capture(turn, SAVED, memory=False)
+        finally:
+            self._captures.discard(task)
+
     async def _checkpoint(
         self, turn: graph.PendingTurn | None, error: RolloutError
     ) -> Checkpoint | None:
@@ -912,17 +972,19 @@ class Rollout:
         if task is not None:
             self._captures.add(task)
         try:
-            self._checkpointed = await self._capture(turn, error)
+            self._checkpointed = await self._capture(
+                turn, type(error).__name__, memory=self._memory_checkpoints
+            )
             return self._checkpointed
         finally:
             self._captures.discard(task)
 
     async def _capture(
-        self, turn: graph.PendingTurn | None, error: RolloutError
+        self, turn: graph.PendingTurn | None, reason: str, *, memory: bool
     ) -> Checkpoint | None:
         assert self.runtime is not None and self._harness_session is not None
         live: dict[str, Any] | None = None
-        if self._memory_checkpoints:
+        if memory:
             try:
                 harness_live = await self._harness_session.memory_state()
             except Exception:
@@ -985,7 +1047,7 @@ class Rollout:
         checkpoint = Checkpoint(
             id=snapshot.id if snapshot is not None else uuid.uuid4().hex,
             snapshot=snapshot,
-            reason=type(error).__name__,
+            reason=reason,
             node=node,
             tail=list(turn.tail) if turn is not None else [],
             state=state,

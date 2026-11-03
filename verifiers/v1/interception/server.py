@@ -968,6 +968,7 @@ class InterceptionServer(Interception):
                 try:
                     if session.interrupt_at_turn is not None:
                         raise session.interrupt_at_turn
+                    await session.take_save(turn)
                     retries = 0
                     while True:
                         try:
@@ -1008,6 +1009,7 @@ class InterceptionServer(Interception):
                                 delay,
                             )
                             await asyncio.sleep(delay)
+                    await session.take_save(turn)
                     logger.debug(
                         "intercept turn: id=%s tools=%d",
                         session.trace.id,

@@ -294,6 +294,46 @@ async def test_interrupt_without_a_turn_gives_up_after_its_timeout():
     assert backend.taken == []
 
 
+async def test_save_checkpoints_at_the_next_turn_and_goes_on():
+    run, backend = make_rollout()
+    save = asyncio.create_task(run.save(timeout=5))
+    await asyncio.sleep(0)
+    # The next model call takes the save (the interception), and goes upstream.
+    await run._session.take_save(TURN)
+    assert await asyncio.wait_for(save, timeout=1)
+    assert run._session.save_at_turn is None and run._session.aborted is None
+    (checkpoint,) = run.trace.checkpoints
+    assert checkpoint.reason == "Saved" and not checkpoint.memory
+    # A save is not the attempt's checkpoint: a failure still takes its own.
+    assert run._checkpointed is None
+    assert await run._checkpoint(TURN, ERROR) is not None
+    assert backend.taken == [False, False]
+
+
+async def test_save_takes_a_filesystem_checkpoint_of_a_memory_run():
+    run, backend = make_rollout(memory=True)
+    save = asyncio.create_task(run.save(timeout=5))
+    await asyncio.sleep(0)
+    await run._session.take_save(TURN)
+    assert await save
+    assert backend.taken == [False] and not run._paused
+
+
+async def test_save_without_a_turn_gives_up_after_its_timeout():
+    run, backend = make_rollout()
+    assert not await run.save(timeout=0.01)
+    assert run._session.save_at_turn is None and backend.taken == []
+
+
+async def test_save_skips_a_finishing_rollout():
+    run, _ = make_rollout()
+    run.trace.stop("max_turns")
+    assert not await run.save(timeout=1)
+    run, _ = make_rollout()
+    run._checkpointing = None
+    assert not await run.save(timeout=1)
+
+
 def test_turn_retries_back_off_and_run_out():
     config = TurnRetryConfig(max_retries=3, initial_delay=1.0, max_delay=3.0)
     delays = [turn_retry_delay(config, ERROR, n) for n in range(4)]

@@ -229,6 +229,16 @@ class RolloutSession:
     """An interrupt that waits for the next model call: the box is idle then, so a
     filesystem checkpoint matches the turn (`Rollout.interrupt`). The call
     checkpoints and ends the segment with it instead of going upstream."""
+    save_at_turn: Callable[[graph.PendingTurn], Awaitable[None]] | None = None
+    """A save that waits for a model call (`Rollout.save`): the next call checkpoints
+    the box before it goes upstream, or after its reply is back and before the
+    harness sees the reply, while the box is idle. The rollout goes on."""
+
+    async def take_save(self, turn: graph.PendingTurn) -> None:
+        """Run the save waiting for this model call, if any (`save_at_turn`)."""
+        save, self.save_at_turn = self.save_at_turn, None
+        if save is not None:
+            await save(turn)
 
     @property
     def stopped(self) -> bool:
