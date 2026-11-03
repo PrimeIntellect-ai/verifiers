@@ -449,3 +449,37 @@ async def test_isolating_a_box_again_runs_its_script_outside_the_live_namespace(
     assert jobs == [(shlex.join(["sh", "-c", prime._PID_NAMESPACE]), None)]
     command, _ = await box._job(runtime, "true")
     assert command.startswith(f"p=$(cat {prime._PID_NAMESPACE_FILE}")
+
+
+async def test_a_transfer_renewing_a_namespace_long_after_its_last_check_returns(
+    runtime, tmp_path, monkeypatch
+):
+    """A transfer renews under the namespace lock, and the namespace script's own
+    command once checked the init again when the last check was over the interval
+    old, as on a box isolated minutes before: it waited on the lock its caller held,
+    and the write never returned."""
+    box = runtime.backend
+    box._pid_namespace, box._namespace_root = True, DEAD
+    box._namespace_checked = -1e9
+
+    async def run(self, runtime, argv, env):
+        await self._job(runtime, shlex.join(argv))
+        return ProgramResult(0, f"{os.getpid()}\n", "")
+
+    monkeypatch.setattr(PrimeBackend, "run", run)
+    target = tmp_path / "box" / "f.bin"
+    await asyncio.wait_for(runtime.write(str(target), b"abc"), 10)
+    assert target.read_bytes() == b"abc"
+
+
+async def test_a_command_waits_for_a_renewal_under_way(runtime):
+    """A command started while another renews a dead namespace starts once the new one
+    is up: it saw a fresh check time and skipped the check, and ran outside."""
+    box = runtime.backend
+    box._pid_namespace, box._namespace_root = True, DEAD
+    box._namespace_checked = time.monotonic()
+    async with box._namespace_lock:
+        job = asyncio.ensure_future(box._job(runtime, "true"))
+        await asyncio.sleep(0.05)
+        assert not job.done()
+    await asyncio.wait_for(job, 5)

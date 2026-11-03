@@ -1168,6 +1168,11 @@ class PrimeBackend(RuntimeBackend):
         command, user = await self._as_user(runtime, command)
         if _OUTSIDE_NAMESPACE.get():
             return command, user
+        if self._namespace_lock.locked():
+            # A renewal is under way: start in the namespace it makes, not outside the
+            # dead one (the fresh check time below would let this command skip it).
+            async with self._namespace_lock:
+                pass
         if (
             self._namespace_root is not None
             and time.monotonic() - self._namespace_checked > _NAMESPACE_RECHECK_S
