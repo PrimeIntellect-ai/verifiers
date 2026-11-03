@@ -1,10 +1,10 @@
 """The episode — one run's traces plus their shared standing, whole."""
 
+import functools
 import uuid
-from typing import Annotated, Any, Generic, Literal, Self
+from typing import Any, Generic
 
-import orjson
-from pydantic import BaseModel, Field, computed_field, model_validator
+from pydantic import BaseModel, Field, computed_field
 
 from verifiers.v1.configs.agent import WireAgentConfig
 from verifiers.v1.graph import RECORD_FLOAT_DECIMALS
@@ -14,10 +14,15 @@ from verifiers.v1.trace import (
     RECORD_DUMP_EXCLUDE,
     AgentConfigT,
     Error,
+    RunInfo,
     Trace,
     TraceTask,
     add_record_streams,
+    item_adapter,
+    item_exclude,
     merge_exclude,
+    splice_json,
+    trace_json_parts,
 )
 from verifiers.v1.types import Usage
 
@@ -35,62 +40,6 @@ class GroupInfo(BaseModel):
     """The consumer-defined rollout group this episode belongs to."""
 
     id: str
-
-
-class PolicySpan(BaseModel):
-    """Live policy versions spanned while generating an episode."""
-
-    start: int
-    end: int
-
-    @model_validator(mode="after")
-    def ordered(self) -> Self:
-        if self.end < self.start:
-            raise ValueError("policy span end must be at least its start")
-        return self
-
-    @property
-    def drift(self) -> int:
-        return self.end - self.start
-
-
-class TrainWorkInfo(BaseModel):
-    type: Literal["train"] = "train"
-    step: int
-    """The training step at which the episode was dispatched."""
-    policy: PolicySpan | None = None
-    """The live policy used for generation; None for frozen-policy work."""
-
-
-class EvalWorkInfo(BaseModel):
-    type: Literal["eval"] = "eval"
-    step: int
-    """The training step at which the episode was dispatched."""
-    policy: PolicySpan | None = None
-    """The live policy used for generation; None for frozen-policy work."""
-
-
-WorkInfo = Annotated[TrainWorkInfo | EvalWorkInfo, Field(discriminator="type")]
-
-
-class TrainRunInfo(BaseModel):
-    """A training run and the kind of work this episode performed for it."""
-
-    type: Literal["train"] = "train"
-    id: str
-    name: str | None = None
-    work: WorkInfo
-
-
-class EvalRunInfo(BaseModel):
-    """A standalone evaluation run."""
-
-    type: Literal["eval"] = "eval"
-    id: str
-    name: str | None = None
-
-
-RunInfo = Annotated[TrainRunInfo | EvalRunInfo, Field(discriminator="type")]
 
 
 class Episode(BaseModel, Generic[DataT, StateT, AgentConfigT]):
@@ -117,8 +66,10 @@ class Episode(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     """Every agent's trace, in completion order."""
 
     def record_run(self, run: RunInfo) -> None:
-        """Record the run identity on the dispatched episode."""
+        """Record the run identity on the dispatched episode and each of its traces."""
         self.run = run
+        for trace in self.traces:
+            trace.run = run
 
     @property
     def last_error(self) -> Error | None:
@@ -188,10 +139,34 @@ class Episode(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         float_decimals: int | None = RECORD_FLOAT_DECIMALS,
         exclude: dict | set | None = None,
     ) -> bytes:
-        """`to_record` as compact UTF-8 JSON. NaN and infinity become `null`."""
-        return orjson.dumps(
-            self.to_record(float_decimals, exclude), option=orjson.OPT_SERIALIZE_NUMPY
+        """`to_record` as compact UTF-8 JSON, byte for byte. NaN and infinity become
+        `null`.
+
+        Pydantic's dump and orjson each hold the GIL for a whole call, so encoding a
+        large episode in one call stalls every other thread of the process, such as an
+        asyncio event loop, for as long as it takes. This encodes the episode one node at
+        a time instead, and releases the GIL about every millisecond, so other threads
+        run in between and the stall no longer grows with the episode. The total work
+        stays the same."""
+        exclude = merge_exclude({"traces": {"__all__": RECORD_DUMP_EXCLUDE}}, exclude)
+        head = self.model_dump(
+            mode="json",
+            exclude=merge_exclude(exclude, {"traces": {"__all__": True}}),
+            exclude_none=True,
         )
+        adapter = item_adapter(type(self), "traces")
+        traces = (
+            trace_json_parts(
+                trace,
+                functools.partial(adapter.dump_python, trace),
+                item_exclude(exclude, "traces", index) or {},
+                float_decimals,
+                exclude_none=True,
+            )
+            for index, trace in enumerate(self.traces)
+        )
+        # One join at the end: joining per level would copy the whole record each time.
+        return b"".join(splice_json(head, "traces", traces))
 
 
 WireEpisode = Episode[WireTaskData, State, WireAgentConfig]
