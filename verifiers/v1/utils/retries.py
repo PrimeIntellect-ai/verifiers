@@ -121,10 +121,10 @@ async def run_episode_with_retry(
     run: Callable[[], Awaitable[Episode]],
     retry: RetryConfig,
 ) -> Episode:
-    """Run one episode (each attempt mints a fresh one), retrying while
-    it ends with a retryable error. When the final attempt fails too, the earlier
-    attempts' errors are prepended so the episode shows the full history; a final
-    good attempt returns clean."""
+    """Run one episode (each attempt builds a fresh one under the same id),
+    retrying while it ends with a retryable error. When the final attempt fails
+    too, the earlier attempts' errors are prepended so the episode shows the full
+    history; a final good attempt returns clean."""
     history: list = []
     state = RetryState(retry)
     for attempt in range(state.max_retries + 1):

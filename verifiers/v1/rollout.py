@@ -115,6 +115,8 @@ class Rollout:
         on_trace: Callable[[Trace], None] | None = None,
         collect_artifacts: bool = False,
         on_score: Callable[[Trace, Runtime], Awaitable[None]] | None = None,
+        trace_id: str | None = None,
+        attempt: int = 1,
     ) -> None:
         self._on_score = on_score
         self.task = task
@@ -136,6 +138,8 @@ class Rollout:
         self._borrowed_runtime = runtime
         self._collect_artifacts = collect_artifacts
         self.trace: Trace = Trace(
+            **({"id": trace_id} if trace_id is not None else {}),
+            attempt=attempt,
             task=TraceTask(
                 type=type(task).__name__,
                 data=task.data,
@@ -248,7 +252,12 @@ class Rollout:
         self.trace.timing.boot.start = time.time()
         self.trace.notify()
         if self._borrowed_runtime is None:
-            self.runtime = make_backend(self.runtime_config, name=self.trace.id).bind()
+            # A retry's box gets a name of its own: the previous attempt's box can
+            # outlive a failed teardown.
+            name = self.trace.id
+            if self.trace.attempt > 1:
+                name = f"{name}-{self.trace.attempt}"
+            self.runtime = make_backend(self.runtime_config, name=name).bind()
         elif (
             self._borrowed_runtime is not None
             and self._borrowed_runtime.backend.stopped

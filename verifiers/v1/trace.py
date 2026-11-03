@@ -576,7 +576,9 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     version: int = TRACE_VERSION
     """The trace schema this trace serializes as."""
     id: str = Field(default_factory=lambda: uuid.uuid4().hex)
-    """Unique ID for this trace, auto-generated."""
+    """Unique ID for this agent run, auto-generated. Retries of the run keep it."""
+    attempt: int = 1
+    """Which attempt of the agent run this trace records, from 1."""
     verifiers: VersionInfo = Field(default_factory=_current_build)
     """The verifiers version that produced this trace."""
     task: TraceTask[DataT]

@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import logging
 import traceback
+import uuid
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -58,6 +59,8 @@ class RunSlot:
     at dispatch so the slot still reads as running."""
 
     task: Task
+    id: str = field(default_factory=lambda: uuid.uuid4().hex)
+    """The episode's id, shared by all its attempts."""
     traces: list[Trace] = field(default_factory=list)
     episode: Episode | None = None
     done: bool = False
@@ -67,6 +70,7 @@ class RunSlot:
     def finished(cls, episode: Episode) -> "RunSlot":
         return cls(
             task=Task(episode.task.data),
+            id=episode.id,
             traces=list(episode.traces),
             episode=episode,
             done=True,
@@ -238,6 +242,8 @@ class Env(ABC, Generic[ConfigT]):
         *,
         on_trace: Callable[[Trace], None] | None = None,
         on_discard: Callable[[Trace], None] | None = None,
+        episode_id: str | None = None,
+        attempt: int = 1,
     ) -> Episode:
         """One episode of `task`, minted as the wire atom: `setup()` then `run()`
         over fresh agents, then `finalize()`. Its agents run one at a time
@@ -246,8 +252,11 @@ class Env(ABC, Generic[ConfigT]):
         Traces join the episode as runs complete — a hook raising mid-way yields the
         completed subset, its exception on the episode's `errors`. `on_trace` observes
         each agent-run's trace at mint; `on_discard` its abandonment (a per-agent
-        retry mints a replacement)."""
+        retry replaces it). `episode_id` and `attempt` place a retry under the
+        episode it repeats."""
         episode = Episode(
+            **({"id": episode_id} if episode_id is not None else {}),
+            attempt=attempt,
             env=EnvInfo(id=self.config.env_id),
             task=TraceTask(
                 type=type(task).__name__,
@@ -319,7 +328,11 @@ class Env(ABC, Generic[ConfigT]):
         `on_complete` (the runners' persistence hook, which fires when final).
         `on_trace` sees each trace at mint, after it joined `slot.traces`."""
 
+        attempts = 0
+
         async def attempt() -> Episode:
+            nonlocal attempts
+            attempts += 1
             slot.traces = []  # a retry shows the fresh attempt's traces
             live = slot.traces
 
@@ -339,6 +352,8 @@ class Env(ABC, Generic[ConfigT]):
                     ctx,
                     on_trace=minted,
                     on_discard=discard,
+                    episode_id=slot.id,
+                    attempt=attempts,
                 )
 
         episode = await run_episode_with_retry(attempt, self.config.retries)
