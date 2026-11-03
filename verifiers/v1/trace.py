@@ -1,16 +1,25 @@
 from __future__ import annotations
 
 import copy
+import functools
 import math
 import time
 import traceback
 import uuid
 from collections.abc import Callable, Iterable, Iterator, Mapping
-from typing import TYPE_CHECKING, Any, Generic
+from typing import TYPE_CHECKING, Annotated, Any, Generic, Literal, Self, get_args
 
 import numpy as np
 import orjson
-from pydantic import BaseModel, Field, PrivateAttr, computed_field, field_serializer
+from pydantic import (
+    BaseModel,
+    Field,
+    PrivateAttr,
+    TypeAdapter,
+    computed_field,
+    field_serializer,
+    model_validator,
+)
 from typing_extensions import TypeVar
 
 if TYPE_CHECKING:
@@ -88,6 +97,137 @@ def add_record_streams(
     """Join a trace's record (dumped with `RECORD_DUMP_EXCLUDE`) with its node streams."""
     for node_record, node in zip(record["nodes"], trace.nodes, strict=True):
         node_record.update(node.record_streams(float_decimals, exclude_none))
+
+
+_SPLICE = f"\x00splice-{uuid.uuid4().hex}"
+"""Holds a list field's place in a record head until its encoded items replace it."""
+_SPLICE_JSON = orjson.dumps(_SPLICE)
+YIELD_INTERVAL_S = 0.001
+"""How long `to_json` encodes before it releases the GIL to other threads."""
+
+
+@functools.cache
+def item_adapter(model: type[BaseModel], field: str) -> TypeAdapter:
+    """Dumps one item of `model`'s list `field` as `model` itself does: as the declared
+    item type, not the item's own class."""
+    return TypeAdapter(get_args(model.model_fields[field].annotation)[0])
+
+
+def item_exclude(exclude: dict, field: str, index: int) -> dict | None:
+    """The part of the pydantic `exclude` spec that applies to item `index` of `field`."""
+    spec = exclude.get(field)
+    if not isinstance(spec, dict):
+        return None
+    return merge_exclude(spec.get("__all__"), spec.get(index)) or None
+
+
+def splice_json(head: dict, field: str, items: Iterable[list[bytes]]) -> list[bytes]:
+    """`head` as JSON parts, with the encoded `items` as the array at its `field`. A head
+    without `field` (excluded whole) is encoded alone."""
+    if field not in head:
+        return [orjson.dumps(head)]
+    head[field] = _SPLICE
+    before, after = orjson.dumps(head).split(_SPLICE_JSON, 1)
+    parts = [before, b"["]
+    for index, item in enumerate(items):
+        if index:
+            parts.append(b",")
+        parts.extend(item)
+    parts += [b"]", after]
+    return parts
+
+
+def trace_json_parts(
+    trace: Trace,
+    dump: Callable[..., dict[str, Any]],
+    exclude: dict,
+    float_decimals: int | None,
+    exclude_none: bool,
+) -> list[bytes]:
+    """A trace's record as JSON parts, one per node: `dump` (the trace's pydantic dump
+    with `exclude`) gives the head."""
+    head = dump(
+        mode="json",
+        exclude=merge_exclude(exclude, {"nodes": {"__all__": True}}),
+        exclude_none=exclude_none,
+    )
+    adapter = item_adapter(type(trace), "nodes")
+
+    def nodes() -> Iterator[list[bytes]]:
+        last_yield = time.perf_counter()
+        for index, node in enumerate(trace.nodes):
+            # A busy thread keeps the GIL until CPython's switch interval forces a
+            # handoff, so another thread (an event loop) waits that long each time it
+            # wakes. Releasing the GIL every millisecond lets it run at once.
+            if time.perf_counter() - last_yield > YIELD_INTERVAL_S:
+                time.sleep(0)
+                last_yield = time.perf_counter()
+            record = adapter.dump_python(
+                node,
+                mode="json",
+                exclude=item_exclude(exclude, "nodes", index),
+                exclude_none=exclude_none,
+            )
+            record.update(node.record_streams(float_decimals, exclude_none))
+            yield [orjson.dumps(record, option=orjson.OPT_SERIALIZE_NUMPY)]
+
+    return splice_json(head, "nodes", nodes())
+
+
+class PolicySpan(BaseModel):
+    """Live policy versions spanned while generating an episode."""
+
+    start: int
+    end: int
+
+    @model_validator(mode="after")
+    def ordered(self) -> Self:
+        if self.end < self.start:
+            raise ValueError("policy span end must be at least its start")
+        return self
+
+    @property
+    def drift(self) -> int:
+        return self.end - self.start
+
+
+class TrainWorkInfo(BaseModel):
+    type: Literal["train"] = "train"
+    step: int
+    """The training step at which the episode was dispatched."""
+    policy: PolicySpan | None = None
+    """The live policy used for generation; None for frozen-policy work."""
+
+
+class EvalWorkInfo(BaseModel):
+    type: Literal["eval"] = "eval"
+    step: int
+    """The training step at which the episode was dispatched."""
+    policy: PolicySpan | None = None
+    """The live policy used for generation; None for frozen-policy work."""
+
+
+WorkInfo = Annotated[TrainWorkInfo | EvalWorkInfo, Field(discriminator="type")]
+
+
+class TrainRunInfo(BaseModel):
+    """A training run and the kind of work this episode performed for it."""
+
+    type: Literal["train"] = "train"
+    id: str
+    name: str | None = None
+    work: WorkInfo
+
+
+class EvalRunInfo(BaseModel):
+    """A standalone evaluation run."""
+
+    type: Literal["eval"] = "eval"
+    id: str
+    name: str | None = None
+
+
+RunInfo = Annotated[TrainRunInfo | EvalRunInfo, Field(discriminator="type")]
 
 
 class TimeSpan(BaseModel):
@@ -441,6 +581,9 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     """The verifiers version that produced this trace."""
     task: TraceTask[DataT]
     """The task data that seeded this trace."""
+    run: RunInfo | None = None
+    """The run this trace belongs to, consumer-stamped with its episode's
+    (`Episode.record_run`): trace stores such as Prime Traces key traces by it."""
     agent: AgentInfo[AgentConfigT]
     """The agent (harness x model x runtime) that produced this trace."""
     tools: list[Tool] = Field(default_factory=list)
@@ -853,10 +996,17 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         float_decimals: int | None = RECORD_FLOAT_DECIMALS,
         exclude: dict | set | None = None,
     ) -> bytes:
-        """`to_record` as compact UTF-8 JSON. NaN and infinity become `null`."""
-        return orjson.dumps(
-            self.to_record(float_decimals, exclude), option=orjson.OPT_SERIALIZE_NUMPY
+        """`to_record` as compact UTF-8 JSON, byte for byte. NaN and infinity become
+        `null`. Encoded one node at a time, like `Episode.to_json`, so a long trace does
+        not stall other threads."""
+        parts = trace_json_parts(
+            self,
+            self.model_dump,
+            merge_exclude(RECORD_DUMP_EXCLUDE, exclude),
+            float_decimals,
+            exclude_none=False,
         )
+        return b"".join(parts)
 
 
 WireTrace = Trace[WireTaskData, State, WireAgentConfig]

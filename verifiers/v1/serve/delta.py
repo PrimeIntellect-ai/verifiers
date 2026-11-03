@@ -39,7 +39,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-HEADER_FIELDS = ("version", "id", "verifiers", "task")
+HEADER_FIELDS = ("version", "id", "verifiers", "task", "run")
 """Sent once, when a trace first appears."""
 
 LIST_FIELDS = (

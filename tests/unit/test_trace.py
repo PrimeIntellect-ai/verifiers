@@ -133,6 +133,11 @@ def test_record_streams_are_arrays_with_json_dump_content(float_decimals):
     assert orjson.loads(episode.to_json(float_decimals)) == orjson.loads(
         json.dumps(cases[1][1])
     )
+    for record, encoded in (
+        (tr.to_record(float_decimals), tr.to_json(float_decimals)),
+        (episode.to_record(float_decimals), episode.to_json(float_decimals)),
+    ):
+        assert encoded == orjson.dumps(record, option=orjson.OPT_SERIALIZE_NUMPY)
 
 
 def test_record_exclude_merges_with_the_record_excludes():
@@ -145,9 +150,41 @@ def test_record_exclude_merges_with_the_record_excludes():
     assert record["nodes"][1]["message"]["content"] == "a"
     assert "top_logprobs" not in record["nodes"][1]
     assert record["nodes"][1]["token_ids"].tolist() == [4, 5, 6]
-    assert orjson.loads(tr.to_json(exclude=exclude)) == orjson.loads(
-        orjson.dumps(record, option=orjson.OPT_SERIALIZE_NUMPY)
+    assert tr.to_json(exclude=exclude) == orjson.dumps(
+        record, option=orjson.OPT_SERIALIZE_NUMPY
     )
+    episode = vf.Episode(task=tr.task, traces=[tr, _streamed_trace()], ok=True)
+    exclude = {"ok": True, "traces": {"__all__": exclude, 1: {"tools"}}}
+    assert episode.to_json(exclude=exclude) == orjson.dumps(
+        episode.to_record(exclude=exclude), option=orjson.OPT_SERIALIZE_NUMPY
+    )
+
+
+def test_episode_json_keeps_task_subclass_fields_like_its_record():
+    tr = _streamed_trace()
+    tr.task.data = MyTask(idx=0, prompt="q", answer="42")
+    episode = vf.Episode(task=tr.task, traces=[tr], ok=True)
+    assert episode.to_json() == orjson.dumps(
+        episode.to_record(), option=orjson.OPT_SERIALIZE_NUMPY
+    )
+
+
+def test_record_run_stamps_the_episode_and_every_trace():
+    work = vf.TrainWorkInfo(step=3, policy=vf.PolicySpan(start=0, end=1))
+    episode = vf.Episode(
+        task=_streamed_trace().task, traces=[_streamed_trace(), _streamed_trace()]
+    )
+    run = vf.TrainRunInfo(id="run-1", work=work)
+    episode.record_run(run)
+
+    record = orjson.loads(episode.to_json())
+    expected = run.model_dump(mode="json", exclude_none=True)
+    assert record["run"] == expected
+    assert [trace["run"] for trace in record["traces"]] == [expected, expected]
+    assert episode.to_json() == orjson.dumps(
+        episode.to_record(), option=orjson.OPT_SERIALIZE_NUMPY
+    )
+    assert vf.Episode.model_validate(record).traces[1].run == run
 
 
 def test_round_stream_matches_round():
