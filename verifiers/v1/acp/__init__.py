@@ -170,10 +170,8 @@ def _turn_result(response: JsonObject) -> ACPTurn:
 def _require_model_turn(
     trace: Trace, calls_before: int, result: ProgramResult, stderr: str = ""
 ) -> None:
-    """Fail a turn the agent reports as complete that didn't finish: no model turn was
-    committed, or the last one asked for tools whose results the model never saw. Some
-    agents (Pi, OpenClaw) end their turn with `end_turn` when a model request fails, and
-    a request that fails before it reaches the interception server leaves no call."""
+    """Fail a turn that ended without a model turn, or on tool calls the model never saw
+    the results of (Pi and OpenClaw end their turn when a model request fails)."""
     if result.exit_code or trace.stop_condition is not None:
         return
     committed = [
