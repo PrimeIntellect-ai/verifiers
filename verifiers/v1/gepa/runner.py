@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 class _GEPALog:
     """Forwards GEPA's optimizer log lines to v1 logging. GEPA's `LoggerProtocol` needs only
     `.log(str)`, so its per-iteration progress rides the same loguru setup as the rest of the
-    v1 CLIs instead of a bespoke dashboard."""
+    v1 CLIs."""
 
     def log(self, message: str) -> None:
         logger.info(message)

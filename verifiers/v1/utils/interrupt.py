@@ -11,11 +11,6 @@ logger = logging.getLogger(__name__)
 _cleaning_up = False
 
 
-def cleaning_up() -> bool:
-    """Whether a shutdown signal has begun graceful cleanup (read by the dashboard)."""
-    return _cleaning_up
-
-
 def install_interrupt() -> None:
     """Route SIGINT/SIGTERM through the graceful-shutdown handler. Call once from a CLI
     entrypoint before running its async main."""

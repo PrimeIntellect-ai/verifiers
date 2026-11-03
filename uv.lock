@@ -5206,7 +5206,6 @@ dependencies = [
     { name = "pydantic" },
     { name = "pyzmq" },
     { name = "renderers", extra = ["multimodal"] },
-    { name = "rich" },
     { name = "tenacity" },
     { name = "tomli-w" },
     { name = "typing-extensions" },

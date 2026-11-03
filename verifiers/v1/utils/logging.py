@@ -36,20 +36,12 @@ class InterceptHandler(logging.Handler):
         )
 
 
-def setup_logging(
-    level: str = "INFO", log_file: str | None = None, console: bool = True
-) -> None:
-    """Route the library's stdlib logs through loguru, to stderr (when `console`) and/or a
-    `log_file`. `console=False` (used under the `--rich` dashboard, which owns the screen)
-    keeps logs off the terminal while still writing them to `log_file`."""
+def setup_logging(level: str = "INFO", log_file: str | None = None) -> None:
+    """Route the library's stdlib logs through loguru, to stderr and, when given, a
+    `log_file`."""
     lvl = level.upper()
     logger.remove()
-    if console:
-        logger.add(sys.stderr, level=lvl, format=FORMAT)
-    else:
-        # The terminal is off-limits: stray stdlib records that bypass the intercept
-        # below must not fall through to stderr either (they'd print over the UI).
-        logging.lastResort = None
+    logger.add(sys.stderr, level=lvl, format=FORMAT)
     if log_file is not None:
         Path(log_file).parent.mkdir(parents=True, exist_ok=True)
         logger.add(log_file, level=lvl, format=FORMAT)
