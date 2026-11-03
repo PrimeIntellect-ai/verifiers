@@ -135,7 +135,7 @@ def parse_message(raw: dict) -> Message:
     image parts (multimodal ingress); assistant bodies flatten to text."""
     role = raw.get("role")
     content = raw.get("content")
-    if role == "system":
+    if role in ("system", "developer"):
         return SystemMessage(content=content_to_parts(content))
     if role == "tool":
         return ToolMessage(
