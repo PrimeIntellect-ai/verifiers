@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import contextvars
 import io
 import json
 import logging
@@ -214,6 +215,15 @@ hundred MB; its other files are copied in. What Prime itself put in the tmpfs is
 a box without `mount` keeps the empty tmpfs."""
 
 _PID_NAMESPACE_FILE = "/run/vf-pid-namespace"
+_NAMESPACE_RECHECK_S = 30.0
+_OUTSIDE_NAMESPACE: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "vf_prime_outside_namespace", default=False
+)
+"""Set while `isolate_processes` runs its script, which `_job` then starts on the box
+itself. The script looks for the recorded init in the box's /proc: entered into the
+namespace, whose /proc is its own, it found no such process, started a namespace
+nested in the live one, and recorded a PID numbered inside it, which later commands
+entered on the box as some other process and the file gateway named as its root."""
 _REAPER = """
 import os, signal
 for sig in (signal.SIGHUP, signal.SIGINT, signal.SIGTERM, signal.SIGQUIT):
@@ -656,6 +666,8 @@ class PrimeBackend(RuntimeBackend):
         self._pid_namespace = False
         """Whether `isolate_processes` gave this box's commands a PID namespace."""
         self._namespace_root: str | None = None
+        self._namespace_lock = asyncio.Lock()
+        self._namespace_checked = 0.0
         """The namespace's root as the file gateway reaches it (`/proc/<init>/root`):
         the namespace has a mount table of its own, and what is mounted there (an agent's
         `mount --bind` over a directory) is invisible from outside it."""
@@ -1151,12 +1163,19 @@ class PrimeBackend(RuntimeBackend):
         the platform's command daemon, and the box with it; one that refuses to grade
         while a kernel thread it cannot kill is listed sees none here either. Needs
         `unshare` and `nsenter` in the image; without them commands run as before."""
-        if self._pid_namespace:
-            return
-        result = await self.run(Runtime(self), ["sh", "-c", _PID_NAMESPACE], {})
+        # The script prints the recorded init when it still lives and starts a fresh
+        # namespace when it does not, so it is run each time rather than skipped on
+        # a flag a dead init leaves set.
+        outside = _OUTSIDE_NAMESPACE.set(True)
+        try:
+            result = await self.run(Runtime(self), ["sh", "-c", _PID_NAMESPACE], {})
+        finally:
+            _OUTSIDE_NAMESPACE.reset(outside)
         self._pid_namespace = result.exit_code == 0
+        self._namespace_root = None
         if self._pid_namespace and (init := result.stdout.split()[-1:]):
             self._namespace_root = f"/proc/{init[0]}/root"
+        self._namespace_checked = time.monotonic()
         if not self._pid_namespace:
             logger.warning(
                 "prime: no PID namespace on sandbox %s: %s",
@@ -1164,11 +1183,63 @@ class PrimeBackend(RuntimeBackend):
                 (result.stderr or result.stdout).strip()[-300:],
             )
 
+    async def _renew_namespace(self, stale: str | None) -> bool:
+        """Start the PID namespace again if its init is gone: whether a transfer that
+        went through `stale` (the root it used) can be tried again. The kernel kills
+        every process of a namespace whose init dies, and `/proc/<init>/root` goes
+        with it. Callers that failed together renew once."""
+        if stale is None:
+            return False
+        async with self._namespace_lock:
+            if self._namespace_root != stale:
+                return self._namespace_root is not None
+            pid = stale.split("/")[2]
+            alive = await self._client.execute_command(
+                self.info.id, f"test -e /proc/{pid}/ns/pid", timeout=30
+            )
+            if not alive.exit_code:
+                return False
+            logger.warning(
+                "prime: PID namespace init %s is gone on sandbox %s; renewing",
+                pid,
+                self.info.id,
+            )
+            await self.isolate_processes()
+            return self._namespace_root is not None
+
+    async def _with_namespace(self, call: Callable[[], Awaitable[T]]) -> T:
+        """`call()`, a transfer addressed through `_gateway`: once more after the
+        namespace is renewed if it failed because its init had died. Costs nothing
+        unless a transfer fails."""
+        root = self._namespace_root
+        try:
+            return await call()
+        except Exception:
+            if root is None or not await self._renew_namespace(root):
+                raise
+        return await call()
+
     async def _job(self, runtime: Runtime, command: str) -> tuple[str, str | None]:
         """`command` as the platform should start it, and the user to start it as: as
         the runtime's user (`_as_user`), inside the box's PID namespace once it has one
         (`isolate_processes`), and outside it should that namespace's init be gone."""
         command, user = await self._as_user(runtime, command)
+        if _OUTSIDE_NAMESPACE.get():
+            return command, user
+        if self._namespace_lock.locked():
+            # A renewal is under way: start in the namespace it makes, not outside the
+            # dead one (the fresh check time below would let this command skip it).
+            async with self._namespace_lock:
+                pass
+        if (
+            self._namespace_root is not None
+            and time.monotonic() - self._namespace_checked > _NAMESPACE_RECHECK_S
+        ):
+            # A dead init would otherwise leave every command running outside the
+            # namespace (the `exec sh -c` below); look at most once per interval.
+            self._namespace_checked = time.monotonic()
+            with contextlib.suppress(Exception):
+                await self._renew_namespace(self._namespace_root)
         if not self._pid_namespace or user is not None:
             return command, user
         inner = shlex.quote(command)
@@ -1611,19 +1682,24 @@ class PrimeBackend(RuntimeBackend):
         """`target`'s size in bytes, which picks one download or several. A missing
         file fails here, before any transfer."""
         began = time.monotonic()
-        result = await self._held(
-            "size",
-            lambda: self._client.execute_command(
-                self.info.id,
-                f"wc -c < {shlex.quote(self._gateway(target))}",
-                timeout=_OUTPUT_DEADLINE_SECONDS,
-            ),
-            **_TRANSFER_RETRIES,
-        )
+
+        async def measure() -> Any:
+            result = await self._held(
+                "size",
+                lambda: self._client.execute_command(
+                    self.info.id,
+                    f"wc -c < {shlex.quote(self._gateway(target))}",
+                    timeout=_OUTPUT_DEADLINE_SECONDS,
+                ),
+                **_TRANSFER_RETRIES,
+            )
+            if result.exit_code:
+                detail = (result.stderr or "").strip()[-500:]
+                raise SandboxError(detail, kind=missing_file_kind(detail, "io"))
+            return result
+
+        result = await self._with_namespace(measure)
         _call_stats.record("read.size", time.monotonic() - began)
-        if result.exit_code:
-            detail = (result.stderr or "").strip()[-500:]
-            raise SandboxError(detail, kind=missing_file_kind(detail, "io"))
         return int(result.stdout.strip())
 
     def _gateway(self, target: str) -> str:
@@ -1632,34 +1708,36 @@ class PrimeBackend(RuntimeBackend):
         return f"{self._namespace_root or ''}{target}"
 
     async def _upload(self, target: str, data: bytes) -> None:
-        target = self._gateway(target)
-        await self._held(
-            "upload",
-            lambda: self._client.upload_bytes(
-                self.info.id,
-                target,
-                data,
-                filename=PurePosixPath(target).name,
-                timeout=self.config.transfer_timeout,
-            ),
-            **_TRANSFER_RETRIES,
+        await self._with_namespace(
+            lambda: self._held(
+                "upload",
+                lambda: self._client.upload_bytes(
+                    self.info.id,
+                    self._gateway(target),
+                    data,
+                    filename=PurePosixPath(target).name,
+                    timeout=self.config.transfer_timeout,
+                ),
+                **_TRANSFER_RETRIES,
+            )
         )
 
     async def _download(self, target: str) -> bytes:
-        target = self._gateway(target)
         # The temporary file is removed on every exit, and its byte read stays off the event loop.
         with tempfile.TemporaryDirectory() as directory:
             download = Path(directory) / "download"
             began = time.monotonic()
-            await self._held(
-                "download",
-                lambda: self._client.download_file(
-                    self.info.id,
-                    target,
-                    str(download),
-                    timeout=self.config.transfer_timeout,
-                ),
-                **_TRANSFER_RETRIES,
+            await self._with_namespace(
+                lambda: self._held(
+                    "download",
+                    lambda: self._client.download_file(
+                        self.info.id,
+                        self._gateway(target),
+                        str(download),
+                        timeout=self.config.transfer_timeout,
+                    ),
+                    **_TRANSFER_RETRIES,
+                )
             )
             _call_stats.record("read.download", time.monotonic() - began)
             return await asyncio.to_thread(download.read_bytes)
