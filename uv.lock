@@ -3356,16 +3356,16 @@ wheels = [
 
 [[package]]
 name = "prime-tunnel"
-version = "0.1.14"
+version = "0.1.17"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "httpx" },
     { name = "pydantic" },
     { name = "tenacity" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/db/7d/8d8cdd03aada223acc53d4de49cf7f195d7656705a0f3d2339051890a9f1/prime_tunnel-0.1.14.tar.gz", hash = "sha256:4968787d8702578b213204d2524c3525985cd0362f50841af5fa2465d0d4e2cb", size = 22378, upload-time = "2026-10-09T00:16:40.263Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/c5/53/feb14c6188ef6abcd1a57a75acf5283f933f798031eecd7082efc645c591/prime_tunnel-0.1.17.tar.gz", hash = "sha256:dbdb41d14246b3f9a9a825a13413d8f8738e1cf44fae493b5c6235a1f9438b8e", size = 27152, upload-time = "2026-11-02T20:27:38.759Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/b8/d4/51e2b8fea13709edf3a6b94fb81d27a0eb3da11b339d870ace41de813dbb/prime_tunnel-0.1.14-py3-none-any.whl", hash = "sha256:a0e21f2b9ff61cf07c038486ddc541fe07326c65e703aaf4c795fae460ac6402", size = 19345, upload-time = "2026-10-09T00:16:38.845Z" },
+    { url = "https://files.pythonhosted.org/packages/c4/15/7e0ae988c2a526941b882951856b8ab9cdd065e52771c4e6f4abc7b3f519/prime_tunnel-0.1.17-py3-none-any.whl", hash = "sha256:0d78793706724709b57335ac40cff421357ed5953496bbc532c5db4040e416d0", size = 21381, upload-time = "2026-11-02T20:27:37.578Z" },
 ]
 
 [[package]]

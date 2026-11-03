@@ -59,9 +59,11 @@ from verifiers.v1.errors import (
     ProviderError,
     RolloutError,
     TaskError,
+    TunnelError,
 )
 from verifiers.v1.interception.base import Interception, Slot
 from verifiers.v1.interception.tunnel import Tunnel, make_tunnel
+from verifiers.v1.interception.tunnel.base import HEALTH_PATH
 from verifiers.v1.semantic import ACPInfo, extract_acp_info
 from verifiers.v1.session import IdempotentRequest, ReplayResponse, RolloutSession
 from verifiers.v1.trace import Error, ModelCall, PolicyEvent, TimeSpan
@@ -361,6 +363,9 @@ class InterceptionServer(Interception):
         self.tunnel: Tunnel | None = (
             make_tunnel(self.config.tunnel) if requires_tunnel else None
         )
+        self.healthy = True
+        if self.tunnel is not None:
+            self.tunnel.on_gone = self._handle_tunnel_gone
         self.host = "127.0.0.1"
         self.port = 0
         self.base_url = ""  # set by `start`
@@ -370,6 +375,14 @@ class InterceptionServer(Interception):
     def load(self) -> int:
         """Rollouts currently registered — what the pools balance on."""
         return len(self.sessions)
+
+    def _handle_tunnel_gone(self) -> None:
+        """Fail this server's rollouts and take no more: their URL will never work again."""
+        self.healthy = False
+        logger.error("interception unhealthy: url=%s", self.base_url)
+        for session in list(self.sessions.values()):
+            session.error = TunnelError("interception tunnel lost")
+            session.release()
 
     def _client(self, config: BaseClientConfig) -> Client:
         """The server-owned client for `config` — one per distinct endpoint config, shared
@@ -386,6 +399,8 @@ class InterceptionServer(Interception):
     def register(self, session: RolloutSession) -> tuple[str, str]:
         """Register separate capabilities for model inference and private task state, and
         assign the session its server-owned model client."""
+        if not self.healthy:
+            raise TunnelError("interception tunnel lost")
         session.client = self._client(session.ctx.client)
         model_secret = secrets.token_urlsafe(16)
         state_secret = secrets.token_urlsafe(16)
@@ -544,8 +559,12 @@ class InterceptionServer(Interception):
 
         return handler
 
+    async def handle_health(self, request: web.Request) -> web.Response:
+        return web.Response(text="ok")
+
     async def start(self) -> None:
         app = web.Application(client_max_size=MAX_REQUEST_BODY)
+        app.router.add_get(HEALTH_PATH, self.handle_health)
         for dialect in DIALECTS:
             for route in dialect.routes:
                 app.router.add_post(route, self._handler_for(dialect))

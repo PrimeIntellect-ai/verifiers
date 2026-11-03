@@ -298,6 +298,9 @@ class ServerBase(Generic[ConfigT, StateT]):
         async def serve() -> None:
             import httpx
             from mcp.server.transport_security import TransportSecuritySettings
+            from starlette.responses import PlainTextResponse
+
+            from verifiers.v1.interception.tunnel.base import HEALTH_PATH
 
             try:
                 async with (
@@ -317,6 +320,11 @@ class ServerBase(Generic[ConfigT, StateT]):
                         version=__version__,
                     )
                     self.register(mcp)
+
+                    @mcp.custom_route(HEALTH_PATH, methods=["GET"])
+                    async def health(_request):
+                        return PlainTextResponse("ok")
+
                     # Modern HTTP is inherently sessionless. Keep the legacy leg stateless too so
                     # older agent clients can use the same reconnect-per-call endpoint.
                     mcp_app = mcp.streamable_http_app(
