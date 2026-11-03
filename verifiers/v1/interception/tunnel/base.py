@@ -15,7 +15,7 @@ from verifiers.v1.configs.interception import BaseTunnelConfig
 
 ConfigT = TypeVar("ConfigT", bound=BaseTunnelConfig)
 
-HEALTH_PATH = "/__verifiers/healthz"
+HEALTH_PATH = "/vf/health"
 """What a tunneled service answers 2xx on, so a tunnel can tell whether requests reach it.
 Not `/healthz`: Prime tunnels answer that themselves, without reaching the service."""
 
