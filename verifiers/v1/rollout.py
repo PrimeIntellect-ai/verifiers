@@ -202,6 +202,11 @@ class Rollout:
         self._captures: set[asyncio.Task] = set()
         """Checkpoints being taken (`_checkpoint`), for `_settle_checkpoints` to wait
         for."""
+        self._segment_running = False
+        """Whether the harness program runs a segment, so a model call may still come
+        (`save`)."""
+        self._saves: set[asyncio.Future[bool]] = set()
+        """The saves waiting for a model call, which a segment's end resolves."""
         self._paused = False
         """Whether a memory checkpoint froze the box: nothing may touch it any more."""
         self._attempt = attempt
@@ -760,7 +765,15 @@ class Rollout:
                         return False
                 self._session.on_turn_input = on_input
                 assert self.deployment is not None
-                if await self._turn(messages, reattach):
+                self._segment_running = True
+                try:
+                    aborted = await self._turn(messages, reattach)
+                finally:
+                    self._segment_running = False
+                    for saved in self._saves:
+                        if not saved.done():
+                            saved.set_result(False)
+                if aborted:
                     assert self._session.aborted is not None
                     self.fail(self._session.aborted, stage="agent")
                     return False
@@ -921,15 +934,16 @@ class Rollout:
         at a model call: the next call to reach the interception, or the one in
         flight once its reply is back, checkpoints the box before the harness sees
         the reply. Waits up to `timeout` seconds for that call. A rollout that is
-        finishing, or that takes no filesystem checkpoints, takes none. A later retry
-        of this attempt restores the newest one it took. Returns whether it took
-        one."""
+        finishing, or whose agent is done (it is being scored), or that takes no
+        filesystem checkpoints, takes none. A later retry of this attempt restores the
+        newest one it took. Returns whether it took one."""
         if (
             self.trace.stop_condition is not None
             or self._closed
             or self._paused
             or self._checkpointing is None
             or self._session.checkpointer is None
+            or (not self._segment_running and self.trace.nodes)
         ):
             return False
         saved: asyncio.Future[bool] = asyncio.get_running_loop().create_future()
@@ -940,11 +954,13 @@ class Rollout:
                 saved.set_result(checkpoint is not None)
 
         self._session.save_at_turn = take
+        self._saves.add(saved)
         try:
             return await asyncio.wait_for(asyncio.shield(saved), timeout)
         except TimeoutError:
             return False
         finally:
+            self._saves.discard(saved)
             if self._session.save_at_turn is take:
                 self._session.save_at_turn = None
 

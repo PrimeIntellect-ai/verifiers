@@ -170,6 +170,8 @@ def make_rollout(*, memory: bool = False) -> tuple[Rollout, SlowBackend]:
     run.deleted_checkpoints = set()
     run.rewound_checkpoints = []
     run._boxless = False
+    run._segment_running = True
+    run._saves = set()
     run._session.checkpointer = run._checkpoint
     return run, backend
 
@@ -323,6 +325,13 @@ async def test_save_without_a_turn_gives_up_after_its_timeout():
     run, backend = make_rollout()
     assert not await run.save(timeout=0.01)
     assert run._session.save_at_turn is None and backend.taken == []
+
+
+async def test_save_skips_a_rollout_whose_agent_is_done():
+    run, backend = make_rollout()
+    run._segment_running = False
+    assert not await run.save(timeout=5)
+    assert backend.taken == []
 
 
 async def test_save_skips_a_finishing_rollout():
