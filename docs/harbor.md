@@ -81,63 +81,7 @@ class OpenThoughtsTBLiteTaskset(
 
 Set `ignore_dockerfile = true` when loading tasks that only ship a Dockerfile so `super().load()` accepts them before you swap in your pre-built image references. These overrides only update the in-memory `TaskData` and leave `task.toml` untouched.
 
-`verifier_image` applies to tasks that declare a separate verifier and must contain the complete `/tests` suite, including `/tests/test.sh` or `/tests/judge.toml`.
-
-## RewardKit judges
-
-When `/tests/test.sh` is absent and `/tests/judge.toml` exists, Harbor's scorer runs `rewardkit /tests --workspace "$PWD"` in the grading runtime, with a separate output directory for each invocation. Install `harbor-rewardkit` and any required judge CLI or provider extras in that runtime's image, with `rewardkit` on `PATH`. A script always takes precedence, including in a dedicated verifier image.
-
-RewardKit reads the tests directory unchanged: criterion weights, `[scoring]` aggregation, judge/model selection, file inputs, and custom prompt templates retain its semantics. Provider credentials, endpoint settings, and RewardKit overrides such as `REWARDKIT_MODEL` go through the existing `[verifier.env]` in `task.toml`, `TaskData.scoring.env`, or `agent.scoring.env`. For example:
-
-```toml
-[verifier.env]
-OPENAI_API_KEY = "${JUDGE_API_KEY}"
-OPENAI_API_BASE = "${JUDGE_BASE_URL}"
-```
-
-A minimal `tests/judge.toml` for grading the final reply is:
-
-```toml
-[judge]
-judge = "openai/judge-model"
-files = ["/logs/verifier/instruction.md", "/logs/verifier/response.txt"]
-prompt_template = "prompt_template.md"
-
-[[criterion]]
-name = "correct"
-description = "The response answers the instruction correctly."
-type = "binary"
-weight = 2.0
-
-[scoring]
-aggregation = "weighted-mean"
-```
-
-The matching `tests/prompt_template.md` can contain `Evaluate the supplied files against these criteria: {criteria}`. Verifiers writes the task instruction and final assistant reply to the two paths above before judging, including in a separate verifier box. Agent judges can inspect workspace files; separate verifiers receive only the artifacts restored by the normal grading lifecycle. Templates and `files` must explicitly select the inputs they need. Verifiers does not synthesize an ATIF trajectory.
-
-RewardKit must support the authored judge backend and schema. Its custom templates require `{criteria}`, and criterion names must meet its structured-output restrictions. Unsupported definitions fail rather than being translated into a different rubric or judge. Nonzero RewardKit exits, missing reward files, and errors recorded in `reward-details.json` (including judge timeouts) fail grading instead of producing a training reward. Script-based verifiers retain their existing reward-file behavior, including when a script exits nonzero.
-
-Use the existing scoring environment for RewardKit overrides. `REWARDKIT_JUDGE` selects an LLM model or agent backend; `REWARDKIT_MODEL` selects the model for an agent backend. Unset options preserve the task's definition. For example, in a run config:
-
-```toml
-[env.agent.scoring.env]
-REWARDKIT_JUDGE = "openai/my-judge-model"
-REWARDKIT_REASONING_EFFORT = "low"
-OPENAI_API_KEY = "${JUDGE_API_KEY}"
-OPENAI_API_BASE = "${JUDGE_BASE_URL}"
-```
-
-Harbor maps RewardKit results using the existing `JudgeResponse`, `Usage`, and trace methods:
-
-| RewardKit result | Verifiers result |
-| --- | --- |
-| Selected aggregate | Task reward, selected by `task.reward_key` |
-| Other aggregates | Named metrics, like script-based verifier outputs |
-| Criterion scores | Metrics under `harbor/<component>/<criterion>` |
-| Verdicts, reasons, weights, backend configuration | `trace.info["judge_calls"]`, preserving the RewardKit details |
-| Aggregate tokens and cost | `trace.extra_usage`, with cached tokens counted once |
-
-Each imported judge record is marked `scope = "aggregate"`: RewardKit reports a component's combined results, not every underlying request. Per-model usage and cost provenance remain in the recorded details. Verdicts and usage are retained before reporting recorded judge errors; if RewardKit exits without writing details, those records are unavailable.
+`verifier_image` applies to tasks that declare a separate verifier and must contain the complete `/tests` suite, including `/tests/test.sh`.
 
 ## Timeouts and resources
 
