@@ -20,7 +20,7 @@ from verifiers.v1.utils.trace_store import write_episode
 async def saved_run(run_dir: Path) -> vf.Trace:
     """A one-trace reverse-text run on disk, as `run_eval` leaves it: the resolved
     config under `configs/resolved/` and a scored trace in `traces.jsonl`."""
-    config = EvalConfig(env={"taskset": {"id": "reverse-text"}}, rich=None, push=False)
+    config = EvalConfig(env={"taskset": {"id": "reverse-text"}}, rich=None)
     resolved = run_dir / CONFIG_DIR / RESOLVED_DIR
     resolved.mkdir(parents=True)
     (resolved / "eval.json").write_text(json.dumps(config.model_dump(mode="json")))
