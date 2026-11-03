@@ -85,9 +85,9 @@ Set `ignore_dockerfile = true` when loading tasks that only ship a Dockerfile so
 
 ## RewardKit judges
 
-When `/tests/test.sh` is absent and `/tests/judge.toml` exists, Harbor tasks invoke Verifiers' `RewardKitJudge`. It runs `rewardkit /tests --workspace "$PWD"` in the grading runtime, with a separate output directory for each invocation. Install `harbor-rewardkit` and any required judge CLI or provider extras in that runtime's image, with `rewardkit` on `PATH`. A script always takes precedence, including in a dedicated verifier image.
+When `/tests/test.sh` is absent and `/tests/judge.toml` exists, Harbor's scorer runs `rewardkit /tests --workspace "$PWD"` in the grading runtime, with a separate output directory for each invocation. Install `harbor-rewardkit` and any required judge CLI or provider extras in that runtime's image, with `rewardkit` on `PATH`. A script always takes precedence, including in a dedicated verifier image.
 
-RewardKit reads the tests directory unchanged: criterion weights, `[scoring]` aggregation, judge/model selection, file inputs, and custom prompt templates retain its semantics. Provider credentials, endpoint settings, and RewardKit overrides such as `REWARDKIT_MODEL` go through the existing `[verifier.env]` in `task.toml` (or `task.scoring.env`). For example:
+RewardKit reads the tests directory unchanged: criterion weights, `[scoring]` aggregation, judge/model selection, file inputs, and custom prompt templates retain its semantics. Provider credentials, endpoint settings, and RewardKit overrides such as `REWARDKIT_MODEL` go through the existing `[verifier.env]` in `task.toml`, `TaskData.scoring.env`, or `agent.scoring.env`. For example:
 
 ```toml
 [verifier.env]
@@ -117,31 +117,27 @@ The matching `tests/prompt_template.md` can contain `Evaluate the supplied files
 
 RewardKit must support the authored judge backend and schema. Its custom templates require `{criteria}`, and criterion names must meet its structured-output restrictions. Unsupported definitions fail rather than being translated into a different rubric or judge. Nonzero RewardKit exits, missing reward files, and errors recorded in `reward-details.json` (including judge timeouts) fail grading instead of producing a training reward. Script-based verifiers retain their existing reward-file behavior, including when a script exits nonzero.
 
-Harbor exposes RewardKit overrides under `env.taskset.task.judge`. For an LLM judge, `judge` selects the model; for an agent judge, `judge` selects the backend and `model` selects its model. These are RewardKit's own `--judge`, `--model`, and `--reasoning-effort` options. Unset options preserve the task's definition. Provider endpoints and credentials belong in `judge.env`, which overrides the task's scoring environment without saving resolved secrets in the config:
+Use the existing scoring environment for RewardKit overrides. `REWARDKIT_JUDGE` selects an LLM model or agent backend; `REWARDKIT_MODEL` selects the model for an agent backend. Unset options preserve the task's definition. For example, in a run config:
 
 ```toml
-[env.taskset.task.judge]
-judge = "openai/my-judge-model"
-reasoning_effort = "low"
-
-[env.taskset.task.judge.env]
+[env.agent.scoring.env]
+REWARDKIT_JUDGE = "openai/my-judge-model"
+REWARDKIT_REASONING_EFFORT = "low"
 OPENAI_API_KEY = "${JUDGE_API_KEY}"
 OPENAI_API_BASE = "${JUDGE_BASE_URL}"
 ```
 
-The adapter maps RewardKit results into native judge records:
+Harbor maps RewardKit results using the existing `JudgeResponse`, `Usage`, and trace methods:
 
 | RewardKit result | Verifiers result |
 | --- | --- |
 | Selected aggregate | Task reward, selected by `task.reward_key` |
-| Other aggregates | Metrics under `harbor/<name>` |
+| Other aggregates | Named metrics, like script-based verifier outputs |
 | Criterion scores | Metrics under `harbor/<component>/<criterion>` |
 | Verdicts, reasons, weights, backend configuration | `trace.info["judge_calls"]`, preserving the RewardKit details |
 | Aggregate tokens and cost | `trace.extra_usage`, with cached tokens counted once |
 
 Each imported judge record is marked `scope = "aggregate"`: RewardKit reports a component's combined results, not every underlying request. Per-model usage and cost provenance remain in the recorded details. Verdicts and usage are retained before reporting recorded judge errors; if RewardKit exits without writing details, those records are unavailable.
-
-Other tasksets can plug the same adapter into `task.judges` with `id = "rewardkit"`, `path` pointing to a tests directory already staged in the runtime, and `reward_key` selecting its output. The usual native `name` and `weight` control this judge's contribution; criterion weights and aggregation remain RewardKit's. Runtime-backed judges use `JudgePluginConfig` for these common controls rather than inheriting HTTP endpoint settings they cannot apply. No runtime means the judge is skipped, following normal native scoring behavior.
 
 ## Timeouts and resources
 

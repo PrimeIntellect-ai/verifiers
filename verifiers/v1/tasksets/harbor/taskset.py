@@ -6,7 +6,7 @@ runtime the harness edited — or, when the task asks for it with
 touched, carrying only what the task declared — the rollout provisions and
 grades that box. A script takes precedence over a RewardKit ``judge.toml``.
 Scripts write ``/logs/verifier/reward.json`` or the legacy ``reward.txt``;
-the native RewardKit judge imports scores and verdicts from its own output directory.
+RewardKit results are imported into the trace from a separate output directory.
 
 A pullable ``[environment].docker_image`` becomes ``TaskData.image``. Compose can build
 its workspace from ``environment/Dockerfile``. Single-container Dockerfile-only
@@ -20,6 +20,7 @@ or tests build definition, then fall back to the agent environment. Unsupported 
 import asyncio
 import hashlib
 import io
+import json
 import logging
 import shutil
 import subprocess
@@ -27,6 +28,7 @@ import sys
 import tarfile
 import tempfile
 import time
+import uuid
 from collections.abc import Iterator
 from functools import lru_cache
 from pathlib import Path, PurePosixPath
@@ -38,20 +40,14 @@ from verifiers.v1.configs.scoring import ScoringConfig
 from verifiers.v1.configs.task import TaskConfig
 from verifiers.v1.configs.taskset import TasksetConfig
 from verifiers.v1.errors import SandboxError, TaskError
-from verifiers.v1.judges.rewardkit import (
-    MAX_REWARD_BYTES,
-    MAX_VERIFIER_OUTPUT_CHARS,
-    REWARD_JSON_ADAPTER,
-    RewardKitConfig,
-    RewardKitJudge,
-    RewardKitJudgeConfig,
-)
+from verifiers.v1.judge import JudgeResponse
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.runtimes.deployment import Deployment
 from verifiers.v1.state import State
 from verifiers.v1.task import Task, TaskData, TaskResources, TaskTimeout
 from verifiers.v1.taskset import Taskset
 from verifiers.v1.trace import Trace
+from verifiers.v1.types import Usage
 from verifiers.v1.utils.artifacts import (
     ARTIFACTS_DIR,
     MAX_ARTIFACT_BYTES,
@@ -66,14 +62,19 @@ logger = logging.getLogger(__name__)
 CACHE = Path.home() / ".cache" / "harbor"
 HARBOR_INSTALL_HINT = "uv sync --python 3.12 --extra harbor"
 REWARD_JSON = "/logs/verifier/reward.json"
+MAX_REWARD_BYTES = 1024 * 1024
+MAX_VERIFIER_OUTPUT_CHARS = 16 * 1024
+REWARD_JSON_ADAPTER = TypeAdapter(
+    dict[str, float],
+    config=ConfigDict(strict=True, allow_inf_nan=False),
+)
+
 REWARD_SCALAR_ADAPTER = TypeAdapter(
     float, config=ConfigDict(strict=True, allow_inf_nan=False)
 )
 
 
 class HarborTaskConfig(TaskConfig):
-    judge: RewardKitConfig = RewardKitConfig()
-    """Overrides for judge.toml grading; script-based verifiers are unaffected."""
     reward_key: str = Field("reward", min_length=1)
     """Named verifier value used as the training reward; other values remain metrics."""
     mcp_servers: list[dict] = Field(default_factory=list)
@@ -418,8 +419,7 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
                 "mkdir -p /tests && tar -xzf /tmp/tests.tgz -C /tests"
             )
         command = (
-            "rm -f /logs/verifier/reward.json /logs/verifier/reward.txt "
-            "/logs/verifier/reward-details.json && "
+            "rm -f /logs/verifier/reward.json /logs/verifier/reward.txt && "
             f"mkdir -p /logs/verifier {ARTIFACTS_DIR} && {stage}"
         )
         result = await runtime.run(["sh", "-c", command], {})
@@ -467,25 +467,36 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
             raise TaskError(
                 "Harbor verifier requires /tests/test.sh or /tests/judge.toml"
             )
-        if entrypoint.stdout.strip() == "judge":
-            judge = RewardKitJudge(
-                RewardKitJudgeConfig(
-                    **self.config.judge.model_dump(),
-                    name="harbor",
-                    reward_key=self.config.reward_key,
-                )
+        judge = entrypoint.stdout.strip() == "judge"
+        reward_path = REWARD_JSON
+        command = ["bash", "/tests/test.sh"]
+        if judge:
+            # Each judge invocation owns its outputs, so retries cannot accept a
+            # previous reward. Publish the submission atomically for judge readers.
+            directory = f"/logs/verifier/rewardkit/{uuid.uuid4().hex}"
+            reward_path = f"{directory}/reward.json"
+            await runtime.write(
+                f"{directory}/instruction.md", self.data.prompt_text.encode()
             )
-            return {
-                self.config.reward_key: await judge.score(
-                    self.data, trace, runtime, env=self.scoring.env
-                )
-            }
+            await runtime.write(f"{directory}/response.txt", trace.last_reply.encode())
+            command = [
+                "sh",
+                "-c",
+                (
+                    'mv "$1/instruction.md" /logs/verifier/instruction.md && '
+                    'mv "$1/response.txt" /logs/verifier/response.txt && '
+                    'shift && exec rewardkit "$@" --workspace "$PWD"'
+                ),
+                "vf-rewardkit",
+                directory,
+                "/tests",
+                "--output",
+                reward_path,
+            ]
         # By absolute path, in the runtime's configured workdir: Harbor execs the
         # script the same way, and scripts do grade the agent's work at `$PWD`.
         # A script's reward file is authoritative even when it exits nonzero.
-        result = await runtime.run(
-            ["bash", "/tests/test.sh"], resolve_env(self.scoring.env or {})
-        )
+        result = await runtime.run(command, resolve_env(self.scoring.env or {}))
         trace.info.setdefault("scoring_diagnostics", {})["harbor"] = {
             "exit_code": result.exit_code,
             "stdout": result.stdout[-MAX_VERIFIER_OUTPUT_CHARS:],
@@ -493,7 +504,81 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
             "stdout_truncated": len(result.stdout) > MAX_VERIFIER_OUTPUT_CHARS,
             "stderr_truncated": len(result.stderr) > MAX_VERIFIER_OUTPUT_CHARS,
         }
-        scores = await self.read_reward_json(runtime)
+        if judge:
+            if result.exit_code:
+                raise TaskError(
+                    f"RewardKit judge failed (exit {result.exit_code}): "
+                    f"{(result.stderr or result.stdout).strip()[-500:]}"
+                )
+            try:
+                details = json.loads(
+                    await runtime.read(
+                        f"{directory}/reward-details.json", max_bytes=MAX_REWARD_BYTES
+                    )
+                )
+                if not isinstance(details, dict):
+                    raise TypeError("expected an object of reward details")
+            except (SandboxError, OSError, ValueError, TypeError) as exc:
+                raise TaskError(
+                    "RewardKit produced no valid reward-details.json"
+                ) from exc
+
+            errors = []
+            pending = list(details.items())
+            while pending:
+                name, detail = pending.pop()
+                if "components" in detail:
+                    pending.extend(
+                        (f"{name}/{component['name']}", component["detail"])
+                        for component in detail["components"]
+                    )
+                    continue
+                prefix = f"harbor/{name}"
+                if "judge" in detail:
+                    usage = detail.get("usage")
+                    # RewardKit reports aggregate usage per component, with cache
+                    # reads included in input_tokens. Do not add per-model totals again.
+                    trace.record_judge_call(
+                        name=prefix,
+                        request={
+                            "model": detail["judge"].get("model"),
+                            "judge": detail["judge"],
+                            "backend": "rewardkit",
+                            "scope": "aggregate",
+                        },
+                        response=JudgeResponse(
+                            text=detail.get("judge_output", ""),
+                            parsed=detail,
+                            usage=Usage(
+                                prompt_tokens=usage.get("input_tokens", 0)
+                                - usage.get("cache_read_input_tokens", 0),
+                                completion_tokens=usage.get("output_tokens", 0),
+                                cached_input_tokens=usage.get(
+                                    "cache_read_input_tokens"
+                                ),
+                                reasoning_tokens=usage.get("reasoning_output_tokens"),
+                                cost=usage.get("cost_usd"),
+                            )
+                            if usage
+                            else None,
+                        ),
+                    )
+                for criterion in detail["criteria"]:
+                    if criterion.get("error") is not None:
+                        errors.append(criterion["error"])
+                    else:
+                        trace.record_metric(
+                            f"{prefix}/{criterion['name']}", criterion["value"]
+                        )
+                if error := (detail.get("guard") or {}).get("error"):
+                    errors.append(error)
+            # Preserve verdicts and billed usage even when a timed-out criterion makes
+            # the aggregate unusable as a training reward.
+            if errors:
+                raise TaskError(f"RewardKit judge failed: {'; '.join(errors)}")
+        scores = await self.read_reward_json(runtime, reward_path)
+        if judge and scores is None:
+            raise TaskError("RewardKit produced no reward.json")
         if scores is None:
             try:
                 value = (
@@ -524,21 +609,23 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
         )
         return {key: scores[key]}
 
-    async def read_reward_json(self, runtime: Runtime) -> dict[str, float] | None:
+    async def read_reward_json(
+        self, runtime: Runtime, path: str = REWARD_JSON
+    ) -> dict[str, float] | None:
         """JSON takes precedence whenever present; invalid or unreadable JSON fails.
 
         Only absence permits text fallback. Reads remain bounded at the source.
         """
         exists = await runtime.run(
-            ["sh", "-c", 'test -e "$1" || test -L "$1"', "vf-reward", REWARD_JSON], {}
+            ["sh", "-c", 'test -e "$1" || test -L "$1"', "vf-reward", path], {}
         )
         if exists.exit_code == 1:
             return None
         if exists.exit_code:
-            raise TaskError(f"Cannot inspect Harbor reward file {REWARD_JSON}")
+            raise TaskError(f"Cannot inspect Harbor reward file {path}")
         try:
             return REWARD_JSON_ADAPTER.validate_json(
-                await runtime.read(REWARD_JSON, max_bytes=MAX_REWARD_BYTES)
+                await runtime.read(path, max_bytes=MAX_REWARD_BYTES)
             )
         except (SandboxError, OSError, ValidationError) as exc:
             raise TaskError(

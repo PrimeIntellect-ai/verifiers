@@ -14,7 +14,7 @@ from pydantic_config import BaseConfig
 
 from verifiers.v1.configs.env import EnvConfig
 from verifiers.v1.configs.harness import HarnessConfig
-from verifiers.v1.configs.judge import JudgePluginConfig
+from verifiers.v1.configs.judge import JudgeConfig
 from verifiers.v1.configs.task import (
     DecoratedFunctionConfig,
     RewardFunctionConfig,
@@ -210,7 +210,7 @@ def load_harness(config: HarnessConfig) -> Harness:
     return harness_class(config.id)(config)
 
 
-def load_judge(config: JudgePluginConfig) -> Judge:
+def load_judge(config: JudgeConfig) -> Judge:
     return judge_class(config.id)(config)
 
 
@@ -304,7 +304,7 @@ def harness_config_type(harness_id: str) -> type[HarnessConfig]:
     return concrete_type(harness_class(harness_id), HarnessConfig) or HarnessConfig
 
 
-def judge_config_type(judge_id: str) -> type[JudgePluginConfig]:
+def judge_config_type(judge_id: str) -> type[JudgeConfig]:
     """Resolve the judge's config specialization through its MRO."""
     return judge_config_cls(judge_class(judge_id))
 
