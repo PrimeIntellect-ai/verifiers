@@ -50,6 +50,7 @@ _TRUNCATION_STOPS = {
     "max_total_turns": "max_turns",
     "token_budget": "max_output_tokens",
     "compaction_failed": "compaction_failed",
+    "format_violation": "format_violation",
 }
 
 
@@ -64,13 +65,13 @@ class CompactionConfig(BaseConfig):
     nano-rlm's default."""
     max_attempts: PositiveInt | None = None
     """Summary-generation attempts within one compaction cycle; `None` =
-    nano-rlm's default (5)."""
+    nano-rlm's default (5). Set 1 for training without summary resampling."""
 
 
 class RLMHarnessConfig(HarnessConfig):
     dialect: Literal["chat_completions"] = "chat_completions"
     version: str = Field(
-        default="684ea9069eadaf855596c3fa49e529566de7d1af", min_length=1
+        default="26376b13887c460f3466aee189ecd64bcd09852b", min_length=1
     )
     """Git ref (branch, tag, or commit) of nano-rlm to install. Must know every
     field this harness puts on the wire, i.e. be at least the default ref."""
@@ -278,6 +279,8 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
         if snapshot.session_id != trace.id:
             raise ValueError("RLM session snapshot does not match the rollout")
         trace.record_metrics(snapshot.metrics)
+        if trace.is_format_violation:
+            trace.stop("format_violation")
         if condition := _TRUNCATION_STOPS.get(snapshot.last_stop_reason or ""):
             trace.stop(condition)
 

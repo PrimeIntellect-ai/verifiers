@@ -17,6 +17,7 @@ from verifiers.v1.harnesses.rlm.harness import (
         ("max_total_turns", "max_turns"),
         ("token_budget", "max_output_tokens"),
         ("compaction_failed", "compaction_failed"),
+        ("format_violation", "format_violation"),
         ("done", "agent_completed"),
         (None, "agent_completed"),
     ],
@@ -42,4 +43,7 @@ def test_rlm_stop_reason_survives_completion_and_serialization(reason, condition
 
     restored = vf.WireTrace.model_validate_json(trace.model_dump_json())
     assert restored.stop_condition == condition
-    assert restored.is_truncated is (condition != "agent_completed")
+    assert restored.is_truncated is (
+        condition not in ("agent_completed", "format_violation")
+    )
+    assert restored.is_format_violation is (condition == "format_violation")
