@@ -132,6 +132,9 @@ class ToolCall(BaseModel):
     """Provider namespace qualifying the tool name, when sent separately."""
     arguments: str
     """Raw function arguments or custom-tool input, exactly as the model emitted it."""
+    content_type: str | None = None
+    """The call's content type as the model sampled it in its header, for formats whose header carries one
+    (gpt-oss: `json` or `code`), so a re-render writes the header the model sampled."""
 
 
 class AssistantMessage(BaseModel):

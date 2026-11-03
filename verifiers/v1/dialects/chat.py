@@ -163,6 +163,7 @@ def parse_message(raw: dict) -> Message:
                     name=native["name"],
                     namespace=native.get("namespace"),
                     arguments=native["input" if kind == "custom" else "arguments"],
+                    content_type=native.get("content_type"),
                 )
             )
         return AssistantMessage(
@@ -233,6 +234,7 @@ def message_to_wire(message: Message) -> dict:
                         "input"
                         if call.type == "custom"
                         else "arguments": call.arguments,
+                        **({"content_type": call.content_type} if call.content_type else {}),
                     },
                 }
                 for call in message.tool_calls
