@@ -323,7 +323,8 @@ class ServerBase(Generic[ConfigT, StateT]):
 
                     @mcp.custom_route(HEALTH_PATH, methods=["GET"])
                     async def health(_request):
-                        return PlainTextResponse("ok")
+                        # See HEALTH_PATH.
+                        return PlainTextResponse("ok", headers={"Connection": "close"})
 
                     # Modern HTTP is inherently sessionless. Keep the legacy leg stateless too so
                     # older agent clients can use the same reconnect-per-call endpoint.

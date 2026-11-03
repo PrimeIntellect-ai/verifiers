@@ -560,7 +560,9 @@ class InterceptionServer(Interception):
         return handler
 
     async def handle_health(self, request: web.Request) -> web.Response:
-        return web.Response(text="ok")
+        response = web.Response(text="ok")
+        response.force_close()  # see HEALTH_PATH
+        return response
 
     async def start(self) -> None:
         app = web.Application(client_max_size=MAX_REQUEST_BODY)

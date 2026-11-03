@@ -17,7 +17,9 @@ ConfigT = TypeVar("ConfigT", bound=BaseTunnelConfig)
 
 HEALTH_PATH = "/vf/health"
 """What a tunneled service answers 2xx on, so a tunnel can tell whether requests reach it.
-Not `/healthz`: Prime tunnels answer that themselves, without reaching the service."""
+Not `/healthz`: Prime tunnels answer that themselves, without reaching the service. The
+answer closes its connection, so each probe needs a new one through the tunnel: a probe
+riding a kept-alive connection passes while new connections hang."""
 
 
 class Tunnel(ABC, Generic[ConfigT]):

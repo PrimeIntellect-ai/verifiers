@@ -88,10 +88,11 @@ async def test_sdk_restarts_reach_the_run_logs(caplog):
     assert "tunnel https://t: frpc restarted" in caplog.messages
 
 
-async def test_server_answers_the_health_route():
+async def test_server_answers_the_health_route_on_a_connection_it_closes():
     async with InterceptionServer() as server, httpx.AsyncClient() as client:
         response = await client.get(f"{server.base_url}{HEALTH_PATH}")
     assert response.status_code == 200
+    assert response.headers["connection"] == "close"
 
 
 def test_gone_tunnel_fails_the_servers_rollouts_and_refuses_new_ones():
