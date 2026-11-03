@@ -74,7 +74,9 @@ class PixelDocument:
                     ):
                         bitmap.to_pil().save(buffer, format="PNG")
                 else:
-                    image.convert("RGB").save(buffer, format="PNG")
+                    (image.convert("RGB") if image.mode == "CMYK" else image).save(
+                        buffer, format="PNG"
+                    )
                 content.extend(
                     [
                         TextContent(type="text", text=f"Page {number}"),
