@@ -121,15 +121,31 @@ async def interrupt_all(timeout: float) -> tuple[int, list[str]]:
     return len(runs), [run.trace.id for run, ok in zip(runs, taken) if ok is True]
 
 
-async def save_all(timeout: float) -> tuple[int, list[str]]:
+_release: asyncio.Event | None = None
+"""Releases the rollouts the last `save_all` holds (`release_all`)."""
+
+
+async def save_all(timeout: float, hold: float = 0.0) -> tuple[int, list[str]]:
     """Checkpoint every open rollout of this process while it keeps running
-    (`Rollout.save`), e.g. for an owner that saves its run. Returns how many are
-    open, and the trace ids of those that took a checkpoint."""
+    (`Rollout.save`), e.g. for an owner that saves its run. With `hold`, each
+    rollout that took a checkpoint waits at its model call until `release_all`, or
+    for `hold` seconds at most: the owner records them as they are at their
+    checkpoints, with no progress past them. Returns how many are open, and the
+    trace ids of those that took a checkpoint."""
+    global _release
+    release = _release = asyncio.Event() if hold else None
     runs = [run for run in list(_LIVE) if not run._closed]
     taken = await asyncio.gather(
-        *(run.save(timeout) for run in runs), return_exceptions=True
+        *(run.save(timeout, release=release, hold=hold) for run in runs),
+        return_exceptions=True,
     )
     return len(runs), [run.trace.id for run, ok in zip(runs, taken) if ok is True]
+
+
+def release_all() -> None:
+    """Let the rollouts that the last `save_all` holds go on."""
+    if _release is not None:
+        _release.set()
 
 
 SAVED = "Saved"
@@ -928,7 +944,13 @@ class Rollout:
         self._session.abort(error)
         return self._checkpointed is not None
 
-    async def save(self, timeout: float) -> bool:
+    async def save(
+        self,
+        timeout: float,
+        *,
+        release: asyncio.Event | None = None,
+        hold: float = 0.0,
+    ) -> bool:
         """Checkpoint this rollout's filesystem while it keeps running, for another
         process to continue from (an owner that saves its run). The box must be idle
         at a model call: the next call to reach the interception, or the one in
@@ -936,7 +958,9 @@ class Rollout:
         the reply. Waits up to `timeout` seconds for that call. A rollout that is
         finishing, or whose agent is done (it is being scored), or that takes no
         filesystem checkpoints, takes none. A later retry of this attempt restores the
-        newest one it took. Returns whether it took one."""
+        newest one it took. With `release`, the model call then waits until it is set,
+        or for `hold` seconds at most, before it goes on. Returns whether it took
+        one."""
         if (
             self.trace.stop_condition is not None
             or self._closed
@@ -952,6 +976,9 @@ class Rollout:
             checkpoint = await self._save(turn)
             if not saved.done():
                 saved.set_result(checkpoint is not None)
+            if checkpoint is not None and release is not None:
+                with contextlib.suppress(TimeoutError):
+                    await asyncio.wait_for(release.wait(), hold)
 
         self._session.save_at_turn = take
         self._saves.add(saved)

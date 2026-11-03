@@ -312,6 +312,28 @@ async def test_save_checkpoints_at_the_next_turn_and_goes_on():
     assert backend.taken == [False, False]
 
 
+async def test_a_held_save_waits_at_the_model_call_until_released():
+    run, _ = make_rollout()
+    release = asyncio.Event()
+    save = asyncio.create_task(run.save(timeout=5, release=release, hold=5))
+    await asyncio.sleep(0)
+    call = asyncio.create_task(run._session.take_save(TURN))
+    # The save replies once the checkpoint is taken; the model call waits on.
+    assert await asyncio.wait_for(save, timeout=1)
+    await asyncio.sleep(0.05)
+    assert not call.done()
+    release.set()
+    await asyncio.wait_for(call, timeout=1)
+
+
+async def test_a_held_save_goes_on_after_its_hold():
+    run, _ = make_rollout()
+    save = asyncio.create_task(run.save(timeout=5, release=asyncio.Event(), hold=0.05))
+    await asyncio.sleep(0)
+    await asyncio.wait_for(run._session.take_save(TURN), timeout=1)
+    assert await save
+
+
 async def test_save_takes_a_filesystem_checkpoint_of_a_memory_run():
     run, backend = make_rollout(memory=True)
     save = asyncio.create_task(run.save(timeout=5))
