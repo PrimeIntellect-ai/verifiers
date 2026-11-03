@@ -4,7 +4,8 @@ The Harbor CLI downloads and caches each task directory. Its verifier runs in th
 runtime the harness edited — or, when the task asks for it with
 ``[verifier].environment_mode = "separate"``, in a second box the agent never
 touched, carrying only what the task declared — the rollout provisions and
-grades that box. Either way the score lands in
+grades that box. A script takes precedence over a RewardKit ``judge.toml``.
+Either way the score lands in
 ``/logs/verifier/reward.json`` or the legacy ``reward.txt``.
 
 A pullable ``[environment].docker_image`` becomes ``TaskData.image``. Compose can build
@@ -19,6 +20,7 @@ or tests build definition, then fall back to the agent environment. Unsupported 
 import asyncio
 import hashlib
 import io
+import json
 import logging
 import shutil
 import subprocess
@@ -400,17 +402,22 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
         """
         # Harbor's dedicated verifier image owns the complete test suite and its
         # dependencies. Mixing it with packaged tests can retain obsolete helpers.
-        stage = "test -f /tests/test.sh"
+        stage = "{ test -f /tests/test.sh || test -f /tests/judge.toml; }"
         if self.data.verifier is None or self.data.verifier_image is None:
-            await runtime.write(
-                "/tmp/tests.tgz", make_tar(Path(self.data.task_dir) / "tests")
+            tests = Path(self.data.task_dir) / "tests"
+            # RewardKit discovers every check in /tests; stale files must not add
+            # criteria or override a judge-only package with a leftover script.
+            wipe = wipe or (
+                (tests / "judge.toml").is_file() and not (tests / "test.sh").is_file()
             )
+            await runtime.write("/tmp/tests.tgz", make_tar(tests))
             stage = (
                 f"{'rm -rf /tests && ' if wipe else ''}"
                 "mkdir -p /tests && tar -xzf /tmp/tests.tgz -C /tests"
             )
         command = (
-            "rm -f /logs/verifier/reward.json /logs/verifier/reward.txt && "
+            "rm -f /logs/verifier/reward.json /logs/verifier/reward.txt "
+            "/logs/verifier/reward-details.json && "
             f"mkdir -p /logs/verifier {ARTIFACTS_DIR} && {stage}"
         )
         result = await runtime.run(["sh", "-c", command], {})
@@ -443,12 +450,37 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
     async def run_verifier(
         self, runtime: Runtime, trace: Trace
     ) -> float | dict[str, float]:
+        entrypoint = await runtime.run(
+            [
+                "sh",
+                "-c",
+                (
+                    "if test -f /tests/test.sh; then echo script; "
+                    "elif test -f /tests/judge.toml; then echo judge; else exit 1; fi"
+                ),
+            ],
+            {},
+        )
+        if entrypoint.exit_code:
+            raise TaskError(
+                "Harbor verifier requires /tests/test.sh or /tests/judge.toml"
+            )
+        judge = entrypoint.stdout.strip() == "judge"
+        command = ["bash", "/tests/test.sh"]
+        if judge:
+            # These inputs also exist in a separate grading box; templates/files
+            # choose what to read without changing the authored judge prompt.
+            await runtime.write(
+                "/logs/verifier/instruction.md", self.data.prompt_text.encode()
+            )
+            await runtime.write(
+                "/logs/verifier/response.txt", trace.last_reply.encode()
+            )
+            command = ["sh", "-c", 'exec rewardkit /tests --workspace "$PWD"']
         # By absolute path, in the runtime's configured workdir: Harbor execs the
         # script the same way, and scripts do grade the agent's work at `$PWD`.
-        # The reward file is authoritative even when the script exits nonzero.
-        result = await runtime.run(
-            ["bash", "/tests/test.sh"], resolve_env(self.scoring.env or {})
-        )
+        # A script's reward file is authoritative even when it exits nonzero.
+        result = await runtime.run(command, resolve_env(self.scoring.env or {}))
         trace.info.setdefault("scoring_diagnostics", {})["harbor"] = {
             "exit_code": result.exit_code,
             "stdout": result.stdout[-MAX_VERIFIER_OUTPUT_CHARS:],
@@ -456,7 +488,38 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
             "stdout_truncated": len(result.stdout) > MAX_VERIFIER_OUTPUT_CHARS,
             "stderr_truncated": len(result.stderr) > MAX_VERIFIER_OUTPUT_CHARS,
         }
+        if judge:
+            if result.exit_code:
+                raise TaskError(
+                    f"Harbor RewardKit judge failed (exit {result.exit_code}): "
+                    f"{(result.stderr or result.stdout).strip()[-500:]}"
+                )
+            try:
+                details = json.loads(
+                    await runtime.read(
+                        "/logs/verifier/reward-details.json", max_bytes=MAX_REWARD_BYTES
+                    )
+                )
+            except (SandboxError, OSError, ValueError) as exc:
+                raise TaskError(
+                    "Harbor RewardKit produced no valid reward-details.json"
+                ) from exc
+            # RewardKit can emit a zero score for a timed-out judge. Surface the
+            # recorded error instead of treating infrastructure failure as a grade.
+            pending = [details]
+            while pending:
+                item = pending.pop()
+                if isinstance(item, dict):
+                    if isinstance(item.get("error"), str):
+                        raise TaskError(
+                            f"Harbor RewardKit judge failed: {item['error']}"
+                        )
+                    pending.extend(item.values())
+                elif isinstance(item, list):
+                    pending.extend(item)
         scores = await self.read_reward_json(runtime)
+        if judge and scores is None:
+            raise TaskError("Harbor RewardKit produced no reward.json")
         if scores is None:
             try:
                 value = (
