@@ -56,7 +56,7 @@ class _PackageBuildState:
     users: int = 0
 
 
-# Coordination and caching are process-local. Spawned env-server workers each
+# Coordination and caching are process-local. Separate worker processes each
 # build once; within an event loop, concurrent rollouts share the completed artifact.
 _PACKAGE_BUILD_STATES: dict[
     tuple[Path, asyncio.AbstractEventLoop], _PackageBuildState

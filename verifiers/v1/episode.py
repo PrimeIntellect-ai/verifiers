@@ -118,7 +118,7 @@ class Episode(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         float_decimals: int | None = RECORD_FLOAT_DECIMALS,
         exclude: dict | set | None = None,
     ) -> dict[str, Any]:
-        """JSON record without raw trace tensors, which remain on the msgpack wire.
+        """JSON record without raw trace tensors, which a python-mode `model_dump` keeps.
         Per-token node streams are numpy arrays (`graph.RECORD_STREAMS`): encode it with
         `to_json`, or with orjson and `OPT_SERIALIZE_NUMPY`. Per-token float streams are
         rounded to `float_decimals` (`None` keeps every digit). `exclude` is a pydantic

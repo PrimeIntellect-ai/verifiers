@@ -321,7 +321,7 @@ def env_config_type(taskset_id: str, env_id: str = "") -> type[EnvConfig]:
 
 def resolve_env_config(data: dict | EnvConfig | None) -> EnvConfig:
     """Narrow raw env-config data to the concrete env class's config type and
-    validate. The one entry every consumer takes (CLI, TOML, the env-server wire),
+    validate. The one entry every consumer takes (CLI, TOML, a plain-data dump),
     so role fields always validate against the real config class."""
     if isinstance(data, EnvConfig):
         cls = env_config_type(data.taskset.id, data.id)

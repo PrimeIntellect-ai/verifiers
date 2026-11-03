@@ -60,7 +60,7 @@ EXCLUDE_FIELDS: dict = {
         }
     }
 }
-"""Raw tensor fields kept on the msgpack wire but excluded from disk serialization."""
+"""Raw tensor fields kept by `model_dump` but excluded from disk serialization."""
 
 RECORD_DUMP_EXCLUDE: dict = {
     "nodes": {"__all__": EXCLUDE_FIELDS["nodes"]["__all__"] | set(graph.RECORD_STREAMS)}
@@ -669,7 +669,7 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
 
     @field_serializer("mm_token_type_id_map")
     def serialize_mm_token_type_id_map(self, mapping: dict[int, int]) -> dict[str, int]:
-        """The wire unpacks with msgpack's `strict_map_key`, which forbids int map keys —
+        """Binary wire formats forbid int map keys (msgpack's `strict_map_key`) —
         dump str keys; validation coerces them back to int."""
         return {str(k): v for k, v in mapping.items()}
 
@@ -980,7 +980,7 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         float_decimals: int | None = RECORD_FLOAT_DECIMALS,
         exclude: dict | set | None = None,
     ) -> dict[str, Any]:
-        """JSON record without raw tensors, which remain available on the msgpack wire.
+        """JSON record without raw tensors, which a python-mode `model_dump` keeps.
         Per-token node streams are numpy arrays (`graph.RECORD_STREAMS`): encode it with
         `to_json`, or with orjson and `OPT_SERIALIZE_NUMPY`. Per-token float streams are
         rounded to `float_decimals` (`None` keeps every digit). `exclude` is a pydantic

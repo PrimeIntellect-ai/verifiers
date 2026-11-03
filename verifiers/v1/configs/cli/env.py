@@ -2,14 +2,14 @@
 every config that owns one. `merge_defaults` (`utils/generic.py`) layers shared env
 defaults under it.
 
-A run composes the blocks it needs — `[env]` (what runs, `configs/env.py`),
-`[serve]` (how it's hosted, `configs/serve.py`) — plus its own fields. Nothing here is a base class: the eval
+A run composes the blocks it needs — `[env]` (what runs, `configs/env.py`) — plus its
+own fields. Nothing here is a base class: the eval
 CLI, GEPA, and a trainer each declare their blocks and call these.
 
 Declare the env field as `SerializeAsAny[EnvConfig] = Field(default_factory=
 single_agent_env_config)`. The `SerializeAsAny` is load-bearing: pydantic serializes
 by declared type, so a plain `EnvConfig` silently drops a narrowed subclass's agents
-and knobs from `model_dump()` — the env-server wire's payload."""
+and knobs from `model_dump()`."""
 
 from pydantic import ValidationError
 from pydantic_config import BaseConfig

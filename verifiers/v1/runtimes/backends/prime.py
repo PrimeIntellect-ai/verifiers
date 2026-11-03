@@ -111,7 +111,7 @@ async def leased_client() -> AsyncIterator[Any]:
 def set_base_sandbox_labels(labels: list[str]) -> None:
     """Set process-wide base labels attached to every Prime sandbox, extended by each
     runtime's ``PrimeConfig.labels``. Call it in the process that creates the sandboxes
-    (env-server workers set it via their setup hook) — e.g. a trainer stamps its run
+    (a host that spawns worker processes sets it in each one) — e.g. a trainer stamps its run
     name so every sandbox of a run is findable on the platform."""
     global BASE_LABELS
     BASE_LABELS = list(labels)

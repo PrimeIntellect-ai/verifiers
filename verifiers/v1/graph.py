@@ -69,7 +69,7 @@ RECORD_FLOAT_DECIMALS = 4
 """Default precision of per-token float streams in JSON records (`to_record`). Full-precision
 digits are noise to every record reader and the least compressible bytes of a trace; four
 decimals leave a logprob within 1e-4 of what the trainer saw. `to_record(float_decimals=...)`
-overrides it per dump (`None` keeps every digit). The msgpack wire (`mode="python"`) keeps
+overrides it per dump (`None` keeps every digit). A python-mode dump keeps
 full precision — training never reads the record."""
 
 
@@ -115,7 +115,7 @@ def _serialize_stream(
     values: list | np.ndarray, info: FieldSerializationInfo, rounded: bool
 ) -> list | dict:
     """JSON dumps: a list. Python dumps: a list too, unless the context sets `token_arrays`,
-    when the msgpack wire carries a raw-bytes `__nd__` dict."""
+    when it is a raw-bytes `__nd__` dict for a binary wire."""
     context = info.context or {}
     if info.mode_is_json():
         decimals = context.get("float_decimals", RECORD_FLOAT_DECIMALS)

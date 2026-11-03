@@ -54,7 +54,7 @@ def _as_error(e: Exception) -> Error:
 class RunSlot:
     """One planned episode, observable while it happens: `traces` collects the
     current attempt (a retry restarts the list), `episode`/`done` land when final.
-    A runner that can't watch live traces (the env-server path) stamps `started`
+    A runner that can't watch live traces stamps `started`
     at dispatch so the slot still reads as running."""
 
     task: Task

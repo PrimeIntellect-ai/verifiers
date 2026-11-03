@@ -352,7 +352,7 @@ def test_wire_trace_round_trip(history_type):
         "answer": "a"
     }  # taskset extras preserved on WireTaskData
 
-    # the env-server wire form (a plain model_dump) loads too
+    # a plain model_dump loads too
     assert vf.WireTrace.model_validate(tr.model_dump()).num_branches == 2
 
 

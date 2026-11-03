@@ -11,7 +11,7 @@ _process_scope: str | None = None
 
 def run_scope() -> str:
     """``$VF_RUN_ID``, set by every entrypoint (the `vf-*` CLIs and the prime-rl launchers)
-    and inherited by spawned env servers and pool workers. A process started without one
+    and inherited by every process they spawn. A process started without one
     gets a scope of its own, minted once per process."""
     global _process_scope
     run_id = os.environ.get("VF_RUN_ID")
