@@ -21,17 +21,24 @@ class ToolsetTimeoutConfig(BaseConfig):
     """Time to start serving, including `setup()`, such as to build an index."""
 
 
-class ToolsetConfig(BaseConfig):
-    colocated: bool = False
+class BaseToolsetConfig(BaseConfig):
+    """Settings every tool server has, whether per-task or shared."""
+
     runtime: RuntimeConfig = SubprocessConfig()
-    """Where the server runs: the evaluator by default. A Prime runtime beside a Prime
-    workspace without a task service spec is a VM of the server's own that joins the
-    workspace over the rollout's private network, under its own egress policy."""
+    """Where the server runs: the evaluator by default."""
     url: str | None = None
+    timeout: ToolsetTimeoutConfig = ToolsetTimeoutConfig()
+
+
+class ToolsetConfig(BaseToolsetConfig):
+    """A per-task tool server. A Prime `runtime` beside a Prime workspace without a task
+    service spec is a VM of the server's own that joins the workspace over the rollout's
+    private network, under its own egress policy."""
+
+    colocated: bool = False
     service: str | None = None
     """Run the server in a named native Prime service VM. The harness reaches it
     over the deployment's private network, using its LAN hostname."""
-    timeout: ToolsetTimeoutConfig = ToolsetTimeoutConfig()
 
     @model_validator(mode="after")
     def _one_placement(self):
@@ -50,10 +57,8 @@ class ToolsetConfig(BaseConfig):
         return self
 
 
-class SharedToolsetConfig(BaseConfig):
-    runtime: RuntimeConfig = SubprocessConfig()
-    url: str | None = None
-    timeout: ToolsetTimeoutConfig = ToolsetTimeoutConfig()
+class SharedToolsetConfig(BaseToolsetConfig):
+    pass
 
 
 class Toolset(ServerBase[ConfigT, StateT]):

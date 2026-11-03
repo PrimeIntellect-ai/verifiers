@@ -30,7 +30,7 @@ from verifiers.v1.mcp.server import (
     ServerBase,
     state_signature,
 )
-from verifiers.v1.mcp.toolset import ToolsetTimeoutConfig
+from verifiers.v1.mcp.toolset import BaseToolsetConfig, ToolsetTimeoutConfig
 from verifiers.v1.runtimes import (
     Runtime,
     backend_cls,
@@ -66,14 +66,17 @@ _PACKAGE_BUILD_STATES: dict[
 _PROBE = """
 import sys, time, urllib.error, urllib.request
 deadline = time.monotonic() + float(sys.argv[2])
-while time.monotonic() < deadline:
+while True:
     try:
         urllib.request.urlopen(sys.argv[1], timeout=2); sys.exit(0)
     except urllib.error.HTTPError:
         sys.exit(0)
     except Exception:
-        time.sleep(1)
-sys.exit(1)
+        pass
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        sys.exit(1)
+    time.sleep(min(1, remaining))
 """
 
 
@@ -326,13 +329,17 @@ async def log_tail(runtime: Runtime, log: str, limit: int = 2000) -> str:
 async def _read_back_port(runtime: Runtime, path: str, deadline: float) -> int:
     """Poll the server's port file until the server writes it."""
     loop = asyncio.get_running_loop()
-    while loop.time() < deadline:
+    while True:
         with contextlib.suppress(Exception):
             data = (await runtime.read(path)).decode().strip()
             if data.isdigit():
                 return int(data)
-        await asyncio.sleep(1)
-    raise ToolsetError(f"server did not report its port at {path} in its runtime")
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            raise ToolsetError(
+                f"server did not report its port at {path} in its runtime"
+            )
+        await asyncio.sleep(min(1, remaining))
 
 
 async def serve_in_runtime(
@@ -390,7 +397,12 @@ async def serve_in_runtime(
         log = f"/tmp/vf_tool_{server.server_name}-{uuid.uuid4().hex[:8]}.log"
     loop = asyncio.get_running_loop()
     # Servers without a toolset config, such as custom `ServerBase` subclasses, keep the default.
-    timeout = getattr(server.config, "timeout", ToolsetTimeoutConfig()).startup
+    timeouts = (
+        server.config.timeout
+        if isinstance(server.config, BaseToolsetConfig)
+        else ToolsetTimeoutConfig()
+    )
+    timeout = timeouts.startup
     deadline = loop.time() + (math.inf if timeout is None else timeout)
     await runtime.run_background(command, env, log)
     if fixed is not None:
