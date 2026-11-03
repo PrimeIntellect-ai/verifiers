@@ -78,6 +78,13 @@ logger = logging.getLogger(__name__)
 MAX_REQUEST_BODY = 1024**3  # 1 GiB (aiohttp's default is 1 MiB)
 HEALTH_CHECK_INTERVAL_SECONDS = 20
 HEALTH_CHECK_FAILURE_THRESHOLD = 2
+# A fresh prime tunnel's public edge can take a few seconds to accept connections (seen in
+# hosted RL: ~20% of public probes hit a 2 s ConnectTimeout while real traffic on the same
+# tunnels succeeded), so a single startup probe discarded healthy servers and failed the
+# rollout that asked for one. Give the connect more time and retry startup probes.
+HEALTH_PROBE_CONNECT_TIMEOUT_SECONDS = 5.0
+STARTUP_PROBE_ATTEMPTS = 3
+STARTUP_PROBE_RETRY_DELAY_SECONDS = 1.0  # doubled after each failed attempt
 KEEPALIVE_INTERVAL_SECONDS = 3
 # A streamed turn commits its SSE stream only after this long: a result within it keeps
 # its HTTP status (so the harness SDK can retry 5xx/429), and a longer one is kept alive
@@ -479,7 +486,7 @@ class InterceptionServer(Interception):
         url = f"{base_url.rstrip('/')}/__interception/healthz"
         try:
             async with httpx.AsyncClient(
-                timeout=httpx.Timeout(5.0, connect=2.0)
+                timeout=httpx.Timeout(5.0, connect=HEALTH_PROBE_CONNECT_TIMEOUT_SECONDS)
             ) as client:
                 response = await client.get(url)
             observed = response.json()
@@ -517,6 +524,28 @@ class InterceptionServer(Interception):
             observed_tunnel,
         )
         return matched
+
+    async def _probe_startup(self, scope: str, base_url: str) -> bool:
+        """`_probe_health` with retries: up to `STARTUP_PROBE_ATTEMPTS` tries, backing off
+        from `STARTUP_PROBE_RETRY_DELAY_SECONDS`. Stops early on a terminal tunnel loss."""
+        delay = STARTUP_PROBE_RETRY_DELAY_SECONDS
+        for attempt in range(1, STARTUP_PROBE_ATTEMPTS + 1):
+            if await self._probe_health(scope, base_url):
+                if attempt > 1:
+                    logger.info(
+                        "interception startup probe passed on retry: scope=%s attempt=%d "
+                        "server_id=%s tunnel_id=%s",
+                        scope,
+                        attempt,
+                        self.server_id,
+                        self.tunnel_id,
+                    )
+                return True
+            if attempt == STARTUP_PROBE_ATTEMPTS or not self.healthy:
+                return False
+            await asyncio.sleep(delay)
+            delay *= 2
+        return False
 
     async def _watch_health(self) -> None:
         """Quarantine a persistently unreachable URL without interrupting its rollouts."""
@@ -623,10 +652,10 @@ class InterceptionServer(Interception):
             )
             self.tunnel_id = getattr(self.tunnel, "tunnel_id", None)
         local_url = f"http://127.0.0.1:{self.port}"
-        local_healthy = await self._probe_health("local", local_url)
+        local_healthy = await self._probe_startup("local", local_url)
         public_healthy = True
-        if self.tunnel is not None:
-            public_healthy = await self._probe_health("public", self.base_url)
+        if self.tunnel is not None and local_healthy:
+            public_healthy = await self._probe_startup("public", self.base_url)
         # Keep a concurrent terminal tunnel-loss verdict; startup must not resurrect it.
         self.healthy = self.healthy and local_healthy and public_healthy
         if self.tunnel is not None and self.healthy:

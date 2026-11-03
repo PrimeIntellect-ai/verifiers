@@ -115,6 +115,7 @@ async def test_failed_startup_probe_rejects_registration_before_mutation(monkeyp
     server.tunnel = FakeTunnel()
     watch = AsyncMock()
     monkeypatch.setattr(server, "_watch_health", watch)
+    monkeypatch.setattr(server_module, "STARTUP_PROBE_RETRY_DELAY_SECONDS", 0)
 
     async def failed_probe(scope, base_url):
         return False
@@ -132,6 +133,83 @@ async def test_failed_startup_probe_rejects_registration_before_mutation(monkeyp
     assert session.client is None
     assert server.sessions == {}
     watch.assert_not_called()
+
+
+async def test_startup_public_probe_retries_transient_failures(monkeypatch):
+    server = InterceptionServer()
+    server.tunnel = FakeTunnel()
+    monkeypatch.setattr(server, "_watch_health", AsyncMock())
+    monkeypatch.setattr(server_module, "STARTUP_PROBE_RETRY_DELAY_SECONDS", 0)
+    calls = []
+
+    async def probe(scope, base_url):
+        calls.append(scope)
+        # The fresh tunnel's public edge refuses the first two connects.
+        return scope == "local" or calls.count("public") >= 3
+
+    monkeypatch.setattr(server, "_probe_health", probe)
+    async with server:
+        assert server.healthy
+        assert calls == ["local", "public", "public", "public"]
+
+
+async def test_startup_probe_gives_up_after_configured_attempts(monkeypatch):
+    server = InterceptionServer()
+    server.tunnel = FakeTunnel()
+    monkeypatch.setattr(server, "_watch_health", AsyncMock())
+    monkeypatch.setattr(server_module, "STARTUP_PROBE_RETRY_DELAY_SECONDS", 0)
+    calls = []
+
+    async def probe(scope, base_url):
+        calls.append(scope)
+        return scope == "local"
+
+    monkeypatch.setattr(server, "_probe_health", probe)
+    async with server:
+        assert not server.healthy
+        assert calls == ["local"] + ["public"] * server_module.STARTUP_PROBE_ATTEMPTS
+
+
+async def test_startup_probe_skips_public_when_local_fails(monkeypatch):
+    server = InterceptionServer()
+    server.tunnel = FakeTunnel()
+    monkeypatch.setattr(server, "_watch_health", AsyncMock())
+    monkeypatch.setattr(server_module, "STARTUP_PROBE_RETRY_DELAY_SECONDS", 0)
+    calls = []
+
+    async def probe(scope, base_url):
+        calls.append(scope)
+        return False
+
+    monkeypatch.setattr(server, "_probe_health", probe)
+    async with server:
+        assert not server.healthy
+        assert calls == ["local"] * server_module.STARTUP_PROBE_ATTEMPTS
+
+
+async def test_startup_probe_stops_retrying_after_tunnel_loss(monkeypatch):
+    server = InterceptionServer()
+    server.tunnel = FakeTunnel()
+    monkeypatch.setattr(server, "_watch_health", AsyncMock())
+    monkeypatch.setattr(server_module, "STARTUP_PROBE_RETRY_DELAY_SECONDS", 0)
+    calls = []
+
+    async def probe(scope, base_url):
+        calls.append(scope)
+        if scope == "public":
+            server.healthy = False  # terminal tunnel-gone verdict during the probe
+            return False
+        return True
+
+    monkeypatch.setattr(server, "_probe_health", probe)
+    async with server:
+        assert not server.healthy
+        assert calls == ["local", "public"]
+
+
+def test_health_probe_allows_five_second_connect():
+    assert server_module.HEALTH_PROBE_CONNECT_TIMEOUT_SECONDS == 5.0
+    assert server_module.STARTUP_PROBE_ATTEMPTS == 3
 
 
 @pytest.fixture
