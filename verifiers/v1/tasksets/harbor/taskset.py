@@ -87,6 +87,12 @@ METRICS_JSON = "/logs/verifier/metrics.json"
 """A Harbor grader's optional report beside its reward (SWE-Marathon's `partial_score`,
 test and gate counts): its top-level finite numbers and booleans become trace metrics.
 The reward file alone decides the grade."""
+REWARD_DETAILS_JSON = "/logs/verifier/reward-details.json"
+"""RewardKit's report (most SWE-Marathon-100 graders): its continuous scores, top-level
+numbers or a top-level object's `score` (`"training_score": {"score": 0.4}`), become
+trace metrics under their key, below metrics.json and the reward file's own keys."""
+MAX_REPORT_BYTES = 16 * 1024 * 1024
+"""RewardKit lists every case it graded, so its report can run to megabytes."""
 AGENT_LOGS = "/logs/agent"
 TRAJECTORY = f"{AGENT_LOGS}/trajectory.json"
 FINAL_REPLY = f"{AGENT_LOGS}/final_reply.md"
@@ -693,7 +699,7 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
         # service user (`su postgres -c "pg_ctl -l /logs/verifier/pg.log"`).
         command = (
             "rm -f /logs/verifier/reward.json /logs/verifier/reward.txt "
-            "/logs/verifier/metrics.json && "
+            "/logs/verifier/metrics.json /logs/verifier/reward-details.json && "
             f"mkdir -p /logs/verifier && chmod 777 /logs/verifier && {stage}"
         )
         result = await runtime.run(["sh", "-c", command], {})
@@ -769,7 +775,8 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
                 f"available keys: {sorted(scores)}. "
                 "Set task.reward_key to select a named verifier reward."
             )
-        metrics = await self.read_metrics_json(runtime)
+        metrics = await self.read_report(runtime, REWARD_DETAILS_JSON, scored=True)
+        metrics.update(await self.read_report(runtime, METRICS_JSON))
         metrics.pop(key, None)
         metrics.update({name: value for name, value in scores.items() if name != key})
         trace.record_metrics(metrics)
@@ -927,26 +934,31 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
             resolve_env(self.scoring.env or {}),
         )
 
-    async def read_metrics_json(self, runtime: Runtime) -> dict[str, float]:
-        """The top-level finite numbers and booleans of the grader's metrics.json, or
-        nothing when it wrote none. A diagnostic only: an unreadable or malformed file
-        is logged and left out, never a grading failure."""
+    async def read_report(
+        self, runtime: Runtime, path: str, scored: bool = False
+    ) -> dict[str, float]:
+        """The top-level finite numbers and booleans of a grader's JSON report, or
+        nothing when it wrote none; `scored` also takes a top-level object's numeric
+        `score` under the object's key. A diagnostic only: an unreadable or malformed
+        report is logged and left out, never a grading failure."""
         try:
-            raw = await runtime.read(METRICS_JSON, max_bytes=MAX_REWARD_BYTES)
+            raw = await runtime.read(path, max_bytes=MAX_REPORT_BYTES)
         except (SandboxError, OSError):
             return {}
         try:
             report = json.loads(raw)
         except ValueError:
-            logger.warning("%s: unreadable %s", self.data.name, METRICS_JSON)
+            logger.warning("%s: unreadable %s", self.data.name, path)
             return {}
         if not isinstance(report, dict):
             return {}
-        return {
-            name: float(value)
-            for name, value in report.items()
-            if isinstance(value, (bool, int, float)) and math.isfinite(value)
-        }
+        values = {}
+        for name, value in report.items():
+            if scored and isinstance(value, dict):
+                value = value.get("score")
+            if isinstance(value, (bool, int, float)) and math.isfinite(value):
+                values[name] = float(value)
+        return values
 
     async def read_reward_json(self, runtime: Runtime) -> dict[str, float] | None:
         """JSON takes precedence whenever present; invalid or unreadable JSON fails.

@@ -30,10 +30,14 @@ class FakeRuntime:
         reward: bytes | None,
         listing: str | Exception = LOGS,
         metrics: bytes | None = None,
+        details: bytes | None = None,
     ):
         self.reward = reward
         self.listing = listing
-        self.metrics = metrics
+        self.reports = {
+            "/logs/verifier/metrics.json": metrics,
+            "/logs/verifier/reward-details.json": details,
+        }
 
     async def run(self, argv, env):
         if argv == TEST_SH:
@@ -48,8 +52,9 @@ class FakeRuntime:
         return ProgramResult(exit_code=1, stdout="", stderr="")
 
     async def read(self, path, max_bytes=None):
-        assert path in ("/logs/verifier/reward.txt", "/logs/verifier/metrics.json")
-        data = self.reward if path.endswith("reward.txt") else self.metrics
+        data = (
+            self.reward if path == "/logs/verifier/reward.txt" else self.reports[path]
+        )
         if data is None:
             raise SandboxError(f"{path} not found", kind="missing")
         return data
@@ -92,6 +97,24 @@ async def test_the_graders_metrics_json_lands_on_the_trace_as_metrics():
         "partial_score": 0.81,
         "tests_passed": 214.0,
         "anti_cheat": 1.0,
+    }
+
+
+async def test_rewardkit_scores_land_on_the_trace_below_metrics_json():
+    # RewardKit's report: continuous scores as numbers or as an object's `score`.
+    task = make_task()
+    trace = make_trace(task)
+    details = (
+        b'{"training_score": {"kind": "diagnostic", "lambda": 0.2, "score": 0.4},'
+        b' "deterministic": {"kind": "programmatic", "score": 0.5, "criteria": []},'
+        b' "binary_reward": 0, "formula": "training = D", "judge": {"status": "absent"}}'
+    )
+    runtime = FakeRuntime(b"0", metrics=b'{"deterministic": 0.55}', details=details)
+    assert await task.run_verifier(runtime, trace) == {"reward": 0.0}
+    assert trace.metrics == {
+        "training_score": 0.4,
+        "deterministic": 0.55,
+        "binary_reward": 0.0,
     }
 
 
