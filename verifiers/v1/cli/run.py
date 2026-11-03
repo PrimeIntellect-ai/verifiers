@@ -57,15 +57,19 @@ async def run_episodes(config: RunnerConfig) -> list[Episode]:
         await append_episode(out, episode, write_lock)
 
     async with env.serving():
-        return list(
-            await asyncio.gather(
-                *(
-                    env.run_slot(slot, ctx, semaphore, on_complete)
-                    for task in taskset
-                    for slot in env.slots(task, config.num_rollouts)
-                )
-            )
-        )
+        rollouts = [
+            asyncio.ensure_future(env.run_slot(slot, ctx, semaphore, on_complete))
+            for task in taskset
+            for slot in env.slots(task, config.num_rollouts)
+        ]
+        try:
+            return list(await asyncio.gather(*rollouts))
+        except BaseException:
+            # Unwind every sibling before `serving()` tears down the resources they use.
+            for rollout in rollouts:
+                rollout.cancel()
+            await asyncio.gather(*rollouts, return_exceptions=True)
+            raise
 
 
 def main(argv: list[str] | None = None) -> None:
