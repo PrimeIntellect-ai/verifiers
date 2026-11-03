@@ -2,7 +2,7 @@
 
 Registered as the `gepa` console script. Optimizes a v1 taskset's `Task.system_prompt` via
 GEPA (Genetic-Pareto): alternating rollouts with a teacher LM reflecting on results — see
-`verifiers.v1.gepa`. CLI resolution mirrors `eval`/`serve` (`verifiers.v1.cli.resolve`): a
+`verifiers.v1.gepa`. CLI resolution goes through `verifiers.v1.cli.resolve`: a
 leading bare token is the taskset id, the `env` subconfig is narrowed from the ids so
 `--env.taskset.*` / `--env.<role>.*` stay typed and `-h` renders them, `@ file.toml` loads,
 and the actual parse is `pydantic_config.cli`.

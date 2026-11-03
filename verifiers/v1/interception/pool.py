@@ -6,8 +6,8 @@ is rate-capped per API token — so one-tunnel-per-rollout caps how wide a remot
 server) can fan out. Each shared `InterceptionServer` multiplexes rollouts behind one
 tunnel; the harness is unchanged, authenticating with a per-rollout secret the server routes
 by. Two shapes: `ElasticInterceptionPool` warms one server, then grows on demand (`multiplex`
-rollouts each, always prime tunnels — the only kind the framework can mint) and fits both the
-bounded eval runner and the env server's unbounded request load; `StaticInterceptionPool` is a
+rollouts each, always prime tunnels — the only kind the framework can mint) and fits both a
+bounded eval runner and an unbounded request load; `StaticInterceptionPool` is a
 fixed set of servers (each with its own tunnel choice, e.g. bring-your-own endpoints), balanced
 least-loaded.
 """

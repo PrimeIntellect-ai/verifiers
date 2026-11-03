@@ -10,9 +10,9 @@ from typing_extensions import TypedDict
 
 
 def encode_ndarray(arr: np.ndarray) -> dict:
-    """A numpy array as a msgpack-safe dict (dtype + shape + raw bytes). The bytes ride the
-    env-server wire natively via msgpack's `bin` type — no base64 — so the response must be
-    packed from `model_dump(mode="python")` (`mode="json"` would coerce the bytes to str)."""
+    """A numpy array as a msgpack-safe dict (dtype + shape + raw bytes). The bytes ride a
+    binary wire natively (msgpack's `bin` type) — no base64 — so a payload for such a wire
+    must come from `model_dump(mode="python")` (`mode="json"` would coerce the bytes to str)."""
     arr = np.ascontiguousarray(arr)
     return {
         "__nd__": True,
@@ -35,8 +35,8 @@ def as_list(values: list | np.ndarray) -> list:
 def _token_stream(dtype: type[np.generic], item_type: str):
     """The field type of a per-token stream: a numpy array of `dtype`.
 
-    One list entry per token is a Python object the cyclic garbage collector walks and the
-    msgpack wire packs one by one; an array is one object it skips and raw bytes on the wire, so
+    One list entry per token is a Python object the cyclic garbage collector walks and a
+    serializer packs one by one; an array is one object it skips and raw bytes on the wire, so
     a process holding many long episodes (an RL orchestrator) keeps full collections short.
     Validation takes a list, an array or an `__nd__` dict; the models that hold streams
     serialize them (`graph.MessageNode.serialize_token_stream`). Typed as an array alone,

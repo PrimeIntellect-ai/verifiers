@@ -3,7 +3,6 @@ import random
 import numpy as np
 
 from verifiers.v1.graph import MessageNode
-from verifiers.v1.serve.delta import dump, pack, unpack
 from verifiers.v1.trace import Branch
 from verifiers.v1.types import AssistantMessage, UserMessage
 
@@ -35,26 +34,6 @@ def test_validated_streams_are_typed_arrays():
     # Defaults are typed arrays too.
     bare = assistant()
     assert bare.token_ids.dtype == np.int32 and bare.logprobs.dtype == np.float32
-
-
-def test_token_arrays_wire_round_trip():
-    node = assistant(
-        token_ids=[1, 2, 130_000],
-        mask=[False, True, True],
-        logprobs=[-0.125, -0.25],
-        loss_weights={"rl": [0.0, 1.0, 1.0]},
-    )
-    wire = unpack(pack(dump(node, context={"token_arrays": True})))
-    assert wire["token_ids"]["__nd__"] and wire["loss_weights"]["rl"]["__nd__"]
-    back = MessageNode.model_validate(wire)
-    assert back.token_ids.tolist() == [1, 2, 130_000]
-    assert back.mask.tolist() == [False, True, True]
-    assert back.logprobs.tolist() == [-0.125, -0.25]
-    assert back.loss_weights["rl"].tolist() == [0.0, 1.0, 1.0]
-    # Without the context the wire keeps lists, which validate the same way.
-    plain = unpack(pack(dump(node)))
-    assert plain["token_ids"] == [1, 2, 130_000]
-    assert MessageNode.model_validate(plain).token_ids.dtype == np.int32
 
 
 def test_json_records_stay_lists():
@@ -104,7 +83,7 @@ def test_spread_matches_the_list_implementation():
                 else (lambda **f: MessageNode(message=UserMessage(content="u"), **f))
             )
             node = node_cls(token_ids=list(range(n)), mask=mask, logprobs=values)
-            if rng.random() < 0.5:  # env-server nodes hold lists
+            if rng.random() < 0.5:  # unvalidated nodes hold lists
                 node = MessageNode.model_construct(
                     **{**node.__dict__, "mask": mask, "logprobs": values}
                 )
@@ -120,7 +99,7 @@ def test_spread_matches_the_list_implementation():
 
 
 def test_committed_nodes_own_typed_arrays():
-    """The env server builds nodes unvalidated: each still holds typed arrays, owns them (a view
+    """A rollout builds nodes unvalidated: each still holds typed arrays, owns them (a view
     would retain the turn's full-context prompt) and keeps no copy of identical renderer ids."""
     import verifiers.v1 as vf
     from verifiers.v1 import graph

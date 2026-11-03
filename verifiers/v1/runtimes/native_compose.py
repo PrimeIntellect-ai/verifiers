@@ -605,7 +605,7 @@ async def _import_image(client, project, container: str, config: PrimeConfig) ->
     name = "vf-compose-" + hashlib.sha256(identity.encode()).hexdigest()
     locks = CACHE_DIR / "compose-images"
     locks.mkdir(parents=True, exist_ok=True)
-    # Env-server workers share the build cache; only one prepares a given image.
+    # Worker processes share the build cache; only one prepares a given image.
     with (locks / name).open("a") as lock:
         while True:
             try:
