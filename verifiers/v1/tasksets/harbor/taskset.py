@@ -1095,7 +1095,12 @@ def verifier_box_data(data: HarborData) -> HarborData:
             if data.verifier_image is None
             else False,
             "env": dict(verifier.env),
-            "healthcheck": verifier.healthcheck,
+            # Harbor healthchecks only the agent's environment: a separate verifier's
+            # box is started and graded without one (harbor/trial/trial.py), and a
+            # `[verifier.environment.healthcheck]` copied from `[environment]` probes a
+            # service only the agent's box runs (TB4 kv-live-surgery, 11-03). Parsed
+            # data keeps the field so the task's key does not move.
+            "healthcheck": None,
             "skills": [],
             "mcp_servers": [],
             "tools": [],

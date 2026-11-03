@@ -194,3 +194,28 @@ def test_a_compose_task_declares_its_host_image(tmp_path, monkeypatch):
     [loaded] = list(harbor.HarborTaskset(harbor.HarborConfig()))
     assert loaded.data.compose_host_image == "prime/team/stack:p-1"
     assert loaded.deployment_spec().host_image == "prime/team/stack:p-1"
+
+
+def test_a_separate_verifier_box_is_not_healthchecked_as_harbor_does(tmp_path):
+    """Harbor runs a healthcheck only on the agent's environment; TB4 kv-live-surgery
+    declares one under `[verifier.environment]` that probes the agent box's server, so
+    honoring it failed every grade."""
+    task = tmp_path / "probe"
+    (task / "tests").mkdir(parents=True)
+    (task / "tests/test.sh").write_text("exit 0\n")
+    (task / "instruction.md").write_text("Implement the requested change.")
+    probe = (
+        'command = "nc -z 127.0.0.1 9000"\nretries = 30\n'
+        "start_period_sec = 1.0\ninterval_sec = 1.0\ntimeout_sec = 1.0\n"
+    )
+    (task / "task.toml").write_text(
+        '[environment]\ndocker_image = "python:3.11-slim"\n'
+        f"[environment.healthcheck]\n{probe}"
+        '[verifier]\nenvironment_mode = "separate"\n'
+        '[verifier.environment]\ndocker_image = "python:3.12-slim"\n'
+        f"[verifier.environment.healthcheck]\n{probe}"
+    )
+    data = harbor.parse_task(task, 0, harbor.HarborConfig())
+    assert data.healthcheck is not None
+    assert data.verifier.healthcheck is not None  # kept, so the task key does not move
+    assert harbor.verifier_box_data(data).healthcheck is None
