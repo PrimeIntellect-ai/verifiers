@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import math
 import secrets
 import shlex
 import shutil
@@ -29,7 +30,7 @@ from verifiers.v1.mcp.server import (
     ServerBase,
     state_signature,
 )
-from verifiers.v1.mcp.toolset import DEFAULT_STARTUP_TIMEOUT
+from verifiers.v1.mcp.toolset import ToolsetTimeoutConfig
 from verifiers.v1.runtimes import (
     Runtime,
     backend_cls,
@@ -389,8 +390,8 @@ async def serve_in_runtime(
         log = f"/tmp/vf_tool_{server.server_name}-{uuid.uuid4().hex[:8]}.log"
     loop = asyncio.get_running_loop()
     # Servers without a toolset config, such as custom `ServerBase` subclasses, keep the default.
-    timeout = getattr(server.config, "startup_timeout", DEFAULT_STARTUP_TIMEOUT)
-    deadline = loop.time() + timeout
+    timeout = getattr(server.config, "timeout", ToolsetTimeoutConfig()).startup
+    deadline = loop.time() + (math.inf if timeout is None else timeout)
     await runtime.run_background(command, env, log)
     if fixed is not None:
         port = fixed
@@ -412,7 +413,7 @@ async def serve_in_runtime(
     if probe.exit_code != 0:
         raise ToolsetError(
             f"tool server {server.server_name!r} not serving in runtime after "
-            f"{timeout:g}s (raise its startup_timeout): {await log_tail(runtime, log)}"
+            f"{timeout}s (raise its timeout.startup): {await log_tail(runtime, log)}"
         )
     return port
 

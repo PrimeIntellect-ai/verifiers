@@ -13,7 +13,12 @@ from verifiers.v1.utils.decorators import discover_decorated
 if TYPE_CHECKING:
     from mcp.server.mcpserver import MCPServer
 
-DEFAULT_STARTUP_TIMEOUT = 600.0
+
+class ToolsetTimeoutConfig(BaseConfig):
+    """Timeouts (in seconds) for a launched tool server; `None` waits indefinitely."""
+
+    startup: float | None = Field(600.0, gt=0)
+    """Time to start serving, including `setup()`, such as to build an index."""
 
 
 class ToolsetConfig(BaseConfig):
@@ -26,8 +31,7 @@ class ToolsetConfig(BaseConfig):
     service: str | None = None
     """Run the server in a named native Prime service VM. The harness reaches it
     over the deployment's private network, using its LAN hostname."""
-    startup_timeout: float = Field(DEFAULT_STARTUP_TIMEOUT, gt=0)
-    """Seconds the server may take to start serving, such as to build an index."""
+    timeout: ToolsetTimeoutConfig = ToolsetTimeoutConfig()
 
     @model_validator(mode="after")
     def _one_placement(self):
@@ -49,8 +53,7 @@ class ToolsetConfig(BaseConfig):
 class SharedToolsetConfig(BaseConfig):
     runtime: RuntimeConfig = SubprocessConfig()
     url: str | None = None
-    startup_timeout: float = Field(DEFAULT_STARTUP_TIMEOUT, gt=0)
-    """Seconds the server may take to start serving, such as to build an index."""
+    timeout: ToolsetTimeoutConfig = ToolsetTimeoutConfig()
 
 
 class Toolset(ServerBase[ConfigT, StateT]):
