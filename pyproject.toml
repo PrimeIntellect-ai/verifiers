@@ -151,6 +151,7 @@ renderers = false
 
 [project.scripts]
 vf-eval = "verifiers.v1.cli.eval.main:main"
+vf-run = "verifiers.v1.cli.run:main"
 vf-validate = "verifiers.v1.cli.validate:main"
 vf-debug = "verifiers.v1.cli.debug:main"
 vf-replay = "verifiers.v1.cli.replay:main"
