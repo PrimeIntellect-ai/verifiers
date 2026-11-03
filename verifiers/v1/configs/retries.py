@@ -1,4 +1,4 @@
-"""Whole-rollout retry rules — each agent's own and the env's episode fallback."""
+"""Retry rules shared by episode, agent rollout, and isolated scoring boundaries."""
 
 import re
 from typing import Annotated, Literal
@@ -36,7 +36,7 @@ class RetryRule(BaseConfig):
 
 
 class RetryConfig(BaseConfig):
-    """Ordered rules for opt-in whole-rollout retries.
+    """Ordered rules for retries at the owning config’s execution boundary.
 
     Fields within a rule are ANDed. An exhausted rule never falls through to a
     later rule for that error; another captured error can still trigger a retry.

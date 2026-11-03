@@ -12,9 +12,8 @@ a `solve_rate` metric.
 Seats are deliberately heterogeneous: point the proposer at a code-running harness
 in a real sandbox and keep the solvers on a cheap tool-less chat loop —
 
-    uv run vf-eval proposer-solver -n 4 \
-      --env.proposer.harness.id codex --env.proposer.runtime.type prime \
-      --env.solver.harness.id null
+    --env.proposer.harness.id codex --env.proposer.runtime.type prime \
+    --env.solver.harness.id null
 
 Train-side, the seats flip independently per run (`--env.train_solver false`
 trains only on proposer rollouts; both default trainable, late-bound to the run's

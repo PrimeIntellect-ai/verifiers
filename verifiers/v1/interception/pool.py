@@ -17,29 +17,18 @@ import contextlib
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import Literal
 
-from pydantic import Field
-
-from verifiers.v1.interception.base import BaseInterceptionConfig, Interception, Slot
-from verifiers.v1.interception.server import (
-    InterceptionServer,
+from verifiers.v1.configs.interception import (
+    ElasticInterceptionPoolConfig,
     InterceptionServerConfig,
+    PrimeTunnelConfig,
+    StaticInterceptionPoolConfig,
 )
-from verifiers.v1.interception.tunnel import PrimeTunnelConfig
+from verifiers.v1.interception.base import Interception, Slot
+from verifiers.v1.interception.server import InterceptionServer
 from verifiers.v1.session import RolloutSession
 
 logger = logging.getLogger(__name__)
-
-
-class StaticInterceptionPoolConfig(BaseInterceptionConfig):
-    """A fixed set of interception servers, each configured like a `server` type; rollouts
-    land on the least-loaded one. The shape for multiple bring-your-own endpoints (one
-    `custom` tunnel per server)."""
-
-    type: Literal["static"] = "static"
-    servers: list[InterceptionServerConfig] = Field(min_length=1)
-    """One entry per server, each with its own `tunnel` choice."""
 
 
 class StaticInterceptionPool(Interception):
@@ -71,17 +60,6 @@ class StaticInterceptionPool(Interception):
         server = min(self.servers, key=lambda s: s.load)
         async with server.acquire(session) as slot:
             yield slot
-
-
-class ElasticInterceptionPoolConfig(BaseInterceptionConfig):
-    """An eagerly warmed interception server, then more grown on demand: `multiplex`
-    rollouts share one server (and, behind a remote consumer, one prime tunnel). The default."""
-
-    type: Literal["elastic"] = "elastic"
-    multiplex: int = Field(32, ge=1)
-    """Rollouts that share one interception server (and tunnel). N concurrent rollouts use
-    ~N/multiplex servers + tunnels instead of one each — key past the per-token tunnel cap.
-    1 = a server (+ tunnel) per rollout."""
 
 
 class ElasticInterceptionPool(Interception):

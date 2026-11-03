@@ -233,9 +233,19 @@ class ServerBase(Generic[ConfigT, StateT]):
             token = _call_state.set(state)
             try:
                 before = self._state_adapter.dump_json(state) if sync_state else None
-                result = fn(*args, **kwargs)
-                if inspect.isawaitable(result):
-                    result = await result
+                try:
+                    result = fn(*args, **kwargs)
+                    if inspect.isawaitable(result):
+                        result = await result
+                except Exception as e:
+                    from mcp.server.mcpserver.exceptions import ToolError
+                    from mcp.shared.exceptions import MCPError
+
+                    if isinstance(e, (ToolError, MCPError)):
+                        raise
+                    # MCPServer withholds an unexpected exception's text from the client, but
+                    # tools raise to tell the model what went wrong.
+                    raise ToolError(str(e)) from e
                 if before is not None:
                     await self._push_state(before)
                 return result

@@ -1,34 +1,27 @@
 from collections.abc import AsyncIterator, Iterable
 from contextlib import asynccontextmanager
-from typing import TYPE_CHECKING, Annotated
+from typing import TYPE_CHECKING
 
-from pydantic import Field
 from pydantic_config import BaseConfig
 
-from verifiers.v1.interception.base import BaseInterceptionConfig, Interception, Slot
-from verifiers.v1.interception.pool import (
-    ElasticInterceptionPool,
+from verifiers.v1.configs.interception import (
+    BaseInterceptionConfig,
     ElasticInterceptionPoolConfig,
-    StaticInterceptionPool,
+    InterceptionConfig,
+    InterceptionServerConfig,
     StaticInterceptionPoolConfig,
 )
-from verifiers.v1.interception.server import (
-    InterceptionServer,
-    InterceptionServerConfig,
+from verifiers.v1.interception.base import Interception, Slot
+from verifiers.v1.interception.pool import (
+    ElasticInterceptionPool,
+    StaticInterceptionPool,
 )
+from verifiers.v1.interception.server import InterceptionServer
 from verifiers.v1.runtimes import Runtime, runtime_is_local
 from verifiers.v1.session import RolloutSession
 
 if TYPE_CHECKING:
     from verifiers.v1.mcp import SharedToolServer
-
-# Discriminated on `type` so the CLI selects with `--interception.type server|static|elastic`.
-InterceptionConfig = Annotated[
-    InterceptionServerConfig
-    | StaticInterceptionPoolConfig
-    | ElasticInterceptionPoolConfig,
-    Field(discriminator="type"),
-]
 
 
 def requires_tunnel(
@@ -62,7 +55,7 @@ def make_interception(
     state_service_secrets: tuple[str, ...] = (),
 ) -> Interception:
     """The interception for a config, picked by type (the host-side counterpart to
-    `make_runtime`). With `requires_tunnel`, each server is exposed through its configured
+    `make_backend`). With `requires_tunnel`, each server is exposed through its configured
     tunnel; otherwise it remains on host loopback. The caller computes this requirement."""
     if isinstance(config, InterceptionServerConfig):
         return InterceptionServer(config, requires_tunnel, state_service_secrets)

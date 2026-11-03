@@ -1,15 +1,12 @@
-from typing import Annotated
-
-from pydantic import Field
-
-from verifiers.v1.interception.tunnel.base import BaseTunnelConfig, Tunnel
-from verifiers.v1.interception.tunnel.custom import CustomTunnel, CustomTunnelConfig
-from verifiers.v1.interception.tunnel.prime import PrimeTunnel, PrimeTunnelConfig
-
-# Discriminated on `type` so the CLI selects with `--interception.tunnel.type prime|custom`.
-TunnelConfig = Annotated[
-    PrimeTunnelConfig | CustomTunnelConfig, Field(discriminator="type")
-]
+from verifiers.v1.configs.interception import (
+    BaseTunnelConfig,
+    CustomTunnelConfig,
+    PrimeTunnelConfig,
+    TunnelConfig,
+)
+from verifiers.v1.interception.tunnel.base import Tunnel
+from verifiers.v1.interception.tunnel.custom import CustomTunnel
+from verifiers.v1.interception.tunnel.prime import PrimeTunnel
 
 
 def make_tunnel(config: TunnelConfig) -> Tunnel:

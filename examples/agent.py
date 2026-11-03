@@ -1,9 +1,4 @@
-"""The standalone Agent: one agent, one task, one trace — subprocess runtime.
-
-`PRIME_API_KEY` in the environment, then: uv run python examples/agent.py
-Multi-agent interactions belong in an `Environment` (see docs/v1/environments.md);
-this is the primitive underneath.
-"""
+"""Standalone agent example."""
 
 import asyncio
 
@@ -11,22 +6,13 @@ import verifiers.v1 as vf
 
 
 async def main() -> None:
-    # Everything declarative rides the config (harness None = the built-in bash);
-    # live resources (a shared Client, an Interception) are injected, not configured.
-    solver = vf.make_agent(vf.AgentConfig(model="z-ai/glm-5.2"))
-    task = vf.Task(
-        vf.TaskData(idx=0, prompt="What is 2+2? Answer with just the number.")
-    )
+    solver = vf.make_agent(vf.AgentConfig(model="z-ai/glm-5.3"))
+    prompt = "What is 2+2? Answer with just the number."
+    task = vf.Task(vf.TaskData(prompt=prompt))
     async with solver:
         trace = await solver.run(task)
-    print("stop:", trace.stop_condition)
-    print("error:", trace.last_error)
-    print("turns:", trace.num_turns)
-    print("usage:", trace.usage)
-    last = trace.assistant_messages[-1].content if trace.assistant_messages else None
-    print("answer:", last)
-    print("agent:", trace.agent.name, trace.agent.config.model)
-    print("runtime:", trace.agent.runtime.type if trace.agent.runtime else None)
+    answer = trace.assistant_messages[-1].content if trace.assistant_messages else None
+    print(answer)
 
 
 if __name__ == "__main__":

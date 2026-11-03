@@ -14,16 +14,8 @@ from abc import ABC, abstractmethod
 from contextlib import AbstractAsyncContextManager, AsyncExitStack
 from typing import TYPE_CHECKING, Self
 
-from pydantic_config import BaseConfig
-
 if TYPE_CHECKING:
     from verifiers.v1.session import RolloutSession
-
-
-class BaseInterceptionConfig(BaseConfig):
-    """Base for the interception types — the discriminated union's common type. Per-type
-    fields live on the subclasses (server's `tunnel`, static's `servers`, elastic's
-    `multiplex`)."""
 
 
 # (base_url, model_secret, state_secret): model inference and task state deliberately use

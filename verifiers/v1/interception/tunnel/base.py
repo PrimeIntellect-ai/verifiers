@@ -10,13 +10,7 @@ import contextlib
 from abc import ABC, abstractmethod
 from typing import ClassVar, Generic, TypeVar
 
-from pydantic_config import BaseConfig
-
-
-class BaseTunnelConfig(BaseConfig):
-    """Base for the tunnel types — the discriminated union's common type. Per-type fields
-    live on the subclasses (custom's `url`/`port`)."""
-
+from verifiers.v1.configs.interception import BaseTunnelConfig
 
 ConfigT = TypeVar("ConfigT", bound=BaseTunnelConfig)
 

@@ -34,9 +34,9 @@ class RunConfig(BaseConfig):
     """Run directory name — the run writes to `output_dir / dir`. Defaults to `run.name`;
     set it only when the directory should differ from the display name."""
 
-    # TODO: fetch the id from the Prime SDK once runs are registered there.
-    _id: str = PrivateAttr(default_factory=lambda: str(uuid4()))
+    _id: str = PrivateAttr(default_factory=lambda: uuid4().hex)
 
     @property
     def id(self) -> str:
+        """Stamped on every trace and exported as `$VF_RUN_ID`."""
         return self._id

@@ -29,11 +29,6 @@ overrides:
       MD029: false
     combine: merge
   - filter:
-      - skills/evaluate-environments/SKILL.md
-    config:
-      MD029: false
-    combine: merge
-  - filter:
       - verifiers/envs/experimental/composable/tasksets/swe/README.md
     config:
       MD033:

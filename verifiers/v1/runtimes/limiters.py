@@ -1,8 +1,8 @@
 """Creation-rate limiters for the remote runtimes.
 
 A leaky bucket backed by a lock file under the user cache (``~/.cache/verifiers``, falling
-back to the temp dir when no home is resolvable), so a provider's creation rate (Modal
-sandboxes, Prime sandboxes and tunnels) is enforced across EVERY process that shares the
+back to the temp dir when no home is resolvable), so a provider's creation rate (Prime
+sandboxes and tunnels) is enforced across EVERY process that shares the
 bucket — the eval process and all the elastically-spawned env-server worker processes alike —
 not just within one process. A bucket is named by the limiter's name and a scope the caller
 picks; the runtimes pass the run id, so one run's backlog (or the reservations a killed run

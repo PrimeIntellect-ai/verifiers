@@ -2,7 +2,7 @@
 
 GEPA optimizes one taskset's `Task.system_prompt` by alternating rollouts (`evaluate`) with a
 teacher LM reflecting on the reflective dataset (`make_reflective_dataset`) — see
-`verifiers.v1.gepa.adapter.GEPAAdapter`. Like `EvalConfig`, it owns an `env` field (the
+`verifiers.v1.gepa.adapter.GEPAAdapter`. It owns an `env` field (the
 environment: its taskset, seats, limits) and adds the optimization loop's own knobs (model,
 reflection model, train/val split, budget). There is no `[serve]` block here — GEPA
 always runs in-process, since its adapter protocol is itself synchronous (see
@@ -17,15 +17,15 @@ from verifiers.v1.clients import EvalClientConfig
 from verifiers.v1.configs.cli.env import narrowed_env_annotation, resolve_env_field
 from verifiers.v1.configs.cli.run import RunConfig, default_run_name
 from verifiers.v1.configs.env import EnvConfig
+from verifiers.v1.configs.sampling import SamplingConfig
 from verifiers.v1.configs.select import SelectCLIConfig
 from verifiers.v1.envs.single_agent import SingleAgentEnvConfig
-from verifiers.v1.types import SamplingConfig
 
 
 class GEPAConfig(BaseConfig):
     """The GEPA run plus its environment. `model` runs the rollouts under optimization;
     `reflection_model` (defaults to `model`) proposes new system prompts from the reflective
-    dataset. `model` defaults to the same id as `EvalConfig`."""
+    dataset."""
 
     env: SerializeAsAny[EnvConfig] = SingleAgentEnvConfig()
     """The environment under optimization — the same `[env]` block as an eval's

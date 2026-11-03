@@ -26,7 +26,7 @@ from verifiers.v1.cli.resolve import (
     with_positional_taskset,
 )
 from verifiers.v1.configs.cli.debug import DebugConfig
-from verifiers.v1.runtimes import ProgramResult, Runtime, make_runtime
+from verifiers.v1.runtimes import ProgramResult, Runtime, make_backend
 from verifiers.v1.state import state_cls
 from verifiers.v1.task import Task
 from verifiers.v1.trace import AgentInfo, Error, Trace, TraceTask
@@ -216,20 +216,21 @@ async def debug_task(task: Task, config: DebugConfig) -> tuple[Trace, bool]:
         "reason": "not_run",
     }
     cancelled = False
-    runtime = make_runtime(
+    backend = make_backend(
         resolve_runtime_config(config.runtime, task),
         name=f"debug-{task.data.idx}-{uuid4().hex[:8]}",
     )
-    trace.agent.runtime = runtime.info
+    trace.agent.runtime = backend.info
     setup_timeout = (
         config.timeout.setup
         if config.timeout.setup is not None
         else task.data.timeout.setup
     )
     try:
-        runtime.env = dict(task.runtime_env())
+        backend.env = dict(task.runtime_env())
         trace.timing.boot.start = time.time()
-        await runtime.start()
+        await backend.start()
+        runtime = backend.bind()
         now = time.time()
         trace.timing.boot.end = now
         trace.timing.setup.start = now
@@ -237,7 +238,7 @@ async def debug_task(task: Task, config: DebugConfig) -> tuple[Trace, bool]:
             invoke(task.setup, {"trace": trace, "runtime": runtime}),
             setup_timeout,
         )
-        await runtime.prepare_execution([])
+        await backend.prepare_execution([])
         trace.timing.setup.end = time.time()
 
         trace.timing.agent.start = time.time()
@@ -256,7 +257,7 @@ async def debug_task(task: Task, config: DebugConfig) -> tuple[Trace, bool]:
         trace.split_agent_time()
         trace.info["debug"] = debug
         try:
-            await runtime.stop()
+            await backend.stop()
         except asyncio.CancelledError:
             # a task cancellation delivered mid-stop would abort before the caller can
             # persist the trace — absorb it here; the caller re-raises after appending

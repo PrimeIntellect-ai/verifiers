@@ -15,6 +15,7 @@ from anthropic.types import Message as AnthropicMessage
 from anthropic.types import Usage as AnthropicUsage
 
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
+from verifiers.v1.configs.sampling import Sampling, SamplingConfig
 from verifiers.v1.dialects.base import (
     Dialect,
     RawRequest,
@@ -24,6 +25,7 @@ from verifiers.v1.dialects.base import (
     parse_sse_event,
     provider_domains,
 )
+from verifiers.v1.errors import ProviderError
 from verifiers.v1.types import (
     AssistantMessage,
     ContentPart,
@@ -33,8 +35,6 @@ from verifiers.v1.types import (
     Messages,
     Request,
     Response,
-    Sampling,
-    SamplingConfig,
     SystemMessage,
     TextContentPart,
     Tool,
@@ -51,6 +51,19 @@ STOP_REASONS: dict[str, FinishReason] = {
     "tool_use": "tool_calls",
     "stop_sequence": "stop",
 }
+ERROR_TYPES = {
+    400: "invalid_request_error",
+    401: "authentication_error",
+    403: "permission_error",
+    404: "not_found_error",
+    413: "request_too_large",
+    429: "rate_limit_error",
+    502: "api_error",
+    529: "overloaded_error",
+}
+ERROR_STATUSES = {kind: status for status, kind in ERROR_TYPES.items()}
+
+
 # Claude may reorder mixed thinking block types between a response and its replay.
 # Native tool events share the final rank, preserving their relative order.
 THINKING_ORDER = {"redacted_thinking": 0, "thinking": 1}
@@ -103,6 +116,12 @@ _SAFE_CONTENT_TYPES = (
     "advisor_redacted_result",
     "advisor_tool_result_error",
 )
+
+
+def _error_type(status_code: int) -> str:
+    return ERROR_TYPES.get(
+        status_code, "api_error" if status_code >= 500 else "invalid_request_error"
+    )
 
 
 def parse_content(content) -> str | list[ContentPart]:
@@ -356,6 +375,11 @@ class AnthropicStreamParser(StreamParser):
         if event is None:
             return
         kind = event.get("type")
+        if kind == "error":
+            # HTTP 200 streams can fail in-band; preserve the provider's cause and IDs.
+            detail = event.get("error") or {}
+            status = ERROR_STATUSES.get(detail.get("type"), 502)
+            raise ProviderError(json.dumps(event), status_code=status)
         if kind == "message_start":
             self.message = event.get("message") or {}
         elif kind == "content_block_start":
@@ -419,6 +443,7 @@ class ModdedAnthropicMessage(AnthropicMessage):
 
 
 class AnthropicDialect(Dialect[AnthropicMessage]):
+    name = "anthropic_messages"
     sampling_fields = frozenset(
         {
             "temperature",
@@ -506,17 +531,21 @@ class AnthropicDialect(Dialect[AnthropicMessage]):
         # The SDK sends the key as `x-api-key`; an ANTHROPIC_AUTH_TOKEN arrives as Bearer.
         return headers.get("x-api-key") or super().secret(headers)
 
-    def error_body(self, message: str) -> dict:
+    def error_body(self, message: str, *, status_code: int = 400) -> dict:
         return {
             "type": "error",
-            "error": {"type": "invalid_request_error", "message": message},
+            "error": {"type": _error_type(status_code), "message": message},
         }
 
     def stream_keepalive(self, first: bool) -> bytes:
         # Anthropic's own keepalive; its SDKs skip it anywhere in the stream.
         return b'event: ping\ndata: {"type": "ping"}\n\n'
 
-    def stream_error(self, error: dict) -> bytes:
+    def stream_error(self, error: dict, *, status_code: int | None = None) -> bytes:
+        # Once HTTP 200 is committed, clients classify retries from the SSE error type.
+        if status_code is not None:
+            kind = _error_type(status_code)
+            error = {**error, "error": {**error.get("error", {}), "type": kind}}
         # The Anthropic SDKs raise only on a named `error` event.
         return b"event: error\ndata: " + json.dumps(error).encode() + b"\n\n"
 
@@ -660,7 +689,7 @@ class AnthropicDialect(Dialect[AnthropicMessage]):
         # Preserve native fields except the eval's model + sampling. `temperature`/`top_p` are
         # authoritative (always dropped, the eval's applied if set); `max_tokens` is required by
         # the API, so the program's is kept unless the eval sets one.
-        s = sampling.wire_args()
+        s = sampling.model_dump(exclude_none=True)
         reasoning_effort = s.pop("reasoning_effort", None)
         sampling_output_config = s.pop("output_config", None)
         overrides: dict = {**s, "model": model}

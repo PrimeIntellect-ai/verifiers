@@ -12,7 +12,7 @@ from pydantic import Field
 from verifiers.v1.dialects.responses import ResponsesDialect
 from verifiers.v1.envs.single_agent import SingleAgentEnv
 from verifiers.v1.mcp import SharedToolsetConfig, Toolset
-from verifiers.v1.runtimes import Runtime, SubprocessConfig, make_runtime
+from verifiers.v1.runtimes import Runtime, SubprocessConfig, make_backend
 from verifiers.v1.task import Task, TaskConfig, TaskData
 from verifiers.v1.taskset import Taskset, TasksetConfig
 from verifiers.v1.trace import Trace
@@ -132,8 +132,8 @@ class NeMoGymEnv(SingleAgentEnv):
         if entrypoint is None:
             raise ValueError("set --env.taskset.task.resources-url")
 
-        runtime = self._nemo_runtime = make_runtime(SubprocessConfig())
-        await runtime.start()
+        runtime = self._nemo_runtime = make_backend(SubprocessConfig()).bind()
+        await runtime.backend.start()
         server = Path(__file__).with_name("server.py")
         program = await runtime.prepare_uv_script(server.read_bytes())
         await runtime.run_background(
@@ -161,4 +161,4 @@ class NeMoGymEnv(SingleAgentEnv):
             return
         runtime, self._nemo_runtime = self._nemo_runtime, None
         cast(NeMoGymTaskset, self.taskset).config.task.resources_url = None
-        await runtime.stop()
+        await runtime.backend.stop()

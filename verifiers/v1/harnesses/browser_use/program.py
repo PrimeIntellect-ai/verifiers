@@ -3,7 +3,7 @@
 # dependencies = [
 #     "browser-harness==0.1.13",
 #     "openai",
-#     "mcp==2.0.0",
+#     "mcp==2.3.0",
 #     "httpx",
 #     "httpx2",
 #     "tenacity",
@@ -219,6 +219,7 @@ async def main() -> None:
         **os.environ,
         "BH_HOME": str(state_dir / "bh-home"),
         "BH_TELEMETRY": "0",
+        "BH_TAB_MARKER": "0",  # Keep task page titles unchanged.
         (
             "BU_CDP_WS" if urlsplit(endpoint).scheme in {"ws", "wss"} else "BU_CDP_URL"
         ): endpoint,

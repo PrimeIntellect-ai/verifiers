@@ -21,19 +21,22 @@ class ReplayProgress(TaskProgress):
 
 
 # Colors mirror the eval dashboard for shared states: pending=dim, running=cyan, scored=green
-# (eval's "success"), error=red. `skipped` is replay-only (a rollout that errored → copied through).
+# (eval's "success"), dropped=grey62, error=red. `skipped` is replay-only (a rollout that errored
+# → copied through).
 _STYLE = {
     "pending": "dim",
     "running": "cyan",
     "scored": "green",
+    "dropped": "grey62",
     "skipped": "blue",
     "error": "red",
 }
 _MARK_WIDTH = max(len(state) for state in _STYLE)
 _MARK = {state: escape(f"[{state:<{_MARK_WIDTH}}]") for state in _STYLE}
-_DONE = ("scored", "error", "skipped")
+_DONE = ("scored", "dropped", "error", "skipped")
 _OUTCOMES = {
     "scored": ("scored", _STYLE["scored"]),
+    "dropped": ("dropped", _STYLE["dropped"]),
     "error": ("failed", _STYLE["error"]),
     "skipped": ("skipped", _STYLE["skipped"]),
 }
