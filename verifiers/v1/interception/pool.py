@@ -61,7 +61,9 @@ class StaticInterceptionPool(Interception):
         # updated load before choosing their own least-loaded server.
         healthy = [server for server in self.servers if server.healthy]
         if not healthy:
-            raise TunnelError("interception tunnel lost")
+            raise TunnelError(
+                "no interception servers left: all their tunnels are gone"
+            )
         server = min(healthy, key=lambda s: s.load)
         async with server.acquire(session) as slot:
             yield slot
