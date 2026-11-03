@@ -675,7 +675,18 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
 
     @property
     def reward(self) -> float:
+        if self.is_format_violation:
+            return 0.0
         return sum(r.value for r in self.rewards.values() if r is not None)
+
+    @property
+    def is_format_violation(self) -> bool:
+        """The harness rejected a terminal model response as invalid training output."""
+        return self.stop_condition == "format_violation" or any(
+            link.type == "format_violation"
+            for node in self.nodes
+            for link in node.semantic_parents
+        )
 
     @property
     def has_error(self) -> bool:
@@ -725,7 +736,7 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         """One root-to-leaf view per graph leaf, with no duplicated node storage.
 
         A compaction attempt is a dangling physical leaf. It is trainable only when
-        the final semantic graph shows that the harness resumed from it.
+        the harness resumed from it or declared it a terminal format violation.
         """
         by_node = {c.node: c for c in self.calls if c.node is not None}
         accepted_compaction_attempts = {
@@ -754,6 +765,10 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
                     trainable=(
                         not is_compaction_attempt
                         or leaf in accepted_compaction_attempts
+                        or any(
+                            link.type == "format_violation"
+                            for link in self.nodes[leaf].semantic_parents
+                        )
                     ),
                     mm_token_type_id_map=self.mm_token_type_id_map,
                 )
