@@ -43,6 +43,9 @@ _DROP_UNWRITABLE_UV_DIRS = (
 )
 # The stdlib extension modules a uv script's interpreter must load; one that cannot
 # (it crashes or lacks them) is replaced by a uv-managed Python.
+UV_FALLBACK_PYTHON = "3.12"
+"""The Python a uv script falls back to when its environment cannot be built on the one
+uv chose: a release every dependency the harnesses pin ships wheels for."""
 _SOUND_PYTHON = (
     "import asyncio, ctypes, datetime, decimal, email.message, fractions, ipaddress, "
     "json, ssl, unicodedata, uuid, zlib"
@@ -264,7 +267,13 @@ class Runtime:
                         f"{_DROP_UNWRITABLE_UV_DIRS}; "
                         f"mv -f {shlex.quote(tmp)} {script} "
                         f"&& {{ {{ {_ENSURE_UV}; }} || exit {UV_UNAVAILABLE}; }} "
-                        f'&& {sync} && py=$({find}) && venv="${{py%/bin/*}}" '
+                        # uv downloads its newest Python for an image without one (3.15
+                        # under uv 0.13), which can predate wheels for the script's
+                        # dependencies: an image without a C compiler cannot build them.
+                        # A failed sync retries on uv's own Python {UV_FALLBACK_PYTHON}.
+                        f"&& {{ {sync} || {{ export UV_PYTHON={UV_FALLBACK_PYTHON} "
+                        f"UV_MANAGED_PYTHON=1 UV_PYTHON_DOWNLOADS=automatic; {sync}; }}; }} "
+                        f'&& py=$({find}) && venv="${{py%/bin/*}}" '
                         # uv takes the image's Python when it satisfies `requires-python`,
                         # but an image may graft one build's stdlib onto another's binary
                         # (a `COPY --from=python:3.13` over Debian's python3.13): `import
