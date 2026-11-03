@@ -944,17 +944,24 @@ class PrimeBackend(RuntimeBackend):
         when it cannot be resumed (deleted, expired, not a box of ours): it is deleted, and
         the box starts as configured instead."""
         try:
-            found = await self._held("attach", lambda: self._client.get(box))
-            if found.status == "PAUSED":
-                await self._held("resume", lambda: self._client.resume(box))
-            elif found.status != "RUNNING":
-                raise SandboxError(f"box {box} is {found.status}", kind="io")
             deadline = time.monotonic() + _ATTACH_SECONDS
-            while (await self._client.get(box)).status != "RUNNING":
+            resumed = False
+            while True:
                 if time.monotonic() > deadline:
                     raise SandboxError(
                         f"box {box} did not resume within {_ATTACH_SECONDS}s", kind="io"
                     )
+                found = await self._held("attach", lambda: self._client.get(box))
+                if found.status == "PAUSED" and not resumed:
+                    # Asked once: the platform reports PAUSED until the resume lands.
+                    await self._held("resume", lambda: self._client.resume(box))
+                    resumed = True
+                elif found.status not in ("RUNNING", "PAUSED"):
+                    raise SandboxError(f"box {box} is {found.status}", kind="io")
+                elif await self._answers(box):
+                    break
+                # RUNNING but refusing commands: a pause still landing (the platform
+                # reports RUNNING until PAUSED); the next pass resumes it.
                 await asyncio.sleep(2)
             self.info.id = box
             self.info.image_cached = True
@@ -1762,11 +1769,27 @@ class PrimeBackend(RuntimeBackend):
                 with contextlib.suppress(Exception):
                     client.delete_lan_network(self._expose_network_id)
 
+    async def _answers(self, box: str) -> bool:
+        """Whether `box` runs a command now."""
+        try:
+            done = await self._client.execute_command(box, "true", timeout=30)
+        except Exception:  # noqa: BLE001 - a box that refuses is not ready yet
+            return False
+        return done.exit_code == 0
+
     async def _pause(self, client: Any, box: str) -> bool:
-        """Pause `box` for a later run to resume (`keep_paused`); False when it cannot be
-        (not a VM, the platform refused), and the box is then deleted."""
+        """Pause `box` for a later run to resume (`keep_paused`), and wait until it is: a
+        box resumed while its pause still lands refuses every command. False when it
+        cannot be paused (not a VM, the platform refused), and the box is then deleted."""
         try:
             await self._held("pause", lambda: client.pause(box))
+            deadline = time.monotonic() + _ATTACH_SECONDS
+            while (await client.get(box)).status != "PAUSED":
+                if time.monotonic() > deadline:
+                    raise SandboxError(
+                        f"box {box} did not pause within {_ATTACH_SECONDS}s", kind="io"
+                    )
+                await asyncio.sleep(1)
         except Exception as e:  # noqa: BLE001 - the box is deleted instead
             logger.warning(
                 "prime: sandbox %s could not be paused (%s); deleting it", box, e
