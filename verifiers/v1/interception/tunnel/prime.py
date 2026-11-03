@@ -12,13 +12,14 @@ from verifiers.v1.configs.interception import PrimeTunnelConfig
 from verifiers.v1.interception.tunnel.base import HEALTH_PATH, Tunnel
 from verifiers.v1.runtimes.limiters import CreationLimiter
 from verifiers.v1.utils.aio import run_shielded
+from verifiers.v1.utils.log_scope import get_logger
 from verifiers.v1.utils.prime import ensure_prime_auth
 from verifiers.v1.utils.scope import run_scope
 
 if TYPE_CHECKING:
     from prime_tunnel import Tunnel as TunnelClient
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class TunnelLogHandler(logging.Handler):

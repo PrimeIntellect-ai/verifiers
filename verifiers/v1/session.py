@@ -18,7 +18,6 @@ import asyncio
 import hashlib
 import inspect
 import json
-import logging
 from collections import Counter
 from collections.abc import Awaitable, Callable
 from contextlib import AbstractAsyncContextManager
@@ -45,8 +44,14 @@ from verifiers.v1.types import (
     UserMessage,
 )
 from verifiers.v1.utils.decorators import invoke
+from verifiers.v1.utils.log_scope import (
+    LogScope,
+    current_scope,
+    enter_scope,
+    get_logger,
+)
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 MCPProxy = Callable[[str], AbstractAsyncContextManager[str]]
 
@@ -169,6 +174,8 @@ class RolloutSession:
     response_stops: list[Callable] = field(default_factory=list)
     on_turn_input: Callable[[], None] | None = None
     """One-shot acknowledgement when a resumed harness reaches model inference."""
+    log_scope: LogScope = field(default_factory=current_scope)
+    """The rollout's log scope, re-entered by the handler tasks that serve it."""
     gates_tools: bool = False
     """Whether the harness asks `/tool` before executing each call (see
     `Harness.SUPPORTS_TOOL_INTERCEPTION`). Without that gate a pre-execution rewrite
@@ -602,6 +609,8 @@ class RolloutSession:
         if self.released:  # sealed while this handler was scheduled — don't serve
             task.cancel()
             return
+        if task is asyncio.current_task():
+            enter_scope(self.log_scope)
         self.tasks.add(task)
         task.add_done_callback(self.tasks.discard)
 

@@ -14,7 +14,6 @@ least-loaded.
 
 import asyncio
 import contextlib
-import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -29,8 +28,9 @@ from verifiers.v1.interception.base import Interception, Slot
 from verifiers.v1.interception.server import InterceptionServer
 from verifiers.v1.session import RolloutSession
 from verifiers.v1.utils.aio import run_shielded
+from verifiers.v1.utils.log_scope import get_logger, isolated
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class StaticInterceptionPool(Interception):
@@ -108,7 +108,7 @@ class ElasticInterceptionPool(Interception):
                 await run_shielded(server.stop())
             except Exception:
                 logger.warning(
-                    "interception pool: retired server cleanup failed", exc_info=True
+                    "Failed to stop a retired interception server", exc_info=True
                 )
 
     async def _server(self) -> InterceptionServer:
@@ -125,13 +125,16 @@ class ElasticInterceptionPool(Interception):
             self.requires_tunnel,
             self.state_service_secrets,
         )
-        await self.stack.enter_async_context(server)
-        self.servers.append(server)
-        logger.info(
-            "interception pool: %d server(s), multiplex=%d",
-            len(self.servers),
-            self.config.multiplex,
-        )
+        # The pool outlives the rollout that grows it: its server (and the tasks the
+        # server starts) log without that rollout's scope.
+        with isolated():
+            await self.stack.enter_async_context(server)
+            self.servers.append(server)
+            logger.info(
+                "Grew interception pool to %d server(s) multiplex=%d",
+                len(self.servers),
+                self.config.multiplex,
+            )
         return server
 
     @asynccontextmanager

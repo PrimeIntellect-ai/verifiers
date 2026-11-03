@@ -1,7 +1,6 @@
 """Colocated execution, local Compose, and native Prime service VMs."""
 
 import asyncio
-import logging
 from contextlib import AsyncExitStack, asynccontextmanager
 from functools import partial
 
@@ -9,8 +8,9 @@ from verifiers.v1.runtimes import PrimeBackend, PrimeConfig
 from verifiers.v1.runtimes.compose import compose_services
 from verifiers.v1.runtimes.deployment import ServicesSpec, _DeploymentStrategy
 from verifiers.v1.runtimes.private_network import lan_host, private_network
+from verifiers.v1.utils.log_scope import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class _ColocatedDeployment(_DeploymentStrategy):

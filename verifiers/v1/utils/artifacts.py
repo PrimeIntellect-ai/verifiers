@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import io
 import json
-import logging
 import posixpath
 import re
 import shlex
@@ -18,10 +17,12 @@ from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, Field, field_validator
 
+from verifiers.v1.utils.log_scope import get_logger
+
 if TYPE_CHECKING:
     from verifiers.v1.runtimes import Runtime, RuntimeConfig
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 ARTIFACTS_DIR = "/logs/artifacts"
 """Implicit artifact directory; tasks that write here need no declaration."""

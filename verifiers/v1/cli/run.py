@@ -5,7 +5,6 @@ it directly. For full evaluations, use prime-rl's `uv run eval`.
 """
 
 import asyncio
-import logging
 import os
 import sys
 from pathlib import Path
@@ -26,10 +25,11 @@ from verifiers.v1.episode import Episode
 from verifiers.v1.trace import EvalRunInfo
 from verifiers.v1.utils.interrupt import install_interrupt
 from verifiers.v1.utils.loaders import load_environment
+from verifiers.v1.utils.log_scope import get_logger
 from verifiers.v1.utils.logging import setup_logging
 from verifiers.v1.utils.trace_store import TRACES_FILE, append_episode
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 USAGE = "usage: uv run vf-run [<taskset-id>] [--env.id <id>] [-m <model>] [-n <tasks>] [-r <rollouts>] [options] [@ file.toml]"
 

@@ -3,10 +3,11 @@ validate, debug): the first Ctrl-C/SIGTERM warns and raises KeyboardInterrupt so
 asyncio unwinds each run's teardown `finally`; further signals are swallowed so a second
 Ctrl-C can't orphan containers/sandboxes/tool-server runtimes mid-cleanup."""
 
-import logging
 import signal
 
-logger = logging.getLogger(__name__)
+from verifiers.v1.utils.log_scope import get_logger
+
+logger = get_logger(__name__)
 
 _cleaning_up = False
 

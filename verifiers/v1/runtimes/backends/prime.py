@@ -5,10 +5,10 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import io
-import logging
 import math
 import shlex
 import tempfile
+import time
 import uuid
 from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
@@ -33,10 +33,11 @@ from verifiers.v1.runtimes.limiters import creation_limiter
 from verifiers.v1.runtimes.runtime import Runtime
 from verifiers.v1.utils.aio import run_shielded
 from verifiers.v1.utils.artifacts import validate_runtime_mounts
+from verifiers.v1.utils.log_scope import get_logger, seconds
 from verifiers.v1.utils.prime import ensure_prime_auth
 from verifiers.v1.utils.scope import run_scope
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 EFFECTIVELY_UNBOUNDED_SECONDS = 30 * 24 * 60 * 60
 """Safety deadline for APIs that require a finite bound. Normal execution remains
@@ -180,6 +181,7 @@ class PrimeBackend(RuntimeBackend):
     async def start(self) -> None:
         from prime_sandboxes import APIError, CreateSandboxRequest
 
+        started = time.perf_counter()
         self._client = _lease_client()
         # Map the resources onto prime's API (minutes, split GPU; memory/disk are already
         # GB). gpu_type/region are only sent when set (else provider-chosen).
@@ -258,15 +260,18 @@ class PrimeBackend(RuntimeBackend):
             self.info.image_cached = sandbox.pending_image_build_id is None
             if not self.info.image_cached:
                 logger.warning(
-                    "prime: image %s isn't cached on the platform - auto-building it "
-                    "(sandbox %s waits for the build; first use of an image can take "
-                    "~10 minutes, later runs start in seconds)",
+                    "Building image %s on the platform for prime runtime %s - the "
+                    "first use of an image can take ~10 minutes, later runs start "
+                    "in seconds",
                     self.config.image,
                     self.info.id,
                 )
             await self._client.wait_for_creation(self.info.id, max_attempts=900)
-            logger.info(
-                "prime: sandbox %s up (image=%s)", self.info.id, self.config.image
+            logger.debug(
+                "Started prime runtime %s in %s image=%s",
+                self.info.id,
+                seconds(time.perf_counter() - started),
+                self.config.image,
             )
             await self._client.execute_command(
                 self.info.id, f"mkdir -p {shlex.quote(self.config.workdir)}"
@@ -323,8 +328,8 @@ class PrimeBackend(RuntimeBackend):
             raise
         except Exception as e:
             raise SandboxError(f"prime egress policy failed: {e}") from e
-        logger.info(
-            "prime: egress policy applied on sandbox %s (allow=%s block=%s)",
+        logger.debug(
+            "Applied egress policy to prime runtime %s allow=%s block=%s",
             self.info.id,
             policy.get("allow"),
             policy.get("deny"),
@@ -546,7 +551,10 @@ class PrimeBackend(RuntimeBackend):
                     await client.delete(self.info.id)
             except Exception as e:  # noqa: BLE001 - provider teardown is best-effort
                 logger.warning(
-                    "prime: failed to delete sandbox %s: %s", self.info.id, e
+                    "Failed to delete prime runtime %s - %s: %s",
+                    self.info.id,
+                    type(e).__name__,
+                    e,
                 )
             if self._expose_network_id is not None:
                 try:
@@ -554,8 +562,9 @@ class PrimeBackend(RuntimeBackend):
                     self._expose_network_id = None
                 except Exception as e:  # noqa: BLE001 - provider teardown is best-effort
                     logger.warning(
-                        "prime: failed to delete LAN network %s: %s",
+                        "Failed to delete LAN network %s - %s: %s",
                         self._expose_network_id,
+                        type(e).__name__,
                         e,
                     )
         finally:

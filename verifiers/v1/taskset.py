@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import copy
 import itertools
-import logging
 import random
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterable, Iterator
@@ -35,11 +34,12 @@ from verifiers.v1.configs.select import SelectConfig, TaskMatchConfig
 from verifiers.v1.configs.taskset import TasksetConfig
 from verifiers.v1.task import Task, TaskT
 from verifiers.v1.utils.generic import concrete_type
+from verifiers.v1.utils.log_scope import get_logger
 
 if TYPE_CHECKING:
     from verifiers.v1.mcp import Toolset
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 TasksetConfigT = TypeVar("TasksetConfigT", bound=TasksetConfig, default=TasksetConfig)
 

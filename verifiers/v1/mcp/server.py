@@ -6,7 +6,6 @@ import functools
 import hashlib
 import hmac
 import inspect
-import logging
 import os
 from collections.abc import Callable
 from typing import TYPE_CHECKING, ClassVar, Generic, TypeVar
@@ -17,13 +16,14 @@ from pydantic_config import BaseConfig
 
 from verifiers.v1.state import State, StateT, state_cls
 from verifiers.v1.utils.generic import concrete_type
+from verifiers.v1.utils.log_scope import get_logger
 
 if TYPE_CHECKING:
     from httpx import AsyncClient, Response
     from mcp.server.mcpserver import MCPServer
 
 ConfigT = TypeVar("ConfigT", bound=BaseConfig)
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 # State calls may cross a tunnel, so allow transient startup failures without hanging forever.
 STATE_TIMEOUT = 30.0  # seconds per request

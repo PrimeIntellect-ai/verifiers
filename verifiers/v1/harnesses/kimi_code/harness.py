@@ -1,6 +1,5 @@
 """Run Kimi Code's native ACP server against interception."""
 
-import logging
 import tomllib
 
 import tomli_w
@@ -15,8 +14,9 @@ from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
 from verifiers.v1.types import Message
+from verifiers.v1.utils.log_scope import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 KIMI_DIR = "/var/tmp/vf-kimi-code"
 KIMI_BIN = f"{KIMI_DIR}/node_modules/.bin/kimi"
@@ -58,9 +58,7 @@ class KimiCodeHarness(ACPHarness[KimiCodeHarnessConfig]):
 
     async def setup(self, runtime: Runtime) -> None:
         await ensure_node(runtime)
-        logger.info(
-            "kimi-code: ensuring Kimi Code %s is installed", self.config.version
-        )
+        logger.debug("Ensuring Kimi Code %s is installed", self.config.version)
         await ensure_installed(
             runtime,
             directory=KIMI_DIR,

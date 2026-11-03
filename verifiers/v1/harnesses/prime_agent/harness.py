@@ -2,7 +2,6 @@
 
 import hashlib
 import json
-import logging
 from typing import Literal
 
 from verifiers.v1.acp import ACPConfig, ACPHarness, ACPTurn
@@ -15,8 +14,9 @@ from verifiers.v1.runtimes.base import _ENSURE_UV
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
 from verifiers.v1.types import Message
+from verifiers.v1.utils.log_scope import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 GITHUB_RELEASE_URL = (
     "https://github.com/PrimeIntellect-ai/prime-agent/releases/download"
@@ -151,7 +151,7 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
         statuses.append(status)
 
     async def setup(self, runtime: Runtime) -> None:
-        logger.info("prime-agent: ensuring commit %s is installed", self.config.commit)
+        logger.debug("Ensuring prime-agent %s is installed", self.config.commit)
         await ensure_installed(
             runtime,
             directory=PRIME_AGENT_DIR,

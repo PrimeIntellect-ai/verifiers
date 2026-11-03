@@ -3,7 +3,6 @@
 import asyncio
 import atexit
 import json
-import logging
 import os
 import shutil
 import subprocess
@@ -21,8 +20,9 @@ from verifiers.v1.runtimes import DockerBackend, DockerConfig, PrimeConfig
 from verifiers.v1.runtimes.backends.docker import cli
 from verifiers.v1.runtimes.base import SERVICE_PORT
 from verifiers.v1.utils.aio import run_shielded
+from verifiers.v1.utils.log_scope import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 # Docker routing and credential-helper lookup need these; local Compose must not see
 # unrelated evaluator secrets through shell interpolation.

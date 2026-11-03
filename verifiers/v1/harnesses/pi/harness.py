@@ -1,7 +1,6 @@
 """Pi harness using the upstream pi-acp adapter."""
 
 import json
-import logging
 import shlex
 from pathlib import Path
 
@@ -20,8 +19,9 @@ from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
 from verifiers.v1.types import Message
+from verifiers.v1.utils.log_scope import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 KEY_VAR = "PI_INTERCEPT_KEY"
 
@@ -76,8 +76,8 @@ class PiHarness(ACPHarness[PiHarnessConfig]):
 
     async def setup(self, runtime: Runtime) -> None:
         await ensure_node(runtime)
-        logger.info(
-            "pi: ensuring Pi %s and pi-acp %s are installed",
+        logger.debug(
+            "Ensuring Pi %s and pi-acp %s are installed",
             self.config.version,
             ACP_VERSION,
         )

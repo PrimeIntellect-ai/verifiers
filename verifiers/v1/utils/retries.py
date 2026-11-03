@@ -13,7 +13,6 @@ both off by default.
 from __future__ import annotations
 
 import asyncio
-import logging
 import random
 import re
 from collections.abc import Awaitable, Callable, Iterable
@@ -29,12 +28,13 @@ from tenacity import (
 )
 
 from verifiers.v1.configs.retries import RetryConfig, RetryRule
+from verifiers.v1.utils.log_scope import clip, get_logger
 
 if TYPE_CHECKING:
     from verifiers.v1.episode import Episode
     from verifiers.v1.trace import Error
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 def backoff(attempt: int) -> float:
@@ -57,12 +57,12 @@ def retrying(
     def _log(state: RetryCallState) -> None:
         exc = state.outcome.exception()
         logger.warning(
-            "retrying %s (retry %d/%d) after error: %s: %s",  # name too — some errors stringify empty
+            "Retrying %s (attempt %d/%d) - %s: %s",
             label or getattr(state.fn, "__name__", "call"),
-            state.attempt_number,
-            retries,
-            type(exc).__name__,
-            exc,
+            state.attempt_number + 1,
+            retries + 1,
+            type(exc).__name__,  # some errors stringify empty
+            clip(str(exc)),
         )
 
     return AsyncRetrying(
@@ -142,12 +142,12 @@ async def run_episode_with_retry(
             history.extend(trace.errors)
         delay = backoff(attempt)
         logger.warning(
-            "retrying episode %s (retry %d/%d) in %.1fs after error: %s",
-            final.id,
-            attempt + 1,
-            state.max_retries,
+            "Retrying episode in %.1fs (attempt %d/%d) - %s: %s",
             delay,
+            attempt + 2,
+            state.max_retries + 1,
             cause.type,
+            clip(cause.message),
         )
         await asyncio.sleep(delay)
     if history:

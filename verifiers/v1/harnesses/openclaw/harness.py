@@ -1,7 +1,6 @@
 """Run OpenClaw's Gateway-backed ACP agent against interception."""
 
 import json
-import logging
 from typing import Literal
 
 from verifiers.v1.acp import ACPConfig, ACPHarness
@@ -11,8 +10,9 @@ from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
+from verifiers.v1.utils.log_scope import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 # OpenClaw and its bundled Node runtime exceed the small /tmp tmpfs in some VMs.
 OPENCLAW_DIR = "/var/tmp/vf-openclaw-{version}"
@@ -145,7 +145,7 @@ class OpenClawHarness(ACPHarness[OpenClawHarnessConfig]):
     async def setup(self, runtime: Runtime) -> None:
         directory = OPENCLAW_DIR.format(version=self.config.version)
         binary = OPENCLAW_BIN.format(version=self.config.version)
-        logger.info("openclaw: ensuring OpenClaw %s is installed", self.config.version)
+        logger.debug("Ensuring OpenClaw %s is installed", self.config.version)
         # Borrowed runtimes can share this cache, so one filesystem lock owns both
         # installation and the transcript adjustment.
         await ensure_installed(

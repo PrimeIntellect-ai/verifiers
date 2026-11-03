@@ -1,4 +1,3 @@
-import logging
 from pathlib import Path
 from typing import Literal
 
@@ -8,9 +7,10 @@ from verifiers.v1.harness import Harness
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
+from verifiers.v1.utils.log_scope import get_logger
 
 PROGRAM_SOURCE = (Path(__file__).resolve().parent / "program.py").read_text()
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class Terminus2HarnessConfig(HarnessConfig):

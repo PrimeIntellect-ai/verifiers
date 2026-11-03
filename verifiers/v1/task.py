@@ -13,7 +13,6 @@ import copy
 import hashlib
 import inspect
 import json
-import logging
 from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING, Any, ClassVar, Generic, Self
 
@@ -35,6 +34,7 @@ from verifiers.v1.utils.decorators import (
     unseed,
 )
 from verifiers.v1.utils.generic import concrete_type
+from verifiers.v1.utils.log_scope import get_logger
 
 if TYPE_CHECKING:
     from verifiers.v1.judge import Judge
@@ -44,7 +44,7 @@ if TYPE_CHECKING:
     from verifiers.v1.runtimes.deployment import Deployment, ServicesSpec
     from verifiers.v1.trace import Trace
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 def task_key(data: Mapping) -> str:

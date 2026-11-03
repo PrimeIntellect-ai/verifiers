@@ -17,7 +17,6 @@ import contextlib
 import csv
 import io
 import json
-import logging
 import os
 import re
 import shlex
@@ -26,6 +25,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import time
 import uuid
 from collections.abc import AsyncIterator
 from pathlib import PurePosixPath
@@ -47,9 +47,10 @@ from verifiers.v1.runtimes.egress import EgressProxy, NetworkPolicy, is_loopback
 from verifiers.v1.runtimes.runtime import Runtime
 from verifiers.v1.utils.aio import run_shielded
 from verifiers.v1.utils.artifacts import validate_runtime_mounts
+from verifiers.v1.utils.log_scope import get_logger, seconds
 from verifiers.v1.utils.scope import run_scope
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 _LINUX = sys.platform == "linux"
 _HOST_ALIAS = "host.docker.internal"
@@ -282,6 +283,7 @@ class DockerBackend(RuntimeBackend):
         return SERVICE_PORT
 
     async def start(self) -> None:
+        started = time.perf_counter()
         # Compose keeps its authored workdir; only standalone containers default to /app.
         self.config = self.config.model_copy(
             update={"workdir": self.config.workdir or "/app"}
@@ -429,9 +431,10 @@ class DockerBackend(RuntimeBackend):
             if self._restricted
             else NetworkPolicy(NetworkPolicyConfig(allow=[]), [])
         )
-        logger.info(
-            "docker: started container %s (image=%s)",
+        logger.debug(
+            "Started docker runtime %s in %s image=%s",
             self._container,
+            seconds(time.perf_counter() - started),
             self.config.image,
         )
 
@@ -677,7 +680,6 @@ class DockerBackend(RuntimeBackend):
         self._stopped = (
             True  # idempotency guard; keep `_container` so the name still shows
         )
-        logger.debug("docker: removing container %s", self._container)
         with contextlib.suppress(Exception):
             subprocess.run(
                 ["docker", "rm", "--force", self._container],

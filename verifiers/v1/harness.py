@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 import os
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
@@ -25,13 +24,18 @@ from verifiers.v1.utils.decorators import (
     seed,
     unseed,
 )
+from verifiers.v1.utils.log_scope import get_logger
 
 if TYPE_CHECKING:
     # Annotation-only: `Trace` appears in signatures only, so this module stays
     # importable below the trace record.
     from verifiers.v1.trace import Trace
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
+
+_WARNED_SYSTEM_PROMPT: set[str] = set()
+"""Harness ids already warned about folding the system prompt: the warning is per
+config, so it fires once per process, not once per rollout."""
 
 
 ConfigT = TypeVar("ConfigT", bound=HarnessConfig)
@@ -94,11 +98,13 @@ class Harness(ABC, Generic[ConfigT]):
                 f"{'Messages' if prompt is not None else 'None'} prompt; set "
                 "APPENDS_SYSTEM_PROMPT to emit it as a system message."
             )
-        logger.warning(
-            "Harness %r does not support a separate system prompt; prepending "
-            "task.system_prompt to the user prompt.",
-            self.config.id,
-        )
+        if self.config.id not in _WARNED_SYSTEM_PROMPT:
+            _WARNED_SYSTEM_PROMPT.add(self.config.id)
+            logger.warning(
+                "Harness %s does not support a separate system prompt - prepending "
+                "task.system_prompt to the user prompt",
+                self.config.id,
+            )
         return None, f"{system}\n\n{prompt}"
 
     def resolve_text_prompt(self, task: TaskData) -> tuple[str | None, str | None]:

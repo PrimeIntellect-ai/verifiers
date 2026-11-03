@@ -2,7 +2,6 @@
 
 import asyncio
 import json
-import logging
 import threading
 from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import asynccontextmanager
@@ -34,8 +33,9 @@ from verifiers.v1.types import (
     Usage,
     WeightVersionSpan,
 )
+from verifiers.v1.utils.log_scope import get_logger, isolated
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 T = TypeVar("T")
 
@@ -315,11 +315,12 @@ class ElasticRendererPool:
 
             slot = RendererSlot(await asyncio.to_thread(build))
             self.renderers.append(slot)
-            logger.info(
-                "renderer pool: %d renderer(s), multiplex=%d",
-                len(self.renderers),
-                self.multiplex,
-            )
+            with isolated():
+                logger.info(
+                    "Grew renderer pool to %d renderer(s) multiplex=%d",
+                    len(self.renderers),
+                    self.multiplex,
+                )
             return slot
 
     @asynccontextmanager

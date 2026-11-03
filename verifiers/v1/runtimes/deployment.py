@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 from collections.abc import AsyncIterator, Mapping
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
@@ -21,8 +20,9 @@ from verifiers.v1.runtimes.base import (
 )
 from verifiers.v1.runtimes.compose import ComposeSpec
 from verifiers.v1.utils.aio import run_shielded
+from verifiers.v1.utils.log_scope import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 @dataclass(frozen=True)

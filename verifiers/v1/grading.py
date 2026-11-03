@@ -21,9 +21,10 @@ from verifiers.v1.utils.artifacts import restore
 from verifiers.v1.utils.compile import resolve_runtime_config
 from verifiers.v1.utils.decorators import invoke
 from verifiers.v1.utils.env import resolve_env
+from verifiers.v1.utils.log_scope import clip, get_logger
 from verifiers.v1.utils.retries import RetryState, backoff
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 _SCORING_INFO_KEYS = ("judge_calls", "scoring_diagnostics")
 """Accounting and diagnostics survive failed scoring attempts, unlike partial scores."""
 
@@ -185,8 +186,13 @@ async def grade_task(
                 trace.info = result.info
                 try:
                     await stack.aclose()
-                except Exception:
-                    logger.warning("verifier teardown failed", exc_info=True)
+                except Exception as e:
+                    logger.warning(
+                        "Failed to tear down verifier - %s: %s",
+                        type(e).__name__,
+                        e,
+                        exc_info=logger.isEnabledFor(logging.DEBUG),
+                    )
                 return
         except Exception as error:
             recorded = Error(
@@ -197,7 +203,12 @@ async def grade_task(
             if attempt == retry.max_retries or retry.next_error([recorded]) is None:
                 raise
             logger.warning(
-                "verifier attempt %d failed; retrying", attempt + 1, exc_info=True
+                "Retrying grading (attempt %d/%d) - %s: %s",
+                attempt + 2,
+                retry.max_retries + 1,
+                recorded.type,
+                clip(recorded.message),
+                exc_info=logger.isEnabledFor(logging.DEBUG),
             )
 
 

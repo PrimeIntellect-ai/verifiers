@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import logging
 import math
 import secrets
 import shlex
@@ -39,12 +38,13 @@ from verifiers.v1.runtimes import (
 from verifiers.v1.runtimes.base import _ENSURE_UV
 from verifiers.v1.state import State
 from verifiers.v1.utils.aio import run_shielded
+from verifiers.v1.utils.log_scope import get_logger
 
 if TYPE_CHECKING:
     from verifiers.v1.mcp.toolset import Toolset
     from verifiers.v1.session import MCPProxy
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 _PACKAGE_BUILD_TIMEOUT_SECONDS = 300
 
@@ -689,7 +689,7 @@ async def serve_shared(toolsets: list[Toolset], harness_is_local: bool = True):
                     runtime=served.runtime,
                     state_secret=state_secret,
                 )
-            logger.info("shared tool server '%s': %s", name, servers[name].url)
+            logger.info("Started shared tool server %s url=%s", name, servers[name].url)
         yield servers
 
 
@@ -745,11 +745,11 @@ async def serve_tools(
                 # through bare — a state tag would be useless, and the per-rollout secret
                 # must not ride the query string to a third-party host.
                 urls[name] = harness_runtime.host_url(server.url)
-                logger.info("tool server '%s' (shared, external): %s", name, server.url)
+                logger.debug("Using external tool server %s url=%s", name, server.url)
                 continue
             url = harness_runtime.host_url(server.url) if server.local else server.url
             urls[name] = _shared_url_for_rollout(server, url, state_base, state_route)
-            logger.info("tool server '%s' (shared): %s", name, server.url)
+            logger.debug("Using shared tool server %s url=%s", name, server.url)
         for toolset in toolsets:
             name = toolset.server_name
             if name in urls:
@@ -760,7 +760,7 @@ async def serve_tools(
             cfg = toolset.config
             if cfg.url:
                 urls[name] = harness_runtime.host_url(cfg.url)
-                logger.info("tool server '%s' (remote): %s", name, cfg.url)
+                logger.debug("Using remote tool server %s url=%s", name, cfg.url)
             else:
                 urls[name] = await stack.enter_async_context(
                     serve(
@@ -774,5 +774,5 @@ async def serve_tools(
                         placements=placements,
                     )
                 )
-                logger.info("tool server '%s' ready", name)
+                logger.debug("Started tool server %s", name)
         yield urls

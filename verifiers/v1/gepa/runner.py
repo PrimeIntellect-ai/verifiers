@@ -6,7 +6,6 @@ and everything is torn down in `finally`. Mirrors how v0 vf-gepa bridged sync GE
 rollouts — a Ctrl-C raises on the main thread inside `optimize()` and unwinds through teardown."""
 
 import asyncio
-import logging
 
 from gepa.api import optimize
 from gepa.core.result import GEPAResult
@@ -22,9 +21,10 @@ from verifiers.v1.gepa.dataset import (
     split_tasks,
 )
 from verifiers.v1.gepa.reflection import build_reflection_lm
+from verifiers.v1.utils.log_scope import get_logger
 from verifiers.v1.utils.trace_store import append_episode
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class _GEPALog:

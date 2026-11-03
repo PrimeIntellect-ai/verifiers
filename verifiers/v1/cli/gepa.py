@@ -8,7 +8,6 @@ leading bare token is the taskset id, the `env` subconfig is narrowed from the i
 and the actual parse is `pydantic_config.cli`.
 """
 
-import logging
 import os
 import sys
 import uuid
@@ -26,10 +25,11 @@ from verifiers.v1.cli.resolve import (
 )
 from verifiers.v1.gepa import GEPAConfig, run_gepa
 from verifiers.v1.utils.interrupt import install_interrupt
+from verifiers.v1.utils.log_scope import get_logger
 from verifiers.v1.utils.logging import setup_logging
 from verifiers.v1.utils.trace_store import TRACES_FILE
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 USAGE = "usage: uv run vf-gepa [<taskset-id>] [--env.id <id>] --model <model> [options] [@ file.toml]"
 

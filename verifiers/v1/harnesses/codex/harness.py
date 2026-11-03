@@ -2,7 +2,6 @@
 
 import hashlib
 import json
-import logging
 import tomllib
 from pathlib import Path
 from typing import Literal
@@ -17,8 +16,9 @@ from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
+from verifiers.v1.utils.log_scope import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 CODEX_DIR = "/var/tmp/vf-codex-{version}-{acp_version}"
 PACKAGES_DIR = f"{CODEX_DIR}/acp"
@@ -77,8 +77,8 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
 
     async def setup(self, runtime: Runtime) -> None:
         await ensure_node(runtime)
-        logger.info(
-            "codex: ensuring Codex %s and codex-acp %s are installed",
+        logger.debug(
+            "Ensuring Codex %s and codex-acp %s are installed",
             self.config.version,
             ACP_VERSION,
         )

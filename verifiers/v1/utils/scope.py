@@ -1,10 +1,11 @@
 """The scope that state shared by a run's processes is keyed by."""
 
-import logging
 import os
 import uuid
 
-logger = logging.getLogger(__name__)
+from verifiers.v1.utils.log_scope import get_logger
+
+logger = get_logger(__name__)
 
 _process_scope: str | None = None
 

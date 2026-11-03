@@ -1,7 +1,6 @@
 """RLM over ACP, with MCP tools exposed as pre-imported IPython skills."""
 
 import hashlib
-import logging
 import secrets
 import shlex
 from typing import Any, Literal
@@ -24,8 +23,9 @@ from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
+from verifiers.v1.utils.log_scope import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 BuiltinSkill = Literal["bash", "edit", "fetch", "search"]
 BuiltinTool = Literal["bash", "edit", "fetch", "ipython"]
@@ -171,7 +171,7 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
             f"RLM_CHECKOUT_PATH={checkout} bash {checkout}/install.sh && "
             f"touch {ready})"
         )
-        logger.info("rlm: ensuring rlm is installed (version=%s)", self.config.version)
+        logger.debug("Ensuring rlm %s is installed", self.config.version)
         env = self.config.resolved_env.copy()
         extra_uv_args = env.get("RLM_EXTRA_UV_ARGS", "")
         env["RLM_EXTRA_UV_ARGS"] = f"{extra_uv_args} --with mcp~=1.28".strip()

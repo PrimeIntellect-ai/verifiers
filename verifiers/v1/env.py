@@ -2,7 +2,7 @@
 
 import asyncio
 import contextlib
-import logging
+import time
 import traceback
 import uuid
 from abc import ABC, abstractmethod
@@ -34,10 +34,11 @@ from verifiers.v1.runtimes import SubprocessConfig, runtime_is_local
 from verifiers.v1.task import Task
 from verifiers.v1.trace import Error, Trace, TraceTask
 from verifiers.v1.utils.generic import concrete_type
+from verifiers.v1.utils.log_scope import clip, get_logger, scope, seconds, short_id
 from verifiers.v1.utils.memory import trim_memory_periodically
 from verifiers.v1.utils.retries import run_episode_with_retry
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 def _as_error(e: Exception) -> Error:
@@ -331,7 +332,7 @@ class Env(ABC, Generic[ConfigT]):
         attempts = 0
 
         async def attempt() -> Episode:
-            nonlocal attempts
+            nonlocal attempts, started
             attempts += 1
             slot.traces = []  # a retry shows the fresh attempt's traces
             live = slot.traces
@@ -347,6 +348,13 @@ class Env(ABC, Generic[ConfigT]):
                     live.remove(trace)
 
             async with semaphore or contextlib.nullcontext():
+                if started is None:
+                    started = time.perf_counter()
+                    data = slot.task.data
+                    logger.info(
+                        "Starting episode task=%s",
+                        data.name if data.name is not None else data.idx,
+                    )
                 return await self.run_episode(
                     slot.task,
                     ctx,
@@ -356,7 +364,28 @@ class Env(ABC, Generic[ConfigT]):
                     attempt=attempts,
                 )
 
-        episode = await run_episode_with_retry(attempt, self.config.retries)
+        started: float | None = None
+        with scope(episode=short_id(slot.id)):
+            episode = await run_episode_with_retry(attempt, self.config.retries)
+            elapsed = seconds(time.perf_counter() - (started or time.perf_counter()))
+            failed = sum(not trace.ok for trace in episode.traces)
+            if episode.ok:
+                logger.info(
+                    "Finished episode in %s rollouts=%d failed=%d",
+                    elapsed,
+                    len(episode.traces),
+                    failed,
+                )
+            else:
+                error = episode.errors[-1] if episode.errors else None
+                logger.warning(
+                    "Failed episode in %s rollouts=%d failed=%d - %s: %s",
+                    elapsed,
+                    len(episode.traces),
+                    failed,
+                    error.type if error else "Error",
+                    clip(error.message) if error else "",
+                )
         slot.traces = list(episode.traces)
         slot.episode = episode
         slot.done = True

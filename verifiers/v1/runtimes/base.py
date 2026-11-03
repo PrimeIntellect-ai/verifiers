@@ -6,8 +6,8 @@ import asyncio
 import atexit
 import base64
 import contextlib
-import logging
 import shlex
+import time
 import uuid
 import weakref
 from abc import ABC, abstractmethod
@@ -20,11 +20,12 @@ from pydantic_config import BaseConfig
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.errors import SandboxError
 from verifiers.v1.utils.aio import run_shielded
+from verifiers.v1.utils.log_scope import get_logger, seconds
 
 if TYPE_CHECKING:
     from verifiers.v1.runtimes.runtime import Runtime
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 # Ensure `uv` supports both script commands used below. Reuse a compatible installation;
 # upgrade older binaries bundled in task images. Prefer pip on
@@ -224,8 +225,17 @@ class RuntimeBackend(ABC):
         and an interrupted teardown leaks the container / paid sandbox. Runs `teardown`
         to completion, then re-raises the cancellation. Framework method — override
         `teardown`, not this."""
+        first = not self.stopped
         self.stopped = True  # before the await: no new borrows once teardown begins
+        started = time.perf_counter()
         await run_shielded(self.teardown())
+        if first:
+            logger.debug(
+                "Stopped %s runtime %s in %s",
+                self.config.type,
+                self.info.id or self.name,
+                seconds(time.perf_counter() - started),
+            )
 
     async def teardown(self) -> None:
         """Free the provisioned resource, off the event loop. Override only for teardown

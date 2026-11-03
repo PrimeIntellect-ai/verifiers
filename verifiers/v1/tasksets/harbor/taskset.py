@@ -19,7 +19,6 @@ or tests build definition, then fall back to the agent environment. Unsupported 
 import asyncio
 import hashlib
 import io
-import logging
 import shutil
 import subprocess
 import sys
@@ -51,8 +50,9 @@ from verifiers.v1.utils.artifacts import (
 )
 from verifiers.v1.utils.decorators import reward
 from verifiers.v1.utils.env import resolve_env
+from verifiers.v1.utils.log_scope import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 CACHE = Path.home() / ".cache" / "harbor"
 HARBOR_INSTALL_HINT = "uv sync --python 3.12 --extra harbor"
