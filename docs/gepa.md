@@ -8,7 +8,7 @@ uv run vf-gepa reverse-text
 
 `vf-gepa` alternates between running rollouts on the taskset and asking a reflection LLM to review the trajectories and propose improvements to `TaskData.system_prompt`.
 
-GEPA reuses the same `env` (taskset + agent), `client`, and `sampling` configuration as `vf-eval`, so its `.toml` config looks almost identical:
+GEPA takes the same `env` (taskset + agent), `client`, and `sampling` configuration as `vf-run`:
 
 ```toml
 model = "deepseek/deepseek-v4-flash"
@@ -27,7 +27,7 @@ Validate the config with `uv run vf-gepa @ config.toml --dry-run`, and run optim
 
 ## Common config values
 
-- `model` / `-m` — model for the rollouts under optimization (default: `deepseek/deepseek-v4-flash`, same as `vf-eval`)
+- `model` / `-m` — model for the rollouts under optimization (default: `deepseek/deepseek-v4-flash`)
 - `reflection_model` / `reflection_client` — teacher model and endpoint that propose new prompts (default: reuse `model` and `client`)
 - `select` — [task selection](tasksets.md#selecting-tasks) applied before splitting into train and validation sets (shuffling is off by default)
 - `num_train` / `num_val` — train tasks for reflection minibatches and validation tasks for scoring candidates on the Pareto frontier (defaults: `100` / `50`)
@@ -38,14 +38,9 @@ Task selection runs before the train/val split: the first `num_train` selected t
 
 ## Output
 
-Results are written to `output_dir / run.dir`, which defaults to `outputs/<env>--<model>--<harness>--<short-id>/` just like `vf-eval`. The resolved config is saved at `configs/resolved/gepa.json`, and when the run finishes, the best system prompt is printed to the console and written to `best_system_prompt.txt`.
+Results are written to `output_dir / run.dir`, which defaults to `outputs/<env>--<model>--<harness>--<short-id>/`. The resolved config is saved at `configs/resolved/gepa.json`, and when the run finishes, the best system prompt is printed to the console and written to `best_system_prompt.txt`.
 
-You can pass that file directly back into evaluation or training via `--env.taskset.system-prompt`:
-
-```bash
-uv run vf-eval reverse-text \
-  --env.taskset.system-prompt outputs/<run>/best_system_prompt.txt
-```
+Pass that file back into evaluation or training through the taskset's `system_prompt` config field.
 
 ## Limitations
 

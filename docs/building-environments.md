@@ -6,7 +6,7 @@ An environment package defines the tasks an agent receives, the files and tools 
 
 A verifiers evaluation spans up to four execution boundaries:
 
-- **The evaluator** (the machine running `vf-eval` or an environment worker) loads datasets, runs Python task hooks (`setup`, `finalize`, `@vf.reward`), coordinates agents, and records traces.
+- **The evaluator** (the machine running the environment server) loads datasets, runs Python task hooks (`setup`, `finalize`, `@vf.reward`), coordinates agents, and records traces.
 - **The agent sandbox** (the agent's configured [runtime](runtimes.md#capability-matrix)) runs the harness, holds the task workspace, and executes any commands the agent invokes.
 - **The grading sandbox** is a fresh container started after the agent finishes when you use isolated scoring (`ScoringConfig(mode="isolated")`), giving graders a clean filesystem containing only declared agent outputs and private test assets.
 - **Task tools** run in their own configured runtime by default, inside the agent sandbox when configured with `colocated = true`, inside a named task service when configured with `service = "<name>"`, or on a Prime VM of their own, under its own egress policy, when their `runtime` is a Prime runtime beside a Prime workspace.
@@ -188,9 +188,7 @@ Install your new package into the CLI environment and run a quick smoke test bef
 
 ```bash
 uv pip install -e environments/file_sum
-uv run vf-eval @ file-sum.toml --dry-run
 uv run vf-validate file-sum --runtime.type docker -n 1
-uv run vf-eval @ file-sum.toml -n 1 -r 1 -c 1
 ```
 
-`--dry-run` validates the TOML config and taskset resolution without starting containers. Next, `vf-validate` runs your task's `validate` hook and a no-op check inside a single sandbox to confirm that the gold answer scores `1.0` while an untouched workspace scores `0.0`. Because `vf-validate` exercises `Task` directly in one sandbox, it does not transfer artifacts or call `stage_verifier` automatically; if your gold check needs to exercise the full isolated-grading flow without a model, request `trace` by name in `validate`, finalize the submission, and call `await vf.grade_submission(self, trace, runtime)` (or call `await self.stage_verifier(runtime)` directly). Finally, running a single rollout with `vf-eval -n 1 -r 1 -c 1` exercises the full solver-to-verifier transfer lifecycle; see [debugging](debugging.md) for inspecting saved traces and diagnosing setup or grading errors.
+`vf-validate` runs your task's `validate` hook and a no-op check inside a single sandbox to confirm that the gold answer scores `1.0` while an untouched workspace scores `0.0`. Because `vf-validate` exercises `Task` directly in one sandbox, it does not transfer artifacts or call `stage_verifier` automatically; if your gold check needs to exercise the full isolated-grading flow without a model, request `trace` by name in `validate`, finalize the submission, and call `await vf.grade_submission(self, trace, runtime)` (or call `await self.stage_verifier(runtime)` directly). Finally, running a single rollout with `uv run vf-run file-sum -n 1 -r 1` exercises the full solver-to-verifier transfer lifecycle; see [debugging](debugging.md) for inspecting saved traces and diagnosing setup or grading errors.

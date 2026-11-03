@@ -110,6 +110,10 @@ async def test_env_id_best_of_n_judge(run):
             "judge": {
                 "harness": {"id": "bash"},
                 "max_output_tokens": 8192,
+                # Judges verify each attempt before ranking and often use 7-10 turns.
+                # The short rollout bounds a hung command, such as a filesystem-wide grep.
+                "max_turns": 20,
+                "timeout": {"rollout": 120, "scoring": 60},
             },
         },
         max_turns=10,
