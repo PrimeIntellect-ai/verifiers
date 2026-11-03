@@ -1,5 +1,5 @@
 version = 1
-revision = 5
+revision = 4
 requires-python = ">=3.11, <3.15"
 resolution-markers = [
     "python_full_version >= '3.14' and sys_platform == 'win32'",
@@ -30,6 +30,12 @@ prime-tunnel = false
 renderers = false
 ruff = "2026-07-28T00:00:00Z"
 ty = "2026-07-28T00:00:00Z"
+
+[manifest]
+constraints = [
+    { name = "brotli", specifier = ">=1.2.1" },
+    { name = "brotlicffi", specifier = ">=1.2.1.0" },
+]
 
 [[package]]
 name = "aiofile"
@@ -5184,7 +5190,6 @@ wheels = [
 [[package]]
 name = "verifiers"
 source = { editable = "." }
-default-groups = ["dev", "examples"]
 dependencies = [
     { name = "aiohttp" },
     { name = "anthropic" },
