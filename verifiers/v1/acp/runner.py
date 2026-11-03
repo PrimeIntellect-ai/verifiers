@@ -10,6 +10,7 @@ import os
 import signal
 import sys
 import traceback
+from collections import OrderedDict
 from contextlib import AsyncExitStack, suppress
 from dataclasses import asdict, dataclass
 from typing import Any
@@ -36,6 +37,8 @@ from acp.schema import (
 )
 
 MAX_PACKET_BYTES = 128 * 1024 * 1024
+REPLAYED_REPLIES = 32
+"""Replies kept for a host that attaches later and asks again (`serve_stream`)."""
 
 
 @dataclass(frozen=True)
@@ -87,6 +90,8 @@ class VerifiersACPClient(Client):
         self.stop_reason: str | None = None
         self.response_metadata: dict[str, Any] = {}
         self.update_metadata: list[dict[str, Any]] = []
+        self.loading = False
+        """Set while `session/load` replays the history, which no turn reports."""
 
     def reset(self) -> None:
         self.visible_reply = ""
@@ -104,6 +109,8 @@ class VerifiersACPClient(Client):
         )
 
     async def session_update(self, session_id: str, update: Any, **kwargs: Any) -> None:
+        if self.loading:
+            return
         metadata = dict(kwargs)
         if isinstance(field_meta := getattr(update, "field_meta", None), dict):
             metadata.update(field_meta)
@@ -267,18 +274,37 @@ class ACPSession:
             self.supports_steering = (initialized.field_meta or {}).get(
                 "steering", {}
             ).get("supported") is True
-            session = await self.connection.new_session(
-                cwd=os.getcwd(),
-                mcp_servers=mcp_servers(config),
-                **config["session_meta"],
-            )
+            load_id = config.get("load_session_id")
+            if load_id is None:
+                session = await self.connection.new_session(
+                    cwd=os.getcwd(),
+                    mcp_servers=mcp_servers(config),
+                    **config["session_meta"],
+                )
+                session_id = session.session_id
+            else:
+                # A box restored from a checkpoint: the agent's session files are
+                # here, its process is not. Load the session in this new process.
+                if not (self.capabilities and self.capabilities.load_session):
+                    raise RuntimeError("ACP agent does not support session/load")
+                self.client.loading = True
+                try:
+                    await self.connection.load_session(
+                        cwd=os.getcwd(),
+                        session_id=load_id,
+                        mcp_servers=mcp_servers(config),
+                        **config["session_meta"],
+                    )
+                finally:
+                    self.client.loading = False
+                session_id = load_id
         except BaseException:
             with suppress(BaseException):
                 await self.stack.aclose()
             self._reset()
             raise
-        self.session_id = session.session_id
-        self.is_new = True
+        self.session_id = session_id
+        self.is_new = load_id is None
 
     async def run(self, config: dict) -> ACPTurn:
         gate = config.get("tool_interception")
@@ -370,6 +396,12 @@ async def serve_stream() -> None:
     )
     tasks: set[asyncio.Task] = set()
     prompt_lock = asyncio.Lock()
+    # A host that attaches to this process after another one went away (a box resumed
+    # from a memory checkpoint) never saw what was written meanwhile: it sends the
+    # request it was waiting on again, by id, and gets the reply, or the request's
+    # reply once it is done.
+    replies: OrderedDict[Any, dict] = OrderedDict()
+    running: dict[Any, asyncio.Task] = {}
 
     async def handle(request: dict) -> None:
         operation = request.get("operation")
@@ -381,6 +413,13 @@ async def serve_stream() -> None:
                 result = await session.steer(
                     request["message"], request.get("message_id")
                 )
+            elif operation == "session":
+                result = {
+                    "session_id": session.session_id,
+                    "load_session": bool(
+                        session.capabilities and session.capabilities.load_session
+                    ),
+                }
             elif operation == "shutdown":
                 result = {"response_metadata": await session.close()}
             else:
@@ -395,6 +434,9 @@ async def serve_stream() -> None:
             if operation == "prompt":
                 response["result"] = asdict(session.client.turn_result())
         response["id"] = request.get("id")
+        replies[response["id"]] = response
+        while len(replies) > REPLAYED_REPLIES:
+            replies.popitem(last=False)
         write_packet(sys.stdout.buffer, response)
 
     try:
@@ -404,9 +446,17 @@ async def serve_stream() -> None:
                     await asyncio.gather(*tasks)
                 await handle(request)
                 break
+            request_id = request.get("id")
+            if request_id in replies:
+                write_packet(sys.stdout.buffer, replies[request_id])
+                continue
+            if request_id in running:
+                continue
             task = asyncio.create_task(handle(request))
             tasks.add(task)
             task.add_done_callback(tasks.discard)
+            running[request_id] = task
+            task.add_done_callback(lambda _, key=request_id: running.pop(key, None))
     finally:
         for task in tasks:
             task.cancel()

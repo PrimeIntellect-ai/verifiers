@@ -33,6 +33,7 @@ from collections.abc import AsyncIterator, Awaitable, Collection, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from functools import partial
+from typing import NoReturn
 
 import httpx
 from aiohttp import web
@@ -43,6 +44,7 @@ from verifiers.v1 import graph
 from verifiers.v1.clients import Client, resolve_client
 from verifiers.v1.clients.base import join_url
 from verifiers.v1.clients.client import RelayReply
+from verifiers.v1.configs.agent import TurnRetryConfig
 from verifiers.v1.configs.client import (
     BaseClientConfig,
     TrainClientConfig,
@@ -232,6 +234,26 @@ def _prune_idempotent_requests(session: RolloutSession, now: float) -> None:
         )[:excess]:
             if session.idempotent_requests.get(key) is request:
                 session.idempotent_requests.pop(key)
+
+
+def retryable(config: TurnRetryConfig, error: ProviderError) -> bool:
+    """Whether `config` retries a model call that failed with `error`."""
+    return any(
+        error.status_code == status
+        if isinstance(status, int)
+        else error.status_code // 100 == int(status[0])
+        for status in config.status_code
+    )
+
+
+def turn_retry_delay(
+    config: TurnRetryConfig, error: ProviderError, retries: int
+) -> float | None:
+    """Seconds before retrying a model call that failed with `error` after `retries`
+    retries, or None when it does not retry."""
+    if not retryable(config, error) or retries >= config.max_retries:
+        return None
+    return min(config.initial_delay * 2**retries, config.max_delay)
 
 
 async def _collect_stream(
@@ -606,10 +628,13 @@ class InterceptionServer(Interception):
             )
 
     def _fail(
-        self, session: RolloutSession, dialect: Dialect, error: RolloutError
+        self,
+        session: RolloutSession,
+        dialect: Dialect,
+        error: RolloutError,
     ) -> web.Response:
-        """Stash a model-turn-adjacent failure (such as a hook raising) so the rollout
-        re-raises it as the real cause, and report it to the harness as an HTTP error."""
+        """Stash a model-turn-adjacent failure so the rollout re-raises it as the real
+        cause, and report it to the harness as an HTTP error."""
         session.error = error
         logger.warning(
             "rollout %s failed: %s: %s", session.trace.id, type(error).__name__, error
@@ -617,6 +642,17 @@ class InterceptionServer(Interception):
         return _error_response(
             dialect, str(error), status=getattr(error, "status_code", 502)
         )
+
+    async def _abort(self, session: RolloutSession, error: RolloutError) -> NoReturn:
+        """End the rollout's segment with a request hook's failure. The harness gets no
+        reply: the rollout cancels its turn, and releasing the session cancels this
+        handler."""
+        logger.warning(
+            "rollout %s failed: %s: %s", session.trace.id, type(error).__name__, error
+        )
+        session.abort(error)
+        await asyncio.get_running_loop().create_future()
+        raise AssertionError("unreachable")
 
     def mediate_capabilities(
         self, session: RolloutSession, dialect: Dialect, body: dict
@@ -867,11 +903,10 @@ class InterceptionServer(Interception):
             if stopped is None and model_request != original_request:
                 dialect.rewrite_request(body, original_request, model_request)
         except RolloutError as error:
-            return self._fail(session, dialect, error)
+            return await self._abort(session, error)
         except Exception as error:  # noqa: BLE001 - surface task hook failures
-            return self._fail(
+            return await self._abort(
                 session,
-                dialect,
                 TaskError(
                     f"model boundary hook failed: {type(error).__name__}: {error}"
                 ),
@@ -931,25 +966,48 @@ class InterceptionServer(Interception):
             started = time.time()
             try:
                 try:
-                    # What actually goes upstream: the native body with the rollout's model +
-                    # sampling imposed — recorded raw on the trace, per call.
-                    if relay:
-                        reply = await session.client.relay(
-                            dialect,
-                            body,
-                            headers=upstream_headers,
-                            session_id=session.trace.id,
-                        )
-                        call_response, events = await _collect_stream(dialect, reply)
-                    else:
-                        call_response = await session.client.get_response(
-                            dialect,
-                            body,
-                            session.ctx.sampling,
-                            headers=upstream_headers,
-                            session_id=session.trace.id,
-                            turn=turn,
-                        )
+                    if session.interrupt_at_turn is not None:
+                        raise session.interrupt_at_turn
+                    retries = 0
+                    while True:
+                        try:
+                            # What actually goes upstream: the native body with the
+                            # rollout's model + sampling imposed — recorded raw on the
+                            # trace, per call.
+                            if relay:
+                                reply = await session.client.relay(
+                                    dialect,
+                                    body,
+                                    headers=upstream_headers,
+                                    session_id=session.trace.id,
+                                )
+                                call_response, events = await _collect_stream(
+                                    dialect, reply
+                                )
+                            else:
+                                call_response = await session.client.get_response(
+                                    dialect,
+                                    body,
+                                    session.ctx.sampling,
+                                    headers=upstream_headers,
+                                    session_id=session.trace.id,
+                                    turn=turn,
+                                )
+                            break
+                        except ProviderError as e:
+                            delay = turn_retry_delay(session.turn_retries, e, retries)
+                            if delay is None:
+                                raise
+                            retries += 1
+                            logger.warning(
+                                "model call failed: id=%s %s; retry %d/%d in %.1fs",
+                                session.trace.id,
+                                e,
+                                retries,
+                                session.turn_retries.max_retries,
+                                delay,
+                            )
+                            await asyncio.sleep(delay)
                     logger.debug(
                         "intercept turn: id=%s tools=%d",
                         session.trace.id,
@@ -993,9 +1051,22 @@ class InterceptionServer(Interception):
                             dialect, f"rollout stopped: {stopped}", status=400
                         )
                 except RolloutError as e:
+                    error = e
+                    if e is session.interrupt_at_turn or (
+                        isinstance(e, ProviderError)
+                        and retryable(session.turn_retries, e)
+                    ):
+                        # The turn retries did not recover it, or the owner interrupts
+                        # the rollout: checkpoint the box, idle at this turn, for the
+                        # attempt's retry to restore, and end the segment with the error.
+                        if session.checkpointer is not None:
+                            await session.checkpointer(turn, e)
+                        session.abort(e)
+                        return _error_response(
+                            dialect, str(e), status=getattr(e, "status_code", 502)
+                        )
                     # Stash the real cause; the rollout re-raises it after the harness returns.
                     # Relay the provider's status so the harness SDK retries 5xx/429 and not 4xx.
-                    error = e
                     session.error = e
                     logger.warning(
                         "model call failed: id=%s %s: %s",

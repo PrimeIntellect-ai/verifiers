@@ -1,6 +1,6 @@
 """One env agent's config: who plays the seat, and its per-run caps."""
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import (
     BaseModel,
@@ -15,7 +15,7 @@ from pydantic_config import BaseConfig
 from verifiers.v1.configs.client import ClientConfig
 from verifiers.v1.configs.deployment import DeploymentConfig
 from verifiers.v1.configs.harness import HarnessConfig, WireHarnessConfig
-from verifiers.v1.configs.retries import RetryConfig
+from verifiers.v1.configs.retries import RetryConfig, RetryRule, StatusCode
 from verifiers.v1.configs.runtime import PrimeConfig, RuntimeConfig
 from verifiers.v1.configs.sampling import SamplingConfig
 from verifiers.v1.configs.scoring import ScoringConfig
@@ -36,6 +36,59 @@ class TimeoutConfig(BaseConfig):
     scoring: float | None = Field(None, gt=0)
     """Combined budget (in seconds) for harness metrics and task scoring, including
     isolated verifier setup and retries. Finalization has its own budget."""
+
+
+class RolloutCheckpointConfig(BaseConfig):
+    """Filesystem checkpoints of a rollout's box. When an attempt fails with a model
+    error that its turn retries did not recover (`AgentConfig.turn_retries`), or its
+    owner interrupts it, the rollout snapshots the box's filesystem before the box goes.
+    A retry, or another process continuing the run, restores the snapshot: the trace
+    keeps its turns up to there, and a new harness process continues in a new box with
+    the snapshot's files, told that the box was restored. Background processes,
+    sub-agents and in-memory state are gone. Needs a runtime and a harness that set
+    `SUPPORTS_FILESYSTEM_CHECKPOINTS`; elsewhere the agent warns once and a retry starts
+    over. A failure of the box itself (`SandboxError`) takes no checkpoint: its retry
+    starts over in a new box."""
+
+    after: Literal["delete", "keep"] = "delete"
+    """What happens to the checkpoint when the rollout's run is final (it succeeded,
+    or its retries ran out): `"delete"` deletes it once the box is gone; `"keep"`
+    leaves it for its owner (forks, inspection), who must delete it."""
+    boxless: bool = False
+    """Also checkpoint a harness that runs no code (null) on a runtime without
+    snapshots, from the trace alone."""
+
+
+class MemoryCheckpointConfig(BaseConfig):
+    """Memory checkpoints of a rollout's box: like `RolloutCheckpointConfig`, taken on
+    the same failures, but the checkpoint also holds the box's processes and memory. A
+    restore continues the harness process where it stopped, with its background
+    processes, sub-agents and in-memory state; the harness does not notice. Needs a
+    runtime and a harness that set `SUPPORTS_MEMORY_CHECKPOINTS`. A memory checkpoint
+    that can no longer resume restores its filesystem instead, as a filesystem
+    checkpoint does (prime: a memory checkpoint resumes once, on the node that took it).
+    Takes precedence over `AgentConfig.checkpoint` where both apply."""
+
+    after: Literal["delete", "keep"] = "delete"
+    """As `RolloutCheckpointConfig.after`. Prime bills a kept memory checkpoint as a
+    paused sandbox until its owner deletes it."""
+
+
+class TurnRetryConfig(BaseConfig):
+    """Retries of one model call, inside the interception: the harness waits on the
+    call and never sees an error that a retry recovered. When the retries run out, the
+    rollout checkpoints its box (`AgentConfig.checkpoint`, `.memory_checkpoint`) and
+    fails the attempt with the error, for the rollout retries (`AgentConfig.retries`)
+    to restore."""
+
+    max_retries: int = Field(5, ge=0)
+    """Retries per model call. Zero fails the attempt at the first error."""
+    status_code: list[StatusCode] = Field(default_factory=lambda: [408, 429, "5xx"])
+    """The provider statuses that retry; a transport failure or timeout counts as 502."""
+    initial_delay: float = Field(1.0, gt=0)
+    """Seconds before the first retry; each next retry waits twice as long."""
+    max_delay: float = Field(30.0, gt=0)
+    """Cap on the wait between two retries, in seconds."""
 
 
 class AgentConfig(BaseConfig):
@@ -74,7 +127,25 @@ class AgentConfig(BaseConfig):
     response without stopping the run."""
 
     timeout: TimeoutConfig = TimeoutConfig()
-    retries: RetryConfig = RetryConfig()
+    retries: RetryConfig = Field(
+        default_factory=lambda: RetryConfig(
+            rules=[
+                RetryRule(type="SandboxError", max_retries=2),
+                RetryRule(type="ProviderError", max_retries=2),
+            ]
+        )
+    )
+    """Retries of the whole rollout. By default a failed box (`SandboxError`) starts
+    over in a new box, and a model error that the turn retries did not recover
+    (`ProviderError`) restores the checkpoint it took, if any."""
+    turn_retries: TurnRetryConfig = TurnRetryConfig()
+    checkpoint: RolloutCheckpointConfig | None = Field(
+        default_factory=RolloutCheckpointConfig
+    )
+    """Filesystem checkpoints, on by default (`RolloutCheckpointConfig`). None turns
+    them off."""
+    memory_checkpoint: MemoryCheckpointConfig | None = None
+    """Memory checkpoints, off by default (`MemoryCheckpointConfig`)."""
 
     network_notice: bool = True
     """Include the runtime's network restrictions in the agent's prompt."""

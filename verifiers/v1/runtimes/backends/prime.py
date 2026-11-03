@@ -9,6 +9,7 @@ import logging
 import math
 import shlex
 import tempfile
+import time
 import uuid
 from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
@@ -27,7 +28,9 @@ from verifiers.v1.runtimes.base import (
     ProgramResult,
     RuntimeBackend,
     RuntimeProcess,
+    Snapshot,
     parse_gpu,
+    program_sink,
 )
 from verifiers.v1.runtimes.limiters import creation_limiter
 from verifiers.v1.runtimes.runtime import Runtime
@@ -51,6 +54,11 @@ _OUTPUT_DEADLINE_SECONDS = 300
 _OUTPUT_RETRIES = 10
 """Re-reads of a finished job's output that the SDK still failed to fetch, before the
 exec is reported as failed."""
+_CHECKPOINT_DURABLE_SECONDS = 300
+"""How long a checkpoint gets to become restorable (`DURABLE`): the platform uploads it
+after the request returns, and only a durable one restores."""
+_PAUSE_SECONDS = 300
+"""How long a pause or a resume gets to settle (`PAUSED`, `RUNNING`)."""
 _PUBLIC_DOMAIN = "sandbox-v2-prod.pinfra.io"
 """Domain of the public URLs `https://<port>-<sandbox-id>.<domain>` that a LAN network's
 `internet` rule publishes ports at."""
@@ -128,6 +136,10 @@ class PrimeProcess(RuntimeProcess):
         self._process = process
         self.stdout: AsyncIterator[bytes] = process.stdout
         self.stderr: AsyncIterator[bytes] = process.stderr
+        self.session = getattr(process, "session_uuid", None)
+
+    async def detach(self) -> None:
+        await self._process.detach()
 
     async def write(self, data: bytes) -> None:
         await self._process.write_stdin(data)
@@ -150,6 +162,8 @@ class PrimeBackend(RuntimeBackend):
     SUPPORTS_USER_SWITCHING: ClassVar[bool] = True
     SUPPORTS_COMPOSE: ClassVar[bool] = True
     SUPPORTS_PORT_EXPOSURE: ClassVar[bool] = True
+    SUPPORTS_FILESYSTEM_CHECKPOINTS: ClassVar[bool] = True
+    SUPPORTS_MEMORY_CHECKPOINTS: ClassVar[bool] = True
 
     def __init__(self, config: PrimeConfig, name: str | None = None) -> None:
         ensure_prime_auth()
@@ -167,6 +181,9 @@ class PrimeBackend(RuntimeBackend):
         self._expose_network_id: str | None = None
         self._exposed_ports: list[int] = []
         self._expose_lock = asyncio.Lock()
+        self._paused = False
+        """Whether a memory checkpoint paused the sandbox: the checkpoint resumes in it,
+        so teardown leaves it to the checkpoint's owner (`discard_checkpoints`)."""
 
     @property
     def published_port(self) -> int:
@@ -205,7 +222,15 @@ class PrimeBackend(RuntimeBackend):
                 {"mount_path": target, **mount.model_dump()}
                 for target, mount in self.config.mounts.items()
             ]
-        if self.config.checkpoint:
+        if (
+            self.restore is not None
+            and self.restore.memory
+            and await self._resume(self.restore)
+        ):
+            return
+        if self.restore is not None:
+            source = {"checkpoint_id": self.restore.id}
+        elif self.config.checkpoint:
             source = {"checkpoint_id": self.config.checkpoint}
         else:
             source = {
@@ -242,8 +267,8 @@ class PrimeBackend(RuntimeBackend):
                         CreateSandboxRequest(
                             name=self.name,
                             labels=list(dict.fromkeys(labels)),
-                            **source,
                             environment_vars=self.env,
+                            **source,
                             **{k: v for k, v in options.items() if v is not None},
                         )
                     )
@@ -265,8 +290,14 @@ class PrimeBackend(RuntimeBackend):
                     self.info.id,
                 )
             await self._client.wait_for_creation(self.info.id, max_attempts=900)
+            checkpoint = (
+                self.restore.id if self.restore is not None else self.config.checkpoint
+            )
             logger.info(
-                "prime: sandbox %s up (image=%s)", self.info.id, self.config.image
+                "prime: sandbox %s up (image=%s%s)",
+                self.info.id,
+                self.config.image,
+                f", checkpoint={checkpoint}" if checkpoint else "",
             )
             await self._client.execute_command(
                 self.info.id, f"mkdir -p {shlex.quote(self.config.workdir)}"
@@ -282,6 +313,137 @@ class PrimeBackend(RuntimeBackend):
             Exception
         ) as e:  # provisioning failure is one rollout's problem, not the eval's
             raise SandboxError(f"prime sandbox provisioning failed: {e}") from e
+
+    async def _resume(self, snapshot: Snapshot) -> bool:
+        """Resume the sandbox a memory checkpoint paused, and adopt it as this box.
+        Returns False when it can no longer resume (resumed already, its node or the
+        sandbox gone), for `start` to restore the checkpoint's filesystem instead."""
+        assert snapshot.box is not None and self._client is not None
+        try:
+            await self._client.resume(snapshot.box)
+            await self._settle(snapshot.box, "RUNNING")
+        except Exception as e:  # noqa: BLE001 - a failed resume falls back to the filesystem
+            logger.warning(
+                "prime: sandbox %s did not resume (%s); restoring checkpoint %s's "
+                "filesystem instead",
+                snapshot.box,
+                e,
+                snapshot.id,
+            )
+            with contextlib.suppress(Exception):
+                await self._client.delete(snapshot.box)
+            return False
+        self.info.id = snapshot.box
+        self.restored_memory = True
+        logger.info(
+            "prime: sandbox %s resumed (checkpoint %s)", snapshot.box, snapshot.id
+        )
+        return True
+
+    async def _settle(self, sandbox_id: str, status: str) -> None:
+        """Wait until a pause or resume of `sandbox_id` reaches `status`."""
+        assert self._client is not None
+        deadline = time.monotonic() + _PAUSE_SECONDS
+        while True:
+            sandbox = await self._client.get(sandbox_id)
+            if sandbox.status == status:
+                return
+            if sandbox.error_type in ("PAUSE_FAILED", "RESUME_FAILED") or (
+                sandbox.status in ("ERROR", "TERMINATED", "TIMEOUT")
+            ):
+                raise SandboxError(
+                    f"sandbox {sandbox_id} is {sandbox.status} "
+                    f"({sandbox.error_type}: {sandbox.error_message})"
+                )
+            if time.monotonic() > deadline:
+                raise SandboxError(
+                    f"sandbox {sandbox_id} is still {sandbox.status} after "
+                    f"{_PAUSE_SECONDS}s, not {status}"
+                )
+            await asyncio.sleep(1)
+
+    async def checkpoint(self, *, memory: bool = False) -> Snapshot:
+        if memory:
+            snapshot = await run_shielded(self._pause())
+            # Only a pause whose checkpoint reached its caller keeps the sandbox: the
+            # shielded pause also finishes for a cancelled caller, and teardown deletes
+            # that sandbox, which nothing would resume.
+            self._paused = True
+            return snapshot
+
+        # The platform fixes the snapshot's content before the request returns, then
+        # uploads it. Until it is durable the snapshot is stray: the platform refuses
+        # to delete it while this box lives, so teardown frees it after.
+        async def create() -> Snapshot:
+            checkpoint = await self._client.checkpoint(self.info.id)
+            snapshot = Snapshot(id=checkpoint.id)
+            self.stray_checkpoints.append(snapshot)
+            return snapshot
+
+        try:
+            return await run_shielded(create())
+        except Exception as e:
+            raise SandboxError(f"prime checkpoint failed: {e}") from e
+
+    async def _pause(self) -> Snapshot:
+        # A pause snapshots the memory, freezes the disk into a checkpoint of its own and
+        # stops the VM; a resume continues it in the same sandbox, on the same node.
+        assert self._client is not None and self.info.id is not None
+        try:
+            await self._client.pause(self.info.id)
+            await self._settle(self.info.id, "PAUSED")
+            checkpoints = await self._client.list_checkpoints(self.info.id)
+        except Exception as e:
+            raise SandboxError(f"prime pause failed: {e}") from e
+        if not checkpoints:
+            raise SandboxError(f"prime pause of {self.info.id} left no checkpoint")
+        snapshot = Snapshot(id=checkpoints[-1].id, memory=True, box=self.info.id)
+        logger.debug(
+            "prime: sandbox %s paused (checkpoint %s)", self.info.id, snapshot.id
+        )
+        return snapshot
+
+    async def wait_checkpoint(self, snapshot: Snapshot) -> int | None:
+        started = time.monotonic()
+        try:
+            durable = await self._client.wait_for_checkpoint(
+                snapshot.id, timeout_seconds=_CHECKPOINT_DURABLE_SECONDS
+            )
+        except Exception as e:
+            raise SandboxError(f"prime checkpoint {snapshot.id}: {e}") from e
+        with contextlib.suppress(ValueError):
+            self.stray_checkpoints.remove(snapshot)
+        logger.debug(
+            "prime: checkpoint %s durable after %.1fs on sandbox %s",
+            snapshot.id,
+            time.monotonic() - started,
+            self.info.id,
+        )
+        return durable.stored_bytes
+
+    async def discard_checkpoints(self, snapshots: list[Snapshot]) -> list[str]:
+        # The platform refuses only the newest checkpoint of a running box (the parent
+        # of its live state); older ones go while it runs, their data kept as long as a
+        # newer one needs it. A memory checkpoint also holds its paused sandbox, which
+        # goes with it unless a restore resumed it since.
+        from prime_sandboxes import AsyncSandboxClient
+
+        deleted = []
+        async with AsyncSandboxClient() as client:
+            for snapshot in snapshots:
+                try:
+                    if snapshot.memory and snapshot.box is not None:
+                        sandbox = await client.get(snapshot.box)
+                        if sandbox.status == "PAUSED":
+                            await client.delete(snapshot.box)
+                    await client.delete_checkpoint(snapshot.id)
+                except Exception as e:  # noqa: BLE001 - provider cleanup is best-effort
+                    logger.warning(
+                        "prime: failed to delete checkpoint %s: %s", snapshot.id, e
+                    )
+                else:
+                    deleted.append(snapshot.id)
+        return deleted
 
     async def prepare_execution(
         self, routes: list[str] | None, network: NetworkPolicyConfig | None = None
@@ -342,6 +504,36 @@ class PrimeBackend(RuntimeBackend):
                 env=runtime.process_env(env),
                 user=runtime.user,
             )
+        except (
+            Exception
+        ) as e:  # a sandbox/API failure is one rollout's problem, not the eval's
+            raise SandboxError(f"prime exec failed: {e}") from e
+        sink = program_sink.get()
+        if sink is not None:
+            sink(job.model_dump(mode="json"))
+        return await self._wait_program(job)
+
+    @property
+    def attaches_processes(self) -> bool:
+        from prime_sandboxes import AsyncSandboxClient
+
+        # prime-sandboxes gained `attach_process` after `pause` and `resume`.
+        return hasattr(AsyncSandboxClient, "attach_process")
+
+    async def attach_process(self, runtime: Runtime, session: str) -> RuntimeProcess:
+        try:
+            process = await self._client.attach_process(self.info.id, session)
+        except Exception as e:
+            raise SandboxError(f"prime process attach failed: {e}") from e
+        return PrimeProcess(process)
+
+    async def attach(self, program: dict[str, Any]) -> ProgramResult:
+        from prime_sandboxes.models import BackgroundJob
+
+        return await self._wait_program(BackgroundJob.model_validate(program))
+
+    async def _wait_program(self, job: Any) -> ProgramResult:
+        try:
             delay = 0.1
             output_retries = 0
             missing = None
@@ -523,7 +715,7 @@ class PrimeBackend(RuntimeBackend):
         # Synchronous atexit backstop (the async client can't run once the loop is gone): delete
         # the sandbox via the sync client, so the costly resource isn't left to its max-lifetime.
         # Idempotent — the async `stop` deletes it on the normal path, a second delete 404s.
-        if self.info.id is not None:
+        if self.info.id is not None and not self._paused:
             from prime_sandboxes import SandboxClient
             from prime_sandboxes.core import APIClient
 
@@ -542,7 +734,9 @@ class PrimeBackend(RuntimeBackend):
             return
         try:
             try:
-                if self.info.id is not None:  # keep info.id available after teardown
+                # Keep info.id available after teardown. A paused sandbox belongs to
+                # its memory checkpoint.
+                if self.info.id is not None and not self._paused:
                     await client.delete(self.info.id)
             except Exception as e:  # noqa: BLE001 - provider teardown is best-effort
                 logger.warning(

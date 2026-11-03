@@ -13,8 +13,8 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
-from verifiers.v1.errors import HarnessError, InterceptionError
-from verifiers.v1.harness import Harness, HarnessSession
+from verifiers.v1.errors import HarnessError, InterceptionError, boundary
+from verifiers.v1.harness import RESTORE_PROMPT, Harness, HarnessSession
 from verifiers.v1.runtimes import ProgramResult, Runtime, RuntimeProcess
 from verifiers.v1.semantic import (
     ACP_SEMANTIC_EDGES_METADATA_KEY,
@@ -22,7 +22,7 @@ from verifiers.v1.semantic import (
 )
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
-from verifiers.v1.types import Messages
+from verifiers.v1.types import Messages, UserMessage
 from verifiers.v1.utils.aio import run_shielded
 
 ACP_SOURCE = (Path(__file__).resolve().parent / "runner.py").read_text()
@@ -237,6 +237,13 @@ class ACPHarnessSession(HarnessSession):
         self._responses: dict[int, asyncio.Future] = {}
         self._request_id = 0
         self._response_task: asyncio.Task | None = None
+        self._session_id: str | None = None
+        """The agent's ACP session id, once a checkpoint asked for it."""
+        self._restore_id: str | None = None
+        """The session the next process loads from the restored box (`restore`)."""
+        self._prompt: dict[str, Any] | None = None
+        """The prompt request in flight, which a host reattaching after a memory
+        checkpoint sends again to get its reply (`reattach`)."""
 
     async def _start(self) -> None:
         self._stderr_tail.clear()
@@ -266,23 +273,48 @@ class ACPHarnessSession(HarnessSession):
                     )
 
     async def _request(self, operation: str, **payload: Any) -> JsonObject:
+        self._request_id += 1
+        return await self._send(
+            {"id": self._request_id, "operation": operation, **payload}
+        )
+
+    async def _send(self, request: dict[str, Any]) -> JsonObject:
         process = self._process
         if process is None or self._response_task is None or self._response_task.done():
             raise RuntimeError("ACP process is not running")
-        self._request_id += 1
-        request_id = self._request_id
+        request_id = request["id"]
         future = asyncio.get_running_loop().create_future()
         self._responses[request_id] = future
         try:
             async with self._write_lock:
-                await process.write(
-                    _packet({"id": request_id, "operation": operation, **payload})
-                )
+                await process.write(_packet(request))
             return await future
         finally:
             self._responses.pop(request_id, None)
             if not future.done():
                 future.cancel()
+
+    async def checkpoint_state(self) -> dict[str, Any] | None:
+        # The agent keeps its session in files of the box, so a restored box can load
+        # it in a new process — if the agent advertises `loadSession`.
+        if self._session_id is None:
+            if self._process is None:
+                return None
+            response = await self._request("session")
+            result = response.get("result")
+            if not response.get("ok") or not isinstance(result, dict):
+                raise RuntimeError(response.get("error") or "ACP session query failed")
+            if not result.get("load_session") or result.get("session_id") is None:
+                return None
+            self._session_id = result["session_id"]
+        return {"acp_session_id": self._session_id}
+
+    def restore(self, state: dict[str, Any], tail: Messages) -> Messages:
+        # The agent's own session files hold the conversation, the tail included as
+        # far as it flushed them; the restored process takes only the notice.
+        self._restore_id = state["acp_session_id"]
+        self._session_id = self._restore_id
+        return [UserMessage(content=RESTORE_PROMPT)]
 
     async def steer(self, message: str, *, message_id: str | None = None) -> dict:
         if self._closed:
@@ -326,6 +358,7 @@ class ACPHarnessSession(HarnessSession):
         )
         config = {
             "command": self.config.command,
+            "load_session_id": self._restore_id,
             "user_contents": user_contents,
             "mcp_urls": self.mcp_urls,
             "mcp_headers": self.harness.config.resolve_mcp_headers(self.mcp_urls),
@@ -349,11 +382,78 @@ class ACPHarnessSession(HarnessSession):
             assert self._process is not None
             assert self._reader is not None
             calls_before = len(self.trace.calls)
+            self._request_id += 1
+            self._prompt = {
+                "id": self._request_id,
+                "operation": "prompt",
+                "config": config,
+            }
             try:
-                response = await self._request("prompt", config=config)
+                response = await self._send(self._prompt)
             except BaseException:
-                await run_shielded(self._stop(graceful=False))
+                # A memory checkpoint froze the program for another host to reattach.
+                if not self.frozen:
+                    await run_shielded(self._stop(graceful=False))
                 raise
+            finally:
+                # Only the restored box's first process loads the session; later
+                # turns continue the live one.
+                self._restore_id = None
+        self._prompt = None
+        return self._finish_turn(response, calls_before)
+
+    async def memory_state(self) -> dict[str, Any] | None:
+        process = self._process
+        if (
+            process is None
+            or process.session is None
+            or self._prompt is None
+            or not self.runtime.backend.attaches_processes
+        ):
+            return None
+        return {
+            "process": process.session,
+            "request": self._prompt,
+            "calls_before": len(self.trace.calls),
+        }
+
+    async def reattach(self, state: dict[str, Any]) -> None:
+        request = state["request"]
+        async with (
+            self._lock,
+            boundary(HarnessError, f"harness {self.harness.config.id!r}"),
+        ):
+            process = await self.runtime.attach_process(state["process"])
+            self._process = process
+            self._reader = _PacketReader(process.stdout)
+            self._response_task = asyncio.create_task(
+                self._read_responses(self._reader)
+            )
+            self._stderr_task = asyncio.create_task(self._drain_stderr(process.stderr))
+            # Later requests must not reuse an id the process already answered.
+            self._request_id = request["id"]
+            self._prompt = request
+            try:
+                response = await self._send(request)
+            except BaseException:
+                if not self.frozen:
+                    await run_shielded(self._stop(graceful=False))
+                raise
+            self._prompt = None
+            result = self._finish_turn(response, state["calls_before"])
+        await self.harness._check_result(self.trace, self.runtime, result)
+
+    async def detach(self) -> None:
+        await super().detach()
+        process, self._process = self._process, None
+        for task in (self._response_task, self._stderr_task):
+            if task is not None:
+                task.cancel()
+        if process is not None:
+            with contextlib.suppress(Exception):
+                await run_shielded(process.detach())
+
+    def _finish_turn(self, response: JsonObject, calls_before: int) -> ProgramResult:
         turn = _turn_result(response)
         self.trace.root_reply = turn.reply.strip()
         self.trace.info["acp_stop_reason"] = turn.stop_reason

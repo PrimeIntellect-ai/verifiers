@@ -10,7 +10,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import PurePosixPath
 from types import MappingProxyType
-from typing import Self
+from typing import Any, Self
 
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.errors import SandboxError
@@ -86,6 +86,12 @@ class Runtime:
 
     def host_url(self, url: str) -> str:
         return self.backend.host_url(url)
+
+    async def attach(self, program: dict[str, Any]) -> ProgramResult:
+        return await self.backend.attach(program)
+
+    async def attach_process(self, session: str) -> RuntimeProcess:
+        return await self.backend.attach_process(self, session)
 
     async def expose(self, port: int) -> str:
         return await self.backend.expose(port)
