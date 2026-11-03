@@ -9,7 +9,7 @@
 ## Running code
 
 - **Always use uv**: run code and commands with `uv run`, never raw `python`. Make sure `uv` is installed ([docs](https://docs.astral.sh/uv/getting-started/installation/)).
-- **Check tasksets**: check a taskset without a model with `uv run vf-validate <taskset>`. Run model evals with prime-rl's `uv run eval`.
+- **Check tasksets**: check a taskset without a model with `uv run vf-validate <taskset>`. Run a few episodes with `uv run vf-run <taskset> -n 1 -r 1`. Run full model evals with prime-rl's `uv run eval`.
 - **Validate TOML first**: validate config `.toml` files before running them.
 - **Don't add dependencies**: never add dependencies or optional extras to the top-level `pyproject.toml`.
 

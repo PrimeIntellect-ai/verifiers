@@ -236,7 +236,7 @@ Two rules follow from an infinite stream:
 1. Every run must bound the taskset with `take` (`-n` / `--select.limit` on the CLI) or an `include` consisting only of closed `idx` ranges; omitting both raises an error.
 2. `shuffle` needs a finite bound _before_ it runs, since you cannot shuffle an infinite stream. Because `select` applies `limit` after `shuffle`, shuffling an infinite taskset from the CLI requires a closed `include.idx` range first (for example, `--select.include.idx 0:1000 -s -n 50`); in Python, `taskset.take(1000).shuffle()` works as well.
 
-The generator runs once on the client (the eval entrypoint or prime-rl orchestrator pulls tasks from `load()` and sends each task's `TaskData` to the environment worker), so workers never need to reproduce the generator sequence. Keep `load()` deterministic if you want `--resume` to regenerate the same first `n` tasks across runs (see `alphabet_sort`, `color_codeword`, or the built-in `textarena` taskset).
+The generator runs once on the client (`vf-run` or the prime-rl orchestrator pulls tasks from `load()` and sends each task's `TaskData` to the environment worker), so workers never need to reproduce the generator sequence. Keep `load()` deterministic if you want `--resume` to regenerate the same first `n` tasks across runs (see `alphabet_sort`, `color_codeword`, or the built-in `textarena` taskset).
 
 ## Adding Tools
 

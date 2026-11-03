@@ -8,7 +8,7 @@ uv run vf-gepa reverse-text
 
 `vf-gepa` alternates between running rollouts on the taskset and asking a reflection LLM to review the trajectories and propose improvements to `TaskData.system_prompt`.
 
-GEPA takes the same `env` (taskset + agent), `client`, and `sampling` configuration as a prime-rl eval:
+GEPA takes the same `env` (taskset + agent), `client`, and `sampling` configuration as `vf-run`:
 
 ```toml
 model = "deepseek/deepseek-v4-flash"

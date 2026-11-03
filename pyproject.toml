@@ -32,8 +32,8 @@ dependencies = [
     "numpy>=2.1.0",
     "math-verify>=0.8.0",
     "openai>=2.54.0,<3.0.0",
-    "prime-tunnel>=0.1.14",
-    "prime-sandboxes>=0.5.4",
+    "prime-tunnel>=0.1.17",
+    "prime-sandboxes>=0.5.5",
     "pydantic>=2.12.3",
     "rich>=11.0.0",
     "tenacity>=8.5.0",
@@ -150,6 +150,7 @@ prime-pydantic-config = false
 renderers = false
 
 [project.scripts]
+vf-run = "verifiers.v1.cli.run:main"
 vf-validate = "verifiers.v1.cli.validate:main"
 vf-debug = "verifiers.v1.cli.debug:main"
 vf-replay = "verifiers.v1.cli.replay:main"

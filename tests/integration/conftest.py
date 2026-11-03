@@ -4,28 +4,24 @@ resulting `Trace`(s). They need a model API key (`PRIME_API_KEY`); without one t
 model-driven tests skip.
 
 Each behavior module fixes one task and fans it across the harness x runtime grid in
-`grid.py`, which also says why a cell is skipped. `run` drives the `Env` API in-process. The placement fixtures below are indirect-only: they
-translate a parametrized value, and using one without `indirect=True` fails loudly.
+`grid.py`, which also says why a cell is skipped. `run` drives `vf-run`'s in-process
+runner. The placement fixtures below are indirect-only: they translate a parametrized
+value, and using one without `indirect=True` fails loudly.
 """
 
-import asyncio
 import os
 from pathlib import Path
 
 import pytest
 from grid import agent_seats, runtime_config
-from pydantic import SerializeAsAny, model_validator
-from pydantic_config import BaseConfig
 
+from verifiers.v1.cli.run import run_episodes
 from verifiers.v1.clients import EvalClientConfig, ModelContext
-from verifiers.v1.configs.cli.env import narrowed_env_annotation, resolve_env_field
-from verifiers.v1.configs.client import ClientConfig
-from verifiers.v1.configs.env import EnvConfig, SingleAgentEnvConfig
+from verifiers.v1.configs.cli.run import RunnerConfig
 from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.configs.sampling import SamplingConfig
-from verifiers.v1.configs.select import SelectCLIConfig
 from verifiers.v1.episode import Episode
-from verifiers.v1.utils.loaders import harness_config_type, load_environment
+from verifiers.v1.utils.loaders import harness_config_type
 
 CI_MODEL = "internal/deepseek-v4.1-flash"
 CI_REASONING_EFFORT = "low"
@@ -37,22 +33,6 @@ CI_DECISION_JUDGE = {"model": "cloudflare/clef"}
 # added to the path via `pythonpath` in pyproject so the loader resolves them by id.
 
 LIVE_FIXTURES = {"run", "live_ctx"}
-
-
-class RunnerConfig(BaseConfig):
-    """The environment, model, and task selection one `run` call executes."""
-
-    env: SerializeAsAny[EnvConfig] = SingleAgentEnvConfig()
-    model: str
-    client: ClientConfig = EvalClientConfig()
-    sampling: SamplingConfig = SamplingConfig()
-    select: SelectCLIConfig = SelectCLIConfig()
-    num_rollouts: int = 1
-
-    @model_validator(mode="before")
-    @classmethod
-    def _resolve_env(cls, data):
-        return resolve_env_field(data, narrowed_env_annotation(cls))
 
 
 @pytest.fixture
@@ -193,27 +173,14 @@ def _eval_config(
 
 
 @pytest.fixture
-def run():
-    """Run a taskset's episodes in-process through the `Env` API (`serving`, `slots`,
-    `run_slot`, retries included)."""
+def run(tmp_path):
+    """Run a taskset's episodes in-process with `vf-run`'s runner, saving them under
+    `tmp_path`."""
 
     async def _episodes(taskset: str, **kwargs) -> list[Episode]:
         config = _eval_config(taskset, **kwargs)
-        env = load_environment(config.env)
-        tasks = list(env.taskset.select(config.select))
-        ctx = ModelContext(
-            client=config.client, model=config.model, sampling=config.sampling
-        )
-        async with env.serving():
-            return list(
-                await asyncio.gather(
-                    *(
-                        env.run_slot(slot, ctx)
-                        for task in tasks
-                        for slot in env.slots(task, config.num_rollouts)
-                    )
-                )
-            )
+        config.output_dir = tmp_path
+        return await run_episodes(config)
 
     return _episodes
 
