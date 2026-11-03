@@ -13,7 +13,7 @@ The checkout installs the example tasksets right away, so you can verify your se
 
 ```bash
 uv run vf-eval reverse-text --env.agent.harness.id null \
-  --env.agent.runtime.type subprocess --no-push --dry-run
+  --env.agent.runtime.type subprocess --dry-run
 ```
 
 For full model evaluations, we recommend [`uv run eval` in prime-rl](https://github.com/PrimeIntellect-ai/prime-rl/blob/main/docs/eval.md), which is replacing the bundled `vf-eval` CLI.
