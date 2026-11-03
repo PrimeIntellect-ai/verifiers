@@ -532,8 +532,6 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
 
     @property
     def reward(self) -> float:
-        if self.is_format_violation:
-            return 0.0
         return sum(r.value for r in self.rewards.values() if r is not None)
 
     @property

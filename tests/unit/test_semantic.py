@@ -400,10 +400,9 @@ def test_acp_derives_compaction_attempt_branch_trainability():
     trace.nodes[3].semantic_parents.append(
         vf.ParentLink(node=1, type="format_violation")
     )
-    trace.record_reward("task", 1.0)
-    trace.record_reward("judge", 1.0)
     restored = vf.WireTrace.model_validate_json(trace.model_dump_json())
     assert restored.is_format_violation
+    assert restored.rewards == {}
     assert restored.reward == 0.0
     assert not restored.is_dropped
     branches = {
