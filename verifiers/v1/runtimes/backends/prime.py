@@ -64,6 +64,26 @@ _OUTPUT_DEADLINE_SECONDS = 300
 _OUTPUT_RETRIES = 10
 """Re-reads of a finished job's output that the SDK still failed to fetch, before the
 exec is reported as failed."""
+_VM_MAX_DISK_GB = 128
+"""Prime's largest disk for a GPU VM (`VM disk size must not exceed 131072 MiB`, a 422):
+a task that asks for more (TB4's jax-speedrun-gpu declares 1,000 GB) gets this instead
+of a box that never starts."""
+
+
+def vm_disk(name: str, disk: float | None, gpu_count: int | None) -> float | None:
+    """The disk to ask Prime for: a GPU box is a VM, whose disk Prime caps."""
+    if gpu_count and disk is not None and disk > _VM_MAX_DISK_GB:
+        logger.warning(
+            "%s: %g GB disk exceeds a Prime VM's %d GB; using %d GB",
+            name,
+            disk,
+            _VM_MAX_DISK_GB,
+            _VM_MAX_DISK_GB,
+        )
+        return _VM_MAX_DISK_GB
+    return disk
+
+
 _PUBLIC_DOMAIN = "sandbox-v2-prod.pinfra.io"
 """Domain of the public URLs `https://<port>-<sandbox-id>.<domain>` that a LAN network's
 `internet` rule publishes ports at."""
@@ -789,7 +809,7 @@ class PrimeBackend(RuntimeBackend):
         else:
             source = {
                 "docker_image": self.config.image,
-                "disk_size_gb": self.config.disk,
+                "disk_size_gb": vm_disk(self.name, self.config.disk, gpu_count),
             }
         if self.lan is not None:
             options["lan_network_id"], options["lan_tags"] = self.lan

@@ -255,3 +255,14 @@ async def test_prime_reports_the_stored_bytes_of_the_checkpoints_it_still_holds(
     sizes = await PrimeBackend(PrimeConfig()).checkpoint_sizes(ids)
     assert [len(batch) for batch in asked] == [100, 51]
     assert len(sizes) == 150 and sizes["ck7"] == 3 and "gone" not in sizes
+
+
+def test_a_gpu_vm_asks_for_at_most_primes_largest_disk(caplog):
+    # TB4's jax-speedrun-gpu declares 1,000 GB; Prime refuses a VM over 128 GB (a 422).
+    from verifiers.v1.runtimes.backends.prime import vm_disk
+
+    assert vm_disk("box", 1000.0, 1) == 128
+    assert "exceeds a Prime VM's 128 GB" in caplog.text
+    assert vm_disk("box", 64.0, 1) == 64.0
+    assert vm_disk("box", 1000.0, None) == 1000.0  # a container keeps its request
+    assert vm_disk("box", None, 1) is None
