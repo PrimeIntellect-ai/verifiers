@@ -1,6 +1,7 @@
 """Decision-model judge using Prime's evaluations API by default."""
 
 import json
+from collections.abc import Callable
 from typing import Any, cast
 
 from pydantic import Field
@@ -46,23 +47,40 @@ class DecisionJudge(Judge[float, DecisionJudgeConfig]):
     async def evaluate(
         self, *, trace: Trace | None = None, **fields: Any
     ) -> JudgeResponse[float]:
-        request = {
-            "model": self.config.model,
-            "state": fields,
-            "questions": {
-                "grade": {
-                    "type": "score",
-                    "instructions": self.build_messages(**fields),
-                    "criteria": self.config.levels,
-                }
-            },
+        grade = {
+            "type": "score",
+            "instructions": self.build_messages(**fields),
+            "criteria": self.config.levels,
         }
+
+        def normalize(answers: dict[str, Any]) -> float:
+            score = answers["grade"]["score"] / (len(self.config.levels) - 1)
+            if not 0 <= score <= 1:
+                raise ValueError(f"decision judge score {score!r} is outside [0, 1]")
+            return score
+
+        return await self.ask(fields, {"grade": grade}, trace=trace, parse=normalize)
+
+    async def ask(
+        self,
+        state: Any,
+        questions: dict[str, dict[str, Any]],
+        *,
+        trace: Trace | None = None,
+        parse: Callable[[dict[str, Any]], Any] | None = None,
+    ) -> JudgeResponse[Any]:
+        """Ask the decision model `questions` about `state`: any of the kinds it
+        answers (a `score` over levels, a `noul` chance, a `choice` among labeled
+        options), several at once. The response's `parsed` is `parse` of the
+        answers by name, by default the answers themselves, raising if a question
+        goes unanswered; with `trace`, the call is recorded even then."""
+        request = {"model": self.config.model, "state": state, "questions": questions}
         async with build_async_openai(self.config) as client:
             raw = await client.post(
                 self.config.base_url, cast_to=dict[str, Any], body=request
             )
         result = raw.get("result", raw)  # Workers AI wraps its response in `result`.
-        response = JudgeResponse[float](text=json.dumps(raw))
+        response = JudgeResponse[Any](text=json.dumps(raw))
         try:
             if usage := result.get("usage"):
                 response.usage = Usage(
@@ -72,13 +90,16 @@ class DecisionJudge(Judge[float, DecisionJudgeConfig]):
                     ),
                     cost=usage.get("cost"),
                 )
-            score = result["answers"]["grade"]["score"] / (len(self.config.levels) - 1)
-            if not 0 <= score <= 1:
-                raise ValueError(f"decision judge score {score!r} is outside [0, 1]")
-            response.parsed = score
+            answers = result["answers"]
+            if parse is None:
+                if missing := sorted(set(questions) - set(answers)):
+                    raise ValueError(f"decision judge answered no {missing}")
+                response.parsed = answers
+            else:
+                response.parsed = parse(answers)
             return response
         finally:
-            # The call was billed even if the score could not be parsed.
+            # The call was billed even if the answers could not be parsed.
             if trace is not None:
                 trace.record_judge_call(
                     name=self.reward_name, request=request, response=response
