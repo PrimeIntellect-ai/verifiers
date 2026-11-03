@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import contextvars
 import io
 import json
 import logging
@@ -212,6 +213,14 @@ a box without `mount` keeps the empty tmpfs."""
 
 _PID_NAMESPACE_FILE = "/run/vf-pid-namespace"
 _NAMESPACE_RECHECK_S = 30.0
+_OUTSIDE_NAMESPACE: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "vf_prime_outside_namespace", default=False
+)
+"""Set while `isolate_processes` runs its script, which `_job` then starts on the box
+itself. The script looks for the recorded init in the box's /proc: entered into the
+namespace, whose /proc is its own, it found no such process, started a namespace
+nested in the live one, and recorded a PID numbered inside it, which later commands
+entered on the box as some other process and the file gateway named as its root."""
 _REAPER = """
 import os, signal
 for sig in (signal.SIGHUP, signal.SIGINT, signal.SIGTERM, signal.SIGQUIT):
@@ -1099,7 +1108,11 @@ class PrimeBackend(RuntimeBackend):
         # The script prints the recorded init when it still lives and starts a fresh
         # namespace when it does not, so it is run each time rather than skipped on
         # a flag a dead init leaves set.
-        result = await self.run(Runtime(self), ["sh", "-c", _PID_NAMESPACE], {})
+        outside = _OUTSIDE_NAMESPACE.set(True)
+        try:
+            result = await self.run(Runtime(self), ["sh", "-c", _PID_NAMESPACE], {})
+        finally:
+            _OUTSIDE_NAMESPACE.reset(outside)
         self._pid_namespace = result.exit_code == 0
         self._namespace_root = None
         if self._pid_namespace and (init := result.stdout.split()[-1:]):
@@ -1153,6 +1166,8 @@ class PrimeBackend(RuntimeBackend):
         the runtime's user (`_as_user`), inside the box's PID namespace once it has one
         (`isolate_processes`), and outside it should that namespace's init be gone."""
         command, user = await self._as_user(runtime, command)
+        if _OUTSIDE_NAMESPACE.get():
+            return command, user
         if (
             self._namespace_root is not None
             and time.monotonic() - self._namespace_checked > _NAMESPACE_RECHECK_S

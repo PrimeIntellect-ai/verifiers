@@ -4,8 +4,10 @@ the runtime's commands run in a local shell, so the join and cut scripts run for
 
 import asyncio
 import os
+import shlex
 import shutil
 import subprocess
+import time
 from pathlib import Path
 
 import httpx
@@ -378,3 +380,72 @@ async def test_commands_renew_a_dead_namespace_once_per_interval(runtime, monkey
     await box._job(runtime, "true")
     await box._job(runtime, "true")
     assert renewed == [DEAD]
+
+
+def with_restartable_namespace(runtime, monkeypatch) -> list[str | None]:
+    """The namespace script starts a live init: this process, whose `/proc/<pid>/root` is
+    the host's `/`, so the gateway's paths through it land on the local files."""
+    ran = PrimeBackend.run
+    starts: list[str | None] = []
+
+    async def run(self, runtime, argv, env):
+        if argv[-1] == prime._PID_NAMESPACE:
+            starts.append(self._namespace_root)
+            return ProgramResult(0, f"{os.getpid()}\n", "")
+        return await ran(self, runtime, argv, env)
+
+    monkeypatch.setattr(PrimeBackend, "run", run)
+    return starts
+
+
+async def test_a_relative_write_on_a_reused_box_whose_init_died(
+    runtime, tmp_path, monkeypatch
+):
+    """QC stage 6: a verifier call resumed on its box after its agent's run took the
+    namespace's init (737) down. Every write of its relative `.audit/tool-config.json`
+    went to `/proc/737/root/audit-review/...`, the gateway answered `mkdir /proc/737: no
+    such file or directory`, and the call stalled. The write starts a new namespace and
+    lands in the workdir."""
+    box = runtime.backend
+    workdir = tmp_path / "audit-review"
+    box.config = box.config.model_copy(update={"workdir": str(workdir)})
+    box._pid_namespace, box._namespace_root = True, DEAD
+    starts = with_restartable_namespace(runtime, monkeypatch)
+    await runtime.write(".audit/tool-config.json", b"{}")
+    assert (workdir / ".audit" / "tool-config.json").read_bytes() == b"{}"
+    assert box._namespace_root == f"/proc/{os.getpid()}/root"
+    assert starts == [DEAD]
+
+
+async def test_isolating_a_reused_box_again_replaces_a_dead_init(runtime, monkeypatch):
+    """A call's setup isolates its box again when it runs on a box an earlier run
+    used; the flag that run left set no longer keeps the dead init's root."""
+    box = runtime.backend
+    box._pid_namespace, box._namespace_root = True, DEAD
+    starts = with_restartable_namespace(runtime, monkeypatch)
+    await box.isolate_processes()
+    assert box._namespace_root == f"/proc/{os.getpid()}/root"
+    assert starts == [DEAD]
+
+
+async def test_isolating_a_box_again_runs_its_script_outside_the_live_namespace(
+    runtime, monkeypatch
+):
+    """The script looks for the recorded init in the box's /proc. Entered into the live
+    namespace it saw that namespace's /proc instead, started a nested namespace and
+    recorded a PID numbered inside it (8 on a real box): later commands entered some
+    other process's namespaces, the box's own, and transfers went through its root."""
+    box = runtime.backend
+    box._pid_namespace, box._namespace_root = True, f"/proc/{os.getpid()}/root"
+    box._namespace_checked = time.monotonic()
+    jobs: list[tuple[str, str | None]] = []
+
+    async def run(self, runtime, argv, env):
+        jobs.append(await self._job(runtime, shlex.join(argv)))
+        return ProgramResult(0, f"{os.getpid()}\n", "")
+
+    monkeypatch.setattr(PrimeBackend, "run", run)
+    await box.isolate_processes()
+    assert jobs == [(shlex.join(["sh", "-c", prime._PID_NAMESPACE]), None)]
+    command, _ = await box._job(runtime, "true")
+    assert command.startswith(f"p=$(cat {prime._PID_NAMESPACE_FILE}")
