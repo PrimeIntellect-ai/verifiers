@@ -1,34 +1,16 @@
 """The `EvalConfig`: the single config object the eval CLI parses."""
 
 from pathlib import Path
-from uuid import uuid4
 
-from pydantic import AliasChoices, Field, PrivateAttr, SerializeAsAny, model_validator
+from pydantic import AliasChoices, Field, SerializeAsAny, model_validator
 from pydantic_config import BaseConfig
 
 from verifiers.v1.configs.cli.env import narrowed_env_annotation, resolve_env_field
+from verifiers.v1.configs.cli.run import RunConfig, default_run_name
 from verifiers.v1.configs.client import ClientConfig, EvalClientConfig
 from verifiers.v1.configs.env import EnvConfig, SingleAgentEnvConfig
 from verifiers.v1.configs.sampling import SamplingConfig
 from verifiers.v1.configs.select import SelectCLIConfig
-
-
-def default_run_name(env: EnvConfig, model: str) -> str:
-    """The auto-generated run name: `<env>--<model>--<harness>--<short-id>`, a
-    descriptive leaf for the run directory `output_dir / run.name`. The short-id
-    suffix keeps repeated invocations from colliding."""
-    taskset = env.taskset
-    name = taskset.name if taskset.id else "no-taskset"
-    if taskset.id and env.id:
-        # Same compounding as `EnvConfig.env_id`: a `best-of-n+gsm8k` run must
-        # not share a name with a plain `gsm8k` one.
-        name = f"{env.id}+{name}"
-    # Every seat's resolved harness, distinct, in role order.
-    harness = "+".join(dict.fromkeys(h.name for h in env.agent_harnesses().values()))
-    slug = (
-        f"{name}--{model.replace('/', '--')}--{harness or 'default'}--{uuid4().hex[:8]}"
-    )
-    return slug.lower()
 
 
 class RichConfig(BaseConfig):
@@ -37,22 +19,6 @@ class RichConfig(BaseConfig):
     show_logs: bool = False
     """Replace the dashboard's per-rollout rows with a live tail of the attempt's log
     file (`logs/latest/eval.log`) — the env's own log lines included."""
-
-
-class RunConfig(BaseConfig):
-    name: str | None = None
-    """Run name. Auto-generated as `<env>--<model>--<harness>--<short-id>` when unset."""
-
-    dir: str | None = None
-    """Run directory name — the run writes to `output_dir / dir`. Defaults to `run.name`;
-    set it only when the directory should differ from the display name."""
-
-    _id: str = PrivateAttr(default_factory=lambda: uuid4().hex)
-
-    @property
-    def id(self) -> str:
-        """Stamped on every trace and exported as `$VF_RUN_ID`."""
-        return self._id
 
 
 class EvalConfig(BaseConfig):

@@ -22,13 +22,14 @@ To work with other tasksets, including packages you build yourself following [bu
 
 ## Commands
 
-verifiers installs five CLI commands, which you run with `uv run` in the environment where verifiers and your taskset package are installed:
+verifiers installs six CLI commands, which you run with `uv run` in the environment where verifiers and your taskset package are installed:
 
 | Command | Use |
 | --- | --- |
 | [`vf-validate <taskset>`](debugging.md#before-running-an-agent) | Check task setup, a known gold solution, or the untouched task |
 | [`vf-debug <taskset>`](debugging.md#before-running-an-agent) | Run a command or script inside the prepared task runtime |
 | [`vf-replay <run-dir>`](debugging.md#re-score-without-rerunning-the-agent) | Re-score saved `vf-eval` traces without recreating their sandbox |
+| `vf-run <taskset>` | Run a few episodes in-process and save their traces, with a one-line summary |
 | [`vf-gepa <taskset>`](gepa.md) | Optimize a system prompt against task rewards |
 | [`vf-eval <taskset>`](evaluation.md) | Run the bundled evaluator |
 
