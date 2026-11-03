@@ -216,6 +216,14 @@ class PrimeConfig(NetworkPolicyConfig):
     checkpoint: str | None = None
     """A DURABLE filesystem checkpoint to start from instead of ``image`` (see the SDK's
     ``checkpoint`` and ``wait_for_checkpoint``)."""
+    keep_paused: bool = False
+    """At teardown, pause the box (a VM) instead of deleting it, files and processes as
+    they are, for a later box to resume (`attach`). Its owner deletes it when nothing
+    will. A box that cannot be paused is deleted."""
+    attach: str | None = None
+    """A paused box (`keep_paused`) to resume instead of starting one. When it cannot be
+    resumed (deleted, expired), the box starts from ``checkpoint`` or ``image`` as
+    configured, and the paused one is deleted."""
     idle_timeout: float | None = 3600
     """Seconds of inactivity before the sandbox self-deletes (None disables)."""
     transfer_timeout: int = Field(600, gt=0)

@@ -84,6 +84,9 @@ _SECONDS_PER_WAIT_ATTEMPT = 355 / 180
 _RESTORE_WAIT_ATTEMPTS = 420
 """Creation-wait budget for a box restored from a checkpoint (~14 min): a restore
 copies the checkpoint's data first, and a large box's takes longer than a boot."""
+_ATTACH_SECONDS = 300
+"""How long a paused box may take to resume (`PrimeConfig.attach`); a pause or resume takes
+about 3 s."""
 _MISSING_CWD = re.compile(r"cwd '([^']+)' does not exist")
 """The platform's refusal of a command whose working directory is not on the box."""
 
@@ -659,6 +662,8 @@ class PrimeBackend(RuntimeBackend):
         self.placed = False
         """The box has answered an exec: a placement lost from now on is the box lost,
         not an outage."""
+        self.attached = False
+        """The box is a paused one resumed (`PrimeConfig.attach`), not started."""
         # A LAN network (id, tags) to join as the sandbox boots: prime-sandboxes joins it
         # once it is running, within `wait_for_creation` on the creating client.
         self.lan: tuple[str, list[str]] | None = None
@@ -739,6 +744,8 @@ class PrimeBackend(RuntimeBackend):
         from prime_sandboxes import CreateSandboxRequest
 
         self._client = _lease_client()
+        if self.config.attach and await self._attach(self.config.attach):
+            return
         # Map the resources onto prime's API (minutes, split GPU; memory/disk are already
         # GB). gpu_type/region are only sent when set (else provider-chosen).
         gpu_type, gpu_count = parse_gpu(self.config.gpu)
@@ -843,57 +850,7 @@ class PrimeBackend(RuntimeBackend):
                 logger.info(
                     "prime: sandbox %s up (image=%s)", self.info.id, self.config.image
                 )
-                if self.config.workdir is None:
-                    cwd = await self._held(
-                        "image workdir",
-                        lambda: self._client.execute_command(
-                            self.info.id, _IMAGE_WORKDIR
-                        ),
-                    )
-                    lines = cwd.stdout.strip().splitlines()
-                    if (
-                        cwd.exit_code != 0
-                        or len(lines) != 2
-                        or not all(path.startswith("/") for path in lines)
-                    ):
-                        raise SandboxError(
-                            f"Cannot resolve image working directory: {cwd.stderr}",
-                            kind="exec",
-                        )
-                    workdir, root_home = lines
-                    # The gateway uses root's home (its passwd entry, whatever the
-                    # image's HOME says) when the image has no WORKDIR, where Docker
-                    # uses /. Do not bind that private directory to every user's
-                    # commands.
-                    if workdir == root_home:
-                        workdir = "/"
-                    self.config = self.config.model_copy(update={"workdir": workdir})
-                self.info.workdir = self.config.workdir
-                prepared = await self._held(
-                    "workdir",
-                    lambda: self._client.execute_command(
-                        self.info.id,
-                        f"{IMAGE_RUN} mkdir -p {shlex.quote(self.config.workdir)}"
-                        f" && mkdir -p -m 1777 /run/lock && {HOSTS_ENTRY}",
-                        working_dir="/",
-                    ),
-                )
-                # Prime boots /run as an empty tmpfs, including on checkpoint restore,
-                # over what the image put there (`IMAGE_RUN` copies it back). Restore the
-                # standard lock directory before image service launchers run.
-                # Existing directories retain their permissions (mkdir -p -m only applies
-                # the mode when creating a directory). The box's own hostname resolves
-                # locally, as in Docker: Prime's /etc/hosts does not list it, so without a
-                # network every lookup of it (each `sudo`) waits 20 s on DNS.
-                if prepared.exit_code:
-                    raise SandboxError(
-                        f"Cannot prepare runtime directories: {prepared.stderr}",
-                        kind="exec",
-                    )
-                if gpu_count:
-                    await self._ready_gpu()
-                await validate_runtime_mounts(self.bind(), [])
-                self.placed = True
+                await self._ready()
         except CreationBacklogFull as e:
             raise SandboxError(
                 f"prime sandbox provisioning failed: {e}", kind="quota"
@@ -927,6 +884,95 @@ class PrimeBackend(RuntimeBackend):
             raise SandboxError(
                 f"prime sandbox provisioning failed: {e}", kind=kind
             ) from e
+
+    async def _ready(self) -> None:
+        """Make the booted box ready for runs: its working directory (found from the
+        image when not configured), /run's lock directory, the host's own name, the GPU,
+        the mounts."""
+        if self.config.workdir is None:
+            cwd = await self._held(
+                "image workdir",
+                lambda: self._client.execute_command(self.info.id, _IMAGE_WORKDIR),
+            )
+            lines = cwd.stdout.strip().splitlines()
+            if (
+                cwd.exit_code != 0
+                or len(lines) != 2
+                or not all(path.startswith("/") for path in lines)
+            ):
+                raise SandboxError(
+                    f"Cannot resolve image working directory: {cwd.stderr}",
+                    kind="exec",
+                )
+            workdir, root_home = lines
+            # The gateway uses root's home (its passwd entry, whatever the
+            # image's HOME says) when the image has no WORKDIR, where Docker
+            # uses /. Do not bind that private directory to every user's
+            # commands.
+            if workdir == root_home:
+                workdir = "/"
+            self.config = self.config.model_copy(update={"workdir": workdir})
+        self.info.workdir = self.config.workdir
+        prepared = await self._held(
+            "workdir",
+            lambda: self._client.execute_command(
+                self.info.id,
+                f"{IMAGE_RUN} mkdir -p {shlex.quote(self.config.workdir)}"
+                f" && mkdir -p -m 1777 /run/lock && {HOSTS_ENTRY}",
+                working_dir="/",
+            ),
+        )
+        # Prime boots /run as an empty tmpfs, including on checkpoint restore,
+        # over what the image put there (`IMAGE_RUN` copies it back). Restore the
+        # standard lock directory before image service launchers run.
+        # Existing directories retain their permissions (mkdir -p -m only applies
+        # the mode when creating a directory). The box's own hostname resolves
+        # locally, as in Docker: Prime's /etc/hosts does not list it, so without a
+        # network every lookup of it (each `sudo`) waits 20 s on DNS.
+        if prepared.exit_code:
+            raise SandboxError(
+                f"Cannot prepare runtime directories: {prepared.stderr}",
+                kind="exec",
+            )
+        if parse_gpu(self.config.gpu)[1]:
+            await self._ready_gpu()
+        await validate_runtime_mounts(self.bind(), [])
+        self.placed = True
+
+    async def _attach(self, box: str) -> bool:
+        """Resume the paused box `box` (`PrimeConfig.attach`) as this backend's box. False
+        when it cannot be resumed (deleted, expired, not a box of ours): it is deleted, and
+        the box starts as configured instead."""
+        try:
+            found = await self._held("attach", lambda: self._client.get(box))
+            if found.status == "PAUSED":
+                await self._held("resume", lambda: self._client.resume(box))
+            elif found.status != "RUNNING":
+                raise SandboxError(f"box {box} is {found.status}", kind="io")
+            deadline = time.monotonic() + _ATTACH_SECONDS
+            while (await self._client.get(box)).status != "RUNNING":
+                if time.monotonic() > deadline:
+                    raise SandboxError(
+                        f"box {box} did not resume within {_ATTACH_SECONDS}s", kind="io"
+                    )
+                await asyncio.sleep(2)
+            self.info.id = box
+            self.info.image_cached = True
+            await self._ready()
+        except Exception as e:  # noqa: BLE001 - the box then starts as configured
+            logger.warning(
+                "prime: paused sandbox %s could not be resumed (%s); starting %s",
+                box,
+                e,
+                f"from {self.config.checkpoint}" if self.config.checkpoint else "fresh",
+            )
+            self.info.id = None
+            with contextlib.suppress(Exception):
+                await self._client.delete(box)
+            return False
+        self.attached = True
+        logger.info("prime: sandbox %s resumed", box)
+        return True
 
     async def _boot(self) -> None:
         """Wait for the created box to boot. The SDK's readiness probe runs in the
@@ -1298,8 +1344,9 @@ class PrimeBackend(RuntimeBackend):
 
     @property
     def restored(self) -> bool:
-        # the same test start() uses to pick the checkpoint over the image
-        return bool(self.config.checkpoint)
+        # the same test start() uses to pick the checkpoint over the image; a resumed
+        # paused box holds what its last run left, as a restored one does
+        return self.attached or bool(self.config.checkpoint)
 
     async def checkpoint(self) -> str:
         try:
@@ -1704,11 +1751,29 @@ class PrimeBackend(RuntimeBackend):
             from prime_sandboxes.core import APIClient
 
             client = SandboxClient(APIClient())
-            with contextlib.suppress(Exception):
-                client.delete(self.info.id)
+            try:
+                if not self.config.keep_paused:
+                    raise RuntimeError("delete")
+                client.pause(self.info.id)
+            except Exception:  # noqa: BLE001 - not kept: deleted
+                with contextlib.suppress(Exception):
+                    client.delete(self.info.id)
             if self._expose_network_id is not None:
                 with contextlib.suppress(Exception):
                     client.delete_lan_network(self._expose_network_id)
+
+    async def _pause(self, client: Any, box: str) -> bool:
+        """Pause `box` for a later run to resume (`keep_paused`); False when it cannot be
+        (not a VM, the platform refused), and the box is then deleted."""
+        try:
+            await self._held("pause", lambda: client.pause(box))
+        except Exception as e:  # noqa: BLE001 - the box is deleted instead
+            logger.warning(
+                "prime: sandbox %s could not be paused (%s); deleting it", box, e
+            )
+            return False
+        logger.info("prime: sandbox %s paused", box)
+        return True
 
     async def teardown(self) -> None:
         # Best-effort, idempotent teardown: delete the sandbox (the costly resource). Runs via
@@ -1720,7 +1785,8 @@ class PrimeBackend(RuntimeBackend):
             try:
                 if self.info.id is not None:  # keep info.id available after teardown
                     box = self.info.id
-                    await self._held("delete", lambda: client.delete(box))
+                    if not (self.config.keep_paused and await self._pause(client, box)):
+                        await self._held("delete", lambda: client.delete(box))
             except Exception as e:  # noqa: BLE001 - provider teardown is best-effort
                 logger.warning(
                     "prime: failed to delete sandbox %s: %s", self.info.id, e

@@ -69,6 +69,7 @@ from verifiers.v1.interception import Interception, InterceptionServer
 from verifiers.v1.mcp import SharedToolServer
 from verifiers.v1.rollout import OnSave, Rollout, RolloutTimeouts, messaging_toolset
 from verifiers.v1.runtimes import (
+    PrimeConfig,
     Runtime,
     RuntimeConfig,
     backend_cls,
@@ -2436,10 +2437,15 @@ class Agent:
         key: str | None = None,
         depends: object = None,
         durable: Durable | bool | None = None,
+        attach: str | None = None,
+        keep_paused: bool = False,
     ) -> AsyncIterator[Runtime]:
         """Provision (and on exit tear down) a box from this agent's runtime
         policy, resolved for `task` when given and started from `checkpoint` when
-        given; share it via `run(..., runtime=box)`.
+        given; share it via `run(..., runtime=box)`. With `keep_paused` the box is
+        paused on exit instead of deleted (a Prime VM), and `attach` names such a
+        paused box to resume instead of starting one: when it is gone, the box starts
+        from `checkpoint` (`PrimeConfig.attach`).
 
         The box comes with its owner (`box.Box`): runs that borrow it checkpoint it
         through the owner (per call when they or this agent save per call), and an
@@ -2482,6 +2488,14 @@ class Agent:
                 logger.info("box %r restores from checkpoint %s", key, start.id)
         if start is not None:
             restore_config(config, start.id)  # raises when the runtime cannot
+        if attach is not None or keep_paused:
+            if not isinstance(config, PrimeConfig):
+                raise TypeError(
+                    f"{config.type} runtimes cannot keep or attach paused boxes"
+                )
+            config = config.model_copy(
+                update={"attach": attach, "keep_paused": keep_paused}
+            )
         async with provision_box(
             config,
             # Keep sandbox startup task-neutral: this box may later host another task.
