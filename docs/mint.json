@@ -9,7 +9,6 @@
         "architecture",
         "building-environments",
         "tasksets",
-        "evaluation",
         "runtimes",
         "debugging",
         "harnesses",

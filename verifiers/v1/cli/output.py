@@ -1,7 +1,6 @@
-"""CLI output directories, saved launch/config files, and per-attempt log paths."""
+"""CLI output directories and saved launch/config files."""
 
 import json
-import os
 from pathlib import Path
 from typing import Protocol
 
@@ -18,40 +17,6 @@ not TOML: JSON keeps nulls, so explicit None settings round-trip exactly on re-p
 
 RESOLVED_DIR = "resolved"
 """Subdirectory of `configs/` holding the resolved per-component JSON dumps."""
-
-
-def create_attempt_log_dir(run_dir: Path) -> Path:
-    """Create `logs/attempt_<n>` for this launch attempt and atomically repoint the
-    relative `logs/latest` symlink at it (prime-rl's log layout). Every launch —
-    fresh or `--resume` — gets its own numbered log directory, so a resume never
-    appends to an earlier attempt's logs."""
-    logs_dir = run_dir / "logs"
-    logs_dir.mkdir(parents=True, exist_ok=True)
-    attempts = (
-        int(p.name.removeprefix("attempt_"))
-        for p in logs_dir.glob("attempt_*")
-        if p.name.removeprefix("attempt_").isdigit()
-    )
-    attempt_dir = logs_dir / f"attempt_{1 + max(attempts, default=0)}"
-    attempt_dir.mkdir()
-    # Atomically repoint the relative `latest` symlink: create a temp link, then rename.
-    tmp_link = logs_dir / f".{attempt_dir.name}"
-    if tmp_link.is_symlink() or tmp_link.exists():
-        tmp_link.unlink()
-    os.symlink(attempt_dir.name, tmp_link)
-    os.replace(tmp_link, logs_dir / "latest")
-    return attempt_dir
-
-
-def attempt_log_file(run_dir: Path) -> Path:
-    """The current attempt's `eval.log`. The CLI creates the attempt dir once at
-    startup; everyone after it — the runner's worker spawn, the dashboard's log
-    tail — resolves through `logs/latest`, so the whole invocation shares one file.
-    A direct `run_eval` call (no CLI) creates the first attempt itself."""
-    latest = run_dir / "logs" / "latest"
-    if not latest.exists():
-        create_attempt_log_dir(run_dir)
-    return latest / "eval.log"
 
 
 def saved_config_path(run_dir: Path) -> Path | None:
