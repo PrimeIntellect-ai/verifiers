@@ -4245,7 +4245,7 @@ wheels = [
 
 [[package]]
 name = "renderers"
-version = "0.1.13.dev17"
+version = "0.2.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "jinja2" },
@@ -4256,9 +4256,9 @@ dependencies = [
     { name = "prime-pydantic-config" },
     { name = "tiktoken" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/12/31/a908c3560b710ffa537fd40021ae200f7d83b1537f7afa3a72d5d0f947ef/renderers-0.1.13.dev17.tar.gz", hash = "sha256:787152ddde094d409ca56983683bdaf33414d4940267176d290824cac858346c", size = 465146, upload-time = "2026-10-24T12:59:56.576Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/84/31/3d6cd3cdf81796ad4e235ed3d3f75867b5b42a0f6c4e1c5786985387d5d3/renderers-0.2.0.tar.gz", hash = "sha256:ae9141ffd4f356506fcc3a8e9e34e84959ec59081ac5f14369bacc24555a373e", size = 465167, upload-time = "2026-10-29T00:16:47.072Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/86/a6/60b5d1ee44f20720ab1e6e59d7bd7fd807e2cdf8f035013866e93e6ac84d/renderers-0.1.13.dev17-py3-none-any.whl", hash = "sha256:dfdbeb085e1ede9d7d49d2b39eb3f1ee5eada7dcb58115c2579d477943ca9a14", size = 266437, upload-time = "2026-10-24T12:59:54.569Z" },
+    { url = "https://files.pythonhosted.org/packages/02/0d/c1f43f31c60f0fb9e69f29513c86e0d11119b7279eca2261953e8e0b12cc/renderers-0.2.0-py3-none-any.whl", hash = "sha256:fbccdd8dca1dca5df758c239a13e582446b8ee47da6e0e7540c59175614f2417", size = 266449, upload-time = "2026-10-29T00:16:45.167Z" },
 ]
 
 [package.optional-dependencies]
