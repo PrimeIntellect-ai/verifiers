@@ -20,6 +20,7 @@ import hashlib
 import io
 import json
 import logging
+import math
 import re
 import shutil
 import subprocess
@@ -82,6 +83,10 @@ logger = logging.getLogger(__name__)
 CACHE = Path.home() / ".cache" / "harbor"
 HARBOR_INSTALL_HINT = "uv sync --python 3.12 --extra harbor"
 REWARD_JSON = "/logs/verifier/reward.json"
+METRICS_JSON = "/logs/verifier/metrics.json"
+"""A Harbor grader's optional report beside its reward (SWE-Marathon's `partial_score`,
+test and gate counts): its top-level finite numbers and booleans become trace metrics.
+The reward file alone decides the grade."""
 AGENT_LOGS = "/logs/agent"
 TRAJECTORY = f"{AGENT_LOGS}/trajectory.json"
 FINAL_REPLY = f"{AGENT_LOGS}/final_reply.md"
@@ -687,7 +692,8 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
         # World-writable, as Harbor makes it: a verifier may log as an unprivileged
         # service user (`su postgres -c "pg_ctl -l /logs/verifier/pg.log"`).
         command = (
-            "rm -f /logs/verifier/reward.json /logs/verifier/reward.txt && "
+            "rm -f /logs/verifier/reward.json /logs/verifier/reward.txt "
+            "/logs/verifier/metrics.json && "
             f"mkdir -p /logs/verifier && chmod 777 /logs/verifier && {stage}"
         )
         result = await runtime.run(["sh", "-c", command], {})
@@ -763,9 +769,10 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
                 f"available keys: {sorted(scores)}. "
                 "Set task.reward_key to select a named verifier reward."
             )
-        trace.record_metrics(
-            {name: value for name, value in scores.items() if name != key}
-        )
+        metrics = await self.read_metrics_json(runtime)
+        metrics.pop(key, None)
+        metrics.update({name: value for name, value in scores.items() if name != key})
+        trace.record_metrics(metrics)
         return {key: scores[key]}
 
     def verifier_timeout(self) -> float | None:
@@ -919,6 +926,27 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
             ["sh", "-c", WITHOUT_SYS_RESOURCE, "vf-verifier", "bash", "/tests/test.sh"],
             resolve_env(self.scoring.env or {}),
         )
+
+    async def read_metrics_json(self, runtime: Runtime) -> dict[str, float]:
+        """The top-level finite numbers and booleans of the grader's metrics.json, or
+        nothing when it wrote none. A diagnostic only: an unreadable or malformed file
+        is logged and left out, never a grading failure."""
+        try:
+            raw = await runtime.read(METRICS_JSON, max_bytes=MAX_REWARD_BYTES)
+        except (SandboxError, OSError):
+            return {}
+        try:
+            report = json.loads(raw)
+        except ValueError:
+            logger.warning("%s: unreadable %s", self.data.name, METRICS_JSON)
+            return {}
+        if not isinstance(report, dict):
+            return {}
+        return {
+            name: float(value)
+            for name, value in report.items()
+            if isinstance(value, (bool, int, float)) and math.isfinite(value)
+        }
 
     async def read_reward_json(self, runtime: Runtime) -> dict[str, float] | None:
         """JSON takes precedence whenever present; invalid or unreadable JSON fails.

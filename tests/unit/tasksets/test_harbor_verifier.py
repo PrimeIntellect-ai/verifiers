@@ -25,9 +25,15 @@ LOGS = "==> /logs/verifier/pg.log <==\nFATAL: could not start\n\n"
 class FakeRuntime:
     """Answers the verifier's commands: test.sh, the log listing, the reward reads."""
 
-    def __init__(self, reward: bytes | None, listing: str | Exception = LOGS):
+    def __init__(
+        self,
+        reward: bytes | None,
+        listing: str | Exception = LOGS,
+        metrics: bytes | None = None,
+    ):
         self.reward = reward
         self.listing = listing
+        self.metrics = metrics
 
     async def run(self, argv, env):
         if argv == TEST_SH:
@@ -42,10 +48,11 @@ class FakeRuntime:
         return ProgramResult(exit_code=1, stdout="", stderr="")
 
     async def read(self, path, max_bytes=None):
-        assert path == "/logs/verifier/reward.txt"
-        if self.reward is None:
+        assert path in ("/logs/verifier/reward.txt", "/logs/verifier/metrics.json")
+        data = self.reward if path.endswith("reward.txt") else self.metrics
+        if data is None:
             raise SandboxError(f"{path} not found", kind="missing")
-        return self.reward
+        return data
 
 
 def make_task() -> HarborTask:
@@ -68,6 +75,32 @@ async def test_verifier_output_and_logs_land_on_the_trace():
         "output": "ran tests\nboom\n",
         "files": LOGS,
     }
+
+
+async def test_the_graders_metrics_json_lands_on_the_trace_as_metrics():
+    # SWE-Marathon grades all-or-nothing and reports its partial score beside it.
+    task = make_task()
+    trace = make_trace(task)
+    metrics = (
+        b'{"partial_score": 0.81, "tests_passed": 214, "anti_cheat": true,'
+        b' "reward": 0, "phase": "complete", "main": {"passed": 3}}'
+    )
+    runtime = FakeRuntime(b"0", metrics=metrics)
+    assert await task.run_verifier(runtime, trace) == {"reward": 0.0}
+    # Numbers and booleans only; the reward stays the reward file's.
+    assert trace.metrics == {
+        "partial_score": 0.81,
+        "tests_passed": 214.0,
+        "anti_cheat": 1.0,
+    }
+
+
+async def test_a_malformed_metrics_json_leaves_grading_to_the_reward():
+    task = make_task()
+    trace = make_trace(task)
+    runtime = FakeRuntime(b"1", metrics=b'{"partial_score": 0.')
+    assert await task.run_verifier(runtime, trace) == {"reward": 1.0}
+    assert trace.metrics == {}
 
 
 async def test_a_failed_log_listing_leaves_grading_to_the_reward():
