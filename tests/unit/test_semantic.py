@@ -396,6 +396,20 @@ def test_acp_derives_compaction_attempt_branch_trainability():
     assert restored_branches["bad tool call"].trainable is False
     assert restored_branches["accepted summary"].trainable is True
 
+    # A terminal rejection is a zero-reward training sample, including in a child.
+    trace.nodes[3].semantic_parents.append(
+        vf.ParentLink(node=1, type="format_violation")
+    )
+    restored = vf.WireTrace.model_validate_json(trace.model_dump_json())
+    assert restored.is_format_violation
+    assert restored.rewards == {}
+    assert restored.reward == 0.0
+    assert not restored.is_dropped
+    branches = {
+        branch.nodes[-1].message.content: branch for branch in restored.branches
+    }
+    assert branches["bad tool call"].trainable is True
+
 
 def test_semantic_edge_set_rejects_duplicate_and_self_edges_but_accepts_loops():
     edge_set = _semantic_edge_set().model_dump(mode="json")

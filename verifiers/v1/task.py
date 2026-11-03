@@ -254,7 +254,7 @@ class Task(Generic[DataT, StateT, ConfigT]):
         runtime: Runtime | None = None,
         deployment: Deployment | None = None,
     ) -> None:
-        if self.scoring_deferred:
+        if self.scoring_deferred or trace.is_format_violation:
             return
 
         def requires_unavailable_resource(fn) -> bool:

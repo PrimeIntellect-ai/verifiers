@@ -105,8 +105,19 @@ async def test_defer_scoring_defers_only_task_scoring() -> None:
 
     await task.defer_scoring().score(trace)
     assert trace.rewards == {}
+    invalid = trace.model_copy(deep=True)
+    invalid.stop("format_violation")
+    await task.score(invalid)
+    assert invalid.rewards == {}
+    assert invalid.reward == 0.0
     await task.score(trace)
     assert set(trace.rewards) == {"fmt", "lcs"}
+
+    trace.stop("format_violation")
+    trace.ok = True
+    await task.rescore(trace)
+    assert trace.rewards == {}
+    assert trace.reward == 0.0
 
 
 def test_plugged_stops_set_skip_scoring(tmp_path) -> None:
