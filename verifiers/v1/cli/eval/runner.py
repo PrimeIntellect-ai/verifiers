@@ -23,15 +23,7 @@ from verifiers.v1.configs.cli.eval import EvalConfig
 from verifiers.v1.env import Env, RunSlot
 from verifiers.v1.episode import Episode
 from verifiers.v1.trace import EvalRunInfo
-from verifiers.v1.utils.aio import run_shielded
 from verifiers.v1.utils.eval import plan_rollouts
-from verifiers.v1.utils.platform import (
-    PushState,
-    abort_run,
-    finish_run,
-    log_episodes,
-    open_run,
-)
 from verifiers.v1.utils.trace_store import append_episode
 
 logger = logging.getLogger(__name__)
@@ -41,7 +33,7 @@ T = TypeVar("T")
 
 async def gather_rollouts(rollouts: Iterable[Awaitable[T]]) -> list[T]:
     """`asyncio.gather`, but one rollout failing cancels the rest and waits for them
-    to unwind, so nothing keeps uploading into a run the caller is already closing.
+    to unwind, so no rollout outlives the eval it belongs to.
     Not a `TaskGroup`: that wraps errors in an `ExceptionGroup`, and `main` would no
     longer see a `KeyboardInterrupt` as Ctrl-C."""
     tasks = [asyncio.ensure_future(rollout) for rollout in rollouts]
@@ -125,43 +117,23 @@ async def run_eval(config: EvalConfig) -> list[Episode]:
         asyncio.Semaphore(config.max_concurrent) if config.max_concurrent else None
     )
     write_lock = asyncio.Lock()
-    push_state = PushState()
 
-    # Opened before the first rollout so every episode streams as it lands.
-    run = open_run(config, push_state, num_examples=len(tasks))
     # The run identity: every process this run spawns inherits it.
     os.environ.setdefault("VF_RUN_ID", config.run.id)
-    # Resumed rollouts are part of this run too.
-    log_episodes(run, finished)
 
     async def on_complete(episode: Episode) -> None:
         episode.record_run(EvalRunInfo(id=config.run.id, name=config.run.name))
         await append_episode(out, episode, write_lock)
-        await asyncio.to_thread(log_episodes, run, [episode])
 
-    # The run is closed out whatever breaks, env setup and teardown included.
-    try:
-        async with _in_process(env, config, semaphore, on_complete) as run_slot:
-            # the env's own slots: it fills their live traces as the rollouts run
-            planned = [slot for task, _, n in plan if n for slot in env.slots(task, n)]
-            slots = [RunSlot.finished(episode) for episode in finished] + planned
-            display = (
-                dashboard(slots, config, start, push=push_state)
-                if config.rich is not None
-                else contextlib.nullcontext()
-            )
-            async with display:
-                results = await gather_rollouts(run_slot(slot) for slot in planned)
-                episodes = finished + list(results)
-                # Drain and close out off the event loop so the view keeps refreshing.
-                # Shielded: a Ctrl-C here must not cancel the close-out before the
-                # worker picks it up (a cancelled executor item never runs), so it
-                # runs to completion first and the interrupt is re-raised after —
-                # by which point the run is finished and `abort_run` has nothing to do.
-                await run_shielded(
-                    asyncio.to_thread(finish_run, run, episodes, push_state)
-                )
-    except BaseException as e:
-        await asyncio.to_thread(abort_run, run, e, push_state)
-        raise
-    return episodes
+    async with _in_process(env, config, semaphore, on_complete) as run_slot:
+        # the env's own slots: it fills their live traces as the rollouts run
+        planned = [slot for task, _, n in plan if n for slot in env.slots(task, n)]
+        slots = [RunSlot.finished(episode) for episode in finished] + planned
+        display = (
+            dashboard(slots, config, start)
+            if config.rich is not None
+            else contextlib.nullcontext()
+        )
+        async with display:
+            results = await gather_rollouts(run_slot(slot) for slot in planned)
+    return finished + list(results)

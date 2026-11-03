@@ -47,28 +47,12 @@ class RunConfig(BaseConfig):
     """Run directory name — the run writes to `output_dir / dir`. Defaults to `run.name`;
     set it only when the directory should differ from the display name."""
 
-    attach: str | None = None
-    """Stream into a run the launcher already created on the platform instead of opening a
-    new one — its evaluation id. Hosted evaluations pass the sandbox's `$EVALUATION_ID`
-    here; the platform owns that run's record and status, and a run that cannot be
-    attached to is an error rather than a local fallback. Requires `push`."""
-
-    _id: str | None = PrivateAttr(default=None)
+    _id: str = PrivateAttr(default_factory=lambda: uuid4().hex)
 
     @property
     def id(self) -> str:
-        """The run's one id, assigned by `open_run` from the prime-runs handle: the
-        platform's evaluation id online, the SDK's local id otherwise. The run mints
-        none of its own, so the run dir, every trace and the dashboard agree."""
-        if self._id is None:
-            raise RuntimeError("the run has no id until `open_run` has opened it")
+        """Stamped on every trace and exported as `$VF_RUN_ID`."""
         return self._id
-
-    def assign_id(self, run_id: str) -> None:
-        """Called once by `open_run`, before the first rollout."""
-        if self._id is not None and self._id != run_id:
-            raise RuntimeError(f"the run already has id {self._id!r}")
-        self._id = run_id
 
 
 class EvalConfig(BaseConfig):
@@ -112,10 +96,6 @@ class EvalConfig(BaseConfig):
     rich: RichConfig | None = Field(default_factory=RichConfig)
     """The live dashboard (on by default; `--no-rich` streams logs to the console
     instead); `--rich.show-logs` swaps the rollout rows for the run's logs."""
-    push: bool = True
-    """Upload the finished run to the Prime Intellect platform (the private Evaluations
-    tab) at the end of the eval. On by default; disable with `--no-push`. Needs
-    `$PRIME_API_KEY` or `prime login`."""
     output_dir: Path = Field(
         Path("outputs"), validation_alias=AliasChoices("output_dir", "o")
     )
@@ -138,12 +118,4 @@ class EvalConfig(BaseConfig):
             self.run.name = default_run_name(self.env, self.model)
         if self.run.dir is None:
             self.run.dir = self.run.name
-        return self
-
-    @model_validator(mode="after")
-    def attach_needs_push(self):
-        if self.run.attach and not self.push:
-            raise ValueError(
-                "run.attach names a run on the platform, so it needs push (drop --no-push)"
-            )
         return self

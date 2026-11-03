@@ -4,7 +4,6 @@ import contextlib
 import time
 from collections import deque
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 from pydantic import BaseModel
 from rich import get_console
@@ -29,9 +28,6 @@ from verifiers.v1.utils.format import (
     format_time,
 )
 from verifiers.v1.utils.interrupt import cleaning_up
-
-if TYPE_CHECKING:
-    from verifiers.v1.utils.platform import PushState
 
 # For sizing pages to the terminal: detects the real terminal height/width each access (the live
 # view writes to the same terminal). Reused so we don't rebuild it every refresh tick.
@@ -153,7 +149,7 @@ def _aligned(rows: list[list[str]]) -> list[str]:
 def _interrupt_footer() -> Group | None:
     """The graceful-shutdown notice under the rollouts once Ctrl-C has begun teardown — the
     on-screen echo of the warning (console logging is silenced in rich mode); a further Ctrl-C
-    is ignored while it shows. Sits beside the `--push` line, mirroring its placement."""
+    is ignored while it shows."""
     if not cleaning_up():
         return None
     return Group(
@@ -285,29 +281,6 @@ def Overview(config: EvalConfig) -> Table:
 
 def _prime_rl_footer() -> Group:
     return Group(Text(""), Text(PRIME_RL_HINT, style="dim", overflow="fold"))
-
-
-def _push_footer(push: "PushState | None") -> Group | None:
-    """The `--push` line under the rollouts: dim with the run's URL while it streams,
-    white once pushed, red when it failed. `None` when `--push` is off or the run stayed
-    local."""
-    if push is None or not push.started:
-        return None
-    if push.error and push.url:
-        # The run exists and holds what streamed up; only closing it out failed.
-        line = Text(f"Traces pushed ({push.url})", style="white", overflow="fold")
-        line.append(f"  not closed out: {push.error}", style="red")
-    elif push.error:
-        line = Text(f"Trace push failed ({push.error})", style="red", overflow="fold")
-    elif (incomplete := push.incomplete) and push.url:
-        label = "Traces pushed" if push.finished else "Pushing traces"
-        line = Text(f"{label} ({push.url})", style="white", overflow="fold")
-        line.append(f"  incomplete: {incomplete}", style="red")
-    elif not push.finished:
-        line = Text(f"Pushing traces ({push.url})", style="dim", overflow="fold")
-    else:
-        line = Text(f"Traces pushed ({push.url})", style="white", overflow="fold")
-    return Group(Rule(style="dim"), line)
 
 
 class TraceStats:
@@ -835,7 +808,6 @@ def _render(
     header: Group | Table,
     runtime_type: str,
     completed: dict[str, TraceStats],
-    push: "PushState | None" = None,
     tail: LogTail | None = None,
 ) -> Group:
     now = time.time()
@@ -848,14 +820,10 @@ def _render(
         for trace in slot.traces
         if trace.id not in completed
     )
-    # The --push status line (and, on Ctrl-C, the cleanup notice) appear under the rollouts. Measure
+    # The Ctrl-C cleanup notice and the prime-rl hint appear under the rollouts. Measure
     # the fixed top (header + progress + rule) and the footer so the rollout rows fill what's left;
     # page through them (timer / arrows) when they'd overflow (else rich truncates).
-    footers = [
-        f
-        for f in (_push_footer(push), _interrupt_footer(), _prime_rl_footer())
-        if f is not None
-    ]
+    footers = [f for f in (_interrupt_footer(), _prime_rl_footer()) if f is not None]
     footer = Group(*footers)
     progress = Progress(slots, start, completed)
     top = Group(header, progress, Rule(style="dim"))
@@ -888,7 +856,6 @@ async def dashboard(
     slots: list[RunSlot],
     config: EvalConfig,
     start: float,
-    push: "PushState | None" = None,
 ):
     pager = Pager()
     completed: dict[str, TraceStats] = {}
@@ -909,9 +876,7 @@ async def dashboard(
         else None
     )
     async with live_view(
-        lambda: _render(
-            slots, start, pager, header, runtime_type, completed, push, tail
-        ),
+        lambda: _render(slots, start, pager, header, runtime_type, completed, tail),
         on_key=None if tail is not None else pager.on_key,
     ):
         yield
