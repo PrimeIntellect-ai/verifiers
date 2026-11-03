@@ -22,7 +22,7 @@ from verifiers.v1.semantic import (
 )
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
-from verifiers.v1.types import Messages
+from verifiers.v1.types import AssistantMessage, Messages
 from verifiers.v1.utils.aio import run_shielded
 
 ACP_SOURCE = (Path(__file__).resolve().parent / "runner.py").read_text()
@@ -167,15 +167,30 @@ def _turn_result(response: JsonObject) -> ACPTurn:
     return ACPTurn.model_validate(value)
 
 
-def _require_model_turn(trace: Trace, calls_before: int, result: ProgramResult) -> None:
-    if (
-        result.exit_code
-        or trace.stop_condition is not None
-        or any(call.node is not None for call in trace.calls[calls_before:])
-    ):
+def _require_model_turn(
+    trace: Trace, calls_before: int, result: ProgramResult, stderr: str = ""
+) -> None:
+    """Fail a turn the agent reports as complete that didn't finish: no model turn was
+    committed, or the last one asked for tools whose results the model never saw. Some
+    agents (Pi, OpenClaw) end their turn with `end_turn` when a model request fails, and
+    a request that fails before it reaches the interception server leaves no call."""
+    if result.exit_code or trace.stop_condition is not None:
         return
-    detail = (result.stderr or result.stdout).strip()[-500:] or "<no output>"
-    raise RuntimeError("ACP agent completed without committing a model turn: " + detail)
+    committed = [
+        call.node for call in trace.calls[calls_before:] if call.node is not None
+    ]
+    if not committed:
+        detail = (result.stderr or result.stdout).strip()[-500:] or "<no output>"
+        raise RuntimeError(
+            "ACP agent completed without committing a model turn: " + detail
+        )
+    last = trace.nodes[committed[-1]].message
+    if isinstance(last, AssistantMessage) and last.tool_calls:
+        detail = (stderr or result.stdout).strip()[-500:] or "<no output>"
+        raise RuntimeError(
+            "ACP agent ended its turn before the model saw its last tool results; "
+            "its next model request likely failed: " + detail
+        )
 
 
 class _PacketReader:
@@ -374,7 +389,7 @@ class ACPHarnessSession(HarnessSession):
         if condition := _STOP_CONDITIONS.get(turn.stop_reason or ""):
             self.trace.stop(condition)
         result = ProgramResult(exit_code=0, stdout=turn.reply, stderr="")
-        _require_model_turn(self.trace, calls_before, result)
+        _require_model_turn(self.trace, calls_before, result, self._stderr())
         return result
 
     async def _stop(self, *, graceful: bool) -> dict[str, Any]:
