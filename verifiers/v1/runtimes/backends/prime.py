@@ -58,8 +58,10 @@ _EXPOSE_TAG = "vf-exposed"
 _LAN_JOIN_TIMEOUT_SECONDS = 120
 _RESOLVE_LAN = (
     "command -v getent >/dev/null || exit 0; "
-    f"for _ in $(seq {_LAN_JOIN_TIMEOUT_SECONDS * 2}); do "
-    'getent hosts "$@" >/dev/null && exit 0; sleep 0.5; done; exit 1'
+    f"attempts={_LAN_JOIN_TIMEOUT_SECONDS * 2}; "
+    'while [ "$attempts" -gt 0 ]; do '
+    'getent hosts "$@" >/dev/null && exit 0; '
+    "attempts=$((attempts - 1)); sleep 0.5; done; exit 1"
 )
 
 
