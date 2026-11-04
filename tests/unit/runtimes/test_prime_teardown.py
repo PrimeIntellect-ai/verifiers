@@ -1,5 +1,6 @@
 """Prime teardown recognizes explicit sandbox-gone responses, not other errors."""
 
+import json
 import logging
 
 import pytest
@@ -89,10 +90,74 @@ async def test_prime_delete_handles_only_already_gone_as_idempotent(
 
     await backend.teardown()
 
-    records = [record for record in caplog.records if record.name == prime.__name__]
+    lifecycle = [
+        json.loads(record.message.removeprefix("prime_lifecycle "))
+        for record in caplog.records
+        if record.message.startswith("prime_lifecycle ")
+    ]
+    assert [record["event"] for record in lifecycle] == ["delete_start", "delete_error"]
+    assert all(record["initiator"] == "async_teardown" for record in lifecycle)
+    assert lifecycle[-1]["error_type"] == type(error).__name__
+    records = [
+        record
+        for record in caplog.records
+        if record.name == prime.__name__
+        and not record.message.startswith("prime_lifecycle ")
+    ]
     assert len(records) == 1
     assert records[0].levelno == expected_level
     if expected_level == logging.DEBUG:
         assert records[0].exc_info is None
     assert backend._client is None
     assert released == [client]
+
+
+async def test_delete_success_logs_once_without_error_payload(monkeypatch, caplog):
+    calls = []
+
+    class Client:
+        async def delete(self, sandbox_id):
+            calls.append(sandbox_id)
+
+    async def release(client):
+        pass
+
+    monkeypatch.setattr(prime, "ensure_prime_auth", lambda: None)
+    monkeypatch.setattr(prime, "_release_client", release)
+    backend = PrimeBackend(PrimeConfig())
+    backend.info.id = "sandbox-test"
+    backend._client = Client()
+    caplog.set_level(logging.INFO, logger=prime.__name__)
+    await backend.teardown()
+    await backend.teardown()
+    events = [
+        json.loads(r.message.removeprefix("prime_lifecycle ")) for r in caplog.records
+    ]
+    assert calls == ["sandbox-test"]
+    assert [e["event"] for e in events] == ["delete_start", "delete_end"]
+    assert all(e["sandbox_id"] == "sandbox-test" for e in events)
+    assert all(e["error_type"] is None for e in events)
+
+
+def test_atexit_delete_logs_initiator_and_only_error_type(monkeypatch, caplog):
+    import prime_sandboxes
+    import prime_sandboxes.core
+
+    class Client:
+        def delete(self, sandbox_id):
+            raise ValueError("private-error-payload")
+
+    monkeypatch.setattr(prime, "ensure_prime_auth", lambda: None)
+    monkeypatch.setattr(prime_sandboxes, "SandboxClient", lambda client: Client())
+    monkeypatch.setattr(prime_sandboxes.core, "APIClient", lambda: object())
+    backend = PrimeBackend(PrimeConfig())
+    backend.info.id = "sandbox-test"
+    caplog.set_level(logging.INFO, logger=prime.__name__)
+    backend.cleanup()
+    events = [
+        json.loads(r.message.removeprefix("prime_lifecycle ")) for r in caplog.records
+    ]
+    assert [e["event"] for e in events] == ["delete_start", "delete_error"]
+    assert all(e["initiator"] == "atexit_backstop" for e in events)
+    assert events[-1]["error_type"] == "ValueError"
+    assert "private-error-payload" not in caplog.text

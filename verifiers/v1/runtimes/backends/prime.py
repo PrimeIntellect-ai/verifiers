@@ -8,6 +8,7 @@ import io
 import json
 import logging
 import math
+import random
 import shlex
 import tempfile
 import time
@@ -32,6 +33,7 @@ from verifiers.v1.runtimes.base import (
     parse_gpu,
 )
 from verifiers.v1.runtimes.limiters import creation_limiter
+from verifiers.v1.runtimes.prime_requests import install_prime_request_hooks
 from verifiers.v1.runtimes.runtime import Runtime
 from verifiers.v1.utils.aio import run_shielded
 from verifiers.v1.utils.prime import ensure_prime_auth
@@ -52,6 +54,10 @@ _OUTPUT_DEADLINE_SECONDS = 300
 _OUTPUT_RETRIES = 10
 """Re-reads of a finished job's output that the SDK still failed to fetch, before the
 exec is reported as failed."""
+_POLL_TRANSPORT_RETRIES = 3
+"""Extra read-only job polls per execution after typed RPC UNAVAILABLE faults.
+Backoff uses jitter in [0.5, 1], [1, 2], then [2, 4] seconds; cancellation is not shielded.
+"""
 _OPERATION_HEARTBEAT_SECONDS = 30
 """Interval between metadata-only records for a stalled Prime operation."""
 
@@ -68,6 +74,7 @@ class PrimeOperationContext:
     sdk_wait: float = 0.0
     sdk_started_at: float | None = field(default=None, repr=False)
     poll_count: int = 0
+    poll_retries: int = 0
     output_retries: int = 0
     last_stream_activity: float | None = field(default=None, repr=False)
     terminal_error_type: str | None = None
@@ -106,6 +113,7 @@ class PrimeOperationContext:
             "elapsed_s": round(max(0.0, now - self.started_at), 3),
             "sdk_wait_s": round(sdk_wait, 3),
             "poll_count": self.poll_count,
+            "poll_retries": self.poll_retries,
             "output_retries": self.output_retries,
             "last_stream_activity_age_s": (
                 round(stream_age, 3) if stream_age is not None else None
@@ -153,6 +161,29 @@ def is_sandbox_gone_error(error: BaseException) -> bool:
         # unrelated exception being handled when cleanup failed, so do not use it.
         current = current.__cause__
     return False
+
+
+def _is_unavailable_poll_error(error: BaseException) -> bool:
+    """Match transport faults only through explicit causes, never message text."""
+    from connectrpc.code import Code
+    from connectrpc.errors import ConnectError
+    from prime_sandboxes.exceptions import SandboxNotRunningError
+
+    if is_sandbox_gone_error(error):
+        return False
+    seen: set[int] = set()
+    current: BaseException | None = error
+    unavailable = False
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, SandboxNotRunningError):
+            return False
+        if isinstance(current, ConnectError):
+            if current.code != Code.UNAVAILABLE:
+                return False
+            unavailable = True
+        current = current.__cause__
+    return unavailable
 
 
 def _log_operation(context: PrimeOperationContext, event: str) -> None:
@@ -361,6 +392,9 @@ class PrimeBackend(RuntimeBackend):
         scope = run_scope()
         labels = [*BASE_LABELS, *self.config.labels, scope]
         try:
+            install_prime_request_hooks(
+                self._client, self.config.requests_per_min, scope
+            )
             async with (
                 creation_limiter(
                     (self.config.creates_per_min or 0) / 60,
@@ -497,12 +531,30 @@ class PrimeBackend(RuntimeBackend):
             async with _operation(self.name, "poll_output") as context:
                 while True:
                     context.poll_count += 1
-                    result = await context.sdk(
-                        self._client.get_background_job(
-                            self.info.id, job, timeout=_OUTPUT_DEADLINE_SECONDS
-                        ),
-                        phase=("output_read" if context.output_retries else "polling"),
-                    )
+                    try:
+                        result = await context.sdk(
+                            self._client.get_background_job(
+                                self.info.id, job, timeout=_OUTPUT_DEADLINE_SECONDS
+                            ),
+                            phase=(
+                                "output_read" if context.output_retries else "polling"
+                            ),
+                        )
+                    except Exception as error:
+                        if (
+                            context.poll_retries == _POLL_TRANSPORT_RETRIES
+                            or not _is_unavailable_poll_error(error)
+                        ):
+                            raise
+                        # Only re-read this handle. The launch above must never be
+                        # retried: a failed response may hide a committed command.
+                        context.poll_retries += 1
+                        context.phase = "poll_retry_backoff"
+                        _log_operation(context, "poll_retry")
+                        await asyncio.sleep(
+                            random.uniform(0.5, 1) * 2 ** (context.poll_retries - 1)
+                        )
+                        continue
                     context.phase = "output_read" if result.completed else "polling"
                     # Under load the SDK can see a job finish yet miss its output (its bounded
                     # output reads expire while queued) and reports that as `*_error`. The job
@@ -646,8 +698,31 @@ class PrimeBackend(RuntimeBackend):
             from prime_sandboxes import SandboxClient
             from prime_sandboxes.core import APIClient
 
-            with contextlib.suppress(Exception):
+            self._log_delete("start", "atexit_backstop")
+            try:
                 SandboxClient(APIClient()).delete(self.info.id)
+            except Exception as error:  # noqa: BLE001 - atexit cleanup is best-effort
+                self._log_delete("error", "atexit_backstop", error)
+            else:
+                self._log_delete("end", "atexit_backstop")
+
+    def _log_delete(
+        self, event: str, initiator: str, error: BaseException | None = None
+    ) -> None:
+        logger.info(
+            "prime_lifecycle %s",
+            json.dumps(
+                {
+                    "event": f"delete_{event}",
+                    "initiator": initiator,
+                    "rollout_id": self.name,
+                    "sandbox_id": self.info.id,
+                    "error_type": type(error).__name__ if error else None,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+        )
 
     async def teardown(self) -> None:
         # Best-effort, idempotent teardown: delete the sandbox (the costly resource). Runs via
@@ -657,8 +732,11 @@ class PrimeBackend(RuntimeBackend):
             return
         try:
             if self.info.id is not None:  # keep info.id available after teardown
+                self._log_delete("start", "async_teardown")
                 await client.delete(self.info.id)
+                self._log_delete("end", "async_teardown")
         except Exception as e:  # noqa: BLE001 - provider teardown is best-effort
+            self._log_delete("error", "async_teardown", e)
             if is_sandbox_gone_error(e):
                 logger.debug("prime: sandbox %s is already gone", self.info.id)
             else:
