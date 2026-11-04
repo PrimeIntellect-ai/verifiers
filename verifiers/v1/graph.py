@@ -53,6 +53,7 @@ from verifiers.v1.types import (
     TextContentPart,
     Tool,
     ToolMessage,
+    VideoUrlContentPart,
     WeightVersionSpan,
     as_list,
     decode_ndarray,
@@ -351,6 +352,8 @@ def _message_hash(message: Message) -> str:
             add(part.type)
             if isinstance(part, TextContentPart):
                 add(part.text)
+            elif isinstance(part, VideoUrlContentPart):
+                add(part.video_url.url)
             else:
                 add(part.image_url.url)
     else:
@@ -730,7 +733,7 @@ def prepare_turn(
         if (
             isinstance(msg.content, list)
             and len(idx) <= 10
-            and any(part.type == "image_url" for part in msg.content)
+            and any(part.type in ("image_url", "video_url") for part in msg.content)
         ):
             children = [
                 node_id
@@ -738,7 +741,7 @@ def prepare_turn(
                 if node_parent == parent
                 and (parent is not None or node_tools_hash == tools_hash)
             ]
-            # Repeated image URLs are cheaper to compare than to encode and hash again.
+            # Repeated media URLs are cheaper to compare than to encode and hash again.
             # Only scan short, unambiguous parents; all other cases use the stable index.
             if len(children) == 1 and trace.nodes[children[0]].message == msg:
                 existing = children[0]
