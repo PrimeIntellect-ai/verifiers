@@ -7,6 +7,6 @@ from pydantic_config import BaseConfig
 
 class DeploymentConfig(BaseConfig):
     mode: Literal["colocated"] = "colocated"
-    """Harness and tools share the workspace."""
+    """Run the harness in the task workspace."""
     trust_compose: bool = False
     """Permit task-authored Compose privileges and bind mounts on local Docker."""

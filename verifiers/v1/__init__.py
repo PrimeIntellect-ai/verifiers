@@ -85,7 +85,6 @@ if TYPE_CHECKING:
         RubricJudgeConfig,
     )
     from verifiers.v1.mcp import (
-        SharedToolsetConfig,
         Toolset,
         ToolsetConfig,
         ToolsetTimeoutConfig,
@@ -290,7 +289,6 @@ _NAME_TO_MODULE = {
     "SemanticEdgeSet": "verifiers.v1.semantic",
     "SharedEnvConfig": "verifiers.v1.configs.env",
     "SharedTasksetConfig": "verifiers.v1.configs.taskset",
-    "SharedToolsetConfig": "verifiers.v1.mcp",
     "SingleAgentEnv": "verifiers.v1.envs.single_agent",
     "SingleAgentEnvConfig": "verifiers.v1.configs.env",
     "State": "verifiers.v1.state",
@@ -559,7 +557,6 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "verify_boxed_math_answer",
     # mcp
     "Toolset",
-    "SharedToolsetConfig",
     "ToolsetConfig",
     "ToolsetTimeoutConfig",
     # the user channel

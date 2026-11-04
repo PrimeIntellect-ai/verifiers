@@ -2,13 +2,12 @@
 
 The v1 tool fixture for the integration grid. The task constructs an `EchoToolset`
 (`vf.Toolset`) in `Task.toolsets`, with one `@vf.tool` method whose placement is
-CLI-tunable (`--taskset.task.tools.colocated`, `--taskset.task.tools.service`,
-`--taskset.task.tools.runtime.type`): it runs colocated in the harness's runtime, in the
-task's native `tools` service VM, or in its own runtime, and the
+CLI-tunable (`--taskset.task.tools.service`, `--taskset.task.tools.runtime.type`): it
+runs in the task's native `tools` service VM or in its own runtime, and the
 harness must reach it wherever it lives. The tool stamps its output with a token the prompt
 never reveals, so the reward is 1.0 only if the model actually called the tool —
 trivial when the infra works, impossible when it doesn't. The tool is task-agnostic,
-so it would also serve taskset-scoped (`Taskset.toolsets`).
+so it can also run as a shared server (`shared=True`).
 """
 
 import verifiers.v1 as vf

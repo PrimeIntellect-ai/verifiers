@@ -15,6 +15,7 @@ from verifiers.v1.runtimes import (
     private_network,
 )
 from verifiers.v1.runtimes.backends import prime
+from verifiers.v1.runtimes.deployment import Deployment
 from verifiers.v1.runtimes.strategies import (
     _ColocatedDeployment,
     _ContainerDeployment,
@@ -34,38 +35,24 @@ def test_tool_servers_on_prime_runtimes_beside_a_prime_workspace_get_vms():
     toolsets = [
         toolset("atlas", runtime=ATLAS),
         toolset("search"),  # the evaluator
-        toolset("files", colocated=True, runtime=ATLAS),  # the workspace
         toolset("remote", url="https://tools.example/mcp"),
         toolset("gym", service="tools"),  # a named task service
         toolset("local", runtime=DockerConfig()),  # a published port
+        toolset("shared", runtime=ATLAS, shared=True),
     ]
     vms = private_network.tool_vms
-    assert vms(toolsets, PrimeConfig(), composed=False, borrowed=False) == {
-        "atlas": ATLAS
-    }
-    # Without a Prime workspace of the rollout's own, servers keep their published port.
-    for workspace, composed, borrowed in [
-        (DockerConfig(), False, False),
-        (PrimeConfig(), True, False),
-        (PrimeConfig(), False, True),
-    ]:
-        assert vms(toolsets, workspace, composed=composed, borrowed=borrowed) == {}
+    assert vms(toolsets, PrimeConfig()) == {"atlas": ATLAS}
+    assert vms(toolsets, DockerConfig()) == {}
     with pytest.raises(ValueError, match="cannot be named 'main'"):
         vms(
             [toolset("main", runtime=ATLAS)],
             PrimeConfig(),
-            composed=False,
-            borrowed=False,
         )
 
 
-def test_the_deployment_joins_tool_vms_over_a_private_network():
+def test_tool_vms_do_not_choose_the_workspace_deployment_strategy():
     assert isinstance(
-        _deployment_strategy(None, PrimeBackend, None, {"atlas": ATLAS}),
-        _PrivateNetworkDeployment,
-    )
-    assert isinstance(
-        _deployment_strategy(None, PrimeBackend, None, {}), _ColocatedDeployment
+        _deployment_strategy(None, PrimeBackend, None), _ColocatedDeployment
     )
     spec = vf.ComposeSpec("task")
     assert isinstance(
@@ -164,7 +151,8 @@ def test_a_tool_vm_keeps_only_its_state_channel_and_the_harness_its_routes():
 
     strategy = _PrivateNetworkDeployment()
     deployment = SimpleNamespace(
-        target_backends={"main": backend("main"), "forth": backend("forth")}
+        target_backends={"main": backend("main"), "forth": backend("forth")},
+        tool_vms={},
     )
     # The harness reaches the model and a remote tool server; the tool VM needs neither.
     routes = ["https://tunnel.example/v1", "https://tools.example/mcp"]
@@ -225,14 +213,14 @@ def test_a_tool_server_on_its_own_vm_is_reached_by_its_lan_name(monkeypatch):
         served_url(
             monkeypatch,
             server,
-            hosts={"forth": "sb1.sandbox.internal"},
-            placements={"forth": runtime},
+            runtime=runtime,
+            host="sb1.sandbox.internal",
         )
         == "http://sb1.sandbox.internal:1234/mcp"
     )
     # A Compose service keeps its name.
     compose = toolset("echo", service="tools")
-    assert served_url(monkeypatch, compose, services={"tools": runtime}) == (
+    assert served_url(monkeypatch, compose, runtime=runtime, host="tools") == (
         "http://tools:1234/mcp"
     )
 
@@ -241,16 +229,15 @@ def test_a_tool_server_on_its_own_vm_is_reached_by_its_lan_name(monkeypatch):
 def test_an_explicit_service_needs_a_task_service_spec(monkeypatch, service):
     # Without a service spec, these are targets for independent tool placement.
     runtime = SimpleNamespace(is_local=False, host_url=lambda url: url)
-    with pytest.raises(ToolsetError, match="services define it"):
-        served_url(
-            monkeypatch,
+    with pytest.raises(ToolsetError, match="services define"):
+        Deployment.tool_target(
+            SimpleNamespace(
+                spec=None, target_backends={"forth": runtime}, tool_vms={"forth": FORTH}
+            ),
             toolset("echo", service=service),
-            services={},
-            hosts={"forth": "sb1.sandbox.internal"},
-            placements={"forth": runtime},
         )
 
 
 def test_a_restricted_runtime_without_a_private_network_is_refused(monkeypatch):
-    with pytest.raises(ToolsetError, match="joins the rollout's private network"):
+    with pytest.raises(ToolsetError, match="private network"):
         served_url(monkeypatch, toolset("forth", runtime=FORTH))

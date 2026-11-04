@@ -296,12 +296,13 @@ class Rollout:
                 spec = self.task.deployment_spec()
                 self.deployment = runtime.backend.deploy(
                     spec=spec,
-                    # Tool servers on Prime VMs of their own boot with the workspace.
-                    tool_vms=tool_vms(
-                        toolsets,
-                        runtime.backend.config,
-                        composed=spec is not None,
-                        borrowed=self._borrowed_runtime is not None,
+                    tool_vms=tool_vms(toolsets, runtime.backend.config),
+                    shared_networks=tuple(
+                        dict.fromkeys(
+                            server.network_id
+                            for server in self._shared_tools.values()
+                            if server.network_id is not None
+                        )
                     ),
                     env=runtime.env,
                     config=self._deployment_config,
@@ -391,21 +392,22 @@ class Rollout:
                         proxy_mcp=self._session.proxy_mcp,
                         state_route=self.trace.id,
                         state_base=base_url,
-                        services=services,
-                        hosts=self.deployment.hosts,
-                        # Tool servers on VMs of their own, by server name; an explicit
-                        # `service` names a task-declared service.
-                        placements={
-                            name: self.deployment.target(name)
-                            for name in self.deployment.tool_vms
-                        },
+                        deployment=self.deployment,
                     )
                 )
                 # Setup and service provisioning are complete. Apply the runtime's
                 # execution policy while preserving the framework routes the agent uses.
                 # Service hosts resolve inside the deployment (Compose names, LAN
                 # names), not as egress.
-                internal = {*services, *self.deployment.hosts.values()}
+                internal = {
+                    *services,
+                    *self.deployment.hosts.values(),
+                    *(
+                        urlsplit(server.lan_url).hostname
+                        for server in self._shared_tools.values()
+                        if server.lan_url
+                    ),
+                }
                 await self.deployment.prepare_execution(
                     [
                         url

@@ -70,22 +70,20 @@ class _PrivateNetworkDeployment(_DeploymentStrategy):
                 "single target"
             )
         d.backend.env = d.env
-        native = isinstance(d.spec, ServicesSpec)
-        members = d.spec.services if native else d.tool_vms
+        members = d.spec.services
         self._services = await d.enter(AsyncExitStack())
         vms = await self._services.enter_async_context(
             private_network(
                 d.backend,
                 members,
                 partial(d.own, d.backend),
-                interconnect=native,
+                interconnect=True,
                 networks=self._networks,
             )
         )
         d.target_backends = {"main": d.backend, **vms}
         d.hosts = {name: lan_host(backend) for name, backend in vms.items()}
-        if native:
-            d.hosts["main"] = lan_host(d.backend)
+        d.hosts["main"] = lan_host(d.backend)
         d.execution_backend = d.harness_backend = d.backend
 
     async def prepare_execution(self, d, routes, state_route=None):
@@ -102,6 +100,7 @@ class _PrivateNetworkDeployment(_DeploymentStrategy):
             *(
                 backend.prepare_execution(own(name, backend))
                 for name, backend in d.target_backends.items()
+                if name not in d.tool_vms
             ),
         )
 
@@ -191,7 +190,7 @@ class _NativeComposeDeployment(_PrivateNetworkDeployment):
             )
 
 
-def _deployment_strategy(config, backend, spec, tool_vms=None):
+def _deployment_strategy(config, backend, spec):
     if isinstance(spec, ServicesSpec):
         if not isinstance(backend, PrimeBackend):
             raise TypeError("Native service VMs require a Prime workspace")
@@ -213,6 +212,4 @@ def _deployment_strategy(config, backend, spec, tool_vms=None):
                 "cannot run Compose services; use ServicesSpec on Prime or local Docker"
             )
         return _ContainerDeployment()
-    if tool_vms:
-        return _PrivateNetworkDeployment()
     return _ColocatedDeployment()

@@ -8,7 +8,7 @@ from mcp.types import CallToolResult, TextContent, Tool
 from pydantic import Field
 
 from verifiers.v1.harnesses.utils.mcp import mcp_client
-from verifiers.v1.mcp import SharedToolsetConfig, Toolset
+from verifiers.v1.mcp import Toolset, ToolsetConfig
 from verifiers.v1.state import State
 
 
@@ -34,7 +34,7 @@ class NeMoGymState(State):
             return await client.post(f"{self.resources_url}/{path}", json=body)
 
 
-class NeMoGymToolset(Toolset[SharedToolsetConfig, NeMoGymState]):
+class NeMoGymToolset(Toolset[ToolsetConfig, NeMoGymState]):
     """Bridge rollout-specific Gym tools into the standard V1 MCP boundary."""
 
     TOOL_PREFIX = None

@@ -27,7 +27,7 @@ import logging
 import random
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterable, Iterator
-from typing import TYPE_CHECKING, Any, Generic, Self
+from typing import Any, Generic, Self
 
 from typing_extensions import TypeVar
 
@@ -35,9 +35,6 @@ from verifiers.v1.configs.select import SelectConfig, TaskMatchConfig
 from verifiers.v1.configs.taskset import TasksetConfig
 from verifiers.v1.task import Task, TaskT
 from verifiers.v1.utils.generic import concrete_type
-
-if TYPE_CHECKING:
-    from verifiers.v1.mcp import Toolset
 
 logger = logging.getLogger(__name__)
 
@@ -175,18 +172,6 @@ class Taskset(ABC, Generic[TaskT, TasksetConfigT]):
     @classmethod
     def task_type(cls) -> type[Task]:
         return concrete_type(cls, Task, origin=Taskset) or Task
-
-    @classmethod
-    def toolsets(cls, config: TasksetConfigT) -> list[Toolset]:
-        """Tool servers shared by all tasks in the taskset (one global instance
-        per server, reused across an environment worker's rollouts), each
-        constructed with its config off `config` — override and wire explicitly:
-
-            @classmethod
-            def toolsets(cls, config: MyConfig) -> list[vf.Toolset]:
-                return [SearchToolset(config.tools)]
-        """
-        return []
 
 
 def _match(

@@ -162,6 +162,8 @@ class PrimeBackend(RuntimeBackend):
         # A LAN network (id, tags) to join as the sandbox boots: prime-sandboxes joins it
         # once it is running, within `wait_for_creation` on the creating client.
         self.lan: tuple[str, list[str]] | None = None
+        self._lan_users: dict[str, int] = {}
+        self._lan_lock = asyncio.Lock()
         # Exposure state: a LAN network created on the first `expose`, separate from
         # `lan`, and the ports its `internet` rule publishes.
         self._expose_network_id: str | None = None
@@ -423,6 +425,41 @@ class PrimeBackend(RuntimeBackend):
                     raise SandboxError(f"prime expose port {port} failed: {e}") from e
                 self._exposed_ports = ports
         return f"https://{port}-{self.info.id}.{_PUBLIC_DOMAIN}"
+
+    @contextlib.asynccontextmanager
+    async def join_network(self, network_id: str, tags: list[str]):
+        """Borrow LAN membership until the last local consumer releases it.
+
+        Concurrent rollouts may borrow the same workspace and shared-tool LAN.
+        A rollout must not disconnect a sibling that still uses that membership.
+        """
+        async with self._lan_lock:
+            if network_id not in self._lan_users:
+                try:
+                    await run_shielded(
+                        self._client._join_lan(network_id, self.info.id, tags)
+                    )
+                except BaseException:
+                    await run_shielded(
+                        self._client.remove_lan_member(network_id, self.info.id)
+                    )
+                    raise
+            self._lan_users[network_id] = self._lan_users.get(network_id, 0) + 1
+        try:
+            yield
+        finally:
+
+            async def release():
+                async with self._lan_lock:
+                    self._lan_users[network_id] -= 1
+                    if not self._lan_users[network_id]:
+                        del self._lan_users[network_id]
+                        if not self.stopped:
+                            await self._client.remove_lan_member(
+                                network_id, self.info.id
+                            )
+
+            await run_shielded(release())
 
     async def run_background(
         self, runtime: Runtime, argv: list[str], env: dict[str, str], log: str

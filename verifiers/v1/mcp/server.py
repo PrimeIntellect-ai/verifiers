@@ -12,6 +12,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, ClassVar, Generic, TypeVar
 from urllib.parse import parse_qs
 
+import anyio
 from pydantic import TypeAdapter, ValidationError
 from pydantic_config import BaseConfig
 
@@ -234,7 +235,15 @@ class ServerBase(Generic[ConfigT, StateT]):
             try:
                 before = self._state_adapter.dump_json(state) if sync_state else None
                 try:
-                    result = fn(*args, **kwargs)
+                    # MCP sees this async wrapper, so dispatch synchronous tools
+                    # through the bounded worker pool without blocking other rollouts.
+                    result = (
+                        fn(*args, **kwargs)
+                        if inspect.iscoroutinefunction(fn)
+                        else await anyio.to_thread.run_sync(
+                            functools.partial(fn, *args, **kwargs)
+                        )
+                    )
                     if inspect.isawaitable(result):
                         result = await result
                 except Exception as e:
@@ -268,7 +277,7 @@ class ServerBase(Generic[ConfigT, StateT]):
         """Initialize task-agnostic server state."""
 
     async def setup_task(self, task) -> None:
-        """Initialize per-task state; taskset-scoped servers skip this hook."""
+        """Initialize a dedicated server for its task; shared servers cannot override this."""
 
     def register(self, mcp: MCPServer) -> None:
         """Register this server's MCP handlers."""

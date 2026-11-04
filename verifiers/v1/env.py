@@ -29,7 +29,7 @@ from verifiers.v1.interception import (
     requires_tunnel,
 )
 from verifiers.v1.mcp import SharedToolServer, serve_shared
-from verifiers.v1.runtimes import SubprocessConfig, runtime_is_local
+from verifiers.v1.runtimes import PrimeConfig, SubprocessConfig, runtime_is_local
 from verifiers.v1.task import Task
 from verifiers.v1.trace import Error, Trace, TraceTask
 from verifiers.v1.utils.generic import concrete_type
@@ -352,10 +352,12 @@ class Env(ABC, Generic[ConfigT]):
         return episode
 
     @contextlib.asynccontextmanager
-    async def serving(self):
+    async def serving(self, tools: dict[str, SharedToolServer] | None = None):
         """Hold the env-level serving resources for the duration of an eval; plan and
         run slots inside. Torn down on exit (`teardown()`, then the framework's)."""
-        async with self.shared_tools() as shared:
+        async with (
+            self.shared_tools() if tools is None else contextlib.nullcontext(tools)
+        ) as shared:
             interception = make_interception(
                 self.config.interception,
                 requires_tunnel=self._requires_tunnel(shared),
@@ -397,9 +399,21 @@ class Env(ABC, Generic[ConfigT]):
 
     @contextlib.asynccontextmanager
     async def shared_tools(self):
-        servers = self.taskset.toolsets(self.taskset.config)
-        if not servers:
-            yield {}
-            return
-        async with serve_shared(servers, harness_is_local=self._runs_local()) as shared:
+        """Own shared servers once; runners can pass the handles to worker `serving()`.
+
+        Workers borrow these serializable handles and never tear down their servers.
+        """
+        servers = [
+            server
+            for server in self._task_cls.toolsets(self.taskset.config.task)
+            if server.config.shared
+        ]
+        async with serve_shared(
+            servers,
+            harness_is_local=self._runs_local(),
+            harness_is_prime=all(
+                isinstance(spec.runtime, PrimeConfig)
+                for spec in self._agent_specs.values()
+            ),
+        ) as shared:
             yield shared

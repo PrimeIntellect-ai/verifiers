@@ -7,9 +7,12 @@ import logging
 from collections.abc import AsyncIterator, Mapping
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
+from functools import partial
 
 from verifiers.v1.configs.deployment import DeploymentConfig
+from verifiers.v1.errors import ToolsetError
 from verifiers.v1.runtimes import (
+    PrimeBackend,
     PrimeConfig,
     Runtime,
     RuntimeBackend,
@@ -79,6 +82,7 @@ class Deployment:
         *,
         spec: ComposeSpec | ServicesSpec | None = None,
         tool_vms: Mapping[str, PrimeConfig] | None = None,
+        shared_networks: tuple[str, ...] = (),
         env: dict[str, str] | None = None,
         config: DeploymentConfig | None = None,
         borrowed_runtime: Runtime | None = None,
@@ -88,18 +92,20 @@ class Deployment:
         self.tool_vms = dict(tool_vms or {})
         """Tool servers on Prime runtimes of their own, by server name, which join the
         workspace over the rollout's private network."""
+        self.shared_networks = shared_networks
         self.env = dict(env or {})
         self.config = config or DeploymentConfig()
         self.borrowed_runtime = borrowed_runtime
         from verifiers.v1.runtimes.strategies import _deployment_strategy
 
-        self._strategy = _deployment_strategy(self.config, backend, spec, self.tool_vms)
+        self._strategy = _deployment_strategy(self.config, backend, spec)
         self.target_backends: dict[str, RuntimeBackend] = {}
         self.hosts: dict[str, str] = {}
         """LAN hostnames of native services or tool servers on their own VMs."""
         self.harness_backend: RuntimeBackend | None = None
         self.execution_backend: RuntimeBackend | None = None
         self._stack = AsyncExitStack()
+        self._tools = AsyncExitStack()
         self._owned: set[int] = set()
         self._close_task: asyncio.Task[None] | None = None
 
@@ -118,11 +124,46 @@ class Deployment:
         return await self._stack.enter_async_context(resource)
 
     async def start(self) -> None:
+        from verifiers.v1.runtimes.private_network import (
+            WORKSPACE_TAG,
+            lan_host,
+            private_network,
+        )
+
         try:
-            await self._strategy.start(self)
+            await self.enter(self._tools)
+            tools = {}
+            if self.tool_vms and self.spec is None and self.borrowed_runtime is None:
+                # Fresh VMs can join their LAN at creation and boot together.
+                tools = await self._tools.enter_async_context(
+                    private_network(
+                        self.backend,
+                        self.tool_vms,
+                        partial(self._strategy.start, self),
+                    )
+                )
+            else:
+                await self._strategy.start(self)
             if self.harness_backend is None or self.execution_backend is None:
                 raise ValueError(
                     "deployment strategy must bind harness and execution roles"
+                )
+            if isinstance(self.harness_backend, PrimeBackend):
+                for network_id in self.shared_networks:
+                    await self._tools.enter_async_context(
+                        self.harness_backend.join_network(network_id, [WORKSPACE_TAG])
+                    )
+            if self.tool_vms:
+                if overlap := self.tool_vms.keys() & self.target_backends.keys():
+                    raise ValueError(
+                        f"tool servers collide with task services: {sorted(overlap)}"
+                    )
+                tools = tools or await self._tools.enter_async_context(
+                    private_network(self.execution_backend, self.tool_vms)
+                )
+                self.target_backends.update(tools)
+                self.hosts.update(
+                    {name: lan_host(backend) for name, backend in tools.items()}
                 )
         except BaseException:
             try:
@@ -163,6 +204,33 @@ class Deployment:
             else self.target_backends[name].bind()
         )
 
+    def tool_target(self, toolset) -> tuple[Runtime | None, str | None]:
+        """Resolve an explicit service or an independently provisioned tool VM."""
+        name = toolset.config.service
+        if name is not None:
+            if (
+                self.spec is None
+                or name not in self.target_backends
+                or name in self.tool_vms
+            ):
+                raise ToolsetError(
+                    f"server {toolset.server_name!r} needs a task whose services define {name!r}"
+                )
+        elif toolset.server_name in self.tool_vms:
+            name = toolset.server_name
+        else:
+            return None, None
+        runtime = self.target(name)
+        if runtime.backend is self.execution_backend:
+            raise ToolsetError(
+                f"server {toolset.server_name!r} needs a service separate from the workspace"
+            )
+        if runtime.is_local:
+            raise ToolsetError(
+                f"server {toolset.server_name!r} needs a native Prime service VM"
+            )
+        return runtime, self.hosts.get(name, name)
+
     @asynccontextmanager
     async def verifier(
         self, config: RuntimeConfig, env: dict[str, str]
@@ -182,9 +250,17 @@ class Deployment:
         Finish cleanup even if the caller is cancelled, then propagate cancellation.
         """
         await run_shielded(self._strategy.prepare_verifier(self))
+        await run_shielded(self._tools.aclose())
 
     async def stop_execution(self) -> None:
         await self._strategy.stop_execution(self)
+        if (
+            self.tool_vms
+            and self.borrowed_runtime is None
+            and not self.execution_backend.stopped
+        ):
+            # Stop agent descendants before collecting evidence from dedicated tools.
+            await self.execution_backend.stop()
 
     async def prepare_execution(
         self, routes: list[str], *, state_route: str | None = None
@@ -192,6 +268,14 @@ class Deployment:
         """Apply each target's execution policy: the harness's keeps `routes`, and a tool
         server's own VM keeps only `state_route`, its state channel."""
         await self._strategy.prepare_execution(self, routes, state_route)
+        await asyncio.gather(
+            *(
+                self.target_backends[name].prepare_execution(
+                    [state_route] if state_route else []
+                )
+                for name in self.tool_vms
+            )
+        )
 
     async def close(self) -> None:
         async def release():

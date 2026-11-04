@@ -210,8 +210,13 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
     def toolsets(cls, config: HarborTaskConfig):
         from .toolset import HarborMCPConfig, HarborMCPToolset
 
+        if any(server["transport"] == "stdio" for server in config.mcp_servers):
+            raise TaskError(
+                "Harbor task-local stdio MCP servers are not supported; "
+                "expose the tools over HTTP from a separate server"
+            )
         return super().toolsets(config) + [
-            HarborMCPToolset(HarborMCPConfig(colocated=True, server=server))
+            HarborMCPToolset(HarborMCPConfig(server=server))
             for server in config.mcp_servers
         ]
 

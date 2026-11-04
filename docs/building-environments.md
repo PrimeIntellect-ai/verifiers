@@ -9,7 +9,7 @@ A verifiers evaluation spans up to four execution boundaries:
 - **The evaluator** (the machine running the environment server) loads datasets, runs Python task hooks (`setup`, `finalize`, `@vf.reward`), coordinates agents, and records traces.
 - **The agent sandbox** (the agent's configured [runtime](runtimes.md#capability-matrix)) runs the harness, holds the task workspace, and executes any commands the agent invokes.
 - **The grading sandbox** is a fresh container started after the agent finishes when you use isolated scoring (`ScoringConfig(mode="isolated")`), giving graders a clean filesystem containing only declared agent outputs and private test assets.
-- **Task tools** run in their own configured runtime by default, inside the agent sandbox when configured with `colocated = true`, inside a named task service when configured with `service = "<name>"`, or on a Prime VM of their own, under its own egress policy, when their `runtime` is a Prime runtime beside a Prime workspace.
+- **Task tools** run in their own configured runtime or inside a separate named task service with `service = "<name>"`. Prime workspaces reach Prime tool servers over a private LAN. Set `shared = true` to reuse a server across rollouts; otherwise each rollout owns its server.
 
 Because Python task hooks always execute on the evaluator, calling `Path.read_text()` reads from the evaluator's own filesystem, whereas `await runtime.read()` or `await runtime.run()` operates inside whichever sandbox was passed to the hook (the agent sandbox during `setup` and `finalize`, or the grading sandbox during isolated scoring). For answer-only benchmarks, scoring the final message in `@vf.reward` with the default `SingleAgentEnv` is all you need. When tasks modify files or execute untrusted code, you can either score directly inside the agent's sandbox or transfer the outputs into a separate grading sandbox.
 
@@ -176,7 +176,7 @@ During an isolated run, task `finalize` and harness metrics still execute before
 
 When your benchmark needs more than a single solver and deterministic grading, you can combine other verifiers primitives:
 
-- **Task-specific MCP tools**: define a [`vf.Toolset`](tasksets.md#adding-tools) on the task, running either in its own runtime or inside the agent sandbox with `colocated = true`.
+- **Task-specific MCP tools**: define a [`vf.Toolset`](tasksets.md#adding-tools) on the task, running in a separate runtime with `shared = true` to reuse the server across rollouts.
 - **Multi-attempt sampling or model judges**: run the built-in `best-of-n`, `agentic-judge`, or `best-of-n-judge` environments, or `user-sim` when a model needs to role-play the user across turns.
 - **Games and multi-turn scripted interactions**: write a custom [`Env.run()`](env.md#custom-control-flow) that drives `agents.<role>.interaction(task)` across turns or agents. Note that a custom environment's `finalize(task, episode)` hook runs after agent runtimes have been torn down, so read from saved trace data (`trace.info`) rather than live sandboxes.
 - **Multiple services** (such as an application server paired with a database): return a `ServicesSpec` from `Task.deployment_spec()` for prepared native Prime VMs, or a `ComposeSpec` for local Docker or Prime's supported Compose subset. [Harbor benchmarks](harbor.md) can supply a Compose file (see [deployment and services](runtimes.md#deployment-and-services)).
