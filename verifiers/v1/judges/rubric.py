@@ -281,7 +281,7 @@ class RubricJudge(Judge[RubricVerdicts, RubricJudgeConfig]):
         return load_criteria(self.config.path, self.config.weights)
 
     async def grade_batch(
-        self, task: TaskData, trace: Trace, batch: list[Criterion]
+        self, task: TaskData, trace: Trace, batch: list[Criterion], **fields: str
     ) -> list[CriterionVerdict]:
         reference = ""
         if self.config.answer_field:
@@ -310,6 +310,7 @@ class RubricJudge(Judge[RubricVerdicts, RubricJudgeConfig]):
             "response": judge_response(trace, self.config.view),
             "criteria": "\n".join(c.render() for c in batch),
             "reference": reference,
+            **fields,
         }
         if self.config.structured_output:
             result = await self.evaluate(trace=trace, **fields)
