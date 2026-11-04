@@ -33,11 +33,12 @@ class ProcessScope:
     @classmethod
     async def prepare(cls, runtime: Runtime) -> ProcessScope:
         if (
-            not runtime.backend.SUPPORTS_USER_SWITCHING
+            runtime.backend.type != "prime"
+            or not runtime.backend.SUPPORTS_USER_SWITCHING
             or not runtime.backend.SUPPORTS_TASK_IMAGES
         ):
             raise SandboxError(
-                "workload scopes require an isolated user-switching runtime"
+                "workload scopes require an isolated Prime VM user-switching runtime"
             )
         control = runtime.with_user(None).with_env({})
         created = await control.run(["sh", "-c", f"umask 077; mkdir {DIRECTORY}"], {})

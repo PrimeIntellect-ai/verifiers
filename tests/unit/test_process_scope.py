@@ -160,10 +160,122 @@ def test_cli_preserves_existing_drop_argv(fake_scope, monkeypatch, operation, op
     assert commands[0][1] == ["/usr/bin/runuser", "-u", "worker", "--", "true"]
 
 
+@pytest.fixture
+def fake_prepare(tmp_path, monkeypatch):
+    state = tmp_path / "state"
+    mount = tmp_path / "cgroup2"
+    parent = mount / "vf-task-scopes"
+    state.mkdir(mode=0o700)
+    mount.mkdir(mode=0o755)
+    owners = {}
+    real_stat = controller.Path.stat
+    real_mkdir = controller.Path.mkdir
+    real_is_file = controller.Path.is_file
+
+    def root_owned_stat(path, *args, **kwargs):
+        info = real_stat(path, *args, **kwargs)
+        mode = info.st_mode
+        if path == tmp_path or path in tmp_path.parents:
+            mode &= ~0o022
+        return SimpleNamespace(st_uid=owners.get(path, 0), st_mode=mode)
+
+    def cgroup_mkdir(path, *args, **kwargs):
+        real_mkdir(path, *args, **kwargs)
+        if path == parent:
+            (path / "cgroup.controllers").touch()
+        elif path.parent.parent == parent:
+            for name in ("cgroup.procs", "cgroup.freeze", "cgroup.kill"):
+                (path / name).touch()
+            (path / "cgroup.events").write_text("populated 0\nfrozen 0\n")
+
+    monkeypatch.setattr(controller, "STATE", state)
+    monkeypatch.setattr(controller, "PARENT", parent)
+    # Emulate ownership, kernel-created files and mount type only on temporary files.
+    monkeypatch.setattr(controller.Path, "stat", root_owned_stat)
+    monkeypatch.setattr(controller.Path, "mkdir", cgroup_mkdir)
+    monkeypatch.setattr(
+        controller.Path,
+        "is_file",
+        lambda path: (
+            str(path) in ("/usr/bin/setpriv", "/usr/bin/env") or real_is_file(path)
+        ),
+    )
+    monkeypatch.setattr(controller, "cgroup2_mount", lambda path: True)
+    return SimpleNamespace(state=state, parent=parent, mount=mount, owners=owners)
+
+
+def test_prepare_bootstraps_missing_parent_on_protected_cgroup2(fake_prepare):
+    fixture = fake_prepare
+    controller.prepare()
+    assert fixture.parent.stat().st_mode & 0o777 == 0o700
+    root = controller.Path(
+        json.loads((fixture.state / "scope.json").read_text())["root"]
+    )
+    assert root.parent == fixture.parent
+    assert all((root / role).is_dir() for role in controller.ROLES)
+    assert (fixture.state / "agent.state").read_text() == "active"
+
+
+def test_prepare_preserves_existing_secure_parent_permissions(fake_prepare):
+    fake_prepare.parent.mkdir(mode=0o750)
+    controller.prepare()
+    assert fake_prepare.parent.stat().st_mode & 0o777 == 0o750
+
+
+@pytest.mark.parametrize("insecure", ["mount", "parent_mode", "parent_owner"])
+def test_prepare_rejects_unprotected_paths_without_chmod(fake_prepare, insecure):
+    fixture = fake_prepare
+    if insecure == "mount":
+        fixture.mount.chmod(0o777)
+    else:
+        fixture.parent.mkdir(mode=0o700)
+        if insecure == "parent_mode":
+            fixture.parent.chmod(0o777)
+        else:
+            fixture.owners[fixture.parent] = 1000
+    with pytest.raises(RuntimeError, match="protected"):
+        controller.prepare()
+    assert not (fixture.state / "scope.json").exists()
+    if insecure == "mount":
+        assert not fixture.parent.exists()
+        assert fixture.mount.stat().st_mode & 0o777 == 0o777
+    elif insecure == "parent_mode":
+        assert fixture.parent.stat().st_mode & 0o777 == 0o777
+
+
+@pytest.mark.parametrize("existing_parent", [False, True])
+def test_prepare_rejects_non_cgroup2_before_creating_scopes(
+    fake_prepare, monkeypatch, existing_parent
+):
+    fixture = fake_prepare
+    if existing_parent:
+        fixture.parent.mkdir(mode=0o700)
+    monkeypatch.setattr(controller, "cgroup2_mount", lambda path: False)
+    with pytest.raises(RuntimeError, match="cgroup-v2"):
+        controller.prepare()
+    assert fixture.parent.exists() == existing_parent
+    assert not (fixture.state / "scope.json").exists()
+
+
+def test_prepare_rejects_non_cgroup2_mount_over_existing_parent(
+    fake_prepare, monkeypatch
+):
+    fixture = fake_prepare
+    fixture.parent.mkdir(mode=0o700)
+    monkeypatch.setattr(controller, "cgroup2_mount", lambda path: path == fixture.mount)
+    with pytest.raises(RuntimeError, match="cgroup-v2"):
+        controller.prepare()
+    assert not (fixture.state / "scope.json").exists()
+
+
 class RecordingBackend:
     SUPPORTS_USER_SWITCHING = True
     SUPPORTS_TASK_IMAGES = True
     config = SimpleNamespace(type="recording")
+
+    @property
+    def type(self):
+        return self.config.type
 
     def __init__(self):
         self.calls = []
@@ -198,9 +310,23 @@ async def test_all_runtime_launches_use_root_entry_then_nonroot_workload():
     assert agent.with_user(None).process_scope is None
 
 
-async def test_missing_capability_fails_before_any_command():
+@pytest.mark.parametrize(
+    "backend_type,supports_images,supports_users",
+    [
+        ("prime", False, True),
+        ("prime", True, False),
+        ("docker", True, True),
+        ("subprocess", True, True),
+        ("recording", True, True),
+    ],
+)
+async def test_unsupported_runtime_fails_before_any_command(
+    backend_type, supports_images, supports_users
+):
     backend = RecordingBackend()
-    backend.SUPPORTS_TASK_IMAGES = False
+    backend.config = SimpleNamespace(type=backend_type)
+    backend.SUPPORTS_TASK_IMAGES = supports_images
+    backend.SUPPORTS_USER_SWITCHING = supports_users
     with pytest.raises(SandboxError, match="isolated"):
         await ProcessScope.prepare(Runtime(backend))
     assert not backend.calls
@@ -244,6 +370,8 @@ async def test_cancellation_finishes_scorer_cleanup_and_kills_agent(monkeypatch)
 
 async def test_prepare_uses_root_protected_image_python():
     class ImageBackend(RecordingBackend):
+        config = SimpleNamespace(type="prime")
+
         async def run(self, runtime, argv, env):
             self.calls.append(("run", runtime, argv, env, None))
             if argv[:2] == ["/usr/local/bin/python3", "-I"]:

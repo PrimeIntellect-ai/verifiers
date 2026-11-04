@@ -52,10 +52,15 @@ def cgroup2_mount(path):
 
 def prepare():
     secure_path(STATE)
+    secure_path(PARENT.parent)
+    if not cgroup2_mount(PARENT.parent):
+        raise RuntimeError("scope parent must be on a cgroup-v2 filesystem")
+    # Only Prime VM runtimes install this controller; never alter existing permissions.
+    if not PARENT.exists():
+        PARENT.mkdir(mode=0o700)
     secure_path(PARENT)
     if not cgroup2_mount(PARENT):
-        raise RuntimeError("provider delegation must be on a cgroup-v2 filesystem")
-    # The provider delegates this exact directory; never create or chmod its parent.
+        raise RuntimeError("scope parent must be on a cgroup-v2 filesystem")
     if not (PARENT / "cgroup.controllers").is_file():
         raise RuntimeError("cgroup-v2 delegation is required")
     if not Path("/usr/bin/setpriv").is_file() or not Path("/usr/bin/env").is_file():
