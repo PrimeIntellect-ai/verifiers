@@ -16,6 +16,15 @@ if TYPE_CHECKING:
 DIRECTORY = "/run/vf-task-scope"
 HELPER = f"{DIRECTORY}/control"
 
+PYTHON_PROBE = """import os, pathlib, stat, sys
+path = pathlib.Path(sys.executable).resolve(strict=True)
+for item in (path, *path.parents):
+    info = item.stat()
+    if info.st_uid != 0 or info.st_mode & 0o022:
+        raise RuntimeError("interpreter is not root protected")
+print(path)
+"""
+
 
 @dataclass(frozen=True)
 class ProcessScope:
@@ -34,9 +43,20 @@ class ProcessScope:
         created = await control.run(["sh", "-c", f"umask 077; mkdir {DIRECTORY}"], {})
         if created.exit_code:
             raise SandboxError("workload scope state directory is unavailable")
-        await control.write(
-            HELPER, Path(__file__).with_name("_process_scope.py").read_bytes()
-        )
+        interpreter = None
+        for candidate in ("/usr/local/bin/python3", "/usr/bin/python3"):
+            probe = await control.run([candidate, "-I", "-c", PYTHON_PROBE], {})
+            if probe.exit_code == 0:
+                resolved = probe.stdout.strip()
+                if not resolved.startswith("/") or any(c.isspace() for c in resolved):
+                    raise SandboxError("invalid workload scope interpreter path")
+                interpreter = resolved
+                break
+        if interpreter is None:
+            raise SandboxError("workload scopes require a root-protected Python 3")
+        source = Path(__file__).with_name("_process_scope.py").read_bytes()
+        body = source.split(b"\n", 1)[1]
+        await control.write(HELPER, f"#!{interpreter} -I\n".encode() + body)
         secured = await control.run(["chmod", "700", HELPER], {})
         if secured.exit_code:
             raise SandboxError("workload scope helper could not be secured")

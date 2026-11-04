@@ -240,3 +240,19 @@ async def test_cancellation_finishes_scorer_cleanup_and_kills_agent(monkeypatch)
     with pytest.raises(asyncio.CancelledError):
         await task
     assert calls == [("kill", "scorer"), ("kill", "agent")]
+
+
+async def test_prepare_uses_root_protected_image_python():
+    class ImageBackend(RecordingBackend):
+        async def run(self, runtime, argv, env):
+            self.calls.append(("run", runtime, argv, env, None))
+            if argv[:2] == ["/usr/local/bin/python3", "-I"]:
+                return ProgramResult(0, "/usr/local/bin/python3.13\n", "")
+            return ProgramResult(0, "", "")
+
+        async def write(self, runtime, path, data):
+            self.helper = data
+
+    backend = ImageBackend()
+    await ProcessScope.prepare(Runtime(backend))
+    assert backend.helper.startswith(b"#!/usr/local/bin/python3.13 -I\n")
