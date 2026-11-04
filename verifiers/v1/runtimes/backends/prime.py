@@ -33,7 +33,6 @@ from verifiers.v1.runtimes.base import (
     parse_gpu,
 )
 from verifiers.v1.runtimes.limiters import creation_limiter
-from verifiers.v1.runtimes.prime_requests import install_prime_request_hooks
 from verifiers.v1.runtimes.runtime import Runtime
 from verifiers.v1.utils.aio import run_shielded
 from verifiers.v1.utils.prime import ensure_prime_auth
@@ -392,9 +391,6 @@ class PrimeBackend(RuntimeBackend):
         scope = run_scope()
         labels = [*BASE_LABELS, *self.config.labels, scope]
         try:
-            install_prime_request_hooks(
-                self._client, self.config.requests_per_min, scope
-            )
             async with (
                 creation_limiter(
                     (self.config.creates_per_min or 0) / 60,

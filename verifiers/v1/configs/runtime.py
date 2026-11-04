@@ -186,11 +186,6 @@ class PrimeConfig(NetworkPolicyConfig):
     env-server worker process (None/<= 0 disables it). (Tunnel creation is limited separately
     — see interception.tunnel.prime.tunnel_limiter.)"""
 
-    requests_per_min: int | None = Field(default=None, gt=0)
-    """Pace every Prime control-plane HTTP attempt, including SDK retries, per minute.
-    Shared across workers in the run; None disables it. This is an operator safety
-    rate, not a statement of the provider quota. Gateway/exec traffic is unchanged."""
-
     @model_validator(mode="after")
     def _validate_egress(self) -> Self:
         if not self.network_restricted:
