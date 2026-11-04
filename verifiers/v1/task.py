@@ -376,14 +376,15 @@ class Task(Generic[DataT, StateT, ConfigT]):
 
     @classmethod
     def toolsets(cls, config: ConfigT) -> list[Toolset]:
-        """Tool servers launched per rollout, each constructed with its config off
-        `config` — override and wire explicitly:
+        """The task's tool servers, each constructed with its config off `config` —
+        override and wire explicitly:
 
             @classmethod
             def toolsets(cls, config: MyTaskConfig) -> list[vf.Toolset]:
                 return [SearchToolset(config.tools)]
 
-        A classmethod so consumers can size placement (tunnels) off the class
+        A server is started per rollout, or once per eval when its config sets
+        `shared`. A classmethod so an env can start shared servers off the class
         before any task instance exists."""
         return []
 

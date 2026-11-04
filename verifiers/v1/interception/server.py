@@ -29,7 +29,7 @@ import logging
 import secrets
 import time
 import traceback
-from collections.abc import AsyncIterator, Awaitable, Collection, Mapping
+from collections.abc import AsyncIterator, Awaitable, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from functools import partial
@@ -350,7 +350,6 @@ class InterceptionServer(Interception):
         self,
         config: InterceptionServerConfig | None = None,
         requires_tunnel: bool = False,
-        state_service_secrets: Collection[str] = (),
     ) -> None:
         super().__init__()
         self.sessions: dict[str, RolloutSession] = {}
@@ -358,7 +357,6 @@ class InterceptionServer(Interception):
         self.state_sessions: dict[str, RolloutSession] = {}
         self.state_routes: dict[str, RolloutSession] = {}
         self.mcp_routes: dict[str, _MCPRoute] = {}
-        self.state_service_secrets = frozenset(state_service_secrets)
         self.config = config or InterceptionServerConfig()
         self.tunnel: Tunnel | None = (
             make_tunnel(self.config.tunnel) if requires_tunnel else None
@@ -1117,14 +1115,16 @@ class InterceptionServer(Interception):
     def _session_for(
         self, request: web.Request, *, allow_service: bool = False
     ) -> RolloutSession | None:
-        """Resolve a private state bearer, or a trusted shared server plus route id."""
+        """Resolve a private state bearer, or a shared server the routed rollout trusts."""
         auth = request.headers.get("Authorization", "")
         secret = auth[len("Bearer ") :] if auth.startswith("Bearer ") else ""
         session = self.state_sessions.get(secret)
-        if session is None and allow_service and secret in self.state_service_secrets:
-            session = self.state_routes.get(
+        if session is None and allow_service and secret:
+            routed = self.state_routes.get(
                 request.headers.get("X-Verifiers-State-Route", "")
             )
+            if routed is not None and secret in routed.service_secrets:
+                session = routed
         if session is not None:  # state writes must not land on a sealed trace either
             session.adopt(asyncio.current_task())
         return session

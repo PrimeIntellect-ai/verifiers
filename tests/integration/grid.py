@@ -62,7 +62,6 @@ RUNTIME_FEATURES = {
     "container": "task images",
     "user": "running as another user",
     "network": "network policies",
-    "expose": "port exposure",
     "compose": "Compose services",
     "services": "native service VMs",
 }
@@ -142,7 +141,6 @@ def supports(runtime: str, feature: str) -> bool:
     flag = {
         "container": "SUPPORTS_TASK_IMAGES",
         "user": "SUPPORTS_USER_SWITCHING",
-        "expose": "SUPPORTS_PORT_EXPOSURE",
         "compose": "SUPPORTS_COMPOSE",
     }[feature]
     return getattr(runtime_cls(runtime), flag)
@@ -277,15 +275,12 @@ def skip_harness(cells: list, harness: str, reason: str) -> list:
 
 def placements(
     harness_runtimes: tuple[str, ...] = ("prime",),
-    tool_runtimes: tuple[str, ...] = ("colocated", "subprocess", "prime"),
-    *,
-    shared: bool = False,
+    tool_runtimes: tuple[str, ...] = ("subprocess", "docker", "prime"),
 ) -> list:
-    """`(harness_runtime, tool_runtime)` cells for a tool server placed colocated in the
-    harness's box, in a native service VM beside it (`service`), or in its own runtime
-    (on Prime beside a Prime harness, a VM on the rollout's private network). A
-    `subprocess` tool runtime is a server on the host, reached from the sandbox through
-    the tunnel. A `shared` server runs once per eval, so it joins no rollout's network."""
+    """`(harness_runtime, tool_runtime)` cells for a tool server placed in a native
+    service VM beside the harness (`service`), or in its own runtime. A `subprocess` or
+    `docker` server serves on the evaluator's loopback, which a Prime harness reaches
+    through its interception; a `prime` server is a VM on a Prime harness's LAN."""
     cells = []
     for harness_runtime in harness_runtimes:
         for tool_runtime in tool_runtimes:
@@ -293,11 +288,8 @@ def placements(
             reason = None
             if tool_runtime == "service":
                 reason = unsupported("null", harness_runtime, ("services",))
-            # Beside a Prime harness, a rollout's Prime server joins its private network.
-            elif tool_runtime != "colocated" and not (
-                not shared and tool_runtime == harness_runtime == "prime"
-            ):
-                reason = unsupported("null", tool_runtime, ("expose",))
+            elif tool_runtime == "prime" and harness_runtime != "prime":
+                reason = "a Prime tool VM joins a Prime harness's LAN"
             if reason:
                 marks.append(pytest.mark.skip(reason=reason))
             cells.append(
@@ -305,12 +297,7 @@ def placements(
                     harness_runtime,
                     tool_runtime,
                     marks=marks,
-                    id=f"harness-in-{harness_runtime}-with-tool-"
-                    + (
-                        "colocated"
-                        if tool_runtime == "colocated"
-                        else f"in-{tool_runtime}"
-                    ),
+                    id=f"harness-in-{harness_runtime}-with-tool-in-{tool_runtime}",
                 )
             )
     return cells

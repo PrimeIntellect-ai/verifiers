@@ -71,13 +71,16 @@ class _PrivateNetworkDeployment(_DeploymentStrategy):
             )
         d.backend.env = d.env
         native = isinstance(d.spec, ServicesSpec)
-        members = d.spec.services if native else d.tool_vms
+        services = d.spec.services if native else {}
+        if clash := sorted(services.keys() & d.tool_vms.keys()):
+            raise ValueError(f"tool servers {clash} share a name with task services")
         self._services = await d.enter(AsyncExitStack())
         vms = await self._services.enter_async_context(
             private_network(
                 d.backend,
-                members,
+                {**services, **d.tool_vms},
                 partial(d.own, d.backend),
+                tools=frozenset(d.tool_vms),
                 interconnect=native,
                 networks=self._networks,
             )

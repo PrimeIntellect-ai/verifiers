@@ -7,25 +7,15 @@ from grid import assert_one_branch, grid, runtimes_grid
 
 
 @pytest.mark.parametrize(
-    "preinstalled_tools", [False, True], ids=["fresh", "preinstalled"]
-)
-@pytest.mark.parametrize(
     "harness_runtime", runtimes_grid(needs=("user",)), indirect=True
 )
-async def test_agent_user_cannot_act_as_root(run, harness_runtime, preinstalled_tools):
+async def test_agent_user_cannot_act_as_root(run, harness_runtime):
     """A scripted, model-free agent runs as the task's non-root `agent_user`. Root-only
-    actions are denied, while its uv script, runtime file I/O, and colocated tool server
-    all act as the user. With `preinstalled_tools`, the tool's package was first installed
-    by the default user, as on a reused runtime."""
-    (episode,) = await run(
-        "agent-user",
-        harness="agent-user",
-        runtime=harness_runtime,
-        taskset_overrides={"preinstalled_tools": preinstalled_tools},
-    )
+    actions are denied, while its uv script and runtime file I/O act as the user."""
+    (episode,) = await run("agent-user", harness="agent-user", runtime=harness_runtime)
     (trace,) = episode.traces
     report = trace.info["agent_user_report"]
-    for key in ("user", "uv_user", "written_owner", "tool_user"):
+    for key in ("user", "uv_user", "written_owner"):
         assert report[key] == "vf-agent", key
     assert report["secret_exists"] == "ok" and report["write_home"] == "ok"
     root_actions = ("read_secret", "write_etc", "chmod_secret", "signal_init")
@@ -33,7 +23,6 @@ async def test_agent_user_cannot_act_as_root(run, harness_runtime, preinstalled_
         root_actions, "denied"
     )
     assert report["read_secret_api"] == "denied"
-    assert report["tool_uv"] == "ok"
     assert not report["uv_python"].startswith("/root/")
     assert report["uv_script"] != report["root_uv_script"]
     assert trace.reward == 1.0

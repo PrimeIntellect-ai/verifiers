@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Annotated
 
-from pydantic import Field, model_validator
+from pydantic import Field, SerializeAsAny, model_validator
 from pydantic_config import BaseConfig
 
 from verifiers.v1.mcp.server import ConfigT, ServerBase
-from verifiers.v1.runtimes import RuntimeConfig, SubprocessConfig
+from verifiers.v1.runtimes import DockerConfig, PrimeConfig, SubprocessConfig
 from verifiers.v1.state import StateT
 from verifiers.v1.utils.decorators import discover_decorated
 
@@ -21,44 +21,54 @@ class ToolsetTimeoutConfig(BaseConfig):
     """Time to start serving, including `setup()`, such as to build an index."""
 
 
-class BaseToolsetConfig(BaseConfig):
-    """Settings every tool server has, whether per-task or shared."""
+class ToolsetConfig(BaseConfig):
+    """Where a tool server runs and how long it lives.
 
-    runtime: RuntimeConfig = SubprocessConfig()
-    """Where the server runs: the evaluator by default."""
-    url: str | None = None
-    timeout: ToolsetTimeoutConfig = ToolsetTimeoutConfig()
+    A subprocess or Docker `runtime` serves on the evaluator's loopback; the harness
+    reaches it directly from a local workspace and through its interception from a
+    Prime one. A Prime `runtime` is a VM of the server's own that joins a Prime
+    workspace over a private LAN, under its own egress policy."""
 
-
-class ToolsetConfig(BaseToolsetConfig):
-    """A per-task tool server. A Prime `runtime` beside a Prime workspace without a task
-    service spec is a VM of the server's own that joins the workspace over the rollout's
-    private network, under its own egress policy."""
-
-    colocated: bool = False
+    shared: bool = False
+    """Serve every rollout of an eval from one server instead of starting one per
+    rollout. A shared server runs `setup()` once and never `setup_task()`."""
     service: str | None = None
-    """Run the server in a named native Prime service VM. The harness reaches it
-    over the deployment's private network, using its LAN hostname."""
+    """Run the server in one of the task's services instead of a runtime of its own.
+    The harness reaches it by the service's name on the deployment's network."""
+    runtime: SerializeAsAny[
+        Annotated[
+            SubprocessConfig | DockerConfig | PrimeConfig, Field(discriminator="type")
+        ]
+    ] = SubprocessConfig()
+    url: str | None = None
+    """An MCP server that is already running; nothing is launched."""
+    timeout: ToolsetTimeoutConfig = ToolsetTimeoutConfig()
 
     @model_validator(mode="after")
     def _one_placement(self):
-        if self.service is None:
-            return self
-        if self.colocated or self.url:
+        if self.service is not None:
+            if self.url or self.shared:
+                raise ValueError(
+                    "a tool server placed in a service belongs to one rollout and "
+                    "is not remote"
+                )
+            # The service is the server's runtime; another one, or its policy, would go unused.
+            if not isinstance(self.runtime, SubprocessConfig):
+                raise ValueError(
+                    "a tool server placed in a service runs in that service and "
+                    f"takes no runtime of its own (got {self.runtime.type})"
+                )
+        # Only a rollout's own Prime VM applies a network policy of its own, after setup.
+        restricted = (
+            not isinstance(self.runtime, SubprocessConfig)
+            and self.runtime.network_restricted
+        )
+        if restricted and (isinstance(self.runtime, DockerConfig) or self.shared):
             raise ValueError(
-                "a tool server placed in a service is neither colocated nor remote"
-            )
-        # The service is the server's runtime; another one, or its policy, would go unused.
-        if not isinstance(self.runtime, SubprocessConfig):
-            raise ValueError(  # noqa: TRY004 - Pydantic validators must raise ValueError
-                "a tool server placed in a service runs in that service and "
-                f"takes no runtime of its own (got {self.runtime.type})"
+                "a tool server's own network policy needs a Prime VM that serves "
+                "one rollout"
             )
         return self
-
-
-class SharedToolsetConfig(BaseToolsetConfig):
-    pass
 
 
 class Toolset(ServerBase[ConfigT, StateT]):

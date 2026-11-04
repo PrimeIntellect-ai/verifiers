@@ -1,8 +1,7 @@
 """Answer trivia with a worker-shared wiki corpus and a reference judge.
 
-The tool server builds an expensive corpus/index in its process-level `setup`, so
-`Taskset.toolsets` launches one instance per environment worker instead of rebuilding it
-per rollout. The tools are read-only; grading comes from the plugged wiki-search judge
+The tool server builds an expensive corpus/index in its process-level `setup`, so it is
+`shared`: one instance serves the whole eval instead of rebuilding it per rollout. The tools are read-only; grading comes from the plugged wiki-search judge
 (class-level prompt; reject incoherent answers).
 """
 
@@ -25,6 +24,7 @@ NUM_QUESTIONS = 20
 
 
 class WikiSearchTaskConfig(vf.TaskConfig):
+    tools: vf.ToolsetConfig = vf.ToolsetConfig(shared=True)
     # Users can replace or reconfigure this judge through --taskset.task.judges.
     judges: vf.Judges = Field(default_factory=lambda: [WikiSearchJudgeConfig()])
 
@@ -36,19 +36,16 @@ class TriviaTaskData(vf.TaskData):
 
 
 class TriviaTask(vf.Task[TriviaTaskData, vf.State, WikiSearchTaskConfig]):
-    pass
+    @classmethod
+    def toolsets(cls, config: WikiSearchTaskConfig) -> list[vf.Toolset]:
+        return [WikiSearchToolset(config.tools)]
 
 
 class WikiSearchConfig(vf.TasksetConfig):
-    tools: vf.SharedToolsetConfig = vf.SharedToolsetConfig()
     task: WikiSearchTaskConfig = WikiSearchTaskConfig()
 
 
 class WikiSearchTaskset(vf.Taskset[TriviaTask, WikiSearchConfig]):
-    @classmethod
-    def toolsets(cls, config: WikiSearchConfig) -> list[vf.Toolset]:
-        return [WikiSearchToolset(config.tools)]
-
     def load(self) -> list[TriviaTask]:
         from datasets import load_dataset
 

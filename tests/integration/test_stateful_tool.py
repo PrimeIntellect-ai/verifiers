@@ -10,8 +10,8 @@ from grid import placements
 async def test_tool_state(run, harness_runtime, tool_runtime):
     """The shared-state round-trip: a `@vf.tool` increments the typed `trace.state` each
     call (synced over the interception server) and the `@reward` reads it back — reward
-    1.0 proves tool writes reach the host's `trace.state`, colocated and own-runtime (a
-    SHARED server's per-rollout state channel is covered by `test_shared_tool`)."""
+    1.0 proves tool writes reach the host's `trace.state` from every placement (a
+    `shared` server's per-rollout state channel is covered by `test_shared_tool`)."""
     (episode,) = await run(
         "counter-tool",
         harness="null",

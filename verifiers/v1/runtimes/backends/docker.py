@@ -207,7 +207,6 @@ class DockerBackend(RuntimeBackend):
 
     SUPPORTS_TASK_IMAGES: ClassVar[bool] = True
     SUPPORTS_USER_SWITCHING: ClassVar[bool] = True
-    SUPPORTS_PORT_EXPOSURE: ClassVar[bool] = True
     SUPPORTS_COMPOSE: ClassVar[bool] = True
     is_local = True
 
@@ -261,10 +260,8 @@ class DockerBackend(RuntimeBackend):
             backend.info.image = backend.config.image
             backend.info.workdir = backend.config.workdir
             backend._service_url = service_url
-            if service_url is not None:
-                await backend._start_proxy(
-                    NetworkPolicy(NetworkPolicyConfig(allow=[]), [])
-                )
+            # Any service may host a tool server that calls back into the evaluator.
+            await backend._start_proxy(NetworkPolicy(NetworkPolicyConfig(allow=[]), []))
             yield backend
         finally:
             await backend.stop()

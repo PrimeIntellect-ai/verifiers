@@ -45,11 +45,8 @@ def harness_runtime(request) -> dict:
 
 @pytest.fixture
 def tool_runtime(request) -> dict:
-    """A `taskset.task.tools` override placing the tool server: `colocated` (inside the harness's
-    runtime), `service` (in the task's native `tools` service VM), or its own runtime,
-    by type."""
-    if request.param == "colocated":
-        return {"colocated": True}
+    """A `taskset.task.tools` override placing the tool server: `service` (in the task's
+    native `tools` service VM), or its own runtime, by type."""
     if request.param == "service":
         return {"service": "tools"}
     return {"runtime": runtime_config(request.param)}

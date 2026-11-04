@@ -42,13 +42,11 @@ class StaticInterceptionPool(Interception):
         self,
         config: StaticInterceptionPoolConfig,
         requires_tunnel: bool = False,
-        state_service_secrets: tuple[str, ...] = (),
     ) -> None:
         super().__init__()
         self.config = config
         self.servers = [
-            InterceptionServer(server, requires_tunnel, state_service_secrets)
-            for server in config.servers
+            InterceptionServer(server, requires_tunnel) for server in config.servers
         ]
 
     async def start(self) -> None:
@@ -78,12 +76,10 @@ class ElasticInterceptionPool(Interception):
         self,
         config: ElasticInterceptionPoolConfig | None = None,
         requires_tunnel: bool = False,
-        state_service_secrets: tuple[str, ...] = (),
     ) -> None:
         super().__init__()
         self.config = config or ElasticInterceptionPoolConfig()
         self.requires_tunnel = requires_tunnel
-        self.state_service_secrets = state_service_secrets
         self.servers: list[InterceptionServer] = []
         self._lock = asyncio.Lock()
         self._warm_task: asyncio.Task[InterceptionServer] | None = None
@@ -123,7 +119,6 @@ class ElasticInterceptionPool(Interception):
         server = InterceptionServer(
             InterceptionServerConfig(tunnel=PrimeTunnelConfig()),
             self.requires_tunnel,
-            self.state_service_secrets,
         )
         await self.stack.enter_async_context(server)
         self.servers.append(server)

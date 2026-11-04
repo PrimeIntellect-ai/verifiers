@@ -1,7 +1,8 @@
 """Task-declared Harbor MCP tools served through the standard VF toolset lifecycle."""
 
 import os
-from typing import Any, cast
+from typing import Any, Self, cast
+from urllib.parse import urlsplit
 
 from mcp import Client
 from mcp.client.sse import sse_client
@@ -11,11 +12,34 @@ from mcp.server.mcpserver import Context, MCPServer
 from mcp.types import CallToolResult, Tool
 
 from verifiers.v1.mcp import Toolset, ToolsetConfig
+from verifiers.v1.runtimes import PrimeConfig
 
 
 class HarborMCPConfig(ToolsetConfig):
     server: dict[str, Any]
     """One declaration already validated by Harbor's task parser."""
+
+    @classmethod
+    def place(
+        cls, server: dict[str, Any], *, services: bool, image: str | None
+    ) -> Self:
+        """Map a Harbor MCP declaration onto a native placement. A streamable-HTTP
+        server is used at its URL, which resolves from the workspace like any Compose
+        service. Harnesses speak no SSE, so an SSE server gets this bridge inside the
+        Compose service that hosts it, or on the evaluator for a task without services.
+        Harbor's agents spawn a stdio server in their own box; here the bridge spawns it
+        on a Prime VM of its own from the task's image."""
+        match server["transport"]:
+            case "streamable-http":
+                return cls(server=server, url=server["url"])
+            case "sse":
+                host = urlsplit(server["url"]).hostname if services else None
+                return cls(server=server, service=host)
+            case "stdio":
+                runtime = PrimeConfig(image=image) if image else PrimeConfig()
+                return cls(server=server, runtime=runtime)
+            case other:
+                raise ValueError(f"Unsupported Harbor MCP transport: {other!r}")
 
 
 class HarborMCPToolset(Toolset[HarborMCPConfig]):

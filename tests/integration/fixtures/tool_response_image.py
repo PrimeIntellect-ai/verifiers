@@ -1,6 +1,6 @@
 """tool-response-image: an MCP tool returns image content.
 
-The task asks the model to call a tiny colocated MCP tool. The reward ignores the
+The task asks the model to call a tiny MCP tool. The reward ignores the
 final answer and checks the v1 trace: the tool result must survive as an image_url
 content part on a ToolMessage.
 """

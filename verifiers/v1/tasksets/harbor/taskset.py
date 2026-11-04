@@ -52,6 +52,8 @@ from verifiers.v1.utils.artifacts import (
 from verifiers.v1.utils.decorators import reward
 from verifiers.v1.utils.env import resolve_env
 
+from .toolset import HarborMCPConfig
+
 logger = logging.getLogger(__name__)
 
 CACHE = Path.home() / ".cache" / "harbor"
@@ -72,8 +74,9 @@ REWARD_SCALAR_ADAPTER = TypeAdapter(
 class HarborTaskConfig(TaskConfig):
     reward_key: str = Field("reward", min_length=1)
     """Named verifier value used as the training reward; other values remain metrics."""
-    mcp_servers: list[dict] = Field(default_factory=list)
-    """Task-declared connections, bound from HarborData during construction."""
+    mcp_servers: list[HarborMCPConfig] = Field(default_factory=list)
+    """Task-declared MCP servers on native placements, bound from HarborData during
+    construction."""
 
 
 class HarborConfig(TasksetConfig):
@@ -204,15 +207,22 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
     def __init__(self, data: HarborData, config: HarborTaskConfig | None = None):
         super().__init__(data, config)
         # Each reconstructed row gets its own connections without mutating worker config.
-        self.config = self.config.model_copy(update={"mcp_servers": data.mcp_servers})
+        services = self.deployment_spec() is not None
+        self.config = self.config.model_copy(
+            update={
+                "mcp_servers": [
+                    HarborMCPConfig.place(server, services=services, image=data.image)
+                    for server in data.mcp_servers
+                ]
+            }
+        )
 
     @classmethod
     def toolsets(cls, config: HarborTaskConfig):
-        from .toolset import HarborMCPConfig, HarborMCPToolset
+        from .toolset import HarborMCPToolset
 
         return super().toolsets(config) + [
-            HarborMCPToolset(HarborMCPConfig(colocated=True, server=server))
-            for server in config.mcp_servers
+            HarborMCPToolset(server) for server in config.mcp_servers
         ]
 
     def deployment_spec(self):

@@ -173,10 +173,6 @@ class RuntimeBackend(ABC):
     SUPPORTS_USER_SWITCHING: ClassVar[bool] = False
     """Whether handles can bind another existing user."""
 
-    SUPPORTS_PORT_EXPOSURE: ClassVar[bool] = False
-    """Whether `expose` can publish a port inside this runtime to the outside, so a
-    server here is reachable from another runtime."""
-
     SUPPORTS_COMPOSE: ClassVar[bool] = False
     """Whether the runtime can run a task's Docker Compose services."""
 
@@ -357,19 +353,15 @@ class RuntimeBackend(ABC):
 
     @property
     def published_port(self) -> int | None:
-        """A fixed port this runtime exposes to the outside at startup, declared up front to the
-        provider (some forward only ports named at creation). When set, a server placed
-        here binds it instead of a host-chosen free port, and `expose` returns its public URL.
-        `None` for runtimes whose services already sit on host loopback (subprocess),
-        which pick a free port."""
+        """A fixed port a local container publishes on the evaluator's loopback at startup.
+        A server placed here binds it instead of a free port. `None` for runtimes on the
+        host network, which pick a free port."""
         return None
 
     async def expose(self, port: int) -> str:
-        """Publish a port running *inside this runtime* to a URL reachable from the host/outside.
-        A runtime on the host network is reached at host loopback as is; a sandbox overrides
-        this with its port exposure (e.g. a container engine's published port), torn
-        down with the sandbox in `stop()`. The reverse of a
-        host `Tunnel` (interception.tunnel, which reaches a host port from inside a runtime)."""
+        """The evaluator-loopback URL of `port` in this local runtime: as is on the host
+        network, the published port for a container. The reverse of a host `Tunnel`
+        (interception.tunnel, which reaches a host port from inside a runtime)."""
         return f"http://127.0.0.1:{port}"
 
 

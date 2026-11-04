@@ -179,6 +179,9 @@ class RolloutSession:
     multiplexes shares one keepalive connection pool instead of opening its own."""
     proxy_mcp: MCPProxy | None = field(default=None, repr=False)
     """Register a host MCP backend on this session's interception server while serving."""
+    service_secrets: frozenset[str] = field(default=frozenset(), repr=False)
+    """Bearers of the shared tool servers this rollout borrows, each allowed this
+    rollout's state when it names the rollout's route."""
     error: "RolloutError | None" = None
     """The latest unresolved model-call failure. The harness only sees it as an HTTP error, so
     when its program dies on it the rollout records this original error instead of a secondary

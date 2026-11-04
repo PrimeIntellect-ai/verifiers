@@ -30,18 +30,24 @@ from verifiers.v1.grading import (
 )
 from verifiers.v1.harness import Harness, HarnessSession
 from verifiers.v1.interception import Interception, serve_interception
-from verifiers.v1.mcp import SharedToolServer, serve_tools
+from verifiers.v1.mcp import (
+    SharedToolServer,
+    join_shared_lans,
+    launch_tools,
+    serve_tools,
+)
 from verifiers.v1.runtimes import (
     Runtime,
     RuntimeConfig,
     make_backend,
 )
-from verifiers.v1.runtimes.private_network import tool_vms
+from verifiers.v1.runtimes.private_network import LAN_DOMAIN, tool_vms
 from verifiers.v1.session import RolloutLimits, RolloutSession, hook_boundary
 from verifiers.v1.state import state_cls
 from verifiers.v1.task import Task
 from verifiers.v1.trace import AgentInfo, Trace, TraceTask
 from verifiers.v1.types import Messages, Request, Response, SystemMessage, UserMessage
+from verifiers.v1.utils.aio import background
 from verifiers.v1.utils.artifacts import collect
 from verifiers.v1.utils.decorators import discover_decorated, invoke
 
@@ -178,6 +184,11 @@ class Rollout:
             request_stops=[fn for boundary, fn in stops if boundary is Request],
             response_stops=[fn for boundary, fn in stops if boundary is Response],
             gates_tools=harness.SUPPORTS_TOOL_INTERCEPTION,
+            service_secrets=frozenset(
+                tool.state_secret
+                for tool in self._shared_tools.values()
+                if tool.state_secret
+            ),
         )
         self._stack = AsyncExitStack()
         self._failed = False
@@ -293,6 +304,26 @@ class Rollout:
                     )
                 async with boundary(ToolsetError, "building tool servers"):
                     toolsets = self.task.toolsets(self.task.config)
+                # `base_url` is the interception server's reachable URL for this rollout.
+                # The harness reaches the model at `{base_url}/v1`; tool servers reach this
+                # rollout's `/state` + `/task` at `base_url` — it's universally reachable
+                # (the interception is exposed whenever any consumer is remote).
+                (
+                    base_url,
+                    model_secret,
+                    state_secret,
+                ) = await self._stack.enter_async_context(
+                    serve_interception(self._interception, runtime, self._session)
+                )
+                # Tool servers on the evaluator need nothing from the workspace, so they
+                # start while it boots and the task and harness set up.
+                launching = await self._stack.enter_async_context(
+                    background(
+                        launch_tools(
+                            toolsets, state_secret=state_secret, state_base=base_url
+                        )
+                    )
+                )
                 spec = self.task.deployment_spec()
                 self.deployment = runtime.backend.deploy(
                     spec=spec,
@@ -300,7 +331,6 @@ class Rollout:
                     tool_vms=tool_vms(
                         toolsets,
                         runtime.backend.config,
-                        composed=spec is not None,
                         borrowed=self._borrowed_runtime is not None,
                     ),
                     env=runtime.env,
@@ -314,6 +344,14 @@ class Rollout:
                 finally:
                     # Providers may assign an ID before startup fails; retain it for diagnostics.
                     self.trace.agent.runtime = runtime.info.model_copy()
+                # Joining a shared server's eval LAN overlaps the setup below.
+                joining = join_shared_lans(toolsets, self._shared_tools, runtime)
+
+                async def stop_joining() -> None:
+                    joining.cancel()
+                    await asyncio.gather(joining, return_exceptions=True)
+
+                self._stack.push_async_callback(stop_joining)
                 if not self.task.scoring_deferred:
                     isolated = self._scoring_policy.mode == "isolated"
                     self._scoring_task = self.task.grading_task(
@@ -355,64 +393,36 @@ class Rollout:
                         runtime, self.task.data.agent_user
                     )
                     await self.harness.setup(self._agent_runtime)
-                # `base_url` is the interception server's reachable URL for this rollout.
-                # The harness reaches the model at `{base_url}/v1`; tool servers reach this
-                # rollout's `/state` + `/task` at `base_url` — it's universally reachable
-                # (the interception is exposed whenever any consumer is remote).
-                (
-                    base_url,
-                    model_secret,
-                    state_secret,
-                ) = await self._stack.enter_async_context(
-                    serve_interception(
-                        self._interception,
-                        runtime,
-                        self._session,
-                        toolsets,
-                        self._shared_tools,
-                    )
-                )
                 self._endpoint = runtime.host_url(f"{base_url.rstrip('/')}/v1")
                 self._secret = model_secret
-                services = (
-                    {
-                        name: self.deployment.target(name)
-                        for name in self.deployment.target_backends
-                    }
-                    if self.deployment.spec is not None
-                    else {}
-                )
+                await joining
                 self._urls = await self._stack.enter_async_context(
                     serve_tools(
                         toolsets,
                         self._agent_runtime,
-                        shared=self._shared_tools,
+                        self.deployment,
+                        self._shared_tools,
+                        await launching,
                         state_secret=state_secret,
                         proxy_mcp=self._session.proxy_mcp,
                         state_route=self.trace.id,
                         state_base=base_url,
-                        services=services,
-                        hosts=self.deployment.hosts,
-                        # Tool servers on VMs of their own, by server name; an explicit
-                        # `service` names a task-declared service.
-                        placements={
-                            name: self.deployment.target(name)
-                            for name in self.deployment.tool_vms
-                        },
                     )
                 )
                 # Setup and service provisioning are complete. Apply the runtime's
                 # execution policy while preserving the framework routes the agent uses.
-                # Service hosts resolve inside the deployment (Compose names, LAN
-                # names), not as egress.
-                internal = {*services, *self.deployment.hosts.values()}
+                # Compose service names and LAN names resolve inside a deployment or
+                # eval LAN, not as egress.
+                routes = [self._endpoint]
+                for url in self._urls.values():
+                    host = urlsplit(url).hostname or ""
+                    if (
+                        host not in self.deployment.target_backends
+                        and not host.endswith(LAN_DOMAIN)
+                    ):
+                        routes.append(url)
                 await self.deployment.prepare_execution(
-                    [
-                        url
-                        for url in [self._endpoint, *self._urls.values()]
-                        if urlsplit(url).hostname not in internal
-                    ],
-                    state_route=f"{base_url.rstrip('/')}/state",
+                    routes, state_route=f"{base_url.rstrip('/')}/state"
                 )
                 async with (
                     boundary(HarnessError, "opening harness session"),

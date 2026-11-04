@@ -10,6 +10,10 @@ if TYPE_CHECKING:
 
 MCP_CALL_ATTEMPTS = 6
 MCP_TIMEOUT = 600.0
+MCP_IDLE_SECONDS = 240.0
+"""How long a client keeps an idle connection for its next call: opening one to a
+server on a Prime LAN costs about 0.3 s. Below the tool servers' 300 s, so a client
+never reuses a connection just as the server closes it."""
 
 T = TypeVar("T")
 
@@ -25,20 +29,18 @@ async def mcp_client(spec: dict[str, Any]) -> AsyncIterator["Client"]:
     # Bundled chat programs also run without tools; load MCP only when it is used.
     import httpx2
     from mcp import Client
-    from mcp.client.streamable_http import (
-        create_mcp_http_client,
-        streamable_http_client,
-    )
+    from mcp.client.streamable_http import streamable_http_client
 
     stack = AsyncExitStack()
     try:
         http_client = await stack.enter_async_context(
-            create_mcp_http_client(
+            httpx2.AsyncClient(
                 headers=spec.get("headers") or None,
                 timeout=httpx2.Timeout(
                     spec.get("timeout", MCP_TIMEOUT),
                     connect=spec.get("connect_timeout", 5.0),
                 ),
+                limits=httpx2.Limits(keepalive_expiry=MCP_IDLE_SECONDS),
             )
         )
         transport = streamable_http_client(spec["url"], http_client=http_client)

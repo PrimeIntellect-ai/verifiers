@@ -18,7 +18,6 @@ Each runtime declares its features through its backend's class attributes, and n
 | Task image, container-only harnesses, isolated scoring | `SUPPORTS_TASK_IMAGES` | `docker`, `prime` |
 | Task network policy | config inherits `NetworkPolicyConfig` | `docker`, `prime` |
 | Task `agent_user` | `SUPPORTS_USER_SWITCHING` | `docker`, `prime` |
-| Tool server in its own runtime | `SUPPORTS_PORT_EXPOSURE` | `subprocess`, `docker`, `prime` |
 | Compose services | `SUPPORTS_COMPOSE` | `docker`, `prime` (subset below) |
 
 Runtime capabilities are orthogonal to agent harness capabilities like MCP tool support, image inputs, or conversation resumption; see [harnesses](harnesses.md) for harness features and [building environments](building-environments.md#separate-agent-and-grading-sandboxes) for running separate solver and grading sandboxes.
@@ -47,7 +46,7 @@ Timeouts and token budgets can be tuned at evaluation time under `env.agent`:
 
 ## Execution users
 
-On `docker` and `prime`, you can set `TaskData.agent_user` to run the agent under an existing non-root user account in the container image (with a writable home directory). Task `setup` still runs as the container's default user, after which harness setup, the agent process itself, and any colocated task tools execute as `agent_user`. Once the agent finishes, `finalize`, scoring, and artifact collection switch back to the default user.
+On `docker` and `prime`, you can set `TaskData.agent_user` to run the agent under an existing non-root user account in the container image (with a writable home directory). Task `setup` still runs as the container's default user, after which harness setup and the agent process itself execute as `agent_user`. Once the agent finishes, `finalize`, scoring, and artifact collection switch back to the default user.
 
 Calling `runtime.with_user(...)` or `runtime.with_env(...)` returns an independent view over the same underlying resource without mutating existing views. Under the hood, a `RuntimeBackend` (such as `DockerBackend` or `PrimeBackend`) owns the provider lifecycle, including container startup, network policy, and teardown; `backend.bind()` creates a `Runtime` view without provisioning a new resource, and `runtime.backend` exposes the backend when explicit infrastructure operations are needed. `Agent.provision()` lends a runtime whose cleanup remains owned by the caller's context.
 
@@ -162,7 +161,6 @@ bindings and the uv-script helpers on top of it:
 | `run(runtime, argv, env)` | no | Run to completion. The default drains an `exec`. |
 | `run_background(runtime, argv, env, log)` | no | Start a long-lived process with its output in `log`. The default keeps an `exec` open for the process's life; override it when the provider runs detached jobs. |
 | `read(runtime, path, max_bytes)` | no | Read a file. The default reads through `run`. |
-| `expose(port)` | with `SUPPORTS_PORT_EXPOSURE` | Publish a port to a URL outside the runtime. |
 | `prepare_execution(routes, network)` | with `NetworkPolicyConfig` | Apply the network policy, or `network` in its place, before the agent starts; `None` routes reopen the network. |
 | `host_url(url)` | no | Rewrite a host URL for programs inside the runtime. |
 
@@ -189,7 +187,7 @@ expect `sh` and Python 3 in the runtime's default image.
 
 A `Deployment` coordinates all execution resources for a single rollout attempt: provisioning, placement, connectivity, and cleanup of the harness environment, the task workspace, supporting sidecar services, and fresh verification targets.
 
-The **workspace** (`deployment.workspace`) is the `Runtime` where task commands run and task files live; setting `agent.deployment.mode = "colocated"` places the harness and colocated tools inside that same workspace.
+The **workspace** (`deployment.workspace`) is the `Runtime` where task commands run and task files live; setting `agent.deployment.mode = "colocated"` places the harness inside that same workspace.
 
 On Prime, return a `ServicesSpec` from `deployment_spec()` to provision one native VM per named service beside the task's `main` workspace. Each service has its own image, resources, filesystem, and egress policy. The VMs join a private LAN for the rollout; they can call each other and the workspace through the names in `deployment.hosts`. Services bind to `0.0.0.0`, since each VM has its own loopback interface. No Docker daemon runs inside these VMs.
 
@@ -243,7 +241,7 @@ class WebTask(vf.Task):
 
 Use a Prime agent runtime for this task. Setup controls process startup order; there are no automatic dependency or restart rules. LAN access remains available when each VM's external egress policy is applied after setup. Before isolated grading, the deployment deletes the workspace, calls `finalize_services()` to collect service artifacts, then releases the remaining VMs and LAN. Each service adds its own VM resource allocation. Processes that can share the workspace's filesystem and policy can instead start directly with `runtime.run_background()`.
 
-A task tool server can run in a named service using `ToolsetConfig.service`; the harness reaches it at the service VM's LAN hostname. `deployment.target(name)` gives task hooks access to any named service.
+A task tool server can run in a named service using `ToolsetConfig.service`; the harness reaches it at the service VM's LAN hostname, or by its Compose service name on local Docker. `deployment.target(name)` gives task hooks access to any named service.
 
 Return a `ComposeSpec` to resolve a task's Compose services. Local Docker starts the authored containers and selects the workspace service. Compose files can mount host paths and request Docker privileges, so local Compose requires `agent.deployment.trust_compose = true` (`--env.agent.deployment.trust-compose`). Only enable it for task packages you trust. Local Compose does not enforce network policies.
 
@@ -253,7 +251,9 @@ The Prime subset requires a workspace named `main` and project-scoped networks, 
 
 Task and runtime disk settings apply only to `main`. Set a service's `storage_opt: {size: "20G"}` to request its own VM disk size; other storage driver options are rejected. Sizes use Docker's binary units (`G`, `GB`, and `GiB` all mean 1024³ bytes); a number without a suffix is bytes. A non-default disk setting on `main` takes precedence over its Compose size. Sidecars otherwise use the 5 GB default, and Compose sizes never reduce that default. Every disk is also large enough for its image plus room to write. These are total disk sizes per VM, not a shared allocation or extra writable space.
 
-A tool server can also run on a Prime VM of its own, under an egress policy of its own: set its `ToolsetConfig.runtime` to a Prime runtime, such as `vf.PrimeConfig(image="example/tools:1", allow=["*"])` for a server that calls public APIs beside an offline workspace, or `allow=[]` for one that runs agent-submitted code with no egress at all. Beside a Prime workspace without a task service spec, the server's VM boots with the workspace and joins it over a LAN network of the rollout's own, on which the workspace's VM may open connections to the server and nothing may open one to the workspace; the harness reaches the server at its VM's LAN name (`<sandbox-id>.sandbox.internal`), and `deployment.target(name)` gives task hooks the server's VM. The VM's policy applies when the workspace's does, after setup. Elsewhere such a server keeps its runtime's published port, which takes no network policy. On Prime, the published port is a public HTTPS URL (`https://<port>-<sandbox-id>.sandbox-v2-prod.pinfra.io`) without authentication.
+A tool server can also run on a Prime VM of its own, under an egress policy of its own: set its `ToolsetConfig.runtime` to a Prime runtime, such as `vf.PrimeConfig(image="example/tools:1", allow=["*"])` for a server that calls public APIs beside an offline workspace, or `allow=[]` for one that runs agent-submitted code with no egress at all. The server's VM boots with the workspace and joins the rollout's LAN, beside any task services, on which the workspace's VM may open connections to the server and nothing may open one to the workspace; the harness reaches the server at its VM's LAN name (`<sandbox-id>.sandbox.internal`), and `deployment.target(name)` gives task hooks the server's VM. The VM's policy applies when the workspace's does, after setup. Such a server needs a Prime workspace that the rollout provisions itself.
+
+A `shared` tool server on a Prime runtime runs on one VM for the whole eval, on a LAN of the eval's own that each rollout's workspace joins; workspaces can reach the server but not each other. A sandbox joins at most 32 LAN networks, so the shared VM cannot join each rollout's LAN instead. A shared VM takes no network policy of its own.
 
 To validate an isolated task without calling a model, finalize the submission, collect its artifacts, and call `vf.grade_submission(task, trace, runtime)`. This runs the task's normal grader, verifier image, timeouts, and retries in a fresh verification target without taking ownership of the supplied solver runtime. As in a rollout, the verifier derives from the agent's runtime config on the trace (`trace.agent.config.runtime`), not from the solver's resolved config, so the solver task's requirements, such as its network policy, don't carry over. Inside `Task.validate`, request `trace` by name for vf-validate's trace, which records its runtime config.
 
@@ -290,4 +290,4 @@ vf.TaskData(
 
 Unset, isolated scoring runs under `TaskData.network` and shared scoring keeps the agent phase's network. Shared scoring can't restrict a runtime that started without a policy; use isolated scoring for that. A hook that needs a different policy at another point can call `runtime.set_network(policy)`, which enforces the policy as given on the whole runtime.
 
-These egress rules govern processes inside the sandbox (including task tools configured with `colocated = true`), not Python hooks running on the evaluator or tools running in separate containers. For provider-hosted server tools that execute outside the sandbox, verifiers forwards supported domain restrictions to web search tools and disables any provider tools it cannot constrain (see [Harbor network policies](harbor.md#network-policies)). By default, restricted runs also append a short notice to the agent's system prompt (or first user message when the harness cannot append a system prompt) explaining the network policy; pass `--no-env.agent.network-notice` if a benchmark requires the unmodified prompt verbatim.
+These egress rules govern processes inside the sandbox, not Python hooks running on the evaluator or tool servers outside the sandbox. For provider-hosted server tools that execute outside the sandbox, verifiers forwards supported domain restrictions to web search tools and disables any provider tools it cannot constrain (see [Harbor network policies](harbor.md#network-policies)). By default, restricted runs also append a short notice to the agent's system prompt (or first user message when the harness cannot append a system prompt) explaining the network policy; pass `--no-env.agent.network-notice` if a benchmark requires the unmodified prompt verbatim.

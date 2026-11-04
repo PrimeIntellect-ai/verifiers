@@ -34,9 +34,7 @@ from pydantic import TypeAdapter, ValidationError
 
 import verifiers.v1 as vf
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
-from verifiers.v1.errors import SandboxError, ToolsetError
-from verifiers.v1.mcp import launch
-from verifiers.v1.mcp.toolset import ToolsetConfig
+from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes import (
     CustomRuntimeConfig,
     CustomRuntimeInfo,
@@ -57,7 +55,6 @@ RUNTIMES = ["subprocess", "docker", "prime", "plugin"]
 SUPPORTED = {
     "task_images": {"docker", "prime"},
     "user_switching": {"docker", "prime"},
-    "port_exposure": {"subprocess", "docker", "prime"},
     "compose": {"docker", "prime"},
     "network_policies": {"docker", "prime"},
 }
@@ -164,7 +161,6 @@ def test_built_in_runtime_declares_its_features(name) -> None:
     declared = {
         "task_images": cls.SUPPORTS_TASK_IMAGES,
         "user_switching": cls.SUPPORTS_USER_SWITCHING,
-        "port_exposure": cls.SUPPORTS_PORT_EXPOSURE,
         "compose": cls.SUPPORTS_COMPOSE,
         "network_policies": isinstance(config, NetworkPolicyConfig),
     }
@@ -248,20 +244,11 @@ async def test_user_switching(runtime) -> None:
         assert result.stdout.strip() == "nobody", result
 
 
-async def test_port_exposure(runtime, monkeypatch) -> None:
-    if not backend_cls(runtime).SUPPORTS_PORT_EXPOSURE:
-
-        def provision(*args, **kwargs):
-            raise AssertionError("an undeclared feature must be refused first")
-
-        monkeypatch.setattr(launch, "provision_backend", provision)
-        server = SimpleNamespace(
-            config=ToolsetConfig(runtime=runtime), server_name="tools"
-        )
-        with refused(runtime, ToolsetError, "cannot expose a port"):
-            async with launch.serve(server):
-                pass
-        return
+async def test_loopback_exposure(runtime) -> None:
+    """A local runtime serves a port on the evaluator's loopback, where tool servers in
+    it are reached; a Prime VM's servers are reached over a LAN instead."""
+    if not backend_cls(runtime).is_local:
+        pytest.skip("servers on Prime VMs are reached by LAN name")
     async with provisioned(runtime) as view:
         port = view.published_port
         if port is None:

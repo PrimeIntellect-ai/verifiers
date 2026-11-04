@@ -618,24 +618,14 @@ class Agent:
         if server is not None:
             await server.__aexit__(*exc)
 
-    def _interception_for(
-        self, run_is_local: bool, task: Task, shared_tools: Mapping
-    ) -> Interception | None:
+    def _interception_for(self, run_is_local: bool) -> Interception | None:
         """Which interception this run rides: an injected one always (its owner
-        sized its reach); the owned server only when provably reachable from all
-        the run's consumers — when it tunnels, else for a local run with no tool
-        servers in play (such servers may sit in a remote runtime and must reach
-        `/state`). Otherwise `None`: a per-run server sized to the task."""
+        sized its reach); the owned server when it reaches the run's harness, which
+        is all a remote tool server needs too. Otherwise `None`: a per-run server."""
         if self.interception is not None:
             return self.interception
-        if self._server is None:
-            return None
-        if any(tool.state_secret for tool in shared_tools.values()):
-            # Shared state credentials are attached per run, after this owned
-            # server was created; let the rollout size a scoped server instead.
-            return None
-        if self._server.tunnel is not None or (
-            run_is_local and not shared_tools and not task.toolsets(task.config)
+        if self._server is not None and (
+            self._server.tunnel is not None or run_is_local
         ):
             return self._server
         return None
@@ -670,8 +660,8 @@ class Agent:
         """Run this agent on `task` once and return the trace: one segment — the
         program runs on the task's prompt until it exits (a multi-turn exchange
         is `interaction()`). `runtime` places it into a live borrowed box instead of
-        provisioning one; `tools` are live servers borrowed from their
-        owner, counted in the pairing check; `on_trace` observes the trace the
+        provisioning one; `tools` are live `shared` servers borrowed from their
+        owner (see `serve_shared`); `on_trace` observes the trace the
         moment it's minted, before any I/O. `collect_artifacts` captures the task's
         declared artifacts after its finalizer while its container runtime is still
         alive. Retries whole while the trace ends with a retryable error
@@ -777,8 +767,7 @@ class Agent:
         and keep the scenario on a scoring-side field (the user-sim env's contract).
 
         `runtime` and `tools` borrow live resources from their owners, just as
-        they do for `run()`; an env supplies its taskset's shared tools
-        automatically for tasks loaded from that taskset.
+        they do for `run()`; an env supplies its shared tool servers automatically.
 
         Everything is a real rollout — the trace (live on `interaction.trace`),
         limits, `@stop`s, and scoring all apply; leaving the context ends the
@@ -844,7 +833,7 @@ class Agent:
             harness,
             type(task),
             runtime_config,
-            tools=[*task.toolsets(task.config), *shared_tools.values()],
+            tools=task.toolsets(task.config),
         )
         timeouts = resolve_rollout_timeouts(self.timeout, task)
         return {
@@ -855,7 +844,7 @@ class Agent:
             "timeouts": timeouts,
             "limits": self.limits,
             "shared_tools": shared_tools,
-            "interception": self._interception_for(run_is_local, task, shared_tools),
+            "interception": self._interception_for(run_is_local),
             "runtime": runtime,
         }
 
@@ -879,9 +868,8 @@ class _EpisodeAgent(Agent):
     bundle of references — expensive resources are env-owned and borrowed, so no
     state spans concurrent episodes): traces get their agent standing the moment
     they're created, finished ones land in `completed` (the episode's traces),
-    each run takes one of the episode's agent permits. The taskset's shared tool
-    servers ride only its own tasks — on an env-minted task they'd wrongly put MCP
-    in play (`tools=` overrides)."""
+    each run takes one of the episode's agent permits. Every run borrows the env's
+    shared tool servers (`tools=` overrides)."""
 
     def __init__(
         self,
@@ -890,7 +878,6 @@ class _EpisodeAgent(Agent):
         interception: Interception | None,
         name: str,
         shared_tools: Mapping[str, SharedToolServer],
-        task_cls: type[Task],
         gate: asyncio.Semaphore | None,
         completed: list[Trace],
         on_trace: Callable[[Trace], None] | None,
@@ -902,14 +889,10 @@ class _EpisodeAgent(Agent):
         self._warned_resources = warned_resources
         self._name = name
         self._shared_tools = shared_tools
-        self._task_cls = task_cls
         self._gate = gate
         self._completed = completed
         self._on_trace = on_trace
         self._on_discard = on_discard
-
-    def _shared_for(self, task: Task) -> Mapping[str, SharedToolServer]:
-        return self._shared_tools if isinstance(task, self._task_cls) else {}
 
     def _watch(
         self, on_trace: Callable[[Trace], None] | None
@@ -985,7 +968,7 @@ class _EpisodeAgent(Agent):
             trace = await super().run(
                 task,
                 runtime=runtime,
-                tools=tools if tools is not None else self._shared_for(task),
+                tools=tools if tools is not None else self._shared_tools,
                 on_trace=self._watch(on_trace),
                 collect_artifacts=collect_artifacts,
                 on_score=self._scoring_callback(on_score),
@@ -1020,7 +1003,7 @@ class _EpisodeAgent(Agent):
             async with super().interaction(
                 task,
                 runtime=runtime,
-                tools=tools if tools is not None else self._shared_for(task),
+                tools=tools if tools is not None else self._shared_tools,
                 on_trace=self._watch(remember),
             ) as interaction:
                 yield interaction

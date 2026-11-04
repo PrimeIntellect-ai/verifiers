@@ -23,11 +23,7 @@ from verifiers.v1.configs.env import EnvConfig, default_agent_harness
 from verifiers.v1.episode import EnvInfo, Episode
 from verifiers.v1.errors import EnvError, boundary
 from verifiers.v1.harness import Harness, HarnessConfig
-from verifiers.v1.interception import (
-    Interception,
-    make_interception,
-    requires_tunnel,
-)
+from verifiers.v1.interception import Interception, make_interception
 from verifiers.v1.mcp import SharedToolServer, serve_shared
 from verifiers.v1.runtimes import SubprocessConfig, runtime_is_local
 from verifiers.v1.task import Task
@@ -220,7 +216,6 @@ class Env(ABC, Generic[ConfigT]):
                 interception=self._interception,
                 name=name,
                 shared_tools=self._shared_tools,
-                task_cls=self._task_cls,
                 gate=gate,
                 completed=completed,
                 on_trace=on_trace,
@@ -357,13 +352,7 @@ class Env(ABC, Generic[ConfigT]):
         run slots inside. Torn down on exit (`teardown()`, then the framework's)."""
         async with self.shared_tools() as shared:
             interception = make_interception(
-                self.config.interception,
-                requires_tunnel=self._requires_tunnel(shared),
-                state_service_secrets=tuple(
-                    server.state_secret
-                    for server in shared.values()
-                    if server.state_secret
-                ),
+                self.config.interception, requires_tunnel=not self._runs_local()
             )
             async with interception:
                 self._shared_tools = shared
@@ -385,21 +374,14 @@ class Env(ABC, Generic[ConfigT]):
             runtime_is_local(spec.runtime) for spec in self._agent_specs.values()
         )
 
-    def _requires_tunnel(self, shared: dict[str, SharedToolServer]) -> bool:
-        """`requires_tunnel` over the consumers known before any rollout: role
-        runtimes, live `shared` servers, and the task class's tool servers
-        (`Task.toolsets` is a classmethod, so no task instance is needed)."""
-        task_cls = type(self.taskset).task_type()
-        configs = [
-            server.config for server in task_cls.toolsets(self.taskset.config.task)
-        ]
-        return requires_tunnel(self._runs_local(), configs, shared.values())
-
     @contextlib.asynccontextmanager
     async def shared_tools(self):
-        servers = self.taskset.toolsets(self.taskset.config)
-        if not servers:
-            yield {}
-            return
-        async with serve_shared(servers, harness_is_local=self._runs_local()) as shared:
+        """Start the task class's `shared` tool servers once for the eval
+        (`Task.toolsets` is a classmethod, so no task instance is needed)."""
+        toolsets = [
+            toolset
+            for toolset in self._task_cls.toolsets(self.taskset.config.task)
+            if toolset.config.shared and not toolset.config.url
+        ]
+        async with serve_shared(toolsets) as shared:
             yield shared

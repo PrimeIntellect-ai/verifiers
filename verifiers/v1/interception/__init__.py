@@ -1,8 +1,5 @@
-from collections.abc import AsyncIterator, Iterable
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import TYPE_CHECKING
-
-from pydantic_config import BaseConfig
 
 from verifiers.v1.configs.interception import (
     BaseInterceptionConfig,
@@ -17,51 +14,22 @@ from verifiers.v1.interception.pool import (
     StaticInterceptionPool,
 )
 from verifiers.v1.interception.server import InterceptionServer
-from verifiers.v1.runtimes import Runtime, runtime_is_local
+from verifiers.v1.runtimes import Runtime
 from verifiers.v1.session import RolloutSession
-
-if TYPE_CHECKING:
-    from verifiers.v1.mcp import SharedToolServer
-
-
-def requires_tunnel(
-    harness_is_local: bool,
-    server_configs: Iterable[BaseConfig] = (),
-    shared: "Iterable[SharedToolServer]" = (),
-) -> bool:
-    """Whether the interception must be exposed via a tunnel — some consumer is off the
-    host network: the harness itself, a live `shared` server in a remote runtime, or a
-    tool server config placing one there (each reaches the `/state` channel from
-    its own runtime). Skipped as non-consumers: a `colocated` server (shares the
-    harness's runtime, covered by `harness_is_local`), a config-`url` server (external —
-    it connects out), and an `external` shared server (outside the state machinery
-    entirely). False means every consumer reaches the server at localhost."""
-    if not harness_is_local:
-        return True
-    if any(not s.external and not s.local for s in shared):
-        return True
-    for config in server_configs:
-        if getattr(config, "url", None) or config.colocated:
-            continue
-        if not runtime_is_local(config.runtime):
-            return True
-    return False
 
 
 def make_interception(
-    config: InterceptionConfig,
-    *,
-    requires_tunnel: bool,
-    state_service_secrets: tuple[str, ...] = (),
+    config: InterceptionConfig, *, requires_tunnel: bool
 ) -> Interception:
     """The interception for a config, picked by type (the host-side counterpart to
     `make_backend`). With `requires_tunnel`, each server is exposed through its configured
-    tunnel; otherwise it remains on host loopback. The caller computes this requirement."""
+    tunnel; otherwise it remains on host loopback. Only a remote harness needs the
+    tunnel: every tool server off the evaluator sits beside a remote harness."""
     if isinstance(config, InterceptionServerConfig):
-        return InterceptionServer(config, requires_tunnel, state_service_secrets)
+        return InterceptionServer(config, requires_tunnel)
     if isinstance(config, StaticInterceptionPoolConfig):
-        return StaticInterceptionPool(config, requires_tunnel, state_service_secrets)
-    return ElasticInterceptionPool(config, requires_tunnel, state_service_secrets)
+        return StaticInterceptionPool(config, requires_tunnel)
+    return ElasticInterceptionPool(config, requires_tunnel)
 
 
 @asynccontextmanager
@@ -69,8 +37,6 @@ async def serve_interception(
     interception: Interception | None,
     runtime: Runtime,
     session: RolloutSession,
-    servers: list,
-    shared_tools: "dict[str, SharedToolServer]",
 ) -> AsyncIterator[Slot]:
     """A slot on the shared interception when one was injected (its owner keeps the
     lifecycle), else on a per-rollout `InterceptionServer` owned — brought up and torn
@@ -79,17 +45,7 @@ async def serve_interception(
         async with interception.acquire(session) as slot:
             yield slot
         return
-    tunneled = requires_tunnel(
-        runtime.is_local,
-        [server.config for server in servers],
-        shared_tools.values(),
-    )
-    server = InterceptionServer(
-        requires_tunnel=tunneled,
-        state_service_secrets=tuple(
-            tool.state_secret for tool in shared_tools.values() if tool.state_secret
-        ),
-    )
+    server = InterceptionServer(requires_tunnel=not runtime.is_local)
     async with server, server.acquire(session) as slot:
         yield slot
 
@@ -106,6 +62,5 @@ __all__ = [
     "StaticInterceptionPool",
     "StaticInterceptionPoolConfig",
     "make_interception",
-    "requires_tunnel",
     "serve_interception",
 ]

@@ -26,7 +26,7 @@ An environment has one or multiple agents and defines the control flow among the
 
 ## Toolset
 
-A set of tools defined by the taskset that are installed as MCP servers into the harnesses that support them.
+A set of tools defined by a task that are installed as MCP servers into the harnesses that support them, started per rollout or shared by the eval.
 
 ## Trace
 

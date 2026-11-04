@@ -1,12 +1,12 @@
 from verifiers.v1.mcp.launch import (
     SharedToolServer,
-    serve,
+    join_shared_lans,
+    launch_tools,
     serve_shared,
     serve_tools,
 )
 from verifiers.v1.mcp.server import ServerBase
 from verifiers.v1.mcp.toolset import (
-    SharedToolsetConfig,
     Toolset,
     ToolsetConfig,
     ToolsetTimeoutConfig,
@@ -15,11 +15,11 @@ from verifiers.v1.mcp.toolset import (
 __all__ = [
     "ServerBase",
     "SharedToolServer",
-    "SharedToolsetConfig",
     "Toolset",
     "ToolsetConfig",
     "ToolsetTimeoutConfig",
-    "serve",
+    "join_shared_lans",
+    "launch_tools",
     "serve_shared",
     "serve_tools",
 ]

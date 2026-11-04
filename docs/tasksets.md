@@ -246,7 +246,7 @@ When a task requires custom tools beyond what the harness provides natively, bun
 DATABASE = None
 
 
-class SearchToolset(vf.Toolset[vf.SharedToolsetConfig]):
+class SearchToolset(vf.Toolset[vf.ToolsetConfig]):
     TOOL_PREFIX = "search"
 
     @vf.tool
@@ -255,29 +255,31 @@ class SearchToolset(vf.Toolset[vf.SharedToolsetConfig]):
         return DATABASE.search(text)
 
 
-class SearchConfig(vf.TasksetConfig):
-    tools: vf.SharedToolsetConfig = vf.SharedToolsetConfig()
+class SearchTaskConfig(vf.TaskConfig):
+    tools: vf.ToolsetConfig = vf.ToolsetConfig(shared=True)
 
 
-class SearchTaskset(vf.Taskset[vf.Task, SearchConfig]):
+class SearchTask(vf.Task[vf.TaskData, vf.State, SearchTaskConfig]):
     @classmethod
-    def toolsets(cls, config: SearchConfig) -> list[vf.Toolset]:
+    def toolsets(cls, config: SearchTaskConfig) -> list[vf.Toolset]:
         return [SearchToolset(config.tools)]
 ```
 
-Tools defined on `Taskset.toolsets(config)` run in a server shared across a worker's rollouts and take a `vf.SharedToolsetConfig`. When each rollout needs its own isolated tool server, define `Task.toolsets(config)` on the task class instead and store a `vf.ToolsetConfig` on your `TaskConfig`.
+Each server starts once per rollout by default. With `shared = true`, one server serves every rollout of the eval, which suits a server with an expensive `setup()`, such as one that builds an index. Flip it per eval with `--taskset.task.tools.shared`.
 
-A toolset's config controls where the MCP server runs:
+A toolset's config also controls where the MCP server runs:
 
-- **Host subprocess (default)** — launches the server as a local subprocess with its own filesystem.
-- **`colocated = true`** (per-task toolsets only) — runs the tool server inside the agent's own runtime container so tools share the agent's filesystem directly.
-- **`service = "<name>"`** (per-task toolsets on Prime) — runs the tool server inside a named native VM from the task's `ServicesSpec`. The harness reaches it over the rollout's private network by its LAN hostname.
-- **`runtime = { type = "docker", ... }`** — runs the tool server in its own dedicated container.
+- **Evaluator subprocess (default)** — launches the server as a local subprocess on the evaluator.
+- **`runtime = { type = "docker", ... }`** — runs the server in a local container of its own.
+- **`runtime = { type = "prime", ... }`** — runs the server on a Prime VM of its own, which joins the Prime workspace over a private LAN, under its own egress policy (see [runtimes](runtimes.md#deployment-and-services)).
+- **`service = "<name>"`** — runs the server inside one of the task's services. The harness reaches it by the service's name on the deployment's network.
 - **`url = "https://.../mcp"`** — connects to an already-running streamable-HTTP MCP server instead of launching one.
+
+A server on the evaluator or in a local container is reached directly from a local workspace, and through the interception from a Prime workspace. A Prime VM needs a Prime workspace. Tool servers never run inside the agent's workspace.
 
 A launched server has `timeout.startup` seconds (600 by default) to start serving. Raise it for a server that builds a large index in `setup()`, or set it to `None` to wait indefinitely.
 
-For local or containerized servers, put the `Toolset` subclass in a server module that calls `SearchToolset.run()` under `if __name__ == "__main__":`. On startup, the server runs `await self.setup()`, then `await self.setup_task(task)` (for per-task servers, receiving the rollout's `TaskData`), and finally `self.register(mcp)`. Shared servers skip `setup_task`, so keep shared indexes or clients on `self` during `setup()` and store per-rollout state in `self.state`.
+For local or containerized servers, put the `Toolset` subclass in a server module that calls `SearchToolset.run()` under `if __name__ == "__main__":`. On startup, the server runs `await self.setup()`, then `await self.setup_task(task)` (for per-rollout servers, receiving the rollout's `TaskData`), and finally `self.register(mcp)`. Shared servers skip `setup_task`, so keep shared indexes or clients on `self` during `setup()` and store per-rollout state in `self.state`. A per-rollout server on the evaluator or in a local container starts as soon as the rollout opens, while the workspace boots and the task and harness set up, so a slow `setup_task` costs no extra time unless it outlasts them; it cannot rely on the workspace or on `Task.setup`.
 
 ### Stateful tools
 
