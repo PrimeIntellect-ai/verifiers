@@ -72,3 +72,9 @@ max_turn_tokens = 4096
 skip_on_truncated = true
 skip_on_timeout = true
 ```
+
+## Retries and checkpoints
+
+`[env.agent.retries]` sets a retry budget per error type: `rules` are checked in order, and the first rule where all fields match sets the budget for that error; unmatched errors use the top-level `max_retries` budget.
+
+Rollout checkpointing (`[env.agent.checkpoint]`) is on by default: the agent snapshots the box as model turns go upstream, and a retry restores the newest snapshot and continues the trace from there. It needs a runtime that takes snapshots (prime) and a harness that supports it (`SUPPORTS_FILESYSTEM_CHECKPOINTS`). Elsewhere the agent logs a warning once, and each retry starts a fresh attempt from the beginning. `interval` sets how often it snapshots, `keep` which snapshots stay while the rollout runs (`"last"`, `"all"`, or every k-th), and `after` whether the kept ones are deleted (`"delete"`) or kept (`"keep"`) when the run is final. Set `--no-env.agent.checkpoint` to turn it off.

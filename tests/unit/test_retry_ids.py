@@ -33,7 +33,11 @@ async def test_agent_retries_keep_the_trace_id(monkeypatch):
     minted: list[vf.Trace] = []
 
     class FakeRollout:
+        runtime = None
+
         def __init__(self, *, on_trace, trace_id, attempt, **_):
+            self.rewound_checkpoints: list[str] = []
+            self.deleted_checkpoints: set[str] = set()
             self.trace = make_trace(id=trace_id, attempt=attempt)
             on_trace(self.trace)
 
