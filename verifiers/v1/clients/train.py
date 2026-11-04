@@ -219,7 +219,10 @@ def _has_multimodal_content(messages) -> bool:
         content = getattr(message, "content", None)
         if not isinstance(content, list):
             continue
-        if any(getattr(part, "type", None) == "image_url" for part in content):
+        if any(
+            getattr(part, "type", None) in ("image_url", "video_url")
+            for part in content
+        ):
             return True
     return False
 

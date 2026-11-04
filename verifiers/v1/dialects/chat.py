@@ -62,7 +62,14 @@ class ModdedChatCompletion(ChatCompletion):
 FINISH_REASONS = frozenset({"stop", "length", "tool_calls"})
 # Client tools return calls to the harness; every other type may execute at the provider.
 _CLIENT_TOOL_TYPES = ("function", "custom")
-_SAFE_CONTENT_TYPES = ("text", "refusal", "input_audio", "image_url", "file")
+_SAFE_CONTENT_TYPES = (
+    "text",
+    "refusal",
+    "input_audio",
+    "image_url",
+    "video_url",
+    "file",
+)
 
 
 class ChatRequestFilter(RequestFilter):
@@ -85,6 +92,11 @@ class ChatRequestFilter(RequestFilter):
             url = image.get("url") if isinstance(image, dict) else image
             if self.blocked_url(url):
                 return f"{path}.image_url.url"
+        if kind == "video_url":
+            video = value.get("video_url") or {}
+            url = video.get("url") if isinstance(video, dict) else video
+            if self.blocked_url(url):
+                return f"{path}.video_url.url"
         if kind == "file":
             file = value.get("file")
             if not isinstance(file, dict):
@@ -132,7 +144,7 @@ def reasoning_text(data: Mapping[str, Any]) -> str | None:
 
 def parse_message(raw: dict) -> Message:
     """An OpenAI chat request message dict -> a typed Message. User/system bodies keep their
-    image parts (multimodal ingress); assistant bodies flatten to text."""
+    image and video parts (multimodal ingress); assistant bodies flatten to text."""
     role = raw.get("role")
     content = raw.get("content")
     if role == "system":
