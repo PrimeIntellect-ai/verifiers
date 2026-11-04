@@ -171,7 +171,9 @@ class RLMHarnessConfig(HarnessConfig):
 _USER_PYTHON = (
     'IFS=:; for d in $PATH; do for n in python3 python; do p="$d/$n"; '
     '[ -x "$p" ] && "$p" -c "import sys; raise SystemExit(sys.version_info < (3, 10))" '
-    '>/dev/null 2>&1 && { printf %s "$p"; exit 0; }; done; done; exit 1'
+    '>/dev/null 2>&1 && "$p" -c "import os, sys; '
+    'sys.stdout.write(os.path.realpath(sys.executable))" 2>/dev/null && exit 0; '
+    "done; done; exit 1"
 )
 USER_PYTHON_FALLBACK = "3.12"
 """What `uv tool install --python` gets when the user can run no Python 3.10+: uv
@@ -183,7 +185,14 @@ async def user_python(runtime: Runtime) -> str:
     (run as root) would otherwise choose for itself. Root's first `python3` can be
     one the agent cannot run: CyberStrike's langgraph-checkpoint-isolation-defensive
     puts /opt/rk/bin first, a venv on uv's Python 3.13 under root's 0700 home, and the
-    `auditor` agent's `rlm` failed with "Permission denied" before turn 1."""
+    `auditor` agent's `rlm` failed with "Permission denied" before turn 1.
+
+    The answer is the interpreter's real path, not the PATH entry: uv records the
+    directory it was given as the venv's home and finds the standard library from
+    there. CyberStrike's multi-cwe-document-portal-defensive links
+    /usr/local/bin/python to Debian's /usr/bin/python3 beside a python.org build's
+    /usr/local/lib/python3.13, so a venv on the link ran Debian's binary on the other
+    build's C extensions and `rlm --acp` segfaulted before turn 1 (2026-11-04)."""
     result = await runtime.run(["sh", "-c", _USER_PYTHON], {})
     if result.exit_code == 0 and result.stdout.strip():
         return result.stdout.strip()

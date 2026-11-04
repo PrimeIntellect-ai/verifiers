@@ -37,7 +37,17 @@ def test_the_probe_skips_a_python_the_user_cannot_run(tmp_path):
     (denied / "python3").chmod(0o755)
     os.symlink(sys.executable, usable / "python3")
     result = probe(f"{denied}:{usable}")
-    assert (result.returncode, result.stdout.decode()) == (0, f"{usable}/python3")
+    real = os.path.realpath(sys.executable)
+    assert (result.returncode, result.stdout.decode()) == (0, real)
+
+
+def test_the_probe_names_the_interpreter_not_a_link_to_it(tmp_path):
+    """uv takes the path it is given as the venv's home: a link from another prefix
+    (multi-cwe-document-portal-defensive's /usr/local/bin/python -> /usr/bin/python3)
+    made the venv load that prefix's standard library, and rlm segfaulted."""
+    os.symlink(sys.executable, tmp_path / "python")
+    result = probe(str(tmp_path))
+    assert result.stdout.decode() == os.path.realpath(sys.executable)
 
 
 def test_the_probe_finds_nothing_without_a_usable_python(tmp_path):
