@@ -83,10 +83,16 @@ class CodeGolfEnv(vf.Env[CodeGolfEnvConfig]):
         """The sibling comparison: among the PASSING attempts, the shortest source
         wins `most_concise` and the lowest recorded latency wins `fastest` (ties
         share); a failed attempt earns nothing on either."""
-        passing = [t for t in episode.traces if t.metrics.get("passed")]
+        passing = [
+            t
+            for t in episode.traces
+            if not t.is_format_violation and t.metrics.get("passed")
+        ]
         min_length = min((len(extract_program(t)) for t in passing), default=None)
         min_latency = min((t.metrics["latency"] for t in passing), default=None)
         for trace in episode.traces:
+            if trace.is_format_violation:
+                continue
             if trace not in passing:
                 trace.record_reward("most_concise", 0.0, 0.5)
                 trace.record_reward("fastest", 0.0, 0.5)
