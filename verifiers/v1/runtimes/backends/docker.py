@@ -43,7 +43,7 @@ from verifiers.v1.runtimes.base import (
     RuntimeProcess,
     parse_gpu,
 )
-from verifiers.v1.runtimes.egress import EgressProxy, NetworkPolicy, is_loopback_host
+from verifiers.v1.runtimes.egress import EgressProxy, HostCallback, NetworkPolicy
 from verifiers.v1.runtimes.runtime import Runtime
 from verifiers.v1.utils.aio import run_shielded
 from verifiers.v1.utils.artifacts import validate_runtime_mounts
@@ -435,11 +435,6 @@ class DockerBackend(RuntimeBackend):
             self.config.image,
         )
 
-    def host_url(self, url: str) -> str:
-        if self._proxy is None or not is_loopback_host(urlsplit(url).hostname or ""):
-            return url
-        return self._proxy.callback_url(url, self._proxy_host)
-
     async def expose(self, port: int) -> str:
         if port != SERVICE_PORT or self._service_url is None:
             raise SandboxError(f"docker publishes only port {SERVICE_PORT}, not {port}")
@@ -457,6 +452,9 @@ class DockerBackend(RuntimeBackend):
             await self._proxy.start(listener=await self._container_listener())
         else:
             await self._proxy.start("127.0.0.1")
+        self.host_callback = HostCallback(
+            self._proxy_host, self._proxy.port, self._proxy._callback_key
+        )
 
     async def _container_listener(self) -> socket.socket:
         """Create the proxy listener inside the container netns, serviced here."""

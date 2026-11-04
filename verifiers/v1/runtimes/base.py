@@ -22,6 +22,7 @@ from verifiers.v1.errors import SandboxError
 from verifiers.v1.utils.aio import run_shielded
 
 if TYPE_CHECKING:
+    from verifiers.v1.runtimes.egress import HostCallback
     from verifiers.v1.runtimes.runtime import Runtime
 
 logger = logging.getLogger(__name__)
@@ -185,6 +186,7 @@ class RuntimeBackend(ABC):
     the host subprocess runtime overrides this with its per-user cache."""
 
     info: BaseRuntimeInfo
+    host_callback: HostCallback | None = None
 
     def __init__(self, name: str | None = None) -> None:
         self.name = name or f"vf-{uuid.uuid4().hex[:12]}"
@@ -329,7 +331,7 @@ class RuntimeBackend(ABC):
 
     def host_url(self, url: str) -> str:
         """The URL a program inside this runtime uses to reach a host-bound `url`."""
-        return url
+        return self.host_callback(url) if self.host_callback is not None else url
 
     async def prepare_setup(self) -> None:
         """Open egress for trusted setup when reusing a restricted runtime."""

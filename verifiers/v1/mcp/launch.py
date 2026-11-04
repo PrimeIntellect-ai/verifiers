@@ -40,6 +40,7 @@ from verifiers.v1.runtimes import (
     provision_backend,
 )
 from verifiers.v1.runtimes.base import _ENSURE_UV, SERVICE_PORT
+from verifiers.v1.runtimes.egress import HostCallback
 from verifiers.v1.runtimes.private_network import (
     WORKSPACE_TAG,
     keepalive,
@@ -252,7 +253,9 @@ async def _cached_package(src: Path) -> tuple[str, bytes]:
             del _PACKAGE_BUILD_STATES[key]
 
 
-async def _install_in_sandbox(server: ServerBase, runtime: Runtime) -> str:
+async def _install_in_sandbox(server: ServerBase, service_runtime: Runtime) -> str:
+    # Service images may give their user a readable but root-owned working directory.
+    runtime = service_runtime.with_user(None)
     # Prime VMs mount /tmp as a small tmpfs, while the runtime workdir lives on
     # the VM's root disk. Keep source, build scratch space, and uv's cache on the
     # durable runtime filesystem so ordinary dependency installs cannot exhaust
@@ -269,6 +272,7 @@ async def _install_in_sandbox(server: ServerBase, runtime: Runtime) -> str:
     temp = str(PurePosixPath(workdir) / ".vf-tmp")
     cache = str(PurePosixPath(workdir) / ".vf-uv-cache")
     venv = str(PurePosixPath(workdir) / ".vf-venv")
+    python_dir = str(PurePosixPath(workdir) / ".vf-python")
     root_q, temp_q, cache_q, venv_q = map(shlex.quote, (root, temp, cache, venv))
     # Servers in the same service share one environment. Serialize installs and
     # only remember sources after a successful install.
@@ -285,6 +289,8 @@ async def _install_in_sandbox(server: ServerBase, runtime: Runtime) -> str:
                 f"export TMPDIR={temp_q} UV_CACHE_DIR={cache_q}; "
                 'export PATH="$HOME/.local/bin:$PATH"; '
             )
+            if service_runtime.user is not None:
+                setup += f"export UV_PYTHON_INSTALL_DIR={shlex.quote(python_dir)}; "
             if not runtime.backend.cache.mcp_sources:
                 # Failed installs can leave the venv behind; retain it when retrying.
                 setup += f"{_ENSURE_UV}; uv venv --allow-existing {venv_q}; "
@@ -301,6 +307,20 @@ async def _install_in_sandbox(server: ServerBase, runtime: Runtime) -> str:
                     f"{(result.stderr or result.stdout).strip()[-2000:]}"
                 )
             runtime.backend.cache.mcp_sources.update(pending)
+        if service_runtime.user is not None:
+            # Keep uv and any downloaded Python outside root's private home.
+            python_q = shlex.quote(python_dir)
+            share = (
+                'set -e; export PATH="$HOME/.local/bin:$PATH"; '
+                f'cp "$(command -v uv)" {venv_q}/bin/uv; chmod -R a+rX {venv_q}; '
+                f"[ ! -d {python_q} ] || chmod -R a+rX {python_q}"
+            )
+            result = await run_shielded(runtime.run(["sh", "-c", share], {}))
+            if result.exit_code != 0:
+                raise ToolsetError(
+                    f"server {server.server_name!r} could not be shared with "
+                    f"{service_runtime.user!r}: {(result.stderr or result.stdout).strip()[-2000:]}"
+                )
     return f"{venv}/bin/python"
 
 
@@ -373,12 +393,17 @@ async def serve_in_runtime(
     command = [python, "-m", type(server).__module__]
     if runtime.type != "subprocess":
         # Providers may invoke uv after the install shell exits, so preserve its PATH.
+        path = "$HOME/.local/bin:$PATH"
+        if runtime.user is not None:
+            path = f"{PurePosixPath(python).parent}:{path}"
         command = [
             "sh",
             "-c",
-            f'export PATH="$HOME/.local/bin:$PATH"; exec {shlex.join(command)}',
+            f'export PATH="{path}"; exec {shlex.join(command)}',
         ]
     log = f"vf_tool_{server.server_name}.log"
+    if runtime.user is not None:
+        log = f"/tmp/vf_tool_{server.server_name}-{uuid.uuid4().hex[:8]}.log"
     loop = asyncio.get_running_loop()
     # Servers without a toolset config, such as custom `ServerBase` subclasses, keep the default.
     timeouts = (
@@ -555,6 +580,7 @@ class SharedToolServer:
     external: bool = False
     network_id: str | None = None
     lan_url: str | None = None
+    host_callback: HostCallback | None = None
     definition: tuple[str, str, str] = ("", "", "")
     state_secret: str = field(default="", repr=False)
 
@@ -647,6 +673,7 @@ async def serve_shared(
                     else None,
                     definition=definition,
                     state_secret=state_secret,
+                    host_callback=served.runtime.backend.host_callback,
                 )
             logger.info("shared tool server '%s': %s", name, servers[name].url)
 
@@ -666,6 +693,8 @@ def _shared_url_for_rollout(
     if not state_base or not server.state_secret:
         return visible_url
     state_url = f"{state_base.rstrip('/')}/state"
+    if server.host_callback is not None:
+        state_url = server.host_callback(state_url)
     parts = urlsplit(visible_url)
     query = dict(parse_qsl(parts.query))
     query[STATE_URL_PARAM] = state_url
