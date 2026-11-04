@@ -26,7 +26,6 @@ import tarfile
 import tempfile
 import time
 from collections.abc import Iterator
-from functools import lru_cache
 from pathlib import Path, PurePosixPath
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
@@ -160,6 +159,7 @@ class HarborData(TaskData):
     name, and description. The remaining fields mirror Harbor metadata.
     """
 
+    """Require provider-delegated cgroup-v2 agent and scorer scopes."""
     keywords: list[str] = Field(default_factory=list)
     authors: list[Author] = Field(default_factory=list)
     difficulty: str | None = None
@@ -167,6 +167,8 @@ class HarborData(TaskData):
     tags: list[str] = Field(default_factory=list)
     task_dir: str = ""
     """Host path to the task dir; used to stage tests/ to verify."""
+    verifiers_process_scope: bool = False
+    """Require a delegated cgroup-v2 boundary for the complete agent workload."""
     upload_environment: bool = False
     """Whether to stage environment/ into the workdir."""
     env: dict[str, str] = Field(default_factory=dict)
@@ -436,6 +438,13 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
             if self.scoring.network is None:
                 await runtime.set_network(NetworkPolicyConfig())
             if not self.verifier_staged:
+                if self.data.verifiers_process_scope:
+                    scope = runtime.backend.cache.process_scope
+                    if scope is None:
+                        raise TaskError(
+                            "verification requires a prepared workload scope"
+                        )
+                    await scope.command("freeze", "agent")
                 await self.stage_tests(runtime)
         return await self.run_verifier(runtime, trace)
 
@@ -445,6 +454,11 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
         # By absolute path, in the runtime's configured workdir: Harbor execs the
         # script the same way, and scripts do grade the agent's work at `$PWD`.
         # The reward file is authoritative even when the script exits nonzero.
+        if self.data.verifiers_process_scope:
+            scope = runtime.backend.cache.process_scope
+            if scope is None:
+                raise TaskError("verification requires a prepared workload scope")
+            await scope.command("freeze", "agent")
         async with scoring_phase(trace, "verifier_execution"):
             result = await runtime.run(
                 ["bash", "/tests/test.sh"], resolve_env(self.scoring.env or {})
@@ -753,6 +767,13 @@ def resolve_image(
     return None
 
 
+def _process_scope_flag(metadata: dict) -> bool:
+    enabled = metadata.get("verifiers_process_scope", False)
+    if not isinstance(enabled, bool):
+        raise TypeError("metadata.verifiers_process_scope must be a boolean")
+    return enabled
+
+
 def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborData:
     # Harbor is optional, so imports stay deferred until a Harbor task loads.
     from harbor.environments.definition import should_upload_environment_dir
@@ -844,6 +865,7 @@ def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborD
         category=meta.get("category"),
         tags=meta.get("tags", []),
         task_dir=str(task_dir),
+        verifiers_process_scope=_process_scope_flag(meta),
         upload_environment=upload_environment,
         skills=[{"runtime": environment.skills_dir}] if environment.skills_dir else [],
         **environment.model_dump(
@@ -977,9 +999,6 @@ def parse_verifier_environment(
     )
 
 
-# Downloaded task directories are immutable. Cache the current task's environment
-# and tests to bound memory while reusing both archives across rollouts.
-@lru_cache(maxsize=2)
 def make_tar(directory: Path) -> bytes:
     buffer = io.BytesIO()
     with tarfile.open(fileobj=buffer, mode="w:gz") as tar:

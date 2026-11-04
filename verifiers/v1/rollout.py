@@ -7,7 +7,7 @@ import math
 import time
 from collections.abc import Awaitable, Callable
 from contextlib import AsyncExitStack
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from urllib.parse import urlsplit
 
 from verifiers.v1.clients import ModelContext
@@ -42,11 +42,13 @@ from verifiers.v1.runtimes import (
     make_backend,
 )
 from verifiers.v1.runtimes.private_network import tool_vms
+from verifiers.v1.runtimes.process_scope import ProcessScope
 from verifiers.v1.session import RolloutLimits, RolloutSession, hook_boundary
 from verifiers.v1.state import state_cls
 from verifiers.v1.task import Task
 from verifiers.v1.trace import AgentInfo, Trace, TraceTask
 from verifiers.v1.types import Messages, Request, Response, SystemMessage, UserMessage
+from verifiers.v1.utils.aio import run_shielded
 from verifiers.v1.utils.artifacts import collect
 from verifiers.v1.utils.decorators import discover_decorated, invoke
 
@@ -188,6 +190,7 @@ class Rollout:
         self._deployment_started = False
         self._closed = False
         self._harness_cleaned = False
+        self._scope_closed = False
         self._endpoint: str | None = None
         self._urls: dict[str, str] = {}
         self._harness_session: HarnessSession | None = None
@@ -356,7 +359,35 @@ class Rollout:
                     self._agent_runtime = await resolve_agent_runtime(
                         runtime, self.task.data.agent_user
                     )
-                    await self.harness.setup(self._agent_runtime)
+                    if getattr(self.task.data, "verifiers_process_scope", False):
+                        if self.harness.config.name != "rlm":
+                            raise SandboxError(
+                                "workload scopes require the RLM harness"
+                            )
+                        if self._scoring_policy.mode != "shared":
+                            raise SandboxError("workload scopes require shared grading")
+                        if self._borrowed_runtime is not None:
+                            raise SandboxError(
+                                "workload scopes require an owned runtime"
+                            )
+                        if self._agent_runtime.user is None:
+                            raise SandboxError(
+                                "workload scopes require a non-root agent"
+                            )
+                        scope = await ProcessScope.prepare(runtime)
+                        runtime.backend.cache.process_scope = scope
+                        runtime = self.runtime = runtime.with_env(
+                            {**runtime.env, **scope.env}
+                        )
+                        self._agent_runtime = self._agent_runtime.with_env(
+                            {**self._agent_runtime.env, **scope.env}
+                        )
+                        await self.harness.setup(self._agent_runtime)
+                        self._agent_runtime = replace(
+                            self._agent_runtime, process_scope=scope
+                        )
+                    else:
+                        await self.harness.setup(self._agent_runtime)
                 # `base_url` is the interception server's reachable URL for this rollout.
                 # The harness reaches the model at `{base_url}/v1`; tool servers reach this
                 # rollout's `/state` + `/task` at `base_url` — it's universally reachable
@@ -669,9 +700,8 @@ class Rollout:
         (a cancellation mid-setup, a lifetime bug raised to the caller) means the
         driver will never reach `close()`. Safe after a partial `close()`."""
         self._closed = True
-        if self._harness_session is not None:
-            with contextlib.suppress(Exception):
-                await self._harness_session.close()
+        with contextlib.suppress(Exception):
+            await self._close_harness_session()
         with contextlib.suppress(Exception):
             await self._stack.aclose()
         if self.runtime is not None:
@@ -700,27 +730,55 @@ class Rollout:
             }
             logger.warning("harness scoring failed", exc_info=True)
 
-    async def _close_harness(self) -> None:
-        """Close the harness session, then the tool servers and interception. Idempotent.
+    async def _close_harness_session(self) -> None:
+        if getattr(self, "_scope_closed", False):
+            return
 
-        Generation has already completed, so a teardown failure is logged rather than
-        raised: it must not discard an otherwise scoreable (or already scored)
-        trajectory."""
-        if self._harness_session is not None:
+        async def close() -> None:
+            scope = (
+                self.runtime.backend.cache.process_scope
+                if self.runtime is not None
+                else None
+            )
             try:
-                await self._harness_session.close()
-            except Exception as error:
-                if is_sandbox_gone_error(error):
-                    logger.debug(
-                        "harness session already closed; sandbox is gone (rollout %s)",
-                        self.trace.id,
-                    )
-                else:
-                    logger.warning(
-                        "harness session close failed (rollout %s)",
-                        self.trace.id,
-                        exc_info=True,
-                    )
+                if scope is not None:
+                    await scope.finish_verification()
+                if self._harness_session is not None:
+                    await self._harness_session.close()
+            finally:
+                if scope is not None:
+                    await scope.kill_agent_after_close()
+                    self._scope_closed = True
+                    # Metrics/cleanup are trusted control work, not new agent work.
+                    if self._agent_runtime is not None:
+                        self._agent_runtime = replace(
+                            self._agent_runtime, process_scope=None
+                        )
+
+        await run_shielded(close())
+
+    async def _close_harness(self) -> None:
+        """Close the workload before tool teardown and trusted metric reads."""
+        try:
+            await self._close_harness_session()
+        except Exception as error:
+            if is_sandbox_gone_error(error):
+                logger.debug(
+                    "harness session already closed; sandbox is gone (rollout %s)",
+                    self.trace.id,
+                )
+            elif (
+                self.runtime is not None
+                and self.runtime.backend.cache.process_scope is not None
+            ):
+                # A failed scoped close cannot leave live writers behind for scoring.
+                raise
+            else:
+                logger.warning(
+                    "harness session close failed (rollout %s)",
+                    self.trace.id,
+                    exc_info=True,
+                )
         try:
             await self._stack.aclose()
         except Exception:
@@ -920,6 +978,9 @@ class Rollout:
                                     scoring_runtime = bind_scoring_env(
                                         runtime, self._scoring_policy
                                     )
+                                    scope = runtime.backend.cache.process_scope
+                                    if scope is not None:
+                                        await scope.command("freeze", "agent")
                                     async with scoring_phase(trace, "staging"):
                                         await invoke(
                                             self._scoring_task.stage_verifier,
@@ -979,9 +1040,8 @@ class Rollout:
         except Exception as e:  # noqa: BLE001 - finalize boundary records every rollout failure
             self.fail(e)
         finally:
-            if self._harness_session is not None:
-                with contextlib.suppress(Exception):
-                    await self._harness_session.close()
+            with contextlib.suppress(Exception):
+                await self._close_harness_session()
             with contextlib.suppress(Exception):
                 await self._stack.aclose()
             trace.is_completed = True

@@ -37,6 +37,7 @@ def _rollout() -> Rollout:
         info={"primary": "unchanged"},
     )
     rollout._harness_cleaned = False
+    rollout.runtime = None
     return rollout
 
 
@@ -132,3 +133,131 @@ async def test_cleanup_still_warns_for_unavailable_stream(caplog):
     assert records[0].exc_info is not None
     assert records[0].exc_info[0] is APIError
     assert rollout._harness_cleaned
+
+
+async def test_scoped_close_quiesces_before_metrics():
+    events = []
+    rollout = _rollout()
+
+    async def finish():
+        events.append("thaw")
+
+    async def command(*argv):
+        events.append(argv)
+
+    async def close():
+        events.append("close")
+
+    async def kill_agent():
+        await command("kill", "agent")
+
+    scope = SimpleNamespace(
+        finish_verification=finish, kill_agent_after_close=kill_agent
+    )
+    rollout.runtime = SimpleNamespace(
+        backend=SimpleNamespace(cache=SimpleNamespace(process_scope=scope))
+    )
+    rollout._agent_runtime = None
+    rollout._harness_session = SimpleNamespace(close=close)
+    await rollout._close_harness_session()
+    assert events == ["thaw", "close", ("kill", "agent")]
+
+
+async def test_scoped_close_kills_agent_if_handshake_fails():
+    import pytest
+
+    events = []
+    rollout = _rollout()
+
+    async def finish():
+        events.append("thaw")
+
+    async def command(*argv):
+        events.append(argv)
+
+    async def close():
+        raise RuntimeError("handshake failed")
+
+    async def kill_agent():
+        await command("kill", "agent")
+
+    scope = SimpleNamespace(
+        finish_verification=finish, kill_agent_after_close=kill_agent
+    )
+    rollout.runtime = SimpleNamespace(
+        backend=SimpleNamespace(cache=SimpleNamespace(process_scope=scope))
+    )
+    rollout._agent_runtime = None
+    rollout._harness_session = SimpleNamespace(close=close)
+    with pytest.raises(RuntimeError, match="handshake failed"):
+        await rollout._close_harness_session()
+    assert events == ["thaw", ("kill", "agent")]
+
+
+async def test_scoped_close_kills_agent_if_scorer_reset_fails():
+    import pytest
+
+    events = []
+    rollout = _rollout()
+
+    async def finish():
+        raise RuntimeError("scorer reset failed")
+
+    async def command(*argv):
+        events.append(argv)
+
+    async def close():
+        events.append("close")
+
+    async def kill_agent():
+        await command("kill", "agent")
+
+    scope = SimpleNamespace(
+        finish_verification=finish, kill_agent_after_close=kill_agent
+    )
+    rollout.runtime = SimpleNamespace(
+        backend=SimpleNamespace(cache=SimpleNamespace(process_scope=scope))
+    )
+    rollout._agent_runtime = None
+    rollout._harness_session = SimpleNamespace(close=close)
+    with pytest.raises(RuntimeError, match="scorer reset failed"):
+        await rollout._close_harness_session()
+    assert events == [("kill", "agent")]
+
+
+async def test_scoped_close_finishes_cleanup_before_reraising_cancellation():
+    import asyncio
+
+    import pytest
+
+    entered, release = asyncio.Event(), asyncio.Event()
+    events = []
+    rollout = _rollout()
+
+    async def finish():
+        events.append("thaw")
+
+    async def kill_agent():
+        events.append("kill")
+
+    async def close():
+        entered.set()
+        await release.wait()
+        events.append("close")
+
+    scope = SimpleNamespace(
+        finish_verification=finish, kill_agent_after_close=kill_agent
+    )
+    rollout.runtime = SimpleNamespace(
+        backend=SimpleNamespace(cache=SimpleNamespace(process_scope=scope))
+    )
+    rollout._agent_runtime = None
+    rollout._harness_session = SimpleNamespace(close=close)
+    task = asyncio.create_task(rollout._close_harness_session())
+    await entered.wait()
+    task.cancel()
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert events == ["thaw", "close", "kill"]
+    assert rollout._scope_closed

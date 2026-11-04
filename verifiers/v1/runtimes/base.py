@@ -22,6 +22,7 @@ from verifiers.v1.errors import SandboxError
 from verifiers.v1.utils.aio import run_shielded
 
 if TYPE_CHECKING:
+    from verifiers.v1.runtimes.process_scope import ProcessScope
     from verifiers.v1.runtimes.runtime import Runtime
 
 logger = logging.getLogger(__name__)
@@ -148,6 +149,7 @@ class RuntimeCache:
     uv_interpreters: dict[str, str] = field(default_factory=dict)
     uv_locks: dict[str, asyncio.Lock] = field(default_factory=dict)
     curl_ready: bool = False
+    process_scope: ProcessScope | None = None
     mcp_sources: set[str] = field(default_factory=set)
     mcp_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 

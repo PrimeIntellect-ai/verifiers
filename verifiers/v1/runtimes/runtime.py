@@ -10,7 +10,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import PurePosixPath
 from types import MappingProxyType
-from typing import Self
+from typing import TYPE_CHECKING, Self
 
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.errors import SandboxError
@@ -21,6 +21,9 @@ from verifiers.v1.runtimes.base import (
     RuntimeBackend,
     RuntimeProcess,
 )
+
+if TYPE_CHECKING:
+    from verifiers.v1.runtimes.process_scope import ProcessScope
 
 
 @dataclass(frozen=True, eq=False)
@@ -36,6 +39,7 @@ class Runtime:
     env: Mapping[str, str] = field(default_factory=dict)
     user: str | None = None
     home: str | None = None
+    process_scope: ProcessScope | None = None
 
     def __post_init__(self) -> None:
         if self.user is not None and not self.backend.SUPPORTS_USER_SWITCHING:
@@ -50,7 +54,12 @@ class Runtime:
         return replace(self, env=env)
 
     def with_user(self, user: str | None, home: str | None = None) -> Self:
-        return replace(self, user=user, home=home if user is not None else None)
+        return replace(
+            self,
+            user=user,
+            home=home if user is not None else None,
+            process_scope=self.process_scope if user is not None else None,
+        )
 
     def process_env(self, env: dict[str, str]) -> dict[str, str]:
         home = {} if self.home is None else {"HOME": self.home}
@@ -113,18 +122,30 @@ class Runtime:
 
     async def run(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
         """Run `argv` to completion and collect its output."""
-        return await self.backend.run(self, argv, env)
+        runtime = self
+        if self.process_scope is not None:
+            runtime, argv, env = self.process_scope.wrap(self, argv, env)
+        return await self.backend.run(runtime, argv, env)
 
     async def exec(self, argv: list[str], env: dict[str, str]) -> RuntimeProcess:
         """Start `argv` and return a handle that streams its stdio."""
-        return await self.backend.exec(self, argv, env)
+        runtime = self
+        if self.process_scope is not None:
+            runtime, argv, env = self.process_scope.wrap(self, argv, env)
+        return await self.backend.exec(runtime, argv, env)
 
     async def run_background(
         self, argv: list[str], env: dict[str, str], log: str
     ) -> None:
         """Start `argv` with its combined output in `log`, a path in the working
         directory, and return. The process runs until the runtime stops."""
-        await self.backend.run_background(self, argv, env, log)
+        runtime = self
+        if self.process_scope is not None:
+            # Open the log only after dropping privileges inside the workload scope.
+            argv = ["sh", "-c", 'exec "$@" > "$0" 2>&1 < /dev/null', log, *argv]
+            runtime, argv, env = self.process_scope.wrap(self, argv, env)
+            log = "/dev/null"
+        await self.backend.run_background(runtime, argv, env, log)
 
     async def write(self, path: str, data: bytes) -> None:
         await self.backend.write(self, path, data)
