@@ -142,6 +142,8 @@ class ProposerSolverEnv(vf.Env[ProposerSolverEnvConfig]):
 
     async def run(self, task: vf.Task, agents: vf.Agents) -> None:
         proposed = await agents.proposer.run(task)
+        if proposed.is_format_violation:
+            return
         solve_task = SolveTask.from_trace(proposed)
         async with asyncio.TaskGroup() as tg:
             for _ in range(self.config.n):
@@ -164,7 +166,8 @@ class ProposerSolverEnv(vf.Env[ProposerSolverEnvConfig]):
         for trace in episode.traces:
             if trace.agent.name == "proposer":
                 trace.record_metric("solve_rate", rate)
-                trace.record_reward("learnability", 4.0 * rate * (1.0 - rate))
+                if not trace.is_format_violation:
+                    trace.record_reward("learnability", 4.0 * rate * (1.0 - rate))
 
 
 class ProposerSolverTaskset(vf.Taskset[ProposeTask, vf.TasksetConfig]):
