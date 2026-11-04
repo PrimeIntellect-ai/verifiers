@@ -82,6 +82,8 @@ class PrimeAgentHarnessConfig(HarnessConfig):
 
     autonomous: bool = False
     """Enable Prime Agent's autonomous continuation loop."""
+    video_input: bool = False
+    """Declare video input for the model, so Prime Agent's `attach_video` sends clips to it."""
     # Over Responses it replays an earlier turn without its reasoning.
     dialect: Literal["chat_completions", "anthropic_messages"] = "chat_completions"
 
@@ -225,7 +227,11 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
                         {
                             "id": ctx.model,
                             "reasoning": reasoning,
-                            "input": ["text", "image"],
+                            "input": [
+                                "text",
+                                "image",
+                                *(["video"] if self.config.video_input else []),
+                            ],
                         }
                     ],
                 }
