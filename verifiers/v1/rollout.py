@@ -31,6 +31,7 @@ from verifiers.v1.grading import (
 from verifiers.v1.harness import Harness, HarnessSession
 from verifiers.v1.interception import Interception, serve_interception
 from verifiers.v1.mcp import SharedToolServer, serve_tools
+from verifiers.v1.mcp.launch import launch_tools
 from verifiers.v1.runtimes import (
     Runtime,
     RuntimeConfig,
@@ -42,6 +43,7 @@ from verifiers.v1.state import state_cls
 from verifiers.v1.task import Task
 from verifiers.v1.trace import AgentInfo, Trace, TraceTask
 from verifiers.v1.types import Messages, Request, Response, SystemMessage, UserMessage
+from verifiers.v1.utils.aio import background
 from verifiers.v1.utils.artifacts import collect
 from verifiers.v1.utils.decorators import discover_decorated, invoke
 
@@ -293,17 +295,41 @@ class Rollout:
                     )
                 async with boundary(ToolsetError, "building tool servers"):
                     toolsets = self.task.toolsets(self.task.config)
+                (
+                    base_url,
+                    model_secret,
+                    state_secret,
+                ) = await self._stack.enter_async_context(
+                    serve_interception(
+                        self._interception,
+                        runtime,
+                        self._session,
+                        toolsets,
+                        self._shared_tools,
+                    )
+                )
+                # Evaluator-local tools need no workspace files and can set up while
+                # the workspace boots and the task and harness prepare it.
+                launching = await self._stack.enter_async_context(
+                    background(
+                        launch_tools(
+                            toolsets, state_secret=state_secret, state_base=base_url
+                        )
+                    )
+                )
+                shared_networks: dict[str, list[str]] = {}
+                for server in self._shared_tools.values():
+                    if (
+                        server.network_id is not None
+                        and server.lan_url
+                        and (host := urlsplit(server.lan_url).hostname)
+                    ):
+                        shared_networks.setdefault(server.network_id, []).append(host)
                 spec = self.task.deployment_spec()
                 self.deployment = runtime.backend.deploy(
                     spec=spec,
                     tool_vms=tool_vms(toolsets, runtime.backend.config),
-                    shared_networks=tuple(
-                        dict.fromkeys(
-                            server.network_id
-                            for server in self._shared_tools.values()
-                            if server.network_id is not None
-                        )
-                    ),
+                    shared_networks=shared_networks,
                     env=runtime.env,
                     config=self._deployment_config,
                     borrowed_runtime=self._borrowed_runtime,
@@ -356,23 +382,6 @@ class Rollout:
                         runtime, self.task.data.agent_user
                     )
                     await self.harness.setup(self._agent_runtime)
-                # `base_url` is the interception server's reachable URL for this rollout.
-                # The harness reaches the model at `{base_url}/v1`; tool servers reach this
-                # rollout's `/state` + `/task` at `base_url` — it's universally reachable
-                # (the interception is exposed whenever any consumer is remote).
-                (
-                    base_url,
-                    model_secret,
-                    state_secret,
-                ) = await self._stack.enter_async_context(
-                    serve_interception(
-                        self._interception,
-                        runtime,
-                        self._session,
-                        toolsets,
-                        self._shared_tools,
-                    )
-                )
                 self._endpoint = runtime.host_url(f"{base_url.rstrip('/')}/v1")
                 self._secret = model_secret
                 services = (
@@ -393,6 +402,7 @@ class Rollout:
                         state_route=self.trace.id,
                         state_base=base_url,
                         deployment=self.deployment,
+                        local=await launching,
                     )
                 )
                 # Setup and service provisioning are complete. Apply the runtime's

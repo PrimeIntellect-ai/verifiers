@@ -23,7 +23,7 @@ from verifiers.v1.runtimes.base import (
     register,
 )
 from verifiers.v1.runtimes.compose import ComposeSpec
-from verifiers.v1.utils.aio import run_shielded
+from verifiers.v1.utils.aio import background, run_shielded
 
 logger = logging.getLogger(__name__)
 
@@ -82,7 +82,7 @@ class Deployment:
         *,
         spec: ComposeSpec | ServicesSpec | None = None,
         tool_vms: Mapping[str, PrimeConfig] | None = None,
-        shared_networks: tuple[str, ...] = (),
+        shared_networks: Mapping[str, list[str]] | None = None,
         env: dict[str, str] | None = None,
         config: DeploymentConfig | None = None,
         borrowed_runtime: Runtime | None = None,
@@ -92,7 +92,7 @@ class Deployment:
         self.tool_vms = dict(tool_vms or {})
         """Tool servers on Prime runtimes of their own, by server name, which join the
         workspace over the rollout's private network."""
-        self.shared_networks = shared_networks
+        self.shared_networks = dict(shared_networks or {})
         self.env = dict(env or {})
         self.config = config or DeploymentConfig()
         self.borrowed_runtime = borrowed_runtime
@@ -106,6 +106,7 @@ class Deployment:
         self.execution_backend: RuntimeBackend | None = None
         self._stack = AsyncExitStack()
         self._tools = AsyncExitStack()
+        self._shared_joins: list[asyncio.Future] = []
         self._owned: set[int] = set()
         self._close_task: asyncio.Task[None] | None = None
 
@@ -149,9 +150,15 @@ class Deployment:
                     "deployment strategy must bind harness and execution roles"
                 )
             if isinstance(self.harness_backend, PrimeBackend):
-                for network_id in self.shared_networks:
-                    await self._tools.enter_async_context(
-                        self.harness_backend.join_network(network_id, [WORKSPACE_TAG])
+                for network_id, hosts in self.shared_networks.items():
+                    self._shared_joins.append(
+                        await self._tools.enter_async_context(
+                            background(
+                                self.harness_backend.join_network(
+                                    network_id, [WORKSPACE_TAG], hosts=hosts
+                                )
+                            )
+                        )
                     )
             if self.tool_vms:
                 if overlap := self.tool_vms.keys() & self.target_backends.keys():
@@ -267,6 +274,9 @@ class Deployment:
     ) -> None:
         """Apply each target's execution policy: the harness's keeps `routes`, and a tool
         server's own VM keeps only `state_route`, its state channel."""
+        # Joining shared LANs overlaps task/harness setup, but the agent needs DNS
+        # and memberships ready before its first MCP connection.
+        await asyncio.gather(*self._shared_joins)
         await self._strategy.prepare_execution(self, routes, state_route)
         await asyncio.gather(
             *(

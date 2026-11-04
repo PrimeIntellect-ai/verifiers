@@ -8,6 +8,7 @@ import hmac
 import inspect
 import logging
 import os
+import resource
 from collections.abc import Callable
 from typing import TYPE_CHECKING, ClassVar, Generic, TypeVar
 from urllib.parse import parse_qs
@@ -29,6 +30,9 @@ logger = logging.getLogger(__name__)
 # State calls may cross a tunnel, so allow transient startup failures without hanging forever.
 STATE_TIMEOUT = 30.0  # seconds per request
 STATE_RETRIES = 4
+
+IDLE_CONNECTION_SECONDS = 300
+"""Keep connections open between model turns; clients expire theirs first."""
 
 
 async def _channel_request(
@@ -285,6 +289,7 @@ class ServerBase(Generic[ConfigT, StateT]):
 
     def _serve(self) -> None:
         import asyncio
+        import signal
         import socket
         from pathlib import Path
 
@@ -294,6 +299,10 @@ class ServerBase(Generic[ConfigT, StateT]):
         from verifiers import __version__
 
         _die_with_parent()
+        # Shared servers keep one idle connection per active rollout.
+        _, files = resource.getrlimit(resource.RLIMIT_NOFILE)
+        with contextlib.suppress(ValueError, OSError):
+            resource.setrlimit(resource.RLIMIT_NOFILE, (files, files))
         host = os.environ.get("MCP_HOST", "127.0.0.1")
         # Remote runtimes require their forwarded port; local servers let the OS choose. Report it
         # before setup so an expensive setup does not block port discovery.
@@ -358,7 +367,28 @@ class ServerBase(Generic[ConfigT, StateT]):
                         finally:
                             _request_query_params.reset(token)
 
-                    server = uvicorn.Server(uvicorn.Config(app, log_level="critical"))
+                    class Server(uvicorn.Server):
+                        # Return after shutdown so the surrounding exit stack releases
+                        # resources acquired by setup; uvicorn otherwise re-raises SIGTERM.
+                        @contextlib.contextmanager
+                        def capture_signals(self):
+                            handlers = {
+                                sig: signal.signal(sig, self.handle_exit)
+                                for sig in (signal.SIGINT, signal.SIGTERM)
+                            }
+                            try:
+                                yield
+                            finally:
+                                for sig, handler in handlers.items():
+                                    signal.signal(sig, handler)
+
+                    server = Server(
+                        uvicorn.Config(
+                            app,
+                            log_level="critical",
+                            timeout_keep_alive=IDLE_CONNECTION_SECONDS,
+                        )
+                    )
                     await server.serve(sockets=[sock])
             finally:
                 self._state_client = None

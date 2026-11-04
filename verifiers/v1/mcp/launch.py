@@ -38,6 +38,7 @@ from verifiers.v1.runtimes import (
     backend_cls,
     make_backend,
     provision_backend,
+    runtime_is_local,
 )
 from verifiers.v1.runtimes.base import _ENSURE_UV, SERVICE_PORT
 from verifiers.v1.runtimes.egress import HostCallback
@@ -87,7 +88,7 @@ while True:
     remaining = deadline - time.monotonic()
     if remaining <= 0:
         sys.exit(1)
-    time.sleep(min(1, remaining))
+    time.sleep(min(0.1, remaining))
 """
 
 
@@ -338,6 +339,7 @@ async def log_tail(runtime: Runtime, log: str, limit: int = 2000) -> str:
 async def _read_back_port(runtime: Runtime, path: str, deadline: float) -> int:
     """Poll the server's port file until the server writes it."""
     loop = asyncio.get_running_loop()
+    delay = 0.05
     while True:
         with contextlib.suppress(Exception):
             data = (await runtime.read(path)).decode().strip()
@@ -348,7 +350,8 @@ async def _read_back_port(runtime: Runtime, path: str, deadline: float) -> int:
             raise ToolsetError(
                 f"server did not report its port at {path} in its runtime"
             )
-        await asyncio.sleep(min(1, remaining))
+        await asyncio.sleep(min(delay, remaining))
+        delay = min(delay * 2, 1)
 
 
 async def serve_in_runtime(
@@ -567,6 +570,39 @@ async def serve(
         yield served.url
 
 
+@contextlib.asynccontextmanager
+async def launch_tools(
+    toolsets: list[Toolset], *, state_secret: str, state_base: str
+) -> AsyncIterator[dict[str, str]]:
+    """Start evaluator-local servers while the rollout provisions its workspace.
+
+    Their URLs are local to the evaluator; serve_tools makes them reachable from
+    the harness once its runtime is ready.
+    """
+    async with contextlib.AsyncExitStack() as stack:
+        try:
+            async with asyncio.TaskGroup() as group:
+                started = {
+                    toolset.server_name: group.create_task(
+                        stack.enter_async_context(
+                            _serve(
+                                toolset,
+                                state_secret=state_secret,
+                                state_base=state_base,
+                            )
+                        )
+                    )
+                    for toolset in toolsets
+                    if not toolset.config.shared
+                    and not toolset.config.url
+                    and toolset.config.service is None
+                    and runtime_is_local(toolset.config.runtime)
+                }
+        except ExceptionGroup as failed:
+            raise failed.exceptions[0]
+        yield {name: task.result().url for name, task in started.items()}
+
+
 @dataclass(frozen=True)
 class SharedToolServer:
     """Serializable connection details borrowed from a shared serving owner.
@@ -716,9 +752,11 @@ async def serve_tools(
     state_base: str | None = None,
     proxy_mcp: MCPProxy | None = None,
     deployment: Deployment | None = None,
+    local: dict[str, str] | None = None,
 ):
     """Resolve each declared server from its owner and yield the harness's MCP URLs."""
     urls: dict[str, str] = {}
+    local = local or {}
     names = [toolset.server_name for toolset in toolsets]
     if len(set(names)) != len(names):
         raise ToolsetError("duplicate tool server name in Task.toolsets")
@@ -755,6 +793,13 @@ async def serve_tools(
                 )
             elif cfg.url:
                 urls[name] = harness_runtime.host_url(cfg.url)
+            elif name in local:
+                url = local[name]
+                urls[name] = (
+                    harness_runtime.host_url(url)
+                    if harness_runtime.is_local
+                    else await stack.enter_async_context(proxy_mcp(url))
+                )
             else:
                 runtime, host = (
                     deployment.tool_target(toolset)
