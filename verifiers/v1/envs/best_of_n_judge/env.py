@@ -279,6 +279,8 @@ class BestOfNJudgeEnv(BestOfNEnv, vf.Env[BestOfNJudgeEnvConfig]):
             ]
         rankings = [run.result() for run in judged]
         for attempt in attempts:
+            if attempt.is_format_violation:
+                continue
             score = statistics.fmean(ranking[attempt.id] for ranking in rankings)
             if self.config.score.task_weight != 1.0:
                 for reward in attempt.rewards.values():
