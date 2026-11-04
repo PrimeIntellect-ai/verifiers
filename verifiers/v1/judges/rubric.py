@@ -16,6 +16,7 @@ from verifiers.v1.configs.judge import JudgeConfig
 from verifiers.v1.judge import Judge, JudgeView, judge_question, judge_response
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
+from verifiers.v1.types import ContentPart, Messages, TextContentPart, UserMessage
 
 CriterionWeight = Annotated[float, Field(ge=0, allow_inf_nan=False)]
 
@@ -281,7 +282,13 @@ class RubricJudge(Judge[RubricVerdicts, RubricJudgeConfig]):
         return load_criteria(self.config.path, self.config.weights)
 
     async def grade_batch(
-        self, task: TaskData, trace: Trace, batch: list[Criterion], **fields: str
+        self,
+        task: TaskData,
+        trace: Trace,
+        batch: list[Criterion],
+        *,
+        attachments: list[ContentPart] | None = None,
+        **fields: str,
     ) -> list[CriterionVerdict]:
         reference = ""
         if self.config.answer_field:
@@ -312,11 +319,20 @@ class RubricJudge(Judge[RubricVerdicts, RubricJudgeConfig]):
             "reference": reference,
             **fields,
         }
+        prompt = cast(str, self.build_messages(**fields))
+        if not self.config.structured_output:
+            prompt += JSON_SUFFIX
+        messages: str | Messages = (
+            [UserMessage(content=[TextContentPart(text=prompt), *attachments])]
+            if attachments
+            else prompt
+        )
         if self.config.structured_output:
-            result = await self.evaluate(trace=trace, **fields)
+            result = await self.complete(
+                messages, trace=trace, schema=self.schema, parse=self.parse
+            )
             verdicts = cast(RubricVerdicts, result.parsed).verdicts
         else:
-            messages = cast(str, self.build_messages(**fields)) + JSON_SUFFIX
             result = await self.complete(messages, trace=trace)
             obj = first_verdicts_object(result.text)
             if obj is None:

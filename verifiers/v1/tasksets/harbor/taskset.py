@@ -6,7 +6,7 @@ runtime the harness edited — or, when the task asks for it with
 touched, carrying only what the task declared — the rollout provisions and
 grades that box. A script takes precedence over a native ``judge.toml``.
 Scripts write ``/logs/verifier/reward.json`` or the legacy ``reward.txt``.
-Judge TOMLs load binary text rubrics into the native rubric judge.
+Judge TOMLs load binary rubrics into the native rubric judge.
 
 A pullable ``[environment].docker_image`` becomes ``TaskData.image``. Compose can build
 its workspace from ``environment/Dockerfile``. Single-container Dockerfile-only
@@ -18,9 +18,11 @@ or tests build definition, then fall back to the agent environment. Unsupported 
 """
 
 import asyncio
+import base64
 import hashlib
 import io
 import logging
+import mimetypes
 import shutil
 import subprocess
 import sys
@@ -32,7 +34,15 @@ from collections.abc import Iterator
 from functools import lru_cache
 from pathlib import Path, PurePosixPath
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SerializationInfo,
+    TypeAdapter,
+    ValidationError,
+    field_serializer,
+)
 
 from verifiers.v1.configs.judge import JudgeConfig
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
@@ -53,6 +63,12 @@ from verifiers.v1.state import State
 from verifiers.v1.task import Task, TaskData, TaskResources, TaskTimeout
 from verifiers.v1.taskset import Taskset
 from verifiers.v1.trace import Trace
+from verifiers.v1.types import (
+    ContentPart,
+    ImageUrlContentPart,
+    ImageUrlSource,
+    TextContentPart,
+)
 from verifiers.v1.utils.artifacts import (
     ARTIFACTS_DIR,
     MAX_ARTIFACT_BYTES,
@@ -87,6 +103,17 @@ class HarborTaskConfig(TaskConfig):
     None uses the authored model with Verifiers' default endpoint."""
     mcp_servers: list[dict] = Field(default_factory=list)
     """Task-declared connections, bound from HarborData during construction."""
+
+    @field_serializer("judge")
+    def _judge_overrides(
+        self, judge: JudgeConfig | None, info: SerializationInfo
+    ) -> dict | None:
+        # Unset fields must still inherit the authored TOML after a config roundtrip.
+        return (
+            judge.model_dump(mode=info.mode, exclude_unset=True)
+            if judge is not None
+            else None
+        )
 
 
 class HarborConfig(TasksetConfig):
@@ -461,12 +488,38 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
     ) -> float | dict[str, float]:
         script = await runtime.run(["test", "-f", "/tests/test.sh"], {})
         if script.exit_code:
+            layout = await runtime.run(
+                [
+                    "sh",
+                    "-c",
+                    (
+                        "test -f /tests/judge.toml && "
+                        "find -L /tests -type f \\( -name '*.toml' -o -name '*.py' \\) "
+                        "! -path /tests/judge.toml -print -quit"
+                    ),
+                ],
+                {},
+            )
+            if layout.exit_code:
+                raise TaskError(
+                    "Cannot inspect Harbor grader; expected /tests/test.sh or /tests/judge.toml: "
+                    + layout.stderr.strip()[-500:]
+                )
+            if layout.stdout.strip():
+                raise TaskError(
+                    f"Additional Harbor graders require test.sh: {layout.stdout.strip()}"
+                )
             raw = tomllib.loads(
                 (
                     await runtime.read("/tests/judge.toml", max_bytes=MAX_REWARD_BYTES)
                 ).decode()
             )
-            authored, entries = raw["judge"], raw["criterion"]
+            authored = {
+                "judge": "anthropic/claude-opus-5-5",
+                "timeout": 300,
+                **raw.get("judge", {}),
+            }
+            entries = raw["criterion"]
             if raw.keys() - {"judge", "criterion", "scoring"} or authored.keys() - {
                 "judge",
                 "prompt_template",
@@ -489,7 +542,9 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
                 )
             criteria = [
                 Criterion(
-                    name=c["name"], text=c["description"], weight=c.get("weight", 1.0)
+                    name=c.get("name", c["description"]),
+                    text=c["description"],
+                    weight=c.get("weight", 1.0),
                 )
                 for c in entries
             ]
@@ -500,17 +555,21 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
                 raise TaskError(
                     "Rubric criteria need unique names and positive total weight"
                 )
-            config = self.config.judge or JudgeConfig(model=authored["judge"])
-            settings = config.model_dump()
+            settings = (
+                self.config.judge.model_dump(exclude_unset=True)
+                if self.config.judge
+                else {}
+            )
             settings.update(
                 path=Path("/tests/judge.toml"),
-                name=config.name or "harbor",
+                model=settings.get("model", authored["judge"]),
+                name=settings.get("name") or "harbor",
                 view="last_reply",
                 sampling={"reasoning_effort": authored.get("reasoning_effort")}
-                | config.sampling.model_dump(exclude_unset=True),
+                | settings.get("sampling", {}),
             )
             judge = RubricJudge(RubricJudgeConfig(**settings))
-            if config.prompt is None and "prompt_template" in authored:
+            if judge.config.prompt is None and "prompt_template" in authored:
                 judge.prompt = (
                     await runtime.read(
                         str(PurePosixPath("/tests") / authored["prompt_template"]),
@@ -527,14 +586,35 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
                 "/logs/verifier/response.txt", trace.last_reply.encode()
             )
             files = []
+            attachments: list[ContentPart] = []
             for path in authored.get("files", []):
-                content = (
-                    await runtime.read(path, max_bytes=MAX_REWARD_BYTES)
-                ).decode()
-                files.append(f"File {path}:\n{content}")
-            async with asyncio.timeout(authored.get("timeout")):
+                content = await runtime.read(path, max_bytes=MAX_REWARD_BYTES)
+                mime = mimetypes.guess_type(path)[0] or ""
+                if mime.startswith("image/"):
+                    attachments.extend(
+                        [
+                            TextContentPart(text=f"File {path}:"),
+                            ImageUrlContentPart(
+                                image_url=ImageUrlSource(
+                                    url=f"data:{mime};base64,{base64.b64encode(content).decode()}"
+                                )
+                            ),
+                        ]
+                    )
+                else:
+                    try:
+                        files.append(f"File {path}:\n{content.decode()}")
+                    except UnicodeDecodeError as exc:
+                        raise TaskError(
+                            f"Judge input {path!r} must be UTF-8 text or an image"
+                        ) from exc
+            async with asyncio.timeout(authored["timeout"]):
                 verdicts = await judge.grade_batch(
-                    self.data, trace, criteria, files="\n\n".join(files)
+                    self.data,
+                    trace,
+                    criteria,
+                    attachments=attachments,
+                    files="\n\n".join(files),
                 )
             scores = score_verdicts(verdicts, criteria, "the rubric's")
             return {self.config.reward_key: weighted_score(scores, criteria)}
