@@ -929,7 +929,10 @@ def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborD
     from harbor.models.task.task import Task as HarborModelTask
     from harbor.models.task.verifier_mode import resolve_verifier_environment_definition
 
-    harbor_task = HarborModelTask(task_dir)
+    # Harbor's host-side verifier check only recognizes script entrypoints.
+    harbor_task = HarborModelTask(
+        task_dir, disable_verification=(task_dir / "tests/judge.toml").is_file()
+    )
     parsed = harbor_task.config
     if parsed.steps:
         raise ValueError(
