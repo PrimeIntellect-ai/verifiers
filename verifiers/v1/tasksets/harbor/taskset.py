@@ -41,7 +41,6 @@ from pydantic import (
     field_validator,
 )
 
-from verifiers.v1.configs.judge import JudgeConfig
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.configs.scoring import ScoringConfig
 from verifiers.v1.configs.task import TaskConfig
@@ -53,6 +52,7 @@ from verifiers.v1.runtimes.deployment import Deployment
 from verifiers.v1.state import State
 from verifiers.v1.task import Task, TaskData, TaskResources, TaskTimeout
 from verifiers.v1.taskset import Taskset
+from verifiers.v1.tasksets.harbor.judge import HarborJudgeConfig
 from verifiers.v1.trace import Trace
 from verifiers.v1.utils.artifacts import (
     ARTIFACTS_DIR,
@@ -83,7 +83,7 @@ REWARD_SCALAR_ADAPTER = TypeAdapter(
 class HarborTaskConfig(TaskConfig):
     reward_key: str = Field("reward", min_length=1)
     """Named verifier value used as the training reward; other values remain metrics."""
-    judge: JudgeConfig | None = None
+    judge: HarborJudgeConfig | None = None
     """Explicit native model, endpoint and sampling overrides for authored judges."""
     mcp_servers: list[dict] = Field(default_factory=list)
     """Task-declared connections, bound from HarborData during construction."""
@@ -99,7 +99,7 @@ class HarborTaskConfig(TaskConfig):
 
     @field_serializer("judge")
     def _judge_overrides(
-        self, judge: JudgeConfig | None, info: SerializationInfo
+        self, judge: HarborJudgeConfig | None, info: SerializationInfo
     ) -> dict | None:
         return (
             judge.model_dump(mode=info.mode, exclude_unset=True)

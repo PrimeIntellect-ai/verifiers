@@ -60,7 +60,7 @@ class NativeReward(Reward):
     """Run native callbacks through upstream retry, normalization and sample reduction."""
 
     @classmethod
-    def bind(cls, reward: Reward, call, *, files=()) -> "NativeReward":
+    def bind(cls, reward: Reward, call, *, files=(), selections=None) -> "NativeReward":
         bound = cls(
             criteria=reward.criteria,
             weights=reward.weights,
@@ -74,6 +74,7 @@ class NativeReward(Reward):
         )
         bound.call = call
         bound.files = files
+        bound.selections = selections
         return bound
 
     async def arun(self, sem=None):
@@ -91,15 +92,17 @@ class NativeReward(Reward):
         criteria, weights = self.criteria, self.weights
         agentic = isinstance(judge, AgentJudge)
         default_files = getattr(judge, "files", self.files)
-        files = tuple(
-            dict.fromkeys(f for c in criteria for f in (c.files or default_files))
-        )
+        selections = self.selections or {
+            c.name: c.files or default_files for c in criteria
+        }
+        files = tuple(dict.fromkeys(f for c in criteria for f in selections[c.name]))
         guarded = judge.guard != "off"
         if guarded:
             criteria, weights = _with_guard(criteria, weights, files)
+            selections = {**selections, criteria[-1].name: files}
         batches = (
             [
-                ([c], [weights[i]] if weights else None, c.files or default_files)
+                ([c], [weights[i]] if weights else None, selections[c.name])
                 for i, c in enumerate(criteria)
             ]
             if judge.mode == "individual"
@@ -121,7 +124,9 @@ class NativeReward(Reward):
             )
 
             async def run(retry_prompt, schema, label):
-                return await self.call(retry_prompt, schema, files)
+                return await self.call(
+                    retry_prompt, schema, files, batch, batch_weights
+                )
 
             # This upstream loop only needs a backend's run() method. LLM calls
             # raise provider errors directly and return output or a timeout, so
