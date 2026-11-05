@@ -289,6 +289,13 @@ answer was refused on every retry, 2026-10-28)."""
 
 SHORT_TEXT_CHARS = 300
 
+MAX_UNSENT_TAIL_REJECTIONS = 5
+"""Times one exchange's text reply is sent back for an unsent tail before it is served as
+it came: a model whose usage always counts more than the text it sends (Nemotron 3.5 on
+three ProgramBench turns, 2026-11-04: ~1,500 tokens past text and reasoning on every one
+of ~1,500 resamples over 20 hours) is not dropping a tool call, and the harness takes the
+text turn as it would any other."""
+
 TEXT_PIECE = re.compile(r"\w+|[^\w\s]")
 
 
@@ -344,7 +351,7 @@ def _reroute(session, ctx, reason: str):
     return ctx
 
 
-def _check_tool_call_leak(response: Response) -> None:
+def _check_tool_call_leak(response: Response, *, check_tail: bool = True) -> None:
     """Raise a transient `ProviderError` for a reply with no content and no tool calls
     whose tool calls the provider failed to parse: raw tool-call markup left in its
     reasoning, or output its usage counts past the reasoning that never arrived (GLM 5.3
@@ -356,7 +363,8 @@ def _check_tool_call_leak(response: Response) -> None:
         return
     content = (message.content or "").strip()
     if content:
-        _check_unsent_tail(response, content)
+        if check_tail:
+            _check_unsent_tail(response, content)
         return
     if any(markup in (message.reasoning_content or "") for markup in LEAKED_TOOL_CALL):
         raise model_error(
@@ -1041,6 +1049,7 @@ class InterceptionServer(Interception):
         # A streamed request is served whole once its turn commits: the eval client's
         # provider stream is read to the end, and the train client generates the response.
         relay = streaming and not isinstance(ctx.client, TrainClientConfig)
+        unsent_tails = 0
         req_hash = await _request_digest(raw)
         # Keep `read()` for aiohttp's size guard, then release its cache and our local
         # alias after parsing so the wire body does not survive model inference.
@@ -1255,7 +1264,15 @@ class InterceptionServer(Interception):
                     turn=turn,
                 )
                 events = None
-            _check_tool_call_leak(response)
+            nonlocal unsent_tails
+            try:
+                _check_tool_call_leak(
+                    response, check_tail=unsent_tails < MAX_UNSENT_TAIL_REJECTIONS
+                )
+            except ProviderError as e:
+                if "a turn with text and no tool call" in str(e):
+                    unsent_tails += 1
+                raise
             return response, events
 
         async def exchange(*, retrying: bool) -> tuple[Response, bytes | None]:
