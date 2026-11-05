@@ -64,7 +64,7 @@ from verifiers.v1.errors import (
 from verifiers.v1.interception.base import Interception, Slot
 from verifiers.v1.interception.tunnel import Tunnel, make_tunnel
 from verifiers.v1.interception.tunnel.base import HEALTH_PATH
-from verifiers.v1.semantic import ACPInfo, extract_acp_info
+from verifiers.v1.semantic import ACPInfo, extract_acp_info, routing_session_id
 from verifiers.v1.session import IdempotentRequest, ReplayResponse, RolloutSession
 from verifiers.v1.trace import Error, ModelCall, PolicyEvent, TimeSpan
 from verifiers.v1.types import FinishReason, Response, Usage
@@ -765,6 +765,9 @@ class InterceptionServer(Interception):
             acp, upstream_headers = extract_acp_info(request.headers)
         except ValueError as error:
             return _error_response(dialect, str(error), status=400)
+        upstream_session_id = routing_session_id(
+            session.trace.id, acp.agent_session_id if acp is not None else None
+        )
         logger.debug(
             "intercept %s: id=%s stream=%s retry=%s",
             request.path,
@@ -938,7 +941,7 @@ class InterceptionServer(Interception):
                             dialect,
                             body,
                             headers=upstream_headers,
-                            session_id=session.trace.id,
+                            session_id=upstream_session_id,
                         )
                         call_response, events = await _collect_stream(dialect, reply)
                     else:
@@ -947,7 +950,7 @@ class InterceptionServer(Interception):
                             body,
                             session.ctx.sampling,
                             headers=upstream_headers,
-                            session_id=session.trace.id,
+                            session_id=upstream_session_id,
                             turn=turn,
                         )
                     logger.debug(
