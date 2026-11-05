@@ -235,7 +235,13 @@ async def prepare_judge(
     if agentic:
         if task.judge_executor is None:
             raise TaskError("Agent judge TOMLs require the agentic-judge environment")
-        if task.config.judge is not None:
+        if (
+            task.config.judge is not None
+            and task.config.judge.model_copy(
+                update={"view": "last_reply", "include_hidden_reasoning": False}
+            )
+            != HarborJudgeConfig()
+        ):
             raise TaskError("Configure agent judge overrides on env.judge")
     else:
         if authored.mcp_servers:
@@ -318,18 +324,37 @@ async def prepare_judge(
         "reasoning_effort": reward.judge.reasoning_effort
     } | settings.get("sampling", {})
     judge = Judge(JudgeConfig(**settings))
-    response = trace.last_reply
+    exclude = {"provider_state"}
+    if not include_reasoning:
+        exclude.add("reasoning_content")
+    response = [TextContentPart(text=trace.last_reply)]
     if view == "full_trace":
-        exclude = {"provider_state"}
-        if not include_reasoning:
-            exclude.add("reasoning_content")
-        response = json.dumps(
-            [
-                m.model_dump(mode="json", exclude=exclude)
-                for m in (trace.branches[-1].messages if trace.branches else [])
-            ],
-            ensure_ascii=False,
-        )
+        response = [
+            TextContentPart(
+                text="Native trajectory: all recorded nodes, once each. Parent and "
+                "semantic_parents identify graph links; sampled marks model responses. "
+                "Each node's content follows its JSON metadata."
+            )
+        ]
+        for index, node in enumerate(trace.nodes):
+            metadata = node.model_dump(
+                mode="json",
+                include={"parent", "semantic_parents", "sampled", "message"},
+                exclude={"message": exclude | {"content"}},
+            )
+            response.append(
+                TextContentPart(
+                    text=json.dumps({"node": index, **metadata}, ensure_ascii=False)
+                )
+            )
+            # Keep observable images as native content, not base64 inside text.
+            content = node.message.content
+            if content:
+                response.extend(
+                    [TextContentPart(text=content)]
+                    if isinstance(content, str)
+                    else content
+                )
 
     async def call(prompt, schema, files, criteria, weights):
         response_format = getattr(reward.judge, "response_format", "none")
@@ -353,7 +378,7 @@ async def prepare_judge(
                 part.model_copy(update={"text": html.escape(part.text, quote=False)})
                 if isinstance(part, TextContentPart)
                 else part
-                for part in [TextContentPart(text=response), *inputs[tuple(files)]]
+                for part in [*response, *inputs[tuple(files)]]
             ],
             TextContentPart(text="</submission>"),
             *reference,
@@ -372,7 +397,8 @@ async def prepare_judge(
 
                     content.append(
                         TextContentPart(
-                            text=f"Write the JSON answer to {VERDICT_FILE}. Required schema:\n{json.dumps(schema)}"
+                            text=f"The native solver trace is at {TRACE_FILE}. "
+                            f"Write the JSON answer to {VERDICT_FILE}. Required schema:\n{json.dumps(schema)}"
                         )
                     )
                     judge_task = HarborAgentJudgeTask(
@@ -385,16 +411,7 @@ async def prepare_judge(
                         ),
                         files={
                             TRACE_FILE: trace.to_json(
-                                exclude={
-                                    "nodes": {
-                                        "__all__": {
-                                            "message": {
-                                                "reasoning_content",
-                                                "provider_state",
-                                            }
-                                        }
-                                    }
-                                }
+                                exclude={"nodes": {"__all__": {"message": exclude}}}
                             )
                         },
                         parse_verdict=lambda text: [

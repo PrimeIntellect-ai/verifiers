@@ -6,7 +6,9 @@ calls discover_plan, which imports task Python; the evaluator restores JSON data
 """
 
 import asyncio
+import json
 import tomllib
+from importlib import import_module
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from types import SimpleNamespace
@@ -67,6 +69,39 @@ class NativeBinary(Binary):
         if not valid:
             raise ValueError(f"Invalid binary judge answer: {raw!r}")
         return super().normalize(raw)
+
+
+def load_native_trajectory(path: str | Path) -> dict | None:
+    """Adapt a native v1 record in memory for RewardKit's three trajectory checks.
+
+    Count sampled assistant nodes once across the graph, excluding prompt-supplied
+    assistant examples and replay copies. Tool use means a recorded call, not a
+    successful execution; names include the provider namespace when present.
+    No ATIF file is read or written.
+    """
+    try:
+        data = json.loads(Path(path).read_text())
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict) or data.get("version") != 1 or "nodes" not in data:
+        raise ValueError("Trajectory criteria require a native Verifiers v1 trace")
+    return {
+        "steps": [
+            {
+                "source": "agent",
+                "tool_calls": [
+                    {
+                        "function_name": ".".join(
+                            p for p in (call.get("namespace"), call["name"]) if p
+                        )
+                    }
+                    for call in node["message"].get("tool_calls") or []
+                ],
+            }
+            for node in data["nodes"]
+            if node["sampled"] and node["message"]["role"] == "assistant"
+        ]
+    }
 
 
 def load_rubric(raw: dict, path: str, workspace: str, template: str | None) -> Reward:
@@ -182,6 +217,16 @@ class NativeReward(Reward):
 
 async def discover_plan(tests: str, workspace: str) -> dict:
     """Worker-only discovery/execution; export data, never Python code, to the host."""
+    # Keep upstream criterion registration, thresholds and turn-budget decay;
+    # only replace their file loader inside this disposable verifier worker.
+    for name in (
+        "trajectory_tool_used",
+        "trajectory_tool_not_used",
+        "trajectory_turn_count",
+    ):
+        import_module(
+            f"rewardkit.criteria.{name}"
+        ).load_trajectory = load_native_trajectory
     from rewardkit import runner
 
     # Authored evidence is data even when it is Python source. Discovery still
