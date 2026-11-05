@@ -235,7 +235,11 @@ def message_to_wire(message: Message) -> dict:
                         "input"
                         if call.type == "custom"
                         else "arguments": call.arguments,
-                        **({"content_type": call.content_type} if call.content_type else {}),
+                        **(
+                            {"content_type": call.content_type}
+                            if call.content_type
+                            else {}
+                        ),
                     },
                 }
                 for call in message.tool_calls
