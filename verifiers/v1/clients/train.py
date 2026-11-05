@@ -70,6 +70,7 @@ def serialize_completion(response: Response, model: str) -> dict:
                     "name": c.name,
                     **({"namespace": c.namespace} if c.namespace else {}),
                     "input" if c.type == "custom" else "arguments": c.arguments,
+                    **({"content_type": c.content_type} if c.content_type else {}),
                 },
             }
             for c in response.message.tool_calls

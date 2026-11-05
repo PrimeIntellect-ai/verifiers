@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 from renderers.base import ParsedToolCall
 
-from verifiers.v1.clients.train import response_from_generate
+from verifiers.v1.clients.train import response_from_generate, serialize_completion
 from verifiers.v1.dialects.chat import message_to_wire, parse_message
 
 
@@ -52,6 +52,12 @@ def test_tool_calls_keep_the_header_content_type_the_model_sampled():
     wire = message_to_wire(message)
     assert wire["tool_calls"][0]["function"]["content_type"] == "code"
     assert parse_message(wire).tool_calls[0].content_type == "code"
+    response = response_from_generate(
+        {"finish_reason": "tool_calls", "tool_calls": [call]}, "openai/gpt-oss-20b"
+    )
+    completion = serialize_completion(response, "openai/gpt-oss-20b")
+    served = completion["choices"][0]["message"]
+    assert parse_message(served).tool_calls[0].content_type == "code"
     # A call without one (other formats, or older renderers) writes none.
     plain = SimpleNamespace(
         raw=sampled,
@@ -65,3 +71,8 @@ def test_tool_calls_keep_the_header_content_type_the_model_sampled():
         {"finish_reason": "tool_calls", "tool_calls": [plain]}, "m"
     ).message
     assert "content_type" not in message_to_wire(message)["tool_calls"][0]["function"]
+    response = response_from_generate(
+        {"finish_reason": "tool_calls", "tool_calls": [plain]}, "m"
+    )
+    served = serialize_completion(response, "m")["choices"][0]["message"]
+    assert "content_type" not in served["tool_calls"][0]["function"]
