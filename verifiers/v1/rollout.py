@@ -558,6 +558,13 @@ class Rollout:
             return {"outcome": "promptRequired", "reason": "noRunningTurn"}
         return await self._harness_session.steer(message, message_id=message_id)
 
+    async def notify(self, message: str, *, message_id: str | None = None) -> dict:
+        if self._closed or not self.ok:
+            raise RuntimeError("this rollout is closed or stopped")
+        if self._harness_session is None:
+            return {"outcome": "promptRequired", "reason": "noRunningTurn"}
+        return await self._harness_session.notify(message, message_id=message_id)
+
     async def step(
         self,
         messages: Messages | None = None,

@@ -260,6 +260,20 @@ class Interaction:
         """
         return await self._send(message, message_id=message_id, mode="steer", wake=wake)
 
+    async def notify(self, message: str, *, message_id: str | None = None) -> dict:
+        """Show a notice to the running turn: it appears at the harness's next model
+        call, after the tool results, as a runtime notice rather than a user message.
+        It never starts or extends a turn. The receipt is ``{"outcome": "delivered"}``
+        once it is in context, or ``promptRequired`` when no turn runs or the turn
+        ended before its next model call. The harness must support notices."""
+        if not isinstance(message, str) or not message.strip():
+            raise ValueError("a notice requires nonempty text")
+        if self._closing or self._run.closed:
+            raise RuntimeError("this interaction is closed")
+        if self._over or not self._run.ok:
+            return {"outcome": "promptRequired", "reason": "interactionStopped"}
+        return await self._run.notify(message, message_id=message_id)
+
     async def _send(
         self,
         message: str,
