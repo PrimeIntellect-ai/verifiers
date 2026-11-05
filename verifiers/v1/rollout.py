@@ -310,7 +310,7 @@ class Rollout:
                 )
                 # Evaluator-local tools need no workspace files and can set up while
                 # the workspace boots and the task and harness prepare it.
-                launching = await self._stack.enter_async_context(
+                launching_local = await self._stack.enter_async_context(
                     background(
                         launch_tools(
                             toolsets, state_secret=state_secret, state_base=base_url
@@ -341,6 +341,18 @@ class Rollout:
                 finally:
                     # Providers may assign an ID before startup fails; retain it for diagnostics.
                     self.trace.agent.runtime = runtime.info.model_copy()
+                # Dedicated tool VMs have their own files and can initialize while
+                # the task and harness set up the workspace.
+                launching_dedicated = await self._stack.enter_async_context(
+                    background(
+                        launch_tools(
+                            toolsets,
+                            state_secret=state_secret,
+                            state_base=base_url,
+                            deployment=self.deployment,
+                        )
+                    )
+                )
                 if not self.task.scoring_deferred:
                     isolated = self._scoring_policy.mode == "isolated"
                     self._scoring_task = self.task.grading_task(
@@ -402,7 +414,10 @@ class Rollout:
                         state_route=self.trace.id,
                         state_base=base_url,
                         deployment=self.deployment,
-                        local=await launching,
+                        started={
+                            **(await launching_local),
+                            **(await launching_dedicated),
+                        },
                     )
                 )
                 # Setup and service provisioning are complete. Apply the runtime's

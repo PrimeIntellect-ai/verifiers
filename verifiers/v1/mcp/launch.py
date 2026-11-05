@@ -572,32 +572,43 @@ async def serve(
 
 @contextlib.asynccontextmanager
 async def launch_tools(
-    toolsets: list[Toolset], *, state_secret: str, state_base: str
+    toolsets: list[Toolset],
+    *,
+    state_secret: str,
+    state_base: str,
+    deployment: Deployment | None = None,
 ) -> AsyncIterator[dict[str, str]]:
-    """Start evaluator-local servers while the rollout provisions its workspace.
+    """Start independent servers while the rollout prepares its workspace.
 
-    Their URLs are local to the evaluator; serve_tools makes them reachable from
-    the harness once its runtime is ready.
+    Without a deployment, start evaluator-local servers; with one, start its
+    dedicated tool VMs' servers. Named services may need task setup first.
     """
     async with contextlib.AsyncExitStack() as stack:
         try:
             async with asyncio.TaskGroup() as group:
-                started = {
-                    toolset.server_name: group.create_task(
+                started = {}
+                for toolset in toolsets:
+                    cfg = toolset.config
+                    if cfg.shared or cfg.url or cfg.service is not None:
+                        continue
+                    runtime, host = None, None
+                    if deployment is not None:
+                        if toolset.server_name not in deployment.tool_vms:
+                            continue
+                        runtime, host = deployment.tool_target(toolset)
+                    elif not runtime_is_local(cfg.runtime):
+                        continue
+                    started[toolset.server_name] = group.create_task(
                         stack.enter_async_context(
                             _serve(
                                 toolset,
                                 state_secret=state_secret,
                                 state_base=state_base,
+                                runtime=runtime,
+                                host=host,
                             )
                         )
                     )
-                    for toolset in toolsets
-                    if not toolset.config.shared
-                    and not toolset.config.url
-                    and toolset.config.service is None
-                    and runtime_is_local(toolset.config.runtime)
-                }
         except ExceptionGroup as failed:
             raise failed.exceptions[0]
         yield {name: task.result().url for name, task in started.items()}
@@ -752,11 +763,11 @@ async def serve_tools(
     state_base: str | None = None,
     proxy_mcp: MCPProxy | None = None,
     deployment: Deployment | None = None,
-    local: dict[str, str] | None = None,
+    started: dict[str, str] | None = None,
 ):
     """Resolve each declared server from its owner and yield the harness's MCP URLs."""
     urls: dict[str, str] = {}
-    local = local or {}
+    started = started or {}
     names = [toolset.server_name for toolset in toolsets]
     if len(set(names)) != len(names):
         raise ToolsetError("duplicate tool server name in Task.toolsets")
@@ -793,11 +804,11 @@ async def serve_tools(
                 )
             elif cfg.url:
                 urls[name] = harness_runtime.host_url(cfg.url)
-            elif name in local:
-                url = local[name]
+            elif name in started:
+                url = started[name]
                 urls[name] = (
                     harness_runtime.host_url(url)
-                    if harness_runtime.is_local
+                    if harness_runtime.is_local or not runtime_is_local(cfg.runtime)
                     else await stack.enter_async_context(proxy_mcp(url))
                 )
             else:
