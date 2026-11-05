@@ -7,6 +7,7 @@ import time
 from collections.abc import Awaitable, Callable
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
+from typing import Any
 from urllib.parse import urlsplit
 
 from verifiers.v1.clients import ModelContext
@@ -29,7 +30,7 @@ from verifiers.v1.grading import (
     verifier_runtime,
 )
 from verifiers.v1.harness import Harness, HarnessSession
-from verifiers.v1.interception import Interception, serve_interception
+from verifiers.v1.interception import Interception, relay, serve_interception
 from verifiers.v1.mcp import SharedToolServer, serve_tools
 from verifiers.v1.runtimes import (
     Runtime,
@@ -187,6 +188,8 @@ class Rollout:
         self._closed = False
         self._harness_cleaned = False
         self._endpoint: str | None = None
+        self._relay: dict[str, Any] | None = None
+        """The relay the harness reaches the interception server through (`agent.relay`)."""
         self._urls: dict[str, str] = {}
         self._harness_session: HarnessSession | None = None
         self._agent_runtime: Runtime | None = None
@@ -372,7 +375,17 @@ class Rollout:
                         self._shared_tools,
                     )
                 )
-                self._endpoint = runtime.host_url(f"{base_url.rstrip('/')}/v1")
+                harness_base = runtime.host_url(base_url.rstrip("/"))
+                if self.trace.agent.config.relay and not runtime.is_local:
+                    harness_base = await self._start_relay(
+                        runtime,
+                        base_url,
+                        {model_secret: model_secret, state_secret: state_secret},
+                        movable=not toolsets
+                        and not self._shared_tools
+                        and self.deployment.spec is None,
+                    )
+                self._endpoint = f"{harness_base}/v1"
                 self._secret = model_secret
                 services = (
                     {
@@ -409,7 +422,11 @@ class Rollout:
                 await self.deployment.prepare_execution(
                     [
                         url
-                        for url in [self._endpoint, *self._urls.values()]
+                        for url in [
+                            self._endpoint,
+                            *self._urls.values(),
+                            *([base_url] if self._relay is not None else []),
+                        ]
                         if urlsplit(url).hostname not in internal
                     ],
                     state_route=f"{base_url.rstrip('/')}/state",
@@ -502,11 +519,7 @@ class Rollout:
                         )
                     if not self._session.stopped:
                         session_kwargs = (
-                            {
-                                "tool_interception_url": runtime.host_url(
-                                    f"{base_url.rstrip('/')}/tool"
-                                )
-                            }
+                            {"tool_interception_url": f"{harness_base}/tool"}
                             if self.harness.SUPPORTS_TOOL_INTERCEPTION
                             and (
                                 self._session.request_interceptors
@@ -550,6 +563,33 @@ class Rollout:
         self.trace.timing.agent.start = now
         self.trace.notify()
         return not self._session.stopped
+
+    async def _start_relay(
+        self,
+        runtime: Runtime,
+        base_url: str,
+        tokens: dict[str, str],
+        *,
+        movable: bool,
+    ) -> str:
+        """Start the relay the harness reaches the interception server through, and return
+        its base URL in the box. A `movable` rollout follows its server to a replacement
+        tunnel (`RolloutSession.reroute`)."""
+        upstream = base_url.rstrip("/")
+        self._relay = await relay.start(runtime, self.trace.id, upstream, tokens)
+        if movable:
+            relay_info = self._relay
+
+            async def reroute(new_base_url: str) -> None:
+                new_upstream = new_base_url.rstrip("/")
+                # A restricted box must reach the new tunnel host before the relay uses it.
+                await self.deployment.prepare_execution(
+                    [self._endpoint, new_upstream], state_route=f"{new_upstream}/state"
+                )
+                await relay.reroute(runtime, relay_info, new_upstream, tokens)
+
+            self._session.reroute = reroute
+        return self._relay["url"]
 
     async def steer(self, message: str, *, message_id: str | None = None) -> dict:
         if self._closed or not self.ok:

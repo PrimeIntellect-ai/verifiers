@@ -364,6 +364,7 @@ class InterceptionServer(Interception):
             make_tunnel(self.config.tunnel) if requires_tunnel else None
         )
         self.healthy = True
+        self._replacing: asyncio.Task | None = None
         if self.tunnel is not None:
             self.tunnel.on_gone = self._handle_tunnel_gone
         self.host = "127.0.0.1"
@@ -377,12 +378,70 @@ class InterceptionServer(Interception):
         return len(self.sessions)
 
     def _handle_tunnel_gone(self) -> None:
-        """Fail this server's rollouts and take no more: their URL will never work again."""
+        """Take no more rollouts: the URL will never work again. Rollouts that can move
+        (`RolloutSession.reroute`) follow this server to a new tunnel; the others fail."""
         self.healthy = False
         logger.error("interception unhealthy: url=%s", self.base_url)
+        movable = False
         for session in list(self.sessions.values()):
-            session.error = TunnelError("interception tunnel lost")
-            session.release()
+            if session.reroute is None:
+                session.error = TunnelError("interception tunnel lost")
+                session.release()
+            else:
+                movable = True
+        if movable and (self._replacing is None or self._replacing.done()):
+            self._replacing = asyncio.create_task(self._replace_tunnel())
+
+    async def _replace_tunnel(self) -> None:
+        """Open a new tunnel to this server and reroute its movable rollouts to it. A
+        rollout that does not move fails as on a lost tunnel."""
+        assert self.tunnel is not None
+        try:
+            base_url = await self.stack.enter_async_context(
+                self.tunnel.expose(self.port)
+            )
+        except TunnelError as error:
+            logger.error("interception tunnel replacement failed: %s", error)
+            base_url = None
+        else:
+            logger.warning(
+                "interception tunnel replaced: url=%s -> %s", self.base_url, base_url
+            )
+            self.base_url = base_url
+
+        async def move(session: RolloutSession) -> None:
+            try:
+                if base_url is None:
+                    raise TunnelError("interception tunnel lost")
+                assert session.reroute is not None
+                await session.reroute(base_url)
+            except Exception as error:  # noqa: BLE001 - one rollout's failure is its own
+                logger.warning(
+                    "rollout %s did not move to the new tunnel: %s",
+                    session.trace.id,
+                    error,
+                )
+                session.error = (
+                    error
+                    if isinstance(error, RolloutError)
+                    else TunnelError(f"interception tunnel lost: {error}")
+                )
+                session.release()
+
+        await asyncio.gather(
+            *(
+                move(session)
+                for session in list(self.sessions.values())
+                if session.reroute is not None and not session.released
+            )
+        )
+
+    async def stop(self) -> None:
+        if self._replacing is not None:
+            self._replacing.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await self._replacing
+        await super().stop()
 
     def _client(self, config: BaseClientConfig) -> Client:
         """The server-owned client for `config` — one per distinct endpoint config, shared

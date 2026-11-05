@@ -1,5 +1,6 @@
 """A prime tunnel is kept serving by the SDK through the service's health route. A tunnel
-that can never work again retires its server: its rollouts fail and the pools skip it."""
+that can never work again retires its server: the pools skip it, its rollouts that reach
+it through a relay move to a new tunnel, and the others fail."""
 
 import asyncio
 import logging
@@ -98,7 +99,9 @@ async def test_server_answers_the_health_route_on_a_connection_it_closes():
 def test_gone_tunnel_fails_the_servers_rollouts_and_refuses_new_ones():
     server = InterceptionServer()
     released = []
-    session = SimpleNamespace(error=None, release=lambda: released.append(True))
+    session = SimpleNamespace(
+        error=None, release=lambda: released.append(True), reroute=None
+    )
     server.sessions["secret"] = session
 
     server._handle_tunnel_gone()
@@ -107,6 +110,72 @@ def test_gone_tunnel_fails_the_servers_rollouts_and_refuses_new_ones():
     assert released == [True]
     with pytest.raises(TunnelError):
         server.register(SimpleNamespace())
+
+
+class ReplacingTunnel:
+    """Exposes the server at a new URL each time; `fail` makes the next expose fail."""
+
+    def __init__(self) -> None:
+        self.on_gone = None
+        self.urls = iter(["https://first.example", "https://second.example"])
+        self.fail = False
+
+    @asynccontextmanager
+    async def expose(self, port):
+        if self.fail:
+            raise TunnelError("no tunnel")
+        yield next(self.urls)
+
+
+def movable_session(trace_id: str, moved: list) -> SimpleNamespace:
+    async def reroute(url: str) -> None:
+        moved.append((trace_id, url))
+
+    session = SimpleNamespace(
+        error=None, released=False, reroute=reroute, trace=SimpleNamespace(id=trace_id)
+    )
+    session.release = lambda: setattr(session, "released", True)
+    return session
+
+
+async def test_gone_tunnel_moves_movable_rollouts_to_a_new_tunnel():
+    server = InterceptionServer()
+    server.tunnel = ReplacingTunnel()
+    server.base_url = await server.stack.enter_async_context(server.tunnel.expose(0))
+    moved: list = []
+    movable = movable_session("movable", moved)
+    stuck = SimpleNamespace(
+        error=None, released=False, reroute=None, trace=SimpleNamespace(id="stuck")
+    )
+    stuck.release = lambda: setattr(stuck, "released", True)
+    server.sessions.update(movable=movable, stuck=stuck)
+
+    server._handle_tunnel_gone()
+    await server._replacing
+
+    assert moved == [("movable", "https://second.example")]
+    assert server.base_url == "https://second.example"
+    assert movable.error is None and not movable.released
+    assert isinstance(stuck.error, TunnelError) and stuck.released
+    # The server still takes no new rollouts; the pools retire it once these leave.
+    assert not server.healthy
+    await server.stop()
+
+
+async def test_failed_replacement_fails_the_movable_rollouts():
+    server = InterceptionServer()
+    server.tunnel = ReplacingTunnel()
+    server.tunnel.fail = True
+    moved: list = []
+    movable = movable_session("movable", moved)
+    server.sessions["movable"] = movable
+
+    server._handle_tunnel_gone()
+    await server._replacing
+
+    assert moved == []
+    assert isinstance(movable.error, TunnelError) and movable.released
+    await server.stop()
 
 
 async def test_elastic_pool_replaces_a_retired_server_and_frees_it():
@@ -127,7 +196,9 @@ async def test_elastic_pool_replaces_a_retired_server_and_frees_it():
 async def test_elastic_pool_keeps_a_retired_server_until_its_rollouts_leave():
     async with ElasticInterceptionPool() as pool:
         retired = await pool._warm_task
-        retired.sessions["secret"] = SimpleNamespace(error=None, release=lambda: None)
+        retired.sessions["secret"] = SimpleNamespace(
+            error=None, release=lambda: None, reroute=None
+        )
         retired._handle_tunnel_gone()
 
         replacement = await pool._server()
