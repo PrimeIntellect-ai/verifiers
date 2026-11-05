@@ -8,7 +8,9 @@ import json
 import mimetypes
 import shlex
 import tomllib
+from dataclasses import dataclass
 from pathlib import PurePosixPath
+from typing import Any
 
 from openai import APITimeoutError
 
@@ -130,14 +132,46 @@ async def read_inputs(runtime, paths, *, cache=None, budget=None):
     return parts
 
 
-async def run_judge(task, runtime, trace, path="/tests/judge.toml"):
+@dataclass
+class PreparedJudge:
+    reward: Any
+    trace: Any
+    path: str
+    prefix: str
+    authored: dict
+
+    async def run(self) -> float:
+        await self.reward.arun()
+        value = self.reward.score
+        self.trace.record_metrics(
+            {f"{self.prefix}/{s.name}": s.value for s in self.reward.scores}
+        )
+        self.trace.info.setdefault("harbor_judge", {})[self.path] = {
+            **self.reward.to_detail_dict(value),
+            "authored": self.authored,
+        }
+        return value
+
+
+async def prepare_judge(
+    task,
+    runtime,
+    trace,
+    path="/tests/judge.toml",
+    *,
+    raw=None,
+    reward=None,
+    prefix="harbor",
+):
     from rewardkit.agents import AgentAttempt
     from rewardkit.models import AgentJudge, JudgeTomlConfig, LLMJudge
 
     from .rewardkit import NativeReward, load_rubric
 
-    raw = tomllib.loads((await runtime.read(path, max_bytes=MAX_BYTES)).decode())
+    if raw is None:
+        raw = tomllib.loads((await runtime.read(path, max_bytes=MAX_BYTES)).decode())
     config = JudgeTomlConfig.model_validate(raw)
+    trace.info["authored_judging"] = True
     authored = config.judge
     unsupported = {
         "version",
@@ -149,12 +183,13 @@ async def run_judge(task, runtime, trace, path="/tests/judge.toml"):
     if unsupported:
         raise TaskError(f"Unsupported native judge options: {sorted(unsupported)}")
     template = None
-    if authored.prompt_template is not None:
+    if reward is None and authored.prompt_template is not None:
         source = PurePosixPath(path).parent / authored.prompt_template
         if source.suffix not in {".txt", ".md"}:
             raise TaskError("judge prompt_template must be .txt or .md")
         template = (await runtime.read(str(source), max_bytes=MAX_BYTES)).decode()
-    reward = load_rubric(raw, path, runtime.config.workdir or "/app", template)
+    if reward is None:
+        reward = load_rubric(raw, path, runtime.config.workdir or "/app", template)
     agentic = isinstance(reward.judge, AgentJudge)
     if not agentic and not isinstance(reward.judge, LLMJudge):
         raise TaskError("JEV judging is not supported by the native judge backend")
@@ -202,7 +237,7 @@ async def run_judge(task, runtime, trace, path="/tests/judge.toml"):
     )
     if reward.judge.model is not None:
         settings.setdefault("model", reward.judge.model)
-    settings.setdefault("name", "harbor")
+    settings.setdefault("name", prefix)
     view = settings.pop("view", "last_reply")
     include_reasoning = settings.pop("include_hidden_reasoning", False)
     settings["sampling"] = {
@@ -326,11 +361,10 @@ async def run_judge(task, runtime, trace, path="/tests/judge.toml"):
     reward = NativeReward.bind(
         reward, call, files=authored.files, selections=selections
     )
-    await reward.arun()
-    trace.record_metrics(
-        {f"{judge.reward_name}/{score.name}": score.value for score in reward.scores}
+    return PreparedJudge(
+        reward,
+        trace,
+        path,
+        judge.reward_name,
+        config.model_dump(mode="json", by_alias=True),
     )
-    trace.info.setdefault("harbor_judge", {})[path] = reward.to_detail_dict(
-        reward.score
-    )
-    return reward.score
