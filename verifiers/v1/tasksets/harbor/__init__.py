@@ -1,3 +1,7 @@
+from verifiers.v1.tasksets.harbor.comparison import (
+    VerifierComparison,
+    compare_verifiers,
+)
 from verifiers.v1.tasksets.harbor.taskset import (
     HarborConfig,
     HarborData,
@@ -10,4 +14,6 @@ __all__ = [
     "HarborData",
     "HarborTask",
     "HarborTaskset",
+    "VerifierComparison",
+    "compare_verifiers",
 ]

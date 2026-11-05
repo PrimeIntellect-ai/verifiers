@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import logging
@@ -52,11 +53,11 @@ class Artifact(BaseModel):
             or not path.parts
             or ".." in path.parts
             or "\\" in value
-            or path.parts[0] == "manifest.json"
+            or path.parts[0] in {"manifest.json", ".archives"}
         ):
             raise ValueError(
                 "artifact destination must be a relative path without '..' or "
-                "backslashes, outside the reserved manifest.json path"
+                "backslashes, outside the reserved manifest.json and .archives paths"
             )
         return str(path)
 
@@ -224,7 +225,7 @@ def save_artifacts(
     *,
     workdir: str = "/",
 ) -> None:
-    """Save collected files at their declared destinations, with a manifest.
+    """Save collected files and their exact restoration archives, with a manifest.
 
     Unpack each validated archive in isolation before moving its files into the
     saved tree. Failed or conflicting entries are recorded without losing the
@@ -238,6 +239,7 @@ def save_artifacts(
     with tempfile.TemporaryDirectory(dir=directory.parent) as temporary:
         saved = Path(temporary) / "artifacts"
         saved.mkdir()
+        (saved / ".archives").mkdir()
         (saved / "manifest.json").touch()
         for source, archive in collected.items():
             artifact = declared.get(source, Artifact(source=source))
@@ -247,11 +249,17 @@ def save_artifacts(
                 "service": getattr(artifact, "service", "main"),
                 "destination": destination,
                 "status": "empty",
+                "archive": None,
             }
             manifest.append(entry)
             try:
                 _validate_restore(source, archive)
-                Artifact.validate_destination(artifact.destination)
+                if archive is not None:
+                    name = hashlib.sha256(source.encode()).hexdigest() + ".tar"
+                    entry["archive"] = f".archives/{name}"
+                    entry["sha256"] = hashlib.sha256(archive).hexdigest()
+                    (saved / entry["archive"]).write_bytes(archive)
+                Artifact.validate_destination(destination)
                 target = PurePosixPath(destination)
                 entry["destination"] = str(target)
                 if archive is None:
@@ -309,6 +317,42 @@ def save_artifacts(
         if directory.exists():
             shutil.rmtree(directory)
         saved.replace(directory)
+
+
+def load_artifacts(
+    directory: Path, *, max_bytes: int = MAX_ARTIFACT_BYTES
+) -> dict[str, bytes | None]:
+    """Load exact saved archives, independent of edits to the extracted preview.
+
+    Refuse missing or corrupt archives instead of grading an incomplete submission.
+    The manifest's digest identifies the captured input; archive validation still
+    treats those bytes as untrusted before restoring them in a verifier.
+    """
+    collected = {}
+    manifest = json.loads((directory / "manifest.json").read_text())
+    for entry in manifest:
+        source = entry["source"]
+        if source in collected or "archive" not in entry:
+            raise ValueError(f"no unique saved archive for artifact {source!r}")
+        archive = None
+        if entry["archive"] is not None:
+            expected = f".archives/{hashlib.sha256(source.encode()).hexdigest()}.tar"
+            if entry["archive"] != expected:
+                raise ValueError(f"invalid saved archive path for {source!r}")
+            path = directory / expected
+            if path.is_symlink() or path.parent.is_symlink():
+                raise ValueError(f"saved archive must not be a symlink: {source!r}")
+            if path.stat().st_size > max_bytes:
+                raise ValueError("saved artifacts exceed the byte limit")
+            archive = path.read_bytes()
+            max_bytes -= len(archive)
+            if max_bytes < 0 or hashlib.sha256(archive).hexdigest() != entry["sha256"]:
+                raise ValueError(f"saved archive failed integrity check: {source!r}")
+        elif entry["status"] != "empty":
+            raise ValueError(f"artifact was not saved: {source!r}")
+        _validate_restore(source, archive)
+        collected[source] = archive
+    return collected
 
 
 async def restore(runtime: Runtime, collected: dict[str, bytes | None]) -> None:

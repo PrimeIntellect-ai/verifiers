@@ -317,13 +317,13 @@ class Rollout:
                 if not self.task.scoring_deferred:
                     isolated = self._scoring_policy.mode == "isolated"
                     self._scoring_task = self.task.grading_task(
-                        runtime, scoring=self._scoring_policy
+                        runtime.config, scoring=self._scoring_policy
                     )
                     if isolated:
                         self._grader = self._scoring_task
                         self._grading_config = verifier_runtime(
                             self._grader,
-                            runtime,
+                            runtime.config,
                             # Solver task requirements must not override the verifier's.
                             self.trace.agent.config.runtime,
                             self._scoring_policy,
