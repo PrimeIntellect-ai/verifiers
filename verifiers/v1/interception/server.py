@@ -283,10 +283,12 @@ on Prime, 2026-10-25: a PostTrainBench turn whose reasoning ends in
 `</arg_value></tool_call>`, the agent writing out Qwen3's own `<tool_call>` template)."""
 
 
-DROPPED_OUTPUT_TOKENS = 3
+DROPPED_OUTPUT_TOKENS = 8
 """Completion tokens past the reasoning that an empty reply may account for (end-of-turn
 markers); more means the provider generated output it did not send. A model that ends its
-run with an empty reply counts at most 3 (Nemotron 3.5: 143 such endings, none past 3)."""
+run with an empty reply counts a few (Nemotron 3.5: 143 such endings, none past 3; GPT 6.1
+sol on Prime: exactly 4 for its empty final message, 830 of 830, 2026-11-05); the dropped
+tool calls this catches ran ~80 (GLM 5.3)."""
 
 
 UNSENT_TAIL_TOKENS = 16
