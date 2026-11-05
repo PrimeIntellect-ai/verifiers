@@ -30,13 +30,21 @@ from collections.abc import Iterator
 from functools import lru_cache
 from pathlib import Path, PurePosixPath
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    TypeAdapter,
+    ValidationError,
+    field_validator,
+)
 
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.configs.scoring import ScoringConfig
 from verifiers.v1.configs.task import TaskConfig
 from verifiers.v1.configs.taskset import TasksetConfig
 from verifiers.v1.errors import SandboxError, TaskError
+from verifiers.v1.mcp import ToolsetConfig
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.runtimes.deployment import Deployment
 from verifiers.v1.state import State
@@ -74,9 +82,20 @@ class HarborTaskConfig(TaskConfig):
     """Named verifier value used as the training reward; other values remain metrics."""
     mcp_servers: list[dict] = Field(default_factory=list)
     """Task-declared connections, bound from HarborData during construction."""
+    mcp: ToolsetConfig = ToolsetConfig(colocated=True)
+    """Native placement and execution settings for task-declared MCP tools."""
+
+    @field_validator("mcp")
+    @classmethod
+    def _mcp_placement(cls, config: ToolsetConfig) -> ToolsetConfig:
+        if not config.model_fields_set & {"colocated", "runtime", "service", "url"}:
+            config = config.model_copy(update={"colocated": True})
+        return config
 
 
 class HarborConfig(TasksetConfig):
+    path: Path | None = None
+    """Local task directory; skips downloading a dataset when set."""
     artifact_max_bytes: int = Field(MAX_ARTIFACT_BYTES, gt=0)
     """Total archive bytes collected from one solver, across all its services."""
     task: HarborTaskConfig = HarborTaskConfig()
@@ -211,7 +230,7 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
         from .toolset import HarborMCPConfig, HarborMCPToolset
 
         return super().toolsets(config) + [
-            HarborMCPToolset(HarborMCPConfig(colocated=True, server=server))
+            HarborMCPToolset(HarborMCPConfig(**config.mcp.model_dump(), server=server))
             for server in config.mcp_servers
         ]
 
@@ -656,7 +675,9 @@ def download_command(config: HarborConfig, output_dir: Path) -> list[str]:
 
 
 def dataset_dir(config: HarborConfig) -> Path:
-    """Download/cache a Hub or legacy-registry package selected by the config."""
+    """Use local tasks or download/cache the selected Harbor package."""
+    if config.path is not None:
+        return config.path.expanduser()
     out = cache_dir(config)
     if out.is_dir():
         return out

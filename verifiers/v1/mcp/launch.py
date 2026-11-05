@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
-from verifiers.v1.errors import ToolsetError
+from verifiers.v1.errors import SandboxError, TaskError, ToolsetError
 from verifiers.v1.interception.tunnel import PrimeTunnel
 from verifiers.v1.mcp.server import (
     STATE_ROUTE_PARAM,
@@ -357,6 +357,15 @@ async def serve_in_runtime(
     the OS choose and report the result through a file. With a state channel, the server fetches
     the current rollout task from the adjacent `/task` endpoint rather than a launch argument.
     """
+    if isinstance(server.config, BaseToolsetConfig) and server.config.user is not None:
+        from verifiers.v1.rollout import resolve_agent_runtime
+
+        try:
+            runtime = await resolve_agent_runtime(runtime, server.config.user)
+        except (TaskError, SandboxError) as exc:
+            raise ToolsetError(
+                f"tool server {server.server_name!r} cannot run as user {server.config.user!r}"
+            ) from exc
     # A shared server has a private service secret but no fixed state URL. Set
     # both controls explicitly so a subprocess cannot inherit stale host values.
     env = {
