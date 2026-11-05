@@ -117,6 +117,8 @@ class HarborTaskConfig(TaskConfig):
 
 
 class HarborConfig(TasksetConfig):
+    path: Path | None = None
+    """Local task directory; skips downloading a dataset when set."""
     artifact_max_bytes: int = Field(MAX_ARTIFACT_BYTES, gt=0)
     """Total archive bytes collected from one solver, across all its services."""
     task: HarborTaskConfig = HarborTaskConfig()
@@ -486,6 +488,10 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
     async def run_verifier(
         self, runtime: Runtime, trace: Trace
     ) -> float | dict[str, float]:
+        await runtime.write(
+            "/logs/verifier/instruction.md", self.data.prompt_text.encode()
+        )
+        await runtime.write("/logs/verifier/response.txt", trace.last_reply.encode())
         script = await runtime.run(["test", "-f", "/tests/test.sh"], {})
         if script.exit_code:
             layout = await runtime.run(
@@ -579,12 +585,6 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
             for field in ("question", "response", "criteria", "files"):
                 if "{" + field + "}" not in judge.prompt:
                     judge.prompt += f"\n\n{field.title()}:\n{{{field}}}"
-            await runtime.write(
-                "/logs/verifier/instruction.md", self.data.prompt_text.encode()
-            )
-            await runtime.write(
-                "/logs/verifier/response.txt", trace.last_reply.encode()
-            )
             files = []
             attachments: list[ContentPart] = []
             for path in authored.get("files", []):
@@ -829,7 +829,9 @@ def download_command(config: HarborConfig, output_dir: Path) -> list[str]:
 
 
 def dataset_dir(config: HarborConfig) -> Path:
-    """Download/cache a Hub or legacy-registry package selected by the config."""
+    """Use local tasks or download/cache the selected Harbor package."""
+    if config.path is not None:
+        return config.path.expanduser()
     out = cache_dir(config)
     if out.is_dir():
         return out
