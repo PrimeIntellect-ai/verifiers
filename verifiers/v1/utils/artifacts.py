@@ -80,13 +80,19 @@ def validate_artifact_mounts(config: RuntimeConfig, sources: Iterable[str]) -> N
                 )
 
 
-async def validate_runtime_mounts(runtime: Runtime, sources: Iterable[str]) -> None:
+async def validate_runtime_mounts(
+    runtime: Runtime, sources: Iterable[str], *, workspace: bool = False
+) -> None:
     """Reject relocated mounts and aliases that bypass lexical overlap checks."""
     mounts = getattr(runtime.config, "mounts", {})
     if not mounts:
         return
     sources = list(sources)
-    validate_artifact_mounts(runtime.config, sources)
+    if workspace:
+        if any(not mount.read_only for mount in mounts.values()):
+            raise ValueError("Independent workspaces require read-only mounts")
+    else:
+        validate_artifact_mounts(runtime.config, sources)
     workdir = PurePosixPath(getattr(runtime.config, "workdir", None) or "/")
     paths: set[str] = set()
     for source in [*mounts, ARTIFACTS_DIR, *sources]:
@@ -399,9 +405,13 @@ async def restore(runtime: Runtime, collected: dict[str, bytes | None]) -> None:
         )
 
 
-async def _tar_out(runtime: Runtime, artifact: Artifact, budget: int) -> bytes:
+async def _tar_out(
+    runtime: Runtime, artifact: Artifact, budget: int, *, literal_excludes: bool = False
+) -> bytes:
     path = f"/tmp/vf-artifact-{uuid.uuid4().hex}.tar"
     excludes = " ".join(f"--exclude={shlex.quote(p)}" for p in artifact.exclude)
+    if literal_excludes:
+        excludes = "--anchored --no-wildcards " + excludes
     try:
         # macOS tar otherwise adds AppleDouble sidecars next to a directory root.
         await _run(
@@ -459,7 +469,9 @@ def _drop_special_files(archive: bytes) -> tuple[bytes, list[str]]:
     return out.getvalue(), dropped
 
 
-def _validate_restore(root: str, archive: bytes | None) -> None:
+def _validate_restore(
+    root: str, archive: bytes | None, *, workspace: bool = False
+) -> None:
     """Reject archive content that could restore outside its declared root."""
     root_path = PurePosixPath(root)
     if (
@@ -525,6 +537,11 @@ def _validate_restore(root: str, archive: bytes | None) -> None:
                     raise RuntimeError(
                         f"artifact member {str(member_path)!r} traverses a symlink"
                     )
+            # Workspace copies stay in containers and preserve the image's links.
+            # Member paths and hard links remain confined; extraction cannot walk
+            # through a symlink. Saved submission artifacts keep stricter targets.
+            if workspace:
+                return
             relative_root = root_path.relative_to("/")
             for member_path, linkname in symlinks.items():
                 target = PurePosixPath(linkname)

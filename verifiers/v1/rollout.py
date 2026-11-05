@@ -5,7 +5,7 @@ import contextlib
 import logging
 import time
 from collections.abc import Awaitable, Callable
-from contextlib import AsyncExitStack
+from contextlib import AbstractAsyncContextManager, AsyncExitStack, nullcontext
 from dataclasses import dataclass
 from urllib.parse import urlsplit
 
@@ -115,8 +115,10 @@ class Rollout:
         on_trace: Callable[[Trace], None] | None = None,
         collect_artifacts: bool = False,
         on_score: Callable[[Trace, Runtime], Awaitable[None]] | None = None,
+        scoring_context: Callable[[Trace], AbstractAsyncContextManager] = nullcontext,
     ) -> None:
         self._on_score = on_score
+        self._scoring_context = scoring_context
         self.task = task
         self.harness = harness
         self.ctx = ctx
@@ -881,11 +883,15 @@ class Rollout:
                                     self._scoring_policy,
                                     self.deployment,
                                     on_score=self._on_score,
+                                    scoring_context=self._scoring_context,
                                     scoring_elapsed=scoring_elapsed,
                                 )
                             except TimeoutError:
                                 self.timeout("scoring")
-                                if self._on_score is not None:
+                                if (
+                                    self._on_score is not None
+                                    or self.task.judge_executor is not None
+                                ):
                                     self.fail(
                                         TaskError(
                                             "verification exceeded its scoring deadline"
@@ -895,7 +901,8 @@ class Rollout:
                             with (
                                 scoring_transaction(trace)
                                 if self._on_score is not None
-                                else contextlib.nullcontext()
+                                or self.task.judge_executor is not None
+                                else nullcontext()
                             ):
                                 scoring_runtime = runtime
                                 if not self._scoring_task.scoring_deferred:
@@ -916,14 +923,18 @@ class Rollout:
                                                 self._scoring_policy.network,
                                             )
                                         )
-                                await self._scoring_task.score(
-                                    trace, scoring_runtime, self.deployment
-                                )
-                                if self._on_score is not None:
-                                    await self._on_score(trace, scoring_runtime)
+                                async with self._scoring_context(trace):
+                                    await self._scoring_task.score(
+                                        trace, scoring_runtime, self.deployment
+                                    )
+                                    if self._on_score is not None:
+                                        await self._on_score(trace, scoring_runtime)
                 except TimeoutError:
                     self.timeout("scoring")
-                    if self._on_score is not None:
+                    if (
+                        self._on_score is not None
+                        or self.task.judge_executor is not None
+                    ):
                         self.fail(
                             TaskError("verification exceeded its scoring deadline")
                         )

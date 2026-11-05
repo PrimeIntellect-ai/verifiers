@@ -2,10 +2,12 @@
 
 import copy
 import hashlib
+import json
 import logging
 import time
 import uuid
 from collections.abc import Mapping
+from dataclasses import replace
 from pathlib import Path, PurePosixPath
 
 from pydantic import BaseModel, SerializeAsAny
@@ -158,6 +160,21 @@ async def compare_verifiers(
         )
         prepared[label] = task, policy, config, tests_hash
     for label, (task, policy, config, tests_hash) in prepared.items():
+        judge_traces = []
+        executor = task.judge_executor
+        if executor is not None:
+
+            async def capture_judge(
+                request, runtime, executor=executor, judge_traces=judge_traces
+            ):
+                verdict = await executor(
+                    replace(request, on_trace=judge_traces.append), runtime
+                )
+                if not any(verdict is child for child in judge_traces):
+                    judge_traces.append(verdict)
+                return verdict
+
+            task.judge_executor = capture_judge
         result = copy.deepcopy(original)
         result.id, result.run = uuid.uuid4().hex, None
         result.task = TraceTask(
@@ -185,6 +202,13 @@ async def compare_verifiers(
                 result.record_error(error)
         finally:
             result.timing.scoring.end = time.time()
+            result.info["agent_judge_traces"] = [
+                json.loads(child.to_json()) for child in judge_traces
+            ]
+            for child in judge_traces:
+                if child.usage is not None:
+                    result.extra_usage.append(child.usage)
+                result.extra_usage.extend(child.extra_usage)
         result.info["regrading"] = copy.deepcopy(provenance)
         result.state.artifacts = dict(original.state.artifacts)
         comparison.traces[label] = result

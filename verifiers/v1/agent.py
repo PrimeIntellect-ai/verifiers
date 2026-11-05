@@ -542,6 +542,8 @@ class Agent:
     per task; `run(runtime=...)` places the run into an existing box instead
     (borrowed boxes are never started or torn down by the run)."""
 
+    _scoring_context = staticmethod(nullcontext)
+
     def __init__(
         self,
         config: AgentConfig,
@@ -857,6 +859,7 @@ class Agent:
             "shared_tools": shared_tools,
             "interception": self._interception_for(run_is_local, task, shared_tools),
             "runtime": runtime,
+            "scoring_context": self._scoring_context,
         }
 
     @asynccontextmanager
@@ -935,41 +938,38 @@ class _EpisodeAgent(Agent):
 
         return watch
 
-    def _scoring_callback(self, callback):
-        if callback is None:
-            return None
-
-        async def score(trace, runtime):
-            parent_runs = _scoring_runs.get()
-            runs = []
-            token = _scoring_runs.set(runs)
-            # The solver is idle while an Env runs a judge. Release its permit
-            # so a one-agent episode can enter the nested judge rollout.
-            if self._gate is not None:
-                self._gate.release()
+    @asynccontextmanager
+    async def _scoring_context(self, trace):
+        parent_runs = _scoring_runs.get()
+        runs = []
+        token = _scoring_runs.set(runs)
+        # Task-authored and environment judges both run while the solver is idle.
+        # Release its permit so a one-agent episode can enter nested judge runs.
+        if self._gate is not None:
+            self._gate.release()
+        succeeded = False
+        try:
             try:
-                try:
-                    await callback(trace, runtime)
-                finally:
-                    _scoring_runs.reset(token)
-                    if self._gate is not None:
-                        await run_shielded(self._gate.acquire())
-            except BaseException:
-                for agent, child in runs:
-                    agent._completed[:] = [
-                        t for t in agent._completed if t is not child
-                    ]
-                    if agent._on_discard is not None:
-                        agent._on_discard(child)
-                    if child.usage is not None:
-                        trace.extra_usage.append(child.usage)
-                    trace.extra_usage.extend(child.extra_usage)
-                raise
-            else:
-                if parent_runs is not None:
-                    parent_runs.extend(runs)
-
-        return score
+                yield
+            finally:
+                _scoring_runs.reset(token)
+                if self._gate is not None:
+                    await run_shielded(self._gate.acquire())
+            succeeded = True
+        finally:
+            for agent, child in runs:
+                if succeeded and any(t is child for t in agent._completed):
+                    if parent_runs is not None:
+                        parent_runs.append((agent, child))
+                    continue
+                # Rollback discards every child. Accepted scoring still accounts
+                # for cancelled attempts and replaced native retries.
+                agent._completed[:] = [t for t in agent._completed if t is not child]
+                if agent._on_discard is not None:
+                    agent._on_discard(child)
+                if child.usage is not None:
+                    trace.extra_usage.append(child.usage)
+                trace.extra_usage.extend(child.extra_usage)
 
     async def run(
         self,
@@ -988,7 +988,7 @@ class _EpisodeAgent(Agent):
                 tools=tools if tools is not None else self._shared_for(task),
                 on_trace=self._watch(on_trace),
                 collect_artifacts=collect_artifacts,
-                on_score=self._scoring_callback(on_score),
+                on_score=on_score,
             )
         self._completed.append(trace)
         return trace
