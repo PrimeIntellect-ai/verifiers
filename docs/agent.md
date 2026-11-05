@@ -46,6 +46,18 @@ receipt = await interaction.send(
 
 For tasks that define an initial `prompt`, start the opening `turn()` before calling `send()`. Note that the returned receipt confirms whether the message was accepted for delivery, not that the agent has finished acting on it. Keep the `interaction` context open while the agent works, since exiting the block cancels outstanding deliveries and finishes the rollout.
 
+## A config for one run
+
+`agent.with_config(**update)` is a copy of the agent with config fields replaced, for what one run needs that its config cannot say ahead, such as a harness config naming a per-run credential or the runtime policy of a box the caller provisions. The copy keeps the agent's standing: inside an env, the copy of an episode's agent is still that episode's agent, and its traces join the episode. It starts un-entered and owns no interception server.
+
+```python
+async def run(self, task, agents):
+    harness = agents.solver.config.harness.model_copy(
+        update={"mcp_header_env": {"world": {"Authorization": per_run_variable}}}
+    )
+    await agents.solver.with_config(harness=harness).run(task)
+```
+
 ## Verification placement
 
 `agent.scoring.mode` selects whether task scoring runs in the agent's workspace (`shared`) or in a fresh container (`isolated`). Tasks can declare their own defaults on `TaskData.scoring` via `ScoringConfig`, and any fields explicitly set on `agent.scoring` override the task defaults (falling back to `shared` when neither sets a mode).

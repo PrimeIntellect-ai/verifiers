@@ -1,14 +1,17 @@
 """`Interaction` segments: a failed segment reports its own partial reply, and an
-expired agent deadline stops the rollout as a timeout."""
+expired agent deadline stops the rollout as a timeout. `Agent.with_config` keeps the
+agent's standing."""
 
 import asyncio
 from types import SimpleNamespace
 
 import pytest
+from pydantic import ValidationError
 
 import verifiers.v1 as vf
-from verifiers.v1.agent import Interaction
+from verifiers.v1.agent import Interaction, TimeoutConfig, _EpisodeAgent
 from verifiers.v1.graph import MessageNode
+from verifiers.v1.harnesses.null import NullHarnessConfig
 from verifiers.v1.rollout import Rollout, RolloutTimeouts
 from verifiers.v1.types import AssistantMessage
 
@@ -99,3 +102,37 @@ async def test_expired_deadline_is_a_timeout_when_the_runtime_reports_an_error()
 
     assert trace.is_timeout and not trace.errors
     assert trace.stop_condition == "agent_timeout"
+
+
+def test_with_config_keeps_an_episode_agents_standing():
+    """A per-run config (a harness naming a per-run credential, a borrowed box's
+    runtime policy) on an env's episode agent: a copy that is still the episode's."""
+    completed, gate, warned = [], asyncio.Semaphore(1), set()
+    seat = _EpisodeAgent(
+        vf.AgentConfig(model="m", runtime={"type": "subprocess"}),
+        interception=None,
+        name="solver",
+        shared_tools={},
+        task_cls=vf.Task,
+        gate=gate,
+        completed=completed,
+        on_trace=None,
+        on_discard=None,
+        warned_resources=warned,
+    )
+    seat.trainable = False
+    harness = NullHarnessConfig(id="null", mcp_header_env={"world": {"X": "VAR"}})
+    timeout = TimeoutConfig(rollout=5)
+
+    run = seat.with_config(harness=harness, timeout=timeout, max_turns=3)
+
+    assert type(run) is _EpisodeAgent and run is not seat
+    assert run.config.harness == harness and run.harness.config == harness
+    assert run.timeout == timeout and run.limits.max_turns == 3
+    assert run.ctx.model == "m" and run.runtime_config == seat.runtime_config
+    assert (run._name, run.trainable, run._gate) == ("solver", False, gate)
+    assert run._completed is completed and run._warned_resources is warned
+    assert seat.config.harness.id == "bash" and seat.limits.max_turns is None
+    assert seat.with_config(timeout={"rollout": 5}).timeout == timeout
+    with pytest.raises(ValidationError):
+        seat.with_config(max_turn=3)
