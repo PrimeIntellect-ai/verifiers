@@ -65,6 +65,11 @@ class SandboxError(RolloutError):
     """A runtime/sandbox operation failed (provisioning, exec, or file I/O)."""
 
 
+class RolloutInterrupted(RolloutError):
+    """The rollout's owner interrupted it (`Rollout.interrupt`), e.g. to shut down:
+    another process may continue it from the checkpoint it took."""
+
+
 class TaskError(RolloutError):
     """Task-authored code raised — `setup`, `finalize`, or a `@reward`/`@metric`."""
 

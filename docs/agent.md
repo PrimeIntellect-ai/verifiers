@@ -72,3 +72,18 @@ max_turn_tokens = 4096
 skip_on_truncated = true
 skip_on_timeout = true
 ```
+
+## Retries and checkpoints
+
+An agent retries a whole rollout up to twice on a `SandboxError` and twice on a `ProviderError` by default (separate from the turn retries below and from HTTP retries inside the provider SDK). You can configure retry budgets per error type under `[env.agent.retries]`, or under `[env.retries]` for environments that manage shared resources such as Harbor Compose. When an agent rollout fails, `rules` are checked in order and the first rule where all fields match sets the retry budget for that error; unmatched errors use the top-level `max_retries` budget.
+
+A model call that fails gets turn retries first (`[env.agent.turn_retries]`): the interception retries the call with backoff, and the harness waits on it and never sees an error that a retry recovered. By default it retries 408, 429, 5xx and transport failures 5 times; another status goes to the harness at once. When the turn retries run out, the rollout checkpoints its box and fails the attempt with the error, and the rollout retry restores the checkpoint:
+
+- **Filesystem checkpoints** (`[env.agent.checkpoint]`, on by default) snapshot the box's files. The retry starts a new box from the snapshot and a new harness process, which continues the trace and is told that the box was restored; processes, sub-agents and in-memory state are gone. They need a runtime that takes snapshots (prime) and a harness that supports them (`SUPPORTS_FILESYSTEM_CHECKPOINTS`).
+- **Memory checkpoints** (`[env.agent.memory_checkpoint]`, off by default) also hold the box's processes and memory. The retry resumes the box, and the harness program carries on as it was, with its background processes, REPL state and sub-agents. They need a runtime and a harness that support them (`SUPPORTS_MEMORY_CHECKPOINTS`). On prime, a memory checkpoint pauses the sandbox and resumes it once, on the same node; when it no longer resumes, the retry restores its files as a filesystem checkpoint would. Where both kinds apply, memory checkpoints are taken.
+
+A failed box (`SandboxError`) takes no checkpoint: its retry starts over in a new box. Elsewhere the agent logs a warning once, and each retry starts a fresh attempt from the beginning. `after` sets whether a checkpoint is deleted (`"delete"`) or kept (`"keep"`) when the run is final; a kept memory checkpoint bills as a paused sandbox until it is deleted. Set `--no-env.agent.checkpoint` to turn filesystem checkpoints off.
+
+The rollout's owner can also checkpoint it. `Rollout.interrupt` checkpoints the rollout and ends it with `RolloutInterrupted`, for another process to continue; `interrupt_all` interrupts every open rollout of the process. `Rollout.save` takes a filesystem checkpoint of the rollout at its next model call, and the rollout goes on; a later retry of the rollout restores the newest one. `save_all` saves every open rollout of the process. The trace's `restorable` checkpoint and `RestorePoint.of` give what that process needs.
+
+To bound how long individual stages or rollouts can run, configure stage timeouts and token limits on the [runtime](runtimes.md); see [debugging](debugging.md) for diagnosing failed episodes.

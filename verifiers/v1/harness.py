@@ -5,7 +5,7 @@ import logging
 import os
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, ClassVar, Generic, TypeVar
+from typing import TYPE_CHECKING, Any, ClassVar, Generic, TypeVar
 
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import DialectName, HarnessConfig, skill_destination
@@ -17,8 +17,9 @@ from verifiers.v1.errors import (
     boundary,
 )
 from verifiers.v1.runtimes import ProgramResult, Runtime
+from verifiers.v1.runtimes.base import program_sink
 from verifiers.v1.task import TaskData
-from verifiers.v1.types import Message, Messages
+from verifiers.v1.types import Message, Messages, UserMessage
 from verifiers.v1.utils.decorators import (
     discover_decorated,
     invoke_all,
@@ -36,6 +37,16 @@ logger = logging.getLogger(__name__)
 
 ConfigT = TypeVar("ConfigT", bound=HarnessConfig)
 
+RESTORE_PROMPT = (
+    "Your workspace was restored from a filesystem checkpoint taken before your last "
+    "model turn, and you are continuing in a new process. Files are as they were at "
+    "the checkpoint. Background processes, running shells, sub-agents, and in-memory "
+    "state such as REPL variables from before the restore are gone; start again "
+    "whatever you still need. Your last action may not have taken effect, so check "
+    "before you rely on it. Continue the task."
+)
+"""The user turn a harness gets after a restore (`HarnessSession.restore`)."""
+
 
 class Harness(ABC, Generic[ConfigT]):
     APPENDS_SYSTEM_PROMPT: ClassVar[bool] = False
@@ -49,6 +60,18 @@ class Harness(ABC, Generic[ConfigT]):
     SUPPORTS_RESUME: ClassVar[bool] = False
     """Whether the default `resume()` can relaunch this harness from the
     accumulated Messages transcript."""
+    SUPPORTS_FILESYSTEM_CHECKPOINTS: ClassVar[bool] = False
+    """Whether a new process of this harness can continue a rollout in a box restored
+    from a filesystem checkpoint (`HarnessSession.restore`), so a retry restores the
+    checkpoint instead of starting over (`AgentConfig.checkpoint`). A rollout
+    checkpoints only when its runtime backend sets `SUPPORTS_FILESYSTEM_CHECKPOINTS`
+    too. Distinct from `SUPPORTS_RESUME`: a restore never finds a live process, its
+    program continues from the conversation the trace or its own session files hold."""
+    SUPPORTS_MEMORY_CHECKPOINTS: ClassVar[bool] = False
+    """Whether a new host process can reattach to this harness's program in a box
+    resumed from a memory checkpoint (`HarnessSession.reattach`), so the program
+    continues as it was (`AgentConfig.memory_checkpoint`). Needs a runtime backend
+    that sets `SUPPORTS_MEMORY_CHECKPOINTS` too."""
     EXECUTES_CODE: ClassVar[bool] = True
     """Whether the program hands the model local execution in the runtime — true for
     every real harness; the tool-less chat loops (`null`) override to False. Read
@@ -358,6 +381,11 @@ class HarnessSession:
         self.data = data
         self.tool_interception_url = tool_interception_url
         self._closed = False
+        self._program: dict[str, Any] | None = None
+        """The handle of the program the running segment launched (`program_sink`)."""
+        self.frozen = False
+        """Set once a memory checkpoint froze the box: a cancelled segment leaves its
+        program as it is, for another host to reattach to."""
 
     async def steer(self, message: str, *, message_id: str | None = None) -> dict:
         """Deliver a user message during a running turn, if supported by the harness."""
@@ -371,9 +399,16 @@ class HarnessSession:
             raise HarnessError(
                 f"harness {self.harness.config.id!r} session is already closed"
             )
-        async with boundary(HarnessError, f"harness {self.harness.config.id!r}"):
-            result = await self._run(messages)
+        token = program_sink.set(self._record_program)
+        try:
+            async with boundary(HarnessError, f"harness {self.harness.config.id!r}"):
+                result = await self._run(messages)
+        finally:
+            program_sink.reset(token)
         await self.harness._check_result(self.trace, self.runtime, result)
+
+    def _record_program(self, program: dict[str, Any]) -> None:
+        self._program = program
 
     async def _run(self, messages: Messages | None) -> ProgramResult:
         if messages is None:
@@ -403,6 +438,41 @@ class HarnessSession:
             messages,
             self.tool_interception_url,
         )
+
+    async def checkpoint_state(self) -> dict[str, Any] | None:
+        """What `restore` needs to continue in a box restored from a checkpoint taken
+        now, or None when this session cannot be restored (no checkpoint is taken).
+        The default relaunches on the trace's transcript and needs nothing."""
+        return {}
+
+    def restore(self, state: dict[str, Any], tail: Messages) -> Messages:
+        """Prepare this new session to continue a rollout in a box restored from a
+        checkpoint, and return the messages of its first segment. `state` is what
+        `checkpoint_state` returned when the checkpoint was taken; `tail` is the
+        checkpoint's uncommitted prompt after the trace's branch. The default
+        relaunches on the branch plus `tail`, then tells the program about the
+        restore (`RESTORE_PROMPT`)."""
+        return [*tail, UserMessage(content=RESTORE_PROMPT)]
+
+    async def memory_state(self) -> dict[str, Any] | None:
+        """What `reattach` needs to continue this session's running program from another
+        host process, in its box resumed from a memory checkpoint taken now; None when
+        it cannot (no memory checkpoint is taken). The default waits on the program the
+        running segment launched."""
+        return {"program": self._program} if self._program is not None else None
+
+    async def reattach(self, state: dict[str, Any]) -> None:
+        """Run the rest of the segment that was running when a memory checkpoint was
+        taken: wait on its program, still running in the resumed box, and check its
+        result as `turn` does. `state` is what `memory_state` returned."""
+        async with boundary(HarnessError, f"harness {self.harness.config.id!r}"):
+            result = await self.runtime.attach(state["program"])
+        await self.harness._check_result(self.trace, self.runtime, result)
+
+    async def detach(self) -> None:
+        """Release this session without touching its program, which a memory checkpoint
+        froze in its box for another process to reattach to. Idempotent."""
+        self._closed = True
 
     async def close(self) -> None:
         """Close session-owned resources. Idempotent."""

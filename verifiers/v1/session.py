@@ -30,11 +30,12 @@ from pydantic import TypeAdapter
 
 from verifiers.v1 import graph
 from verifiers.v1.clients import Client, ModelContext
+from verifiers.v1.configs.agent import TurnRetryConfig
 from verifiers.v1.configs.harness import DialectName
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.errors import HarnessError, RolloutError, TaskError
 from verifiers.v1.harnesses.utils.compaction import bound_tool_message
-from verifiers.v1.trace import InterceptRecord, Trace
+from verifiers.v1.trace import Checkpoint, InterceptRecord, Trace
 from verifiers.v1.types import (
     AssistantMessage,
     Messages,
@@ -184,6 +185,10 @@ class RolloutSession:
     when its program dies on it the rollout records this original error instead of a secondary
     `HarnessError`. A harness that completes cleanly after the failure handled it. Reset before
     each model turn, so a successful retry clears it."""
+    aborted: "RolloutError | None" = None
+    """A request hook's failure: the task, not the provider, refused a turn. The rollout
+    ends the running segment with it (`Rollout.step`); the harness never sees it."""
+    abort_event: asyncio.Event = field(default_factory=asyncio.Event)
     idempotent_requests: dict[str, IdempotentRequest] = field(default_factory=dict)
     """Explicit keys or marked SDK retries mapped to their replay state."""
     released: bool = False
@@ -209,6 +214,31 @@ class RolloutSession:
     gated_tools: set[tuple[str, str]] = field(default_factory=set)
     """Calls the harness's gate asked about before executing."""
     prepared_users: Counter[str] = field(default_factory=Counter)
+    checkpointer: (
+        Callable[
+            [graph.PendingTurn | None, "RolloutError"], Awaitable[Checkpoint | None]
+        ]
+        | None
+    ) = None
+    """Checkpoints the rollout's box as an attempt fails with an error a retry may
+    recover, at the turn whose model call failed (`Rollout` sets it when its runtime
+    and harness support checkpoints). Returns the checkpoint it took, if any."""
+    turn_retries: TurnRetryConfig = field(default_factory=TurnRetryConfig)
+    """Retries of a failed model call, before the attempt fails with its error."""
+    interrupt_at_turn: "RolloutError | None" = None
+    """An interrupt that waits for the next model call: the box is idle then, so a
+    filesystem checkpoint matches the turn (`Rollout.interrupt`). The call
+    checkpoints and ends the segment with it instead of going upstream."""
+    save_at_turn: Callable[[graph.PendingTurn], Awaitable[None]] | None = None
+    """A save that waits for a model call (`Rollout.save`): the next call checkpoints
+    the box before it goes upstream, or after its reply is back and before the
+    harness sees the reply, while the box is idle. The rollout goes on."""
+
+    async def take_save(self, turn: graph.PendingTurn) -> None:
+        """Run the save waiting for this model call, if any (`save_at_turn`)."""
+        save, self.save_at_turn = self.save_at_turn, None
+        if save is not None:
+            await save(turn)
 
     @property
     def stopped(self) -> bool:
@@ -384,6 +414,21 @@ class RolloutSession:
             ):
                 self.pinned_tool_results[tool_keys[position]] = after
         return current, records, None
+
+    def mark_intercepted(self, branch: Messages, tail: Messages) -> None:
+        """Treat `tail`, which follows `branch` and was intercepted in an earlier
+        attempt (a restored checkpoint's), as prepared: the harness re-sends it, and
+        a non-idempotent hook must not rewrite it twice."""
+        request = Request(messages=[*branch, *tail])
+        for position, key in self.tool_result_keys(request).items():
+            message = request.messages[position]
+            if position >= len(branch) and isinstance(message, ToolMessage):
+                self.pinned_tool_results.setdefault(key, message)
+        self.prepared_users.update(
+            graph.message_hash(message)
+            for message in tail
+            if isinstance(message, UserMessage)
+        )
 
     def consume_prepared(self, messages: Messages) -> None:
         """Forget pre-harness user rewrites only after their model request commits."""
@@ -604,6 +649,12 @@ class RolloutSession:
             return
         self.tasks.add(task)
         task.add_done_callback(self.tasks.discard)
+
+    def abort(self, error: "RolloutError") -> None:
+        """End the running segment with `error`. The first abort wins."""
+        if self.aborted is None:
+            self.aborted = error
+            self.abort_event.set()
 
     def release(self) -> None:
         """Seal the session: no further trace mutation, and in-flight handlers cancel."""

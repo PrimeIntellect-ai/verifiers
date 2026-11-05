@@ -11,10 +11,12 @@ import shlex
 import uuid
 import weakref
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Callable, Mapping
+from contextvars import ContextVar
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 
+from pydantic import BaseModel
 from pydantic_config import BaseConfig
 
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
@@ -56,6 +58,29 @@ _ENSURE_UV = (
 SERVICE_PORT = 8000
 
 
+program_sink: ContextVar[Callable[[dict[str, Any]], None] | None] = ContextVar(
+    "program_sink", default=None
+)
+"""Receives the handle of each program `RuntimeBackend.run` starts in this context, for
+a later `RuntimeBackend.attach` to wait on it again (`HarnessSession` sets it around
+its program)."""
+
+
+class Snapshot(BaseModel):
+    """A checkpoint of a box (`RuntimeBackend.checkpoint`): its filesystem, and with
+    `memory` its processes and memory too. A new box of the same config restores it
+    (`RuntimeBackend.restore`)."""
+
+    id: str
+    """The provider's checkpoint id. A memory checkpoint holds a filesystem checkpoint
+    too, which a box can restore when the memory no longer resumes."""
+    memory: bool = False
+    """Whether the checkpoint holds the box's processes and memory."""
+    box: str | None = None
+    """The provider's id of the box a memory checkpoint resumes in (prime: the paused
+    sandbox), when the provider resumes memory only in place."""
+
+
 @dataclass(frozen=True)
 class ProgramResult:
     exit_code: int
@@ -68,10 +93,18 @@ class RuntimeProcess(ABC):
 
     stdout: AsyncIterator[bytes]
     stderr: AsyncIterator[bytes]
+    session: str | None = None
+    """The provider's id of the process, for another host process to attach to it
+    (`RuntimeBackend.attach_process`); None when it cannot."""
 
     @abstractmethod
     async def write(self, data: bytes) -> None:
         pass
+
+    async def detach(self) -> None:
+        """Release this handle and leave the process running, for a later
+        `RuntimeBackend.attach_process`."""
+        raise NotImplementedError(f"{type(self).__name__} cannot detach")
 
     @abstractmethod
     async def wait(self) -> int:
@@ -184,6 +217,13 @@ class RuntimeBackend(ABC):
     """Digest-keyed PEP 723 scripts inside the runtime. Sandboxes own their `/tmp`;
     the host subprocess runtime overrides this with its per-user cache."""
 
+    SUPPORTS_FILESYSTEM_CHECKPOINTS: ClassVar[bool] = False
+    """Whether `checkpoint` snapshots the box's filesystem, for a new box of this
+    config to start from (`restore`)."""
+    SUPPORTS_MEMORY_CHECKPOINTS: ClassVar[bool] = False
+    """Whether `checkpoint(memory=True)` also holds the box's processes and memory, so a
+    restore continues them where they stopped."""
+
     info: BaseRuntimeInfo
 
     def __init__(self, name: str | None = None) -> None:
@@ -192,6 +232,15 @@ class RuntimeBackend(ABC):
         # Explicit process values (model credentials, proxy settings, etc.) override these.
         self.env: dict[str, str] = {}
         self.cache = RuntimeCache()
+        self.stray_checkpoints: list[Snapshot] = []
+        """Checkpoints this box took that never became restorable (a failed or cancelled
+        durability wait), so no trace records them; freed after the box is gone."""
+        self.restore: Snapshot | None = None
+        """A checkpoint for `start` to restore instead of booting the config's image."""
+        self.restored_memory = False
+        """Whether `start` restored `restore`'s processes and memory, not only its
+        filesystem: a memory checkpoint that can no longer resume falls back to the
+        filesystem it holds."""
         self._setup_claimed = False
         self._background: list[RuntimeProcess] = []
         self.stopped = False
@@ -217,6 +266,43 @@ class RuntimeBackend(ABC):
     @abstractmethod
     async def start(self) -> None:
         pass
+
+    async def checkpoint(self, *, memory: bool = False) -> Snapshot:
+        """Checkpoint the box and return the snapshot once its content is fixed: changes
+        after this returns are not in it. It becomes restorable only later
+        (`wait_checkpoint`). A filesystem checkpoint leaves the box running; a memory
+        checkpoint may stop it (prime: it pauses the box), so take one only as the box's
+        last act."""
+        raise NotImplementedError(f"{type(self).__name__} does not support checkpoints")
+
+    async def wait_checkpoint(self, snapshot: Snapshot) -> int | None:
+        """Wait until `snapshot` is restorable and return its stored size in bytes,
+        when the provider reports it. Raises if it never becomes restorable. The box
+        must stay alive until then: its teardown fails a pending checkpoint."""
+        raise NotImplementedError(f"{type(self).__name__} does not support checkpoints")
+
+    @property
+    def attaches_processes(self) -> bool:
+        """Whether `attach_process` can stream a process another host process started."""
+        return False
+
+    async def attach_process(self, runtime: Runtime, session: str) -> RuntimeProcess:
+        """Stream a process `exec` started, by its `RuntimeProcess.session`: e.g. in a
+        box resumed from a memory checkpoint, where the process kept running. Output it
+        wrote while no handle was attached is lost."""
+        raise NotImplementedError(f"{type(self).__name__} cannot attach to a process")
+
+    async def attach(self, program: dict[str, Any]) -> ProgramResult:
+        """Wait for a program that `run` started, from its handle (`program_sink`), and
+        return its result as `run` would: e.g. in a box resumed from a memory checkpoint,
+        where the program kept running."""
+        raise NotImplementedError(f"{type(self).__name__} cannot attach to a program")
+
+    async def discard_checkpoints(self, snapshots: list[Snapshot]) -> list[str]:
+        """Free checkpoints nothing will restore from and return the ids it freed.
+        Best-effort: a provider may refuse one a live box still needs (prime: the
+        newest one of a running box)."""
+        return []
 
     async def stop(self) -> None:
         """Free the provisioned resource on the normal path (the owner's `finally`),
