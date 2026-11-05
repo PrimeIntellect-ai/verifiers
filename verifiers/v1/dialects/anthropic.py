@@ -461,10 +461,6 @@ class AnthropicDialect(Dialect[AnthropicMessage]):
     aux_routes = ("/v1/messages/count_tokens",)
     upstream_path = "/v1/messages"
     response_type = ModdedAnthropicMessage
-    # Thinking blocks can't carry a breakpoint; the prefix up to them is cached anyway.
-    cache_block_types = frozenset(
-        {"text", "image", "document", "search_result", "tool_use", "tool_result"}
-    )
 
     def mediate_external_capabilities(
         self, body: RawRequest, policy: NetworkPolicyConfig
