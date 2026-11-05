@@ -79,13 +79,6 @@ class AgentConfig(BaseConfig):
     network_notice: bool = True
     """Include the runtime's network restrictions in the agent's prompt."""
 
-    relay: bool = False
-    """Reach the interception server through a relay in a remote box (127.0.0.1) instead
-    of its tunnel URL. The relay retries a model call while the tunnel reconnects, and
-    when a tunnel is lost for good, the server opens a new one and reroutes the relay,
-    so the rollout goes on. A rollout with tool servers or deployment services still
-    fails on a lost tunnel: they reach the old URL. Needs Python 3.10+ in the box."""
-
     @field_serializer("scoring")
     def _scoring_overrides(
         self, scoring: ScoringConfig, info: SerializationInfo

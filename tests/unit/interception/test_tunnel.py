@@ -162,6 +162,36 @@ async def test_gone_tunnel_moves_movable_rollouts_to_a_new_tunnel():
     await server.stop()
 
 
+async def test_tunnel_lost_during_a_replacement_is_replaced_again():
+    server = InterceptionServer()
+    server.tunnel = ReplacingTunnel()
+    server.tunnel.urls = iter(
+        ["https://first.example", "https://second.example", "https://third.example"]
+    )
+    server.base_url = await server.stack.enter_async_context(server.tunnel.expose(0))
+    moved: list = []
+
+    async def reroute(url: str) -> None:
+        moved.append(url)
+        if len(moved) == 1:
+            # The new tunnel is lost while the rollouts are rerouted to it.
+            server._handle_tunnel_gone()
+
+    session = SimpleNamespace(
+        error=None, released=False, reroute=reroute, trace=SimpleNamespace(id="m")
+    )
+    session.release = lambda: setattr(session, "released", True)
+    server.sessions["m"] = session
+
+    server._handle_tunnel_gone()
+    await server._replacing
+
+    assert moved == ["https://second.example", "https://third.example"]
+    assert server.base_url == "https://third.example"
+    assert session.error is None
+    await server.stop()
+
+
 async def test_failed_replacement_fails_the_movable_rollouts():
     server = InterceptionServer()
     server.tunnel = ReplacingTunnel()

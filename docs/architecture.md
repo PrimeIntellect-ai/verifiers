@@ -27,12 +27,12 @@ Routing traffic through the interception server enables several things beyond fo
 
 ### Relay
 
-A Prime tunnel can drop for a while (its client reconnects) or for good (the tunnel service drops its registration). A lost tunnel fails every rollout on its interception server. With `[env.agent] relay = true`, a harness in a remote box reaches the interception server through a relay in its own box, at `127.0.0.1`, instead of the tunnel URL:
+A Prime tunnel can drop for a while (its client reconnects) or for good (the tunnel service drops its registration). A harness in a remote box therefore reaches the interception server through a relay in its own box, at `127.0.0.1`, not at the tunnel URL:
 
 - While the tunnel cannot be reached, the relay retries the model call for up to 5 minutes, so the harness does not see a tunnel that reconnects.
 - When a tunnel is lost for good, its interception server opens a new tunnel and points each relay at the new URL. A model call that was in flight goes through the new tunnel; the server joins it to the call it already serves, so the trace gets no second turn.
 
-A rollout with tool servers or deployment services still fails on a lost tunnel, because they reach the interception server at the tunnel URL. The relay needs Python 3.10 or later in the box.
+A rollout with tool servers or deployment services still fails on a lost tunnel, because they reach the interception server at the tunnel URL. The relay is a Python script that verifiers runs with uv; setup installs uv and a Python when the image has none. A relay that does not start leaves the harness on the tunnel URL, with a warning.
 
 ## Finishing a rollout
 

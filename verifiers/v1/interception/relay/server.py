@@ -478,8 +478,8 @@ class Handler(BaseHTTPRequestHandler):
                 if upstream.aborted:
                     return False
                 log(f"{self.command} {self.label}: upstream broke: {error!r}")
-                if not self.scanner.data and self.scanner.sse:
-                    # Nothing but comments went out: the retry can still answer.
+                if not self.scanner.data:
+                    # No body data went out: the retry can still answer.
                     return False
                 self.reset()
                 return True
@@ -487,6 +487,13 @@ class Handler(BaseHTTPRequestHandler):
             if upstream.aborted:
                 return False
             if not data:
+                if response.length:
+                    # The upstream ended before its `Content-Length`.
+                    log(f"{self.command} {self.label}: upstream body cut short")
+                    if not self.scanner.data:
+                        return False
+                    self.reset()
+                    return True
                 self.finish_body()
                 return True
             self.send(data)

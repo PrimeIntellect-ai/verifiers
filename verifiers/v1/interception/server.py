@@ -365,6 +365,8 @@ class InterceptionServer(Interception):
         )
         self.healthy = True
         self._replacing: asyncio.Task | None = None
+        self._lost_again = False
+        """A tunnel was lost while a replacement was under way: replace it once more."""
         if self.tunnel is not None:
             self.tunnel.on_gone = self._handle_tunnel_gone
         self.host = "127.0.0.1"
@@ -389,8 +391,20 @@ class InterceptionServer(Interception):
                 session.release()
             else:
                 movable = True
-        if movable and (self._replacing is None or self._replacing.done()):
-            self._replacing = asyncio.create_task(self._replace_tunnel())
+        if not movable:
+            return
+        if self._replacing is None or self._replacing.done():
+            self._replacing = asyncio.create_task(self._replace_tunnels())
+        else:
+            self._lost_again = True
+
+    async def _replace_tunnels(self) -> None:
+        """Replace the tunnel until no loss arrived while a replacement was under way."""
+        while True:
+            self._lost_again = False
+            await self._replace_tunnel()
+            if not self._lost_again:
+                return
 
     async def _replace_tunnel(self) -> None:
         """Open a new tunnel to this server and reroute its movable rollouts to it. A

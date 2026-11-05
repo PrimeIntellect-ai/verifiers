@@ -1,8 +1,9 @@
 """The interception relay on Prime: the server's tunnel is lost while a rollout's model
 call is in flight: its registration is deleted and its frpc connection drops, so it
-cannot log in again. With `agent.relay`, the server opens a new tunnel, reroutes the box's
-relay to it, and the rollout finishes as if nothing happened: the waiting model call
-goes through once, on one branch. Without the relay, the rollout fails, as before.
+cannot log in again. The server opens a new tunnel, reroutes the box's relay to it, and
+the rollout finishes as if nothing happened: the waiting model call goes through once,
+on one branch. A rollout whose relay did not start reaches the server at the tunnel
+URL and fails, as before the relay.
 
 The model is scripted and holds its second reply until the test has dropped the tunnel
 and, with the relay, until the server has replaced it."""
@@ -18,8 +19,10 @@ from aiohttp import web
 
 import verifiers.v1 as vf
 from verifiers.v1.dialects.chat import ChatDialect
+from verifiers.v1.errors import SandboxError
 from verifiers.v1.harnesses.bash import BashHarnessConfig
 from verifiers.v1.interception import InterceptionServer
+from verifiers.v1.interception import relay as relay_module
 from verifiers.v1.utils.prime import load_prime_config
 
 pytestmark = pytest.mark.skipif(
@@ -149,6 +152,8 @@ def _cmdline(pid: int) -> str:
 
 
 async def _run(relay: bool) -> tuple[vf.Trace, HeldModel, str, str]:
+    """`relay=False` makes the relay fail to start, so the harness reaches the server
+    directly."""
     async with HeldModel() as model, InterceptionServer(requires_tunnel=True) as server:
         agent = vf.make_agent(
             vf.AgentConfig(
@@ -156,7 +161,6 @@ async def _run(relay: bool) -> tuple[vf.Trace, HeldModel, str, str]:
                 runtime=vf.PrimeConfig(image="python:3.11-slim", labels=["vf-ci"]),
                 model="scripted",
                 client=vf.EvalClientConfig(base_url=model.url),
-                relay=relay,
             ),
             interception=server,
         )
@@ -192,7 +196,11 @@ async def test_rollout_survives_a_replaced_tunnel():
     assert len(trace.branches) == 1
 
 
-async def test_rollout_without_relay_fails_on_a_lost_tunnel():
+async def test_rollout_without_relay_fails_on_a_lost_tunnel(monkeypatch):
+    async def fail(*args, **kwargs):
+        raise SandboxError("no relay")
+
+    monkeypatch.setattr(relay_module, "start", fail)
     trace, _, _, _ = await _run(relay=False)
 
     assert not trace.ok

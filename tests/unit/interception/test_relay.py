@@ -439,3 +439,32 @@ def test_lost_upstream_is_retried_until_rerouted(upstreams, make_relay):
     assert response.read().endswith(b"data: from-b\n\n")
     retried = b.requests.get(timeout=TIMEOUT)["headers"]["x-stainless-retry-count"]
     assert int(retried) >= 1
+
+
+def test_body_cut_short_is_retried(upstreams, make_relay):
+    """An upstream that ends before its `Content-Length` (a tunnel that drops mid-body)
+    is retried while the harness has no body data yet."""
+    a, _ = upstreams
+    body = json.dumps({"answer": "x" * 64}).encode()
+    attempts = []
+
+    def respond(handler) -> None:
+        attempts.append(True)
+        handler.send_response(200)
+        handler.send_header("Content-Type", "application/json")
+        handler.send_header("Content-Length", str(len(body)))
+        handler.end_headers()
+        if len(attempts) == 1:
+            handler.wfile.flush()
+            handler.close_connection = True
+            return
+        handler.wfile.write(body)
+
+    a.respond = respond
+    relay = make_relay(a.url)
+    connection = relay.connect()
+    connection.request("POST", "/v1/chat/completions", b"{}", {})
+    response = connection.getresponse()
+    assert response.status == 200
+    assert response.read() == body
+    assert len(attempts) == 2
