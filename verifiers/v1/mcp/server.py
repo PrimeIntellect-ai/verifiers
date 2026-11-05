@@ -6,6 +6,7 @@ import functools
 import hashlib
 import hmac
 import inspect
+import json
 import logging
 import os
 from collections.abc import Callable
@@ -217,6 +218,47 @@ class ServerBase(Generic[ConfigT, StateT]):
         task = await self._fetch_task(state_url, secret)
         if task is not None:
             await self.setup_task(task)
+
+    async def _ask_gate(self, name: str, arguments: dict) -> dict:
+        """The rollout's verdict on one call. A program may reach this tool through a
+        wrapper (model-written code, a generic MCP meta-tool) whose call the request hooks
+        never saw as this tool, so the server asks before running it."""
+        url, secret, route = self._state_channel()
+        if not url:
+            return {"action": "allow"}
+        gate_url = url[: -len("/state")] + "/gate" if url.endswith("/state") else url
+        response = await _channel_request(
+            "POST",
+            gate_url,
+            secret,
+            route=route,
+            content=json.dumps({"name": name, "arguments": arguments}).encode(),
+            client=self._state_client,
+        )
+        return response.json()
+
+    def _with_gate(self, fn: Callable, name: str) -> Callable:
+        """Run the call only if the rollout's request hooks allow it; a denial's tool
+        message becomes the result."""
+        qualified = f"{self.server_name}_{name}" if self.server_name else name
+
+        @functools.wraps(fn)
+        async def wrapper(*args, **kwargs):
+            verdict = await self._ask_gate(qualified, kwargs)
+            if verdict.get("action") == "stop":
+                raise RuntimeError(f"the rollout stopped: {verdict.get('reason')}")
+            if verdict.get("action") == "deny":
+                content = verdict["message"].get("content") or ""
+                if isinstance(content, str):
+                    return content
+                return "\n".join(part.get("text", "") for part in content)
+            result = fn(*args, **kwargs)
+            if inspect.isawaitable(result):
+                result = await result
+            return result
+
+        wrapper.__signature__ = inspect.signature(fn)  # type: ignore[attr-defined]
+        return wrapper
 
     def _with_state(self, fn: Callable) -> Callable:
         """Sync state around one call, isolated by a context variable.
