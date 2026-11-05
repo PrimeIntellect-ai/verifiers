@@ -6,8 +6,8 @@ the current upstream and swaps each box token for its upstream token. When the u
 URL changes (the server replaced a lost tunnel), the host points it at the new one.
 
 Each rollout runs its own relay, under `RELAY_ROOT/<name>` and on a port of its own, so
-rollouts that share a box never share a relay: `start` launches it, `reroute` rewrites
-its config and makes it reload (SIGHUP), and `stop` ends it. On a reload the relay aborts
+rollouts that share a box never share a relay: `launch` starts it before its upstream is
+known, `reroute` writes its config and makes it reload (SIGHUP), and `stop` ends it. On a reload the relay aborts
 every in-flight upstream request and retries each one that has sent its client only the
 status, headers and SSE comments.
 """
@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import shlex
 import time
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -87,16 +88,16 @@ class Relay:
         return f"{self.dir}/pid"
 
 
-async def start(
-    runtime: Runtime, name: str, upstream: str, tokens: dict[str, str]
-) -> Relay:
-    """Start a relay in `runtime`'s box under `RELAY_ROOT/name`, forwarding to
-    `upstream` with `tokens`, on a free port."""
+async def launch(runtime: Runtime, name: str) -> Relay:
+    """Start a relay in `runtime`'s box under `RELAY_ROOT/name`, on a free port, before
+    its upstream is known: it forwards nowhere until `reroute` configures it."""
     directory = f"{RELAY_ROOT}/{name}"
-    ready = f"{directory}/port"
-    await runtime.run(["sh", "-c", f"rm -rf {shlex.quote(directory)}"], {})
     relay = Relay(dir=directory, url="")
-    await _write_config(runtime, relay, upstream, tokens)
+    # Each launch reads its port from a file of its own: a relay an earlier attempt
+    # left in the box can never answer for this one.
+    ready = f"{directory}/port-{uuid.uuid4().hex}"
+    # The gateway creates the directory. Nothing listens on port 9 (discard).
+    await runtime.write(relay.config_path, relay_config("http://127.0.0.1:9", {}))
     program = await runtime.prepare_uv_script(RELAY_SOURCE, activate=False)
     args = ["--config", relay.config_path, "--port", "0", "--ready", ready]
     await runtime.run_background(
@@ -109,7 +110,7 @@ async def start(
             return Relay(dir=directory, url=f"http://127.0.0.1:{port}")
         if time.monotonic() > deadline:
             raise SandboxError(f"the relay did not start within {RELAY_START_SECONDS}s")
-        await asyncio.sleep(0.2)
+        await asyncio.sleep(0.1)
 
 
 async def reroute(
@@ -117,9 +118,14 @@ async def reroute(
 ) -> None:
     """Point a running relay at `upstream`, swapping its box tokens for `tokens`'
     values. Its requests in flight retry against the new upstream."""
-    await _write_config(runtime, relay, upstream, tokens)
-    pid = shlex.quote(relay.pid_path)
-    result = await runtime.run(["sh", "-c", f'kill -HUP "$(cat {pid})"'], {})
+    # Written whole, then moved: the relay must never read a partial config.
+    staged = f"{relay.config_path}.next"
+    await runtime.write(staged, relay_config(upstream, tokens))
+    config, pid = shlex.quote(relay.config_path), shlex.quote(relay.pid_path)
+    result = await runtime.run(
+        ["sh", "-c", f'mv {shlex.quote(staged)} {config} && kill -HUP "$(cat {pid})"'],
+        {},
+    )
     if result.exit_code:
         raise SandboxError(f"the relay did not reload: {result.stderr.strip()[-500:]}")
 
@@ -135,15 +141,3 @@ async def stop(runtime: Runtime, relay: Relay) -> None:
         ],
         {},
     )
-
-
-async def _write_config(
-    runtime: Runtime, relay: Relay, upstream: str, tokens: dict[str, str]
-) -> None:
-    await runtime.run(["mkdir", "-p", relay.dir], {})
-    # Written whole, then moved: the relay must never read a partial config.
-    staged = f"{relay.config_path}.next"
-    await runtime.write(staged, relay_config(upstream, tokens))
-    result = await runtime.run(["mv", staged, relay.config_path], {})
-    if result.exit_code:
-        raise SandboxError(f"writing the relay config failed: {result.stderr[-500:]}")

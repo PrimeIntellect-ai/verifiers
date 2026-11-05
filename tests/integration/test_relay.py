@@ -200,7 +200,7 @@ async def test_rollout_without_relay_fails_on_a_lost_tunnel(monkeypatch):
     async def fail(*args, **kwargs):
         raise SandboxError("no relay")
 
-    monkeypatch.setattr(relay_module, "start", fail)
+    monkeypatch.setattr(relay_module, "launch", fail)
     trace, _, _, _ = await _run(relay=False)
 
     assert not trace.ok

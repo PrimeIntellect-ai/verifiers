@@ -196,6 +196,7 @@ class Rollout:
         """Set once the relay started, or failed to start."""
         self._relay_runtime: Runtime | None = None
         self._relay_tokens: dict[str, str] = {}
+        self._relay_launch: asyncio.Task[relay.Relay] | None = None
         self._urls: dict[str, str] = {}
         self._harness_session: HarnessSession | None = None
         self._agent_runtime: Runtime | None = None
@@ -363,15 +364,23 @@ class Rollout:
                     self._agent_runtime = await resolve_agent_runtime(
                         runtime, self.task.data.agent_user
                     )
+                    # A harness in a remote box reaches the interception server through
+                    # a relay in its box, which follows the server to a replacement
+                    # tunnel. It starts alongside the harness setup.
+                    relayed = not runtime.is_local
+                    if relayed:
+                        self._relay_runtime = runtime
+                        self._relay_launch = asyncio.create_task(
+                            relay.launch(runtime, self.trace.id)
+                        )
+                        self._stack.push_async_callback(self._stop_relay)
                     await self.harness.setup(self._agent_runtime)
                 # `base_url` is the interception server's reachable URL for this rollout.
                 # The harness reaches the model at `{base_url}/v1`; tool servers reach this
                 # rollout's `/state` + `/task` at `base_url` — it's universally reachable
                 # (the interception is exposed whenever any consumer is remote).
-                # A harness in a remote box reaches the interception server through a
-                # relay in its box, which follows the server to a replacement tunnel. A
-                # rollout whose tool servers or services reach the server too cannot move.
-                relayed = not runtime.is_local
+                # A rollout whose tool servers or services reach the server too cannot
+                # follow it to a replacement tunnel.
                 if (
                     relayed
                     and not toolsets
@@ -582,15 +591,17 @@ class Rollout:
     async def _start_relay(
         self, runtime: Runtime, base_url: str, model_secret: str
     ) -> str | None:
-        """Start the relay the harness reaches the interception server through, and return
-        its base URL in the box. A relay that does not start leaves the harness on the
-        server's URL, unable to follow it to a replacement tunnel."""
+        """Point the launched relay at the interception server, and return the base URL
+        the harness reaches it at in the box. A relay that does not start leaves the
+        harness on the server's URL, unable to follow it to a replacement tunnel."""
+        assert self._relay_launch is not None
         upstream = base_url.rstrip("/")
         # The harness holds the model secret anyway; the relay gets nothing more, so a
         # harness that reads its config gains no capability.
         tokens = {model_secret: model_secret}
         try:
-            self._relay = await relay.start(runtime, self.trace.id, upstream, tokens)
+            launched = await self._relay_launch
+            await relay.reroute(runtime, launched, upstream, tokens)
         except Exception as error:  # noqa: BLE001 - the rollout runs on without it
             logger.warning(
                 "rollout %s: the relay did not start, the harness reaches the "
@@ -602,11 +613,10 @@ class Rollout:
             return None
         finally:
             self._relay_started.set()
+        self._relay = launched
         self._relay_upstream = upstream
-        self._relay_runtime = runtime
         self._relay_tokens = tokens
-        self._stack.push_async_callback(self._stop_relay)
-        return self._relay.url
+        return launched.url
 
     async def _reroute(self, base_url: str) -> None:
         """Point the harness's relay at the interception server's new URL
@@ -625,10 +635,18 @@ class Rollout:
         self._relay_upstream = upstream
 
     async def _stop_relay(self) -> None:
-        if self._relay is None or self._relay_runtime is None:
+        # A reroute still waiting for the relay finds none.
+        self._relay_started.set()
+        launch, runtime = self._relay_launch, self._relay_runtime
+        if launch is None or runtime is None:
+            return
+        if not launch.done():
+            launch.cancel()
+        await asyncio.wait({launch})
+        if launch.cancelled() or launch.exception() is not None:
             return
         try:
-            await relay.stop(self._relay_runtime, self._relay)
+            await relay.stop(runtime, launch.result())
         except Exception:  # noqa: BLE001 - the box may be gone already
             logger.debug("rollout %s: stopping the relay failed", self.trace.id)
 
