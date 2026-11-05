@@ -14,7 +14,7 @@ import hashlib
 import inspect
 import json
 import logging
-from collections.abc import Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from typing import TYPE_CHECKING, Any, ClassVar, Generic, Self
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -38,6 +38,7 @@ from verifiers.v1.utils.generic import concrete_type
 
 if TYPE_CHECKING:
     from verifiers.v1.judge import Judge
+    from verifiers.v1.judges.agent import AgentJudgeRequest
     from verifiers.v1.mcp import Toolset
     from verifiers.v1.runtimes import Runtime
     from verifiers.v1.runtimes.compose import ComposeSpec
@@ -153,6 +154,13 @@ ConfigT = TypeVar("ConfigT", bound=TaskConfig, default=TaskConfig)
 class Task(Generic[DataT, StateT, ConfigT]):
     NEEDS_CONTAINER: ClassVar[bool] = False
     """Whether the task needs a containerized environment (isolated filesystem, ...)."""
+
+    AUTHORED_JUDGES: ClassVar[bool] = False
+    """Task grading owns judge requests; an agentic environment adds no default judge."""
+    judge_executor: Callable[[AgentJudgeRequest, Runtime], Awaitable[Trace]] | None = (
+        None
+    )
+    """Bound by an agentic environment to its configured, non-training judge."""
 
     def __init__(self, data: DataT, config: ConfigT | None = None) -> None:
         self.data = data

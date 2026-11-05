@@ -5,15 +5,20 @@ agentic judging run in that same workspace and share its timeout/retry boundary.
 The judge has its own non-training trace and writes rubric verdicts to a file.
 """
 
+import asyncio
 import copy
 import re
+from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 
 from pydantic import FiniteFloat
 
 import verifiers.v1 as vf
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
+from verifiers.v1.configs.sampling import SamplingConfig
 from verifiers.v1.configs.scoring import resolve_scoring
+from verifiers.v1.judges.agent import AgentJudgeRequest
 from verifiers.v1.judges.rubric import (
     Criterion,
     RubricVerdicts,
@@ -126,9 +131,11 @@ class JudgeTask(vf.Task):
         self,
         data: vf.TaskData,
         files: dict[str, bytes],
+        parse_verdict: Callable[[str], object] | None = None,
     ) -> None:
         super().__init__(data)
         self.files = files
+        self.parse_verdict = parse_verdict
 
     @classmethod
     def from_trace(
@@ -188,7 +195,12 @@ class JudgeTask(vf.Task):
                 f"the judge wrote no verdict to {VERDICT_FILE}; its final act must "
                 'be writing {"verdicts": [{"name", "reason", "verdict"}, ...]} there'
             ) from e
-        trace.info["verdict"] = RubricVerdicts.model_validate_json(raw).model_dump()
+        trace.info["verdict_raw"] = raw.decode()
+        trace.info["verdict"] = (
+            self.parse_verdict(raw.decode())
+            if self.parse_verdict is not None
+            else RubricVerdicts.model_validate_json(raw).model_dump()
+        )
 
 
 class TextFile(vf.BaseConfig):
@@ -313,6 +325,18 @@ class AgenticJudgeEnv(vf.Env[AgenticJudgeEnvConfig]):
         )
 
     async def run(self, task: vf.Task, agents: vf.Agents) -> None:
+        if task.AUTHORED_JUDGES:
+            if self.config.solver.harness is None or self.config.judge.harness is None:
+                raise ValueError(
+                    "Task-authored judging requires explicit solver and judge harnesses"
+                )
+            if (
+                self.config.task != JudgeTaskConfig()
+                or self.config.score != ScoreConfig()
+            ):
+                raise ValueError(
+                    "Task-authored judging does not accept environment rubric or score overrides"
+                )
         policy = resolve_scoring(task.scoring, self.config.solver.scoring)
         workspace = (
             policy.runtime if policy.mode == "isolated" else None
@@ -321,13 +345,7 @@ class AgenticJudgeEnv(vf.Env[AgenticJudgeEnvConfig]):
             raise TypeError("agentic judging requires a container scoring workspace")
         validate_pairing(self._harnesses["judge"], JudgeTask, workspace)
 
-        async def judge(solution: vf.Trace, runtime: vf.Runtime) -> None:
-            isolated = policy.mode == "isolated"
-            judge_task = JudgeTask.from_trace(
-                solution,
-                self.config.task,
-                isolated=isolated,
-            )
+        async def execute(request: AgentJudgeRequest, runtime: vf.Runtime) -> vf.Trace:
             # The workspace already has the verifier's image and network policy.
             # Do not reapply the solver's requirements to an overridden verifier.
             updates = {
@@ -338,7 +356,7 @@ class AgenticJudgeEnv(vf.Env[AgenticJudgeEnvConfig]):
                 updates["network"] = NetworkPolicyConfig(
                     allow=runtime.config.allow, block=runtime.config.block
                 )
-            judge_task = judge_task.with_data(**updates)
+            judge_task = request.task.with_data(**updates)
             # A per-invocation view retains episode accounting and concurrency while
             # binding placement to the already provisioned scoring workspace.
             judge_agent = copy.copy(agents.judge)
@@ -346,7 +364,35 @@ class AgenticJudgeEnv(vf.Env[AgenticJudgeEnvConfig]):
             judge_agent.config = judge_agent.config.model_copy(
                 update={"runtime": runtime.config}
             )
-            verdict = await judge_agent.run(judge_task, runtime=runtime)
+            model = self.config.judge.model or request.model or judge_agent.ctx.model
+            sampling = SamplingConfig.model_validate(
+                (
+                    request.sampling.model_dump(exclude_unset=True)
+                    if request.sampling
+                    else {}
+                )
+                | (
+                    self.config.judge.sampling.model_dump(exclude_unset=True)
+                    if self.config.judge.sampling
+                    else {}
+                )
+            )
+            sampling = SamplingConfig.model_validate(
+                judge_agent.ctx.sampling.model_dump()
+                | sampling.model_dump(exclude_unset=True)
+            )
+            judge_agent.ctx = replace(judge_agent.ctx, model=model, sampling=sampling)
+            judge_agent.config = judge_agent.config.model_copy(
+                update={"model": model, "sampling": sampling}
+            )
+            async with asyncio.timeout(request.timeout):
+                return await judge_agent.run(judge_task, runtime=runtime)
+
+        async def judge(solution: vf.Trace, runtime: vf.Runtime) -> None:
+            judge_task = JudgeTask.from_trace(
+                solution, self.config.task, isolated=policy.mode == "isolated"
+            )
+            verdict = await execute(AgentJudgeRequest(judge_task), runtime)
             if not verdict.ok:
                 raise RuntimeError(
                     "agentic judge failed: "
@@ -354,4 +400,6 @@ class AgenticJudgeEnv(vf.Env[AgenticJudgeEnvConfig]):
                 )
             self._record_verdict(solution, verdict)
 
-        await agents.solver.run(task, on_score=judge)
+        task = copy.copy(task)
+        task.judge_executor = execute
+        await agents.solver.run(task, on_score=None if task.AUTHORED_JUDGES else judge)
