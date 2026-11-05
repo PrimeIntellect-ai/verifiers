@@ -11,7 +11,7 @@ from pydantic import Field
 
 from verifiers.v1.dialects.responses import ResponsesDialect
 from verifiers.v1.envs.single_agent import SingleAgentEnv
-from verifiers.v1.mcp import SharedToolsetConfig, Toolset
+from verifiers.v1.mcp import Toolset, ToolsetConfig
 from verifiers.v1.runtimes import Runtime, SubprocessConfig, make_backend
 from verifiers.v1.task import Task, TaskConfig, TaskData
 from verifiers.v1.taskset import Taskset, TasksetConfig
@@ -23,6 +23,7 @@ from .toolset import NeMoGymState, NeMoGymToolset
 
 
 class NeMoGymTaskConfig(TaskConfig):
+    tools: ToolsetConfig = ToolsetConfig(shared=True)
     resources_url: str | None = None
     """Base URL of an existing server; managed tasksets fill this automatically."""
 
@@ -37,7 +38,6 @@ class NeMoGymConfig(TasksetConfig):
     dataset: Path
     """JSONL rows containing ``responses_create_params`` and verifier metadata."""
 
-    tools: SharedToolsetConfig = SharedToolsetConfig()
     task: NeMoGymTaskConfig = NeMoGymTaskConfig()
 
 
@@ -47,6 +47,10 @@ class NeMoGymData(TaskData):
 
 
 class NeMoGymTask(Task[NeMoGymData, NeMoGymState, NeMoGymTaskConfig]):
+    @classmethod
+    def toolsets(cls, config: NeMoGymTaskConfig) -> list[Toolset]:
+        return [NeMoGymToolset(config.tools)]
+
     async def setup(self, trace: Trace, runtime: Runtime) -> None:
         state = trace.state
         if self.config.resources_url is None:
@@ -90,10 +94,6 @@ class NeMoGymTask(Task[NeMoGymData, NeMoGymState, NeMoGymTaskConfig]):
 class NeMoGymTaskset(Taskset[NeMoGymTask, NeMoGymConfig]):
     resource_server: ClassVar[str | None] = None
     """Import reference for a package-provided resource server, if managed."""
-
-    @classmethod
-    def toolsets(cls, config: NeMoGymConfig) -> list[Toolset]:
-        return [NeMoGymToolset(config.tools)]
 
     def load(self) -> Iterator[NeMoGymTask]:
         path = self.config.dataset.expanduser().resolve()

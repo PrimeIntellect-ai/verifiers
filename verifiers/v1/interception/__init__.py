@@ -32,16 +32,14 @@ def requires_tunnel(
     """Whether the interception must be exposed via a tunnel — some consumer is off the
     host network: the harness itself, a live `shared` server in a remote runtime, or a
     tool server config placing one there (each reaches the `/state` channel from
-    its own runtime). Skipped as non-consumers: a `colocated` server (shares the
-    harness's runtime, covered by `harness_is_local`), a config-`url` server (external —
-    it connects out), and an `external` shared server (outside the state machinery
-    entirely). False means every consumer reaches the server at localhost."""
+    its own runtime). URL-based servers are outside the state machinery.
+    False means every consumer reaches the server at localhost."""
     if not harness_is_local:
         return True
     if any(not s.external and not s.local for s in shared):
         return True
     for config in server_configs:
-        if getattr(config, "url", None) or config.colocated:
+        if getattr(config, "url", None):
             continue
         if not runtime_is_local(config.runtime):
             return True

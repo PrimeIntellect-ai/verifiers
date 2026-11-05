@@ -30,20 +30,16 @@ logger = logging.getLogger(__name__)
 WORKSPACE_TAG = "vf-workspace"
 
 
-def tool_vms(
-    toolsets, workspace, *, composed: bool, borrowed: bool
-) -> dict[str, PrimeConfig]:
+def tool_vms(toolsets, workspace) -> dict[str, PrimeConfig]:
     """The task's tool servers that join the workspace over the rollout's private
-    network, by server name: those on Prime runtimes of their own beside a Prime
-    workspace of the rollout's own, without a task service spec. Any other server keeps its
-    runtime's published port, which takes no network policy."""
-    if composed or borrowed or not isinstance(workspace, PrimeConfig):
+    network, by server name. Shared servers are owned by the serving context."""
+    if not isinstance(workspace, PrimeConfig):
         return {}
     vms = {
         toolset.server_name: toolset.config.runtime
         for toolset in toolsets
         if isinstance(toolset.config.runtime, PrimeConfig)
-        and not toolset.config.colocated
+        and not toolset.config.shared
         and not toolset.config.url
         and toolset.config.service is None
     }
@@ -70,10 +66,51 @@ async def _keepalive(runtime, every: float) -> None:
 
 
 @asynccontextmanager
+async def keepalive(backend: PrimeBackend):
+    """LAN requests do not refresh a sandbox's platform idle timeout."""
+    task = None
+    if backend.config.idle_timeout is not None:
+        task = asyncio.create_task(
+            _keepalive(backend.bind(), max(10.0, backend.config.idle_timeout / 3))
+        )
+    try:
+        yield
+    finally:
+        if task is not None:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+
+@asynccontextmanager
+async def lan_network(rules):
+    """Own a LAN with explicit rules installed before any member joins."""
+    async with leased_client() as client:
+        network = None
+
+        async def create():
+            nonlocal network
+            network = await client.create_lan_network(
+                f"vf-{uuid.uuid4().hex[:16]}", rules=rules
+            )
+
+        try:
+            await run_shielded(create())
+            yield network.id
+        finally:
+            if network is not None:
+                try:
+                    await run_shielded(client.delete_lan_network(network.id))
+                except Exception:
+                    logger.warning(
+                        "LAN network %s deletion failed", network.id, exc_info=True
+                    )
+
+
+@asynccontextmanager
 async def private_network(
     workspace: RuntimeBackend,
     members: Mapping[str, PrimeConfig],
-    start_workspace: Callable[[], Awaitable[object]],
+    start_workspace: Callable[[], Awaitable[object]] | None = None,
     *,
     interconnect: bool = False,
     networks: Mapping[str, list[str]] | None = None,
@@ -109,59 +146,39 @@ async def private_network(
             for name in names:
                 memberships[name].append(tag)
     async with AsyncExitStack() as stack:
-        client = await stack.enter_async_context(leased_client())
-        # Install connectivity before boot: Compose peers must share a network;
-        # independent tool servers accept only workspace connections.
-        network = await client.create_lan_network(
-            f"vf-{uuid.uuid4().hex[:16]}",
-            rules=rules,
-        )
-
-        async def delete_network() -> None:
-            try:
-                await client.delete_lan_network(network.id)
-            except Exception:
-                logger.warning(
-                    "LAN network %s deletion failed", network.id, exc_info=True
-                )
-
-        stack.push_async_callback(lambda: run_shielded(delete_network()))
-        # Failed startup unwinds this stack before the deployment's workspace owner.
-        stack.push_async_callback(workspace.stop)
+        network_id = await stack.enter_async_context(lan_network(rules))
+        if start_workspace is not None:
+            # A failed boot must release the workspace before its network.
+            stack.push_async_callback(workspace.stop)
+            workspace.lan = (network_id, memberships["main"])
+        else:
+            await stack.enter_async_context(
+                workspace.join_network(network_id, memberships["main"])
+            )
 
         backends: dict[str, RuntimeBackend] = {}
-
-        async def stop(task: asyncio.Task) -> None:
-            task.cancel()
-            await asyncio.gather(task, return_exceptions=True)
 
         async def provision(name: str, config: PrimeConfig) -> None:
             backend = make_backend(config, f"{workspace.name}-{tags[name]}")
             assert isinstance(backend, PrimeBackend)
-            backend.lan = (network.id, memberships[name])
+            backend.lan = (network_id, memberships[name])
             # Pushed before `start()`: a failed start may already hold a paid sandbox.
             stack.push_async_callback(backend.stop)
             await backend.start()  # running, and joined to the network
             backends[name] = backend
-            # LAN traffic is not activity to the platform, and a server's VM sees no
-            # commands of its own: keep it inside its idle timeout until it is released.
-            if config.idle_timeout is not None:
-                every = max(10.0, config.idle_timeout / 3)
-                stack.push_async_callback(
-                    stop, asyncio.create_task(_keepalive(backend.bind(), every))
-                )
+            await stack.enter_async_context(keepalive(backend))
 
-        workspace.lan = (network.id, memberships["main"])
         try:
             async with asyncio.TaskGroup() as group:
-                group.create_task(start_workspace())
+                if start_workspace is not None:
+                    group.create_task(start_workspace())
                 for name, config in members.items():
                     group.create_task(provision(name, config))
         except ExceptionGroup as failed:
             raise failed.exceptions[0]  # one VM's failure, typed for retries
         logger.info(
             "LAN network %s joins %s to %s",
-            network.id,
+            network_id,
             workspace.info.id,
             {name: backend.info.id for name, backend in backends.items()},
         )

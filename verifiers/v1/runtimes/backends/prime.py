@@ -10,7 +10,7 @@ import math
 import shlex
 import tempfile
 import uuid
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Collection, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -55,6 +55,14 @@ _PUBLIC_DOMAIN = "sandbox-v2-prod.pinfra.io"
 """Domain of the public URLs `https://<port>-<sandbox-id>.<domain>` that a LAN network's
 `internet` rule publishes ports at."""
 _EXPOSE_TAG = "vf-exposed"
+_LAN_JOIN_TIMEOUT_SECONDS = 120
+_RESOLVE_LAN = (
+    "command -v getent >/dev/null || exit 0; "
+    f"attempts={_LAN_JOIN_TIMEOUT_SECONDS * 2}; "
+    'while [ "$attempts" -gt 0 ]; do '
+    'getent hosts "$@" >/dev/null && exit 0; '
+    "attempts=$((attempts - 1)); sleep 0.5; done; exit 1"
+)
 
 
 BASE_LABELS: list[str] = []
@@ -162,6 +170,8 @@ class PrimeBackend(RuntimeBackend):
         # A LAN network (id, tags) to join as the sandbox boots: prime-sandboxes joins it
         # once it is running, within `wait_for_creation` on the creating client.
         self.lan: tuple[str, list[str]] | None = None
+        self._lan_users: dict[str, int] = {}
+        self._lan_lock = asyncio.Lock()
         # Exposure state: a LAN network created on the first `expose`, separate from
         # `lan`, and the ports its `internet` rule publishes.
         self._expose_network_id: str | None = None
@@ -423,6 +433,69 @@ class PrimeBackend(RuntimeBackend):
                     raise SandboxError(f"prime expose port {port} failed: {e}") from e
                 self._exposed_ports = ports
         return f"https://{port}-{self.info.id}.{_PUBLIC_DOMAIN}"
+
+    @contextlib.asynccontextmanager
+    async def join_network(
+        self, network_id: str, tags: list[str], *, hosts: Collection[str] = ()
+    ):
+        """Borrow LAN membership until the last local consumer releases it.
+
+        Concurrent rollouts may borrow the same workspace and shared-tool LAN.
+        A rollout must not disconnect a sibling that still uses that membership.
+        """
+
+        async def join():
+            try:
+                async with asyncio.timeout(_LAN_JOIN_TIMEOUT_SECONDS):
+                    # The member response reports propagation without listing every
+                    # sandbox on a shared LAN on each poll.
+                    while not (
+                        await self._client.add_lan_member(
+                            network_id, self.info.id, tags
+                        )
+                    ).synced:
+                        await asyncio.sleep(2)
+            except TimeoutError as error:
+                raise SandboxError(
+                    f"sandbox {self.info.id} did not join LAN {network_id} within "
+                    f"{_LAN_JOIN_TIMEOUT_SECONDS}s"
+                ) from error
+
+        async with self._lan_lock:
+            if network_id not in self._lan_users:
+                try:
+                    await run_shielded(join())
+                except BaseException:
+                    await run_shielded(
+                        self._client.remove_lan_member(network_id, self.info.id)
+                    )
+                    raise
+            self._lan_users[network_id] = self._lan_users.get(network_id, 0) + 1
+        try:
+            if hosts:
+                # LAN DNS may become usable after membership is reported synced.
+                resolved = await self.bind().run(
+                    ["sh", "-c", _RESOLVE_LAN, "resolve", *hosts], {}
+                )
+                if resolved.exit_code:
+                    raise SandboxError(
+                        f"sandbox {self.info.id} joined LAN {network_id} but could "
+                        f"not resolve {sorted(hosts)} within {_LAN_JOIN_TIMEOUT_SECONDS}s"
+                    )
+            yield
+        finally:
+
+            async def release():
+                async with self._lan_lock:
+                    self._lan_users[network_id] -= 1
+                    if not self._lan_users[network_id]:
+                        del self._lan_users[network_id]
+                        if not self.stopped:
+                            await self._client.remove_lan_member(
+                                network_id, self.info.id
+                            )
+
+            await run_shielded(release())
 
     async def run_background(
         self, runtime: Runtime, argv: list[str], env: dict[str, str], log: str

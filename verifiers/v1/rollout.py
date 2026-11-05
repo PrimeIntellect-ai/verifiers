@@ -31,6 +31,7 @@ from verifiers.v1.grading import (
 from verifiers.v1.harness import Harness, HarnessSession
 from verifiers.v1.interception import Interception, serve_interception
 from verifiers.v1.mcp import SharedToolServer, serve_tools
+from verifiers.v1.mcp.launch import launch_tools
 from verifiers.v1.runtimes import (
     Runtime,
     RuntimeConfig,
@@ -42,6 +43,7 @@ from verifiers.v1.state import state_cls
 from verifiers.v1.task import Task
 from verifiers.v1.trace import AgentInfo, Trace, TraceTask
 from verifiers.v1.types import Messages, Request, Response, SystemMessage, UserMessage
+from verifiers.v1.utils.aio import background
 from verifiers.v1.utils.artifacts import collect
 from verifiers.v1.utils.decorators import discover_decorated, invoke
 
@@ -293,16 +295,41 @@ class Rollout:
                     )
                 async with boundary(ToolsetError, "building tool servers"):
                     toolsets = self.task.toolsets(self.task.config)
+                (
+                    base_url,
+                    model_secret,
+                    state_secret,
+                ) = await self._stack.enter_async_context(
+                    serve_interception(
+                        self._interception,
+                        runtime,
+                        self._session,
+                        toolsets,
+                        self._shared_tools,
+                    )
+                )
+                # Evaluator-local tools need no workspace files and can set up while
+                # the workspace boots and the task and harness prepare it.
+                launching_local = await self._stack.enter_async_context(
+                    background(
+                        launch_tools(
+                            toolsets, state_secret=state_secret, state_base=base_url
+                        )
+                    )
+                )
+                shared_networks: dict[str, list[str]] = {}
+                for server in self._shared_tools.values():
+                    if (
+                        server.network_id is not None
+                        and server.lan_url
+                        and (host := urlsplit(server.lan_url).hostname)
+                    ):
+                        shared_networks.setdefault(server.network_id, []).append(host)
                 spec = self.task.deployment_spec()
                 self.deployment = runtime.backend.deploy(
                     spec=spec,
-                    # Tool servers on Prime VMs of their own boot with the workspace.
-                    tool_vms=tool_vms(
-                        toolsets,
-                        runtime.backend.config,
-                        composed=spec is not None,
-                        borrowed=self._borrowed_runtime is not None,
-                    ),
+                    tool_vms=tool_vms(toolsets, runtime.backend.config),
+                    shared_networks=shared_networks,
                     env=runtime.env,
                     config=self._deployment_config,
                     borrowed_runtime=self._borrowed_runtime,
@@ -314,6 +341,18 @@ class Rollout:
                 finally:
                     # Providers may assign an ID before startup fails; retain it for diagnostics.
                     self.trace.agent.runtime = runtime.info.model_copy()
+                # Dedicated tool VMs have their own files and can initialize while
+                # the task and harness set up the workspace.
+                launching_dedicated = await self._stack.enter_async_context(
+                    background(
+                        launch_tools(
+                            toolsets,
+                            state_secret=state_secret,
+                            state_base=base_url,
+                            deployment=self.deployment,
+                        )
+                    )
+                )
                 if not self.task.scoring_deferred:
                     isolated = self._scoring_policy.mode == "isolated"
                     self._scoring_task = self.task.grading_task(
@@ -355,23 +394,6 @@ class Rollout:
                         runtime, self.task.data.agent_user
                     )
                     await self.harness.setup(self._agent_runtime)
-                # `base_url` is the interception server's reachable URL for this rollout.
-                # The harness reaches the model at `{base_url}/v1`; tool servers reach this
-                # rollout's `/state` + `/task` at `base_url` — it's universally reachable
-                # (the interception is exposed whenever any consumer is remote).
-                (
-                    base_url,
-                    model_secret,
-                    state_secret,
-                ) = await self._stack.enter_async_context(
-                    serve_interception(
-                        self._interception,
-                        runtime,
-                        self._session,
-                        toolsets,
-                        self._shared_tools,
-                    )
-                )
                 self._endpoint = runtime.host_url(f"{base_url.rstrip('/')}/v1")
                 self._secret = model_secret
                 services = (
@@ -391,13 +413,10 @@ class Rollout:
                         proxy_mcp=self._session.proxy_mcp,
                         state_route=self.trace.id,
                         state_base=base_url,
-                        services=services,
-                        hosts=self.deployment.hosts,
-                        # Tool servers on VMs of their own, by server name; an explicit
-                        # `service` names a task-declared service.
-                        placements={
-                            name: self.deployment.target(name)
-                            for name in self.deployment.tool_vms
+                        deployment=self.deployment,
+                        started={
+                            **(await launching_local),
+                            **(await launching_dedicated),
                         },
                     )
                 )
@@ -405,7 +424,15 @@ class Rollout:
                 # execution policy while preserving the framework routes the agent uses.
                 # Service hosts resolve inside the deployment (Compose names, LAN
                 # names), not as egress.
-                internal = {*services, *self.deployment.hosts.values()}
+                internal = {
+                    *services,
+                    *self.deployment.hosts.values(),
+                    *(
+                        urlsplit(server.lan_url).hostname
+                        for server in self._shared_tools.values()
+                        if server.lan_url
+                    ),
+                }
                 await self.deployment.prepare_execution(
                     [
                         url

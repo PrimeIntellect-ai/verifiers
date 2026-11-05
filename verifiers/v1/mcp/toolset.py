@@ -21,33 +21,27 @@ class ToolsetTimeoutConfig(BaseConfig):
     """Time to start serving, including `setup()`, such as to build an index."""
 
 
-class BaseToolsetConfig(BaseConfig):
-    """Settings every tool server has, whether per-task or shared."""
+class ToolsetConfig(BaseConfig):
+    """Placement and lifetime of a task's tool server."""
 
     runtime: RuntimeConfig = SubprocessConfig()
     """Where the server runs: the evaluator by default."""
     url: str | None = None
     timeout: ToolsetTimeoutConfig = ToolsetTimeoutConfig()
-
-
-class ToolsetConfig(BaseToolsetConfig):
-    """A per-task tool server. A Prime `runtime` beside a Prime workspace without a task
-    service spec is a VM of the server's own that joins the workspace over the rollout's
-    private network, under its own egress policy."""
-
-    colocated: bool = False
+    shared: bool = False
+    """Reuse one server across rollouts; its serving owner controls its lifetime."""
     service: str | None = None
     """Run the server in a named native Prime service VM. The harness reaches it
     over the deployment's private network, using its LAN hostname."""
 
     @model_validator(mode="after")
     def _one_placement(self):
+        if self.shared and self.service is not None:
+            raise ValueError("shared tool servers need a runtime of their own or a URL")
         if self.service is None:
             return self
-        if self.colocated or self.url:
-            raise ValueError(
-                "a tool server placed in a service is neither colocated nor remote"
-            )
+        if self.url:
+            raise ValueError("a tool server placed in a service takes no remote URL")
         # The service is the server's runtime; another one, or its policy, would go unused.
         if not isinstance(self.runtime, SubprocessConfig):
             raise ValueError(  # noqa: TRY004 - Pydantic validators must raise ValueError
@@ -55,10 +49,6 @@ class ToolsetConfig(BaseToolsetConfig):
                 f"takes no runtime of its own (got {self.runtime.type})"
             )
         return self
-
-
-class SharedToolsetConfig(BaseToolsetConfig):
-    pass
 
 
 class Toolset(ServerBase[ConfigT, StateT]):

@@ -1,8 +1,8 @@
 """One task, one MCP tool: the model calls a tool whose output carries a stamp the prompt
 never reveals (echo-tool), so reward 1.0 proves the tool ran. Every MCP harness reaches
-it colocated across the harness x runtime grid; the chat loop reaches it across its
-placements (colocated in the harness's box, in a native service VM beside it, or its own
-runtime) on the runtime x runtime grid. A tool that raises (tool-error) reports its message
+it in a separate runtime across the harness x runtime grid; the chat loop reaches it
+in a native service VM or its own runtime on the runtime x runtime grid.
+A tool that raises (tool-error) reports its message
 to the model; that is server-side, so the chat loop covers it."""
 
 import pytest
@@ -13,14 +13,14 @@ import verifiers.v1 as vf
 
 @pytest.mark.parametrize("harness,harness_runtime", grid(needs=("mcp",)), indirect=True)
 async def test_tool(run, harness, harness_runtime):
-    """Every MCP-capable harness reaches a tool colocated in its runtime."""
+    """Every MCP-capable harness reaches a tool in a separate runtime."""
     (episode,) = await run(
         "echo-tool",
         harness=harness,
         runtime=harness_runtime,
         max_turns=6,
         max_tokens=8192,
-        taskset_overrides={"task": {"tools": {"colocated": True}}},
+        taskset_overrides={"task": {"tools": {"runtime": harness_runtime}}},
     )
     (trace,) = episode.traces
     assert_one_branch(trace, harness, forks=("openclaw",))
@@ -38,14 +38,12 @@ async def test_tool(run, harness, harness_runtime):
 
 @pytest.mark.parametrize(
     "harness_runtime,tool_runtime",
-    placements(tool_runtimes=("colocated", "service", "subprocess", "prime")),
+    placements(tool_runtimes=("service", "subprocess", "prime")),
     indirect=True,
 )
 async def test_tool_placement(run, harness_runtime, tool_runtime):
-    """A `vf.Toolset` across its placement (`tool_runtime`: colocated in the harness's
-    runtime, in a native service VM beside it, or its own runtime) x the harness `runtime`,
-    on the chat loop. Eval-wide SHARED servers are a different scope (`Taskset.toolsets`),
-    covered by `test_shared_tool`."""
+    """A dedicated `vf.Toolset` in a native service VM or its own runtime, across
+    harness runtimes. Shared servers are covered by `test_shared_tool`."""
     (episode,) = await run(
         "echo-tool",
         harness="null",
@@ -78,13 +76,12 @@ async def test_tool_error(run):
 @pytest.mark.parametrize(
     "placement",
     [
-        {"colocated": True},
+        {"shared": True},
         {"url": "http://example.com/mcp"},
         {"runtime": {"type": "prime"}},
     ],
 )
 def test_service_placement_is_exclusive(placement):
-    """A server in a named service runs there: not colocated, remote or in a runtime of
-    its own."""
+    """A named service owns its server's runtime and rollout lifetime."""
     with pytest.raises(ValueError):
         vf.ToolsetConfig(service="tools", **placement)

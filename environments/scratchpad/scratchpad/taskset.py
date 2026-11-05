@@ -2,10 +2,10 @@
 
 Each rollout is assigned a unique word and asked to round-trip it through the shared scratchpad
 server, then report what came back. The reward is 1 iff the model reports its own word. The server
-is taskset-scoped (one instance per environment worker) yet writable, so this
+is shared across rollouts yet writable, so this
 is a direct test of per-rollout isolation via `self.state`: a run of 8 tasks
 scores a mean reward of 1.0 because each rollout's write to `self.state` stays isolated even though
-every rollout handled by that worker shares its server process.
+every rollout shares its server process.
 """
 
 import verifiers.v1 as vf
@@ -31,7 +31,17 @@ class ScratchpadTaskData(vf.TaskData):
     word: str
 
 
-class ScratchpadTask(vf.Task[ScratchpadTaskData, ScratchpadState]):
+class ScratchpadTaskConfig(vf.TaskConfig):
+    tools: ScratchpadToolsetConfig = ScratchpadToolsetConfig(shared=True)
+
+
+class ScratchpadTask(
+    vf.Task[ScratchpadTaskData, ScratchpadState, ScratchpadTaskConfig]
+):
+    @classmethod
+    def toolsets(cls, config: ScratchpadTaskConfig) -> list[vf.Toolset]:
+        return [ScratchpadToolset(config.tools)]
+
     @vf.stop
     async def done(self, trace: vf.Trace) -> bool:
         # A tool call then a final answer; cap turns so a chatty model still terminates.
@@ -44,14 +54,10 @@ class ScratchpadTask(vf.Task[ScratchpadTaskData, ScratchpadState]):
 
 
 class ScratchpadConfig(vf.TasksetConfig):
-    tools: ScratchpadToolsetConfig = ScratchpadToolsetConfig()
+    task: ScratchpadTaskConfig = ScratchpadTaskConfig()
 
 
 class ScratchpadTaskset(vf.Taskset[ScratchpadTask, ScratchpadConfig]):
-    @classmethod
-    def toolsets(cls, config: ScratchpadConfig) -> list[vf.Toolset]:
-        return [ScratchpadToolset(config.tools)]
-
     def load(self) -> list[ScratchpadTask]:
         return [
             ScratchpadTask(

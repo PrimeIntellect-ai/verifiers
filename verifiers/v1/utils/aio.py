@@ -1,10 +1,54 @@
 """Asyncio helpers shared across the framework."""
 
 import asyncio
-from collections.abc import Awaitable
+from collections.abc import AsyncIterator, Awaitable
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from typing import TypeVar
 
 T = TypeVar("T")
+
+
+@asynccontextmanager
+async def background(
+    cm: AbstractAsyncContextManager[T],
+) -> AsyncIterator[asyncio.Future[T]]:
+    """Acquire a resource while the caller works, keeping its lifetime in one task.
+
+    Await the yielded future before using the resource. Leaving cancels acquisition
+    still in progress and waits for cleanup, including cancellation of the caller.
+    """
+    entered: asyncio.Future[T] = asyncio.get_running_loop().create_future()
+    leave = asyncio.Event()
+
+    async def own() -> None:
+        try:
+            async with cm as value:
+                if entered.cancelled():
+                    return
+                entered.set_result(value)
+                await leave.wait()
+        except asyncio.CancelledError:
+            if entered.done():
+                raise
+            entered.cancel()
+        except Exception as error:
+            if entered.done():
+                raise
+            entered.set_exception(error)
+
+    task = asyncio.create_task(own())
+    try:
+        yield entered
+    finally:
+        leave.set()
+        if not entered.done() or entered.cancelled():
+            task.cancel()
+        await run_shielded(asyncio.wait([task]))
+        entered.cancel()
+        if not entered.cancelled():
+            entered.exception()
+        if not task.cancelled() and (error := task.exception()) is not None:
+            raise error
 
 
 async def run_shielded(coro: Awaitable[T]) -> T:

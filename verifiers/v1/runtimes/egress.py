@@ -1,11 +1,14 @@
 """In-process HTTP(S) proxy for Docker policy and host callbacks."""
 
 import asyncio
+import base64
 import contextlib
+import hmac
+import json
 import secrets
 import socket
 import ssl
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from ipaddress import ip_address
 from urllib.parse import urljoin, urlsplit, urlunsplit
 
@@ -122,35 +125,54 @@ class _Callback:
     host_alias: str
 
 
+@dataclass(frozen=True)
+class HostCallback:
+    """Portable URL routing for trusted workers; the proxy stays with its owner.
+
+    Only workers receive the signing key. Containers receive an origin-scoped
+    signed URL, which cannot authorize a callback to another host or port.
+    """
+
+    host: str
+    port: int
+    key: bytes = field(repr=False)
+
+    def __call__(self, url: str) -> str:
+        parsed = urlsplit(url)
+        host = (parsed.hostname or "").lower().rstrip(".")
+        if not is_loopback_host(host):
+            return url
+        scheme = {"ws": "http", "wss": "https"}.get(parsed.scheme, parsed.scheme)
+        if scheme not in ("http", "https"):
+            raise ValueError(f"unsupported Docker host callback URL: {url}")
+        port = parsed.port or (443 if scheme == "https" else 80)
+        authority = parsed.netloc.rpartition("@")[2]
+        payload = (
+            base64.urlsafe_b64encode(
+                json.dumps([scheme, host, port, authority, self.host]).encode()
+            )
+            .decode()
+            .rstrip("=")
+        )
+        signature = hmac.digest(self.key, payload.encode(), "sha256").hex()
+        userinfo, separator, _ = parsed.netloc.rpartition("@")
+        netloc = f"{userinfo}{separator}{self.host}:{self.port}"
+        path = f"{_CALLBACK_PREFIX}{payload}.{signature}{parsed.path or '/'}"
+        visible_scheme = "ws" if parsed.scheme in ("ws", "wss") else "http"
+        return urlunsplit((visible_scheme, netloc, path, parsed.query, parsed.fragment))
+
+
 class EgressProxy:
     def __init__(self, policy: NetworkPolicy) -> None:
         self.policy = policy
-        self._callbacks: dict[str, _Callback] = {}
-        self._callback_tokens: dict[_Callback, str] = {}
+        self._callback_key = secrets.token_bytes(32)
         self._handlers: set[asyncio.Task] = set()
         self.server: asyncio.Server | None = None
         self.port = 0
 
     def callback_url(self, url: str, host_alias: str = HOST_ALIAS) -> str:
         """Route one framework-owned host-loopback HTTP(S)/WebSocket origin."""
-        parsed = urlsplit(url)
-        scheme = {"ws": "http", "wss": "https"}.get(parsed.scheme, parsed.scheme)
-        host = (parsed.hostname or "").lower().rstrip(".")
-        if scheme not in ("http", "https") or not is_loopback_host(host):
-            raise ValueError(f"unsupported Docker host callback URL: {url}")
-        port = parsed.port or (443 if scheme == "https" else 80)
-        authority = parsed.netloc.rpartition("@")[2]
-        callback = _Callback(scheme, host, port, authority, host_alias)
-        token = self._callback_tokens.get(callback)
-        if token is None:
-            token = secrets.token_urlsafe(32)
-            self._callback_tokens[callback] = token
-            self._callbacks[token] = callback
-        userinfo, separator, _ = parsed.netloc.rpartition("@")
-        netloc = f"{userinfo}{separator}{host_alias}:{self.port}"
-        path = f"{_CALLBACK_PREFIX}{token}{parsed.path or '/'}"
-        visible_scheme = "ws" if parsed.scheme in ("ws", "wss") else "http"
-        return urlunsplit((visible_scheme, netloc, path, parsed.query, parsed.fragment))
+        return HostCallback(host_alias, self.port, self._callback_key)(url)
 
     async def start(
         self, bind_host: str | None = None, *, listener: socket.socket | None = None
@@ -202,7 +224,14 @@ class EgressProxy:
                 token, separator, path = parsed.path[len(_CALLBACK_PREFIX) :].partition(
                     "/"
                 )
-                callback = self._callbacks.get(token)
+                payload, _, signature = token.rpartition(".")
+                expected = hmac.digest(
+                    self._callback_key, payload.encode(), "sha256"
+                ).hex()
+                if hmac.compare_digest(signature, expected):
+                    callback = _Callback(
+                        *json.loads(base64.urlsafe_b64decode(payload + "==="))
+                    )
                 if callback is not None:
                     parsed = parsed._replace(path=f"/{path}" if separator else "/")
             connect = method == "CONNECT"

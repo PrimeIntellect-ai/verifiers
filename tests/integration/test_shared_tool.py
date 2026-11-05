@@ -1,6 +1,4 @@
-"""An eval-wide shared writable tool (scratchpad) isolates state across concurrent
-rollouts, across the runtime x runtime grid. Shared servers
-always run in their own runtime (colocation is per-rollout, shared is eval-level)."""
+"""The same writable tool isolates concurrent rollouts in either lifetime mode."""
 
 import pytest
 from grid import placements
@@ -8,10 +6,11 @@ from grid import placements
 
 @pytest.mark.parametrize(
     "harness_runtime,tool_runtime",
-    placements(tool_runtimes=("subprocess", "prime"), shared=True),
+    placements(),
     indirect=True,
 )
-async def test_shared_tool(run, harness_runtime, tool_runtime):
+@pytest.mark.parametrize("shared", [False, True])
+async def test_shared_tool(run, harness_runtime, tool_runtime, shared):
     episodes = await run(
         "scratchpad",
         harness="null",
@@ -19,7 +18,7 @@ async def test_shared_tool(run, harness_runtime, tool_runtime):
         num_tasks=2,
         n=1,
         max_turns=4,
-        taskset_overrides={"tools": tool_runtime},
+        taskset_overrides={"task": {"tools": {**tool_runtime, "shared": shared}}},
     )
     traces = [trace for episode in episodes for trace in episode.traces]
     assert all(trace.num_branches == 1 for trace in traces)

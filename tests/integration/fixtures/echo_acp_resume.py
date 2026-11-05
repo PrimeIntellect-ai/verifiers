@@ -20,7 +20,7 @@ class ResumeToolset(vf.Toolset[vf.ToolsetConfig]):
 
 
 class ACPResumeTaskConfig(vf.TaskConfig):
-    tools: vf.ToolsetConfig = vf.ToolsetConfig(colocated=True)
+    tools: vf.ToolsetConfig = vf.ToolsetConfig()
 
 
 class ACPResumeConfig(vf.TasksetConfig):

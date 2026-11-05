@@ -6,7 +6,6 @@ from verifiers.v1.mcp.launch import (
 )
 from verifiers.v1.mcp.server import ServerBase
 from verifiers.v1.mcp.toolset import (
-    SharedToolsetConfig,
     Toolset,
     ToolsetConfig,
     ToolsetTimeoutConfig,
@@ -15,7 +14,6 @@ from verifiers.v1.mcp.toolset import (
 __all__ = [
     "ServerBase",
     "SharedToolServer",
-    "SharedToolsetConfig",
     "Toolset",
     "ToolsetConfig",
     "ToolsetTimeoutConfig",

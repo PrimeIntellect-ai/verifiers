@@ -1,11 +1,9 @@
 """Task-declared Harbor MCP tools served through the standard VF toolset lifecycle."""
 
-import os
 from typing import Any, cast
 
 from mcp import Client
 from mcp.client.sse import sse_client
-from mcp.client.stdio import StdioServerParameters, stdio_client
 from mcp.client.streamable_http import streamable_http_client
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.types import CallToolResult, Tool
@@ -26,26 +24,6 @@ class HarborMCPToolset(Toolset[HarborMCPConfig]):
     async def setup(self) -> None:
         spec = self.config.server
         match spec["transport"]:
-            case "stdio":
-                # Keep task variables, excluding the wrapper's state and bind controls.
-                env = {
-                    key: value
-                    for key, value in os.environ.items()
-                    if key
-                    not in {
-                        "VF_CONFIG",
-                        "VF_STATE_URL",
-                        "VF_STATE_SECRET",
-                        "MCP_HOST",
-                        "MCP_PORT",
-                        "MCP_PORT_FILE",
-                    }
-                }
-                transport = stdio_client(
-                    StdioServerParameters(
-                        command=spec["command"], args=spec.get("args", []), env=env
-                    )
-                )
             case "sse":
                 transport = sse_client(spec["url"])
             case "streamable-http":

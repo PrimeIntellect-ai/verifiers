@@ -376,8 +376,8 @@ class Task(Generic[DataT, StateT, ConfigT]):
 
     @classmethod
     def toolsets(cls, config: ConfigT) -> list[Toolset]:
-        """Tool servers launched per rollout, each constructed with its config off
-        `config` — override and wire explicitly:
+        """Tool servers used by this task; `config.shared` selects a serving-owner
+        instance instead of a fresh server per rollout. Wire configs explicitly:
 
             @classmethod
             def toolsets(cls, config: MyTaskConfig) -> list[vf.Toolset]:
