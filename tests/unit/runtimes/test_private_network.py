@@ -204,9 +204,10 @@ def test_the_workspace_stops_before_tool_evidence_and_is_released_regardless():
 
 
 def served_url(monkeypatch, server, **kwargs):
+    @asynccontextmanager
     async def serve_in_runtime(server, runtime, **options):
         assert options["listen_all"]
-        return 1234
+        yield 1234
 
     monkeypatch.setattr(launch, "serve_in_runtime", serve_in_runtime)
 

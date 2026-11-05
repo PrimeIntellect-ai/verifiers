@@ -276,6 +276,7 @@ class ServerBase(Generic[ConfigT, StateT]):
 
     def _serve(self) -> None:
         import asyncio
+        import signal
         import socket
         from pathlib import Path
 
@@ -302,6 +303,11 @@ class ServerBase(Generic[ConfigT, StateT]):
 
             from verifiers.v1.interception.tunnel.base import HEALTH_PATH
 
+            # Cancellation unwinds provider sessions even during setup. Uvicorn's
+            # default SIGTERM exit would bypass this task's outer resource stack.
+            asyncio.get_running_loop().add_signal_handler(
+                signal.SIGTERM, asyncio.current_task().cancel
+            )
             try:
                 async with (
                     self._exit_stack,

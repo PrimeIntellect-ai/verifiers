@@ -29,6 +29,7 @@ from verifiers.v1.judges.rubric import (
     score_verdicts,
     weighted_score,
 )
+from verifiers.v1.task import ConfigT
 from verifiers.v1.utils.compile import validate_pairing
 from verifiers.v1.utils.workspace import WorkspaceSnapshot
 
@@ -121,7 +122,7 @@ HINT_SECTION = """\
 {hint}"""
 
 
-class JudgeTask(vf.Task):
+class JudgeTask(vf.Task[vf.TaskData, vf.State, ConfigT]):
     """The judge's verdict task: the solver task's world mirrored onto the minted
     row, the trace record written (and any stale verdict removed) before the
     judge starts, verdict scraped off the live box after it exits. `NEEDS_CONTAINER`
@@ -137,8 +138,9 @@ class JudgeTask(vf.Task):
         *,
         workspace: WorkspaceSnapshot | None = None,
         env: dict[str, str] | None = None,
+        config: ConfigT | None = None,
     ) -> None:
-        super().__init__(data)
+        super().__init__(data, config)
         self.files = files
         self.parse_verdict = parse_verdict
         self.workspace = workspace
