@@ -973,13 +973,15 @@ class Rollout:
                     await runtime.backend.stop()
             except Exception:
                 logger.warning("runtime teardown failed", exc_info=True)
+        error = trace.last_error
         logger.info(
-            "rollout done: id=%s task=%s reward=%.3f turns=%d stop=%s%s",
+            "rollout done: id=%s task=%s reward=%.3f turns=%d stop=%s%s%s",
             trace.id,
             self.task.data.idx,
             trace.reward,
             trace.num_turns,
-            trace.last_error.type if trace.last_error else trace.stop_condition,
+            error.type if error else trace.stop_condition,
             f" dropped={trace.dropped!r}" if trace.is_dropped else "",
+            f" error={error.message!r}" if error else "",
         )
         return trace
