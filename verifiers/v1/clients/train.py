@@ -132,6 +132,9 @@ def response_from_generate(
                 if isinstance(tc.arguments, str)
                 else json.dumps(tc.arguments or {})
             ),
+            # The header's content type as sampled, where the format has one (renderers' ParsedToolCall
+            # carries it from gpt-oss-sampled-tool-call-header on).
+            content_type=getattr(tc, "content_type", None),
         )
         for i, tc in enumerate(result.get("tool_calls") or [])
         if getattr(tc, "name", None)
