@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import logging
 import os
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, ClassVar, Generic, TypeVar
+from typing import TYPE_CHECKING, ClassVar, Generic, Self, TypeVar
 
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import DialectName, HarnessConfig, skill_destination
@@ -66,6 +67,19 @@ class Harness(ABC, Generic[ConfigT]):
 
     def __init__(self, config: ConfigT) -> None:
         self.config = config
+
+    def with_mcp_header_env(self, header_env: Mapping[str, Mapping[str, str]]) -> Self:
+        """A copy of this harness for one rollout whose config's `mcp_header_env` also
+        names `header_env`'s variables (a shared server's own win, header by header)."""
+        merged = {
+            name: dict(self.config.mcp_header_env.get(name, {})) | dict(headers)
+            for name, headers in header_env.items()
+        }
+        made = copy.copy(self)
+        made.config = self.config.model_copy(
+            update={"mcp_header_env": self.config.mcp_header_env | merged}
+        )
+        return made
 
     def replay_view(self, message: Message, dialect: DialectName | None) -> Message:
         """`message` as this harness re-sends it on later requests over `dialect` (None
