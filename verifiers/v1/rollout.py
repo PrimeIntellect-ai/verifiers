@@ -797,7 +797,11 @@ class Rollout:
         )
 
     def _scoring_skip_reason(self) -> str | None:
-        """Why the resolved scoring policy skips task scoring for this trace, if it does."""
+        """Why task scoring cannot run or is disabled for this trace, if it is."""
+        if getattr(self.task.data, "verifiers_process_scope", False) and (
+            self.runtime is None or self.runtime.backend.cache.process_scope is None
+        ):
+            return "workload_scope_unprepared"
         if self._scoring_policy.skip_on_truncated and self.trace.is_truncated:
             return "truncated"
         if self._scoring_policy.skip_on_timeout and self.trace.is_timeout:
