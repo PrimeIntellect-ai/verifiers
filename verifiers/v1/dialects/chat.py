@@ -425,6 +425,8 @@ class ChatDialect(Dialect[ChatCompletion]):
     routes = ("/v1/chat/completions",)
     upstream_path = "/chat/completions"
     response_type = ModdedChatCompletion
+    # The Prime gateway carries a part's `cache_control` through to Anthropic.
+    cache_block_types = frozenset({"text", "image_url", "file"})
 
     def mediate_external_capabilities(
         self, body: RawRequest, policy: NetworkPolicyConfig

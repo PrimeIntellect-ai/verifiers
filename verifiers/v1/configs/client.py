@@ -71,10 +71,19 @@ class BaseClientConfig(BaseConfig):
         return self
 
 
+PromptCache = Literal["auto", "off"]
+"""How the relay handles Anthropic prompt caching (`EvalClientConfig.prompt_cache`)."""
+
+
 class EvalClientConfig(BaseClientConfig):
     """The default (eval): forward each request to a matching endpoint via `EvalClient`."""
 
     type: Literal["eval"] = "eval"
+    prompt_cache: PromptCache = "auto"
+    """Claude caches a prompt prefix only up to a `cache_control` breakpoint. `auto` adds one,
+    on the last block, to each Claude request whose program set none, so every turn reads the
+    previous turn's prefix from cache (see `Dialect.apply_prompt_cache`). `off` adds none.
+    A program's own breakpoints pass through either way."""
 
 
 class TrainClientConfig(BaseClientConfig):

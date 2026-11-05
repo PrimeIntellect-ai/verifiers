@@ -45,6 +45,7 @@ from verifiers.v1.clients.base import join_url
 from verifiers.v1.clients.client import RelayReply
 from verifiers.v1.configs.client import (
     BaseClientConfig,
+    EvalClientConfig,
     TrainClientConfig,
     resolve_api_key,
     resolve_headers,
@@ -901,6 +902,13 @@ class InterceptionServer(Interception):
             return _error_response(dialect, str(error), status=400)
         except RolloutError as error:
             return self._fail(session, dialect, error)
+        # Prompt-cache breakpoints go on the upstream copy only, after the turn is resolved:
+        # the trace keeps the program's own content shape, so the next turn, which re-sends
+        # this one without the marker, still extends the same branch.
+        if isinstance(session.ctx.client, EvalClientConfig):
+            body = dialect.apply_prompt_cache(
+                body, session.ctx.model, session.ctx.client.prompt_cache
+            )
         # The tail is what the harness added since the last turn (tool results, user
         # turns): live watchers see it now rather than with the model's reply.
         session.trace.preview(turn, turn.tail)

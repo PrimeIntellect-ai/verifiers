@@ -8,7 +8,8 @@ from the endpoint the program's SDK posts to — the harness declares nothing.
 The eval client preserves a request's native JSON fields except for eval-owned overrides, while a
 dialect-owned `StreamParser` incrementally assembles a response copy for the trace; the renderer is chat-only.
 A dialect is therefore mostly wire -> vf (`parse_request`/`parse_response`/`stream_parser`); the
-exception is `apply_overrides` (impose the eval's model + sampling in this format's shape).
+exceptions are `apply_overrides` (impose the eval's model + sampling in this format's shape) and
+`apply_prompt_cache` (add a Claude prompt-cache breakpoint to the copy sent upstream).
 """
 
 import json
@@ -22,6 +23,7 @@ from typing import Any, ClassVar, Generic, TypeVar
 from pydantic import AnyHttpUrl, BaseModel, ValidationError
 from pydantic_core import from_json
 
+from verifiers.v1.configs.client import PromptCache
 from verifiers.v1.configs.harness import DialectName
 from verifiers.v1.configs.runtime import (
     NetworkPolicyConfig,
@@ -214,6 +216,72 @@ def append_user_notice(
     messages.append(message)
 
 
+PROMPT_CACHE_MARKER = {"type": "ephemeral"}
+"""The breakpoint `Dialect.apply_prompt_cache` adds: Anthropic's default five-minute cache."""
+
+
+def is_claude_model(model: str, dialect: DialectName) -> bool:
+    """Whether a request goes to Claude, whose prompt cache needs `cache_control` breakpoints:
+    a model id naming Claude (e.g. `anthropic/claude-sonnet-5.5` over chat completions), or
+    any request in the Anthropic Messages format, whose schema carries `cache_control`. Other
+    providers cache prefixes without markers, so their requests stay unchanged."""
+    return dialect == "anthropic_messages" or "claude" in model.lower()
+
+
+def has_cache_control(value: object) -> bool:
+    """Whether a native request sets `cache_control` anywhere: a block or tool marker, or
+    Anthropic's top-level automatic field."""
+    if isinstance(value, dict):
+        return "cache_control" in value or any(map(has_cache_control, value.values()))
+    if isinstance(value, list):
+        return any(map(has_cache_control, value))
+    return False
+
+
+def mark_last_block(body: RawRequest, block_types: frozenset[str]) -> RawRequest:
+    """A copy of `body` with `PROMPT_CACHE_MARKER` on the last block of the last non-system
+    message that can carry one: a block of `block_types`, text only when non-empty. String
+    content becomes one text block first. Returns `body` itself when no block qualifies."""
+    messages = body.get("messages")
+    if not isinstance(messages, list):
+        return body
+    # A trailing (mid-conversation) system message can't always carry a marker; the
+    # conversation before it is the prefix worth caching.
+    index = len(messages) - 1
+    while (
+        index >= 0
+        and isinstance(messages[index], dict)
+        and messages[index].get("role") in ("system", "developer")
+    ):
+        index -= 1
+    if index < 0 or not isinstance(message := messages[index], dict):
+        return body
+    content = message.get("content")
+    blocks = (
+        [{"type": "text", "text": content}] if isinstance(content, str) else content
+    )
+    if not isinstance(blocks, list):
+        return body
+    for position in reversed(range(len(blocks))):
+        block = blocks[position]
+        if (
+            isinstance(block, dict)
+            and block.get("type") in block_types
+            and (block["type"] != "text" or block.get("text"))
+        ):
+            marked = list(blocks)
+            marked[position] = {**block, "cache_control": dict(PROMPT_CACHE_MARKER)}
+            return {
+                **body,
+                "messages": [
+                    *messages[:index],
+                    {**message, "content": marked},
+                    *messages[index + 1 :],
+                ],
+            }
+    return body
+
+
 def is_sse_done_event(raw: bytes) -> bool:
     """Whether one complete SSE event carries the DONE sentinel."""
     # Ordinary OpenAI events carry JSON objects; reject their hot path before splitting lines.
@@ -288,6 +356,10 @@ class Dialect(ABC, Generic[RespT]):
 
     response_type: type[RespT]
     """The native response model — used to validate the provider's raw JSON before parsing."""
+
+    cache_block_types: ClassVar[frozenset[str]] = frozenset()
+    """Content block types that can carry an Anthropic prompt-cache marker in this format;
+    empty for a format without them, which `apply_prompt_cache` leaves unchanged."""
 
     def auth_headers(self, api_key: str) -> dict[str, str]:
         """The provider auth headers for this format. Defaults to OAuth2 Bearer (every
@@ -384,3 +456,21 @@ class Dialect(ABC, Generic[RespT]):
         """Return `body` with the eval's `model` + `sampling` imposed in this protocol's shape —
         model overlays; sampling is authoritative (the program's sampling keys are dropped, the
         eval's applied). Capability mediation may subsequently remove restricted fields."""
+
+    def apply_prompt_cache(
+        self, body: RawRequest, model: str, prompt_cache: PromptCache
+    ) -> RawRequest:
+        """Return `body` with one Anthropic prompt-cache breakpoint when `prompt_cache` is
+        `auto`, `model` is Claude (`is_claude_model`) and the program set no `cache_control`:
+        `PROMPT_CACHE_MARKER` on the last block (`mark_last_block`), so the next turn, which
+        starts with this one, reads it from cache. A program that places its own breakpoints
+        (Claude Code) is left alone, and adding one only when there are none stays within
+        Anthropic's four per request. Never mutates `body`: a change returns a copy."""
+        if (
+            prompt_cache == "off"
+            or not self.cache_block_types
+            or not is_claude_model(model, self.name)
+            or has_cache_control(body)
+        ):
+            return body
+        return mark_last_block(body, self.cache_block_types)
