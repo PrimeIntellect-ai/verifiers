@@ -118,15 +118,6 @@ at least `REROUTE_AFTER_SECONDS` reroutes at once: a slow replica streams for an
 before the cut, and the regeneration would go back to it."""
 
 
-SLOW_STREAM_AFTER_SECONDS = 600.0
-SLOW_STREAM_EVENTS_PER_SECOND = 6.0
-"""A stream that has run `SLOW_STREAM_AFTER_SECONDS` at under `SLOW_STREAM_EVENTS_PER_SECOND`
-(about a token each) is cut here as the provider would cut it: a slow GLM 5.3 replica streams
-~4 tok/s (the others ~19) for up to 100 minutes before the provider cuts it, and its rollout
-waits all that time (2026-10-30). The cut is a long one, so the rollout reroutes at once
-(`REROUTE_AFTER_SECONDS`) and the turn is sampled again on another replica."""
-
-
 def _retry_wait(
     error: ProviderError,
     failures: int,
@@ -565,7 +556,7 @@ async def _collect_completion(dialect: Dialect, reply: RelayReply) -> Response:
 
 
 async def _collect_stream(
-    dialect: Dialect, reply: RelayReply, *, watch_slow: bool = True
+    dialect: Dialect, reply: RelayReply
 ) -> tuple[Response, bytes]:
     """Read a relayed provider stream whole: the assembled response and the events to serve
     for it. Comment-only events (the provider's own keepalives) are dropped; the served
@@ -578,19 +569,6 @@ async def _collect_stream(
     last = b""
     try:
         async for chunk in reply.chunks:
-            elapsed = time.monotonic() - started
-            if (
-                watch_slow
-                and elapsed >= SLOW_STREAM_AFTER_SECONDS
-                and count < SLOW_STREAM_EVENTS_PER_SECOND * elapsed
-            ):
-                error = ProviderError(
-                    f"upstream stream too slow: {count / elapsed:.1f} events/s "
-                    f"(after {elapsed:.0f}s, {count} events, {len(events)} bytes)"
-                )
-                error.streamed = count > 0
-                error.events = count
-                raise error
             if not any(line.startswith(b"data:") for line in chunk.splitlines()):
                 continue
             if message := _stream_error(chunk):
@@ -1063,10 +1041,6 @@ class InterceptionServer(Interception):
         # A streamed request is served whole once its turn commits: the eval client's
         # provider stream is read to the end, and the train client generates the response.
         relay = streaming and not isinstance(ctx.client, TrainClientConfig)
-        # The slow-stream watchdog cuts a turn once: the cut reroutes it, and when the next
-        # replica is as slow the model is (DeepSeek QC streams ~5 events/s on every replica,
-        # cut and regenerated each 600 s six times over, 2026-10-30), so it runs to the end.
-        watch_slow = True
         req_hash = await _request_digest(raw)
         # Keep `read()` for aiohttp's size guard, then release its cache and our local
         # alias after parsing so the wire body does not survive model inference.
@@ -1254,9 +1228,7 @@ class InterceptionServer(Interception):
                     headers=upstream_headers,
                     session_id=ctx.session_id or session.trace.id,
                 )
-                response, events = await _collect_stream(
-                    dialect, reply, watch_slow=watch_slow
-                )
+                response, events = await _collect_stream(dialect, reply)
             elif _streams_upstream(dialect, ctx.client):
                 # A non-streaming request still streams from the provider: bytes keep
                 # arriving through a long generation, which a client read timeout would
@@ -1269,9 +1241,7 @@ class InterceptionServer(Interception):
                     session_id=ctx.session_id or session.trace.id,
                 )
                 if "text/event-stream" in (reply.content_type or ""):
-                    response, _ = await _collect_stream(
-                        dialect, reply, watch_slow=watch_slow
-                    )
+                    response, _ = await _collect_stream(dialect, reply)
                 else:
                     response = await _collect_completion(dialect, reply)
                 events = None
@@ -1321,7 +1291,7 @@ class InterceptionServer(Interception):
                 return await send()
 
         async def sample() -> web.Response:
-            nonlocal upstream, ctx, watch_slow
+            nonlocal upstream, ctx
             session.error = None
             call_response: Response | None = None
             events: bytes | None = None
@@ -1384,13 +1354,6 @@ class InterceptionServer(Interception):
                                 first_failure = now
                             if getattr(e, "streamed", False):
                                 cut_offs += 1
-                            if str(e).startswith(
-                                "upstream stream too slow"
-                            ) and getattr(e, "events", 0):
-                                # A replica that streams slowly would be cut again for
-                                # nothing; one that sent no event at all (an outage,
-                                # 2026-10-30) is cut every time.
-                                watch_slow = False
                             long_exchange = (
                                 time.time() - started >= REROUTE_AFTER_SECONDS
                             )
