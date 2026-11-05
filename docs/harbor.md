@@ -93,6 +93,14 @@ Install `harbor-rewardkit==0.2.4` in the evaluator project. Composite verifiers 
 
 Task Python runs only in a sandbox verifier runtime. The evaluator receives a JSON reward graph, prepares every judge's inputs before inference, and supplies native judge results to RewardKit's aggregation. Set `env.taskset.task.reward_key` to select the training reward; other named rewards and criterion scores remain metrics.
 
+Native judge reliability metrics use the prefix `harbor/reliability` for standalone judging and `harbor/<component>/reliability` for composite judging:
+
+- `criteria/<criterion>/agreement` and `criteria/<criterion>/valid_samples` copy RewardKit's sample diagnostics when available. Agreement measures consistency between valid samples, not correctness or confidence. Both metrics are omitted for a single sample; an all-invalid repeated result has `valid_samples = 0` and no agreement.
+- `criteria/<criterion>/error` is 1 when the reduced criterion result has an error, otherwise 0. It is not a count of failed samples.
+- `guard/agreement`, `guard/valid_samples`, and `guard/error` follow the same rules when a guard result exists. `guard/flagged` is 1 for a flagged guard and 0 for a clear guard; it is omitted when the guard has an error.
+
+These are ordinary trace metrics and do not change rewards. Detailed judge results remain in `trace.info["harbor_judge"]` and `reward-details.json`, including sample outcomes, error text, and guard details provided by RewardKit. Metrics are recorded after judging completes; a raised judge failure does not produce a reduced result.
+
 For LLM judges, `env.taskset.task.judge` supplies explicit native model, endpoint, and sampling overrides. Authored file inputs, reference files, and prompt templates are read through the verifier runtime. Images become native image inputs; documents require the matching MarkItDown extras in the evaluator project. `view = "full_trace"` includes observable messages; `include_hidden_reasoning = true` also includes reasoning. Opaque provider state is excluded.
 
 Agent judge TOMLs use `agentic-judge` with explicit solver and judge harnesses. The configured native judge harness runs in the selected verifier workspace, keeps a separate non-training trace, and writes the authored RewardKit response schema. Explicit `env.judge` model and sampling settings override authored values. Harbor tasks own their judging policy in this environment, so environment rubric and score overrides are rejected.
