@@ -57,6 +57,7 @@ from verifiers.v1.judges.rubric import (
     score_verdicts,
     weighted_score,
 )
+from verifiers.v1.mcp import ToolsetConfig
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.runtimes.deployment import Deployment
 from verifiers.v1.state import State
@@ -103,6 +104,8 @@ class HarborTaskConfig(TaskConfig):
     None uses the authored model with Verifiers' default endpoint."""
     mcp_servers: list[dict] = Field(default_factory=list)
     """Task-declared connections, bound from HarborData during construction."""
+    mcp: ToolsetConfig = ToolsetConfig(colocated=True)
+    """Native server placement and execution settings for task-declared MCP tools."""
 
     @field_serializer("judge")
     def _judge_overrides(
@@ -253,7 +256,7 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
         from .toolset import HarborMCPConfig, HarborMCPToolset
 
         return super().toolsets(config) + [
-            HarborMCPToolset(HarborMCPConfig(colocated=True, server=server))
+            HarborMCPToolset(HarborMCPConfig(**config.mcp.model_dump(), server=server))
             for server in config.mcp_servers
         ]
 

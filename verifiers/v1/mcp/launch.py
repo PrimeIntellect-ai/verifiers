@@ -357,6 +357,10 @@ async def serve_in_runtime(
     the OS choose and report the result through a file. With a state channel, the server fetches
     the current rollout task from the adjacent `/task` endpoint rather than a launch argument.
     """
+    if isinstance(server.config, BaseToolsetConfig) and server.config.user is not None:
+        from verifiers.v1.rollout import resolve_agent_runtime
+
+        runtime = await resolve_agent_runtime(runtime, server.config.user)
     # A shared server has a private service secret but no fixed state URL. Set
     # both controls explicitly so a subprocess cannot inherit stale host values.
     env = {

@@ -27,6 +27,8 @@ class BaseToolsetConfig(BaseConfig):
     runtime: RuntimeConfig = SubprocessConfig()
     """Where the server runs: the evaluator by default."""
     url: str | None = None
+    user: str | None = None
+    """Existing runtime user to run the server as; None inherits its placement's user."""
     timeout: ToolsetTimeoutConfig = ToolsetTimeoutConfig()
 
 
