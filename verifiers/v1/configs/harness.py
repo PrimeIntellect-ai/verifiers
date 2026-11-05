@@ -55,7 +55,9 @@ class HarnessConfig(BaseConfig):
         return resolved
 
     tool_timeout: FiniteFloat = Field(600.0, gt=0)
-    """Seconds a single MCP tool call may take; raise it for tools that boot a VM."""
+    """Seconds a single MCP tool call may take; raise it for tools that boot a VM. A
+    harness's local `bash` command still running after this long is moved to the
+    background and the agent is told where its output goes."""
     disabled_tools: list[str] | None = None
     dialect: DialectName | Literal["auto"] = "auto"
     """Model API wire format the program speaks. `auto` lets the program pick, e.g. from
