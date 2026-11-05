@@ -461,6 +461,22 @@ async def test_a_turn_with_text_and_unsent_output_is_retried(harness):
     assert len(provider.requests) == (4 if harness is ScriptHarness else 2)
 
 
+async def test_a_text_turn_refused_for_its_tail_again_and_again_is_served():
+    """A model whose usage always counts more than its text (Nemotron 3.5 on three
+    ProgramBench turns, ~1,500 resamples over 20 hours, 2026-11-04) is not dropping a
+    tool call: after `MAX_UNSENT_TAIL_REJECTIONS` refusals the text turn is served."""
+    from verifiers.v1.interception import server
+
+    n = server.MAX_UNSENT_TAIL_REJECTIONS
+    async with Provider(*["tail"] * (n + 1)) as provider:
+        agent = make(provider, StreamHarness, retry={"budget": 60})
+        trace = await agent.run(task())
+    assert len(provider.requests) == n + 1
+    refused = [c for c in trace.calls if c.error and "never arrived" in c.error.message]
+    assert len(refused) == n
+    assert trace.calls[-1].error is None
+
+
 async def test_a_final_answer_with_text_is_kept():
     """A reply whose usage covers its text is a final answer: nothing is retried."""
     async with Provider("summary") as provider:
