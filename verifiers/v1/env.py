@@ -173,8 +173,8 @@ class Env(ABC, Generic[ConfigT]):
         record a guess."""
 
     def complete(self, episode: Episode) -> bool:
-        """Whether a finished episode is a valid result — what `--resume` keeps
-        vs. redoes (default `episode.ok`). An env whose `run()` tolerates a
+        """Whether a finished episode is a valid result, at completion and on resume
+        (default `episode.ok`, initially the success of every trace). An env whose `run()` tolerates a
         failed participant overrides this, else resume re-runs accepted rollouts."""
         return episode.ok
 
@@ -296,6 +296,7 @@ class Env(ABC, Generic[ConfigT]):
         # Both hooks and every trace concluded — stamp the attempt's verdict
         # (retry history merges into `errors` later without touching it).
         episode.ok = all(t.ok for t in episode.traces)
+        episode.ok = self.complete(episode)
         return episode
 
     def slots(self, task: Task, n: int = 1) -> list[RunSlot]:

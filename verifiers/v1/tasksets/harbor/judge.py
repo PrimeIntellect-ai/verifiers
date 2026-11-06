@@ -15,7 +15,9 @@ from typing import Any
 from openai import APITimeoutError
 
 from verifiers.v1.configs.judge import JudgeConfig
+from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.errors import SandboxError, TaskError
+from verifiers.v1.grading import scoring_network
 from verifiers.v1.judge import Judge, JudgeView
 from verifiers.v1.task import TaskData
 from verifiers.v1.types import (
@@ -25,6 +27,8 @@ from verifiers.v1.types import (
     TextContentPart,
     UserMessage,
 )
+from verifiers.v1.utils.artifacts import ARTIFACTS_DIR
+from verifiers.v1.utils.workspace import WorkspaceSnapshot
 
 MAX_BYTES = 1024 * 1024
 MAX_INPUT_BYTES = 32 * MAX_BYTES
@@ -194,7 +198,6 @@ async def prepare_judge(
     authored = config.judge
     unsupported = {
         "version",
-        "isolated",
         "cwd",
         "atif_trajectory",
         "mcp_servers",
@@ -215,14 +218,12 @@ async def prepare_judge(
     if agentic:
         if task.judge_executor is None:
             raise TaskError("Agent judge TOMLs require the agentic-judge environment")
-        if authored.samples != 1 or authored.mode != "batched":
-            raise TaskError(
-                "Repeated/individual agent judging needs independent sample workspaces"
-            )
         if task.config.judge is not None:
             raise TaskError("Configure agent judge overrides on env.judge")
     elif "model" in authored.model_fields_set:
         raise TaskError("judge.model is only supported for agent judges")
+    if not agentic and "isolated" in authored.model_fields_set:
+        raise TaskError("judge.isolated is only supported for agent judges")
     if authored.timeout <= 0:
         raise TaskError("judge.timeout must be positive")
     selections = {
@@ -251,6 +252,40 @@ async def prepare_judge(
         reference.insert(
             0, TextContentPart(text="Reference solution (for comparison):")
         )
+    workspace = None
+    network = None
+    if agentic:
+        if any(not m.read_only for m in getattr(runtime.config, "mounts", {}).values()):
+            raise TaskError("Independent judge workspaces require read-only mounts")
+        # Capture after verifier staging/programmatic checks, before any judge runs.
+        # Only these trees travel: the workdir, tests, verifier logs, published
+        # artifacts and explicit inputs/reference. Other paths come from the image;
+        # live processes and external services are not filesystem artifacts.
+        workdir = PurePosixPath(runtime.config.workdir or "/app")
+        roots = {
+            workdir / path
+            for path in (
+                str(workdir),
+                "/tests",
+                "/logs/verifier",
+                ARTIFACTS_DIR,
+                *trace.state.artifacts,
+                *(a.source for a in task.data.artifacts),
+                *(p for paths in groups for p in paths),
+                *([authored.reference] if authored.reference else []),
+            )
+        }
+        if any(p == PurePosixPath("/") or ".." in p.parts for p in roots):
+            raise TaskError("Judge workspace roots must be below '/' without '..'")
+        workspace = await WorkspaceSnapshot.capture(runtime, roots)
+        # Shared Harbor scoring can reopen the solver's network without changing
+        # runtime.config. Fresh judges need that effective verifier policy.
+        if task.scoring.mode == "shared":
+            network = (
+                scoring_network(trace.agent.config.runtime, task.scoring.network)
+                if task.scoring.network is not None
+                else NetworkPolicyConfig()
+            )
     settings = (
         task.config.judge.model_dump(exclude_unset=True) if task.config.judge else {}
     )
@@ -347,6 +382,8 @@ async def prepare_judge(
                             s.model_dump()
                             for s in parse_judge_response(text, criteria, weights)
                         ],
+                        workspace=workspace,
+                        env=dict(runtime.env),
                     )
                     verdict = await task.judge_executor(
                         AgentJudgeRequest(
@@ -358,6 +395,8 @@ async def prepare_judge(
                             if reward.judge.reasoning_effort is not None
                             else None,
                             timeout=authored.timeout,
+                            isolated=True,
+                            network=network,
                         ),
                         runtime,
                     )

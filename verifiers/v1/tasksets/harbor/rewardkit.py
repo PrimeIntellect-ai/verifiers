@@ -44,7 +44,6 @@ from rewardkit.models import (
 from rewardkit.reward import Reward
 from rewardkit.runner import (
     _build_judge_reward,
-    _check_shared_workspace,
     _discover_layout,
     _evaluate_layout,
     _flatten_layout,
@@ -216,7 +215,8 @@ async def discover_plan(tests: str, workspace: str) -> dict:
     finally:
         runner._import_py_file = importer
     rewards = _flatten_layout(layout)
-    _check_shared_workspace(rewards)
+    # Every native agent attempt receives a fresh runtime, including retries,
+    # so upstream's shared-workspace rejection does not apply here.
     configs = {
         r.name: JudgeTomlConfig.model_validate(
             tomllib.loads((Path(tests) / f"{r.name}.toml").read_text())

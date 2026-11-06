@@ -1,7 +1,8 @@
 """A solver followed by an agentic judge in the selected verifier workspace.
 
 The solver's ScoringConfig selects shared or isolated scoring. Task scoring and
-agentic judging run in that same workspace and share its timeout/retry boundary.
+agentic judging share its timeout/retry boundary; authored judges can request
+independent runtimes initialized by their task's setup.
 The judge has its own non-training trace and writes rubric verdicts to a file.
 """
 
@@ -29,6 +30,7 @@ from verifiers.v1.judges.rubric import (
     weighted_score,
 )
 from verifiers.v1.utils.compile import validate_pairing
+from verifiers.v1.utils.workspace import WorkspaceSnapshot
 
 VERDICT_FILE = "/tmp/verdict.json"
 TRACE_FILE = "/tmp/trace.json"
@@ -132,10 +134,15 @@ class JudgeTask(vf.Task):
         data: vf.TaskData,
         files: dict[str, bytes],
         parse_verdict: Callable[[str], object] | None = None,
+        *,
+        workspace: WorkspaceSnapshot | None = None,
+        env: dict[str, str] | None = None,
     ) -> None:
         super().__init__(data)
         self.files = files
         self.parse_verdict = parse_verdict
+        self.workspace = workspace
+        self.env = env or {}
 
     @classmethod
     def from_trace(
@@ -175,8 +182,13 @@ class JudgeTask(vf.Task):
             files=files,
         )
 
+    def runtime_env(self) -> dict[str, str]:
+        return self.env
+
     async def setup(self, trace: vf.Trace, runtime: vf.Runtime) -> None:
-        # The solver had this box first: a pre-seeded verdict must never read as
+        if self.workspace is not None:
+            await self.workspace.restore(runtime)
+        # The submitted workspace may contain a pre-seeded verdict: never read it as
         # the judge's own, and a file (or planted symlink) at an upload path must
         # never survive it — a symlinked TRACE_FILE would redirect the write onto
         # any file the solver chose.
@@ -306,6 +318,18 @@ class AgenticJudgeEnv(vf.Env[AgenticJudgeEnvConfig]):
         # The judge grades the policy; its tokens are never training data.
         agents.judge.trainable = False
 
+    def complete(self, episode: vf.Episode) -> bool:
+        if (
+            self._task_cls.AUTHORED_JUDGES
+            and not episode.errors
+            and not episode.is_timeout
+        ):
+            # Task scoring owns the authored retry/drop policy. Failed judge
+            # attempts remain visible without overriding its accepted result.
+            solvers = episode.by_agent.get("solver", [])
+            return bool(solvers) and all(trace.ok for trace in solvers)
+        return super().complete(episode)
+
     def _record_verdict(self, solution: vf.Trace, verdict: vf.Trace) -> None:
         verdicts = RubricVerdicts.model_validate(verdict.info.get("verdict")).verdicts
         criteria = self.config.task.criteria()
@@ -336,21 +360,30 @@ class AgenticJudgeEnv(vf.Env[AgenticJudgeEnvConfig]):
         async def execute(request: AgentJudgeRequest, runtime: vf.Runtime) -> vf.Trace:
             # The workspace already has the verifier's image and network policy.
             # Do not reapply the solver's requirements to an overridden verifier.
-            updates = {
-                "image": runtime.config.image,
-                "workdir": runtime.config.workdir,
-            }
-            if isinstance(runtime.config, NetworkPolicyConfig):
+            config = runtime.config
+            if request.isolated:
+                if any(not m.read_only for m in getattr(config, "mounts", {}).values()):
+                    raise ValueError(
+                        "Independent judge workspaces require read-only mounts"
+                    )
+                if isinstance(config, vf.PrimeConfig):
+                    config = config.model_copy(update={"checkpoint": None})
+                if request.network is not None:
+                    config = config.model_copy(
+                        update=request.network.model_dump(include={"allow", "block"})
+                    )
+            updates = {"image": config.image, "workdir": config.workdir}
+            if isinstance(config, NetworkPolicyConfig):
                 updates["network"] = NetworkPolicyConfig(
-                    allow=runtime.config.allow, block=runtime.config.block
+                    allow=config.allow, block=config.block
                 )
             judge_task = request.task.with_data(**updates)
             # A per-invocation view retains episode accounting and concurrency while
-            # binding placement to the already provisioned scoring workspace.
+            # binding placement to the selected verifier configuration.
             judge_agent = copy.copy(agents.judge)
-            judge_agent.runtime_config = runtime.config
+            judge_agent.runtime_config = config
             judge_agent.config = judge_agent.config.model_copy(
-                update={"runtime": runtime.config}
+                update={"runtime": config}
             )
             model = self.config.judge.model or request.model or judge_agent.ctx.model
             sampling = SamplingConfig.model_validate(
@@ -374,7 +407,13 @@ class AgenticJudgeEnv(vf.Env[AgenticJudgeEnvConfig]):
                 update={"model": model, "sampling": sampling}
             )
             async with asyncio.timeout(request.timeout):
-                return await judge_agent.run(judge_task, runtime=runtime)
+                # Native provisioning, including agent retries, keeps workspace
+                # ownership, concurrency permits and cleanup inside the rollout.
+                return await judge_agent.run(
+                    judge_task,
+                    runtime=None if request.isolated else runtime,
+                    on_trace=request.on_trace,
+                )
 
         async def judge(solution: vf.Trace, runtime: vf.Runtime) -> None:
             if solution.info.get("authored_judging"):
