@@ -417,12 +417,18 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
             else runtime
         )
         for view, command in (
-            (setup, "mkdir -p /logs/verifier && chmod 777 /logs/verifier"),
+            (
+                setup,
+                (
+                    f"mkdir -p /logs/verifier {ARTIFACTS_DIR} && "
+                    f"chmod 777 /logs/verifier {ARTIFACTS_DIR}"
+                ),
+            ),
             (
                 runtime,
                 (
                     "rm -f /logs/verifier/reward.json /logs/verifier/reward.txt && "
-                    f"mkdir -p {ARTIFACTS_DIR} && {stage}"
+                    f"{stage}"
                 ),
             ),
         ):
