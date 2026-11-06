@@ -63,6 +63,14 @@ class RuntimeCodeExecToolProvider(LocalCodeExecToolProvider):
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         self._temp_dir = None
 
+    def _resolve_and_validate_path(self, path: str) -> Path:
+        # Commands and file helpers share the container filesystem. The cwd is
+        # only the base for relative paths; Verifiers owns sandbox isolation.
+        if self._temp_dir is None:
+            raise RuntimeError("ExecutionEnvironment not started.")
+        resolved = Path(path)
+        return resolved if resolved.is_absolute() else self._temp_dir / resolved
+
     async def run_command(self, cmd, *, timeout=None):
         # The pinned local backend cleans up on timeouts, but not task
         # cancellation. ACP cancellation must also stop the command's children.
