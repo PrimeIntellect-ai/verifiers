@@ -60,7 +60,7 @@ class RunSlot:
 
     task: Task
     id: str = field(default_factory=lambda: uuid.uuid4().hex)
-    """The episode's id, shared by all its attempts."""
+    """The episode's id. Stable across retries."""
     traces: list[Trace] = field(default_factory=list)
     episode: Episode | None = None
     done: bool = False

@@ -252,12 +252,7 @@ class Rollout:
         self.trace.timing.boot.start = time.time()
         self.trace.notify()
         if self._borrowed_runtime is None:
-            # A retry's box gets a name of its own: the previous attempt's box can
-            # outlive a failed teardown.
-            name = self.trace.id
-            if self.trace.attempt > 1:
-                name = f"{name}-{self.trace.attempt}"
-            self.runtime = make_backend(self.runtime_config, name=name).bind()
+            self.runtime = make_backend(self.runtime_config, name=self.trace.id).bind()
         elif (
             self._borrowed_runtime is not None
             and self._borrowed_runtime.backend.stopped

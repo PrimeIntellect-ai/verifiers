@@ -46,7 +46,7 @@ class Episode(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     """The artifact Env.run produces. Contains multiple agents' traces."""
 
     id: str = Field(default_factory=lambda: uuid.uuid4().hex)
-    """Unique ID for this episode, auto-generated. Retries of the episode keep it."""
+    """Unique ID for this episode, auto-generated. Stable across retries."""
     attempt: int = 1
     """Which attempt of the episode this is, from 1."""
 
