@@ -12,7 +12,7 @@ from pydantic import TypeAdapter
 from verifiers.v1.episode import EnvInfo, Episode, WireEpisode
 from verifiers.v1.state import StateT
 from verifiers.v1.task import DataT
-from verifiers.v1.trace import AgentConfigT, Trace
+from verifiers.v1.trace import EXCLUDE_FIELDS, AgentConfigT, Trace
 from verifiers.v1.utils.aio import run_shielded
 from verifiers.v1.utils.artifacts import save_artifacts
 
@@ -24,8 +24,13 @@ def write_episode(
     results_dir: Path, episode: Episode[DataT, StateT, AgentConfigT]
 ) -> None:
     """Serialize and append one rollout episode in the worker thread."""
-    # Preserve fields declared by typed Trace subclasses nested in the episode.
-    data = type_adapter(type(episode)).dump_json(episode, exclude_none=True)
+    # Preserve fields declared by typed Trace subclasses nested in the episode. Raw tensors
+    # stay on the msgpack wire only, as in `Episode.to_record`: they don't survive JSON.
+    data = type_adapter(type(episode)).dump_json(
+        episode,
+        exclude={"traces": {"__all__": EXCLUDE_FIELDS}},
+        exclude_none=True,
+    )
     for trace in episode.traces:
         if trace.state.artifacts:
             if trace.id == ".." or Path(trace.id).parts != (trace.id,):
