@@ -47,6 +47,7 @@ if TYPE_CHECKING:
 MODEL_TRANSPORT_ERROR_EXIT_CODE = 97
 
 SERPER_URL = "https://google.serper.dev/search"
+ECO_URL = "https://ydc-index.io/v1/eco_search"
 
 BASH_TOOL = {
     "type": "function",
@@ -93,9 +94,9 @@ SEARCH_TOOL = {
     "function": {
         "name": "search",
         "description": (
-            "Run a web search via Serper (Google) and return the top organic results as title, "
-            "URL, and snippet. Issue focused queries and call it several times to cover different "
-            "angles; use the bash tool (e.g. curl) to read a result page in full."
+            "Run a web search and return the top results as title, URL, and snippet. Issue "
+            "focused queries and call it several times to cover different angles; use the bash "
+            "tool (e.g. curl) to read a result page in full."
         ),
         "parameters": {
             "type": "object",
@@ -113,7 +114,7 @@ SEARCH_TOOL = {
 
 
 def format_results(results, query: str) -> str:
-    """Format Serper organic results as title/URL/snippet blocks."""
+    """Format search results as title/URL/snippet blocks."""
     sections = []
     for i, result in enumerate(results, 1):
         title = (result.get("title") or "").strip() or "Untitled"
@@ -132,36 +133,56 @@ def format_results(results, query: str) -> str:
 
 def run_search(
     query: str,
+    provider: str,
     api_key: str,
     num_results: int = 5,
     network_block: list[str] | None = None,
 ) -> str:
-    """Serper Google web search -> formatted organic results.
+    """Serper (Google) or You.com Eco web search -> formatted title/URL/snippet results.
 
     The key arrives as an argument (handed in by the harness over argv, like the interception
-    secret) instead of from `$SERPER_API_KEY`, so the agent's `bash` subprocesses never inherit it.
+    secret) instead of from the environment, so the agent's `bash` subprocesses never inherit it.
     The whole call is wrapped so a bad query or malformed payload becomes a tool error rather than
     raising out of the chat loop and killing the rollout."""
     if not api_key:
-        return "Error: no Serper API key (SERPER_API_KEY was not set in the eval environment)"
+        return f"Error: no {provider} search API key was provided"
     # num_results comes straight from model tool JSON, so it may be a non-int (e.g. "ten"); coerce
-    # defensively — `organic[:num_results]` would otherwise raise on a bad slice.
+    # defensively — `results[:num_results]` would otherwise raise on a bad slice.
     try:
         num_results = max(1, int(num_results))
     except (TypeError, ValueError):
         num_results = 5
     try:
-        response = httpx.post(
-            SERPER_URL,
-            json={"q": query},
-            headers={"X-API-KEY": api_key, "Content-Type": "application/json"},
-            timeout=45,
-        )
+        if provider == "eco":
+            response = httpx.get(
+                ECO_URL,
+                params={"query": query},
+                headers={"X-API-Key": api_key},
+                timeout=45,
+            )
+        else:
+            response = httpx.post(
+                SERPER_URL,
+                json={"q": query},
+                headers={"X-API-KEY": api_key, "Content-Type": "application/json"},
+                timeout=45,
+            )
         response.raise_for_status()
-        organic = response.json().get("organic") or []
+        if provider == "eco":
+            # Map onto Serper's organic-result fields, which the filter and format below read.
+            results = [
+                {
+                    "title": result.get("title"),
+                    "link": result.get("url"),
+                    "snippet": result.get("description"),
+                }
+                for result in response.json().get("results", {}).get("web", [])
+            ]
+        else:
+            results = response.json().get("organic") or []
         if network_block:
             filtered = []
-            for result in organic:
+            for result in results:
                 try:
                     url = AnyHttpUrl(result.get("link", ""))
                 except ValidationError:
@@ -177,8 +198,8 @@ def run_search(
                     for rule in network_block
                 ):
                     filtered.append(result)
-            organic = filtered
-        return format_results(organic[:num_results], query)
+            results = filtered
+        return format_results(results[:num_results], query)
     except Exception as e:  # noqa: BLE001 - tool failures are returned to the model
         return f"search failed ({e}). Try again or rephrase the query."
 
@@ -451,7 +472,8 @@ async def run_chat_loop(
                     content = await asyncio.to_thread(
                         run_search,
                         tool_args.get("query", ""),
-                        args.serper_key,
+                        args.search_provider,
+                        args.search_key,
                         tool_args.get("num_results", 5),
                         args.search_block,
                     )
@@ -482,7 +504,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--edit", action="store_true")
     parser.add_argument("--search", action="store_true")
     parser.add_argument("--search-block", type=json.loads, default=[])
-    parser.add_argument("--serper-key", default="")
+    parser.add_argument("--search-provider", default="serper")
+    parser.add_argument("--search-key", default="")
     return parser.parse_args()
 
 
