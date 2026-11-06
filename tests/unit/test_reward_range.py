@@ -97,6 +97,22 @@ async def test_rescore_keeps_a_skip_reward():
     assert trace.metrics == {}
 
 
+@pytest.mark.parametrize(
+    "skipped, rewards",
+    [("truncated", {"score"}), ("format_violation", {"skipped/format_violation"})],
+)
+async def test_forced_rescore_scores_a_skipped_trace(skipped, rewards):
+    async def score(trace: vf.Trace) -> None:
+        trace.record_reward("score", 1.0)
+
+    task = vf.Task(vf.TaskData(idx=0, prompt=None))
+    task.score = score
+    trace = make_trace(ok=True)
+    trace.record_reward(f"skipped/{skipped}", 0.0)
+    await task.rescore(trace, force=True)
+    assert set(trace.rewards) == rewards
+
+
 class OneAgentConfig(vf.EnvConfig):
     agent: vf.AgentConfig = vf.AgentConfig(model="test-model")
 

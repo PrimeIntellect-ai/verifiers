@@ -31,4 +31,4 @@ For interactive troubleshooting, `vf-debug` runs `Task.setup` and then executes 
 
 ## Re-score without rerunning the agent
 
-`Task.rescore(trace)` re-computes the offline metrics, rewards, and judge scores of a finished `Trace` without re-running the agent. It clears the trace's scores, then runs the scoring hooks and judges that need only the saved `Trace`. The original sandbox is gone, so it skips `setup`, `finalize`, and any scoring hooks that request a `runtime`.
+`Task.rescore(trace)` re-computes the offline metrics, rewards, and judge scores of a finished `Trace` without re-running the agent. It clears the trace's scores, then runs the scoring hooks and judges that need only the saved `Trace`. The original sandbox is gone, so it skips `setup`, `finalize`, and any scoring hooks that request a `runtime`. A trace whose scoring the run skipped keeps its `skipped/<reason>` reward and is not scored. Pass `force=True` to score it anyway, for example a truncated trace. A format violation stays skipped, because its transcript cannot be parsed.
