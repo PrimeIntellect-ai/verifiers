@@ -342,6 +342,7 @@ async def _read_back_port(runtime: Runtime, path: str, deadline: float) -> int:
         await asyncio.sleep(min(1, remaining))
 
 
+@contextlib.asynccontextmanager
 async def serve_in_runtime(
     server: ServerBase,
     runtime: Runtime,
@@ -350,8 +351,8 @@ async def serve_in_runtime(
     listen_all: bool = False,
     state_url: str | None = None,
     state_secret: str = "",
-) -> int:
-    """Start a server and return its bound port.
+) -> AsyncIterator[int]:
+    """Serve a process for this toolset's lifetime and yield its bound port.
 
     Exposed remote servers must use the runtime's forwarded port. Local or colocated servers let
     the OS choose and report the result through a file. With a state channel, the server fetches
@@ -413,30 +414,58 @@ async def serve_in_runtime(
     )
     timeout = timeouts.startup
     deadline = loop.time() + (math.inf if timeout is None else timeout)
-    await runtime.run_background(command, env, log)
-    if fixed is not None:
-        port = fixed
-    else:
-        try:
-            port = await _read_back_port(runtime, port_file, deadline)
-        except ToolsetError as e:
-            raise ToolsetError(f"{e}: {await log_tail(runtime, log)}") from e
-    probe = await runtime.run(
+    process = await runtime.exec(
         [
-            python,
+            "sh",
             "-c",
-            _PROBE,
-            f"http://127.0.0.1:{port}/mcp",
-            str(max(deadline - loop.time(), 1)),
+            f'exec "$@" > {shlex.quote(log)} 2>&1 < /dev/null',
+            "sh",
+            *command,
         ],
-        {},
+        env,
     )
-    if probe.exit_code != 0:
-        raise ToolsetError(
-            f"tool server {server.server_name!r} not serving in runtime after "
-            f"{timeout}s (raise its timeout.startup): {await log_tail(runtime, log)}"
+    try:
+        if fixed is not None:
+            port = fixed
+        else:
+            try:
+                port = await _read_back_port(runtime, port_file, deadline)
+            except ToolsetError as e:
+                raise ToolsetError(f"{e}: {await log_tail(runtime, log)}") from e
+        probe = await runtime.run(
+            [
+                python,
+                "-c",
+                _PROBE,
+                f"http://127.0.0.1:{port}/mcp",
+                str(max(deadline - loop.time(), 1)),
+            ],
+            {},
         )
-    return port
+        if probe.exit_code != 0:
+            raise ToolsetError(
+                f"tool server {server.server_name!r} not serving in runtime after "
+                f"{timeout}s (raise its timeout.startup): {await log_tail(runtime, log)}"
+            )
+        yield port
+    finally:
+        # Let providers close upstream sessions before forcing a stuck server down.
+        # Borrowing a verifier workspace must not leave judge servers running in it.
+        cancelled = None
+        for stop in (process.terminate, process.kill):
+            try:
+                await run_shielded(asyncio.wait_for(stop(), 5))
+                await run_shielded(asyncio.wait_for(process.wait(), 5))
+                break
+            except asyncio.CancelledError as error:
+                cancelled = error
+            except Exception:
+                # Cleanup failures must not replace startup or grading errors.
+                logger.warning(
+                    "tool server %s cleanup failed", server.server_name, exc_info=True
+                )
+        if cancelled is not None:
+            raise cancelled
 
 
 @contextlib.asynccontextmanager
@@ -510,7 +539,7 @@ async def _serve(
                 f"server {server.server_name!r} runs in service {service!r}, "
                 "which needs a native Prime service VM"
             )
-        port = await serve_in_runtime(
+        async with serve_in_runtime(
             server,
             runtime,
             exposed=False,
@@ -521,8 +550,8 @@ async def _serve(
                 else None
             ),
             state_secret=state_secret,
-        )
-        yield _ServedServer(f"http://{host}:{port}/mcp", runtime)
+        ) as port:
+            yield _ServedServer(f"http://{host}:{port}/mcp", runtime)
         return
     async with contextlib.AsyncExitStack() as stack:
         # Colocated servers inherit the harness cut. A separately provisioned filtered
@@ -560,12 +589,14 @@ async def _serve(
         state_url = (
             runtime.host_url(f"{state_base.rstrip('/')}/state") if state_base else None
         )
-        port = await serve_in_runtime(
-            server,
-            runtime,
-            exposed=exposed,
-            state_url=state_url,
-            state_secret=state_secret,
+        port = await stack.enter_async_context(
+            serve_in_runtime(
+                server,
+                runtime,
+                exposed=exposed,
+                state_url=state_url,
+                state_secret=state_secret,
+            )
         )
         # The harness consumes the server, and decides reachability: colocated when the
         # server shares the harness's runtime, reached with the harness's locality (read

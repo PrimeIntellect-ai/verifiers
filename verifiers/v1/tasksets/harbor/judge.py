@@ -13,13 +13,17 @@ from pathlib import PurePosixPath
 from typing import Any
 
 from openai import APITimeoutError
+from pydantic import Field
 
 from verifiers.v1.configs.judge import JudgeConfig
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
+from verifiers.v1.configs.task import TaskConfig
+from verifiers.v1.envs.agentic_judge.env import JudgeTask
 from verifiers.v1.errors import SandboxError, TaskError
 from verifiers.v1.grading import scoring_network
 from verifiers.v1.judge import Judge, JudgeView
 from verifiers.v1.task import TaskData
+from verifiers.v1.tasksets.harbor.toolset import HarborMCPConfig, HarborMCPToolset
 from verifiers.v1.types import (
     ImageUrlContentPart,
     ImageUrlSource,
@@ -51,6 +55,20 @@ class HarborJudgeConfig(JudgeConfig):
     """Native evidence selection, independent of the authored RewardKit rubric."""
     include_hidden_reasoning: bool = False
     """Include reasoning in full_trace; opaque provider state is always excluded."""
+
+
+class HarborAgentJudgeConfig(TaskConfig):
+    mcp_servers: list[dict] = Field(default_factory=list)
+
+
+class HarborAgentJudgeTask(JudgeTask[HarborAgentJudgeConfig]):
+    @classmethod
+    def toolsets(cls, config: HarborAgentJudgeConfig):
+        # Judge tools run in the selected verifier workspace, under its policy.
+        return [
+            HarborMCPToolset(HarborMCPConfig(colocated=True, server=server))
+            for server in config.mcp_servers
+        ]
 
 
 async def read_inputs(runtime, paths, *, cache=None, budget=None):
@@ -200,7 +218,6 @@ async def prepare_judge(
         "version",
         "cwd",
         "atif_trajectory",
-        "mcp_servers",
     } & authored.model_fields_set
     if unsupported:
         raise TaskError(f"Unsupported native judge options: {sorted(unsupported)}")
@@ -220,10 +237,13 @@ async def prepare_judge(
             raise TaskError("Agent judge TOMLs require the agentic-judge environment")
         if task.config.judge is not None:
             raise TaskError("Configure agent judge overrides on env.judge")
-    elif "model" in authored.model_fields_set:
-        raise TaskError("judge.model is only supported for agent judges")
-    if not agentic and "isolated" in authored.model_fields_set:
-        raise TaskError("judge.isolated is only supported for agent judges")
+    else:
+        if authored.mcp_servers:
+            raise TaskError("judge.mcp_servers requires an agent judge")
+        if "model" in authored.model_fields_set:
+            raise TaskError("judge.model is only supported for agent judges")
+        if "isolated" in authored.model_fields_set:
+            raise TaskError("judge.isolated is only supported for agent judges")
     if authored.timeout <= 0:
         raise TaskError("judge.timeout must be positive")
     selections = {
@@ -347,7 +367,6 @@ async def prepare_judge(
                     from verifiers.v1.envs.agentic_judge.env import (
                         TRACE_FILE,
                         VERDICT_FILE,
-                        JudgeTask,
                     )
                     from verifiers.v1.judges.agent import AgentJudgeRequest
 
@@ -356,7 +375,7 @@ async def prepare_judge(
                             text=f"Write the JSON answer to {VERDICT_FILE}. Required schema:\n{json.dumps(schema)}"
                         )
                     )
-                    judge_task = JudgeTask(
+                    judge_task = HarborAgentJudgeTask(
                         TaskData(
                             idx=trace.task.data.idx,
                             prompt=[
@@ -384,6 +403,12 @@ async def prepare_judge(
                         ],
                         workspace=workspace,
                         env=dict(runtime.env),
+                        config=HarborAgentJudgeConfig(
+                            mcp_servers=[
+                                server.model_dump(mode="json")
+                                for server in reward.judge.mcp_servers
+                            ]
+                        ),
                     )
                     verdict = await task.judge_executor(
                         AgentJudgeRequest(
