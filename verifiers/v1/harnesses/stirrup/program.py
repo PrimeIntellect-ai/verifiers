@@ -1,5 +1,5 @@
 # /// script
-# requires-python = ">=3.12"
+# requires-python = ">=3.12,<3.14"
 # dependencies = [
 #     "stirrup[mcp] @ https://github.com/ArtificialAnalysis/Stirrup/archive/{version}.tar.gz",
 #     "mcp==1.28.1",
