@@ -27,6 +27,8 @@ class TerminalBench2Taskset(
 
 `dataset` accepts a Harbor Hub ID such as `org/name@ref` (you can pin a tag, revision, or digest to keep the dataset fixed), or a bare `name@version` paired with `repo`, `registry_path`, or `registry_url` when loading from a custom registry. All of these settings live under `env.taskset`, including `tasks` for filtering specific task names.
 
+Set `env.taskset.path` to a local task directory or a directory containing tasks to load them without downloading a dataset.
+
 Export the taskset in your package's `__init__.py` and install the package before running it by taskset ID:
 
 ```python
@@ -81,7 +83,21 @@ class OpenThoughtsTBLiteTaskset(
 
 Set `ignore_dockerfile = true` when loading tasks that only ship a Dockerfile so `super().load()` accepts them before you swap in your pre-built image references. These overrides only update the in-memory `TaskData` and leave `task.toml` untouched.
 
-`verifier_image` applies to tasks that declare a separate verifier and must contain the complete `/tests` suite, including `/tests/test.sh`.
+`verifier_image` applies to tasks that declare a separate verifier and must contain the complete `/tests` suite and its dependencies.
+
+## Native RewardKit verifiers
+
+`/tests/test.sh` takes precedence whenever present; its `reward.json` takes precedence over `reward.txt`, including when the script exits nonzero. Without a script, verifiers accepts a standalone `/tests/judge.toml` or a RewardKit directory of Python criteria, judge TOMLs, and `reward.toml` composition rules.
+
+Install `harbor-rewardkit==0.2.4` in the evaluator project. Composite verifiers also require that version in the verifier image's `python3` environment. RewardKit owns rubric validation, binary/Likert/numeric/rubric normalization, sample reduction, guard scoring, and reward aggregation. Verifiers supplies native model calls, traces, and the selected scoring runtime. The version is pinned because the adapter uses private RewardKit execution and discovery interfaces.
+
+Task Python runs only in a sandbox verifier runtime. The evaluator receives a JSON reward graph, prepares every judge's inputs before inference, and supplies native judge results to RewardKit's aggregation. Set `env.taskset.task.reward_key` to select the training reward; other named rewards and criterion scores remain metrics.
+
+For LLM judges, `env.taskset.task.judge` supplies explicit native model, endpoint, and sampling overrides. Authored file inputs, reference files, and prompt templates are read through the verifier runtime. Images become native image inputs; documents require the matching MarkItDown extras in the evaluator project. `view = "full_trace"` includes observable messages; `include_hidden_reasoning = true` also includes reasoning. Opaque provider state is excluded.
+
+Agent judge TOMLs use `agentic-judge` with explicit solver and judge harnesses. The configured native judge harness runs in the selected verifier workspace, keeps a separate non-training trace, and writes the authored RewardKit response schema. Explicit `env.judge` model and sampling settings override authored values. Harbor tasks own their judging policy in this environment, so environment rubric and score overrides are rejected.
+
+JEV, authored CLI versions, `cwd`, isolation, ATIF paths, and judge-specific MCP declarations are unsupported. Agent judging supports one batched sample; repeated or individual agent samples require independent workspaces and are rejected. Task-declared MCP tools remain available to the solver through the standard bridge.
 
 ## Timeouts and resources
 
@@ -122,6 +138,8 @@ Because provider-hosted web tools execute outside the sandbox, verifiers transla
 When a Harbor task declares `mcp_servers` in `task.toml`, verifiers exposes them through a tool server inside the task runtime and passes an HTTP MCP endpoint to the harness (which requires a harness that supports MCP).
 
 The bridge supports `stdio`, `sse`, and `streamable-http` servers, forwarding their tools and schemas automatically without any task-specific wrapper code. For `stdio` servers, make sure the server command and its dependencies are installed in the image or during task `setup`; URL-based entries connect to an existing service rather than launching one.
+
+`env.taskset.task.mcp` configures native placement and the execution user; task MCP tools are colocated by default. An `allowed_tools` list filters discovery and rejects calls to unlisted tools; unknown listed names fail discovery.
 
 ## Artifacts and collect hooks
 

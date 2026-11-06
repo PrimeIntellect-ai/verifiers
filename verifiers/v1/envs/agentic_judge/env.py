@@ -325,18 +325,6 @@ class AgenticJudgeEnv(vf.Env[AgenticJudgeEnvConfig]):
         )
 
     async def run(self, task: vf.Task, agents: vf.Agents) -> None:
-        if task.AUTHORED_JUDGES:
-            if self.config.solver.harness is None or self.config.judge.harness is None:
-                raise ValueError(
-                    "Task-authored judging requires explicit solver and judge harnesses"
-                )
-            if (
-                self.config.task != JudgeTaskConfig()
-                or self.config.score != ScoreConfig()
-            ):
-                raise ValueError(
-                    "Task-authored judging does not accept environment rubric or score overrides"
-                )
         policy = resolve_scoring(task.scoring, self.config.solver.scoring)
         workspace = (
             policy.runtime if policy.mode == "isolated" else None
@@ -389,6 +377,15 @@ class AgenticJudgeEnv(vf.Env[AgenticJudgeEnvConfig]):
                 return await judge_agent.run(judge_task, runtime=runtime)
 
         async def judge(solution: vf.Trace, runtime: vf.Runtime) -> None:
+            if solution.info.get("authored_judging"):
+                if (
+                    self.config.task != JudgeTaskConfig()
+                    or self.config.score != ScoreConfig()
+                ):
+                    raise ValueError(
+                        "Task-authored judging does not accept environment rubric or score overrides"
+                    )
+                return
             judge_task = JudgeTask.from_trace(
                 solution, self.config.task, isolated=policy.mode == "isolated"
             )
@@ -402,4 +399,4 @@ class AgenticJudgeEnv(vf.Env[AgenticJudgeEnvConfig]):
 
         task = copy.copy(task)
         task.judge_executor = execute
-        await agents.solver.run(task, on_score=None if task.AUTHORED_JUDGES else judge)
+        await agents.solver.run(task, on_score=judge)

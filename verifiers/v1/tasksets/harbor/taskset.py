@@ -19,6 +19,7 @@ or tests build definition, then fall back to the agent environment. Unsupported 
 import asyncio
 import hashlib
 import io
+import json
 import logging
 import shutil
 import subprocess
@@ -26,6 +27,7 @@ import sys
 import tarfile
 import tempfile
 import time
+import tomllib
 from collections.abc import Iterator
 from functools import lru_cache
 from pathlib import Path, PurePosixPath
@@ -436,7 +438,7 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
         """
         # Harbor's dedicated verifier image owns the complete test suite and its
         # dependencies. Mixing it with packaged tests can retain obsolete helpers.
-        stage = "{ test -f /tests/test.sh || test -f /tests/judge.toml; }"
+        stage = "test -d /tests"
         if self.data.verifier is None or self.data.verifier_image is None:
             tests = Path(self.data.task_dir) / "tests"
             wipe = wipe or not (tests / "test.sh").is_file()
@@ -446,7 +448,7 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
                 "mkdir -p /tests && tar -xzf /tmp/tests.tgz -C /tests"
             )
         command = (
-            "rm -f /logs/verifier/reward.json /logs/verifier/reward.txt "
+            "rm -f /logs/verifier/reward.json /logs/verifier/reward.txt /logs/verifier/reward-details.json "
             "/logs/verifier/instruction.md /logs/verifier/response.txt && "
             f"mkdir -p /logs/verifier {ARTIFACTS_DIR} && {stage}"
         )
@@ -480,27 +482,75 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
     async def run_verifier(
         self, runtime: Runtime, trace: Trace
     ) -> float | dict[str, float]:
+        trace.info.pop("authored_judging", None)
         await runtime.write(
             "/logs/verifier/instruction.md", self.data.prompt_text.encode()
         )
         await runtime.write("/logs/verifier/response.txt", trace.last_reply.encode())
         script = await runtime.run(["test", "-f", "/tests/test.sh"], {})
         if script.exit_code:
-            from .judge import run_judge
+            from .judge import prepare_judge
 
             layout = await runtime.run(
                 [
                     "sh",
                     "-c",
-                    "test -f /tests/judge.toml && find -L /tests -type f \\( -name '*.toml' -o -name '*.py' \\) ! -path /tests/judge.toml -print -quit",
+                    "find -L /tests -type f \\( -name '*.toml' -o -name '*.py' \\) -print0",
                 ],
                 {},
             )
-            if layout.exit_code or layout.stdout.strip():
-                raise TaskError(
-                    "Native grading requires a single judge.toml; additional graders require test.sh"
+            candidates = set(layout.stdout.split("\0")) - {""}
+            raw = None
+            if "/tests/judge.toml" in candidates:
+                raw = tomllib.loads(
+                    (
+                        await runtime.read(
+                            "/tests/judge.toml", max_bytes=MAX_REWARD_BYTES
+                        )
+                    ).decode()
                 )
-            return {self.config.reward_key: await run_judge(self, runtime, trace)}
+                authored = raw.get("judge", {})
+                evidence = [
+                    *authored.get("files", []),
+                    *([authored["reference"]] if authored.get("reference") else []),
+                    *(
+                        path
+                        for criterion in raw.get("criterion", [])
+                        for path in criterion.get("files", [])
+                    ),
+                ]
+                roots = [
+                    PurePosixPath(runtime.config.workdir or "/app") / path
+                    for path in evidence
+                ]
+                candidates = {
+                    p
+                    for p in candidates
+                    if p == "/tests/judge.toml"
+                    or not any(PurePosixPath(p).is_relative_to(root) for root in roots)
+                }
+            if not layout.exit_code and candidates == {"/tests/judge.toml"}:
+                judge = await prepare_judge(self, runtime, trace, raw=raw)
+                scores = {self.config.reward_key: await judge.run()}
+                await runtime.write(REWARD_JSON, json.dumps(scores).encode())
+                await runtime.write(
+                    "/logs/verifier/reward-details.json",
+                    json.dumps(trace.info["harbor_judge"], allow_nan=False).encode(),
+                )
+                return scores
+            from .composite import grade_composite
+
+            scores = await grade_composite(
+                self, runtime, trace, resolve_env(self.scoring.env or {})
+            )
+            if self.config.reward_key not in scores:
+                raise TaskError(
+                    f"Harbor reward key {self.config.reward_key!r} is missing: {sorted(scores)}"
+                )
+            trace.record_metrics(
+                {k: v for k, v in scores.items() if k != self.config.reward_key}
+            )
+            return {self.config.reward_key: scores[self.config.reward_key]}
         # By absolute path, in the runtime's configured workdir: Harbor execs the
         # script the same way, and scripts do grade the agent's work at `$PWD`.
         # The reward file is authoritative even when the script exits nonzero.
@@ -815,7 +865,10 @@ def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborD
     from harbor.models.task.verifier_mode import resolve_verifier_environment_definition
 
     harbor_task = HarborModelTask(
-        task_dir, disable_verification=(task_dir / "tests/judge.toml").is_file()
+        task_dir,
+        disable_verification=any(
+            p.suffix in {".toml", ".py"} for p in (task_dir / "tests").rglob("*")
+        ),
     )
     parsed = harbor_task.config
     if parsed.steps:
