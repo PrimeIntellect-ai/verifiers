@@ -82,8 +82,18 @@ class ImageUrlContentPart(BaseModel):
     image_url: ImageUrlSource
 
 
+class VideoUrlSource(BaseModel):
+    url: str
+
+
+class VideoUrlContentPart(BaseModel):
+    type: Literal["video_url"] = "video_url"
+    video_url: VideoUrlSource
+
+
 ContentPart = Annotated[
-    TextContentPart | ImageUrlContentPart, Field(discriminator="type")
+    TextContentPart | ImageUrlContentPart | VideoUrlContentPart,
+    Field(discriminator="type"),
 ]
 MessageContent = str | list[ContentPart]
 """Plain text or typed multimodal content parts."""
@@ -102,11 +112,14 @@ def content_to_parts(content) -> MessageContent:
         elif p.get("type") == "image_url":
             url = (p.get("image_url") or {}).get("url", "")
             parts.append(ImageUrlContentPart(image_url=ImageUrlSource(url=url)))
+        elif p.get("type") == "video_url":
+            url = (p.get("video_url") or {}).get("url", "")
+            parts.append(VideoUrlContentPart(video_url=VideoUrlSource(url=url)))
     return parts
 
 
 def content_text(content: "MessageContent | None") -> str:
-    """Extract text from message content, dropping images."""
+    """Extract text from message content, dropping images and videos."""
     if isinstance(content, str):
         return content
     return "\n".join(
