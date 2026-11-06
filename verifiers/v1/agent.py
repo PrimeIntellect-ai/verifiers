@@ -59,7 +59,6 @@ from verifiers.v1.utils.compile import (
 from verifiers.v1.utils.format import format_time
 from verifiers.v1.utils.log_scope import (
     clip,
-    current_scope,
     get_logger,
     scope,
     short_id,
@@ -578,6 +577,8 @@ class Agent:
             sampling=config.sampling,
         )
         self._closed = False
+        # The name in this agent's log prefix; an episode names it after its role.
+        self._log_name: str | None = None
         self.runtime_config: RuntimeConfig = config.runtime
         self.interception = interception
         self.limits = RolloutLimits(
@@ -693,9 +694,7 @@ class Agent:
         retry_state = RetryState(retry)
         history: list = []
         trace_id = uuid.uuid4().hex
-        # An agent run outside an episode is tagged by its own trace id.
-        standalone = current_scope()[1] is None
-        with scope(rollout=short_id(trace_id)) if standalone else nullcontext():
+        with scope(trace=short_id(trace_id), agent=self._log_name):
             for attempt in range(retry_state.max_retries + 1):
                 trace = await self._run_once(
                     task,
@@ -817,9 +816,7 @@ class Agent:
             raise RuntimeError("Agent is closed; create a new agent")
         self._check_resume_support()
         trace_id = uuid.uuid4().hex
-        # An exchange outside an episode is tagged by its own trace id.
-        standalone = current_scope()[1] is None
-        with scope(rollout=short_id(trace_id)) if standalone else nullcontext():
+        with scope(trace=short_id(trace_id), agent=self._log_name):
             params = self._rollout_params(task, runtime, dict(tools or {}))
             run = Rollout(
                 task=task,
@@ -938,13 +935,7 @@ class _EpisodeAgent(Agent):
         self._completed = completed
         self._on_trace = on_trace
         self._on_discard = on_discard
-        self._runs = 0
-
-    def _scope(self):
-        """Tag this agent run `<role>#<n>`: its role and how many runs of the role
-        this episode attempt has started."""
-        self._runs += 1
-        return scope(rollout=f"{self._name}#{self._runs}")
+        self._log_name = name
 
     def _shared_for(self, task: Task) -> Mapping[str, SharedToolServer]:
         return self._shared_tools if isinstance(task, self._task_cls) else {}
@@ -1020,15 +1011,14 @@ class _EpisodeAgent(Agent):
         on_score: Callable[[Trace, Runtime], Awaitable[None]] | None = None,
     ) -> Trace:
         async with self._gate or nullcontext():
-            with self._scope():
-                trace = await super().run(
-                    task,
-                    runtime=runtime,
-                    tools=tools if tools is not None else self._shared_for(task),
-                    on_trace=self._watch(on_trace),
-                    collect_artifacts=collect_artifacts,
-                    on_score=self._scoring_callback(on_score),
-                )
+            trace = await super().run(
+                task,
+                runtime=runtime,
+                tools=tools if tools is not None else self._shared_for(task),
+                on_trace=self._watch(on_trace),
+                collect_artifacts=collect_artifacts,
+                on_score=self._scoring_callback(on_score),
+            )
         self._completed.append(trace)
         return trace
 
@@ -1056,14 +1046,13 @@ class _EpisodeAgent(Agent):
                 on_trace(current)
 
         try:
-            with self._scope():
-                async with super().interaction(
-                    task,
-                    runtime=runtime,
-                    tools=tools if tools is not None else self._shared_for(task),
-                    on_trace=self._watch(remember),
-                ) as interaction:
-                    yield interaction
+            async with super().interaction(
+                task,
+                runtime=runtime,
+                tools=tools if tools is not None else self._shared_for(task),
+                on_trace=self._watch(remember),
+            ) as interaction:
+                yield interaction
         finally:
             # `Agent.interaction()` may fail before yielding (e.g. task/harness setup).
             # Its trace is minted first, so retain that failed rollout in the episode.
