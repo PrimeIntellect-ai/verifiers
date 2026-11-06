@@ -26,7 +26,10 @@ async def test_single_turn(run, harness, harness_runtime):
     assert trace.num_branches == 1
     assert trace.ok, [error.message for error in trace.errors]
     assert trace.num_turns == 1
-    assert trace.stop_condition == "agent_completed"
+    # Stirrup requires finish, but this task forbids tools: its @stop refuses
+    # Stirrup's continuation after the first text reply.
+    expected_stop = "single_turn" if harness.id == "stirrup" else "agent_completed"
+    assert trace.stop_condition == expected_stop
     assert trace.reward == 1.0, trace.last_reply
     assert trace.task.key == f"echo:{trace.task.data.answer}"
     assert trace.task.hash is not None
