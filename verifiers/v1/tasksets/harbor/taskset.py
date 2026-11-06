@@ -50,7 +50,7 @@ from verifiers.v1.utils.artifacts import (
 )
 from verifiers.v1.utils.decorators import reward
 from verifiers.v1.utils.env import resolve_env
-from verifiers.v1.utils.log_scope import get_logger
+from verifiers.v1.utils.logging import get_logger
 
 logger = get_logger(__name__)
 

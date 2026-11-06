@@ -34,7 +34,7 @@ from verifiers.v1.configs.select import SelectConfig, TaskMatchConfig
 from verifiers.v1.configs.taskset import TasksetConfig
 from verifiers.v1.task import Task, TaskT
 from verifiers.v1.utils.generic import concrete_type
-from verifiers.v1.utils.log_scope import get_logger
+from verifiers.v1.utils.logging import get_logger
 
 if TYPE_CHECKING:
     from verifiers.v1.mcp import Toolset

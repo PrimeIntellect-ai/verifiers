@@ -35,7 +35,7 @@ from verifiers.v1.task import Task
 from verifiers.v1.trace import Error, Trace, TraceTask
 from verifiers.v1.utils.format import format_time
 from verifiers.v1.utils.generic import concrete_type
-from verifiers.v1.utils.log_scope import clip, get_logger, scope, short_id
+from verifiers.v1.utils.logging import clip, get_logger, scope, short_id
 from verifiers.v1.utils.memory import trim_memory_periodically
 from verifiers.v1.utils.retries import run_episode_with_retry
 

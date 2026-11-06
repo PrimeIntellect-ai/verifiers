@@ -32,8 +32,7 @@ from verifiers.v1.trace import AgentInfo, Error, Trace, TraceTask
 from verifiers.v1.utils.compile import resolve_runtime_config
 from verifiers.v1.utils.decorators import invoke
 from verifiers.v1.utils.interrupt import install_interrupt
-from verifiers.v1.utils.log_scope import get_logger
-from verifiers.v1.utils.logging import setup_logging
+from verifiers.v1.utils.logging import get_logger, setup_logging
 from verifiers.v1.utils.trace_store import append_trace
 
 logger = get_logger(__name__)

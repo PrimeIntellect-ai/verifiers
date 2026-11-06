@@ -69,7 +69,7 @@ from verifiers.v1.trace import Error, ModelCall, PolicyEvent, TimeSpan
 from verifiers.v1.types import FinishReason, Response, Usage
 from verifiers.v1.utils.aio import run_shielded
 from verifiers.v1.utils.format import format_time
-from verifiers.v1.utils.log_scope import clip, get_logger, isolated
+from verifiers.v1.utils.logging import clip, get_logger, isolated
 
 logger = get_logger(__name__)
 

@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING
 from pydantic import BaseModel, Field, field_validator
 
 from verifiers.v1.utils.format import format_time
-from verifiers.v1.utils.log_scope import get_logger
+from verifiers.v1.utils.logging import get_logger
 
 if TYPE_CHECKING:
     from verifiers.v1.runtimes import Runtime, RuntimeConfig

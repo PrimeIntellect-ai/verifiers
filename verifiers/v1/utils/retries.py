@@ -29,7 +29,7 @@ from tenacity import (
 
 from verifiers.v1.configs.retries import RetryConfig, RetryRule
 from verifiers.v1.utils.format import format_time
-from verifiers.v1.utils.log_scope import clip, get_logger
+from verifiers.v1.utils.logging import clip, get_logger
 
 if TYPE_CHECKING:
     from verifiers.v1.episode import Episode

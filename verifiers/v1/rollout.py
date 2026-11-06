@@ -45,7 +45,7 @@ from verifiers.v1.types import Messages, Request, Response, SystemMessage, UserM
 from verifiers.v1.utils.artifacts import collect
 from verifiers.v1.utils.decorators import discover_decorated, invoke
 from verifiers.v1.utils.format import format_time
-from verifiers.v1.utils.log_scope import clip, get_logger
+from verifiers.v1.utils.logging import clip, get_logger
 
 logger = get_logger(__name__)
 

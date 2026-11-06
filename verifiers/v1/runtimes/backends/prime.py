@@ -34,7 +34,7 @@ from verifiers.v1.runtimes.runtime import Runtime
 from verifiers.v1.utils.aio import run_shielded
 from verifiers.v1.utils.artifacts import validate_runtime_mounts
 from verifiers.v1.utils.format import format_time
-from verifiers.v1.utils.log_scope import get_logger
+from verifiers.v1.utils.logging import get_logger
 from verifiers.v1.utils.prime import ensure_prime_auth
 from verifiers.v1.utils.scope import run_scope
 

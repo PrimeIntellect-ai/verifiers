@@ -25,8 +25,7 @@ from verifiers.v1.episode import Episode
 from verifiers.v1.trace import EvalRunInfo
 from verifiers.v1.utils.interrupt import install_interrupt
 from verifiers.v1.utils.loaders import load_environment
-from verifiers.v1.utils.log_scope import get_logger
-from verifiers.v1.utils.logging import setup_logging
+from verifiers.v1.utils.logging import get_logger, setup_logging
 from verifiers.v1.utils.trace_store import TRACES_FILE, append_episode
 
 logger = get_logger(__name__)

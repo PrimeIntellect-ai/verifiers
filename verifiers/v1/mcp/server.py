@@ -16,7 +16,7 @@ from pydantic_config import BaseConfig
 
 from verifiers.v1.state import State, StateT, state_cls
 from verifiers.v1.utils.generic import concrete_type
-from verifiers.v1.utils.log_scope import get_logger
+from verifiers.v1.utils.logging import get_logger
 
 if TYPE_CHECKING:
     from httpx import AsyncClient, Response

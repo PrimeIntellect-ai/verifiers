@@ -12,7 +12,7 @@ from verifiers.v1.runtimes import (
 )
 from verifiers.v1.task import Task
 from verifiers.v1.utils.artifacts import validate_artifact_mounts
-from verifiers.v1.utils.log_scope import get_logger
+from verifiers.v1.utils.logging import get_logger
 
 logger = get_logger(__name__)
 

@@ -21,7 +21,7 @@ from verifiers.v1.gepa.dataset import (
     split_tasks,
 )
 from verifiers.v1.gepa.reflection import build_reflection_lm
-from verifiers.v1.utils.log_scope import get_logger
+from verifiers.v1.utils.logging import get_logger
 from verifiers.v1.utils.trace_store import append_episode
 
 logger = get_logger(__name__)

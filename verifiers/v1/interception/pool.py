@@ -28,7 +28,7 @@ from verifiers.v1.interception.base import Interception, Slot
 from verifiers.v1.interception.server import InterceptionServer
 from verifiers.v1.session import RolloutSession
 from verifiers.v1.utils.aio import run_shielded
-from verifiers.v1.utils.log_scope import get_logger, isolated
+from verifiers.v1.utils.logging import get_logger, isolated
 
 logger = get_logger(__name__)
 

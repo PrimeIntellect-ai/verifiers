@@ -24,7 +24,7 @@ from verifiers.v1.utils.decorators import (
     seed,
     unseed,
 )
-from verifiers.v1.utils.log_scope import get_logger
+from verifiers.v1.utils.logging import get_logger
 
 if TYPE_CHECKING:
     # Annotation-only: `Trace` appears in signatures only, so this module stays

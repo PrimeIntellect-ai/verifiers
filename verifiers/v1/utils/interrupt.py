@@ -5,7 +5,7 @@ Ctrl-C can't orphan containers/sandboxes/tool-server runtimes mid-cleanup."""
 
 import signal
 
-from verifiers.v1.utils.log_scope import get_logger
+from verifiers.v1.utils.logging import get_logger
 
 logger = get_logger(__name__)
 

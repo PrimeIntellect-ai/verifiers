@@ -28,7 +28,7 @@ from verifiers.v1.configs.runtime import (
 )
 from verifiers.v1.configs.sampling import Sampling, SamplingConfig
 from verifiers.v1.types import Request, Response
-from verifiers.v1.utils.log_scope import get_logger
+from verifiers.v1.utils.logging import get_logger
 from verifiers.v1.utils.network import parse_network_rule
 
 RespT = TypeVar("RespT", bound=BaseModel)

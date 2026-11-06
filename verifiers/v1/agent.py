@@ -57,7 +57,7 @@ from verifiers.v1.utils.compile import (
     validate_pairing,
 )
 from verifiers.v1.utils.format import format_time
-from verifiers.v1.utils.log_scope import (
+from verifiers.v1.utils.logging import (
     clip,
     get_logger,
     scope,

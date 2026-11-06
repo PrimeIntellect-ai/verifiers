@@ -27,7 +27,7 @@ from verifiers.v1.runtimes.base import RuntimeBackend, RuntimeProcess
 from verifiers.v1.runtimes.compose import ComposeSpec, compose_project
 from verifiers.v1.runtimes.private_network import lan_host
 from verifiers.v1.utils.aio import run_shielded
-from verifiers.v1.utils.log_scope import get_logger
+from verifiers.v1.utils.logging import get_logger
 from verifiers.v1.utils.paths import CACHE_DIR
 
 logger = get_logger(__name__)

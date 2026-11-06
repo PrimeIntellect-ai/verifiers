@@ -44,7 +44,7 @@ from verifiers.v1.types import (
     UserMessage,
 )
 from verifiers.v1.utils.decorators import invoke
-from verifiers.v1.utils.log_scope import (
+from verifiers.v1.utils.logging import (
     LogScope,
     current_scope,
     enter_scope,

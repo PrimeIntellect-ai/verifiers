@@ -21,7 +21,7 @@ from verifiers.v1.utils.artifacts import restore
 from verifiers.v1.utils.compile import resolve_runtime_config
 from verifiers.v1.utils.decorators import invoke
 from verifiers.v1.utils.env import resolve_env
-from verifiers.v1.utils.log_scope import clip, get_logger
+from verifiers.v1.utils.logging import clip, get_logger
 from verifiers.v1.utils.retries import RetryState, backoff
 
 logger = get_logger(__name__)

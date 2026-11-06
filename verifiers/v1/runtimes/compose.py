@@ -20,7 +20,7 @@ from verifiers.v1.runtimes import DockerBackend, DockerConfig, PrimeConfig
 from verifiers.v1.runtimes.backends.docker import cli
 from verifiers.v1.runtimes.base import SERVICE_PORT
 from verifiers.v1.utils.aio import run_shielded
-from verifiers.v1.utils.log_scope import get_logger
+from verifiers.v1.utils.logging import get_logger
 
 logger = get_logger(__name__)
 

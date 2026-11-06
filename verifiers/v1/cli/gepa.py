@@ -25,8 +25,7 @@ from verifiers.v1.cli.resolve import (
 )
 from verifiers.v1.gepa import GEPAConfig, run_gepa
 from verifiers.v1.utils.interrupt import install_interrupt
-from verifiers.v1.utils.log_scope import get_logger
-from verifiers.v1.utils.logging import setup_logging
+from verifiers.v1.utils.logging import get_logger, setup_logging
 from verifiers.v1.utils.trace_store import TRACES_FILE
 
 logger = get_logger(__name__)
