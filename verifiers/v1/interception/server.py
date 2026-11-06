@@ -68,7 +68,8 @@ from verifiers.v1.session import IdempotentRequest, ReplayResponse, RolloutSessi
 from verifiers.v1.trace import Error, ModelCall, PolicyEvent, TimeSpan
 from verifiers.v1.types import FinishReason, Response, Usage
 from verifiers.v1.utils.aio import run_shielded
-from verifiers.v1.utils.log_scope import clip, get_logger, isolated, seconds
+from verifiers.v1.utils.format import format_time
+from verifiers.v1.utils.log_scope import clip, get_logger, isolated
 
 logger = get_logger(__name__)
 
@@ -302,7 +303,8 @@ async def _buffered_stream(
             # like from here; its retry (if any) coalesces onto this turn.
             connected = False
             logger.warning(
-                "Lost the stream reader after %s", seconds(time.monotonic() - started)
+                "Lost the stream reader after %s",
+                format_time(time.monotonic() - started),
             )
         response = await task
         replay = _capture_response(response)
@@ -321,14 +323,14 @@ async def _buffered_stream(
             except ConnectionResetError:
                 logger.warning(
                     "Lost the stream reader before the turn was served after %s",
-                    seconds(time.monotonic() - started),
+                    format_time(time.monotonic() - started),
                 )
         return stream
     finally:
         if not task.done():
             logger.info(
                 "Cancelled the streamed turn after %s",
-                seconds(time.monotonic() - started),
+                format_time(time.monotonic() - started),
             )
             task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -746,7 +748,7 @@ class InterceptionServer(Interception):
             # Client dropped mid-upload.
             logger.warning(
                 "Lost the request body after %s received=%d/%s bytes",
-                seconds(time.monotonic() - started),
+                format_time(time.monotonic() - started),
                 request.content.total_bytes,
                 request.content_length or "?",
             )

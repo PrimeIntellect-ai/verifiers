@@ -33,7 +33,8 @@ from verifiers.v1.runtimes.limiters import creation_limiter
 from verifiers.v1.runtimes.runtime import Runtime
 from verifiers.v1.utils.aio import run_shielded
 from verifiers.v1.utils.artifacts import validate_runtime_mounts
-from verifiers.v1.utils.log_scope import get_logger, seconds
+from verifiers.v1.utils.format import format_time
+from verifiers.v1.utils.log_scope import get_logger
 from verifiers.v1.utils.prime import ensure_prime_auth
 from verifiers.v1.utils.scope import run_scope
 
@@ -270,7 +271,7 @@ class PrimeBackend(RuntimeBackend):
             logger.debug(
                 "Started prime runtime %s in %s image=%s",
                 self.info.id,
-                seconds(time.perf_counter() - started),
+                format_time(time.perf_counter() - started),
                 self.config.image,
             )
             await self._client.execute_command(

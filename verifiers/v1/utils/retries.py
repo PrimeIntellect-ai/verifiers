@@ -28,6 +28,7 @@ from tenacity import (
 )
 
 from verifiers.v1.configs.retries import RetryConfig, RetryRule
+from verifiers.v1.utils.format import format_time
 from verifiers.v1.utils.log_scope import clip, get_logger
 
 if TYPE_CHECKING:
@@ -142,8 +143,8 @@ async def run_episode_with_retry(
             history.extend(trace.errors)
         delay = backoff(attempt)
         logger.warning(
-            "Retrying episode in %.1fs (attempt %d/%d) - %s: %s",
-            delay,
+            "Retrying episode in %s (attempt %d/%d) - %s: %s",
+            format_time(delay),
             attempt + 2,
             state.max_retries + 1,
             cause.type,

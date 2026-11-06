@@ -10,7 +10,7 @@
 
 - **Module loggers**: create them with `get_logger(__name__)` from `verifiers.v1.utils.log_scope`. It prefixes every line with its scope: `[<episode>]` inside an episode, `[<episode> <role>#<n>]` inside an agent run, `[<trace>]` for an agent run outside an episode. Never put a trace or episode id in the message itself.
 - **Levels by frequency**: INFO is for process lifecycle (servers, pools) and, per episode, `Starting episode`, `Finished episode` and one `Finished rollout` line per agent run. Steps inside a rollout (runtime start/stop, setup, scoring) and per-turn or per-request events are DEBUG. Every failure and retry is a WARNING. ERROR is for a process component that can't continue, never for a rollout's outcome.
-- **Message style**: an active sentence with no trailing period (`Started prime runtime abc in 9.8s`), then `key=value` fields. Durations use `seconds()` and read `in 1.2s`. Error details come last, after ` - `: `Failed to delete prime runtime abc - APIError: ...`. Clip error messages with `clip()`.
+- **Message style**: an active sentence with no trailing period (`Started prime runtime abc in 9.8s`), then `key=value` fields. Durations use `format_time()` and read `in 1.2s` or `in 3m 46s`. Error details come last, after ` - `: `Failed to delete prime runtime abc - APIError: ...`. Clip error messages with `clip()`.
 - **Retries**: `Retrying <what> in <delay> (attempt <next>/<total>) - <Type>: <message>`.
 - **Tracebacks**: attach one for unexpected errors only. For an expected failure (teardown, cleanup, a refused call), pass `exc_info=logger.isEnabledFor(logging.DEBUG)`.
 - **Config warnings**: warn once per process, not once per rollout.

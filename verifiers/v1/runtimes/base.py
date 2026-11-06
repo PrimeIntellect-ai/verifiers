@@ -20,7 +20,8 @@ from pydantic_config import BaseConfig
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.errors import SandboxError
 from verifiers.v1.utils.aio import run_shielded
-from verifiers.v1.utils.log_scope import get_logger, seconds
+from verifiers.v1.utils.format import format_time
+from verifiers.v1.utils.log_scope import get_logger
 
 if TYPE_CHECKING:
     from verifiers.v1.runtimes.runtime import Runtime
@@ -235,7 +236,7 @@ class RuntimeBackend(ABC):
                 "Stopped %s runtime %s in %s",
                 self.config.type,
                 (self.info.id or self.name).rsplit("/", 1)[-1],
-                seconds(time.perf_counter() - started),
+                format_time(time.perf_counter() - started),
             )
 
     async def teardown(self) -> None:

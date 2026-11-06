@@ -33,8 +33,9 @@ from verifiers.v1.mcp import SharedToolServer, serve_shared
 from verifiers.v1.runtimes import SubprocessConfig, runtime_is_local
 from verifiers.v1.task import Task
 from verifiers.v1.trace import Error, Trace, TraceTask
+from verifiers.v1.utils.format import format_time
 from verifiers.v1.utils.generic import concrete_type
-from verifiers.v1.utils.log_scope import clip, get_logger, scope, seconds, short_id
+from verifiers.v1.utils.log_scope import clip, get_logger, scope, short_id
 from verifiers.v1.utils.memory import trim_memory_periodically
 from verifiers.v1.utils.retries import run_episode_with_retry
 
@@ -367,7 +368,9 @@ class Env(ABC, Generic[ConfigT]):
         started: float | None = None
         with scope(episode=short_id(slot.id)):
             episode = await run_episode_with_retry(attempt, self.config.retries)
-            elapsed = seconds(time.perf_counter() - (started or time.perf_counter()))
+            elapsed = format_time(
+                time.perf_counter() - (started or time.perf_counter())
+            )
             failed = sum(not trace.ok for trace in episode.traces)
             if episode.ok:
                 logger.info(

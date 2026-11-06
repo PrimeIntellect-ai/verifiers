@@ -47,7 +47,8 @@ from verifiers.v1.runtimes.egress import EgressProxy, NetworkPolicy, is_loopback
 from verifiers.v1.runtimes.runtime import Runtime
 from verifiers.v1.utils.aio import run_shielded
 from verifiers.v1.utils.artifacts import validate_runtime_mounts
-from verifiers.v1.utils.log_scope import get_logger, seconds
+from verifiers.v1.utils.format import format_time
+from verifiers.v1.utils.log_scope import get_logger
 from verifiers.v1.utils.scope import run_scope
 
 logger = get_logger(__name__)
@@ -434,7 +435,7 @@ class DockerBackend(RuntimeBackend):
         logger.debug(
             "Started docker runtime %s in %s image=%s",
             self._container,
-            seconds(time.perf_counter() - started),
+            format_time(time.perf_counter() - started),
             self.config.image,
         )
 

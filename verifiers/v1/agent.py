@@ -56,6 +56,7 @@ from verifiers.v1.utils.compile import (
     resolve_runtime_config,
     validate_pairing,
 )
+from verifiers.v1.utils.format import format_time
 from verifiers.v1.utils.log_scope import (
     clip,
     current_scope,
@@ -720,8 +721,8 @@ class Agent:
                 history.extend(trace.errors)
                 delay = backoff(attempt)
                 logger.warning(
-                    "Retrying rollout in %.1fs (attempt %d/%d) - %s: %s",
-                    delay,
+                    "Retrying rollout in %s (attempt %d/%d) - %s: %s",
+                    format_time(delay),
                     attempt + 2,
                     retry_state.max_retries + 1,
                     cause.type,

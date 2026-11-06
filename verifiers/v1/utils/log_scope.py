@@ -44,10 +44,6 @@ def short_id(id: str) -> str:
     return id[:ID_CHARS]
 
 
-def seconds(value: float) -> str:
-    return f"{value:.1f}s"
-
-
 def clip(message: str, limit: int = 200) -> str:
     """The first line of an error message, short enough for a log line."""
     line = message.strip().splitlines()[0] if message.strip() else ""
