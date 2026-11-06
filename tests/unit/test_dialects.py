@@ -49,3 +49,16 @@ def test_apply_overrides_keeps_other_reasoning_fields():
     body = {"reasoning": {"effort": "high", "summary": "detailed"}}
     sent = ResponsesDialect().apply_overrides(body, "m", SAMPLING)
     assert sent["reasoning"] == {"effort": "low", "summary": "detailed"}
+
+
+@pytest.mark.parametrize(
+    "dialect,body",
+    [
+        (ChatDialect(), {"messages": [{"role": "developer", "content": "be terse"}]}),
+        (ResponsesDialect(), {"input": [{"role": "developer", "content": "be terse"}]}),
+    ],
+    ids=["chat", "responses"],
+)
+def test_developer_instructions_parse_as_system(dialect, body):
+    (message,) = dialect.parse_request(body).messages
+    assert message.role == "system"
