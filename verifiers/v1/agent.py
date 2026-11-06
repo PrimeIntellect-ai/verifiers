@@ -9,6 +9,7 @@ server; un-entered, each run brings its own."""
 
 import asyncio
 import logging
+import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager, nullcontext
 from contextvars import ContextVar
@@ -675,7 +676,8 @@ class Agent:
         moment it's minted, before any I/O. `collect_artifacts` captures the task's
         declared artifacts after its finalizer while its container runtime is still
         alive. Retries whole while the trace ends with a retryable error
-        (`config.retries`) — never into a borrowed box; the final trace keeps earlier
+        (`config.retries`) — never into a borrowed box; every attempt's trace keeps
+        the run's id with its own `attempt`, and the final trace keeps earlier
         attempts' errors. `on_score(trace, runtime)` runs after task scoring in
         the selected verifier workspace, inside its timeout and retry boundary."""
         if self._closed:
@@ -683,9 +685,17 @@ class Agent:
         retry = self.config.retries
         retry_state = RetryState(retry)
         history: list = []
+        trace_id = uuid.uuid4().hex
         for attempt in range(retry_state.max_retries + 1):
             trace = await self._run_once(
-                task, runtime, tools, on_trace, collect_artifacts, on_score
+                task,
+                runtime,
+                tools,
+                on_trace,
+                collect_artifacts,
+                on_score,
+                trace_id=trace_id,
+                attempt=attempt + 1,
             )
             if attempt == retry_state.max_retries or trace.ok:
                 break
@@ -722,6 +732,9 @@ class Agent:
         on_trace: Callable[[Trace], None] | None,
         collect_artifacts: bool,
         on_score: Callable[[Trace, Runtime], Awaitable[None]] | None,
+        *,
+        trace_id: str,
+        attempt: int,
     ) -> Trace:
         params = self._rollout_params(task, runtime, dict(shared_tools or {}))
         if (
@@ -737,6 +750,8 @@ class Agent:
             on_trace=on_trace,
             collect_artifacts=collect_artifacts,
             on_score=on_score,
+            trace_id=trace_id,
+            attempt=attempt,
             **params,
         )
         try:
@@ -921,8 +936,8 @@ class _EpisodeAgent(Agent):
             if trace.agent is not None:
                 trace.agent.name = self._name
                 trace.agent.trainable = self.trainable
-            # A per-agent retry mints a replacement: the abandoned attempt's trace
-            # must leave live views (only the final one joins the episode).
+            # A per-agent retry replaces the trace under the same id: the abandoned
+            # attempt must leave live views (only the final one joins the episode).
             if last is not None and self._on_discard is not None:
                 self._on_discard(last)
             last = trace

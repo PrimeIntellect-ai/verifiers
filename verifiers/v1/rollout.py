@@ -115,6 +115,8 @@ class Rollout:
         on_trace: Callable[[Trace], None] | None = None,
         collect_artifacts: bool = False,
         on_score: Callable[[Trace, Runtime], Awaitable[None]] | None = None,
+        trace_id: str | None = None,
+        attempt: int = 1,
     ) -> None:
         self._on_score = on_score
         self.task = task
@@ -136,6 +138,8 @@ class Rollout:
         self._borrowed_runtime = runtime
         self._collect_artifacts = collect_artifacts
         self.trace: Trace = Trace(
+            **({"id": trace_id} if trace_id is not None else {}),
+            attempt=attempt,
             task=TraceTask(
                 type=type(task).__name__,
                 data=task.data,
