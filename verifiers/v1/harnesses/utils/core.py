@@ -285,6 +285,9 @@ async def chat(
     tools: list[dict],
     *,
     tool_choice: str | None = None,
+    request_id: str | None = None,
+    compaction_attempt: bool = False,
+    compaction_source_request_id: str | None = None,
 ):
     kwargs = {"model": model, "messages": messages}
     if tools:
@@ -301,14 +304,20 @@ async def chat(
         ):
             # Reuse the interception server's body-digest replay guard on stream retries.
             retry_count = attempt.retry_state.attempt_number - 1
-            headers = (
-                {"x-stainless-retry-count": str(retry_count)} if retry_count else omit
-            )
+            headers = {}
+            if request_id is not None:
+                headers["X-ACP-Model-Request-ID"] = request_id
+            if compaction_attempt:
+                headers["X-Verifiers-Compaction-Attempt"] = "1"
+            if compaction_source_request_id is not None:
+                headers["X-Verifiers-Compaction-Source"] = compaction_source_request_id
+            if retry_count:
+                headers["x-stainless-retry-count"] = str(retry_count)
             raw_stream = await client.chat.completions.create(
                 **kwargs,
                 stream=True,
                 stream_options={"include_usage": True},
-                extra_headers=headers,
+                extra_headers=headers or omit,
             )
             # The SDK retries request setup; only stream consumption is retried here.
             with attempt:

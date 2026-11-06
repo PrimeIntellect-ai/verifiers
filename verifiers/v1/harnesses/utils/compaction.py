@@ -1,5 +1,6 @@
 """Tool-output bounding and context compaction for bundled chat programs."""
 
+import uuid
 from typing import TYPE_CHECKING
 
 from openai import APIError, APIStatusError, AsyncOpenAI
@@ -161,6 +162,8 @@ class Compactor:
         self.tools = tools
         self.enabled = enabled
         self.threshold = threshold
+        self.last_request_id = None
+        self.compaction_source_request_id = None
         self.compacted = False
         self.last_good = 0
         """Message count of the newest state that passed a threshold check - by
@@ -176,9 +179,26 @@ class Compactor:
     def note_good(self, messages: list[dict]) -> None:
         self.last_good = len(messages)
 
+    async def _chat(self, messages, *, tool_choice=None, compaction_attempt=False):
+        # One ID per logical request, retained by chat across SDK and stream retries.
+        request_id = uuid.uuid4().hex if self.enabled or compaction_attempt else None
+        completion = await chat(
+            self.client,
+            self.model,
+            messages,
+            self.tools,
+            tool_choice=tool_choice,
+            request_id=request_id,
+            compaction_attempt=compaction_attempt,
+            compaction_source_request_id=self.compaction_source_request_id,
+        )
+        self.last_request_id = request_id
+        self.compaction_source_request_id = None
+        return completion
+
     async def complete(self, messages: list[dict]):
         try:
-            completion = await chat(self.client, self.model, messages, self.tools)
+            completion = await self._chat(messages)
         except APIStatusError as error:
             if (
                 not self.enabled
@@ -206,7 +226,7 @@ class Compactor:
 
         messages = await self.compact(messages)
         try:
-            completion = await chat(self.client, self.model, messages, self.tools)
+            completion = await self._chat(messages)
         except APIStatusError as error:
             # The rebuilt conversation is sized to fit, so this is out of moves.
             if is_context_overflow(error):
@@ -228,12 +248,10 @@ class Compactor:
                 {"role": "user", "content": CHECKPOINT_COMPACTION_PROMPT},
             ]
             try:
-                completion = await chat(
-                    self.client,
-                    self.model,
+                completion = await self._chat(
                     checkpoint,
-                    self.tools,
                     tool_choice="none",
+                    compaction_attempt=True,
                 )
             except APIStatusError as error:
                 if not is_context_overflow(error):
@@ -250,6 +268,7 @@ class Compactor:
                 rebuilt = [*system, {"role": "user", "content": framed}]
                 self.note_good(rebuilt)
                 self.compacted = True
+                self.compaction_source_request_id = self.last_request_id
                 return rebuilt
         raise CompactionFailed(
             f"no usable summary after {COMPACTION_ATTEMPTS} attempts"

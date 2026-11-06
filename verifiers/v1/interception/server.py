@@ -64,7 +64,16 @@ from verifiers.v1.errors import (
 from verifiers.v1.interception.base import Interception, Slot
 from verifiers.v1.interception.tunnel import Tunnel, make_tunnel
 from verifiers.v1.interception.tunnel.base import HEALTH_PATH
-from verifiers.v1.semantic import ACPInfo, extract_acp_info, routing_session_id
+from verifiers.v1.semantic import (
+    ACPInfo,
+    ChatCompactionInfo,
+    ParentLink,
+    SemanticEdge,
+    SemanticEdgeSet,
+    extract_acp_info,
+    extract_chat_compaction_info,
+    routing_session_id,
+)
 from verifiers.v1.session import IdempotentRequest, ReplayResponse, RolloutSession
 from verifiers.v1.trace import Error, ModelCall, PolicyEvent, TimeSpan
 from verifiers.v1.types import FinishReason, Response, Usage
@@ -674,6 +683,7 @@ class InterceptionServer(Interception):
         error: BaseException | None = None,
         policy_paths: list[str] | None = None,
         acp: ACPInfo | None = None,
+        compaction: ChatCompactionInfo | None = None,
     ) -> None:
         """Append one provider exchange to the trace's per-call records (`Trace.calls`):
         the model + effective settings that went upstream, timing, and — when the call
@@ -724,6 +734,27 @@ class InterceptionServer(Interception):
                 acp=acp,
             )
         )
+        if node is not None and acp is not None and compaction is not None:
+            if compaction.attempt:
+                # A first-turn checkpoint need not have an earlier sampled model call.
+                # Its actual prompt parent is the semantic cause of this attempt.
+                parent = session.trace.nodes[node].parent
+                if parent is not None:
+                    link = ParentLink(node=parent, type="compaction_attempt")
+                    if link not in session.trace.nodes[node].semantic_parents:
+                        session.trace.nodes[node].semantic_parents.append(link)
+            if compaction.source_request_id is not None:
+                session.trace.add_semantic_edges(
+                    SemanticEdgeSet(
+                        edges=[
+                            SemanticEdge(
+                                source_request_id=compaction.source_request_id,
+                                target_request_id=acp.request_id,
+                                type="compaction",
+                            )
+                        ]
+                    )
+                )
         session.trace.notify()
 
     async def handle_request(
@@ -763,6 +794,20 @@ class InterceptionServer(Interception):
         del raw
         try:
             acp, upstream_headers = extract_acp_info(request.headers)
+            compaction = extract_chat_compaction_info(request.headers)
+            if (
+                compaction is not None
+                and compaction.source_request_id is not None
+                and not any(
+                    call.acp is not None
+                    and call.node is not None
+                    and call.acp.request_id == compaction.source_request_id
+                    for call in session.trace.calls
+                )
+            ):
+                raise ValueError(
+                    "chat compaction source has no committed model response"
+                )
         except ValueError as error:
             return _error_response(dialect, str(error), status=400)
         upstream_session_id = routing_session_id(
@@ -1041,6 +1086,7 @@ class InterceptionServer(Interception):
                     error=error,
                     policy_paths=policy_paths,
                     acp=acp,
+                    compaction=compaction,
                 )
             return serve(call_response, events)
 
