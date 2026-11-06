@@ -30,6 +30,7 @@ from verifiers.v1.runtimes import (
 )
 from verifiers.v1.runtimes.backends.docker import cli
 from verifiers.v1.runtimes.base import SERVICE_PORT, ProgramResult
+from verifiers.v1.runtimes.runtime import Runtime
 from verifiers.v1.utils.aio import run_shielded
 
 logger = logging.getLogger(__name__)
@@ -112,6 +113,10 @@ class ComposeSpec:
     registry_mirrors: tuple[str, ...] = ()
     """Registry mirrors for the provider VM's Docker daemon; local Docker uses its
     own daemon configuration."""
+    host_setup: Callable[[Runtime], Awaitable[None]] | None = None
+    """Prepares the provider VM that hosts the services before its Docker daemon
+    starts, on a fresh host and on one restored from a checkpoint alike: what the
+    services need of the VM itself, such as a kernel module. Local Docker has no VM."""
 
 
 def compose_file_errors(authored: Mapping) -> list[str]:
@@ -584,6 +589,8 @@ async def provision_vm_host(
     async with provision_backend(config.model_copy(update=host_config)) as host:
         runtime = host.bind()
         prime = isinstance(config, PrimeConfig)
+        if spec.host_setup is not None:
+            await spec.host_setup(runtime)
         install = await runtime.run(["sh", "-c", INSTALL_DOCKER], {})
         if install.exit_code:
             raise SandboxError(

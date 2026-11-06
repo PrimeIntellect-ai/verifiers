@@ -122,3 +122,33 @@ async def test_a_host_image_prepared_from_another_environment_is_refused(
     with pytest.raises(RuntimeError, match="staged"):
         async with module.compose_services(PrimeConfig(), spec, {}):
             pass
+
+
+async def test_host_setup_prepares_the_vm_before_its_docker_daemon(
+    monkeypatch, tmp_path
+):
+    host = Host()
+    events = []
+
+    async def run(argv, env):
+        events.append(argv[-1] if argv[:2] == ["sh", "-c"] else argv)
+        return ProgramResult(0, "", "")
+
+    async def run_background(argv, env, log):
+        events.append(log)
+
+    host.run, host.run_background = run, run_background
+
+    @asynccontextmanager
+    async def backend(config):
+        yield host
+
+    async def setup(runtime):
+        assert runtime is host
+        events.append("host_setup")
+
+    monkeypatch.setattr(module, "provision_backend", backend)
+    spec = ComposeSpec(str(tmp_path), host_setup=setup)
+    async with module.provision_vm_host(PrimeConfig(), spec):
+        pass
+    assert events[:3] == ["host_setup", module.INSTALL_DOCKER, "/tmp/dockerd.log"]
