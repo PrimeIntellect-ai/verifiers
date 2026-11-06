@@ -384,9 +384,12 @@ class Rollout:
                 self._endpoint = runtime.host_url(f"{base_url.rstrip('/')}/v1")
                 self._secret = model_secret
                 if isinstance(runtime.backend, PrimeBackend):
-                    self._secret = await self._stack.enter_async_context(
-                        runtime.backend.model_key(self._endpoint, model_secret)
+                    self._session.injected_model_key = (
+                        await self._stack.enter_async_context(
+                            runtime.backend.model_key(self._endpoint)
+                        )
                     )
+                    self._secret = self.trace.id
                 services = (
                     {
                         name: self.deployment.target(name)

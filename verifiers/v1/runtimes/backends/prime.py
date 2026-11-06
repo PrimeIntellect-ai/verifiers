@@ -7,9 +7,11 @@ import contextlib
 import io
 import logging
 import math
+import secrets
 import shlex
 import tempfile
 import uuid
+from collections import Counter
 from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -17,6 +19,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, ClassVar
 from urllib.parse import urlsplit
 
+import httpx
 from prime_sandboxes.models import (
     HeaderRule,
     validate_egress_lists,
@@ -39,7 +42,7 @@ from verifiers.v1.runtimes.limiters import creation_limiter
 from verifiers.v1.runtimes.runtime import Runtime
 from verifiers.v1.utils.aio import run_shielded
 from verifiers.v1.utils.artifacts import validate_runtime_mounts
-from verifiers.v1.utils.network import MODEL_KEY_HEADER_PREFIX
+from verifiers.v1.utils.network import MODEL_KEY_HEADER
 from verifiers.v1.utils.prime import ensure_prime_auth
 from verifiers.v1.utils.scope import run_scope
 
@@ -179,6 +182,7 @@ class PrimeBackend(RuntimeBackend):
         # Live credentials never enter the serializable runtime config or trace.
         self._headers: dict[str, dict[str, str]] = {}
         self._env_secrets: set[tuple[str, str]] = set()
+        self._model_key_users: Counter[str] = Counter()
 
     @property
     def header_rules(self) -> dict[str, HeaderRule]:
@@ -238,16 +242,18 @@ class PrimeBackend(RuntimeBackend):
                 "Prime inference header injection requires HTTPS on port 443"
             )
         host = url.hostname or ""
-        headers = resolve_headers(config)
+        headers = httpx.Headers(resolve_headers(config))
         if key := forwarded.get(config.api_key_var):
             for dialect in DIALECTS:
                 headers.update(dialect.auth_headers(key))
         headers.update(
-            (header, forwarded[variable])
-            for header, variable in config.headers_from_env.items()
-            if variable in forwarded
+            {
+                header: forwarded[variable]
+                for header, variable in config.headers_from_env.items()
+                if variable in forwarded
+            }
         )
-        headers = {name.lower(): value for name, value in headers.items()}
+        headers = dict(headers)
         validate_header_rules({host: HeaderRule(headers=headers)})
         async with self._network_lock:
             existing = self._headers.setdefault(host, {})
@@ -262,36 +268,45 @@ class PrimeBackend(RuntimeBackend):
                 await self._apply_network()
 
     @asynccontextmanager
-    async def model_key(self, endpoint: str, secret: str) -> AsyncIterator[str]:
-        """Give the harness a public route ID; inject its credential outside the VM."""
+    async def model_key(self, endpoint: str) -> AsyncIterator[str]:
+        """Share one injected credential per host until its last rollout exits."""
         url = urlsplit(endpoint)
         if url.scheme != "https" or url.port not in (None, 443):
             raise SandboxError(
                 "Prime interception header injection requires HTTPS on port 443"
             )
         host = url.hostname or ""
-        route = uuid.uuid4().hex
-        header = f"{MODEL_KEY_HEADER_PREFIX}{route}"
-        async with self._network_lock:
-            self._headers.setdefault(host, {})[header] = secret
+        acquired = False
         try:
             async with self._network_lock:
-                if any(
-                    name.lower() in {"authorization", "x-api-key"}
-                    for name in self.header_rules[host].headers
-                ):
-                    raise SandboxError(
-                        "interception header rules must preserve the harness routing ID"
+                if not self._model_key_users[host]:
+                    self._headers.setdefault(host, {})[MODEL_KEY_HEADER] = (
+                        secrets.token_urlsafe(32)
                     )
-                await self._apply_network()
-            yield route
+                self._model_key_users[host] += 1
+                acquired = True
+                if self._model_key_users[host] == 1:
+                    if any(
+                        name.lower() in {"authorization", "x-api-key"}
+                        for name in self.header_rules[host].headers
+                    ):
+                        raise SandboxError(
+                            "interception header rules must preserve the harness routing ID"
+                        )
+                    await self._apply_network()
+                key = self._headers[host][MODEL_KEY_HEADER]
+            yield key
         finally:
-            async with self._network_lock:
-                del self._headers[host][header]
-                if not self._headers[host]:
-                    del self._headers[host]
-                if not self.stopped:
-                    await run_shielded(self._apply_network())
+            if acquired:
+                async with self._network_lock:
+                    self._model_key_users[host] -= 1
+                    if not self._model_key_users[host]:
+                        del self._model_key_users[host]
+                        del self._headers[host][MODEL_KEY_HEADER]
+                        if not self._headers[host]:
+                            del self._headers[host]
+                        if not self.stopped:
+                            await run_shielded(self._apply_network())
 
     @property
     def published_port(self) -> int:
@@ -594,7 +609,7 @@ class PrimeBackend(RuntimeBackend):
                     self.info.id,
                     f"{reader} -- {shlex.quote(path)}",
                     working_dir=self.config.workdir,
-                    env=runtime.process_env({}),
+                    env=self._process_env(runtime.process_env({})),
                     user=runtime.user,
                 )
                 async with contextlib.aclosing(process):

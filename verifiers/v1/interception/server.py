@@ -69,7 +69,7 @@ from verifiers.v1.session import IdempotentRequest, ReplayResponse, RolloutSessi
 from verifiers.v1.trace import Error, ModelCall, PolicyEvent, TimeSpan
 from verifiers.v1.types import FinishReason, Response, Usage
 from verifiers.v1.utils.aio import run_shielded
-from verifiers.v1.utils.network import MODEL_KEY_HEADER_PREFIX
+from verifiers.v1.utils.network import MODEL_KEY_HEADER
 
 logger = logging.getLogger(__name__)
 
@@ -357,7 +357,7 @@ class InterceptionServer(Interception):
         self.sessions: dict[str, RolloutSession] = {}
         self.clients: dict[str, Client] = {}
         self.state_sessions: dict[str, RolloutSession] = {}
-        self.state_routes: dict[str, RolloutSession] = {}
+        self.routes: dict[str, RolloutSession] = {}
         self.mcp_routes: dict[str, _MCPRoute] = {}
         self.state_service_secrets = frozenset(state_service_secrets)
         self.config = config or InterceptionServerConfig()
@@ -407,7 +407,7 @@ class InterceptionServer(Interception):
         state_secret = secrets.token_urlsafe(16)
         self.sessions[model_secret] = session
         self.state_sessions[state_secret] = session
-        self.state_routes[session.trace.id] = session
+        self.routes[session.trace.id] = session
         session.proxy_mcp = partial(self.proxy_mcp, model_secret)
         return model_secret, state_secret
 
@@ -416,7 +416,8 @@ class InterceptionServer(Interception):
         self.state_sessions.pop(state_secret, None)
         if session is not None:
             session.proxy_mcp = None
-            self.state_routes.pop(session.trace.id, None)
+            self.routes.pop(session.trace.id, None)
+            session.injected_model_key = None
             for capability, route in list(self.mcp_routes.items()):
                 if route.session is session:
                     del self.mcp_routes[capability]
@@ -570,17 +571,11 @@ class InterceptionServer(Interception):
         async def injected_model_key(request, handler):
             # Keep injected credentials out of every upstream request, including MCP.
             # Only model handlers use them; task state keeps its separate bearer.
-            headers = request.headers.copy()
-            injected = {
-                name.lower().removeprefix(MODEL_KEY_HEADER_PREFIX): value
-                for name, value in headers.items()
-                if name.lower().startswith(MODEL_KEY_HEADER_PREFIX)
-            }
-            if injected:
-                for route in injected:
-                    headers.popall(f"{MODEL_KEY_HEADER_PREFIX}{route}")
+            if MODEL_KEY_HEADER in request.headers:
+                headers = request.headers.copy()
+                key = headers.popall(MODEL_KEY_HEADER)[0]
                 request = request.clone(headers=headers)
-                request["model_keys"] = injected
+                request["model_key"] = key
             return await handler(request)
 
         app = web.Application(
@@ -749,7 +744,19 @@ class InterceptionServer(Interception):
     ) -> RolloutSession | None:
         """Resolve either a normal bearer or a public route with an injected credential."""
         route = dialect.secret(request.headers)
-        return self.sessions.get(request.get("model_keys", {}).get(route, route))
+        if session := self.sessions.get(route):
+            return session
+        session = self.routes.get(route)
+        if (
+            session is not None
+            and session.injected_model_key is not None
+            and secrets.compare_digest(
+                session.injected_model_key.encode(),
+                request.get("model_key", "").encode(),
+            )
+        ):
+            return session
+        return None
 
     async def handle_request(
         self, request: web.Request, dialect: Dialect
@@ -1150,7 +1157,7 @@ class InterceptionServer(Interception):
         secret = auth[len("Bearer ") :] if auth.startswith("Bearer ") else ""
         session = self.state_sessions.get(secret)
         if session is None and allow_service and secret in self.state_service_secrets:
-            session = self.state_routes.get(
+            session = self.routes.get(
                 request.headers.get("X-Verifiers-State-Route", "")
             )
         if session is not None:  # state writes must not land on a sealed trace either
