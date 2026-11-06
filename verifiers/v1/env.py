@@ -387,14 +387,19 @@ class Env(ABC, Generic[ConfigT]):
                     failed,
                 )
             else:
-                error = episode.errors[-1] if episode.errors else None
+                # An episode fails on its own error or on a failed rollout's.
+                errors = episode.errors[-1:] + [
+                    t.last_error for t in episode.traces if t.last_error is not None
+                ]
+                reason = (
+                    f" - {errors[0].type}: {clip(errors[0].message)}" if errors else ""
+                )
                 logger.warning(
-                    "Failed episode in %s rollouts=%d failed=%d - %s: %s",
+                    "Failed episode in %s rollouts=%d failed=%d%s",
                     elapsed,
                     len(episode.traces),
                     failed,
-                    error.type if error else "Error",
-                    clip(error.message) if error else "",
+                    reason,
                 )
         slot.traces = list(episode.traces)
         slot.episode = episode

@@ -50,6 +50,13 @@ from verifiers.v1.utils.logging import clip, get_logger
 logger = get_logger(__name__)
 
 
+def _group(name: str, fields: list[tuple[str, object]]) -> str:
+    """`name=(k=v k=v)`, or nothing when there are no fields."""
+    if not fields:
+        return ""
+    return f"{name}=({' '.join(f'{k}={v}' for k, v in fields)})"
+
+
 @dataclass(frozen=True)
 class RolloutTimeouts:
     """Per-stage rollout timeouts, each bounding one rollout stage."""
@@ -1021,39 +1028,57 @@ class Rollout:
                 )
             teardown = time.perf_counter() - started
         timing = trace.timing
-        phases = " ".join(
-            f"{name}={format_time(span.duration)}"
-            for name, span in (
-                ("boot", timing.boot),
-                ("setup", timing.setup),
-                ("agent", timing.agent),
-                ("finalize", timing.finalize),
-                ("score", timing.scoring),
+        spans = (
+            ("boot", timing.boot),
+            ("setup", timing.setup),
+            ("agent", timing.agent),
+            ("finalize", timing.finalize),
+            ("score", timing.scoring),
+        )
+        timings = [(k, format_time(v.duration)) for k, v in spans if v.start]
+        timings.append(("teardown", format_time(teardown)))
+        summary = " ".join(
+            filter(
+                None,
+                [
+                    f"stop={trace.stop_condition}" if trace.ok else "",
+                    f"turns={trace.num_turns} branches={len(trace.branches)}",
+                    f"dropped={trace.dropped}" if trace.is_dropped else "",
+                    f"reward={trace.reward:.3f}" if trace.ok else "",
+                    _group(
+                        "rewards",
+                        [
+                            (k, "none" if r is None else f"{r.score:.3f}")
+                            for k, r in trace.rewards.items()
+                        ],
+                    ),
+                    _group(
+                        "metrics",
+                        [
+                            (k, "none" if v is None else f"{v:.4g}")
+                            for k, v in trace.metrics.items()
+                        ],
+                    ),
+                    _group(
+                        "tokens",
+                        [
+                            ("input", trace.num_input_tokens),
+                            ("output", trace.num_output_tokens),
+                        ],
+                    ),
+                    _group("timing", timings),
+                ],
             )
-            if span.start
         )
         elapsed = format_time(time.time() - timing.start)
-        dropped = f" dropped={trace.dropped}" if trace.is_dropped else ""
         if trace.ok:
-            logger.info(
-                "Finished rollout in %s reward=%.3f turns=%d stop=%s%s %s teardown=%s",
-                elapsed,
-                trace.reward,
-                trace.num_turns,
-                trace.stop_condition,
-                dropped,
-                phases,
-                format_time(teardown),
-            )
+            logger.info("Finished rollout in %s %s", elapsed, summary)
         else:
             error = trace.last_error
             logger.warning(
-                "Failed rollout in %s turns=%d%s %s teardown=%s - %s: %s",
+                "Failed rollout in %s %s - %s: %s",
                 elapsed,
-                trace.num_turns,
-                dropped,
-                phases,
-                format_time(teardown),
+                summary,
                 error.type if error else "Error",
                 clip(error.message) if error else "",
             )
