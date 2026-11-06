@@ -190,7 +190,7 @@ class Compactor:
     def note_good(self, messages: list[dict]) -> None:
         self.last_good = len(messages)
 
-    async def _chat(
+    async def _request_completion(
         self,
         messages,
         *,
@@ -217,7 +217,7 @@ class Compactor:
 
     async def complete(self, messages: list[dict]):
         try:
-            completion = await self._chat(messages)
+            completion = await self._request_completion(messages)
         except APIStatusError as error:
             if (
                 not self.enabled
@@ -245,7 +245,7 @@ class Compactor:
 
         messages = await self.compact(messages)
         try:
-            completion = await self._chat(messages)
+            completion = await self._request_completion(messages)
         except APIStatusError as error:
             # The rebuilt conversation is sized to fit, so this is out of moves.
             if is_context_overflow(error):
@@ -268,7 +268,7 @@ class Compactor:
                 {"role": "user", "content": CHECKPOINT_COMPACTION_PROMPT},
             ]
             try:
-                completion = await self._chat(
+                completion = await self._request_completion(
                     checkpoint,
                     tool_choice="none",
                     compaction_attempt=True,
