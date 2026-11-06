@@ -69,6 +69,7 @@ from verifiers.v1.session import IdempotentRequest, ReplayResponse, RolloutSessi
 from verifiers.v1.trace import Error, ModelCall, PolicyEvent, TimeSpan
 from verifiers.v1.types import FinishReason, Response, Usage
 from verifiers.v1.utils.aio import run_shielded
+from verifiers.v1.utils.network import MODEL_KEY_HEADER_PREFIX
 
 logger = logging.getLogger(__name__)
 
@@ -565,7 +566,26 @@ class InterceptionServer(Interception):
         return response
 
     async def start(self) -> None:
-        app = web.Application(client_max_size=MAX_REQUEST_BODY)
+        @web.middleware
+        async def injected_model_key(request, handler):
+            # Keep injected credentials out of every upstream request, including MCP.
+            # Only model handlers use them; task state keeps its separate bearer.
+            headers = request.headers.copy()
+            injected = {
+                name.lower().removeprefix(MODEL_KEY_HEADER_PREFIX): value
+                for name, value in headers.items()
+                if name.lower().startswith(MODEL_KEY_HEADER_PREFIX)
+            }
+            if injected:
+                for route in injected:
+                    headers.popall(f"{MODEL_KEY_HEADER_PREFIX}{route}")
+                request = request.clone(headers=headers)
+                request["model_keys"] = injected
+            return await handler(request)
+
+        app = web.Application(
+            client_max_size=MAX_REQUEST_BODY, middlewares=[injected_model_key]
+        )
         app.router.add_get(HEALTH_PATH, self.handle_health)
         for dialect in DIALECTS:
             for route in dialect.routes:
@@ -640,9 +660,7 @@ class InterceptionServer(Interception):
         """`POST /tool`: the harness's gate asks whether to run a tool call — its
         `{tool_call_id, name, arguments}` in, the verdict of `RolloutSession.decide_tool`
         out. The model bearer keys it: it never alters what the model already received."""
-        session = self.sessions.get(
-            request.headers.get("Authorization", "").removeprefix("Bearer ")
-        )
+        session = self._model_session(request, DIALECTS[0])
         if session is None:
             return web.json_response({"error": "unauthorized"}, status=401)
         session.adopt(asyncio.current_task())
@@ -726,10 +744,17 @@ class InterceptionServer(Interception):
         )
         session.trace.notify()
 
+    def _model_session(
+        self, request: web.Request, dialect: Dialect
+    ) -> RolloutSession | None:
+        """Resolve either a normal bearer or a public route with an injected credential."""
+        route = dialect.secret(request.headers)
+        return self.sessions.get(request.get("model_keys", {}).get(route, route))
+
     async def handle_request(
         self, request: web.Request, dialect: Dialect
     ) -> web.StreamResponse:
-        session = self.sessions.get(dialect.secret(request.headers))
+        session = self._model_session(request, dialect)
         if session is None:
             logger.warning("interception: unauthorized request")
             return _error_response(dialect, "unauthorized", status=401)
@@ -1053,7 +1078,7 @@ class InterceptionServer(Interception):
     ) -> web.Response:
         """A non-model-turn side request (an `aux_route`, e.g. Anthropic's `count_tokens`):
         relayed as native JSON, never recorded on the trace."""
-        session = self.sessions.get(dialect.secret(request.headers))
+        session = self._model_session(request, dialect)
         if session is None:
             return _error_response(dialect, "unauthorized", status=401)
         session.adopt(asyncio.current_task())
@@ -1089,7 +1114,7 @@ class InterceptionServer(Interception):
         A pure relay from the session's endpoint config — never recorded on the trace, and a
         failure never fails the rollout."""
         for dialect in DIALECTS:
-            session = self.sessions.get(dialect.secret(request.headers))
+            session = self._model_session(request, dialect)
             if session is not None:
                 break
         else:

@@ -191,6 +191,10 @@ class PrimeVolume(BaseConfig):
 
 class PrimeConfig(NetworkPolicyConfig):
     type: Literal["prime"] = "prime"
+    network_rules: dict[str, dict[str, str]] = Field(default_factory=dict)
+    """Headers injected outside the sandbox for HTTPS hosts on port 443. Values may
+    reference `${prime.secrets.NAME}`; rules do not grant network access."""
+
     image: str = "python:3.11-slim"
     """Docker image to run. Any pullable ref works: on the first use of an image, the
     platform auto-builds the VM image that the sandbox needs from it (~10 minutes)
@@ -233,6 +237,21 @@ class PrimeConfig(NetworkPolicyConfig):
 
     @model_validator(mode="after")
     def _validate_egress(self) -> Self:
+        if self.network_rules:
+            from prime_sandboxes.models import HeaderRule, validate_header_rules
+
+            self.network_rules = {
+                host: rule.headers
+                for host, rule in (
+                    validate_header_rules(
+                        {
+                            host: HeaderRule(headers=headers)
+                            for host, headers in self.network_rules.items()
+                        }
+                    )
+                    or {}
+                ).items()
+            }
         if not self.network_restricted:
             return self
         if not self.allow:
