@@ -6,9 +6,11 @@ import json
 import logging
 import subprocess
 import traceback
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import AsyncExitStack
 from pathlib import Path
 from typing import TYPE_CHECKING
+from urllib.parse import urlsplit
 
 import certifi
 import httpx
@@ -131,6 +133,45 @@ def format_results(results, query: str) -> str:
     return "\n\n---\n\n".join(sections)
 
 
+def eco_results(payload: dict, network_block: list[str] | None) -> list[dict]:
+    """Map Eco Search web results onto Serper's organic-result fields.
+
+    Eco often links a result through a Google `/goto` redirect. Each one is replaced by its
+    target, so the blocklist and the model see the real destination."""
+    results = [
+        {
+            "title": result.get("title"),
+            "link": result.get("url"),
+            "snippet": result.get("description"),
+        }
+        for result in payload.get("results", {}).get("web", [])
+    ]
+    redirects = [result for result in results if is_google_redirect(result["link"])]
+    # Eco returns at most 10 results, so every redirect link gets its own worker.
+    with ThreadPoolExecutor(max_workers=10) as pool:
+        targets = list(pool.map(redirect_target, [r["link"] for r in redirects]))
+    for result, target in zip(redirects, targets):
+        result["link"] = target or result["link"]
+    if network_block:
+        # An unresolved redirect hides its destination from the blocklist.
+        results = [r for r in results if not is_google_redirect(r["link"])]
+    return results
+
+
+def is_google_redirect(url: str | None) -> bool:
+    parts = urlsplit(url or "")
+    return parts.hostname == "www.google.com" and parts.path == "/goto"
+
+
+def redirect_target(url: str) -> str | None:
+    """Where a redirect link points, read from one GET that does not follow it."""
+    try:
+        response = httpx.get(url, timeout=10)
+    except httpx.HTTPError:
+        return None
+    return response.headers["location"] if response.is_redirect else None
+
+
 def run_search(
     query: str,
     provider: str,
@@ -160,6 +201,8 @@ def run_search(
                 headers={"X-API-Key": api_key},
                 timeout=45,
             )
+            response.raise_for_status()
+            results = eco_results(response.json(), network_block)
         else:
             response = httpx.post(
                 SERPER_URL,
@@ -167,18 +210,7 @@ def run_search(
                 headers={"X-API-KEY": api_key, "Content-Type": "application/json"},
                 timeout=45,
             )
-        response.raise_for_status()
-        if provider == "eco":
-            # Map onto Serper's organic-result fields, which the filter and format below read.
-            results = [
-                {
-                    "title": result.get("title"),
-                    "link": result.get("url"),
-                    "snippet": result.get("description"),
-                }
-                for result in response.json().get("results", {}).get("web", [])
-            ]
-        else:
+            response.raise_for_status()
             results = response.json().get("organic") or []
         if network_block:
             filtered = []
