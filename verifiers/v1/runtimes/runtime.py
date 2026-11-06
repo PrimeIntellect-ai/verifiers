@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import shlex
 import uuid
@@ -179,9 +180,20 @@ class Runtime:
                     )
                     # Bootstrap dependencies before task networking is restricted;
                     # keep task offline settings on the returned program's processes.
-                    result = await self.run(
-                        ["sh", "-c", command], {**(env or {}), "UV_OFFLINE": "false"}
-                    )
+                    # Scripts prepare in parallel once uv is there; until then one at
+                    # a time, so only one bootstraps it.
+                    cache, user = self.backend.cache, self.user or ""
+                    async with (
+                        contextlib.nullcontext()
+                        if user in cache.uv_ready
+                        else cache.uv_bootstrap_lock
+                    ):
+                        result = await self.run(
+                            ["sh", "-c", command],
+                            {**(env or {}), "UV_OFFLINE": "false"},
+                        )
+                    if result.exit_code == 0:
+                        cache.uv_ready.add(user)
                     if result.exit_code != 0:
                         raise RuntimeError(
                             "failed to prepare uv script: "
