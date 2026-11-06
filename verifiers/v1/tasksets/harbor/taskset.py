@@ -409,16 +409,35 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
                 f"{'rm -rf /tests && ' if wipe else ''}"
                 "mkdir -p /tests && tar -xzf /tmp/tests.tgz -C /tests"
             )
-        command = (
-            "rm -f /logs/verifier/reward.json /logs/verifier/reward.txt && "
-            f"mkdir -p /logs/verifier {ARTIFACTS_DIR} && {stage}"
+        # Verifier subprocesses can use different users; opening their log directory
+        # requires its owner or root, even when it is already writable.
+        setup = (
+            runtime.with_user("root")
+            if runtime.backend.SUPPORTS_USER_SWITCHING
+            else runtime
         )
-        result = await runtime.run(["sh", "-c", command], {})
-        if result.exit_code:
-            raise TaskError(
-                f"staging tests failed (exit {result.exit_code}): "
-                f"{(result.stderr or result.stdout).strip()[-500:]}"
-            )
+        for view, command in (
+            (
+                setup,
+                (
+                    f"mkdir -p /logs/verifier {ARTIFACTS_DIR} && "
+                    f"chmod 777 /logs/verifier {ARTIFACTS_DIR}"
+                ),
+            ),
+            (
+                runtime,
+                (
+                    "rm -f /logs/verifier/reward.json /logs/verifier/reward.txt && "
+                    f"{stage}"
+                ),
+            ),
+        ):
+            result = await view.run(["sh", "-c", command], {})
+            if result.exit_code:
+                raise TaskError(
+                    f"staging tests failed (exit {result.exit_code}): "
+                    f"{(result.stderr or result.stdout).strip()[-500:]}"
+                )
 
     @reward(weight=1.0)
     async def solved(self, runtime: Runtime, trace: Trace) -> float | dict[str, float]:
