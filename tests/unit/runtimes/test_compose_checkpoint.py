@@ -109,3 +109,42 @@ async def test_process_pid_files_go_where_the_user_can_write(monkeypatch):
     assert await backend._pid_dir("agent") == "/home/agent/.tmp"
     assert await backend._pid_dir("nobody") == "/tmp"
     assert len(probes) == 2
+
+
+async def test_a_task_guarding_its_agent_user_keeps_the_framework_routes(monkeypatch):
+    """A composed main whose task cuts its agent user's egress (`iptables -m owner`)
+    would cut the harness running as that user: setup opens main's output ahead of the
+    task's rules, execution keeps only the framework's routes (as host and port)."""
+    from types import SimpleNamespace
+
+    from verifiers.v1.runtimes.backends import docker as module
+
+    class Host:
+        is_local = False
+        info = SimpleNamespace(
+            model_copy=lambda update: SimpleNamespace(**update, borrowed=False)
+        )
+
+        async def prepare_execution(self, routes, network=None):
+            pass
+
+    backend = module.DockerBackend(module.DockerConfig(), host_backend=Host())
+    backend._container = "c-main"
+    calls = []
+
+    async def run_host(*argv):
+        calls.append(argv)
+        return module.ProgramResult(0, "", "")
+
+    monkeypatch.setattr(backend, "_run_host", run_host)
+    await backend._exempt_framework("setup")
+    await backend.prepare_execution(
+        ["https://tunnel.example/v1", "http://10.0.0.5:8080/mcp"]
+    )
+    await backend.prepare_execution(None)
+    setup, execution, reset = calls
+    assert setup[:2] == ("docker", "exec") and "c-main" in setup
+    assert setup[setup.index("--user") + 1] == "0"
+    assert "-m owner" in setup[-3] and setup[-1] == "setup"
+    assert execution[-5:] == ("execution", "tunnel.example", "443", "10.0.0.5", "8080")
+    assert reset[-1] == "reset"

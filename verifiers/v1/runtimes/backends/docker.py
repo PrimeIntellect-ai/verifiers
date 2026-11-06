@@ -58,6 +58,8 @@ if TYPE_CHECKING:
 _LINUX = sys.platform == "linux"
 _HOST_ALIAS = "host.docker.internal"
 _NETWORK_IMAGE = "localhost/verifiers-network:1"
+# The comment on the rules `DockerBackend._exempt_framework` adds in a workspace.
+_EXEMPT_TAG = "vf-framework-egress"
 _PASS_LISTENER = r"""
 import array, socket
 control = socket.socket(socket.AF_UNIX)
@@ -568,6 +570,11 @@ class DockerBackend(RuntimeBackend):
         descriptors.frombytes(ancillary[0][2][: descriptors.itemsize])
         return socket.socket(fileno=descriptors[0])
 
+    async def prepare_setup(self) -> None:
+        await super().prepare_setup()
+        if self._host_backend is not None:
+            await self._exempt_framework("setup")
+
     async def prepare_execution(
         self, routes: list[str] | None, network: NetworkPolicyConfig | None = None
     ) -> None:
@@ -576,6 +583,9 @@ class DockerBackend(RuntimeBackend):
         network for a trusted phase, undoing the cut."""
         if self._host_backend is not None:
             await self._host_backend.prepare_execution(routes, network)
+            await self._exempt_framework(
+                "execution" if routes is not None else "reset", routes or []
+            )
             return
         if self._proxy is None or not self._restricted:
             return
@@ -636,6 +646,56 @@ class DockerBackend(RuntimeBackend):
         )
         await self._net_admin(script, "cut", proxy_address, str(self._proxy.port))
         self._cut = True
+
+    async def _exempt_framework(self, phase: str, routes: list[str] = ()) -> None:
+        """A composed workspace whose task guards its agent user's egress itself (an
+        `iptables -m owner` rule in main's OUTPUT chain, as a task whose agent ran outside
+        the box does) would also cut the harness, which runs in main as that user. Ahead
+        of the task's own rules, main's iptables (the variant the task used) accepts all
+        output during framework setup, before the agent starts, and only the framework's
+        routes (the model, tool servers) during execution, pinned in /etc/hosts as
+        resolved now. `reset` leaves the task's rules alone. Main without such a rule,
+        or without iptables, is left as it is."""
+        targets = []
+        for url in routes:
+            parts = urlsplit(url)
+            if parts.hostname:
+                default = 443 if parts.scheme == "https" else 80
+                targets.append(f"{parts.hostname} {parts.port or default}")
+        script = (
+            "command -v iptables >/dev/null 2>&1 || exit 0; "
+            "iptables -w -S OUTPUT 2>/dev/null | grep -q -- '-m owner' || exit 0; "
+            'tools="iptables"; command -v ip6tables >/dev/null 2>&1 && tools="iptables ip6tables"; '
+            f"tag='-m comment --comment {_EXEMPT_TAG}'; "
+            # Undo the previous phase's rules (iptables prints them back).
+            'for t in $tools; do $t -w -S OUTPUT | grep -- "--comment {tag}" '
+            "| sed 's/^-A /-D /' | while read -r rule; do eval $t -w $rule; done; done; "
+            'case "$1" in '
+            "setup) for t in $tools; do $t -w -I OUTPUT 1 $tag -j ACCEPT; done;; "
+            "execution) shift; while [ $# -gt 0 ]; do host=$1; port=$2; shift 2; "
+            'case "$host" in *[!0-9.]*) '
+            "address=$(getent ahostsv4 \"$host\" | awk 'NR==1{print $1}'); "
+            '[ -n "$address" ] || { echo "cannot resolve $host" >&2; exit 1; }; '
+            'grep -q "^$address $host\\$" /etc/hosts || echo "$address $host" >> /etc/hosts;; '
+            "*) address=$host;; esac; "
+            'iptables -w -I OUTPUT 1 -d "$address/32" -p tcp --dport "$port" $tag -j ACCEPT; '
+            "done;; esac"
+        ).replace("{tag}", _EXEMPT_TAG)
+        args = [arg for target in targets for arg in target.split()]
+        result = await self._run_host(
+            *self._exec_argv({}, user="0"),
+            "sh",
+            "-c",
+            script,
+            "vf-exempt",
+            phase,
+            *args,
+        )
+        if result.exit_code:
+            raise SandboxError(
+                f"framework egress for the task's agent guard ({phase}) failed: "
+                f"{(result.stderr or result.stdout).strip()[-1000:]}"
+            )
 
     async def _net_admin(self, script: str, action: str, *args: str) -> None:
         """Run `script` with NET_ADMIN in the container's network namespace."""
