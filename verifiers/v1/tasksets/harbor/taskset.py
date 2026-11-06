@@ -34,11 +34,14 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    SerializationInfo,
     TypeAdapter,
     ValidationError,
+    field_serializer,
     field_validator,
 )
 
+from verifiers.v1.configs.judge import JudgeConfig
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.configs.scoring import ScoringConfig
 from verifiers.v1.configs.task import TaskConfig
@@ -80,6 +83,8 @@ REWARD_SCALAR_ADAPTER = TypeAdapter(
 class HarborTaskConfig(TaskConfig):
     reward_key: str = Field("reward", min_length=1)
     """Named verifier value used as the training reward; other values remain metrics."""
+    judge: JudgeConfig | None = None
+    """Explicit native model, endpoint and sampling overrides for authored judges."""
     mcp_servers: list[dict] = Field(default_factory=list)
     """Task-declared connections, bound from HarborData during construction."""
     mcp: ToolsetConfig = ToolsetConfig(colocated=True)
@@ -91,6 +96,16 @@ class HarborTaskConfig(TaskConfig):
         if not config.model_fields_set & {"colocated", "runtime", "service", "url"}:
             config = config.model_copy(update={"colocated": True})
         return config
+
+    @field_serializer("judge")
+    def _judge_overrides(
+        self, judge: JudgeConfig | None, info: SerializationInfo
+    ) -> dict | None:
+        return (
+            judge.model_dump(mode=info.mode, exclude_unset=True)
+            if judge is not None
+            else None
+        )
 
 
 class HarborConfig(TasksetConfig):
@@ -419,17 +434,18 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
         """
         # Harbor's dedicated verifier image owns the complete test suite and its
         # dependencies. Mixing it with packaged tests can retain obsolete helpers.
-        stage = "test -f /tests/test.sh"
+        stage = "{ test -f /tests/test.sh || test -f /tests/judge.toml; }"
         if self.data.verifier is None or self.data.verifier_image is None:
-            await runtime.write(
-                "/tmp/tests.tgz", make_tar(Path(self.data.task_dir) / "tests")
-            )
+            tests = Path(self.data.task_dir) / "tests"
+            wipe = wipe or not (tests / "test.sh").is_file()
+            await runtime.write("/tmp/tests.tgz", make_tar(tests))
             stage = (
                 f"{'rm -rf /tests && ' if wipe else ''}"
                 "mkdir -p /tests && tar -xzf /tmp/tests.tgz -C /tests"
             )
         command = (
-            "rm -f /logs/verifier/reward.json /logs/verifier/reward.txt && "
+            "rm -f /logs/verifier/reward.json /logs/verifier/reward.txt "
+            "/logs/verifier/instruction.md /logs/verifier/response.txt && "
             f"mkdir -p /logs/verifier {ARTIFACTS_DIR} && {stage}"
         )
         result = await runtime.run(["sh", "-c", command], {})
@@ -462,6 +478,27 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
     async def run_verifier(
         self, runtime: Runtime, trace: Trace
     ) -> float | dict[str, float]:
+        await runtime.write(
+            "/logs/verifier/instruction.md", self.data.prompt_text.encode()
+        )
+        await runtime.write("/logs/verifier/response.txt", trace.last_reply.encode())
+        script = await runtime.run(["test", "-f", "/tests/test.sh"], {})
+        if script.exit_code:
+            from .judge import run_judge
+
+            layout = await runtime.run(
+                [
+                    "sh",
+                    "-c",
+                    "test -f /tests/judge.toml && find -L /tests -type f \\( -name '*.toml' -o -name '*.py' \\) ! -path /tests/judge.toml -print -quit",
+                ],
+                {},
+            )
+            if layout.exit_code or layout.stdout.strip():
+                raise TaskError(
+                    "Native grading requires a single judge.toml; additional graders require test.sh"
+                )
+            return {self.config.reward_key: await run_judge(self, runtime, trace)}
         # By absolute path, in the runtime's configured workdir: Harbor execs the
         # script the same way, and scripts do grade the agent's work at `$PWD`.
         # The reward file is authoritative even when the script exits nonzero.
@@ -775,7 +812,9 @@ def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborD
     from harbor.models.task.task import Task as HarborModelTask
     from harbor.models.task.verifier_mode import resolve_verifier_environment_definition
 
-    harbor_task = HarborModelTask(task_dir)
+    harbor_task = HarborModelTask(
+        task_dir, disable_verification=(task_dir / "tests/judge.toml").is_file()
+    )
     parsed = harbor_task.config
     if parsed.steps:
         raise ValueError(
