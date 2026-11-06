@@ -18,6 +18,20 @@ async def grade_composite(task, runtime, trace, env):
         raise TaskError("Composite Harbor discovery requires a sandbox runtime")
     prefix = f"/tmp/vf-criteria-{uuid.uuid4().hex}"
     source = Path(__file__).parent
+    # RewardKit's conventional trajectory path carries the native v1 record.
+    # Replace solver-owned files/symlinks before staging harness evidence.
+    trajectory = "/logs/agent/trajectory.json"
+    await runtime.run(["rm", "-f", trajectory], {})
+    await runtime.write(
+        trajectory,
+        trace.to_json(
+            exclude={
+                "nodes": {
+                    "__all__": {"message": {"reasoning_content", "provider_state"}}
+                }
+            }
+        ),
+    )
     await runtime.write(prefix + ".py", (source / "programmatic.py").read_bytes())
     await runtime.write(prefix + "-compat.py", (source / "rewardkit.py").read_bytes())
     result = await runtime.run(
