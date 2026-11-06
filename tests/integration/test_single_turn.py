@@ -21,15 +21,20 @@ async def test_single_turn(run, harness, harness_runtime):
         runtime=harness_runtime,
         env={"agent": {"sampling": {"temperature": 0.0}}},
         max_turns=2,
+        taskset_overrides={"finish_tool": harness.id == "stirrup"},
     )
     (trace,) = episode.traces
     assert trace.num_branches == 1
     assert trace.ok, [error.message for error in trace.errors]
     assert trace.num_turns == 1
-    # Stirrup requires finish, but this task forbids tools: its @stop refuses
-    # Stirrup's continuation after the first text reply.
-    expected_stop = "single_turn" if harness.id == "stirrup" else "agent_completed"
-    assert trace.stop_condition == expected_stop
+    assert trace.stop_condition == "agent_completed"
+    if harness.id == "stirrup":
+        # Verify native completion rather than a task stop cutting off the loop.
+        assert any(
+            call.name == "finish"
+            for message in trace.assistant_messages
+            for call in message.tool_calls or []
+        )
     assert trace.reward == 1.0, trace.last_reply
     assert trace.task.key == f"echo:{trace.task.data.answer}"
     assert trace.task.hash is not None
