@@ -186,6 +186,7 @@ class PolicySpan(BaseModel):
             raise ValueError("policy span end must be at least its start")
         return self
 
+    @computed_field
     @property
     def drift(self) -> int:
         return self.end - self.start
@@ -231,11 +232,12 @@ RunInfo = Annotated[TrainRunInfo | EvalRunInfo, Field(discriminator="type")]
 
 
 class TimeSpan(BaseModel):
-    """Wall-clock timestamps with a derived, non-serialized duration in seconds."""
+    """Wall-clock timestamps, with their duration in seconds."""
 
     start: float = 0.0
     end: float = 0.0
 
+    @computed_field
     @property
     def duration(self) -> float:
         return max(0.0, self.end - self.start) if self.end else 0.0
@@ -675,10 +677,12 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         dump str keys; validation coerces them back to int."""
         return {str(k): v for k, v in mapping.items()}
 
+    @computed_field
     @property
     def reward(self) -> float:
         return sum(r.value for r in self.rewards.values() if r is not None)
 
+    @computed_field
     @property
     def is_format_violation(self) -> bool:
         """The harness rejected a terminal model response as invalid training output."""
@@ -688,6 +692,7 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
             for link in node.semantic_parents
         )
 
+    @computed_field
     @property
     def has_error(self) -> bool:
         return not self.ok
@@ -726,6 +731,7 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         usage = self.usage
         return self.num_input_tokens + (usage.completion_tokens if usage else 0)
 
+    @computed_field
     @property
     def usage(self) -> Usage | None:
         """Provider-reported usage summed once per actual model call in this rollout."""
@@ -832,14 +838,17 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
             raise ValueError("trace has no messages")
         return self.nodes[-1].message
 
+    @computed_field
     @property
     def num_branches(self) -> int:
         return len(graph.leaves(self))
 
+    @computed_field
     @property
     def num_turns(self) -> int:
         return sum(1 for n in self.nodes if n.sampled)
 
+    @computed_field
     @property
     def is_truncated(self) -> bool:
         """True for framework limits, failed compaction, or a length-finished response."""
@@ -870,6 +879,7 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         """Every tool result, in order — branch-independent."""
         return [n.message for n in self.nodes if isinstance(n.message, ToolMessage)]
 
+    @computed_field
     @property
     def last_reply(self) -> str:
         """The root agent's response, falling back to the last assistant message."""
