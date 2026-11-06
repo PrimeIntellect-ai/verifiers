@@ -63,17 +63,19 @@ class RuntimeCodeExecToolProvider(LocalCodeExecToolProvider):
     async def run_command(self, cmd, *, timeout=None):
         # The pinned local backend cleans up on timeouts, but not task
         # cancellation. ACP cancellation must also stop the command's children.
-        process = await asyncio.create_subprocess_exec(
-            "bash",
-            "-c",
-            cmd,
-            cwd=self.workspace,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            start_new_session=True,
-        )
+        process = None
         completed = False
         try:
+            process = await asyncio.create_subprocess_exec(
+                "bash",
+                "-c",
+                cmd,
+                cwd=self.workspace,
+                stdin=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                start_new_session=True,
+            )
             stdout, stderr = await asyncio.wait_for(
                 process.communicate(),
                 self._shell_timeout if timeout is None else timeout,
@@ -91,8 +93,15 @@ class RuntimeCodeExecToolProvider(LocalCodeExecToolProvider):
                 stderr="Command timed out",
                 error_kind="timeout",
             )
+        except Exception as error:  # noqa: BLE001 - shell execution failures are recoverable tool results
+            return CommandResult(
+                exit_code=1,
+                stdout="",
+                stderr=str(error),
+                error_kind="execution_error",
+            )
         finally:
-            if not completed:
+            if process is not None and not completed:
                 with suppress(ProcessLookupError):
                     os.killpg(process.pid, signal.SIGKILL)
                 await process.wait()
