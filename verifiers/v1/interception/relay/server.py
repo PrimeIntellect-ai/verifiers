@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.10"
-# dependencies = []
+# dependencies = ["certifi"]
 # ///
 """Loopback HTTP relay between a harness program in the box and the host's interception
 server.
@@ -15,14 +15,14 @@ call still waiting for its first event.
 
 While the upstream cannot be reached (a connect fails, a request breaks before its
 response, the tunnel edge answers with its own error page), the relay retries the
-request for up to `retry_seconds`, so the harness does not see a tunnel that is
+request for up to `RETRY_SECONDS`, so the harness does not see a tunnel that is
 reconnecting or being replaced. A retry is marked as one (`x-stainless-retry-count`),
 so the interception server joins it to the request it already serves.
 
 Usage: relay_server.py --config <path> --port <port> [--ready <path>] [--pid <path>]
 
 The config file is JSON: `{"upstream": "https://host/base", "tokens": {"<box token>":
-"<upstream token>"}, "retry_seconds": 300}`. Once listening, the relay writes its port to `--ready` and its
+"<upstream token>"}}`. Once listening, the relay writes its port to `--ready` and its
 process id to `--pid`.
 """
 
@@ -42,12 +42,13 @@ from collections.abc import Iterator
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit
 
+import certifi
+
 KEEPALIVE_SECONDS = 10.0
 """Interval of the comments an SSE client gets while its request waits for a retry."""
 RETRY_SECONDS = 5 * 60
-"""How long a request is retried while the upstream cannot be reached, unless the config
-sets `retry_seconds`: long enough for the host to notice a lost tunnel, open a new one
-and reroute the relay."""
+"""How long a request is retried while the upstream cannot be reached: long enough for
+the host to notice a lost tunnel, open a new one and reroute the relay."""
 EDGE_STATUSES = frozenset({404, 502, 503, 504})
 """Statuses a tunnel edge answers with its own page when it cannot reach the upstream
 ("404 Tunnel Not Found", a bad gateway). The interception server answers with JSON or
@@ -77,7 +78,10 @@ REQUEST_DROPPED = HOP_BY_HOP | {"host", "content-length", "expect"}
 # SSE clients try to decode the empty event a blank line would dispatch.
 KEEPALIVE = b": relay keepalive\n"
 STATUS_CHANGED = "relay: upstream changed status on retry"
-SSL_CONTEXT = ssl.create_default_context()
+# certifi's roots, as the harness's own HTTP clients use: a task image may have no system
+# CA store (no `ca-certificates`), and the stdlib then trusts no certificate at all.
+SSL_CONTEXT = ssl.create_default_context(cafile=certifi.where())
+SSL_CONTEXT.load_default_certs()
 
 
 def log(message: str) -> None:
@@ -89,12 +93,7 @@ def error_event(message: str) -> bytes:
 
 
 class Config:
-    def __init__(
-        self,
-        upstream: str,
-        tokens: dict[str, str],
-        retry_seconds: float = RETRY_SECONDS,
-    ) -> None:
+    def __init__(self, upstream: str, tokens: dict[str, str]) -> None:
         parts = urlsplit(upstream)
         if parts.scheme not in ("http", "https") or not parts.hostname:
             raise ValueError(f"upstream must be an http(s) URL: {upstream!r}")
@@ -108,7 +107,6 @@ class Config:
         self.port = parts.port
         self.prefix = parts.path.rstrip("/")
         self.tokens = tokens
-        self.retry_seconds = float(retry_seconds)
         port = f":{parts.port}" if parts.port else ""
         self.origin = f"{parts.scheme}://{parts.hostname}{port}{self.prefix}"
 
@@ -116,11 +114,7 @@ class Config:
     def load(cls, path: str) -> "Config":
         with open(path) as file:
             data = json.load(file)
-        return cls(
-            data["upstream"],
-            data.get("tokens") or {},
-            data.get("retry_seconds", RETRY_SECONDS),
-        )
+        return cls(data["upstream"], data.get("tokens") or {})
 
     def connection(self) -> http.client.HTTPConnection:
         if self.scheme == "https":
@@ -413,14 +407,14 @@ class Handler(BaseHTTPRequestHandler):
 
     def unreachable(self, config: Config, reason: str) -> None:
         """Wait before the next attempt while the upstream cannot be reached: until the
-        config changes, at most `retry_seconds` after the first failure."""
+        config changes, at most `RETRY_SECONDS` after the first failure."""
         now = time.monotonic()
         if self.failing_since is None:
             self.failing_since = now
             self.delay = BACKOFF_SECONDS
-        if now - self.failing_since >= config.retry_seconds:
+        if now - self.failing_since >= RETRY_SECONDS:
             raise UpstreamError(
-                f"upstream unreachable for {config.retry_seconds:g}s: {reason}"
+                f"upstream unreachable for {RETRY_SECONDS:g}s: {reason}"
             )
         log(f"{config.origin} unreachable ({reason}), retry in {self.delay}s")
         self.retries += 1

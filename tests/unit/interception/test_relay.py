@@ -127,9 +127,7 @@ class Relay:
         upstream: str,
         tokens: dict[str, str],
         source: str,
-        retry_seconds: float = 300.0,
     ) -> None:
-        self.retry_seconds = retry_seconds
         script = tmp_path / "relay_server.py"
         script.write_text(source)
         self.config = tmp_path / "config.json"
@@ -144,9 +142,7 @@ class Relay:
         self.port = int(wait_for(lambda: ready.exists() and ready.read_text()))
 
     def write(self, upstream: str, tokens: dict[str, str]) -> None:
-        self.config.write_bytes(
-            relay_config(upstream, tokens, retry_seconds=self.retry_seconds)
-        )
+        self.config.write_bytes(relay_config(upstream, tokens))
 
     def reload(self, upstream: str, tokens: dict[str, str]) -> None:
         self.write(upstream, tokens)
@@ -197,9 +193,8 @@ def make_relay(tmp_path) -> Iterator[Callable[..., Relay]]:
         upstream: str,
         tokens: dict[str, str] | None = None,
         source: str = RELAY_SOURCE,
-        retry_seconds: float = 300.0,
     ) -> Relay:
-        relays.append(Relay(tmp_path, upstream, tokens or {}, source, retry_seconds))
+        relays.append(Relay(tmp_path, upstream, tokens or {}, source))
         return relays[-1]
 
     yield make
@@ -358,7 +353,8 @@ def test_concurrent_requests_do_not_block_each_other(upstreams, make_relay):
 
 
 def test_unreachable_upstream_answers_502_after_the_retry_window(make_relay):
-    relay = make_relay("http://127.0.0.1:1", retry_seconds=1)
+    source = RELAY_SOURCE.replace("RETRY_SECONDS = 5 * 60", "RETRY_SECONDS = 1")
+    relay = make_relay("http://127.0.0.1:1", source=source)
     started = time.monotonic()
     response = sse_post(relay)
     assert response.status == 502
