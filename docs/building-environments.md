@@ -155,7 +155,16 @@ Both the solver and verifier must run on container-backed runtimes (`subprocess`
 
 List every file or directory the grader needs in `TaskData.artifacts` (along with any `exclude` glob patterns for directories). When restoring artifacts into the grading sandbox, verifiers replaces whatever exists under those paths, so keep agent output directories separate from locations where you install trusted tests or grader dependencies. By default, a missing artifact fails the rollout; if an output is optional, declare it with `vf.Artifact(source=..., required=False)` and handle its absence in your reward function.
 
-In addition to declared paths, `/logs/artifacts` is collected automatically whenever it exists. Collected archives are held in memory on the evaluator only until grading finishes (up to `TaskData.artifact_max_bytes`, which defaults to 32 MiB) and are not persisted in traces; if you want to keep small snippets of output on the trace, copy them into `trace.info` during `finalize`.
+In addition to declared paths, `/logs/artifacts` is collected automatically whenever it exists. A rollout collects at most `TaskData.artifact_max_bytes` in total (32 MiB by default). The archive bytes are left out of the trace JSON; when a run saves its traces, the collected files are written next to `traces.jsonl` under `artifacts/<trace-id>/`, with a `manifest.json` (see [Harbor artifacts](harbor.md#artifacts-and-collect-hooks)). To keep small snippets of output on the trace itself, copy them into `trace.info` during `finalize`.
+
+Collected archives are untrusted: the agent controls both the files under each source and the tools that archive them. Before an archive is restored into the grading sandbox or saved to disk, verifiers checks it on the evaluator and refuses it if:
+
+- a member lies outside its declared root, through an absolute name, a `..` component, or any other path
+- a symlink is absolute, leaves the root, resolves through another symlink, or is a parent of another member
+- a hard link targets anything other than an earlier regular file in the same archive
+- a member appears twice
+
+FIFOs and device nodes are dropped at collection with a warning. The runtime enforces the byte limit while it reads each archive, so replacing or growing an archive after `tar` writes it cannot get past the limit. Restoring into the `subprocess` runtime is refused because extraction would write to absolute paths on the host. A refused archive fails the restore; when traces are saved it is recorded as `failed` in `manifest.json` and none of its files are written.
 
 To copy private test suites or reference data into the grading sandbox without exposing them to the solver, implement `stage_verifier`. Unlike `setup` (which runs in both sandboxes and should only prepare inputs the agent is allowed to see), `stage_verifier` runs only in the grading sandbox after solver artifacts have been restored:
 
