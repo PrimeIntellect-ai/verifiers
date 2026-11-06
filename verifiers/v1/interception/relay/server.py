@@ -175,6 +175,8 @@ class Relay:
         self.path = path
         self.failures = failures
         self.failures_lock = threading.Lock()
+        self.failed = False
+        """Whether the last request outcome recorded in `failures` is a failure."""
         self.config = Config.load(path)
         self.changed = threading.Condition()
         self.upstreams: set[Upstream] = set()
@@ -188,6 +190,15 @@ class Relay:
             return upstream, self.config
 
     def record_failure(self, reason: str) -> None:
+        self._record(reason.replace("\n", " "), failed=True)
+
+    def record_success(self) -> None:
+        """After a failure, record that a request went through again: the failure is
+        no longer the relay's current state."""
+        if self.failed:
+            self._record("ok", failed=False)
+
+    def _record(self, line: str, *, failed: bool) -> None:
         if self.failures is None:
             return
         with (
@@ -195,7 +206,8 @@ class Relay:
             contextlib.suppress(OSError),
             open(self.failures, "a") as file,
         ):
-            file.write(reason.replace("\n", " ") + "\n")
+            file.write(line + "\n")
+            self.failed = failed
 
     def end(self, upstream: Upstream) -> None:
         with self.changed:
@@ -306,6 +318,11 @@ class Handler(BaseHTTPRequestHandler):
         except ValueError:
             self.retry_count = 0
         self.retries = 0
+        self.sent = 0
+        """Attempts that may have reached the interception server: the retry count it
+        sees. An attempt that failed to connect or got the tunnel edge's own page did
+        not, so a request that a legitimate later turn repeats is never taken for a
+        retry and answered from the server's replay cache."""
         self.failing_since: float | None = None
         self.delay = BACKOFF_SECONDS
         self.sent_status: int | None = None
@@ -323,12 +340,14 @@ class Handler(BaseHTTPRequestHandler):
                     log(f"{self.command} {self.label}: {error}")
                     self.fail(str(error))
                     return
+                opened = time.monotonic()
                 try:
                     done = self.stream(upstream, response)
                 finally:
                     relay.end(upstream)
                     connection.close()
                 if done:
+                    relay.record_success()
                     retried = f" after {self.retries} retries" if self.retries else ""
                     log(f"{self.command} {self.label} {self.sent_status}{retried}")
                     return
@@ -340,6 +359,9 @@ class Handler(BaseHTTPRequestHandler):
                     self.retries += 1
                     log(f"{self.command} {self.label}: aborted, retrying")
                 else:
+                    if time.monotonic() - opened > BACKOFF_CAP_SECONDS:
+                        # The response was up a while: this is a new outage.
+                        self.failing_since = None
                     try:
                         self.unreachable(relay.config, "the response broke")
                     except UpstreamError as error:
@@ -373,11 +395,11 @@ class Handler(BaseHTTPRequestHandler):
             lower = name.lower()
             if lower in ("authorization", "x-api-key"):
                 value = config.swap(lower, value)
-            elif lower == RETRY_COUNT_HEADER and self.retries:
+            elif lower == RETRY_COUNT_HEADER and self.sent:
                 continue
             headers[name] = f"{headers[name]}, {value}" if name in headers else value
-        if self.retries:
-            headers[RETRY_COUNT_HEADER] = str(self.retry_count + self.retries)
+        if self.sent:
+            headers[RETRY_COUNT_HEADER] = str(self.retry_count + self.sent)
         return headers
 
     def open(
@@ -400,6 +422,7 @@ class Handler(BaseHTTPRequestHandler):
                     self.body or None,
                     self.upstream_headers(config),
                 )
+                self.sent += 1
                 response = connection.getresponse()
             except (OSError, http.client.HTTPException) as error:
                 relay.end(upstream)
@@ -411,8 +434,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.unreachable(config, f"{error!r}")
                 continue
             if is_edge_error(response):
-                with contextlib.suppress(OSError, http.client.HTTPException):
-                    response.read()
+                # Not read: an edge that stalls its page must not block the retry.
+                self.sent -= 1
                 relay.end(upstream)
                 connection.close()
                 self.unreachable(config, f"tunnel edge answered {response.status}")
@@ -526,7 +549,11 @@ class Handler(BaseHTTPRequestHandler):
         if bodyless:
             if length := response.getheader("Content-Length"):
                 self.send_header("Content-Length", length)
-        elif response.length is not None and not response.chunked:
+        elif (
+            response.length is not None
+            and not response.chunked
+            and not self.scanner.sse
+        ):
             self.sent_length = response.length
             self.send_header("Content-Length", str(response.length))
         elif self.request_version != "HTTP/1.0":

@@ -391,7 +391,7 @@ class Rollout:
                         self._shared_tools,
                     )
                 )
-                harness_base = runtime.host_url(base_url.rstrip("/"))
+                harness_base = runtime.host_url(base_url.rstrip("/")).rstrip("/")
                 if self._relay is not None:
                     # The harness holds the model secret anyway; the relay gets
                     # nothing more, so reading its config grants no capability.
@@ -582,6 +582,10 @@ class Rollout:
         """Move the harness's relay to the interception server's new URL
         (`RolloutSession.reroute`)."""
         assert self._relay is not None
+        if self._closed:
+            # Closing: the agent is done and the relay unused, and scoring keeps its
+            # own egress policy.
+            return
         await self._relay.wait_connected()
         upstream = base_url.rstrip("/")
         # A restricted box must reach the new tunnel host before the relay uses it.

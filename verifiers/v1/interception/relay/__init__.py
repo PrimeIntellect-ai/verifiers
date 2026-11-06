@@ -140,7 +140,8 @@ class Relay:
         )
         with contextlib.suppress(Exception):
             result = await self.runtime.run(["sh", "-c", check], {})
-            reasons = result.stdout.strip().splitlines()
+            # "ok": a request went through after the last failure.
+            reasons = [r for r in result.stdout.strip().splitlines() if r != "ok"]
             if reasons:
                 return RelayError("; ".join(reasons))
         return None
@@ -151,8 +152,7 @@ class Relay:
         if not self._launch.done():
             self._launch.cancel()
         await asyncio.wait({self._launch})
-        if self._launch.cancelled() or self._launch.exception() is not None:
-            return
+        # Also after a failed or cancelled launch: the process may run already.
         pid, directory = shlex.quote(self.pid_path), shlex.quote(self.dir)
         # Best effort: the box may be gone already.
         with contextlib.suppress(Exception):

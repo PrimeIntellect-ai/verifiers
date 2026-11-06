@@ -368,6 +368,20 @@ def test_unreachable_upstream_answers_502_after_the_retry_window(make_relay):
     assert "unreachable for 1s" in relay.failures.read_text()
 
 
+def test_a_request_through_after_a_failure_clears_it(upstreams, make_relay):
+    a, _ = upstreams
+    a.respond = lambda handler: reply(handler, 200, {"ok": True})
+    source = RELAY_SOURCE.replace("RETRY_SECONDS = 5 * 60", "RETRY_SECONDS = 1")
+    relay = make_relay("http://127.0.0.1:1", source=source)
+    assert sse_post(relay).status == 502
+    relay.reload(a.url, {})
+    connection = relay.connect()
+    connection.request("POST", "/v1/chat/completions", b"{}", {})
+    assert connection.getresponse().status == 200
+    # The last line is the relay's current state: it forwards again.
+    assert wait_for(lambda: relay.failures.read_text().splitlines()[-1] == "ok")
+
+
 def edge_page(status: int):
     """A tunnel edge's own error page."""
 
@@ -405,8 +419,9 @@ def test_edge_error_pages_are_retried(upstreams, make_relay):
         a.requests.get(timeout=TIMEOUT)["headers"].get("x-stainless-retry-count")
         for _ in range(3)
     ]
-    # Each retry is marked, so the interception server joins it to the request it serves.
-    assert retries == [None, "1", "2"]
+    # The edge's pages mean the server never saw the request, so the resends are
+    # not marked as retries: a repeated body is never answered from its replay cache.
+    assert retries == [None, None, None]
 
 
 def test_interception_errors_reach_the_harness(upstreams, make_relay):
@@ -439,8 +454,8 @@ def test_lost_upstream_is_retried_until_rerouted(upstreams, make_relay):
     response = connection.getresponse()
     assert response.status == 200
     assert response.read().endswith(b"data: from-b\n\n")
-    retried = b.requests.get(timeout=TIMEOUT)["headers"]["x-stainless-retry-count"]
-    assert int(retried) >= 1
+    # The dead upstream never saw the request: the first one to arrive is no retry.
+    assert "x-stainless-retry-count" not in b.requests.get(timeout=TIMEOUT)["headers"]
 
 
 def test_body_cut_short_is_retried(upstreams, make_relay):
@@ -490,9 +505,10 @@ class FakeRuntime:
             "upstream unreachable for 300s: refused",
         ),
         ("the relay exited\n", "the relay exited"),
+        ("ok\n", None),
         ("", None),
     ],
-    ids=["gave-up", "exited", "healthy"],
+    ids=["gave-up", "exited", "recovered", "healthy"],
 )
 async def test_relay_failure_names_the_relay(monkeypatch, stdout, expected):
     from verifiers.v1.errors import RelayError
