@@ -1042,7 +1042,7 @@ class Rollout:
                 None,
                 [
                     f"stop={trace.stop_condition}" if trace.ok else "",
-                    f"turns={trace.num_turns} branches={len(trace.branches)}",
+                    f"turns={trace.num_turns} branches={trace.num_branches}",
                     f"dropped={trace.dropped}" if trace.is_dropped else "",
                     f"reward={trace.reward:.3f}" if trace.ok else "",
                     _group(
