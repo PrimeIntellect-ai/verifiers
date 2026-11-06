@@ -22,6 +22,41 @@ from verifiers.v1.runtimes.base import (
     RuntimeProcess,
 )
 
+# uv locks a script environment with a file in the host's temp dir, so it serializes
+# builds on one host only. Processes on other hosts (or with another TMPDIR) that share
+# the uv cache on a shared filesystem otherwise remove and recreate the same environment
+# under each other. This lock lives in the uv cache itself and is an atomic `mkdir`,
+# which holds on NFS-like filesystems where `flock` may not. The holder refreshes its
+# mtime while it builds, so a lock idle for minutes has a dead holder and is taken over.
+# Without `find`, a waiter takes the lock over after half an hour. If the lock cannot be
+# created at all (e.g. a read-only cache), the build runs unlocked rather than hang.
+# Arguments: the lock name, then the command to run under the lock.
+_UV_SCRIPT_LOCK = """
+cache="$(uv cache dir 2>/dev/null)" || cache=
+lock="$cache/.vf-script-locks/$1"
+shift
+{ [ -n "$cache" ] && mkdir -p "$cache/.vf-script-locks" 2>/dev/null; } || lock=
+since=$(date +%s)
+while [ -n "$lock" ] && ! mkdir "$lock" 2>/dev/null; do
+  [ -d "$lock" ] || { lock=; break; }
+  if [ -n "$(find "$lock" -prune -mmin +3 2>/dev/null)" ] \\
+    || [ $(($(date +%s) - since)) -ge 1800 ]; then
+    mv "$lock" "$lock.stale.$$" 2>/dev/null && rm -rf "$lock.stale.$$"
+    since=$(date +%s)
+  else
+    sleep 0.2 2>/dev/null || sleep 1
+  fi
+done
+if [ -n "$lock" ]; then
+  parent=$$
+  (while kill -0 "$parent" && touch -c "$lock"; do sleep 15; done) >/dev/null 2>&1 &
+  heartbeat=$!
+  trap 'kill "$heartbeat" 2>/dev/null; rmdir "$lock" 2>/dev/null' EXIT
+  trap 'exit 143' HUP INT TERM
+fi
+"$@"
+"""
+
 
 @dataclass(frozen=True, eq=False)
 class Runtime:
@@ -171,11 +206,17 @@ class Runtime:
                 if path not in self.backend.cache.uv_interpreters:
                     tmp = f"{path}.{uuid.uuid4().hex}.tmp"
                     await self.write(tmp, data)
+                    build = (
+                        f"uv sync --script {shlex.quote(path)} -q --no-config "
+                        f"&& uv python find --script {shlex.quote(path)} --no-config"
+                    )
+                    # Serialize the build with other processes sharing the uv cache.
+                    lock = hashlib.sha256(path.encode()).hexdigest()
                     command = (
                         f"mv -f {shlex.quote(tmp)} {shlex.quote(path)} "
                         f"&& {{ {_ENSURE_UV}; }} "
-                        f"&& uv sync --script {shlex.quote(path)} -q --no-config "
-                        f"&& uv python find --script {shlex.quote(path)} --no-config"
+                        f"&& sh -c {shlex.quote(_UV_SCRIPT_LOCK)} uv-script-lock "
+                        f"{lock} sh -c {shlex.quote(build)}"
                     )
                     # Bootstrap dependencies before task networking is restricted;
                     # keep task offline settings on the returned program's processes.

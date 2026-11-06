@@ -48,7 +48,8 @@ from verifiers.v1.runtimes import (
     make_backend,
     provision_runtime,
 )
-from verifiers.v1.runtimes.backends.subprocess import signal_process
+from verifiers.v1.runtimes.backends.subprocess import SubprocessBackend, signal_process
+from verifiers.v1.runtimes.base import RuntimeCache
 from verifiers.v1.runtimes.compose import ComposeSpec, compose_services
 from verifiers.v1.runtimes.strategies import _deployment_strategy
 from verifiers.v1.utils.compile import resolve_runtime_config
@@ -550,3 +551,33 @@ async def test_concurrent_background_starts_keep_every_handle() -> None:
         )
     )
     assert len(backend._background) == 8
+
+
+async def test_uv_script_preparation_is_safe_across_processes(
+    tmp_path, monkeypatch
+) -> None:
+    """Processes sharing one uv cache, e.g. on several hosts over a shared filesystem,
+    can prepare the same script at once: uv's own lock lives in each host's temp dir,
+    so without a lock in the shared cache they rebuild one environment under each
+    other. Each runtime here has its own process state and TMPDIR, as on separate
+    hosts."""
+    if shutil.which("uv") is None:
+        pytest.skip("needs uv")
+    monkeypatch.setattr(SubprocessBackend, "scripts_dir", str(tmp_path / "scripts"))
+    (tmp_path / "scripts").mkdir()
+    script = "# /// script\n# dependencies = []\n# ///\nprint('ok')\n"
+    config = TypeAdapter(RuntimeConfig).validate_python({"type": "subprocess"})
+
+    async def prepare(i: int) -> list[str]:
+        tmp = tmp_path / f"tmp-{i}"
+        tmp.mkdir()
+        env = {"UV_CACHE_DIR": str(tmp_path / "uv-cache"), "TMPDIR": str(tmp)}
+        async with provisioned(config) as view:
+            view.backend.cache = RuntimeCache()
+            return await view.with_env(env).prepare_uv_script(script)
+
+    programs = await asyncio.gather(*(prepare(i) for i in range(8)))
+    assert len({program[-2] for program in programs}) == 1
+    async with provisioned(config) as view:
+        result = await view.run(programs[0], {})
+    assert result.stdout.strip() == "ok", result
