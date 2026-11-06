@@ -65,18 +65,20 @@ class RolloutTimeouts:
 
 _HOME_PROBE = (
     "home=$(awk -F: -v u=\"$1\" '$1 == u { print $6 }' /etc/passwd); "
-    'echo "$home"; test -n "$home" && test -d "$home"'
+    'test -n "$home" || exit 1; home=${2:-$home}; echo "$home"; test -d "$home"'
 )
 
 
-async def resolve_agent_runtime(runtime: Runtime, user: str | None) -> Runtime:
+async def resolve_agent_runtime(
+    runtime: Runtime, user: str | None, home: str | None = None
+) -> Runtime:
     """The runtime the harness runs through: `runtime` itself, or a view running as `user`
-    with `HOME` set to its home. `user` must exist with a home directory it can write
+    with `HOME` set to `home` or its passwd home. `user` must exist with a home it can write
     (task authors ship it in the image), and the view must really run as it, so a
     runtime ignoring the user never runs the agent as root."""
     if user is None:
         return runtime
-    lookup = await runtime.run(["sh", "-c", _HOME_PROBE, "sh", user], {})
+    lookup = await runtime.run(["sh", "-c", _HOME_PROBE, "sh", user, home or ""], {})
     home = lookup.stdout.strip()
     if not home:
         raise TaskError(f"agent_user {user!r} does not exist in the image")
@@ -356,7 +358,7 @@ class Rollout:
                     boundary(HarnessError, "harness setup"),
                 ):
                     self._agent_runtime = await resolve_agent_runtime(
-                        runtime, self.task.data.agent_user
+                        runtime, self.task.data.agent_user, self.task.data.agent_home
                     )
                     await self.harness.setup(self._agent_runtime)
                 # `base_url` is the interception server's reachable URL for this rollout.
