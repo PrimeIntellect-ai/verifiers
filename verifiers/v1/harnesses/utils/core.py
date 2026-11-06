@@ -32,6 +32,7 @@ from tenacity import (
 if TYPE_CHECKING:
     # The harness bundles this module into the generated script before execution.
     from verifiers.v1.harnesses.utils.compaction import (  # noqa: TC004
+        CompactionFormatViolation,
         Compactor,
         bound_tool_message,
         compactable,
@@ -287,6 +288,7 @@ async def chat(
     tool_choice: str | None = None,
     request_id: str | None = None,
     compaction_attempt: bool = False,
+    final_attempt: bool = False,
     compaction_source_request_id: str | None = None,
 ):
     kwargs = {"model": model, "messages": messages}
@@ -308,7 +310,9 @@ async def chat(
             if request_id is not None:
                 headers["X-ACP-Model-Request-ID"] = request_id
             if compaction_attempt:
-                headers["X-Verifiers-Compaction-Attempt"] = "1"
+                headers["X-Verifiers-Compaction-Attempt"] = (
+                    "final" if final_attempt else "1"
+                )
             if compaction_source_request_id is not None:
                 headers["X-Verifiers-Compaction-Source"] = compaction_source_request_id
             if retry_count:
@@ -554,7 +558,13 @@ async def main() -> None:
         # The initial conversation is the floor for checkpoint fallbacks: a first-turn
         # checkpoint must never retry from an empty base.
         compactor.note_good(messages)
-        await run_chat_loop(args, compactor, messages, dispatch, servers, tool_client)
+        try:
+            await run_chat_loop(
+                args, compactor, messages, dispatch, servers, tool_client
+            )
+        except CompactionFormatViolation:
+            # Interception records the terminal invalid response and its stop condition.
+            pass
     if tool_client is not None:
         await tool_client.aclose()
 

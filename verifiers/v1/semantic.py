@@ -147,6 +147,7 @@ class ChatCompactionInfo(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     attempt: bool = False
+    final_attempt: bool = False
     source_request_id: str | None = Field(default=None, pattern=ACP_REQUEST_ID_PATTERN)
 
 
@@ -159,11 +160,15 @@ def extract_chat_compaction_info(
     source = normalized.get(CHAT_COMPACTION_SOURCE_HEADER.lower())
     if attempt is None and source is None:
         return None
-    if attempt not in (None, "1"):
+    if attempt not in (None, "1", "final"):
         raise ValueError("invalid chat compaction attempt marker")
     request_id = normalized.get(ACP_MODEL_REQUEST_ID_HEADER.lower())
     if request_id is None:
         raise ValueError("chat compaction metadata requires a model request ID")
     if source == request_id:
         raise ValueError("chat compaction cannot resume from its own request")
-    return ChatCompactionInfo(attempt=attempt == "1", source_request_id=source)
+    return ChatCompactionInfo(
+        attempt=attempt is not None,
+        final_attempt=attempt == "final",
+        source_request_id=source,
+    )

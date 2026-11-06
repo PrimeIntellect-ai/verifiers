@@ -61,6 +61,7 @@ from verifiers.v1.errors import (
     TaskError,
     TunnelError,
 )
+from verifiers.v1.harnesses.utils.compaction import compaction_summary_text
 from verifiers.v1.interception.base import Interception, Slot
 from verifiers.v1.interception.tunnel import Tunnel, make_tunnel
 from verifiers.v1.interception.tunnel.base import HEALTH_PATH
@@ -743,6 +744,14 @@ class InterceptionServer(Interception):
                     link = ParentLink(node=parent, type="compaction_attempt")
                     if link not in session.trace.nodes[node].semantic_parents:
                         session.trace.nodes[node].semantic_parents.append(link)
+                if compaction.final_attempt and not compaction_summary_text(
+                    session.trace.nodes[node].message, finish_reason
+                ):
+                    if parent is not None:
+                        session.trace.nodes[node].semantic_parents.append(
+                            ParentLink(node=parent, type="format_violation")
+                        )
+                    session.trace.stop("format_violation")
             if compaction.source_request_id is not None:
                 session.trace.add_semantic_edges(
                     SemanticEdgeSet(
