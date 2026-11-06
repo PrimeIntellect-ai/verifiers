@@ -352,9 +352,16 @@ class Env(ABC, Generic[ConfigT]):
                 if started is None:
                     started = time.perf_counter()
                     data = slot.task.data
+                    optional = (
+                        ("name", data.name),
+                        ("id", data.id),
+                        ("image", data.image),
+                    )
                     logger.info(
-                        "Starting episode task=%s",
-                        data.name if data.name is not None else data.idx,
+                        "Starting episode env=%s idx=%s%s",
+                        self.config.env_id,
+                        data.idx,
+                        "".join(f" {k}={v}" for k, v in optional if v is not None),
                     )
                 return await self.run_episode(
                     slot.task,
