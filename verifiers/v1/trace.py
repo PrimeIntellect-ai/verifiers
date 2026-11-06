@@ -305,7 +305,7 @@ class TraceTask(BaseModel, Generic[DataT]):
     data: DataT
     """The (immutable) row being solved."""
     key: str | None = None
-    """Stable task identity (``Task.key``); defaults to the content hash unless overridden."""
+    """Stable task identity (``Task.key``); defaults to a hash of data excluding ``idx``."""
     hash: str | None = None
     """Content hash of ``data`` (``Task.hash``)."""
 
