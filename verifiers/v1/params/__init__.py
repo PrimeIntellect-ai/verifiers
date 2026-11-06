@@ -5,6 +5,7 @@ task data, never the components that consume it."""
 from verifiers.v1.params.agent import AgentParams
 from verifiers.v1.params.harness import HarnessParams, HarnessWiring
 from verifiers.v1.params.rollout import RolloutLimits, RolloutParams, RolloutTimeouts
+from verifiers.v1.params.scoring import resolve_scoring
 
 __all__ = [
     "AgentParams",
@@ -13,4 +14,5 @@ __all__ = [
     "RolloutLimits",
     "RolloutParams",
     "RolloutTimeouts",
+    "resolve_scoring",
 ]

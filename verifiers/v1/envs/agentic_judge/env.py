@@ -13,7 +13,6 @@ from pydantic import FiniteFloat
 
 import verifiers.v1 as vf
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
-from verifiers.v1.configs.scoring import resolve_scoring
 from verifiers.v1.judges.rubric import (
     Criterion,
     RubricVerdicts,
@@ -23,6 +22,7 @@ from verifiers.v1.judges.rubric import (
     score_verdicts,
     weighted_score,
 )
+from verifiers.v1.params.scoring import resolve_scoring
 from verifiers.v1.utils.compile import validate_pairing
 from verifiers.v1.utils.loaders import harness_class
 

@@ -8,9 +8,9 @@ import pytest
 
 import verifiers.v1 as vf
 from verifiers.v1 import grading
-from verifiers.v1.configs.scoring import resolve_scoring
 from verifiers.v1.errors import SandboxError, TaskError
 from verifiers.v1.grading import grade_submission, scoring_network
+from verifiers.v1.params.scoring import resolve_scoring
 from verifiers.v1.runtimes import deployment
 from verifiers.v1.runtimes.base import RuntimeBackend
 from verifiers.v1.runtimes.runtime import Runtime

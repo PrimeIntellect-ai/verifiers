@@ -27,7 +27,7 @@ from verifiers.v1.grading import (
 from verifiers.v1.harness import Harness
 from verifiers.v1.interception import Interception, serve_interception
 from verifiers.v1.mcp import SharedToolServer, serve_tools
-from verifiers.v1.params.harness import HarnessWiring
+from verifiers.v1.params.harness import HarnessWiring, with_network_notice
 from verifiers.v1.params.rollout import RolloutParams
 from verifiers.v1.runtimes import Runtime, make_backend
 from verifiers.v1.runtimes.private_network import tool_vms
@@ -396,46 +396,10 @@ class Rollout:
                     boundary(HarnessError, "opening harness session"),
                 ):
                     harness_data = self.trace.task.data
-                    policy = self._session.network_policy
-                    if self.params.agent.network_notice and policy.network_restricted:
-                        if not policy.allow:
-                            network_prompt = "External network access is disabled."
-                        elif policy.block:
-                            network_prompt = (
-                                "External network access is allowed except for these blocked "
-                                f"destinations: {', '.join(policy.block)}. "
-                                "Do not circumvent this selection of domains."
-                            )
-                        else:
-                            network_prompt = (
-                                "External network access is limited to these destinations: "
-                                f"{', '.join(policy.allow)}. "
-                                "Do not circumvent this selection of domains."
-                            )
-                        network_prompt = "\n\n".join(
-                            text
-                            for text in (harness_data.system_prompt, network_prompt)
-                            if text
+                    if self.params.agent.network_notice:
+                        harness_data = with_network_notice(
+                            harness_data, self._session.network_policy
                         )
-                        # Keep existing transcript system messages intact on resume;
-                        # user-only lists must stay user-only for ACP harnesses.
-                        if (
-                            harness_data.system_prompt is None
-                            and isinstance(harness_data.prompt, list)
-                            and any(m.role == "system" for m in harness_data.prompt)
-                        ):
-                            harness_data = harness_data.model_copy(
-                                update={
-                                    "prompt": [
-                                        SystemMessage(content=network_prompt),
-                                        *harness_data.prompt,
-                                    ]
-                                }
-                            )
-                        else:
-                            harness_data = harness_data.model_copy(
-                                update={"system_prompt": network_prompt}
-                            )
                     if (
                         self._session.request_interceptors
                         and harness_data.prompt is not None

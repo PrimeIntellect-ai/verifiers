@@ -22,7 +22,6 @@ from typing_extensions import TypeVar
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.agent import AgentConfig, TimeoutConfig, agent_config_fields
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
-from verifiers.v1.configs.scoring import resolve_scoring
 from verifiers.v1.dialects import parse_message
 from verifiers.v1.harness import Harness
 from verifiers.v1.interception import Interception, InterceptionServer
@@ -30,6 +29,7 @@ from verifiers.v1.mcp import SharedToolServer
 from verifiers.v1.params.agent import AgentParams
 from verifiers.v1.params.harness import HarnessParams
 from verifiers.v1.params.rollout import RolloutLimits, RolloutParams, RolloutTimeouts
+from verifiers.v1.params.scoring import resolve_scoring
 from verifiers.v1.rollout import Rollout
 from verifiers.v1.runtimes import (
     Runtime,
