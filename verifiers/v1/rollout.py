@@ -802,6 +802,12 @@ class Rollout:
         try:
             if trace.timing.agent.start and not trace.timing.agent.end:
                 trace.timing.agent.end = time.time()
+                logger.debug(
+                    "Stopped agent in %s turns=%d stop=%s",
+                    format_time(trace.timing.agent.duration),
+                    trace.num_turns,
+                    trace.stop_condition,
+                )
             if not self._agent_finished():
                 await self._close_harness()
             trace.notify()
@@ -882,6 +888,9 @@ class Rollout:
                 trace.timing.finalize.end = now
                 trace.timing.scoring.start = now
                 trace.notify()
+                logger.debug(
+                    "Finalized task in %s", format_time(trace.timing.finalize.duration)
+                )
                 scoring_deadline = (
                     loop.time() + max(0.0, self._timeouts.scoring - scoring_elapsed)
                     if self._timeouts.scoring is not None

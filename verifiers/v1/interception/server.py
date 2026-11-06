@@ -954,9 +954,15 @@ class InterceptionServer(Interception):
                             session_id=upstream_session_id,
                             turn=turn,
                         )
+                    usage = call_response.usage
                     logger.debug(
-                        "Served turn tool_calls=%d",
+                        "Served turn in %s tool_calls=%d%s",
+                        format_time(time.time() - started),
                         len(call_response.message.tool_calls or []),
+                        f" input_tokens={usage.input_tokens}"
+                        f" output_tokens={usage.completion_tokens}"
+                        if usage is not None
+                        else "",
                     )
                     if session.released:  # concluded while sampling — seal holds
                         return _error_response(dialect, "rollout concluded", status=409)

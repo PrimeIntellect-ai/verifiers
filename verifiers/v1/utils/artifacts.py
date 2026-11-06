@@ -10,6 +10,7 @@ import shlex
 import shutil
 import tarfile
 import tempfile
+import time
 import uuid
 from collections.abc import Iterable
 from pathlib import Path, PurePosixPath
@@ -17,6 +18,7 @@ from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, Field, field_validator
 
+from verifiers.v1.utils.format import format_time
 from verifiers.v1.utils.log_scope import get_logger
 
 if TYPE_CHECKING:
@@ -133,6 +135,7 @@ async def collect(
 
     Each source is archived separately so its exclude patterns stay local.
     """
+    started = time.perf_counter()
     # Resolve relative sources against the runtime workdir. Joining also normalises
     # `/work/` to `/work`, so one tree cannot key two entries (the source is both the
     # dict key and `restore`'s rm -rf target).
@@ -214,7 +217,11 @@ async def collect(
         budget -= len(archive)
         collected[source] = archive
 
-    logger.debug("Collected artifacts roots=%s", list(collected))
+    logger.debug(
+        "Collected artifacts in %s roots=%s",
+        format_time(time.perf_counter() - started),
+        list(collected),
+    )
     return collected
 
 
