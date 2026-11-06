@@ -82,6 +82,39 @@ async def test_the_grader_reads_the_traces_reply_not_the_solvers_files(tmp_path)
         assert await read(runtime, "/logs/agent/extra") is None
 
 
+async def test_a_mounted_agent_logs_directory_is_emptied_in_place(tmp_path):
+    """A task's Compose file may mount /logs/agent (Harbor's
+    `${HOST_AGENT_LOGS_PATH}:/logs/agent`): the mount point cannot be removed, so the
+    grader empties it, dotfiles included, and stages the trace's reply there."""
+    logs = tmp_path / "agent-logs"
+    logs.mkdir()
+    for name in ("final_reply.md", ".hidden", "..sneaky"):
+        (logs / name).write_text("forged")
+    (logs / "dir").mkdir()
+    task = harbor_task(tmp_path / "task")
+    trace = solver_trace(task, REPLY)
+    mounts = {"/logs/agent": vf.BindMount(source=str(logs), read_only=False)}
+    async with provision_runtime(
+        vf.DockerConfig(image=IMAGE, mounts=mounts)
+    ) as runtime:
+        assert await task.solved(runtime, trace) == {"reward": 1.0}
+        listing = await runtime.run(["ls", "-A", "/logs/agent"], {})
+        assert sorted(listing.stdout.split()) == ["final_reply.md", "trajectory.json"]
+
+
+async def test_a_symlinked_agent_logs_is_replaced_by_a_directory(tmp_path):
+    task = harbor_task(tmp_path)
+    trace = solver_trace(task, REPLY)
+    async with provision_runtime(vf.DockerConfig(image=IMAGE)) as runtime:
+        await runtime.run(
+            ["sh", "-c", "mkdir -p /logs /elsewhere && ln -s /elsewhere /logs/agent"],
+            {},
+        )
+        assert await task.solved(runtime, trace) == {"reward": 1.0}
+        assert (await runtime.run(["test", "-L", "/logs/agent"], {})).exit_code
+        assert await read(runtime, "/elsewhere/final_reply.md") is None
+
+
 async def test_a_run_without_a_reply_stages_none(tmp_path):
     task = harbor_task(tmp_path)
     trace = vf.Trace(

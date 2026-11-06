@@ -860,7 +860,8 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
         the trace alone: Harbor's `/logs/agent/trajectory.json` (CyberStrike's process
         and output-quality judges skip without it) and `/logs/agent/final_reply.md`
         (`final_reply`). `/logs/agent` is grader-owned: whatever the solver, its image
-        or a restored artifact left there is removed first, so a solver cannot stand
+        or a restored artifact left there is removed first (emptied in place: a task
+        may mount it), so a solver cannot stand
         in for its own transcript. A trace without messages stages an empty directory;
         one without a reply stages no reply file."""
         files = {}
@@ -868,8 +869,13 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
             files[TRAJECTORY] = json.dumps(trajectory(trace), ensure_ascii=False)
         if reply := final_reply(trace):
             files[FINAL_REPLY] = reply
+        # Emptied in place, not removed: a task's Compose file may mount it (Harbor's
+        # `${HOST_AGENT_LOGS_PATH}:/logs/agent`), and a mount point cannot be removed.
+        # A symlink or file there is replaced by a directory.
         prepare = (
-            f"rm -rf {AGENT_LOGS} && mkdir -p {AGENT_LOGS} && chmod 755 {AGENT_LOGS}"
+            f"d={AGENT_LOGS}; "
+            'if [ -L "$d" ] || { [ -e "$d" ] && [ ! -d "$d" ]; }; then rm -f "$d"; fi && '
+            'mkdir -p "$d" && rm -rf "$d"/* "$d"/.[!.]* "$d"/..?* && chmod 755 "$d"'
         )
         result = await runtime.run(["sh", "-c", prepare], {})
         if result.exit_code:
