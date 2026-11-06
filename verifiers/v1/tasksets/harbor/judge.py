@@ -146,6 +146,25 @@ class PreparedJudge:
         self.trace.record_metrics(
             {f"{self.prefix}/{s.name}": s.value for s in self.reward.scores}
         )
+        diagnostics = {f"criteria/{s.name}": s for s in self.reward.scores}
+        guard = self.reward.guard_score
+        if guard is not None:
+            diagnostics["guard"] = guard
+            if guard.error is None:
+                self.trace.record_metric(
+                    f"{self.prefix}/reliability/guard/flagged", guard.value > 0
+                )
+        for name, score in diagnostics.items():
+            prefix = f"{self.prefix}/reliability/{name}"
+            # RewardKit leaves sample diagnostics unset for a single judge sample.
+            self.trace.record_metrics(
+                {
+                    f"{prefix}/{field}": getattr(score, field)
+                    for field in ("agreement", "valid_samples")
+                    if getattr(score, field) is not None
+                }
+            )
+            self.trace.record_metric(f"{prefix}/error", score.error is not None)
         self.trace.info.setdefault("harbor_judge", {})[self.path] = {
             **self.reward.to_detail_dict(value),
             "authored": self.authored,
