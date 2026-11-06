@@ -3,6 +3,7 @@
 import logging
 from types import SimpleNamespace
 
+import pytest
 from prime_sandboxes.core import APIError
 from prime_sandboxes.exceptions import SandboxNotRunningError
 
@@ -37,8 +38,14 @@ def _rollout() -> Rollout:
         info={"primary": "unchanged"},
     )
     rollout._harness_cleaned = False
+    rollout._agent_runtime = SimpleNamespace()
+    rollout._harness_session = None
     rollout.runtime = None
     return rollout
+
+
+def _runtime(*, stopped=False):
+    return SimpleNamespace(backend=SimpleNamespace(stopped=stopped))
 
 
 def _teardown_records(caplog):
@@ -82,7 +89,7 @@ async def test_cleanup_ignores_wrapped_terminated_sandbox(caplog):
     rollout.harness = SimpleNamespace(cleanup=cleanup)
     caplog.set_level(logging.DEBUG, logger="verifiers.v1.rollout")
 
-    await rollout._cleanup_harness(SimpleNamespace())
+    await rollout._cleanup_harness(_runtime())
 
     records = _teardown_records(caplog)
     assert len(records) == 1
@@ -125,13 +132,56 @@ async def test_cleanup_still_warns_for_unavailable_stream(caplog):
     rollout.harness = SimpleNamespace(cleanup=cleanup)
     caplog.set_level(logging.DEBUG, logger="verifiers.v1.rollout")
 
-    await rollout._cleanup_harness(SimpleNamespace())
+    await rollout._cleanup_harness(_runtime())
 
     records = _teardown_records(caplog)
     assert len(records) == 1
     assert records[0].levelno == logging.WARNING
     assert records[0].exc_info is not None
     assert records[0].exc_info[0] is APIError
+    assert rollout._harness_cleaned
+
+
+@pytest.mark.parametrize(
+    "prepared,stopped", [(False, False), (False, True), (True, True)]
+)
+async def test_cleanup_skips_unprepared_or_stopped_runtime(caplog, prepared, stopped):
+    rollout = _rollout()
+    runtime = _runtime(stopped=stopped)
+    rollout._agent_runtime = runtime if prepared else None
+    primary = rollout.trace.last_error
+    calls = []
+
+    async def cleanup(trace, runtime):
+        calls.append(runtime)
+
+    rollout.harness = SimpleNamespace(cleanup=cleanup)
+    caplog.set_level(logging.DEBUG, logger="verifiers.v1.rollout")
+
+    await rollout._cleanup_harness(runtime)
+    await rollout._cleanup_harness(runtime)
+
+    assert not calls and not _teardown_records(caplog)
+    assert rollout.trace.last_error is primary
+    assert rollout.trace.stop_condition == "sandbox_error"
+    assert rollout.trace.info == {"primary": "unchanged"}
+
+
+async def test_cleanup_partial_harness_without_session_runs_once():
+    rollout = _rollout()
+    runtime = _runtime()
+    calls = []
+
+    async def cleanup(trace, cleanup_runtime):
+        calls.append((trace, cleanup_runtime))
+
+    rollout.harness = SimpleNamespace(cleanup=cleanup)
+    assert rollout._agent_runtime is not None and rollout._harness_session is None
+
+    await rollout._cleanup_harness(runtime)
+    await rollout._cleanup_harness(runtime)
+
+    assert calls == [(rollout.trace, runtime)]
     assert rollout._harness_cleaned
 
 

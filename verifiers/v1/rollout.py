@@ -676,7 +676,11 @@ class Rollout:
         return self.ok and trace.num_turns > turns_before
 
     async def _cleanup_harness(self, runtime: Runtime) -> None:
-        if self._harness_cleaned:
+        if (
+            self._harness_cleaned
+            or self._agent_runtime is None
+            or runtime.backend.stopped
+        ):
             return
         try:
             await self.harness.cleanup(self.trace, runtime)
