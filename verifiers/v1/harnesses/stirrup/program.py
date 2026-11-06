@@ -38,6 +38,7 @@ from acp.schema import (
 from openai import APIError
 from stirrup import Agent
 from stirrup.clients.chat_completions_client import ChatCompletionsClient
+from stirrup.core.exceptions import OutputTokenLimitError
 from stirrup.core.models import UserMessage
 from stirrup.tools import LocalCodeExecToolProvider, WebToolProvider
 from stirrup.tools.code_backends.base import CommandResult
@@ -180,6 +181,14 @@ class Session:
                                 UserMessage(content=prompt),
                             ]
                         )
+                    except OutputTokenLimitError as error:
+                        # Preserve the accepted tail before the rejected model call,
+                        # including the current user input and any compacted summary.
+                        if state := session._current_run_state:
+                            history = state.msgs[1:]
+                        current.set_exception(error)
+                        current = None
+                        continue
                     except Exception as error:  # noqa: BLE001 - preserve the original error before MCP teardown can group it
                         current.set_exception(error)
                         current = None
@@ -287,6 +296,8 @@ class StirrupACPAgent:
             reply = await self.session(session_id).prompt(
                 "".join(block.text for block in prompt)
             )
+        except OutputTokenLimitError:
+            return PromptResponse(stop_reason="max_tokens")
         except APIError as error:
             raise RequestError.internal_error(
                 {
