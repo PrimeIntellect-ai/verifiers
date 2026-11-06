@@ -38,10 +38,31 @@ from acp.schema import (
 from openai import APIError
 from stirrup import Agent
 from stirrup.clients.chat_completions_client import ChatCompletionsClient
-from stirrup.core.models import UserMessage
-from stirrup.tools import LocalCodeExecToolProvider, WebToolProvider
+from stirrup.core.agent import SessionAgent
+from stirrup.core.models import UserMessage, joined_text, tool_call_blocks
+from stirrup.tools import FinishParams, LocalCodeExecToolProvider, WebToolProvider
 from stirrup.tools.code_backends.base import CommandResult
 from stirrup.tools.mcp import MCPConfig, MCPToolProvider
+
+COMMAND_CLEANUP_TIMEOUT = 5.0
+
+
+class ACPConversationSession(SessionAgent):
+    """A text-only assistant answer yields control to the ACP client."""
+
+    async def step(self, messages, run_metadata, turn=0, max_turns=0):
+        assistant, tools, finish = await super().step(
+            messages, run_metadata, turn=turn, max_turns=max_turns
+        )
+        if (
+            finish is None
+            and not tool_call_blocks(assistant.blocks)
+            and (reply := joined_text(assistant.blocks))
+        ):
+            # This ends Stirrup's loop without manufacturing a tool call or
+            # an extra model turn. Explicit finish calls keep their behavior.
+            finish = FinishParams(reason=reply, paths=[])
+        return assistant, tools, finish
 
 
 class RuntimeCodeExecToolProvider(LocalCodeExecToolProvider):
@@ -104,7 +125,15 @@ class RuntimeCodeExecToolProvider(LocalCodeExecToolProvider):
             if process is not None and not completed:
                 with suppress(ProcessLookupError):
                     os.killpg(process.pid, signal.SIGKILL)
-                await process.wait()
+                try:
+                    await asyncio.wait_for(process.wait(), COMMAND_CLEANUP_TIMEOUT)
+                except TimeoutError:
+                    # A detached child can retain the pipes after Bash exits.
+                    # asyncio has no public API to close subprocess read pipes.
+                    for stream in (process.stdout, process.stderr):
+                        stream._transport.close()
+                    with suppress(TimeoutError):
+                        await asyncio.wait_for(process.wait(), COMMAND_CLEANUP_TIMEOUT)
 
 
 class Session:
@@ -157,6 +186,11 @@ class Session:
                 skills_dir=args.skills_dir if Path(args.skills_dir).is_dir() else None,
                 cache_on_interrupt=False,
             ) as session:
+                # Stirrup constructs SessionAgent directly, so an Agent subclass
+                # would lose its step override when entering the tool context.
+                session = ACPConversationSession.from_agent(
+                    session, session._output_state
+                )
                 for name in json.loads(args.disabled_tools):
                     session.tools.pop(name, None)
                 self.ready.set_result(None)
