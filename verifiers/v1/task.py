@@ -109,7 +109,10 @@ class TaskData(BaseModel):
     agent_user: str | None = None
     """Existing user in the task's box that the harness, and so every command the agent
     runs, executes as. None uses the runtime's default user (usually root). Task setup,
-    harness setup, artifact collection, and grading keep running as the default user."""
+    artifact collection, and grading keep running as the default user."""
+    agent_home: str | None = None
+    """Home directory for `agent_user`; None uses the account's passwd home.
+    Must already exist and be writable by that user."""
 
     skills: list[SkillSource] = Field(default_factory=list)
     """Skill sources installed before the harness's configured skills for this task."""
