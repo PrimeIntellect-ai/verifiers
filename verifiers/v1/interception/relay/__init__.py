@@ -96,10 +96,10 @@ class Relay:
         return self.url
 
     async def wait_connected(self) -> None:
-        """Wait until `connect` finished; raise if the relay does not forward."""
+        """Wait until `connect` finished; raise if the relay did not start."""
         await self._connected.wait()
         if not self.upstream:
-            raise TunnelError("the harness reaches the interception server directly")
+            raise TunnelError("the relay did not start")
 
     async def reroute(
         self, upstream: str, tokens: dict[str, str] | None = None

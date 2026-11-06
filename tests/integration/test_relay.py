@@ -2,11 +2,10 @@
 call is in flight: its registration is deleted and its frpc connection drops, so it
 cannot log in again. The server opens a new tunnel, reroutes the box's relay to it, and
 the rollout finishes as if nothing happened: the waiting model call goes through once,
-on one branch. A rollout whose relay did not start reaches the server at the tunnel
-URL and fails, as before the relay.
+on one branch.
 
 The model is scripted and holds its second reply until the test has dropped the tunnel
-and, with the relay, until the server has replaced it."""
+and the server has replaced it."""
 
 import asyncio
 import json
@@ -19,10 +18,8 @@ from aiohttp import web
 
 import verifiers.v1 as vf
 from verifiers.v1.dialects.chat import ChatDialect
-from verifiers.v1.errors import SandboxError
 from verifiers.v1.harnesses.bash import BashHarnessConfig
 from verifiers.v1.interception import InterceptionServer
-from verifiers.v1.interception import relay as relay_module
 from verifiers.v1.utils.prime import load_prime_config
 
 pytestmark = pytest.mark.skipif(
@@ -151,9 +148,7 @@ def _cmdline(pid: int) -> str:
         return ""
 
 
-async def _run(relay: bool) -> tuple[vf.Trace, HeldModel, str, str]:
-    """`relay=False` makes the relay fail to start, so the harness reaches the server
-    directly."""
+async def test_rollout_survives_a_replaced_tunnel():
     async with HeldModel() as model, InterceptionServer(requires_tunnel=True) as server:
         agent = vf.make_agent(
             vf.AgentConfig(
@@ -168,24 +163,14 @@ async def _run(relay: bool) -> tuple[vf.Trace, HeldModel, str, str]:
         await asyncio.wait_for(model.held.wait(), 600)
         first_url = server.base_url
         await drop_tunnel(first_url)
-        if relay:
-            # Hold the reply until the server serves the rollout through a new tunnel.
-            async with asyncio.timeout(DETECTION_SECONDS):
-                while server.base_url == first_url:
-                    await asyncio.sleep(1)
-        else:
-            async with asyncio.timeout(DETECTION_SECONDS):
-                while server.healthy:
-                    await asyncio.sleep(1)
+        # Hold the reply until the server serves the rollout through a new tunnel.
+        async with asyncio.timeout(DETECTION_SECONDS):
+            while server.base_url == first_url:
+                await asyncio.sleep(1)
         model.release.set()
         trace = await asyncio.wait_for(run, 600)
-        return trace, model, first_url, server.base_url
 
-
-async def test_rollout_survives_a_replaced_tunnel():
-    trace, model, first_url, last_url = await _run(relay=True)
-
-    assert last_url != first_url
+    assert server.base_url != first_url
     assert trace.ok, [error.message for error in trace.errors]
     assert trace.errors == []
     tool_results = [str(m.content) for m in trace.messages if m.role == "tool"]
@@ -194,16 +179,3 @@ async def test_rollout_survives_a_replaced_tunnel():
     # server was already serving.
     assert model.requests[1] == 1
     assert len(trace.branches) == 1
-
-
-async def test_rollout_without_relay_fails_on_a_lost_tunnel(monkeypatch):
-    async def fail(*args, **kwargs):
-        raise SandboxError("no relay")
-
-    monkeypatch.setattr(relay_module.Relay, "connect", fail)
-    trace, _, _, _ = await _run(relay=False)
-
-    assert not trace.ok
-    # The harness gets the tunnel edge's 404 and exits, usually before the server
-    # declares the tunnel gone and fails the rollout itself.
-    assert {error.type for error in trace.errors} & {"HarnessError", "TunnelError"}

@@ -392,20 +392,12 @@ class Rollout:
                 )
                 harness_base = runtime.host_url(base_url.rstrip("/"))
                 if self._relay is not None:
-                    try:
-                        # The harness holds the model secret anyway; the relay gets
-                        # nothing more, so reading its config grants no capability.
+                    # The harness holds the model secret anyway; the relay gets
+                    # nothing more, so reading its config grants no capability.
+                    async with boundary(SandboxError, "starting the relay"):
                         harness_base = await self._relay.connect(
                             base_url.rstrip("/"), {model_secret: model_secret}
                         )
-                    except Exception as error:  # noqa: BLE001 - runs on without it
-                        logger.warning(
-                            "rollout %s: the relay did not start, the harness reaches "
-                            "the interception server directly: %s",
-                            self.trace.id,
-                            error,
-                        )
-                        self._session.reroute = None
                 self._endpoint = f"{harness_base}/v1"
                 self._secret = model_secret
                 services = (
