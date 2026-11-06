@@ -14,7 +14,7 @@ from verifiers.v1.state import StateT
 from verifiers.v1.task import DataT
 from verifiers.v1.trace import AgentConfigT, Trace
 from verifiers.v1.utils.aio import run_shielded
-from verifiers.v1.utils.artifacts import save_artifacts
+from verifiers.v1.utils.artifacts import load_artifacts, save_artifacts
 
 TRACES_FILE = "traces.jsonl"
 type_adapter = cache(TypeAdapter)
@@ -27,11 +27,10 @@ def write_episode(
     # Preserve fields declared by typed Trace subclasses nested in the episode.
     data = type_adapter(type(episode)).dump_json(episode, exclude_none=True)
     for trace in episode.traces:
+        if trace.id == ".." or Path(trace.id).parts != (trace.id,):
+            raise ValueError(f"trace ID must be a single path component: {trace.id!r}")
+        # A trace loaded without artifact state must not replace its saved files.
         if trace.state.artifacts:
-            if trace.id == ".." or Path(trace.id).parts != (trace.id,):
-                raise ValueError(
-                    f"trace ID must be a single path component: {trace.id!r}"
-                )
             save_artifacts(
                 results_dir / "artifacts" / trace.id,
                 trace.state.artifacts,
@@ -42,10 +41,14 @@ def write_episode(
         f.write(data + b"\n")
 
 
-def read_episodes(results_dir: Path, trace_type: type) -> list[WireEpisode]:
+def read_episodes(
+    results_dir: Path, trace_type: type, *, with_artifacts: bool = False
+) -> list[WireEpisode]:
     """Load a run's saved rollouts from `traces.jsonl` with traces typed as
     `trace_type` (`Trace[WireTaskData, ...]` reads any taskset's file without
-    importing it)."""
+    importing it). ``with_artifacts`` restores captured archives into trace state
+    for isolated regrading; it never extracts them onto the host.
+    """
     trace_adapter = type_adapter(trace_type)
     episodes: list[WireEpisode] = []
     with (results_dir / TRACES_FILE).open(encoding="utf-8") as f:
@@ -57,6 +60,18 @@ def read_episodes(results_dir: Path, trace_type: type) -> list[WireEpisode]:
             record.traces = [
                 trace_adapter.validate_python(trace) for trace in row["traces"]
             ]
+            if with_artifacts:
+                for trace in record.traces:
+                    if trace.id == ".." or Path(trace.id).parts != (trace.id,):
+                        raise ValueError(f"invalid saved trace ID: {trace.id!r}")
+                    directory = results_dir / "artifacts" / trace.id
+                    trace.state.artifacts = (
+                        load_artifacts(
+                            directory, max_bytes=trace.task.data.artifact_max_bytes
+                        )
+                        if directory.exists()
+                        else {}
+                    )
             episodes.append(record)
     return episodes
 

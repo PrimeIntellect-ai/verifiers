@@ -259,9 +259,11 @@ async def _score_untouched(
     declares no reward to check."""
     policy = task.scoring
     isolated = policy.mode == "isolated"
-    grader = task.grading_task(runtime, scoring=policy)
+    grader = task.grading_task(runtime.config, scoring=policy)
     grading_config = (
-        verifier_runtime(grader, runtime, config.runtime, policy) if isolated else None
+        verifier_runtime(grader, runtime.config, config.runtime, policy)
+        if isolated
+        else None
     )
     if not isolated and policy.runtime is not None:
         raise TaskError("verifier runtime overrides require isolated verification")
