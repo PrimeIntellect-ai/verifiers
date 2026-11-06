@@ -59,11 +59,11 @@ class Harness(ABC, Generic[ConfigT]):
     SUPPORTS_RESUME: ClassVar[bool] = False
     """Whether the default `resume()` can relaunch this harness from the
     accumulated Messages transcript."""
-    SUPPORTS_FILESYSTEM_CHECKPOINTS: ClassVar[bool] = False
+    SUPPORTS_FILESYSTEM_SNAPSHOTS: ClassVar[bool] = False
     """Whether a new process of this harness can continue a rollout in a box restored
     from a filesystem checkpoint (`HarnessSession.restore`), so a retry restores the
     newest checkpoint instead of starting over (`AgentConfig.checkpoint`). A rollout
-    checkpoints only when its runtime backend sets `SUPPORTS_FILESYSTEM_CHECKPOINTS` too. Distinct
+    checkpoints only when its runtime backend sets `SUPPORTS_FILESYSTEM_SNAPSHOTS` too. Distinct
     from `SUPPORTS_RESUME`: a restore never finds a live process, its program
     continues from the conversation the trace or its own session files hold."""
     EXECUTES_CODE: ClassVar[bool] = True

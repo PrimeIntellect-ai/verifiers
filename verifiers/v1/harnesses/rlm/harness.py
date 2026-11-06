@@ -142,14 +142,14 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
     SUPPORTS_SKILLS = True
-    SUPPORTS_FILESYSTEM_CHECKPOINTS = True
+    SUPPORTS_FILESYSTEM_SNAPSHOTS = True
     _skills_install_dir: str | None = None
 
     async def setup(self, runtime: Runtime) -> None:
         if self.config.skills:
             # Editable skill packages and uv's tool environment must belong to this run.
-            # A retry keeps the directory: it holds `RLM_HOME`, whose session a box
-            # restored from a checkpoint loads.
+            # A retry runs the same harness and keeps the directory: it holds
+            # `RLM_HOME`, whose session a box restored from a checkpoint loads.
             if self._skills_install_dir is None:
                 self._skills_install_dir = (
                     f"{RLM_CACHE_DIR}-skills-{secrets.token_hex(16)}"

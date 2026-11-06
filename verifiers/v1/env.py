@@ -32,7 +32,7 @@ from verifiers.v1.interception import (
 from verifiers.v1.mcp import SharedToolServer, serve_shared
 from verifiers.v1.runtimes import SubprocessConfig, runtime_is_local
 from verifiers.v1.task import Task
-from verifiers.v1.trace import Checkpoint, Error, Trace, TraceTask
+from verifiers.v1.trace import Error, Trace, TraceTask
 from verifiers.v1.utils.generic import concrete_type
 from verifiers.v1.utils.memory import trim_memory_periodically
 from verifiers.v1.utils.retries import run_episode_with_retry
@@ -244,7 +244,6 @@ class Env(ABC, Generic[ConfigT]):
         on_discard: Callable[[Trace], None] | None = None,
         episode_id: str | None = None,
         attempt: int = 1,
-        restore: tuple[Trace, Checkpoint] | None = None,
     ) -> Episode:
         """One episode of `task`, minted as the wire atom: `setup()` then `run()`
         over fresh agents, then `finalize()`. Its agents run one at a time
@@ -267,17 +266,6 @@ class Env(ABC, Generic[ConfigT]):
             ),
         )
         agents = self._episode_agents(ctx, episode.traces, on_trace, on_discard)
-        if restore is not None:
-            # A one-seat episode's run is its one trace: its agent's run continues it.
-            agent = agents.only()
-            if agent is None:
-                logger.warning(
-                    "%s has several agent seats; running trace %s from scratch",
-                    type(self).__name__,
-                    restore[0].id,
-                )
-            else:
-                agent.pending_restore = restore
         try:
             async with asyncio.timeout(self.config.timeout.episode):
                 async with boundary(EnvError, f"{type(self).__name__}.setup()"):
@@ -332,17 +320,13 @@ class Env(ABC, Generic[ConfigT]):
         semaphore: asyncio.Semaphore | None = None,
         on_complete: Callable[[Episode], Awaitable[None]] | None = None,
         on_trace: Callable[[Trace], None] | None = None,
-        restore: tuple[Trace, Checkpoint] | None = None,
     ) -> Episode:
         """Run one planned episode to completion, with whole-episode
         retries per `--env.retries`; `semaphore` bounds concurrent EPISODES — one
         permit for the attempt in flight, held across the whole of it (its agents,
         their boxes, `finalize()`) and released before a retry's backoff and before
         `on_complete` (the runners' persistence hook, which fires when final).
-        `on_trace` sees each trace at mint, after it joined `slot.traces`. `restore`
-        continues a trace another process ran (one-seat episodes); only the first
-        attempt restores it, a whole-episode retry starts over."""
-        pending = [restore] if restore is not None else []
+        `on_trace` sees each trace at mint, after it joined `slot.traces`."""
 
         attempts = 0
 
@@ -370,7 +354,6 @@ class Env(ABC, Generic[ConfigT]):
                     on_discard=discard,
                     episode_id=slot.id,
                     attempt=attempts,
-                    restore=pending.pop() if pending else None,
                 )
 
         episode = await run_episode_with_retry(attempt, self.config.retries)

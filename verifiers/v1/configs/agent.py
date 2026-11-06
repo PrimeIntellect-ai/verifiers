@@ -17,7 +17,7 @@ from verifiers.v1.configs.client import ClientConfig
 from verifiers.v1.configs.deployment import DeploymentConfig
 from verifiers.v1.configs.harness import HarnessConfig, WireHarnessConfig
 from verifiers.v1.configs.retries import RetryConfig
-from verifiers.v1.configs.runtime import PrimeConfig, RuntimeConfig
+from verifiers.v1.configs.runtime import PrimeConfig, RuntimeConfig, SnapshotType
 from verifiers.v1.configs.sampling import SamplingConfig
 from verifiers.v1.configs.scoring import ScoringConfig
 from verifiers.v1.utils.generic import merge_defaults
@@ -40,36 +40,26 @@ class TimeoutConfig(BaseConfig):
 
 
 class RolloutCheckpointConfig(BaseConfig):
-    """Rollout checkpointing. Snapshot the rollout's box (its filesystem) as model
-    turns go upstream, so a retry restores the newest snapshot instead of starting
-    over: the trace keeps its turns up to there, and a new harness process continues
-    in a box restored to that state, told that the box was restored. Needs a runtime
-    with checkpoints (prime) and a harness that can restore one (both set
-    `SUPPORTS_FILESYSTEM_CHECKPOINTS`); elsewhere the agent warns once and a retry starts over.
-    The snapshot runs alongside the model call, and the reply waits only until its
-    content is fixed.
+    """Rollout checkpointing: snapshot the box at model turns, so a retry continues
+    from the newest snapshot instead of starting over. Needs a runtime and a harness
+    that set `SUPPORTS_FILESYSTEM_SNAPSHOTS`; elsewhere a retry starts over. Processes
+    the agent left running (background jobs, a REPL) are gone after a restore."""
 
-    Known limits: a harness with concurrent sub-agents can be snapshotted while one of
-    them is mid-tool, and processes the agent left running (background jobs,
-    sub-agents, a REPL's variables) are gone after a restore, which cold boots."""
-
-    interval: PositiveInt = 1
-    """Snapshot before every this-many-th model turn (the 1st, the 1+n-th, ...). A
-    larger interval takes fewer snapshots, and a restore loses up to this many turns."""
+    type: SnapshotType = "filesystem"
+    """What a snapshot captures."""
+    interval: PositiveInt = 10
+    """Snapshot at every n-th model turn (the 1st, the 1+n-th, ...); a restore loses
+    up to n turns."""
     keep: Literal["all", "last"] | PositiveInt = "last"
-    """Which snapshots stay while the rollout runs: `"last"` keeps only the newest
-    restorable one, `"all"` keeps every one, and `k` keeps every k-th (the 1st, the
-    1+k-th, ...) plus the newest. The others are deleted as soon as a newer one is
-    restorable. A retry whose restore fails falls back to an older snapshot that is
-    still kept, else it starts over."""
+    """Snapshots kept while the rollout runs: the newest (`"last"`), every one
+    (`"all"`), or every k-th plus the newest (`k`). A failed restore falls back to an
+    older kept one."""
     after: Literal["delete", "keep"] = "delete"
-    """What happens to the kept snapshots when the rollout's run is final (it succeeded,
-    or its retries ran out): `"delete"` deletes them once the box is gone; `"keep"`
-    leaves them for their owner (forks, inspection), who must delete them."""
+    """What happens to the kept snapshots once the run is final: `"delete"` them, or
+    `"keep"` them for their owner to delete."""
     boxless: bool = False
     """Also checkpoint a harness that runs no code (null) on a runtime without
-    snapshots, from the trace alone. Off by default: such a run records a checkpoint
-    on its trace at every snapshot turn."""
+    snapshots, from the trace alone."""
 
 
 class AgentConfig(BaseConfig):

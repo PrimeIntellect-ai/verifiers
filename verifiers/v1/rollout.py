@@ -38,6 +38,8 @@ from verifiers.v1.mcp import SharedToolServer, serve_tools
 from verifiers.v1.runtimes import (
     Runtime,
     RuntimeConfig,
+    Snapshot,
+    backend_cls,
     make_backend,
 )
 from verifiers.v1.runtimes.private_network import tool_vms
@@ -181,17 +183,18 @@ class Rollout:
         self._attempt = attempt
         self._restore: Checkpoint | None = None
         self._harness_data: TaskData | None = None
-        self.deleted_checkpoints: set[str] = set()
+        self.deleted_snapshots: set[str] = set()
         """The snapshots this run deleted."""
         self._pruning = asyncio.Lock()
         self._boxless = False
-        """Whether this run's checkpoints are box-less (`Checkpoint.box`)."""
-        self.rewound_checkpoints: list[str] = []
-        """Checkpoints the restored trace dropped (taken after the one restored)."""
+        """Whether this run's checkpoints are box-less (no `Checkpoint.snapshot`)."""
+        self.rewound_snapshots: list[Snapshot] = []
+        """The snapshots of the checkpoints the restored trace dropped (taken after the
+        one restored)."""
         if restore is not None:
             self.trace, self._restore = restore
             self.trace.attempt = attempt
-            self.rewound_checkpoints = self.trace.rewind(self._restore)
+            self.rewound_snapshots = self.trace.rewind(self._restore)
             self._restore.restored = True
         else:
             self.trace = Trace(
@@ -316,8 +319,10 @@ class Rollout:
                 # A restored trace keeps its id; its new box must not collide with the
                 # box an earlier attempt or process left behind.
                 name = f"{self.trace.id}-{uuid.uuid4().hex[:8]}"
-                if self._restore.box:
-                    config = config.model_copy(update={"checkpoint": self._restore.id})
+                if self._restore.snapshot is not None:
+                    config = backend_cls(config).restore_config(
+                        config, self._restore.snapshot
+                    )
             self.runtime = make_backend(config, name=name).bind()
         elif (
             self._borrowed_runtime is not None
@@ -397,7 +402,7 @@ class Rollout:
                     self.trace.agent.runtime = runtime.info.model_copy()
                 # A box snapshot needs a runtime that takes them; a harness that keeps
                 # nothing in its box is restorable from the trace alone (box-less).
-                self._boxless = not runtime.backend.SUPPORTS_FILESYSTEM_CHECKPOINTS
+                self._boxless = not runtime.backend.SUPPORTS_FILESYSTEM_SNAPSHOTS
                 if (
                     self._checkpointing is not None
                     and self._borrowed_runtime is None
@@ -429,7 +434,7 @@ class Rollout:
                 self.trace.notify()
                 # A restored box already holds the task's setup; only the harness's
                 # (idempotent) install runs again. A box-less restore boots a fresh box.
-                if self._restore is None or not self._restore.box:
+                if self._restore is None or self._restore.snapshot is None:
                     async with boundary(TaskError, "task setup"):
                         await invoke(
                             self.task.setup,
@@ -813,6 +818,11 @@ class Rollout:
             # box is not idle, so no snapshot would match this turn's prefix.
             return
         assert self._harness_session is not None
+        # Copied before the first await: the reply may commit and run its hooks while
+        # the harness answers, and the checkpoint must hold the state before them.
+        state = copy.deepcopy(self.trace.state)
+        info = copy.deepcopy(self.trace.info)
+        pins = dict(self._session.pinned_tool_results)
         try:
             harness = await self._harness_session.checkpoint_state()
         except Exception:
@@ -824,20 +834,19 @@ class Rollout:
             return
         if harness is None:
             return
-        state = copy.deepcopy(self.trace.state)
-        info = copy.deepcopy(self.trace.info)
-        pins = dict(self._session.pinned_tool_results)
         started = time.time()
+        snapshot: Snapshot | None = None
         if self._boxless:
             checkpoint_id = uuid.uuid4().hex
         else:
             try:
-                checkpoint_id = await self.runtime.backend.checkpoint()
+                snapshot = await self.runtime.backend.snapshot()
             except Exception:
                 logger.warning(
-                    "checkpoint failed (rollout %s)", self.trace.id, exc_info=True
+                    "snapshot failed (rollout %s)", self.trace.id, exc_info=True
                 )
                 return None
+            checkpoint_id = snapshot.id
         node = turn.prefix_node_ids[-1] if turn.prefix_node_ids else None
         checkpoint = Checkpoint(
             id=checkpoint_id,
@@ -847,7 +856,7 @@ class Rollout:
             info=info,
             pins=pins,
             harness=harness,
-            box=not self._boxless,
+            snapshot=snapshot,
             time=TimeSpan(start=started),
             captured=time.time(),
         )
@@ -866,9 +875,11 @@ class Rollout:
         return checkpoint
 
     async def _make_durable(self, checkpoint: Checkpoint) -> None:
-        assert self.runtime is not None
+        assert self.runtime is not None and checkpoint.snapshot is not None
         try:
-            checkpoint.bytes = await self.runtime.backend.wait_checkpoint(checkpoint.id)
+            checkpoint.bytes = await self.runtime.backend.wait_snapshot(
+                checkpoint.snapshot
+            )
         except Exception:
             # Not restorable: no retry may pick it. The backend still holds it as
             # stray and frees it with the box.
@@ -895,26 +906,27 @@ class Rollout:
             keep = kept(self.trace.checkpoints, self._checkpointing.keep)
             drop = [
                 *(
-                    c.id
+                    c.snapshot
                     for c in self.trace.checkpoints
-                    if c.box and c.time.end and not c.deleted and c.id not in keep
+                    if c.snapshot is not None
+                    and c.time.end
+                    and not c.deleted
+                    and c.id not in keep
                 ),
                 *(
-                    c
-                    for c in self.rewound_checkpoints
-                    if c not in self.deleted_checkpoints
+                    s
+                    for s in self.rewound_snapshots
+                    if s.id not in self.deleted_snapshots
                 ),
             ]
             if drop:
-                self.record_deleted(
-                    await self.runtime.backend.discard_checkpoints(drop)
-                )
+                self.record_deleted(await self.runtime.backend.discard_snapshots(drop))
 
     def record_deleted(self, ids: list[str]) -> None:
         """Mark the snapshots with these ids deleted."""
-        self.deleted_checkpoints.update(ids)
+        self.deleted_snapshots.update(ids)
         for checkpoint in self.trace.checkpoints:
-            if checkpoint.id in self.deleted_checkpoints:
+            if checkpoint.id in self.deleted_snapshots:
                 checkpoint.deleted = True
 
     async def _settle_checkpoints(self, *, wait: bool) -> None:
@@ -975,15 +987,15 @@ class Rollout:
             owned = self._checkpointing is None or self._checkpointing.after == "delete"
             with contextlib.suppress(Exception):
                 self.record_deleted(
-                    await self.runtime.backend.discard_checkpoints(
+                    await self.runtime.backend.discard_snapshots(
                         [
-                            *(self.rewound_checkpoints if owned else ()),
+                            *(self.rewound_snapshots if owned else ()),
                             *(
-                                c.id
+                                c.snapshot
                                 for c in self.trace.checkpoints
-                                if owned and c.box and not c.deleted
+                                if owned and c.snapshot is not None and not c.deleted
                             ),
-                            *self.runtime.backend.stray_checkpoints,
+                            *self.runtime.backend.stray_snapshots,
                         ]
                     )
                 )
@@ -1283,9 +1295,9 @@ class Rollout:
                 ):
                     # Setup can fail before a deployment takes ownership.
                     await runtime.backend.stop()
-                if runtime is not None and runtime.backend.stray_checkpoints:
-                    await runtime.backend.discard_checkpoints(
-                        runtime.backend.stray_checkpoints
+                if runtime is not None and runtime.backend.stray_snapshots:
+                    await runtime.backend.discard_snapshots(
+                        runtime.backend.stray_snapshots
                     )
             except Exception:
                 logger.warning("runtime teardown failed", exc_info=True)

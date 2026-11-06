@@ -16,7 +16,6 @@ from verifiers.v1.session import RolloutSession
 from verifiers.v1.trace import (
     Checkpoint,
     ModelCall,
-    RestorePoint,
     TimeSpan,
     TraceTask,
 )
@@ -65,6 +64,16 @@ def test_rewind_keeps_the_dropped_turns_calls():
     trace.rewind(checkpoint)
     assert len(trace.nodes) == 1
     assert [call.node for call in trace.calls] == [None]
+
+
+def test_rewind_drops_the_later_checkpoints_at_the_same_node():
+    trace = make_trace()
+    older = Checkpoint(id="older", node=1, snapshot=vf.Snapshot(id="older"))
+    target = Checkpoint(id="target", node=1, snapshot=vf.Snapshot(id="target"))
+    later = Checkpoint(id="later", node=1, snapshot=vf.Snapshot(id="later"))
+    trace.checkpoints.extend([older, target, later])
+    assert trace.rewind(target) == [vf.Snapshot(id="later")]
+    assert [c.id for c in trace.checkpoints] == ["older", "target"]
 
 
 def test_restored_span_counts_only_its_own_calls():
@@ -128,17 +137,18 @@ class SlowBackend:
         self.taken = 0
         self.deleted: list[str] = []
 
-    async def checkpoint(self) -> str:
+    async def snapshot(self) -> vf.Snapshot:
         self.taken += 1
-        return f"ck{self.taken}"
+        return vf.Snapshot(id=f"ck{self.taken}")
 
-    async def wait_checkpoint(self, checkpoint: str) -> int | None:
+    async def wait_snapshot(self, snapshot: vf.Snapshot) -> int | None:
         await self.durable.wait()
         if self.fail:
             raise RuntimeError("upload failed")
         return 1024
 
-    async def discard_checkpoints(self, ids: list[str]) -> list[str]:
+    async def discard_snapshots(self, snapshots: list[vf.Snapshot]) -> list[str]:
+        ids = [snapshot.id for snapshot in snapshots]
         self.deleted += ids
         return ids
 
@@ -161,8 +171,8 @@ def make_rollout(
     run._captures = set()
     run._closed = False
     run._pruning = asyncio.Lock()
-    run.deleted_checkpoints = set()
-    run.rewound_checkpoints = []
+    run.deleted_snapshots = set()
+    run.rewound_snapshots = []
     run._boxless = False
     return run, backend
 
@@ -220,7 +230,12 @@ async def test_a_closing_run_takes_no_checkpoint():
 
 def durable(*ids: str, deleted: tuple[str, ...] = ()) -> list[Checkpoint]:
     return [
-        Checkpoint(id=i, time=TimeSpan(start=1.0, end=2.0), deleted=i in deleted)
+        Checkpoint(
+            id=i,
+            snapshot=vf.Snapshot(id=i),
+            time=TimeSpan(start=1.0, end=2.0),
+            deleted=i in deleted,
+        )
         for i in ids
     ]
 
@@ -239,40 +254,22 @@ def test_keep_policies():
 async def test_a_durable_snapshot_prunes_the_older_ones():
     run, backend = make_rollout(keep="last")
     run.trace.checkpoints = durable("old1", "old2")
-    run.rewound_checkpoints = ["rewound"]
+    run.rewound_snapshots = [vf.Snapshot(id="rewound")]
     backend.durable.set()
     newest = await run._checkpoint(TURN)
     await run._settle_checkpoints(wait=True)
     assert sorted(backend.deleted) == ["old1", "old2", "rewound"]
     assert [c.id for c in run.trace.checkpoints if not c.deleted] == [newest.id]
-    assert run.deleted_checkpoints == {"old1", "old2", "rewound"}
+    assert run.deleted_snapshots == {"old1", "old2", "rewound"}
 
 
 async def test_a_boxless_checkpoint_is_restorable_at_once():
     run, backend = make_rollout()
     run._boxless = True
     checkpoint = await run._checkpoint(TURN)
-    assert checkpoint is not None and not checkpoint.box
+    assert checkpoint is not None and checkpoint.snapshot is None
     assert checkpoint.time.end and backend.taken == 0
-    assert run.trace.restorable is checkpoint
-
-
-def test_a_restore_point_round_trips():
-    checkpoint = Checkpoint(
-        id="ck",
-        node=1,
-        tail=[ToolMessage(tool_call_id="c1", content="out")],
-        state=vf.State(),
-        info={"nonce": "n"},
-        pins={("prefix", "c1"): ToolMessage(tool_call_id="c1", content="pinned")},
-        time=TimeSpan(start=1.0, end=2.0),
-    )
-    wire = RestorePoint.of(checkpoint).model_dump(mode="json")
-    back = RestorePoint.model_validate(wire).live(vf.State)
-    assert back.tail == checkpoint.tail
-    assert back.info == {"nonce": "n"}
-    assert back.pins == checkpoint.pins
-    assert back.state == checkpoint.state
+    assert run.trace.checkpoints[-1] is checkpoint
 
 
 def gated(harness: str, runtime: vf.RuntimeConfig, **checkpoint) -> vf.Agent:
