@@ -24,7 +24,7 @@ SearchProvider = Literal["serper", "eco"]
 
 SEARCH_API_KEY_ENV: dict[SearchProvider, str] = {
     "serper": "SERPER_API_KEY",
-    "eco": "ECO_API_KEY",
+    "eco": "YOU_API_KEY",
 }
 """The environment variable that holds each search provider's API key."""
 

@@ -75,7 +75,7 @@ class CompactionConfig(BaseConfig):
 class RLMHarnessConfig(HarnessConfig):
     dialect: Literal["chat_completions"] = "chat_completions"
     version: str = Field(
-        default="22afa52a5c69855e4ee12f15203aacb75f89b0f4", min_length=1
+        default="08b15cc3b58fb4e1a498e1fc4b042e61286df08e", min_length=1
     )
     """Git ref (branch, tag, or commit) of nano-rlm to install. Must know every
     field this harness puts on the wire, i.e. be at least the default ref."""
@@ -91,7 +91,7 @@ class RLMHarnessConfig(HarnessConfig):
     search_provider: SearchProvider = "serper"
     """Backend of the `search` builtin skill: `serper` or `eco` (You.com Eco Search).
     Its key is read from the harness `env`/`forward_env`: `SERPER_API_KEY` or
-    `ECO_API_KEY`."""
+    `YOU_API_KEY`."""
     compaction: CompactionConfig | bool | None = None
     """Context compaction: a `[compaction]` section (or `true`) enables it with the
     given settings, `false` disables it (an overflowing session then fails), and

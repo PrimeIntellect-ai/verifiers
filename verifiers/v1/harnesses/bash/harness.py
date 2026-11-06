@@ -43,7 +43,7 @@ class BashHarnessConfig(HarnessConfig):
 
     search: bool = False
     """Offer a `search` tool (web results from `search_provider`). Requires the provider's key
-    (`SERPER_API_KEY` or `ECO_API_KEY`) in the eval environment; the key is handed to the program
+    (`SERPER_API_KEY` or `YOU_API_KEY`) in the eval environment; the key is handed to the program
     over argv (like the interception secret) so the agent's `bash` subprocesses don't inherit it.
     Results matching the runtime's network blocklist are excluded."""
 
