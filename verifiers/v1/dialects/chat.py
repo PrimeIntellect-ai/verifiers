@@ -422,7 +422,7 @@ class ChatDialect(Dialect[ChatCompletion]):
             "extra_body",
         }
     )
-    routes = ("/v1/chat/completions",)
+    routes = ("/v1/chat/completions", "/chat/completions")
     upstream_path = "/chat/completions"
     response_type = ModdedChatCompletion
 
