@@ -15,6 +15,7 @@ from openai import APITimeoutError
 from verifiers.v1.configs.judge import JudgeConfig
 from verifiers.v1.errors import SandboxError, TaskError
 from verifiers.v1.judge import Judge, JudgeView
+from verifiers.v1.task import TaskData
 from verifiers.v1.types import (
     ImageUrlContentPart,
     ImageUrlSource,
@@ -131,7 +132,7 @@ async def read_inputs(runtime, paths, *, cache=None, budget=None):
 
 async def run_judge(task, runtime, trace, path="/tests/judge.toml"):
     from rewardkit.agents import AgentAttempt
-    from rewardkit.models import JudgeTomlConfig, LLMJudge
+    from rewardkit.models import AgentJudge, JudgeTomlConfig, LLMJudge
 
     from .rewardkit import NativeReward, load_rubric
 
@@ -139,7 +140,6 @@ async def run_judge(task, runtime, trace, path="/tests/judge.toml"):
     config = JudgeTomlConfig.model_validate(raw)
     authored = config.judge
     unsupported = {
-        "model",
         "version",
         "isolated",
         "cwd",
@@ -155,8 +155,22 @@ async def run_judge(task, runtime, trace, path="/tests/judge.toml"):
             raise TaskError("judge prompt_template must be .txt or .md")
         template = (await runtime.read(str(source), max_bytes=MAX_BYTES)).decode()
     reward = load_rubric(raw, path, runtime.config.workdir or "/app", template)
-    if not isinstance(reward.judge, LLMJudge):
-        raise TaskError("This judge requires native agentic execution")
+    agentic = isinstance(reward.judge, AgentJudge)
+    if not agentic and not isinstance(reward.judge, LLMJudge):
+        raise TaskError("JEV judging is not supported by the native judge backend")
+    if agentic:
+        if task.judge_executor is None:
+            raise TaskError("Agent judge TOMLs require the agentic-judge environment")
+        if authored.samples != 1 or authored.mode != "batched":
+            raise TaskError(
+                "Repeated/individual agent judging needs independent sample workspaces"
+            )
+        if task.config.judge is not None:
+            raise TaskError("Configure agent judge overrides on env.judge")
+    elif "model" in authored.model_fields_set:
+        raise TaskError("judge.model is only supported for agent judges")
+    if authored.timeout <= 0:
+        raise TaskError("judge.timeout must be positive")
     selections = {
         criterion.name: source.files
         if "files" in source.model_fields_set
@@ -186,7 +200,8 @@ async def run_judge(task, runtime, trace, path="/tests/judge.toml"):
     settings = (
         task.config.judge.model_dump(exclude_unset=True) if task.config.judge else {}
     )
-    settings.setdefault("model", reward.judge.model)
+    if reward.judge.model is not None:
+        settings.setdefault("model", reward.judge.model)
     settings.setdefault("name", "harbor")
     view = settings.pop("view", "last_reply")
     include_reasoning = settings.pop("include_hidden_reasoning", False)
@@ -208,7 +223,7 @@ async def run_judge(task, runtime, trace, path="/tests/judge.toml"):
         )
 
     async def call(prompt, schema, files, criteria, weights):
-        response_format = reward.judge.response_format
+        response_format = getattr(reward.judge, "response_format", "none")
         sampling = {}
         if response_format == "json-schema":
             sampling["response_format"] = {
@@ -236,6 +251,69 @@ async def run_judge(task, runtime, trace, path="/tests/judge.toml"):
         ]
         try:
             async with asyncio.timeout(reward.judge.timeout):
+                if agentic:
+                    from rewardkit.judges import parse_judge_response
+
+                    from verifiers.v1.configs.sampling import SamplingConfig
+                    from verifiers.v1.envs.agentic_judge.env import (
+                        TRACE_FILE,
+                        VERDICT_FILE,
+                        JudgeTask,
+                    )
+                    from verifiers.v1.judges.agent import AgentJudgeRequest
+
+                    content.append(
+                        TextContentPart(
+                            text=f"Write the JSON answer to {VERDICT_FILE}. Required schema:\n{json.dumps(schema)}"
+                        )
+                    )
+                    judge_task = JudgeTask(
+                        TaskData(
+                            idx=trace.task.data.idx,
+                            prompt=[
+                                SystemMessage(content=prompt),
+                                UserMessage(content=content),
+                            ],
+                        ),
+                        files={
+                            TRACE_FILE: trace.to_json(
+                                exclude={
+                                    "nodes": {
+                                        "__all__": {
+                                            "message": {
+                                                "reasoning_content",
+                                                "provider_state",
+                                            }
+                                        }
+                                    }
+                                }
+                            )
+                        },
+                        parse_verdict=lambda text: [
+                            s.model_dump()
+                            for s in parse_judge_response(text, criteria, weights)
+                        ],
+                    )
+                    verdict = await task.judge_executor(
+                        AgentJudgeRequest(
+                            judge_task,
+                            model=reward.judge.model,
+                            sampling=SamplingConfig(
+                                reasoning_effort=reward.judge.reasoning_effort
+                            )
+                            if reward.judge.reasoning_effort is not None
+                            else None,
+                            timeout=authored.timeout,
+                        ),
+                        runtime,
+                    )
+                    if not verdict.ok:
+                        return AgentAttempt(
+                            error=RuntimeError(
+                                "; ".join(e.message for e in verdict.errors)
+                            )
+                        )
+                    return AgentAttempt(output=verdict.info["verdict_raw"])
                 result = await judge.complete(
                     [SystemMessage(content=prompt), UserMessage(content=content)],
                     trace=trace,
