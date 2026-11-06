@@ -17,9 +17,16 @@ from pathlib import Path, PurePosixPath
 from typing import Any, ClassVar
 from urllib.parse import urlsplit
 
-from prime_sandboxes.models import validate_egress_lists
+import httpx
+from prime_sandboxes.models import (
+    HeaderRule,
+    validate_egress_lists,
+    validate_header_rules,
+)
 
+from verifiers.v1.configs.client import BaseClientConfig
 from verifiers.v1.configs.runtime import NetworkPolicyConfig, PrimeConfig
+from verifiers.v1.dialects import DIALECTS
 from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes.base import (
     SERVICE_PORT,
@@ -167,6 +174,95 @@ class PrimeBackend(RuntimeBackend):
         self._expose_network_id: str | None = None
         self._exposed_ports: list[int] = []
         self._expose_lock = asyncio.Lock()
+        self._network_lock = asyncio.Lock()
+        self._network_policy: dict[str, list[str]] = {"allow": ["*"]}
+        # Live credentials never enter the serializable runtime config or trace.
+        self._headers: dict[str, dict[str, str]] = {}
+        self._env_secrets: set[tuple[str, str]] = set()
+
+    @property
+    def header_rules(self) -> dict[str, HeaderRule]:
+        rules = {
+            host: HeaderRule(headers=headers)
+            for host, headers in self.config.network_rules.items()
+        }
+        for host, headers in self._headers.items():
+            # An exact rule replaces a wildcard at the platform, so retain the
+            # configured rule's other headers when adding a framework credential.
+            inherited = rules.get(host) or rules.get(f"*.{host.partition('.')[2]}")
+            rules[host] = HeaderRule(
+                headers={
+                    **(
+                        {k.lower(): v for k, v in inherited.headers.items()}
+                        if inherited
+                        else {}
+                    ),
+                    **headers,
+                }
+            )
+        return validate_header_rules(rules) or {}
+
+    def _process_env(self, env: Mapping[str, str]) -> dict[str, str]:
+        """Keep explicitly forwarded inference credentials out of VM environments.
+
+        The same replacement applies at creation and every process launch; a nonempty
+        placeholder satisfies SDKs that require a key before sending a request.
+        Match both name and value so harness-owned interception keys are unaffected.
+        """
+        return {
+            name: "vf-injected" if (name, value) in self._env_secrets else value
+            for name, value in env.items()
+        }
+
+    async def protect_inference(
+        self, config: BaseClientConfig, *envs: Mapping[str, str]
+    ) -> None:
+        """Inject only credentials explicitly forwarded for this known endpoint."""
+        variables = {config.api_key_var, *config.headers_from_env.values()}
+        forwarded = {}
+        for env in envs:
+            for name in variables & env.keys():
+                value = env[name]
+                if not value or value == "EMPTY":
+                    continue
+                if name in forwarded and forwarded[name] != value:
+                    raise SandboxError(
+                        f"conflicting forwarded inference variable {name}"
+                    )
+                forwarded[name] = value
+        if not forwarded:
+            return
+        url = urlsplit(config.base_url)
+        if url.scheme != "https" or url.port not in (None, 443):
+            raise SandboxError(
+                "Prime inference header injection requires HTTPS on port 443"
+            )
+        host = url.hostname or ""
+        # Resolve only values explicitly forwarded to the sandbox, never host env.
+        headers = httpx.Headers()
+        if key := forwarded.get(config.api_key_var):
+            for dialect in DIALECTS:
+                headers.update(dialect.auth_headers(key))
+        headers.update(
+            {
+                header: forwarded[variable]
+                for header, variable in config.headers_from_env.items()
+                if variable in forwarded
+            }
+        )
+        headers = dict(headers)
+        validate_header_rules({host: HeaderRule(headers=headers)})
+        async with self._network_lock:
+            existing = self._headers.setdefault(host, {})
+            if any(
+                name in existing and existing[name] != value
+                for name, value in headers.items()
+            ):
+                raise SandboxError(f"conflicting inference headers for {host}")
+            existing.update(headers)
+            self._env_secrets.update(forwarded.items())
+            if self._client is not None:
+                await self._apply_network()
 
     @property
     def published_port(self) -> int:
@@ -243,7 +339,8 @@ class PrimeBackend(RuntimeBackend):
                             name=self.name,
                             labels=list(dict.fromkeys(labels)),
                             **source,
-                            environment_vars=self.env,
+                            environment_vars=self._process_env(self.env),
+                            network_rules=self.header_rules or None,
                             **{k: v for k, v in options.items() if v is not None},
                         )
                     )
@@ -288,7 +385,7 @@ class PrimeBackend(RuntimeBackend):
     ) -> None:
         """Apply the host policy, or `network`, after setup and wait until the platform
         enforces it."""
-        if not self.network_restricted:
+        if not self.network_restricted and not self.header_rules:
             return
         config = network or self.config
         try:
@@ -300,13 +397,34 @@ class PrimeBackend(RuntimeBackend):
                         h for h in (urlsplit(route).hostname for route in routes) if h
                     )
                 )
-                if config.allow == ["*"]:
+                if config.allow == ["*"] and config.block:
                     policy = {"deny": config.block}
+                elif config.allow == ["*"]:
+                    policy = {"allow": ["*"]}
                 else:
                     entries = list(dict.fromkeys([*hosts, *config.allow]))
                     validate_egress_lists(entries, None)
                     policy = {"allow": entries} if entries else {"deny": ["*"]}
-            status = await self._client.set_network(self.info.id, **policy)
+            async with self._network_lock:
+                self._network_policy = policy
+                await self._apply_network()
+        except SandboxError:
+            raise
+        except Exception as e:
+            raise SandboxError(f"prime egress policy failed: {e}") from e
+        logger.info(
+            "prime: egress policy applied on sandbox %s (allow=%s block=%s)",
+            self.info.id,
+            policy.get("allow"),
+            policy.get("deny"),
+        )
+
+    async def _apply_network(self) -> None:
+        """Replace the complete policy under `_network_lock`, retaining all headers."""
+        try:
+            status = await self._client.set_network(
+                self.info.id, **self._network_policy, rules=self.header_rules or None
+            )
             try:
                 async with asyncio.timeout(60):
                     delay = 0.1
@@ -323,12 +441,6 @@ class PrimeBackend(RuntimeBackend):
             raise
         except Exception as e:
             raise SandboxError(f"prime egress policy failed: {e}") from e
-        logger.info(
-            "prime: egress policy applied on sandbox %s (allow=%s block=%s)",
-            self.info.id,
-            policy.get("allow"),
-            policy.get("deny"),
-        )
 
     async def run(
         self, runtime: Runtime, argv: list[str], env: dict[str, str]
@@ -339,7 +451,7 @@ class PrimeBackend(RuntimeBackend):
                 self.info.id,
                 shlex.join(argv),
                 working_dir=self.config.workdir,
-                env=runtime.process_env(env),
+                env=self._process_env(runtime.process_env(env)),
                 user=runtime.user,
             )
             delay = 0.1
@@ -383,7 +495,7 @@ class PrimeBackend(RuntimeBackend):
                 self.info.id,
                 shlex.join(argv),
                 working_dir=self.config.workdir,
-                env=runtime.process_env(env),
+                env=self._process_env(runtime.process_env(env)),
                 user=runtime.user,
             )
         except Exception as e:
@@ -434,7 +546,7 @@ class PrimeBackend(RuntimeBackend):
                 self.info.id,
                 command,
                 working_dir=self.config.workdir,
-                env=runtime.process_env(env),
+                env=self._process_env(runtime.process_env(env)),
                 user=runtime.user,
             )
         except Exception as e:
@@ -453,7 +565,7 @@ class PrimeBackend(RuntimeBackend):
                     self.info.id,
                     f"{reader} -- {shlex.quote(path)}",
                     working_dir=self.config.workdir,
-                    env=runtime.process_env({}),
+                    env=self._process_env(runtime.process_env({})),
                     user=runtime.user,
                 )
                 async with contextlib.aclosing(process):

@@ -32,6 +32,7 @@ from verifiers.v1.harness import Harness, HarnessSession
 from verifiers.v1.interception import Interception, serve_interception
 from verifiers.v1.mcp import SharedToolServer, serve_tools
 from verifiers.v1.runtimes import (
+    PrimeBackend,
     Runtime,
     RuntimeConfig,
     make_backend,
@@ -289,6 +290,10 @@ class Rollout:
                 else:
                     runtime = runtime.with_env({**runtime.env, **runtime_env})
                     self.runtime = runtime
+                if isinstance(runtime.backend, PrimeBackend):
+                    await runtime.backend.protect_inference(
+                        self.ctx.client, runtime.env, self.harness.config.resolved_env
+                    )
                 if self.task.data.prompt is None and not self._has_user:
                     raise TaskError(
                         "task has no prompt and no user to open the conversation; set "

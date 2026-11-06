@@ -78,7 +78,16 @@ The `vf.Runtime` interface provides a small set of methods for interacting with 
 - `prepare_uv_script(script)` and `run_uv_script(script, args, env)` prepare and execute self-contained Python scripts that declare PEP 723 inline dependencies.
 - `run_background(argv, env, log)` launches a background service inside the sandbox. Because standard container runtimes replace the image entrypoint with a keep-alive process (unlike Docker Compose tasks, which preserve service entrypoints), use `run_background` in `setup` to start any daemons the image would normally launch and verify they are ready before returning.
 
-To pass environment variables into sandbox commands without serializing them into `TaskData`, override `Task.runtime_env()` (or set `TaskData.scoring.env` / `agent.scoring.env` for variables used only during scoring). For credentials needed by an agent harness, set `harness.forward_env = ["TOKEN_NAME"]` so saved configs record only the variable name rather than the secret value. Processes inside the sandbox can read forwarded variables, so keep judge-only credentials on the evaluator host.
+To pass environment variables into sandbox commands without serializing them into `TaskData`, override `Task.runtime_env()` (or set `TaskData.scoring.env` / `agent.scoring.env` for variables used only during scoring). For credentials needed by an agent harness, set `harness.forward_env = ["TOKEN_NAME"]` so saved configs record only the variable name rather than the secret value. Processes inside the sandbox can read ordinary forwarded variables, so keep judge-only credentials on the evaluator host.
+
+On Prime, explicitly forwarded inference credentials named by `client.api_key_var` or `client.headers_from_env` are replaced with placeholders and injected as request headers outside the sandbox, only at that client's HTTPS host on port 443. Only the forwarded values are used; other credentials on the evaluator host are not injected. Normal model calls use per-rollout interception authentication, and provider keys stay on the evaluator host.
+
+For other services, configure Prime's `network_rules` with [platform secret references](https://docs.primeintellect.ai/sandboxes/secrets#inject-secrets-into-request-headers). Rules survive network-policy changes and do not grant egress. Use trusted destinations: they receive the credential, and any process in the sandbox can make authenticated requests to them.
+
+```toml
+[env.agent.runtime.network_rules."google.serper.dev"]
+X-API-KEY = "${prime.secrets.SERPER_API_KEY}"
+```
 
 ### Packaged grader scripts
 
