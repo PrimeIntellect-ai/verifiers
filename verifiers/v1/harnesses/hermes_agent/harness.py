@@ -5,13 +5,11 @@ from pathlib import Path
 from typing import Literal
 
 from verifiers.v1.acp import ACPConfig, ACPHarness
-from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import DialectName, HarnessConfig, PinnedVersion
 from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
 from verifiers.v1.harnesses.utils.replay import strip_text
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.runtimes.base import _ENSURE_UV
-from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
 from verifiers.v1.types import Message
 
@@ -52,7 +50,8 @@ class HermesAgentHarness(ACPHarness[HermesAgentHarnessConfig]):
     # routes requiring reasoning replay. Recheck on version bumps:
     # https://github.com/NousResearch/hermes-agent/blob/v0.22.5/agent/chat_completion_helpers.py#L1583
     # https://github.com/NousResearch/hermes-agent/blob/v0.22.5/agent/message_sanitization.py#L867
-    def replay_view(self, message: Message, dialect: DialectName | None) -> Message:
+    @staticmethod
+    def replay_view(message: Message, dialect: DialectName | None) -> Message:
         return strip_text(message)
 
     async def setup(self, runtime: Runtime) -> None:
@@ -73,41 +72,32 @@ class HermesAgentHarness(ACPHarness[HermesAgentHarnessConfig]):
         )
         await super().setup(runtime)
 
-    async def prepare_acp(
-        self,
-        ctx: ModelContext,
-        trace: Trace,
-        runtime: Runtime,
-        endpoint: str,
-        secret: str,
-        mcp_urls: dict[str, str],
-        data: TaskData,
-    ) -> ACPConfig:
+    async def prepare_acp(self) -> ACPConfig:
         if self.config.disabled_tools:
             raise ValueError("Hermes Agent ACP does not support disabling tools")
 
-        home = f"/tmp/vf-hermes/{trace.id}"
+        home = f"/tmp/vf-hermes/{self.trace.id}"
         # Keep interception routing separate from vendor names that Hermes may resolve
         # to built-in cloud providers instead of the configured endpoint.
         model = {
             "provider": "openai",
-            "default": ctx.model,
+            "default": self.model.model,
             **(
-                {"max_tokens": ctx.sampling.max_tokens}
-                if ctx.sampling.max_tokens is not None
+                {"max_tokens": self.model.sampling.max_tokens}
+                if self.model.sampling.max_tokens is not None
                 else {}
             ),
         }
         provider = {
-            "api": endpoint,
-            "api_key": secret,
+            "api": self.wiring.endpoint,
+            "api_key": self.wiring.secret,
             "discover_models": False,
         }
         if self.config.dialect != "auto":
             provider["transport"] = self.config.dialect
-        elif ctx.client.type == "eval":
+        elif self.model.client.type == "eval":
             provider["transport"] = "${HERMES_INTERCEPT_TRANSPORT}"
-        mcp_headers = self.config.resolve_mcp_headers(mcp_urls)
+        mcp_headers = self.config.resolve_mcp_headers(self.wiring.mcp_urls)
         config = {
             "model": model,
             # The ACP client already approves tool requests. Avoid routing Hermes'
@@ -124,20 +114,20 @@ class HermesAgentHarness(ACPHarness[HermesAgentHarnessConfig]):
                     "headers": mcp_headers.get(name, {}),
                     "timeout": self.config.tool_timeout,
                 }
-                for name, url in mcp_urls.items()
+                for name, url in self.wiring.mcp_urls.items()
             },
         }
-        await runtime.write(f"{home}/config.yaml", json.dumps(config).encode())
+        await self.runtime.write(f"{home}/config.yaml", json.dumps(config).encode())
         if not self.config.use_bundled_skill:
-            await runtime.write(f"{home}/.no-bundled-skills", b"")
-        await self.install_skills(runtime, f"{home}/skills")
+            await self.runtime.write(f"{home}/.no-bundled-skills", b"")
+        await self.install_skills(self.runtime, f"{home}/skills")
 
         env = {
             **self.config.resolved_env,
             "HERMES_HOME": home,
-            "HERMES_INFERENCE_MODEL": ctx.model,
+            "HERMES_INFERENCE_MODEL": self.model.model,
         }
-        system_prompt, prompt = self.resolve_prompt(data)
+        system_prompt, prompt = self.resolve_prompt(self.wiring.data)
         return ACPConfig(
             env=env,
             command=[

@@ -38,8 +38,8 @@ print(json.dumps(reachable))
 
 
 class IdleHarness(vf.Harness):
-    async def launch(self, ctx, trace, runtime, endpoint, secret, mcp_urls, data):
-        return await runtime.run(["true"], {})
+    async def launch(self, data):
+        return await self.runtime.run(["true"], {})
 
 
 class ProbeTask(vf.Task):
@@ -56,8 +56,8 @@ async def run(task) -> vf.Trace:
         runtime=vf.DockerConfig(),
         timeout=TimeoutConfig(setup=180, finalize=30, scoring=120),
     )
-    async with vf.Agent(config) as agent:
-        agent.harness = IdleHarness(vf.HarnessConfig())
+    async with vf.make_agent(config) as agent:
+        agent.harness_type = IdleHarness
         return await agent.run(task)
 
 

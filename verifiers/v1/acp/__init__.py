@@ -7,14 +7,14 @@ from abc import abstractmethod
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, TypeAlias, TypeVar, cast
+from typing import Any, TypeAlias, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.errors import HarnessError, InterceptionError
-from verifiers.v1.harness import Harness, HarnessSession
+from verifiers.v1.harness import Harness
+from verifiers.v1.params.harness import HarnessParams, HarnessWiring
 from verifiers.v1.runtimes import ProgramResult, Runtime, RuntimeProcess
 from verifiers.v1.semantic import (
     ACP_SEMANTIC_EDGES_METADATA_KEY,
@@ -67,94 +67,6 @@ class ACPConfig:
     client_capabilities: JsonObject | None = None
 
 
-class ACPHarness(Harness[ConfigT]):
-    """Harness backed by one live ACP process and native session per rollout."""
-
-    async def setup(self, runtime: Runtime) -> None:
-        await runtime.prepare_uv_script(
-            ACP_SOURCE, {**self.config.resolved_env, "UV_FROZEN": "false"}
-        )
-
-    def acp_turn_result(self, trace: Trace, result: ACPTurn) -> None:
-        """Consume the typed result of one ACP prompt."""
-
-    def acp_close_result(self, trace: Trace, response_metadata: dict[str, Any]) -> None:
-        """Consume extension metadata returned by `session/close`, when supported."""
-
-    def _consume_protocol_metadata(
-        self, trace: Trace, response_metadata: dict[str, Any]
-    ) -> None:
-        """Attach optional protocol extensions understood by every ACP harness."""
-        if ACP_SEMANTIC_EDGES_METADATA_KEY in response_metadata:
-            edge_set = SemanticEdgeSet.model_validate(
-                response_metadata[ACP_SEMANTIC_EDGES_METADATA_KEY]
-            )
-            trace.add_semantic_edges(edge_set)
-
-    async def gate_tools(
-        self, config: ACPConfig, runtime: Runtime, url: str, secret: str
-    ) -> None:
-        """Configure the agent to ask before every tool call, so each request reaches the
-        runner's gate (`/tool` at `url`, keyed by `secret`). A harness that advertises
-        `SUPPORTS_TOOL_INTERCEPTION` implements this with the agent's own config."""
-
-    @abstractmethod
-    async def prepare_acp(
-        self,
-        ctx: ModelContext,
-        trace: Trace,
-        runtime: Runtime,
-        endpoint: str,
-        secret: str,
-        mcp_urls: dict[str, str],
-        data: TaskData,
-    ) -> ACPConfig:
-        pass
-
-    async def session(
-        self,
-        ctx: ModelContext,
-        trace: Trace,
-        runtime: Runtime,
-        endpoint: str,
-        secret: str,
-        mcp_urls: dict[str, str],
-        data: TaskData,
-        tool_interception_url: str | None = None,
-    ) -> HarnessSession:
-        config = await self.prepare_acp(
-            ctx, trace, runtime, endpoint, secret, mcp_urls, data
-        )
-        if tool_interception_url is not None:
-            await self.gate_tools(config, runtime, tool_interception_url, secret)
-        return ACPHarnessSession(
-            self,
-            ctx,
-            trace,
-            runtime,
-            endpoint,
-            secret,
-            mcp_urls if config.mcp_urls is None else config.mcp_urls,
-            data,
-            config,
-            tool_interception_url,
-        )
-
-    async def launch(
-        self,
-        ctx: ModelContext,
-        trace: Trace,
-        runtime: Runtime,
-        endpoint: str,
-        secret: str,
-        mcp_urls: dict[str, str],
-        data: TaskData,
-    ) -> ProgramResult:
-        raise HarnessError(
-            f"harness {self.config.id!r} requires a rollout-scoped session"
-        )
-
-
 def _packet(value: JsonObject) -> bytes:
     data = json.dumps(value, ensure_ascii=False).encode()
     if len(data) > MAX_PACKET_BYTES:
@@ -200,34 +112,13 @@ class _PacketReader:
         return json.loads((await self._readexactly(size)).decode())
 
 
-class ACPHarnessSession(HarnessSession):
-    """A live ACP process, connection, and native session for one rollout."""
+class ACPHarness(Harness[ConfigT]):
+    """Harness backed by one live ACP process and native session per rollout."""
 
-    def __init__(
-        self,
-        harness: ACPHarness,
-        ctx: ModelContext,
-        trace: Trace,
-        runtime: Runtime,
-        endpoint: str,
-        secret: str,
-        mcp_urls: dict[str, str],
-        data: TaskData,
-        config: ACPConfig,
-        tool_interception_url: str | None = None,
-    ) -> None:
-        super().__init__(
-            harness,
-            ctx,
-            trace,
-            runtime,
-            endpoint,
-            secret,
-            mcp_urls,
-            data,
-            tool_interception_url,
-        )
-        self.config = config
+    def __init__(self, params: HarnessParams[ConfigT]) -> None:
+        super().__init__(params)
+        self.acp: ACPConfig
+        self.mcp_urls: dict[str, str]
         self._process: RuntimeProcess | None = None
         self._reader: _PacketReader | None = None
         self._stderr_tail = bytearray()
@@ -238,14 +129,62 @@ class ACPHarnessSession(HarnessSession):
         self._request_id = 0
         self._response_task: asyncio.Task | None = None
 
+    async def setup(self, runtime: Runtime) -> None:
+        await runtime.prepare_uv_script(
+            ACP_SOURCE, {**self.config.resolved_env, "UV_FROZEN": "false"}
+        )
+
+    def acp_turn_result(self, trace: Trace, result: ACPTurn) -> None:
+        """Consume the typed result of one ACP prompt."""
+
+    def acp_close_result(self, trace: Trace, response_metadata: dict[str, Any]) -> None:
+        """Consume extension metadata returned by `session/close`, when supported."""
+
+    def _consume_protocol_metadata(
+        self, trace: Trace, response_metadata: dict[str, Any]
+    ) -> None:
+        """Attach optional protocol extensions understood by every ACP harness."""
+        if ACP_SEMANTIC_EDGES_METADATA_KEY in response_metadata:
+            edge_set = SemanticEdgeSet.model_validate(
+                response_metadata[ACP_SEMANTIC_EDGES_METADATA_KEY]
+            )
+            trace.add_semantic_edges(edge_set)
+
+    async def gate_tools(
+        self, config: ACPConfig, runtime: Runtime, url: str, secret: str
+    ) -> None:
+        """Configure the agent to ask before every tool call, so each request reaches the
+        runner's gate (`/tool` at `url`, keyed by `secret`). A harness that advertises
+        `SUPPORTS_TOOL_INTERCEPTION` implements this with the agent's own config."""
+
+    @abstractmethod
+    async def prepare_acp(self) -> ACPConfig:
+        """The ACP process and initial prompt for this rollout, read from the bound
+        `trace`, `runtime` and `wiring`."""
+
+    async def start(
+        self, trace: Trace, runtime: Runtime, wiring: HarnessWiring
+    ) -> None:
+        await super().start(trace, runtime, wiring)
+        acp = await self.prepare_acp()
+        if wiring.tool_interception_url is not None:
+            await self.gate_tools(
+                acp, runtime, wiring.tool_interception_url, wiring.secret
+            )
+        self.acp = acp
+        self.mcp_urls = wiring.mcp_urls if acp.mcp_urls is None else acp.mcp_urls
+
+    async def launch(self, data: TaskData) -> ProgramResult:
+        raise HarnessError(f"harness {self.config.id!r} runs through ACP turns")
+
     async def _start(self) -> None:
         self._stderr_tail.clear()
         program = await self.runtime.prepare_uv_script(
             ACP_SOURCE,
-            {**self.config.env, "UV_FROZEN": "false"},
+            {**self.acp.env, "UV_FROZEN": "false"},
             activate=False,
         )
-        process = await self.runtime.exec(program, self.config.env)
+        process = await self.runtime.exec(program, self.acp.env)
         self._process = process
         self._reader = _PacketReader(process.stdout)
         self._response_task = asyncio.create_task(self._read_responses(self._reader))
@@ -309,7 +248,7 @@ class ACPHarnessSession(HarnessSession):
         return self._stderr_tail.decode(errors="replace").strip()
 
     async def _run(self, messages: Messages | None) -> ProgramResult:
-        prompt = self.config.prompt if messages is None else messages
+        prompt = self.acp.prompt if messages is None else messages
         if prompt is None:
             raise ValueError("ACP requires a prompt")
         if not isinstance(prompt, str) and (
@@ -325,24 +264,24 @@ class ACPHarnessSession(HarnessSession):
             ]
         )
         config = {
-            "command": self.config.command,
+            "command": self.acp.command,
             "user_contents": user_contents,
             "mcp_urls": self.mcp_urls,
-            "mcp_headers": self.harness.config.resolve_mcp_headers(self.mcp_urls),
-            "system_prompt": self.config.system_prompt or "",
-            "session_meta": self.config.session_meta or {},
-            "client_capabilities": self.config.client_capabilities or {},
+            "mcp_headers": self.config.resolve_mcp_headers(self.mcp_urls),
+            "system_prompt": self.acp.system_prompt or "",
+            "session_meta": self.acp.session_meta or {},
+            "client_capabilities": self.acp.client_capabilities or {},
             "tool_interception": {
-                "url": self.tool_interception_url,
-                "secret": self.secret,
+                "url": self.wiring.tool_interception_url,
+                "secret": self.wiring.secret,
             }
-            if self.tool_interception_url
+            if self.wiring.tool_interception_url
             else None,
         }
         async with self._lock:
             if self._closed:
                 raise HarnessError(
-                    f"harness {self.harness.config.id!r} session is already closed"
+                    f"harness {self.config.id!r} session is already closed"
                 )
             if self._process is None:
                 await self._start()
@@ -368,9 +307,8 @@ class ACPHarnessSession(HarnessSession):
             ):
                 raise InterceptionError(detail)
             raise RuntimeError(detail)
-        harness = cast(ACPHarness, self.harness)
-        harness._consume_protocol_metadata(self.trace, turn.response_metadata)
-        harness.acp_turn_result(self.trace, turn)
+        self._consume_protocol_metadata(self.trace, turn.response_metadata)
+        self.acp_turn_result(self.trace, turn)
         if condition := _STOP_CONDITIONS.get(turn.stop_reason or ""):
             self.trace.stop(condition)
         result = ProgramResult(exit_code=0, stdout=turn.reply, stderr="")
@@ -427,7 +365,7 @@ class ACPHarnessSession(HarnessSession):
         if self._closed:
             return
         # Publish closure before waiting for the process lock. A turn that
-        # already passed HarnessSession.turn()'s fast check rechecks under the
+        # already passed Harness.turn()'s fast check rechecks under the
         # same lock in _run(), so it cannot restart after teardown.
         await super().close()
 
@@ -435,8 +373,7 @@ class ACPHarnessSession(HarnessSession):
             async with self._lock:
                 response_metadata = await self._stop(graceful=True)
                 if response_metadata:
-                    harness = cast(ACPHarness, self.harness)
-                    harness._consume_protocol_metadata(self.trace, response_metadata)
-                    harness.acp_close_result(self.trace, response_metadata)
+                    self._consume_protocol_metadata(self.trace, response_metadata)
+                    self.acp_close_result(self.trace, response_metadata)
 
         await run_shielded(close_process())

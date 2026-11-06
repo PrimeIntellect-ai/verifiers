@@ -2,12 +2,10 @@ import logging
 from pathlib import Path
 from typing import Literal
 
-from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig, PinnedVersion
 from verifiers.v1.harness import Harness
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.task import TaskData
-from verifiers.v1.trace import Trace
 
 PROGRAM_SOURCE = (Path(__file__).resolve().parent / "program.py").read_text()
 logger = logging.getLogger(__name__)
@@ -29,42 +27,35 @@ class Terminus2Harness(Harness[Terminus2HarnessConfig]):
         source = PROGRAM_SOURCE.replace("{version}", self.config.version)
         await runtime.prepare_uv_script(source, self.config.resolved_env)
 
-    async def launch(
-        self,
-        ctx: ModelContext,
-        trace: Trace,
-        runtime: Runtime,
-        endpoint: str,
-        secret: str,
-        mcp_urls: dict[str, str],
-        data: TaskData,
-    ) -> ProgramResult:
+    async def launch(self, data: TaskData) -> ProgramResult:
         if self.config.disabled_tools:
             raise ValueError("Terminus 2 does not support disabling tools")
         system_prompt, prompt = self.resolve_text_prompt(data)
         if prompt is None:
             raise ValueError("Terminus 2 requires a task prompt")
-        tmux_dir = f"/tmp/vf-terminus-2-{trace.id}"
+        tmux_dir = f"/tmp/vf-terminus-2-{self.trace.id}"
         env = {
             **self.config.resolved_env,
             "TMUX_TMPDIR": tmux_dir,
         }
         args = [
-            f"--base-url={endpoint}",
-            f"--api-key={secret}",
-            f"--model={ctx.model}",
+            f"--base-url={self.wiring.endpoint}",
+            f"--api-key={self.wiring.secret}",
+            f"--model={self.model.model}",
             f"--system-prompt={system_prompt or ''}",
             f"--task={prompt}",
         ]
         try:
             source = PROGRAM_SOURCE.replace("{version}", self.config.version)
-            program = await runtime.prepare_uv_script(source, self.config.resolved_env)
-            return await runtime.run([*program, *args], env)
+            program = await self.runtime.prepare_uv_script(
+                source, self.config.resolved_env
+            )
+            return await self.runtime.run([*program, *args], env)
         finally:
             # Harbor normally destroys its whole sandbox; this adapter borrows the
             # Verifiers runtime, so clean up Terminus's detached tmux server ourselves.
             try:
-                await runtime.run(
+                await self.runtime.run(
                     [
                         "sh",
                         "-c",

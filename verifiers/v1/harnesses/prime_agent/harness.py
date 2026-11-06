@@ -6,13 +6,11 @@ import logging
 from typing import Literal
 
 from verifiers.v1.acp import ACPConfig, ACPHarness, ACPTurn
-from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import DialectName, HarnessConfig, skill_destination
 from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
 from verifiers.v1.harnesses.utils.replay import drop_blank_text
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.runtimes.base import _ENSURE_UV
-from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
 from verifiers.v1.types import Message
 
@@ -93,7 +91,8 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
 
     # Its chat-completions provider drops whitespace-only assistant text on replay. Recheck on bumps:
     # https://github.com/PrimeIntellect-ai/prime-agent/blob/v0.10.2/crates/pa-ai/src/providers/openai_completions/convert.rs#L106
-    def replay_view(self, message: Message, dialect: DialectName | None) -> Message:
+    @staticmethod
+    def replay_view(message: Message, dialect: DialectName | None) -> Message:
         return drop_blank_text(message)
 
     def acp_turn_result(self, trace: Trace, result: ACPTurn) -> None:
@@ -168,26 +167,17 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
         )
         await super().setup(runtime)
 
-    async def prepare_acp(
-        self,
-        ctx: ModelContext,
-        trace: Trace,
-        runtime: Runtime,
-        endpoint: str,
-        secret: str,
-        mcp_urls: dict[str, str],
-        data: TaskData,
-    ) -> ACPConfig:
+    async def prepare_acp(self) -> ACPConfig:
         if self.config.disabled_tools:
             raise ValueError(
                 "prime-agent has no per-tool disable flag; its model-facing tool "
                 "surface is ipython"
             )
 
-        root = self._root(trace)
+        root = self._root(self.trace)
         agent_dir = f"{root}/agent"
         skills_dir = f"{agent_dir}/skills"
-        created = await runtime.run(
+        created = await self.runtime.run(
             [
                 "mkdir",
                 "-p",
@@ -203,18 +193,18 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
             raise RuntimeError(
                 f"prime-agent state directory failed: {created.stderr.strip()[-500:]}"
             )
-        await self.install_skills(runtime, skills_dir)
-        reasoning = ctx.sampling.reasoning_effort not in (
+        await self.install_skills(self.runtime, skills_dir)
+        reasoning = self.model.sampling.reasoning_effort not in (
             None,
             "none",
-        ) or ctx.model.rsplit("/", 1)[-1].startswith(("gpt-5", "o1", "o3", "o4"))
+        ) or self.model.model.rsplit("/", 1)[-1].startswith(("gpt-5", "o1", "o3", "o4"))
         models = {
             "providers": {
                 PROVIDER: {
                     # Its Anthropic provider appends `/v1/messages` to the base URL.
-                    "baseUrl": endpoint.removesuffix("/v1")
+                    "baseUrl": self.wiring.endpoint.removesuffix("/v1")
                     if self.config.dialect == "anthropic_messages"
-                    else endpoint,
+                    else self.wiring.endpoint,
                     "api": {
                         "chat_completions": "openai-completions",
                         "responses": "openai-responses",
@@ -223,7 +213,7 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
                     "apiKey": KEY_VAR,
                     "models": [
                         {
-                            "id": ctx.model,
+                            "id": self.model.model,
                             "reasoning": reasoning,
                             "input": ["text", "image"],
                         }
@@ -232,14 +222,14 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
             }
         }
         models_path = f"{agent_dir}/models.json"
-        await runtime.write(models_path, json.dumps(models).encode())
-        secured = await runtime.run(["chmod", "600", models_path], {})
+        await self.runtime.write(models_path, json.dumps(models).encode())
+        secured = await self.runtime.run(["chmod", "600", models_path], {})
         if secured.exit_code != 0:
             raise RuntimeError(
                 f"prime-agent model config chmod failed: {secured.stderr.strip()[-500:]}"
             )
 
-        system_prompt, prompt = self.resolve_prompt(data)
+        system_prompt, prompt = self.resolve_prompt(self.wiring.data)
         args = [
             self._bin(),
             "--mode",
@@ -248,7 +238,7 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
             "--provider",
             PROVIDER,
             "--model",
-            ctx.model,
+            self.model.model,
             "--daemon-socket",
             f"{root}/daemon.sock",
             "--offline",
@@ -259,12 +249,12 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
             args += ["--skill", skill_destination(skill, skills_dir)]
         if system_prompt:
             args += ["--append-system-prompt", system_prompt]
-        if mcp_urls:
+        if self.wiring.mcp_urls:
             # ACP servers need discovery guidance; importing the SDK shadows the REPL helper.
             args += [
                 "--append-system-prompt",
                 (
-                    f"Connected MCP servers: {json.dumps(list(mcp_urls))}. "
+                    f"Connected MCP servers: {json.dumps(list(self.wiring.mcp_urls))}. "
                     "Use the pre-imported `mcp` helper in `ipython`, or `from rlm import mcp`. "
                     "Do not `import mcp`: that loads the unrelated SDK and overwrites the helper. "
                     "Discover tools with `print(await mcp.list_tools(server))`, then call them "
@@ -273,7 +263,7 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
             ]
 
         return ACPConfig(
-            env=self._env(trace, secret),
+            env=self._env(self.trace, self.wiring.secret),
             # Expand the sandbox's PATH while keeping every agent argument literal.
             command=[
                 "/bin/sh",

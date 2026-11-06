@@ -5,11 +5,9 @@ import logging
 from typing import Literal
 
 from verifiers.v1.acp import ACPConfig, ACPHarness
-from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig, PinnedVersion
 from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
 from verifiers.v1.runtimes import Runtime
-from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
 
 logger = logging.getLogger(__name__)
@@ -138,10 +136,6 @@ class OpenClawHarness(ACPHarness[OpenClawHarnessConfig]):
     SUPPORTS_MCP = True
     SUPPORTS_SKILLS = True
 
-    def __init__(self, config: OpenClawHarnessConfig) -> None:
-        super().__init__(config)
-        self._cataloged: dict[str, bool] = {}
-
     async def setup(self, runtime: Runtime) -> None:
         directory = OPENCLAW_DIR.format(version=self.config.version)
         binary = OPENCLAW_BIN.format(version=self.config.version)
@@ -164,43 +158,32 @@ class OpenClawHarness(ACPHarness[OpenClawHarnessConfig]):
         await super().setup(runtime)
 
     async def _in_catalog(self, runtime: Runtime, model: str, state_dir: str) -> bool:
-        """Whether OpenClaw's model catalog knows `model`, checked once per model."""
-        if model not in self._cataloged:
-            check_dir = f"{state_dir}/catalog-check"
-            result = await runtime.run(
-                ["sh", "-c", CATALOG_CHECK],
-                {
-                    **self.config.resolved_env,
-                    "OPENCLAW_STATE_DIR": check_dir,
-                    "OPENCLAW_CONFIG_PATH": f"{check_dir}/openclaw.json",
-                    "VF_OPENCLAW_BIN": OPENCLAW_BIN.format(version=self.config.version),
-                    "VF_OPENCLAW_MODEL": json.dumps(model),
-                },
-            )
-            self._cataloged[model] = result.exit_code == 0
-        return self._cataloged[model]
+        """Whether OpenClaw's model catalog knows `model`."""
+        check_dir = f"{state_dir}/catalog-check"
+        result = await runtime.run(
+            ["sh", "-c", CATALOG_CHECK],
+            {
+                **self.config.resolved_env,
+                "OPENCLAW_STATE_DIR": check_dir,
+                "OPENCLAW_CONFIG_PATH": f"{check_dir}/openclaw.json",
+                "VF_OPENCLAW_BIN": OPENCLAW_BIN.format(version=self.config.version),
+                "VF_OPENCLAW_MODEL": json.dumps(model),
+            },
+        )
+        return result.exit_code == 0
 
-    async def prepare_acp(
-        self,
-        ctx: ModelContext,
-        trace: Trace,
-        runtime: Runtime,
-        endpoint: str,
-        secret: str,
-        mcp_urls: dict[str, str],
-        data: TaskData,
-    ) -> ACPConfig:
-        system_prompt, prompt = self.resolve_prompt(data)
-        provider, _, model_id = ctx.model.partition("/")
-        state_dir = f".vf-openclaw/{trace.id}"
+    async def prepare_acp(self) -> ACPConfig:
+        system_prompt, prompt = self.resolve_prompt(self.wiring.data)
+        provider, _, model_id = self.model.model.partition("/")
+        state_dir = f".vf-openclaw/{self.trace.id}"
         config_path = f"{state_dir}/openclaw.json"
         skills_dir = f"{state_dir}/skills"
         provider_config = {
-            "baseUrl": endpoint,
+            "baseUrl": self.wiring.endpoint,
             "apiKey": "${OPENCLAW_INTERCEPT_KEY}",
             "request": {"allowPrivateNetwork": True},
         }
-        if not await self._in_catalog(runtime, ctx.model, state_dir):
+        if not await self._in_catalog(self.runtime, self.model.model, state_dir):
             # Catalog models keep OpenClaw's defaults. Others need a declared model, and
             # OpenClaw's chat completions default for them rewrites replayed turns.
             provider_config["api"] = "openai-responses"
@@ -221,7 +204,7 @@ class OpenClawHarness(ACPHarness[OpenClawHarnessConfig]):
                     "skipBootstrap": True,
                     "heartbeat": {"every": "0m"},
                     "sandbox": {"mode": "off"},
-                    "model": {"primary": ctx.model},
+                    "model": {"primary": self.model.model},
                     "utilityModel": "",  # Disable background recap model calls.
                 }
             },
@@ -242,7 +225,7 @@ class OpenClawHarness(ACPHarness[OpenClawHarnessConfig]):
                         "connectionTimeoutMs": 60_000,
                         "requestTimeoutMs": int(self.config.tool_timeout * 1000),
                     }
-                    for name, url in mcp_urls.items()
+                    for name, url in self.wiring.mcp_urls.items()
                 }
             },
         }
@@ -251,15 +234,15 @@ class OpenClawHarness(ACPHarness[OpenClawHarnessConfig]):
         if not self.config.use_bundled_skill:
             # OpenClaw treats an empty allowlist as all; a no-match key disables the catalog.
             config.setdefault("skills", {})["allowBundled"] = ["__none__"]
-        await runtime.write(config_path, json.dumps(config).encode())
-        await self.install_skills(runtime, skills_dir)
+        await self.runtime.write(config_path, json.dumps(config).encode())
+        await self.install_skills(self.runtime, skills_dir)
 
         env = {
             **self.config.resolved_env,
             "OPENCLAW_CONFIG_PATH": config_path,
             "OPENCLAW_STATE_DIR": state_dir,
-            "OPENCLAW_GATEWAY_TOKEN": trace.id,
-            "OPENCLAW_INTERCEPT_KEY": secret,
+            "OPENCLAW_GATEWAY_TOKEN": self.trace.id,
+            "OPENCLAW_INTERCEPT_KEY": self.wiring.secret,
             "OPENCLAW_HIDE_BANNER": "1",
             "OPENCLAW_SUPPRESS_NOTES": "1",
             "NO_COLOR": "1",

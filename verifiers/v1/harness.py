@@ -7,7 +7,6 @@ from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, ClassVar, Generic, TypeVar
 
-from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import DialectName, HarnessConfig, skill_destination
 from verifiers.v1.errors import (
     MODEL_TRANSPORT_ERROR_EXIT_CODE,
@@ -16,6 +15,7 @@ from verifiers.v1.errors import (
     SandboxError,
     boundary,
 )
+from verifiers.v1.params.harness import HarnessParams, HarnessWiring
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.types import Message, Messages
@@ -64,10 +64,29 @@ class Harness(ABC, Generic[ConfigT]):
     leaks host state (auth, config, processes) both ways. Only the minimal
     in-house loops (`bash`, `null`) override to False."""
 
-    def __init__(self, config: ConfigT) -> None:
-        self.config = config
+    def __init__(self, params: HarnessParams[ConfigT]) -> None:
+        """One harness per rollout: `start()` binds it to the rollout, `turn()` runs
+        its segments, `close()` ends it."""
+        self.params = params
+        self.config = params.config
+        self.model = params.model
+        self.trace: Trace
+        self.runtime: Runtime
+        self.wiring: HarnessWiring
+        self._closed = False
 
-    def replay_view(self, message: Message, dialect: DialectName | None) -> Message:
+    @classmethod
+    def resumes(cls) -> bool:
+        """Whether the harness can continue an exchange: transcript replay
+        (`SUPPORTS_RESUME`), a native `resume()`, or a stateful `_run()`."""
+        return (
+            cls.SUPPORTS_RESUME
+            or cls._run is not Harness._run
+            or cls.resume is not Harness.resume
+        )
+
+    @staticmethod
+    def replay_view(message: Message, dialect: DialectName | None) -> Message:
         """`message` as this harness re-sends it on later requests over `dialect` (None
         before the first intercepted request). Override only for
         deterministic cosmetic rewrites (e.g. dropped whitespace-only text), never for
@@ -178,16 +197,14 @@ copy_failed=$(
                 # `write` moves bytes, not modes; restore the execute bits scripts need.
                 await runtime.run(["chmod", "+x", *executables], {})
 
-    async def _check_result(
-        self, trace: Trace, runtime: Runtime, result: ProgramResult
-    ) -> None:
-        if trace.stop_condition is not None:
+    async def _check_result(self, result: ProgramResult) -> None:
+        if self.trace.stop_condition is not None:
             return  # a @stop refused a turn mid-rollout; the exit is expected
         if result.exit_code == 0:
             return
         # The real cause is at the END of a traceback, so keep the tail.
         detail = (result.stderr or result.stdout).strip()[-2000:] or "<no output>"
-        if not await runtime.alive():
+        if not await self.runtime.alive():
             raise SandboxError(
                 f"runtime died under harness {self.config.id!r} "
                 f"(exit {result.exit_code}): {detail}"
@@ -200,34 +217,36 @@ copy_failed=$(
             f"harness {self.config.id!r} exited {result.exit_code}: {detail}"
         )
 
-    async def session(
-        self,
-        ctx: ModelContext,
-        trace: Trace,
-        runtime: Runtime,
-        endpoint: str,
-        secret: str,
-        mcp_urls: dict[str, str],
-        data: TaskData,
-        tool_interception_url: str | None = None,
-    ) -> HarnessSession:
-        """Create the rollout-scoped handle that drives this harness.
+    async def start(
+        self, trace: Trace, runtime: Runtime, wiring: HarnessWiring
+    ) -> None:
+        """Bind this harness to its rollout before the first `turn()`. Stateful
+        transports extend this to prepare their live connection."""
+        self.trace, self.runtime, self.wiring = trace, runtime, wiring
 
-        The default adapts the existing launch/resume contract. Stateful harness
-        transports override this factory so one handle can own their live process,
-        connection, or native session for the rollout's full interaction.
-        """
-        return HarnessSession(
-            self,
-            ctx,
-            trace,
-            runtime,
-            endpoint,
-            secret,
-            mcp_urls,
-            data,
-            tool_interception_url,
+    async def turn(self, messages: Messages | None = None) -> None:
+        """Run one segment: `launch()` on the task's prompt, or `resume()` with the
+        caller's `messages`."""
+        if self._closed:
+            raise HarnessError(f"harness {self.config.id!r} is already closed")
+        async with boundary(HarnessError, f"harness {self.config.id!r}"):
+            result = await self._run(messages)
+        await self._check_result(result)
+
+    async def _run(self, messages: Messages | None) -> ProgramResult:
+        if messages is None:
+            return await self.launch(self.wiring.data)
+        return await self.resume(messages)
+
+    async def steer(self, message: str, *, message_id: str | None = None) -> dict:
+        """Deliver a user message during a running turn, if supported by the harness."""
+        raise NotImplementedError(
+            f"harness {self.config.id!r} does not support steering"
         )
+
+    async def close(self) -> None:
+        """Close rollout-owned transport state. Idempotent."""
+        self._closed = True
 
     async def score(self, trace: Trace, runtime: Runtime) -> None:
         """Run this harness's `@metric` methods over the finished trace, recording
@@ -249,33 +268,23 @@ copy_failed=$(
             else:
                 trace.record_metric(fn.__name__, result)
 
-    async def resume(
-        self,
-        ctx: ModelContext,
-        trace: Trace,
-        runtime: Runtime,
-        endpoint: str,
-        secret: str,
-        mcp_urls: dict[str, str],
-        data: TaskData,
-        messages: Messages,
-        tool_interception_url: str | None = None,
-    ) -> ProgramResult:
+    async def resume(self, messages: Messages) -> ProgramResult:
         """Run the next segment of an exchange this trace already carries: the user
         spoke (`messages`), the program answers — with the whole conversation behind
         it. The default relaunches the program on the accreted conversation (the
         trace's current branch plus `messages`) as a Messages prompt: correct for any
         stateless chat program, including the very first segment of an exchange the
         user opens (an empty branch). A harness with its own session state overrides
-        this or returns a specialized session handle with a native continuation
-        instead of replaying a conversation it already owns."""
+        this (or `_run`) with a native continuation instead of replaying a
+        conversation it already owns."""
         if not self.SUPPORTS_RESUME:
             raise HarnessError(
                 f"harness {self.config.id!r} cannot continue an exchange: it neither "
                 "overrides resume() nor supports a Messages prompt for the default "
                 "relaunch-on-the-conversation."
             )
-        branch = trace.branches[-1].messages if trace.branches else []
+        branch = self.trace.branches[-1].messages if self.trace.branches else []
+        data = self.wiring.data
         # `resolve_prompt` re-emits `data.system_prompt`; only de-duplicate those
         # system messages when it has something to re-emit. Explicit system
         # messages in a Messages prompt must survive a resumed segment.
@@ -283,127 +292,23 @@ copy_failed=$(
             *(m for m in branch if m.role != "system" or data.system_prompt is None),
             *messages,
         ]
-        kwargs = (
-            {"tool_interception_url": tool_interception_url}
-            if self.SUPPORTS_TOOL_INTERCEPTION
-            else {}
-        )
-        return await self.launch(
-            ctx,
-            trace,
-            runtime,
-            endpoint,
-            secret,
-            mcp_urls,
-            data.model_copy(update={"prompt": conversation}),
-            **kwargs,
-        )
+        return await self.launch(data.model_copy(update={"prompt": conversation}))
 
     async def cleanup(self, trace: Trace, runtime: Runtime) -> None:
         """Remove harness-owned per-rollout state after scoring and before the
         runtime is released. Implementations should be idempotent."""
 
     @abstractmethod
-    async def launch(
-        self,
-        ctx: ModelContext,
-        trace: Trace,
-        runtime: Runtime,
-        endpoint: str,
-        secret: str,
-        mcp_urls: dict[str, str],
-        data: TaskData,
-    ) -> ProgramResult:
-        """Run the harness program through `runtime` to completion and return its result.
-        `data` is this segment's wire view of the task (`resolve_prompt(data)` — for
-        a resumed exchange its prompt is the accreted conversation, and it may
+    async def launch(self, data: TaskData) -> ProgramResult:
+        """Run the harness program through `self.runtime` to completion and return its
+        result. `data` is this segment's wire view of the task (`resolve_prompt(data)` —
+        for a resumed exchange its prompt is the accreted conversation, and it may
         differ from `trace.task.data`, the run's recorded view); model calls must
-        reach the interception server at `endpoint` (bearer token `secret`);
-        `mcp_urls` are the task's tool servers to wire in. Each harness owns the
+        reach `self.wiring.endpoint` (bearer token `self.wiring.secret`);
+        `self.wiring.mcp_urls` are the task's tool servers to wire in. Each harness owns the
         env its program needs (the bash/compact harnesses set OPENAI_*).
 
         The interception is the contract, not the process: a harness may run its
         loop in-process instead of launching a program, as long as every model call
-        goes through `endpoint` + `secret` — it then returns a synthetic success
+        goes through the endpoint — it then returns a synthetic success
         `ProgramResult`, and the trace is the record of what ran."""
-
-
-class HarnessSession:
-    """One rollout's stateful handle onto one harness execution.
-
-    The base adapter preserves the segment-oriented harness interface by invoking
-    `launch()` once and `resume()` for later caller turns. Specialized handles can
-    override `_run()` and `close()` to retain transport state across those turns.
-    """
-
-    def __init__(
-        self,
-        harness: Harness,
-        ctx: ModelContext,
-        trace: Trace,
-        runtime: Runtime,
-        endpoint: str,
-        secret: str,
-        mcp_urls: dict[str, str],
-        data: TaskData,
-        tool_interception_url: str | None = None,
-    ) -> None:
-        self.harness = harness
-        self.ctx = ctx
-        self.trace = trace
-        self.runtime = runtime
-        self.endpoint = endpoint
-        self.secret = secret
-        self.mcp_urls = mcp_urls
-        self.data = data
-        self.tool_interception_url = tool_interception_url
-        self._closed = False
-
-    async def steer(self, message: str, *, message_id: str | None = None) -> dict:
-        """Deliver a user message during a running turn, if supported by the harness."""
-        raise NotImplementedError(
-            f"harness {self.harness.config.id!r} does not support steering"
-        )
-
-    async def turn(self, messages: Messages | None = None) -> None:
-        """Run one harness segment while retaining session state for the next."""
-        if self._closed:
-            raise HarnessError(
-                f"harness {self.harness.config.id!r} session is already closed"
-            )
-        async with boundary(HarnessError, f"harness {self.harness.config.id!r}"):
-            result = await self._run(messages)
-        await self.harness._check_result(self.trace, self.runtime, result)
-
-    async def _run(self, messages: Messages | None) -> ProgramResult:
-        if messages is None:
-            kwargs = (
-                {"tool_interception_url": self.tool_interception_url}
-                if self.harness.SUPPORTS_TOOL_INTERCEPTION
-                else {}
-            )
-            return await self.harness.launch(
-                self.ctx,
-                self.trace,
-                self.runtime,
-                self.endpoint,
-                self.secret,
-                self.mcp_urls,
-                self.data,
-                **kwargs,
-            )
-        return await self.harness.resume(
-            self.ctx,
-            self.trace,
-            self.runtime,
-            self.endpoint,
-            self.secret,
-            self.mcp_urls,
-            self.data,
-            messages,
-            self.tool_interception_url,
-        )
-
-    async def close(self) -> None:
-        """Close session-owned resources. Idempotent."""
-        self._closed = True

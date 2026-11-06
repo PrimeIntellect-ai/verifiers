@@ -5,12 +5,10 @@ from pathlib import Path
 from typing import Literal
 
 from verifiers.v1.acp import ACPConfig, ACPHarness
-from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig, PinnedVersion
 from verifiers.v1.harnesses.node import NODE_BIN_DIR, ensure_node
 from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
 from verifiers.v1.runtimes import Runtime
-from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
 
 DEEPSEEK_DIR = "/var/tmp/vf-deepseek-{version}"
@@ -54,21 +52,12 @@ class DeepSeekHarness(ACPHarness[DeepSeekHarnessConfig]):
         )
         await super().setup(runtime)
 
-    async def prepare_acp(
-        self,
-        ctx: ModelContext,
-        trace: Trace,
-        runtime: Runtime,
-        endpoint: str,
-        secret: str,
-        mcp_urls: dict[str, str],
-        data: TaskData,
-    ) -> ACPConfig:
+    async def prepare_acp(self) -> ACPConfig:
         if self.config.disabled_tools:
             raise ValueError("DeepSeek minimal ACP does not support disabling tools")
 
-        home = f"/tmp/vf-deepseek/{trace.id}"
-        system_prompt, prompt = self.resolve_prompt(data)
+        home = f"/tmp/vf-deepseek/{self.trace.id}"
+        system_prompt, prompt = self.resolve_prompt(self.wiring.data)
         # Keep the upstream minimal tree; replace only its SDK stdio front door.
         # https://github.com/deepseek-ai/deepseek-harness/tree/dsh-v0.2.1-rc.5/packages/bundle/sdk-minimal
         patches = [
@@ -87,7 +76,10 @@ class DeepSeekHarness(ACPHarness[DeepSeekHarnessConfig]):
                         "id": "acp",
                         "name": "@deepseek-ai/dsh-acp",
                         "inject": ["acpAppStartup"],
-                        "config": {"provider": "deepseek-official", "model": ctx.model},
+                        "config": {
+                            "provider": "deepseek-official",
+                            "model": self.model.model,
+                        },
                     },
                 ]
             },
@@ -107,9 +99,9 @@ class DeepSeekHarness(ACPHarness[DeepSeekHarnessConfig]):
             )
         patch_path = f"{home}/acp.patch.json"
         # JSON is valid YAML and preserves arbitrary task prompt text verbatim.
-        await runtime.write(patch_path, json.dumps(patches).encode())
+        await self.runtime.write(patch_path, json.dumps(patches).encode())
         usage_path = f"{home}/usage.mjs"
-        await runtime.write(usage_path, USAGE_COMPAT)
+        await self.runtime.write(usage_path, USAGE_COMPAT)
         return ACPConfig(
             command=[
                 f"{NODE_BIN_DIR}/node",
@@ -124,8 +116,8 @@ class DeepSeekHarness(ACPHarness[DeepSeekHarnessConfig]):
             env={
                 **self.config.resolved_env,
                 "DSH_HOME": home,
-                "DEEPSEEK_BASE_URL": endpoint,
-                "DEEPSEEK_API_KEY": secret,
+                "DEEPSEEK_BASE_URL": self.wiring.endpoint,
+                "DEEPSEEK_API_KEY": self.wiring.secret,
             },
             prompt=prompt,
         )

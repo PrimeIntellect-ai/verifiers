@@ -34,6 +34,7 @@ from verifiers.v1.configs.harness import DialectName
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.errors import HarnessError, RolloutError, TaskError
 from verifiers.v1.harnesses.utils.compaction import bound_tool_message
+from verifiers.v1.params.rollout import RolloutLimits
 from verifiers.v1.trace import InterceptRecord, Trace
 from verifiers.v1.types import (
     AssistantMessage,
@@ -83,55 +84,38 @@ def same_arguments(call: ToolCall, arguments: object) -> bool:
         return call.arguments == arguments
 
 
-@dataclass(frozen=True)
-class RolloutLimits:
-    """Per-rollout framework limits (None = no cap), checked before each turn is served.
-    The first limit reached refuses the turn — halting any harness, the same mechanism as
-    a @stop — and becomes the trace's stop condition. Each caps a trace computed property:
-    `max_turns` -> num_turns, `max_input_tokens` -> num_input_tokens, `max_output_tokens` ->
-    num_output_tokens, `max_total_tokens` -> num_total_tokens. Token caps are soft by one turn:
-    they're checked between turns, so the turn that crosses a cap still completes.
-    `max_turn_tokens` caps each response (applied through sampling) and refuses the turn
-    after a response that hit it."""
-
-    max_turns: int | None = None
-    max_input_tokens: int | None = None
-    max_output_tokens: int | None = None
-    max_total_tokens: int | None = None
-    max_turn_tokens: int | None = None
-
-    def reached(self, trace: Trace) -> str | None:
-        """The name of the first limit `trace` has reached, or None if within all caps."""
-        if self.max_turns is not None and trace.num_turns >= self.max_turns:
-            return "max_turns"
+def limit_reached(limits: RolloutLimits, trace: Trace) -> str | None:
+    """The name of the first limit `trace` has reached, or None if within all caps."""
+    if limits.max_turns is not None and trace.num_turns >= limits.max_turns:
+        return "max_turns"
+    if (
+        limits.max_input_tokens is not None
+        and trace.num_input_tokens >= limits.max_input_tokens
+    ):
+        return "max_input_tokens"
+    if (
+        limits.max_output_tokens is not None
+        and trace.num_output_tokens >= limits.max_output_tokens
+    ):
+        return "max_output_tokens"
+    if (
+        limits.max_total_tokens is not None
+        and trace.num_total_tokens >= limits.max_total_tokens
+    ):
+        return "max_total_tokens"
+    if limits.max_turn_tokens is not None:
+        last = next((c for c in reversed(trace.calls) if c.error is None), None)
+        # A length finish below the cap ran out of context, not turn tokens.
         if (
-            self.max_input_tokens is not None
-            and trace.num_input_tokens >= self.max_input_tokens
+            last is not None
+            and last.finish_reason == "length"
+            and (
+                last.usage is None
+                or last.usage.completion_tokens >= limits.max_turn_tokens
+            )
         ):
-            return "max_input_tokens"
-        if (
-            self.max_output_tokens is not None
-            and trace.num_output_tokens >= self.max_output_tokens
-        ):
-            return "max_output_tokens"
-        if (
-            self.max_total_tokens is not None
-            and trace.num_total_tokens >= self.max_total_tokens
-        ):
-            return "max_total_tokens"
-        if self.max_turn_tokens is not None:
-            last = next((c for c in reversed(trace.calls) if c.error is None), None)
-            # A length finish below the cap ran out of context, not turn tokens.
-            if (
-                last is not None
-                and last.finish_reason == "length"
-                and (
-                    last.usage is None
-                    or last.usage.completion_tokens >= self.max_turn_tokens
-                )
-            ):
-                return "max_turn_tokens"
-        return None
+            return "max_turn_tokens"
+    return None
 
 
 @dataclass
@@ -614,10 +598,10 @@ class RolloutSession:
     async def refused(self) -> str | None:
         """The framework's limits (turns / token budget) and `@stop` checks, run before each
         model call. Sets the stop condition and returns its name, else None. A refused first
-        call halts the harness (its model call errors out); HarnessSession.turn treats it as clean. A task
+        call halts the harness (its model call errors out); Harness.turn treats it as clean. A task
         that ends a trajectory from `trace.state` does it with its own `@stop` (run here generically),
         so the interception server holds no opinion about the state's contents."""
-        if (limit := self.limits.reached(self.trace)) is not None:
+        if (limit := limit_reached(self.limits, self.trace)) is not None:
             self.trace.stop(limit)
             logger.debug("limit %r reached: id=%s", limit, self.trace.id)
             return limit

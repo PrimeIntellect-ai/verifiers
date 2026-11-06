@@ -6,13 +6,9 @@ import logging
 import time
 from collections.abc import Awaitable, Callable
 from contextlib import AsyncExitStack
-from dataclasses import dataclass
 from urllib.parse import urlsplit
 
-from verifiers.v1.clients import ModelContext
-from verifiers.v1.configs.agent import AgentConfig
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
-from verifiers.v1.configs.scoring import resolve_scoring
 from verifiers.v1.errors import (
     HarnessError,
     RolloutError,
@@ -28,16 +24,14 @@ from verifiers.v1.grading import (
     scoring_transaction,
     verifier_runtime,
 )
-from verifiers.v1.harness import Harness, HarnessSession
+from verifiers.v1.harness import Harness
 from verifiers.v1.interception import Interception, serve_interception
 from verifiers.v1.mcp import SharedToolServer, serve_tools
-from verifiers.v1.runtimes import (
-    Runtime,
-    RuntimeConfig,
-    make_backend,
-)
+from verifiers.v1.params.harness import HarnessWiring
+from verifiers.v1.params.rollout import RolloutParams
+from verifiers.v1.runtimes import Runtime, make_backend
 from verifiers.v1.runtimes.private_network import tool_vms
-from verifiers.v1.session import RolloutLimits, RolloutSession, hook_boundary
+from verifiers.v1.session import RolloutSession, hook_boundary
 from verifiers.v1.state import state_cls
 from verifiers.v1.task import Task
 from verifiers.v1.trace import AgentInfo, Trace, TraceTask
@@ -46,21 +40,6 @@ from verifiers.v1.utils.artifacts import collect
 from verifiers.v1.utils.decorators import discover_decorated, invoke
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass(frozen=True)
-class RolloutTimeouts:
-    """Per-stage rollout timeouts, each bounding one rollout stage."""
-
-    setup: float | None = None
-    """Timeout (in seconds) for task/harness setup through session preparation."""
-    agent: float | None = None
-    """Timeout (in seconds) for the agent's solve attempt."""
-    finalize: float | None = None
-    """Timeout (in seconds) for the task + harness finalize hooks."""
-    scoring: float | None = None
-    """Combined budget (in seconds) for harness metrics and task scoring, including
-    isolated verifier setup and retries. Finalization has its own budget."""
 
 
 _HOME_PROBE = (
@@ -104,13 +83,9 @@ class Rollout:
         self,
         *,
         task: Task,
-        agent_config: AgentConfig,
+        params: RolloutParams,
         harness: Harness,
-        ctx: ModelContext,
-        runtime_config: RuntimeConfig,
         has_user: bool = False,
-        timeouts: RolloutTimeouts,
-        limits: RolloutLimits,
         shared_tools: dict[str, SharedToolServer] | None = None,
         interception: Interception | None = None,
         runtime: Runtime | None = None,
@@ -122,18 +97,14 @@ class Rollout:
     ) -> None:
         self._on_score = on_score
         self.task = task
+        self.params = params
         self.harness = harness
-        self.ctx = ctx
-        self.runtime_config = runtime_config
-        self._scoring_policy = resolve_scoring(task.scoring, agent_config.scoring)
         self._grading_config = None
         self._scoring_task = task
         self._grader = None
         self.deployment = None
-        self._deployment_config = agent_config.deployment
         self._has_user = has_user
-        self._timeouts = timeouts
-        self._agent_time_remaining = self._timeouts.agent
+        self._agent_time_remaining = self.params.timeouts.agent
         self._shared_tools = shared_tools or {}
         self._interception = interception
         self.runtime = runtime
@@ -151,7 +122,7 @@ class Rollout:
             state=state_cls(type(task))(),
             # The seat's resolved config, role overrides included — the agent
             # this trace can be reproduced with.
-            agent=AgentInfo(config=agent_config),
+            agent=AgentInfo(config=params.agent),
         )
         self.trace._replay_view = harness.replay_view
         if on_trace is not None:
@@ -164,17 +135,16 @@ class Rollout:
         self._skip_scoring_stops = {
             fn.__name__ for _, fn in stops if getattr(fn, "stop_skip_scoring", False)
         }
-        execution_policy = runtime_config
         self._session = RolloutSession(
-            ctx=ctx,
+            ctx=params.harness.model,
             trace=self.trace,
             network_policy=(
-                execution_policy
-                if isinstance(execution_policy, NetworkPolicyConfig)
+                params.runtime
+                if isinstance(params.runtime, NetworkPolicyConfig)
                 else NetworkPolicyConfig()
             ),
             trace_stops=[fn for boundary, fn in stops if boundary is Trace],
-            limits=limits,
+            limits=params.limits,
             request_interceptors=[
                 fn for boundary, fn in interceptors if boundary is Request
             ],
@@ -194,7 +164,7 @@ class Rollout:
         self._harness_cleaned = False
         self._endpoint: str | None = None
         self._urls: dict[str, str] = {}
-        self._harness_session: HarnessSession | None = None
+        self._harness_started = False
         self._agent_runtime: Runtime | None = None
         self.deadline_at: float | None = None
         """The active harness segment's absolute deadline (event-loop clock), or
@@ -254,7 +224,7 @@ class Rollout:
         self.trace.timing.boot.start = time.time()
         self.trace.notify()
         if self._borrowed_runtime is None:
-            self.runtime = make_backend(self.runtime_config, name=self.trace.id).bind()
+            self.runtime = make_backend(self.params.runtime, name=self.trace.id).bind()
         elif (
             self._borrowed_runtime is not None
             and self._borrowed_runtime.backend.stopped
@@ -274,12 +244,14 @@ class Rollout:
             self.trace.id,
             self.task.data.idx,
             self.harness.config.name,
-            self.runtime_config.type,
+            self.params.runtime.type,
         )
         loop = asyncio.get_running_loop()
         setup_timeout: asyncio.Timeout | None = None
         setup_deadline = (
-            None if self._timeouts.setup is None else loop.time() + self._timeouts.setup
+            None
+            if self.params.timeouts.setup is None
+            else loop.time() + self.params.timeouts.setup
         )
         try:
             # Provisioning, hooks, and service setup share one budget.
@@ -310,7 +282,7 @@ class Rollout:
                         borrowed=self._borrowed_runtime is not None,
                     ),
                     env=runtime.env,
-                    config=self._deployment_config,
+                    config=self.params.agent.deployment,
                     borrowed_runtime=self._borrowed_runtime,
                 )
                 try:
@@ -321,9 +293,9 @@ class Rollout:
                     # Providers may assign an ID before startup fails; retain it for diagnostics.
                     self.trace.agent.runtime = runtime.info.model_copy()
                 if not self.task.scoring_deferred:
-                    isolated = self._scoring_policy.mode == "isolated"
+                    isolated = self.params.scoring.mode == "isolated"
                     self._scoring_task = self.task.grading_task(
-                        runtime, scoring=self._scoring_policy
+                        runtime, scoring=self.params.scoring
                     )
                     if isolated:
                         self._grader = self._scoring_task
@@ -332,9 +304,9 @@ class Rollout:
                             runtime,
                             # Solver task requirements must not override the verifier's.
                             self.trace.agent.config.runtime,
-                            self._scoring_policy,
+                            self.params.scoring,
                         )
-                    elif self._scoring_policy.runtime is not None:
+                    elif self.params.scoring.runtime is not None:
                         raise TaskError(
                             "verifier runtime overrides require isolated verification"
                         )
@@ -425,10 +397,7 @@ class Rollout:
                 ):
                     harness_data = self.trace.task.data
                     policy = self._session.network_policy
-                    if (
-                        self.trace.agent.config.network_notice
-                        and policy.network_restricted
-                    ):
+                    if self.params.agent.network_notice and policy.network_restricted:
                         if not policy.allow:
                             network_prompt = "External network access is disabled."
                         elif policy.block:
@@ -507,29 +476,26 @@ class Rollout:
                             }
                         )
                     if not self._session.stopped:
-                        session_kwargs = (
-                            {
-                                "tool_interception_url": runtime.host_url(
-                                    f"{base_url.rstrip('/')}/tool"
-                                )
-                            }
-                            if self.harness.SUPPORTS_TOOL_INTERCEPTION
-                            and (
-                                self._session.request_interceptors
-                                or self._session.request_stops
-                            )
-                            else {}
+                        gates_tools = self.harness.SUPPORTS_TOOL_INTERCEPTION and (
+                            self._session.request_interceptors
+                            or self._session.request_stops
                         )
-                        self._harness_session = await self.harness.session(
-                            self.ctx,
+                        await self.harness.start(
                             self.trace,
                             self._agent_runtime,
-                            self._endpoint,
-                            self._secret,
-                            self._urls,
-                            harness_data,
-                            **session_kwargs,
+                            HarnessWiring(
+                                endpoint=self._endpoint,
+                                secret=self._secret,
+                                mcp_urls=self._urls,
+                                data=harness_data,
+                                tool_interception_url=runtime.host_url(
+                                    f"{base_url.rstrip('/')}/tool"
+                                )
+                                if gates_tools
+                                else None,
+                            ),
                         )
+                        self._harness_started = True
         except TimeoutError as e:
             # Only our expired setup budget owns the timeout; a provider can
             # raise its own TimeoutError before the overall deadline.
@@ -560,9 +526,9 @@ class Rollout:
     async def steer(self, message: str, *, message_id: str | None = None) -> dict:
         if self._closed or not self.ok:
             raise RuntimeError("this rollout is closed or stopped")
-        if self._harness_session is None:
+        if not self._harness_started:
             return {"outcome": "promptRequired", "reason": "noRunningTurn"}
-        return await self._harness_session.steer(message, message_id=message_id)
+        return await self.harness.steer(message, message_id=message_id)
 
     async def step(
         self,
@@ -594,7 +560,7 @@ class Rollout:
         deadline = asyncio.timeout_at(self.deadline_at)
         try:
             async with deadline:
-                assert self._harness_session is not None
+                assert self._harness_started
                 if messages is not None and self._session.request_interceptors:
                     prepared, rewrites = await self._session.prepare_users(
                         Request(messages=messages)
@@ -605,7 +571,7 @@ class Rollout:
                         return False
                 self._session.on_turn_input = on_input
                 assert self.deployment is not None
-                await self._harness_session.turn(messages)
+                await self.harness.turn(messages)
         except TimeoutError as e:
             # An expired rollout deadline is the agent breaking its time budget: a
             # timeout stop. A TimeoutError from the harness's own I/O with no
@@ -666,9 +632,9 @@ class Rollout:
         (a cancellation mid-setup, a lifetime bug raised to the caller) means the
         driver will never reach `close()`. Safe after a partial `close()`."""
         self._closed = True
-        if self._harness_session is not None:
+        if self._harness_started:
             with contextlib.suppress(Exception):
-                await self._harness_session.close()
+                await self.harness.close()
         with contextlib.suppress(Exception):
             await self._stack.aclose()
         if self.runtime is not None:
@@ -703,9 +669,9 @@ class Rollout:
         Generation has already completed, so a teardown failure is logged rather than
         raised: it must not discard an otherwise scoreable (or already scored)
         trajectory."""
-        if self._harness_session is not None:
+        if self._harness_started:
             try:
-                await self._harness_session.close()
+                await self.harness.close()
             except Exception:
                 logger.warning(
                     "harness session close failed (rollout %s)",
@@ -734,9 +700,9 @@ class Rollout:
         skips task scoring for it, if either does."""
         if self.trace.is_format_violation:
             return "format_violation"
-        if self._scoring_policy.skip_on_truncated and self.trace.is_truncated:
+        if self.params.scoring.skip_on_truncated and self.trace.is_truncated:
             return "truncated"
-        if self._scoring_policy.skip_on_timeout and self.trace.is_timeout:
+        if self.params.scoring.skip_on_timeout and self.trace.is_timeout:
             return "timeout"
         if self.trace.stop_condition in self._skip_scoring_stops:
             return self.trace.stop_condition
@@ -745,8 +711,8 @@ class Rollout:
     def _metrics_deadline(self) -> float:
         """Best-effort metrics get at most 30 seconds, and a tenth of a finite scoring budget."""
         budget = (
-            min(30.0, self._timeouts.scoring / 10)
-            if self._timeouts.scoring is not None
+            min(30.0, self.params.timeouts.scoring / 10)
+            if self.params.timeouts.scoring is not None
             else 30.0
         )
         return asyncio.get_running_loop().time() + budget
@@ -782,12 +748,12 @@ class Rollout:
                 assert runtime is not None
                 assert self.deployment is not None
                 grader = self._grader
-                isolated = self._scoring_policy.mode == "isolated"
+                isolated = self.params.scoring.mode == "isolated"
                 loop = asyncio.get_running_loop()
                 trace.timing.finalize.start = time.time()
                 finalize_deadline = (
-                    loop.time() + self._timeouts.finalize
-                    if self._timeouts.finalize is not None
+                    loop.time() + self.params.timeouts.finalize
+                    if self.params.timeouts.finalize is not None
                     else None
                 )
                 scoring_elapsed = 0.0
@@ -856,8 +822,9 @@ class Rollout:
                 trace.timing.scoring.start = now
                 trace.notify()
                 scoring_deadline = (
-                    loop.time() + max(0.0, self._timeouts.scoring - scoring_elapsed)
-                    if self._timeouts.scoring is not None
+                    loop.time()
+                    + max(0.0, self.params.timeouts.scoring - scoring_elapsed)
+                    if self.params.timeouts.scoring is not None
                     else None
                 )
                 try:
@@ -883,8 +850,8 @@ class Rollout:
                                     grader,
                                     trace,
                                     self._grading_config,
-                                    self._timeouts,
-                                    self._scoring_policy,
+                                    self.params.timeouts,
+                                    self.params.scoring,
                                     self.deployment,
                                     on_score=self._on_score,
                                     scoring_elapsed=scoring_elapsed,
@@ -906,7 +873,7 @@ class Rollout:
                                 scoring_runtime = runtime
                                 if not self._scoring_task.scoring_deferred:
                                     scoring_runtime = bind_scoring_env(
-                                        runtime, self._scoring_policy
+                                        runtime, self.params.scoring
                                     )
                                     await invoke(
                                         self._scoring_task.stage_verifier,
@@ -915,11 +882,11 @@ class Rollout:
                                             "runtime": scoring_runtime,
                                         },
                                     )
-                                    if self._scoring_policy.network is not None:
+                                    if self.params.scoring.network is not None:
                                         await scoring_runtime.set_network(
                                             scoring_network(
                                                 self.trace.agent.config.runtime,
-                                                self._scoring_policy.network,
+                                                self.params.scoring.network,
                                             )
                                         )
                                 await self._scoring_task.score(
@@ -944,9 +911,9 @@ class Rollout:
         except Exception as e:  # noqa: BLE001 - finalize boundary records every rollout failure
             self.fail(e)
         finally:
-            if self._harness_session is not None:
+            if self._harness_started:
                 with contextlib.suppress(Exception):
-                    await self._harness_session.close()
+                    await self.harness.close()
             with contextlib.suppress(Exception):
                 await self._stack.aclose()
             trace.is_completed = True

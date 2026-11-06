@@ -5,6 +5,7 @@ them at construction where the pairing is statically decidable."""
 import logging
 from collections.abc import Collection
 
+from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.harness import Harness
 from verifiers.v1.runtimes import (
@@ -80,7 +81,8 @@ def resolve_runtime_config(
 
 
 def validate_pairing(
-    harness: Harness,
+    harness: type[Harness],
+    config: HarnessConfig,
     task_cls: type[Task],
     runtime_config: RuntimeConfig,
     *,
@@ -93,21 +95,21 @@ def validate_pairing(
     checks the harness can resume an exchange.)"""
     if not harness.SUPPORTS_MCP and tools:
         raise ValueError(
-            f"Harness {harness.config.id!r} does not support MCP tools, but the run "
+            f"Harness {config.id!r} does not support MCP tools, but the run "
             f"serves some ({task_cls.__name__}'s or the taskset's shared servers). Run "
             f"it with a harness that supports MCP (e.g. --env.agent.harness.id bash), "
             f"or use tasks without tools."
         )
-    if not harness.SUPPORTS_SKILLS and harness.config.skills:
+    if not harness.SUPPORTS_SKILLS and config.skills:
         raise ValueError(
-            f"Harness {harness.config.id!r} has no native skill support, but "
+            f"Harness {config.id!r} has no native skill support, but "
             "`skills` is set. Run them with a harness whose program discovers "
             "skills (e.g. --env.agent.harness.id claude-code)."
         )
     container = backend_cls(runtime_config).SUPPORTS_TASK_IMAGES
     if harness.NEEDS_CONTAINER and not container:
         raise ValueError(
-            f"Harness {harness.config.id!r} needs a container runtime "
+            f"Harness {config.id!r} needs a container runtime "
             f"(NEEDS_CONTAINER), but this run resolves to the {runtime_config.type} "
             "runtime; use a supported runtime."
         )

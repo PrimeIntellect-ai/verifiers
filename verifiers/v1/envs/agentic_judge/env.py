@@ -24,6 +24,7 @@ from verifiers.v1.judges.rubric import (
     weighted_score,
 )
 from verifiers.v1.utils.compile import validate_pairing
+from verifiers.v1.utils.loaders import harness_class
 
 VERDICT_FILE = "/tmp/verdict.json"
 TRACE_FILE = "/tmp/trace.json"
@@ -278,10 +279,10 @@ class AgenticJudgeEnv(vf.Env[AgenticJudgeEnvConfig]):
         """The judge executes real code, never on the host — refuse an impossible
         pairing at construction, not after burning a full solver run."""
         judge = self._harnesses["judge"]
-        if not judge.EXECUTES_CODE:
+        if not harness_class(judge.id).EXECUTES_CODE:
             raise ValueError(
                 "agentic-judge requires a judge harness that can execute code, but "
-                f"harness {judge.config.id!r} is a tool-less chat loop — a verdict "
+                f"harness {judge.id!r} is a tool-less chat loop — a verdict "
                 "that needs no execution is a plugged judge "
                 "(--env.taskset.task.judges), not an agent."
             )
@@ -319,7 +320,10 @@ class AgenticJudgeEnv(vf.Env[AgenticJudgeEnvConfig]):
         ) or self.config.solver.runtime
         if isinstance(workspace, vf.SubprocessConfig):
             raise TypeError("agentic judging requires a container scoring workspace")
-        validate_pairing(self._harnesses["judge"], JudgeTask, workspace)
+        judge_harness = self._harnesses["judge"]
+        validate_pairing(
+            harness_class(judge_harness.id), judge_harness, JudgeTask, workspace
+        )
 
         async def judge(solution: vf.Trace, runtime: vf.Runtime) -> None:
             isolated = policy.mode == "isolated"
@@ -342,8 +346,7 @@ class AgenticJudgeEnv(vf.Env[AgenticJudgeEnvConfig]):
             # A per-invocation view retains episode accounting and concurrency while
             # binding placement to the already provisioned scoring workspace.
             judge_agent = copy.copy(agents.judge)
-            judge_agent.runtime_config = runtime.config
-            judge_agent.config = judge_agent.config.model_copy(
+            judge_agent.params = judge_agent.params.model_copy(
                 update={"runtime": runtime.config}
             )
             verdict = await judge_agent.run(judge_task, runtime=runtime)

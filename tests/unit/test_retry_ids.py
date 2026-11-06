@@ -47,9 +47,10 @@ async def test_agent_retries_keep_the_trace_id(monkeypatch):
         async def close(self) -> vf.Trace:
             return self.trace
 
-    monkeypatch.setattr(agent_module, "Rollout", FakeRollout)
-    agent = vf.Agent(vf.AgentConfig(model="test-model", retries=RETRIES))
-    monkeypatch.setattr(agent, "_rollout_params", lambda *args: {})
+    agent = vf.make_agent(vf.AgentConfig(model="test-model", retries=RETRIES))
+    monkeypatch.setattr(
+        agent, "_rollout", lambda *args, **kwargs: FakeRollout(**kwargs)
+    )
 
     trace = await agent.run(
         vf.Task(vf.TaskData(idx=0, prompt=None)), on_trace=minted.append

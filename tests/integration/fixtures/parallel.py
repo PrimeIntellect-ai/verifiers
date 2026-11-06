@@ -8,14 +8,13 @@ import asyncio
 from pydantic import PositiveInt
 
 import verifiers.v1 as vf
-from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.harness import Harness
 from verifiers.v1.harnesses.utils.launch import (
     CHAT_PROGRAM_SOURCE,
     launch_chat_program,
 )
-from verifiers.v1.runtimes import ProgramResult, Runtime
+from verifiers.v1.runtimes import Runtime
 
 __all__ = ["ParallelHarness", "ParallelTaskset"]
 
@@ -33,17 +32,7 @@ class ParallelHarness(Harness[ParallelHarnessConfig]):
     async def setup(self, runtime: Runtime) -> None:
         await runtime.prepare_uv_script(CHAT_PROGRAM_SOURCE, self.config.resolved_env)
 
-    async def launch(
-        self,
-        ctx: ModelContext,
-        trace: vf.Trace,
-        runtime: Runtime,
-        endpoint: str,
-        secret: str,
-        mcp_urls: dict[str, str],
-        data: vf.TaskData,
-        tool_interception_url: str | None = None,
-    ) -> ProgramResult:
+    async def launch(self, data: vf.TaskData) -> vf.ProgramResult:
         system_prompt, prompt = self.resolve_prompt(data)
 
         def copy_prompt(i: int) -> str:
@@ -52,14 +41,8 @@ class ParallelHarness(Harness[ParallelHarnessConfig]):
         results = await asyncio.gather(
             *(
                 launch_chat_program(
+                    self,
                     CHAT_PROGRAM_SOURCE,
-                    self.config,
-                    ctx,
-                    trace,
-                    runtime,
-                    endpoint,
-                    secret,
-                    mcp_urls,
                     system_prompt,
                     copy_prompt(i),
                 )

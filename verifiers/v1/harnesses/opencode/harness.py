@@ -4,13 +4,11 @@ import json
 from pathlib import Path
 
 from verifiers.v1.acp import ACPConfig, ACPHarness
-from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import DialectName, HarnessConfig, PinnedVersion
 from verifiers.v1.harnesses.node import ensure_node
 from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
 from verifiers.v1.harnesses.utils.replay import drop_blank_text
 from verifiers.v1.runtimes import Runtime
-from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
 from verifiers.v1.types import Message
 
@@ -43,7 +41,8 @@ class OpenCodeHarness(ACPHarness[OpenCodeHarnessConfig]):
     # OpenCode drops whitespace-only assistant text on replay over Anthropic messages.
     # Recheck on version bumps:
     # https://github.com/anomalyco/opencode/blob/v2.2.5/packages/ai/src/protocols/anthropic-messages.ts#L961
-    def replay_view(self, message: Message, dialect: DialectName | None) -> Message:
+    @staticmethod
+    def replay_view(message: Message, dialect: DialectName | None) -> Message:
         if dialect == "anthropic_messages":
             return drop_blank_text(message)
         return message
@@ -65,22 +64,13 @@ class OpenCodeHarness(ACPHarness[OpenCodeHarnessConfig]):
         )
         await super().setup(runtime)
 
-    async def prepare_acp(
-        self,
-        ctx: ModelContext,
-        trace: Trace,
-        runtime: Runtime,
-        endpoint: str,
-        secret: str,
-        mcp_urls: dict[str, str],
-        data: TaskData,
-    ) -> ACPConfig:
-        root = f"{STATE_ROOT}/{trace.id}"
+    async def prepare_acp(self) -> ACPConfig:
+        root = f"{STATE_ROOT}/{self.trace.id}"
         config_dir = f"{root}/config/opencode"
-        await self.install_skills(runtime, f"{config_dir}/skills")
-        system_prompt, prompt = self.resolve_prompt(data)
+        await self.install_skills(self.runtime, f"{config_dir}/skills")
+        system_prompt, prompt = self.resolve_prompt(self.wiring.data)
         if system_prompt:
-            await runtime.write(f"{config_dir}/AGENTS.md", system_prompt.encode())
+            await self.runtime.write(f"{config_dir}/AGENTS.md", system_prompt.encode())
 
         package = {
             "chat_completions": "openai-compatible",
@@ -93,8 +83,8 @@ class OpenCodeHarness(ACPHarness[OpenCodeHarnessConfig]):
                 "intercept": {
                     "env": [KEY_VAR],
                     "package": f"@opencode/ai/providers/{package}",
-                    "settings": {"baseURL": endpoint},
-                    "models": {"model": {"modelID": ctx.model}},
+                    "settings": {"baseURL": self.wiring.endpoint},
+                    "models": {"model": {"modelID": self.model.model}},
                 }
             },
             "default_agent": "build",
@@ -111,14 +101,14 @@ class OpenCodeHarness(ACPHarness[OpenCodeHarnessConfig]):
             "share": "disabled",
             "snapshots": False,
         }
-        if mcp_urls:
+        if self.wiring.mcp_urls:
             plugin_dir = f"{root}/mcp-ready"
-            await runtime.write(f"{plugin_dir}/index.js", MCP_READY)
+            await self.runtime.write(f"{plugin_dir}/index.js", MCP_READY)
             settings["plugins"] = [
                 {
                     "package": plugin_dir,
                     "options": {
-                        "servers": list(mcp_urls),
+                        "servers": list(self.wiring.mcp_urls),
                         "timeout": int(self.config.tool_timeout * 1000),
                     },
                 }
@@ -130,7 +120,7 @@ class OpenCodeHarness(ACPHarness[OpenCodeHarnessConfig]):
             ],
             env={
                 **self.config.resolved_env,
-                KEY_VAR: secret,
+                KEY_VAR: self.wiring.secret,
                 "XDG_CONFIG_HOME": f"{root}/config",
                 "XDG_DATA_HOME": f"{root}/data",
                 "XDG_CACHE_HOME": f"{root}/cache",

@@ -6,7 +6,6 @@ import shlex
 from pathlib import Path
 
 from verifiers.v1.acp import ACPConfig, ACPHarness
-from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import (
     DialectName,
     HarnessConfig,
@@ -17,7 +16,6 @@ from verifiers.v1.harnesses.node import NODE_BIN_DIR, ensure_node
 from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
 from verifiers.v1.harnesses.utils.replay import drop_blank_text
 from verifiers.v1.runtimes import Runtime
-from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
 from verifiers.v1.types import Message
 
@@ -69,7 +67,8 @@ class PiHarness(ACPHarness[PiHarnessConfig]):
     # Anthropic messages, not over Responses. Recheck on version bumps:
     # https://github.com/earendil-works/pi/blob/v1.4.0/packages/ai/src/api/openai-completions.ts#L1310
     # https://github.com/earendil-works/pi/blob/v1.4.0/packages/ai/src/api/anthropic-messages.ts#L1437
-    def replay_view(self, message: Message, dialect: DialectName | None) -> Message:
+    @staticmethod
+    def replay_view(message: Message, dialect: DialectName | None) -> Message:
         if dialect in ("chat_completions", "anthropic_messages"):
             return drop_blank_text(message)
         return message
@@ -93,36 +92,27 @@ class PiHarness(ACPHarness[PiHarnessConfig]):
         )
         await super().setup(runtime)
 
-    async def prepare_acp(
-        self,
-        ctx: ModelContext,
-        trace: Trace,
-        runtime: Runtime,
-        endpoint: str,
-        secret: str,
-        mcp_urls: dict[str, str],
-        data: TaskData,
-    ) -> ACPConfig:
-        system_prompt, prompt = self.resolve_prompt(data)
-        agent_dir = f".vf-pi-agent-{trace.id}"
+    async def prepare_acp(self) -> ACPConfig:
+        system_prompt, prompt = self.resolve_prompt(self.wiring.data)
+        agent_dir = f".vf-pi-agent-{self.trace.id}"
         skills_dir = f"{agent_dir}/skills"
-        await self.install_skills(runtime, skills_dir)
-        reasoning = ctx.sampling.reasoning_effort not in (
+        await self.install_skills(self.runtime, skills_dir)
+        reasoning = self.model.sampling.reasoning_effort not in (
             None,
             "none",
-        ) or ctx.model.rsplit("/", 1)[-1].startswith(("gpt-5", "o1", "o3", "o4"))
-        provider, separator, model = ctx.model.partition("/")
+        ) or self.model.model.rsplit("/", 1)[-1].startswith(("gpt-5", "o1", "o3", "o4"))
+        provider, separator, model = self.model.model.partition("/")
         if not separator:
-            provider, model = "openai", ctx.model
+            provider, model = "openai", self.model.model
         api = {
             "chat_completions": "openai-completions",
             "responses": "openai-responses",
             "anthropic_messages": "anthropic-messages",
         }[self.config.dialect]
         base_url = (
-            endpoint.removesuffix("/v1")
+            self.wiring.endpoint.removesuffix("/v1")
             if self.config.dialect == "anthropic_messages"
-            else endpoint
+            else self.wiring.endpoint
         )
         model_config = {
             "id": model,
@@ -151,20 +141,22 @@ class PiHarness(ACPHarness[PiHarnessConfig]):
                 }
             }
         }
-        await runtime.write(f"{agent_dir}/models.json", json.dumps(models).encode())
+        await self.runtime.write(
+            f"{agent_dir}/models.json", json.dumps(models).encode()
+        )
 
-        if mcp_urls:
+        if self.wiring.mcp_urls:
             mcp = {
                 "mcpServers": {
                     name: {"url": url, "exposure": "direct"}
-                    for name, url in mcp_urls.items()
+                    for name, url in self.wiring.mcp_urls.items()
                 }
             }
-            await runtime.write(f"{agent_dir}/mcp.json", json.dumps(mcp).encode())
+            await self.runtime.write(f"{agent_dir}/mcp.json", json.dumps(mcp).encode())
 
         env = {
             **self.config.resolved_env,
-            KEY_VAR: secret,
+            KEY_VAR: self.wiring.secret,
             "PI_CODING_AGENT_DIR": agent_dir,
             "PI_OFFLINE": "1",
             "PI_TELEMETRY": "0",
@@ -188,11 +180,11 @@ class PiHarness(ACPHarness[PiHarnessConfig]):
         if system_prompt:
             pi_args += ["--append-system-prompt", system_prompt]
         pi_wrapper = f"{agent_dir}/pi"
-        await runtime.write(
+        await self.runtime.write(
             pi_wrapper,
             f'#!/bin/sh\nexec {NODE_BIN_DIR}/node {shlex.join(pi_args)} "$@"\n'.encode(),
         )
-        await runtime.run(["chmod", "+x", pi_wrapper], {})
+        await self.runtime.run(["chmod", "+x", pi_wrapper], {})
         env["PI_ACP_PI_COMMAND"] = pi_wrapper
         return ACPConfig(
             env=env,

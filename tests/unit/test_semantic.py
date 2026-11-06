@@ -119,7 +119,9 @@ def test_semantic_edges_resolve_to_message_nodes_and_round_trip():
     assert [call.acp for call in restored.calls] == [call.acp for call in tr.calls]
 
     # The base ACP layer resolves the generic edge set before harness-owned metadata.
-    harness = RLMHarness(RLMHarnessConfig(id="rlm"))
+    harness = RLMHarness(
+        vf.HarnessParams(config=RLMHarnessConfig(id="rlm"), model=None)
+    )
     turn_metadata = {
         ACP_SEMANTIC_EDGES_METADATA_KEY: _semantic_edge_set().model_dump(mode="json"),
         RLM_SESSION_METADATA_KEY: {
@@ -267,7 +269,9 @@ def test_acp_semantic_edge_metadata_is_optional():
         agent=vf.AgentInfo(config=vf.AgentConfig()),
         task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt="q")),
     )
-    harness = RLMHarness(RLMHarnessConfig(id="rlm"))
+    harness = RLMHarness(
+        vf.HarnessParams(config=RLMHarnessConfig(id="rlm"), model=None)
+    )
 
     harness._consume_protocol_metadata(trace, {})
 
@@ -328,7 +332,9 @@ def test_acp_derives_compaction_attempt_branch_trainability():
             vf.ModelCall(node=6, acp=vf.ACPInfo(request_id="resumed")),
         ],
     )
-    harness = RLMHarness(RLMHarnessConfig(id="rlm"))
+    harness = RLMHarness(
+        vf.HarnessParams(config=RLMHarnessConfig(id="rlm"), model=None)
+    )
     harness._consume_protocol_metadata(
         trace,
         {

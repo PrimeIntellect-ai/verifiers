@@ -47,9 +47,11 @@ json.dump(
 class ProbeHarness(vf.Harness):
     SUPPORTS_MCP = True
 
-    async def launch(self, ctx, trace, runtime, endpoint, secret, mcp_urls, data):
-        trace.info["url"] = mcp_urls["fetch"]
-        return await runtime.run(["python", "-c", PROBE, mcp_urls["fetch"]], {})
+    async def launch(self, data):
+        self.trace.info["url"] = self.wiring.mcp_urls["fetch"]
+        return await self.runtime.run(
+            ["python", "-c", PROBE, self.wiring.mcp_urls["fetch"]], {}
+        )
 
 
 class ProbeTask(FetchToolTask):
@@ -79,8 +81,8 @@ async def test_a_tool_vm_keeps_its_own_egress_beside_a_restricted_workspace(
         runtime=vf.PrimeConfig(labels=["vf-integration"]),
         timeout=TimeoutConfig(setup=900, finalize=120, scoring=60),
     )
-    async with vf.Agent(config) as agent:
-        agent.harness = ProbeHarness(vf.HarnessConfig())
+    async with vf.make_agent(config) as agent:
+        agent.harness_type = ProbeHarness
         trace = await agent.run(task)
     assert trace.ok, trace.errors
     assert ".sandbox.internal:" in trace.info["url"]

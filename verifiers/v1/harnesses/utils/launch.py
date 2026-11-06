@@ -6,12 +6,10 @@ from types import ModuleType
 from pydantic import PositiveInt
 from pydantic_config import BaseConfig
 
-from verifiers.v1.clients import ModelContext
-from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.dialects.chat import message_to_wire
+from verifiers.v1.harness import Harness
 from verifiers.v1.harnesses.utils import compaction, core, mcp
-from verifiers.v1.runtimes import ProgramResult, Runtime
-from verifiers.v1.trace import Trace
+from verifiers.v1.runtimes import ProgramResult
 from verifiers.v1.types import Messages
 from verifiers.v1.utils import network
 
@@ -55,14 +53,8 @@ def compaction_args(compaction: CompactionConfig | None) -> list[str]:
 
 
 async def launch_chat_program(
+    harness: Harness,
     source: str,
-    config: HarnessConfig,
-    ctx: ModelContext,
-    trace: Trace,
-    runtime: Runtime,
-    endpoint: str,
-    secret: str,
-    mcp_urls: dict[str, str],
     system_prompt: str | None,
     prompt: str | Messages | None,
     *,
@@ -71,22 +63,23 @@ async def launch_chat_program(
     activate: bool = True,
 ) -> ProgramResult:
     """Prepare and run a standalone chat program with the shared wire arguments."""
+    config, runtime, wiring = harness.config, harness.runtime, harness.wiring
     args = [
-        f"--base-url={endpoint}",
-        f"--api-key={secret}",
-        f"--model={ctx.model}",
+        f"--base-url={wiring.endpoint}",
+        f"--api-key={wiring.secret}",
+        f"--model={harness.model.model}",
         *extra_args,
     ]
     if system_prompt:
         args.append(f"--system-prompt={system_prompt}")
-    if mcp_urls:
+    if wiring.mcp_urls:
         args.append(
             "--mcp-config="
             + json.dumps(
                 {
                     "mcpServers": {
                         name: {"url": url, "timeout": config.tool_timeout}
-                        for name, url in mcp_urls.items()
+                        for name, url in wiring.mcp_urls.items()
                     }
                 }
             )
@@ -94,7 +87,7 @@ async def launch_chat_program(
     if isinstance(prompt, str):
         args.append(f"--prompt={prompt}")
     elif prompt is not None:
-        path = f".vf-initial-messages-{trace.id}.json"
+        path = f".vf-initial-messages-{harness.trace.id}.json"
         await runtime.write(
             path,
             json.dumps([message_to_wire(message) for message in prompt]).encode(),

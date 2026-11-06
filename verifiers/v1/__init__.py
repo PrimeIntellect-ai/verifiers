@@ -73,7 +73,7 @@ if TYPE_CHECKING:
     )
     from verifiers.v1.grading import grade_submission
     from verifiers.v1.graph import MessageNode
-    from verifiers.v1.harness import Harness, HarnessSession
+    from verifiers.v1.harness import Harness
     from verifiers.v1.judge import Judge, JudgeResponse, JudgeView
     from verifiers.v1.judges import (
         Criterion,
@@ -90,6 +90,7 @@ if TYPE_CHECKING:
         ToolsetConfig,
         ToolsetTimeoutConfig,
     )
+    from verifiers.v1.params import AgentParams, HarnessParams, HarnessWiring
     from verifiers.v1.runtimes import (
         ProgramResult,
         Runtime,
@@ -175,7 +176,6 @@ if TYPE_CHECKING:
         import_taskset,
         judge_config_type,
         load_environment,
-        load_harness,
         load_judge,
         load_taskset,
         resolve_env_config,
@@ -200,6 +200,7 @@ _NAME_TO_MODULE = {
     "ARTIFACTS_DIR": "verifiers.v1.utils.artifacts",
     "Agent": "verifiers.v1.agent",
     "AgentConfig": "verifiers.v1.configs.agent",
+    "AgentParams": "verifiers.v1.params",
     "AgentInfo": "verifiers.v1.trace",
     "AgentSpan": "verifiers.v1.trace",
     "Agents": "verifiers.v1.agent",
@@ -234,7 +235,8 @@ _NAME_TO_MODULE = {
     "Harness": "verifiers.v1.harness",
     "HarnessConfig": "verifiers.v1.configs.harness",
     "HarnessError": "verifiers.v1.errors",
-    "HarnessSession": "verifiers.v1.harness",
+    "HarnessParams": "verifiers.v1.params",
+    "HarnessWiring": "verifiers.v1.params",
     "ID": "verifiers.v1.configs.harness",
     "ImageUrlContentPart": "verifiers.v1.types",
     "ImageUrlSource": "verifiers.v1.types",
@@ -351,7 +353,6 @@ _NAME_TO_MODULE = {
     "intercept": "verifiers.v1.utils.decorators",
     "judge_config_type": "verifiers.v1.utils.loaders",
     "load_environment": "verifiers.v1.utils.loaders",
-    "load_harness": "verifiers.v1.utils.loaders",
     "load_judge": "verifiers.v1.utils.loaders",
     "load_taskset": "verifiers.v1.utils.loaders",
     "make_agent": "verifiers.v1.agent",
@@ -476,7 +477,8 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "StopFunctionConfig",
     "BaseConfig",
     "Harness",
-    "HarnessSession",
+    "HarnessParams",
+    "HarnessWiring",
     "HarnessConfig",
     "ACPConfig",
     "ACPHarness",
@@ -503,6 +505,7 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "narrowed_env_annotation",
     "SingleAgentEnvConfig",
     "AgentConfig",
+    "AgentParams",
     "default_agent_harness",
     "RetryConfig",
     "RetryRule",
@@ -517,7 +520,6 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "import_environment",
     "load_environment",
     "load_taskset",
-    "load_harness",
     "load_judge",
     "environment_class",
     "task_type",

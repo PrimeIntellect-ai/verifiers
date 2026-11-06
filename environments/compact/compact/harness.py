@@ -8,12 +8,10 @@ the turn protocol.
 import json
 from pathlib import Path
 
-from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.harness import Harness
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.task import TaskData
-from verifiers.v1.trace import Trace
 
 PROGRAM_SOURCE = (Path(__file__).resolve().parent / "program.py").read_text()
 
@@ -31,29 +29,24 @@ class CompactingHarness(Harness[CompactingHarnessConfig]):
     async def setup(self, runtime: Runtime) -> None:
         await runtime.prepare_uv_script(PROGRAM_SOURCE, self.config.env)
 
-    async def launch(
-        self,
-        ctx: ModelContext,
-        trace: Trace,
-        runtime: Runtime,
-        endpoint: str,
-        secret: str,
-        mcp_urls: dict[str, str],
-        data: TaskData,
-    ) -> ProgramResult:
+    async def launch(self, data: TaskData) -> ProgramResult:
         _, prompt = self.resolve_text_prompt(data)
         if prompt is None:
             raise ValueError("Compacting harness requires a string task prompt")
         env = {
-            "OPENAI_BASE_URL": endpoint,
-            "OPENAI_API_KEY": secret,
-            "OPENAI_MODEL": ctx.model,
+            "OPENAI_BASE_URL": self.wiring.endpoint,
+            "OPENAI_API_KEY": self.wiring.secret,
+            "OPENAI_MODEL": self.model.model,
         }
-        if mcp_urls:
+        if self.wiring.mcp_urls:
             # The program connects to the tool servers over HTTP; hand it a standard
             # `mcpServers` URL config (the `mcp` client itself comes from the uv deps).
             env["MCP_CONFIG"] = json.dumps(
-                {"mcpServers": {name: {"url": url} for name, url in mcp_urls.items()}}
+                {
+                    "mcpServers": {
+                        name: {"url": url} for name, url in self.wiring.mcp_urls.items()
+                    }
+                }
             )
-        program = await runtime.prepare_uv_script(PROGRAM_SOURCE, self.config.env)
-        return await runtime.run([*program, prompt], env)
+        program = await self.runtime.prepare_uv_script(PROGRAM_SOURCE, self.config.env)
+        return await self.runtime.run([*program, prompt], env)

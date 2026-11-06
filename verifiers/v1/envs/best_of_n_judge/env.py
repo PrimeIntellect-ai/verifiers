@@ -27,6 +27,7 @@ from verifiers.v1.envs.agentic_judge.env import (
 from verifiers.v1.envs.best_of_n import BestOfNEnv, BestOfNEnvConfig
 from verifiers.v1.runtimes import backend_cls
 from verifiers.v1.utils.artifacts import _validate_restore
+from verifiers.v1.utils.loaders import harness_class
 
 ATTEMPTS_DIR = "/tmp/attempts"
 # Shuffles stay independent of the global `random`, which tasksets may seed.
@@ -241,10 +242,10 @@ class BestOfNJudgeEnv(BestOfNEnv, vf.Env[BestOfNJudgeEnvConfig]):
         config.task.build_hint()
         # Refuse an impossible judge at construction, not after n attempts ran.
         judge = self._harnesses["judge"]
-        if not judge.EXECUTES_CODE:
+        if not harness_class(judge.id).EXECUTES_CODE:
             raise ValueError(
                 "best-of-n-judge requires a judge harness that can execute code, but "
-                f"harness {judge.config.id!r} is a tool-less chat loop"
+                f"harness {judge.id!r} is a tool-less chat loop"
             )
         if not backend_cls(config.judge.runtime).SUPPORTS_TASK_IMAGES:
             raise ValueError(

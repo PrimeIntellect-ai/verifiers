@@ -90,7 +90,7 @@ class AgentConfig(BaseConfig):
     @field_serializer("sampling")
     def _sampling_overrides(self, sampling: SamplingConfig | None) -> dict | None:
         # An unresolved agent carries only overrides across process boundaries.
-        # resolve_agent fills every field before the config is recorded on a trace.
+        # AgentParams.resolve fills every field before the config is recorded on a trace.
         return sampling.model_dump(exclude_unset=True) if sampling is not None else None
 
     @model_validator(mode="before")
@@ -137,38 +137,3 @@ def merge_agent_defaults(config: type[BaseModel], data: Any) -> Any:
             ):
                 data[name] = merge_defaults(field.default, data[name])
     return data
-
-
-def resolve_agent(
-    spec: AgentConfig,
-    *,
-    model: str | None = None,
-    client: ClientConfig | None = None,
-    sampling: SamplingConfig | None = None,
-    harness: HarnessConfig | None = None,
-) -> AgentConfig:
-    """`spec` with what it leaves unset filled from the run's defaults; its own
-    sampling values merge over the run's. The one place a seat's identity resolves,
-    for configured agent roles.
-
-    The run's sampling belongs to the run's client: it can carry endpoint-specific
-    keys (e.g. vLLM's `top_k`) that another provider rejects. A seat that pins its
-    own `client` therefore starts from empty sampling."""
-    defaults = (
-        sampling if sampling is not None and spec.client is None else SamplingConfig()
-    )
-    overrides = (spec.sampling or SamplingConfig()).model_dump(exclude_unset=True)
-    merged = {**defaults.model_dump(), **merge_defaults(defaults, overrides)}
-    if spec.max_turn_tokens is not None:
-        max_tokens = merged.get("max_tokens")
-        merged["max_tokens"] = min(
-            max_tokens or spec.max_turn_tokens, spec.max_turn_tokens
-        )
-    return spec.model_copy(
-        update={
-            "harness": spec.harness if spec.harness is not None else harness,
-            "model": spec.model if spec.model is not None else model,
-            "client": spec.client if spec.client is not None else client,
-            "sampling": SamplingConfig.model_validate(merged),
-        }
-    )

@@ -49,8 +49,8 @@ def fetch(url: str, timeout: int = 15) -> list[str]:
 
 
 class ComposeHarness(vf.Harness):
-    async def launch(self, ctx, trace, runtime, endpoint, secret, mcp_urls, data):
-        return await runtime.run(
+    async def launch(self, data):
+        return await self.runtime.run(
             [
                 "python",
                 "-c",
@@ -122,8 +122,8 @@ async def test_native_compose(tmp_path, mode):
         # A cold run builds and imports the VM image during setup.
         timeout=TimeoutConfig(setup=1200, finalize=60, scoring=300),
     )
-    async with vf.Agent(config) as agent:
-        agent.harness = ComposeHarness(vf.HarnessConfig())
+    async with vf.make_agent(config) as agent:
+        agent.harness_type = ComposeHarness
         trace = await agent.run(task)
     assert trace.ok and trace.reward == 1, trace.errors
     assert trace.info.get("isolation_checked")

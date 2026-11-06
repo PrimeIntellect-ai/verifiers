@@ -6,13 +6,11 @@ import tomllib
 import tomli_w
 
 from verifiers.v1.acp import ACPConfig, ACPHarness
-from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import DialectName, HarnessConfig, PinnedVersion
 from verifiers.v1.harnesses.node import NODE_BIN_DIR, ensure_node
 from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
 from verifiers.v1.harnesses.utils.replay import drop_blank_text
 from verifiers.v1.runtimes import Runtime
-from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
 from verifiers.v1.types import Message
 
@@ -70,28 +68,19 @@ class KimiCodeHarness(ACPHarness[KimiCodeHarnessConfig]):
         )
         await super().setup(runtime)
 
-    async def prepare_acp(
-        self,
-        ctx: ModelContext,
-        trace: Trace,
-        runtime: Runtime,
-        endpoint: str,
-        secret: str,
-        mcp_urls: dict[str, str],
-        data: TaskData,
-    ) -> ACPConfig:
-        kimi_home = f"{KIMI_HOME}/{trace.id}"
+    async def prepare_acp(self) -> ACPConfig:
+        kimi_home = f"{KIMI_HOME}/{self.trace.id}"
         skills_dir = f"{kimi_home}/skills"
-        await self.install_skills(runtime, skills_dir)
+        await self.install_skills(self.runtime, skills_dir)
         provider_type = {
             "chat_completions": "openai",
             "responses": "openai_responses",
             "anthropic_messages": "anthropic",
         }[self.config.dialect]
         base_url = (
-            endpoint.removesuffix("/v1")
+            self.wiring.endpoint.removesuffix("/v1")
             if self.config.dialect == "anthropic_messages"
-            else endpoint
+            else self.wiring.endpoint
         )
         config = {
             "extra_skill_dirs": [skills_dir] if self.config.skills else [],
@@ -113,15 +102,17 @@ class KimiCodeHarness(ACPHarness[KimiCodeHarnessConfig]):
                 else {}
             ),
         }
-        await runtime.write(f"{kimi_home}/config.toml", tomli_w.dumps(config).encode())
+        await self.runtime.write(
+            f"{kimi_home}/config.toml", tomli_w.dumps(config).encode()
+        )
 
-        system_prompt, prompt = self.resolve_prompt(data)
+        system_prompt, prompt = self.resolve_prompt(self.wiring.data)
         return ACPConfig(
             env={
                 **self.config.resolved_env,
                 "KIMI_CODE_HOME": kimi_home,
-                "KIMI_MODEL_NAME": ctx.model,
-                "KIMI_MODEL_API_KEY": secret,
+                "KIMI_MODEL_NAME": self.model.model,
+                "KIMI_MODEL_API_KEY": self.wiring.secret,
                 "KIMI_MODEL_BASE_URL": base_url,
                 "KIMI_MODEL_PROVIDER_TYPE": provider_type,
                 "KIMI_DISABLE_TELEMETRY": "1",

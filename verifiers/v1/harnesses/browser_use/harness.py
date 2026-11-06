@@ -5,14 +5,12 @@ from urllib.parse import urlsplit
 import httpx
 from pydantic import model_validator
 
-from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.harness import Harness
 from verifiers.v1.harnesses.utils import mcp
 from verifiers.v1.harnesses.utils.launch import bundle_program, launch_chat_program
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.task import TaskData
-from verifiers.v1.trace import Trace
 
 PROGRAM_SOURCE = bundle_program(
     (Path(__file__).resolve().parent / "program.py").read_text(), mcp
@@ -62,16 +60,7 @@ class BrowserUseHarness(Harness[BrowserUseHarnessConfig]):
     async def setup(self, runtime: Runtime) -> None:
         await runtime.prepare_uv_script(PROGRAM_SOURCE, self.config.resolved_env)
 
-    async def launch(
-        self,
-        ctx: ModelContext,
-        trace: Trace,
-        runtime: Runtime,
-        endpoint: str,
-        secret: str,
-        mcp_urls: dict[str, str],
-        data: TaskData,
-    ) -> ProgramResult:
+    async def launch(self, data: TaskData) -> ProgramResult:
         system_prompt, prompt = self.resolve_prompt(data)
         system_prompt = "\n\n".join(
             p for p in (BROWSER_SYSTEM_PROMPT, system_prompt) if p
@@ -88,14 +77,14 @@ class BrowserUseHarness(Harness[BrowserUseHarnessConfig]):
             )
         )
         env = {**self.config.resolved_env}
-        state = f".vf-browser-{trace.id}"
+        state = f".vf-browser-{self.trace.id}"
         args = [
             f"--browser={self.config.browser}",
             # A resumed segment reuses this trace's browser and profile.
             f"--state-dir={state}",
         ]
         if self.config.cdp_url:
-            cdp_url = runtime.host_url(self.config.cdp_url)
+            cdp_url = self.runtime.host_url(self.config.cdp_url)
             if cdp_url != self.config.cdp_url and urlsplit(
                 self.config.cdp_url
             ).scheme in ("http", "https"):
@@ -105,17 +94,11 @@ class BrowserUseHarness(Harness[BrowserUseHarnessConfig]):
                         f"{self.config.cdp_url.rstrip('/')}/json/version"
                     )
                     response.raise_for_status()
-                cdp_url = runtime.host_url(response.json()["webSocketDebuggerUrl"])
+                cdp_url = self.runtime.host_url(response.json()["webSocketDebuggerUrl"])
             args.append(f"--cdp-url={cdp_url}")
         return await launch_chat_program(
+            self,
             PROGRAM_SOURCE,
-            self.config,
-            ctx,
-            trace,
-            runtime,
-            endpoint,
-            secret,
-            mcp_urls,
             None if replaying_browser_prompt else system_prompt,
             prompt,
             extra_args=args,

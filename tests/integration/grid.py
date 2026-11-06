@@ -35,7 +35,6 @@ from pydantic import TypeAdapter
 
 import verifiers.v1 as vf
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
-from verifiers.v1.harness import Harness
 from verifiers.v1.runtimes import PrimeBackend, RuntimeConfig, backend_cls
 from verifiers.v1.utils.loaders import harness_class, harness_config_type
 
@@ -148,16 +147,6 @@ def supports(runtime: str, feature: str) -> bool:
     return getattr(runtime_cls(runtime), flag)
 
 
-def resumes(cls: type[Harness]) -> bool:
-    """The same rule as `Agent.interaction`: transcript replay, a native resume, or a
-    rollout-scoped session."""
-    return (
-        cls.SUPPORTS_RESUME
-        or cls.session is not Harness.session
-        or cls.resume is not Harness.resume
-    )
-
-
 def unsupported(
     harness: str | dict, runtime: str, needs: tuple[str, ...]
 ) -> str | None:
@@ -171,7 +160,7 @@ def unsupported(
         return f"{name} does not support MCP tools"
     if "skills" in needs and not cls.SUPPORTS_SKILLS:
         return f"{name} has no native skill support"
-    if "resume" in needs and not resumes(cls):
+    if "resume" in needs and not cls.resumes():
         return f"{name} cannot resume an exchange"
     runtime_needs = (*(("container",) if cls.NEEDS_CONTAINER else ()), *needs)
     for feature in runtime_needs:

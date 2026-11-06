@@ -21,15 +21,10 @@ Web search is disabled by default; setting `search = true` enables it and requir
 If you want to integrate a custom agent loop or another third-party CLI harness, subclass `Harness` and `HarnessConfig`:
 
 ```python
-from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.harness import Harness
-from verifiers.v1.runtimes import (
-    ProgramResult,
-    Runtime,
-)
+from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.task import TaskData
-from verifiers.v1.trace import Trace
 
 
 class MyHarnessConfig(HarnessConfig):
@@ -45,36 +40,27 @@ class MyHarness(Harness[MyHarnessConfig]):
         # Replace this with the program's installation command.
         await runtime.run(["sh", "-c", "echo installing..."], {})
 
-    async def launch(
-        self,
-        ctx: ModelContext,
-        trace: Trace,
-        runtime: Runtime,
-        endpoint: str,
-        secret: str,
-        mcp_urls: dict[str, str],
-        data: TaskData,
-    ) -> ProgramResult:
+    async def launch(self, data: TaskData) -> ProgramResult:
         system, prompt = self.resolve_text_prompt(data)
 
         # Route model calls through verifiers so they are recorded.
         env = {
             **self.config.resolved_env,
-            "HARNESS_BASE_URL": endpoint,
-            "HARNESS_API_KEY": secret,
-            "HARNESS_BASE_MODEL": ctx.model,
+            "HARNESS_BASE_URL": self.wiring.endpoint,
+            "HARNESS_API_KEY": self.wiring.secret,
+            "HARNESS_BASE_MODEL": self.model.model,
             "HARNESS_SYSTEM_PROMPT": system or "",
         }
-        return await runtime.run(["<HARNESS_BINARY>", str(prompt or "")], env)
+        return await self.runtime.run(["<HARNESS_BINARY>", str(prompt or "")], env)
 ```
 
-Replace the placeholder installation command, binary, and environment variable names with the ones your program expects. Every model call must be routed through the interception server at `endpoint` (authenticated with `secret`) so verifiers can record the conversation and build the `Trace` from the returned `ProgramResult`. Merging `self.config.resolved_env` into the process environment ensures any variables configured via `env` and `forward_env` are passed through. When a task sets `agent_user`, `setup` runs as that user too, so install the harness into a writable path and leave system package installation to the container image or task `setup`.
+Replace the placeholder installation command, binary, and environment variable names with the ones your program expects. Each rollout gets its own harness instance. Before the first turn, the rollout binds `self.trace`, `self.runtime` and `self.wiring`. Every model call must be routed through the interception server at `self.wiring.endpoint` (authenticated with `self.wiring.secret`) so verifiers can record the conversation and build the `Trace` from the returned `ProgramResult`. Merging `self.config.resolved_env` into the process environment ensures any variables configured via `env` and `forward_env` are passed through. When a task sets `agent_user`, `setup` runs as that user too, so install the harness into a writable path and leave system package installation to the container image or task `setup`.
 
 Class-level capability flags declare which optional features your harness implements:
 
 - `APPENDS_SYSTEM_PROMPT`: passes `TaskData.system_prompt` as a separate system message; when `False`, `resolve_prompt` prepends it to the first user message instead.
-- `SUPPORTS_MCP`: indicates that `launch` wires `mcp_urls` into the program.
-- `SUPPORTS_RESUME`: indicates that a multi-turn exchange can restart from the conversation so far (programs with native session state should override `resume` or `session` instead). Note that live mid-turn steering requires a `HarnessSession` that implements `steer`; conversation resume support alone is not enough (see [message delivery](agent.md#messages-during-an-active-turn)).
+- `SUPPORTS_MCP`: indicates that `launch` wires `self.wiring.mcp_urls` into the program.
+- `SUPPORTS_RESUME`: indicates that a multi-turn exchange can restart from the conversation so far (programs with native session state should override `resume` instead, and keep that state on the harness instance). Note that live mid-turn steering requires a harness that implements `steer`; conversation resume support alone is not enough (see [message delivery](agent.md#messages-during-an-active-turn)).
 - `SUPPORTS_SKILLS`: indicates that the harness calls `install_skills` to copy configured skills into the directory where the program discovers them.
 - `SUPPORTS_TOOL_INTERCEPTION`: indicates that the harness checks tool calls against the rollout's tool gate (`tool_interception_url`) before executing them.
 

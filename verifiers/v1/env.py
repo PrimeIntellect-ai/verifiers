@@ -18,18 +18,18 @@ from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.agent import (
     AgentConfig,
     agent_config_fields,
-    resolve_agent,
 )
-from verifiers.v1.configs.env import EnvConfig, default_agent_harness
+from verifiers.v1.configs.env import EnvConfig
 from verifiers.v1.episode import EnvInfo, Episode
 from verifiers.v1.errors import EnvError, boundary
-from verifiers.v1.harness import Harness, HarnessConfig
+from verifiers.v1.harness import HarnessConfig
 from verifiers.v1.interception import (
     Interception,
     make_interception,
     requires_tunnel,
 )
 from verifiers.v1.mcp import SharedToolServer, serve_shared
+from verifiers.v1.params.agent import AgentParams
 from verifiers.v1.runtimes import SubprocessConfig, runtime_is_local
 from verifiers.v1.task import Task
 from verifiers.v1.trace import Error, Trace, TraceTask
@@ -91,7 +91,7 @@ class Env(ABC, Generic[ConfigT]):
     task the agent actually receives — an env-minted task carries its own needs."""
 
     def __init__(self, config: ConfigT) -> None:
-        from verifiers.v1.utils.loaders import load_harness, load_taskset
+        from verifiers.v1.utils.loaders import harness_class, load_taskset
 
         config_cls = concrete_type(type(self), EnvConfig, origin=Env) or EnvConfig
         if not isinstance(config, config_cls):
@@ -109,7 +109,6 @@ class Env(ABC, Generic[ConfigT]):
                 "`eval <taskset-id>`)"
             )
         self.taskset = load_taskset(config.taskset)
-        self._default_harness = default_agent_harness(config.taskset.id)
         task_cls = type(self.taskset).task_type()
         self._task_cls: type[Task] = task_cls
         self._agent_specs: dict[str, AgentConfig] = agent_config_fields(self.config)
@@ -120,30 +119,22 @@ class Env(ABC, Generic[ConfigT]):
                 "(`solver: vf.AgentConfig = vf.AgentConfig()`) — the field name is "
                 "the agent's name. The single-agent case is SingleAgentEnv."
             )
-        # Same harness config -> one loaded object (harnesses are stateless values).
-        loaded: dict[str, Harness] = {}
-        self._harnesses: dict[str, Harness] = {}
-        for name, spec in self._agent_specs.items():
-            cfg = self._agent_harness(spec)
-            key = cfg.model_dump_json()
-            if key not in loaded:
-                loaded[key] = load_harness(cfg)
-            self._harnesses[name] = loaded[key]
+        self._harnesses: dict[str, HarnessConfig] = config.agent_harnesses()
         warned: set[str] = set()
         for name, harness in self._harnesses.items():
             # Warn once per distinct harness; tool-less chat loops are exempt.
             if (
-                harness.EXECUTES_CODE
+                harness_class(harness.id).EXECUTES_CODE
                 and isinstance(self._agent_specs[name].runtime, SubprocessConfig)
-                and harness.config.id not in warned
+                and harness.id not in warned
             ):
-                warned.add(harness.config.id)
+                warned.add(harness.id)
                 logger.warning(
                     "Harness %r is running in the subprocess runtime on the local system. "
                     "Local files and settings may affect the evaluation; use subprocess only "
                     "for debugging. Use --env.<role>.runtime.type docker or prime "
                     "for an isolated run.",
-                    harness.config.id,
+                    harness.id,
                 )
         # Serving resources, live only inside `serving()`; the env's agents borrow them.
         self._shared_tools: dict[str, SharedToolServer] = {}
@@ -192,10 +183,6 @@ class Env(ABC, Generic[ConfigT]):
 
     # --- machinery (the base owns everything below) -----------------------------
 
-    def _agent_harness(self, agent: AgentConfig) -> HarnessConfig:
-        """The role's harness config: its own pin, else the taskset's default."""
-        return agent.harness if agent.harness is not None else self._default_harness
-
     def _episode_agents(
         self,
         ctx: ModelContext,
@@ -211,16 +198,14 @@ class Env(ABC, Generic[ConfigT]):
         gate = asyncio.Semaphore(limit) if limit else None
 
         def make(name: str, spec: AgentConfig) -> Agent:
-            # Unpinned fields fall back to the run's ctx / the taskset's harness.
-            resolved = resolve_agent(
-                spec,
-                model=ctx.model,
-                client=ctx.client,
-                sampling=ctx.sampling,
-                harness=self._default_harness,
-            )
             return _EpisodeAgent(
-                resolved,
+                AgentParams.resolve(
+                    spec,
+                    model=ctx.model,
+                    client=ctx.client,
+                    sampling=ctx.sampling,
+                    harness=self._harnesses[name],
+                ),
                 interception=self._interception,
                 name=name,
                 shared_tools=self._shared_tools,

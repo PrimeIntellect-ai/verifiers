@@ -19,22 +19,18 @@ from weakref import WeakValueDictionary
 
 from typing_extensions import TypeVar
 
-from verifiers.v1.clients import (
-    EvalClientConfig,
-    ModelContext,
-)
-from verifiers.v1.configs.agent import (
-    AgentConfig,
-    TimeoutConfig,
-    agent_config_fields,
-    resolve_agent,
-)
+from verifiers.v1.clients import ModelContext
+from verifiers.v1.configs.agent import AgentConfig, TimeoutConfig, agent_config_fields
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
+from verifiers.v1.configs.scoring import resolve_scoring
 from verifiers.v1.dialects import parse_message
 from verifiers.v1.harness import Harness
 from verifiers.v1.interception import Interception, InterceptionServer
 from verifiers.v1.mcp import SharedToolServer
-from verifiers.v1.rollout import Rollout, RolloutTimeouts
+from verifiers.v1.params.agent import AgentParams
+from verifiers.v1.params.harness import HarnessParams
+from verifiers.v1.params.rollout import RolloutLimits, RolloutParams, RolloutTimeouts
+from verifiers.v1.rollout import Rollout
 from verifiers.v1.runtimes import (
     Runtime,
     RuntimeConfig,
@@ -42,7 +38,6 @@ from verifiers.v1.runtimes import (
     provision_backend,
     runtime_is_local,
 )
-from verifiers.v1.session import RolloutLimits
 from verifiers.v1.task import Task
 from verifiers.v1.trace import Trace
 from verifiers.v1.types import (
@@ -67,26 +62,6 @@ logger = logging.getLogger(__name__)
 _scoring_runs: ContextVar[list[tuple["_EpisodeAgent", Trace]] | None] = ContextVar(
     "scoring_runs", default=None
 )
-
-
-def resolve_rollout_timeouts(timeout: TimeoutConfig, task: Task) -> RolloutTimeouts:
-    """Apply an agent's stage-timeout precedence to one task."""
-    return RolloutTimeouts(
-        setup=timeout.setup if timeout.setup is not None else task.data.timeout.setup,
-        agent=(
-            timeout.rollout if timeout.rollout is not None else task.data.timeout.agent
-        ),
-        finalize=(
-            timeout.finalize
-            if timeout.finalize is not None
-            else task.data.timeout.finalize
-        ),
-        scoring=(
-            timeout.scoring
-            if timeout.scoring is not None
-            else task.data.timeout.scoring
-        ),
-    )
 
 
 def _check_borrowed_placement(
@@ -536,51 +511,26 @@ class Interaction:
 class Agent:
     """A configured harness + model + runtime policy, runnable on any task.
 
-    Built from an `AgentConfig` alone; `interception=` injects a live resource to
-    borrow — its owner keeps the lifecycle. The endpoint stays config: each rollout
-    builds and closes its own `Client`, so an agent holds no transport. The config's
-    `runtime` is a *policy*: each `run` provisions a fresh box from it, resolved
-    per task; `run(runtime=...)` places the run into an existing box instead
+    Built from `AgentParams` (`make_agent(config)` resolves a standalone config);
+    `interception=` injects a live resource to borrow — its owner keeps the
+    lifecycle. The endpoint stays a value: each rollout builds and closes its own
+    `Client`, so an agent holds no transport. The params' `runtime` is a *policy*:
+    each `run` provisions a fresh box from it, resolved per task; `run(runtime=...)` places the run into an existing box instead
     (borrowed boxes are never started or torn down by the run)."""
 
     def __init__(
         self,
-        config: AgentConfig,
+        params: AgentParams,
         *,
         interception: Interception | None = None,
     ) -> None:
-        from verifiers.v1.utils.loaders import harness_config_type, load_harness
+        from verifiers.v1.utils.loaders import harness_class
 
-        if config.model is None:
-            raise ValueError(
-                "AgentConfig.model is unset; an Agent needs a pinned model "
-                "(inside an env the run's own model fills it in)"
-            )
-        # Resolve the unpinned identity fields into the config: it is the agent's
-        # full identity — what stamps onto every trace (`AgentInfo.config`).
-        if config.harness is None:
-            config = config.model_copy(
-                update={"harness": harness_config_type("bash")(id="bash")}
-            )
-        config = resolve_agent(config)
-        self.config = config
-        self.harness = load_harness(config.harness)
-        self.ctx = ModelContext(
-            model=config.model,
-            client=config.client or EvalClientConfig(),
-            sampling=config.sampling,
-        )
+        self.params = params
+        # One harness instance per rollout, built from this type.
+        self.harness_type: type[Harness] = harness_class(params.harness.id)
         self._closed = False
-        self.runtime_config: RuntimeConfig = config.runtime
         self.interception = interception
-        self.limits = RolloutLimits(
-            max_turns=config.max_turns,
-            max_input_tokens=config.max_input_tokens,
-            max_output_tokens=config.max_output_tokens,
-            max_total_tokens=config.max_total_tokens,
-            max_turn_tokens=config.max_turn_tokens,
-        )
-        self.timeout = config.timeout
         # Env episode agents replace this with the episode's agent semaphore
         # (`--env.max-concurrent-agents`). Interactions acquire it only around active
         # lifecycle work, never while awaiting the caller between segments.
@@ -602,7 +552,7 @@ class Agent:
             # Sized to the runtime policy (remote needs the tunnel); runs the
             # server can't serve fall back per run.
             self._server = InterceptionServer(
-                requires_tunnel=not runtime_is_local(self.runtime_config)
+                requires_tunnel=not runtime_is_local(self.params.runtime)
             )
             try:
                 await self._server.__aenter__()
@@ -641,23 +591,6 @@ class Agent:
             return self._server
         return None
 
-    def _check_resume_support(self) -> None:
-        # Multi-turn capability is derived: a harness needs transcript replay, a
-        # native resume implementation, or a rollout-scoped session implementation.
-        harness = self.harness
-        if (
-            type(harness).session is Harness.session
-            and type(harness).resume is Harness.resume
-            and not harness.SUPPORTS_RESUME
-        ):
-            raise ValueError(
-                f"Harness {harness.config.id!r} cannot host a user: resuming an "
-                "exchange takes transcript-backed resume (SUPPORTS_RESUME) for the "
-                "default relaunch-on-the-conversation, a native resume() override, "
-                "or a rollout-scoped session() override. Use a harness that has "
-                "one (e.g. bash or null)."
-            )
-
     async def run(
         self,
         task: Task,
@@ -682,7 +615,7 @@ class Agent:
         the selected verifier workspace, inside its timeout and retry boundary."""
         if self._closed:
             raise RuntimeError("Agent is closed; create a new agent")
-        retry = self.config.retries
+        retry = self.params.retries
         retry_state = RetryState(retry)
         history: list = []
         trace_id = uuid.uuid4().hex
@@ -736,24 +669,24 @@ class Agent:
         trace_id: str,
         attempt: int,
     ) -> Trace:
-        params = self._rollout_params(task, runtime, dict(shared_tools or {}))
-        if (
-            collect_artifacts
-            and not backend_cls(params["runtime_config"]).SUPPORTS_TASK_IMAGES
-        ):
-            raise TypeError(
-                "artifact collection requires a runtime with its own filesystem; the "
-                f"{params['runtime_config'].type} runtime cannot run images"
-            )
-        run = Rollout(
-            task=task,
+        run = self._rollout(
+            task,
+            runtime,
+            dict(shared_tools or {}),
             on_trace=on_trace,
             collect_artifacts=collect_artifacts,
             on_score=on_score,
             trace_id=trace_id,
             attempt=attempt,
-            **params,
         )
+        if (
+            collect_artifacts
+            and not backend_cls(run.params.runtime).SUPPORTS_TASK_IMAGES
+        ):
+            raise TypeError(
+                "artifact collection requires a runtime with its own filesystem; the "
+                f"{run.params.runtime.type} runtime cannot run images"
+            )
         try:
             if await run.open():
                 await run.step()
@@ -804,13 +737,16 @@ class Agent:
         apply here."""
         if self._closed:
             raise RuntimeError("Agent is closed; create a new agent")
-        self._check_resume_support()
-        params = self._rollout_params(task, runtime, dict(tools or {}))
-        run = Rollout(
-            task=task,
-            has_user=True,
-            on_trace=on_trace,
-            **params,
+        if not self.harness_type.resumes():
+            raise ValueError(
+                f"Harness {self.params.harness.id!r} cannot host a user: resuming an "
+                "exchange takes transcript-backed resume (SUPPORTS_RESUME) for the "
+                "default relaunch-on-the-conversation, a native resume() override, "
+                "or a stateful _run() override. Use a harness that has one (e.g. "
+                "bash or null)."
+            )
+        run = self._rollout(
+            task, runtime, dict(tools or {}), has_user=True, on_trace=on_trace
         )
         interaction = Interaction(run, gate=self._gate)
         async with self._gate or nullcontext():
@@ -834,54 +770,70 @@ class Agent:
             if trace.agent.runtime is not None:
                 trace.agent.runtime.borrowed = runtime is not None
 
-    def _rollout_params(
-        self, task: Task, runtime: Runtime | None, shared_tools: dict
-    ) -> dict:
-        """Resolve one run's runtime config, pairing checks, timeouts,
-        interception — shared by `run` and `interaction`."""
-        harness = self.harness
-        skills = [*task.data.skills, *harness.config.skills]
-        if skills:
-            # Skill installations can hold run-specific state, such as RLM's package environment.
-            harness = type(harness)(
-                harness.config.model_copy(update={"skills": skills})
-            )
+    def _rollout(
+        self,
+        task: Task,
+        runtime: Runtime | None,
+        shared_tools: dict,
+        **kwargs,
+    ) -> Rollout:
+        """One rollout of `task`, shared by `run` and `interaction`: this agent
+        resolved for the task (the harness with the task's skills, the box's runtime
+        config, scoring, timeouts and limits) and the interception it rides."""
+        params = self.params
+        harness = params.harness
+        if skills := [*task.data.skills, *harness.skills]:
+            harness = harness.model_copy(update={"skills": skills})
         if runtime is not None:
-            _check_borrowed_placement(task, runtime, self.runtime_config)
+            _check_borrowed_placement(task, runtime, params.runtime)
             runtime_config = runtime.config
-            run_is_local = runtime.is_local
         else:
             runtime_config = resolve_runtime_config(
-                self.runtime_config, task, self._warned_resources
+                params.runtime, task, self._warned_resources
             )
-            run_is_local = runtime_is_local(runtime_config)
         validate_pairing(
+            self.harness_type,
             harness,
             type(task),
             runtime_config,
             tools=[*task.toolsets(task.config), *shared_tools.values()],
         )
-        timeouts = resolve_rollout_timeouts(self.timeout, task)
-        return {
-            "agent_config": self.config,
-            "harness": harness,
-            "ctx": self.ctx,
-            "runtime_config": runtime_config,
-            "timeouts": timeouts,
-            "limits": self.limits,
-            "shared_tools": shared_tools,
-            "interception": self._interception_for(run_is_local, task, shared_tools),
-            "runtime": runtime,
-        }
+        rollout = RolloutParams(
+            agent=params,
+            harness=HarnessParams(
+                config=harness,
+                model=ModelContext(
+                    model=params.model, client=params.client, sampling=params.sampling
+                ),
+            ),
+            runtime=runtime_config,
+            scoring=resolve_scoring(task.scoring, params.scoring),
+            timeouts=RolloutTimeouts.resolve(params.timeout, task.data.timeout),
+            limits=RolloutLimits.resolve(params),
+        )
+        run_is_local = (
+            runtime.is_local
+            if runtime is not None
+            else runtime_is_local(runtime_config)
+        )
+        return Rollout(
+            task=task,
+            params=rollout,
+            harness=self.harness_type(rollout.harness),
+            shared_tools=shared_tools,
+            interception=self._interception_for(run_is_local, task, shared_tools),
+            runtime=runtime,
+            **kwargs,
+        )
 
     @asynccontextmanager
     async def provision(self, task: Task | None = None) -> AsyncIterator[Runtime]:
         """Provision (and on exit tear down) a box from this agent's runtime
         policy, resolved for `task` when given; share it via `run(..., runtime=runtime)`."""
         config = (
-            resolve_runtime_config(self.runtime_config, task, self._warned_resources)
+            resolve_runtime_config(self.params.runtime, task, self._warned_resources)
             if task is not None
-            else self.runtime_config
+            else self.params.runtime
         )
         async with provision_backend(config) as backend:
             # Keep sandbox startup task-neutral: this box may later host another task.
@@ -900,7 +852,7 @@ class _EpisodeAgent(Agent):
 
     def __init__(
         self,
-        config: AgentConfig,
+        params: AgentParams,
         *,
         interception: Interception | None,
         name: str,
@@ -912,7 +864,7 @@ class _EpisodeAgent(Agent):
         on_discard: Callable[[Trace], None] | None,
         warned_resources: set,
     ) -> None:
-        super().__init__(config, interception=interception)
+        super().__init__(params, interception=interception)
         # Resource warnings dedupe env-wide, not per episode.
         self._warned_resources = warned_resources
         self._name = name
@@ -1051,9 +1003,9 @@ def make_agent(
     *,
     interception: Interception | None = None,
 ) -> Agent:
-    """The agent for a config; `interception` injects a live resource to borrow,
-    everything else comes from the config."""
-    return Agent(config, interception=interception)
+    """The agent for a config with a pinned model; `interception` injects a live
+    resource to borrow, everything else comes from the config."""
+    return Agent(AgentParams.resolve(config), interception=interception)
 
 
 AgentT = TypeVar("AgentT", bound=Agent, default=Agent)

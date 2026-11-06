@@ -14,6 +14,10 @@ from verifiers.v1.harnesses.rlm.harness import (
 )
 
 
+def _harness(config: RLMHarnessConfig) -> RLMHarness:
+    return RLMHarness(vf.HarnessParams(config=config, model=SimpleNamespace(model="m")))
+
+
 def _trace() -> vf.Trace:
     return vf.Trace(
         agent=vf.AgentInfo(config=vf.AgentConfig()),
@@ -35,7 +39,7 @@ def _trace() -> vf.Trace:
 )
 def test_rlm_stop_reason_survives_completion_and_serialization(reason, condition):
     trace = _trace()
-    harness = RLMHarness(RLMHarnessConfig(id="rlm"))
+    harness = _harness(RLMHarnessConfig(id="rlm"))
     metadata = {
         RLM_SESSION_METADATA_KEY: {
             "session_id": trace.id,
@@ -58,10 +62,16 @@ def test_rlm_stop_reason_survives_completion_and_serialization(reason, condition
 
 
 def _sent_policy(config: RLMHarnessConfig, runtime_config) -> dict:
-    runtime = SimpleNamespace(config=runtime_config, env={})
-    metadata = RLMHarness(config)._runtime_metadata(
-        SimpleNamespace(model="m"), _trace(), runtime, "http://endpoint", "s", None
+    harness = _harness(config)
+    harness.trace = _trace()
+    harness.runtime = SimpleNamespace(config=runtime_config, env={})
+    harness.wiring = vf.HarnessWiring(
+        endpoint="http://endpoint",
+        secret="s",
+        mcp_urls={},
+        data=harness.trace.task.data,
     )
+    metadata = harness._runtime_metadata(None)
     return metadata[RLM_RUNTIME_METADATA_KEY]["policy"]
 
 

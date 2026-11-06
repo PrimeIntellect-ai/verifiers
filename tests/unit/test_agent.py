@@ -9,7 +9,8 @@ import pytest
 import verifiers.v1 as vf
 from verifiers.v1.agent import Interaction
 from verifiers.v1.graph import MessageNode
-from verifiers.v1.rollout import Rollout, RolloutTimeouts
+from verifiers.v1.params import RolloutTimeouts
+from verifiers.v1.rollout import Rollout
 from verifiers.v1.types import AssistantMessage
 
 
@@ -43,8 +44,9 @@ def make_rollout(trace: vf.Trace, session, time_remaining=None):
     run._borrowed_runtime = None
     run.runtime = None
     run._agent_time_remaining = time_remaining
-    run._timeouts = RolloutTimeouts()
-    run._harness_session = session
+    run.params = SimpleNamespace(timeouts=RolloutTimeouts())
+    run.harness = session
+    run._harness_started = True
     run.deployment = SimpleNamespace(run=lambda turn: turn)
     run._session = SimpleNamespace(
         request_interceptors=[],

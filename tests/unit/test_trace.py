@@ -7,11 +7,11 @@ import orjson
 import pytest
 
 import verifiers.v1 as vf
-from verifiers.v1.configs.agent import resolve_agent
 from verifiers.v1.dialects.chat import ChatDialect
 from verifiers.v1.dialects.responses import ResponsesDialect, fold_assistant
 from verifiers.v1.graph import MessageNode, prepare_turn, round_stream
-from verifiers.v1.session import RolloutLimits
+from verifiers.v1.params import RolloutLimits
+from verifiers.v1.session import limit_reached
 from verifiers.v1.trace import EXCLUDE_FIELDS
 from verifiers.v1.types import AssistantMessage, UserMessage
 from verifiers.v1.utils.trace_store import write_episode
@@ -44,7 +44,7 @@ def test_bare_trace_round_trip(sampling):
     spec = vf.AgentConfig(sampling=sampling)
     defaults = vf.SamplingConfig(temperature=0.7, max_tokens=128, top_k=40)
     # Resolve the live overrides before serializing the effective config on a trace.
-    resolved = resolve_agent(spec, sampling=defaults)
+    resolved = vf.AgentParams.resolve(spec, model="m", sampling=defaults)
     assert set(vf.SamplingConfig.model_fields) <= resolved.sampling.model_fields_set
     # The minimal trace: a base task, no nodes, no extras — dump and back into a plain Trace.
     tr = vf.Trace(
@@ -72,7 +72,7 @@ def test_bare_trace_round_trip(sampling):
         assert rt.task.key == "dataset/example-3" and rt.task.hash == "content-digest"
         assert rt.num_turns == 0 and rt.num_branches == 0
         assert rt.reward == 0.0 and rt.errors == []
-        assert rt.agent.config == tr.agent.config
+        assert rt.agent.config.model_dump() == tr.agent.config.model_dump()
         assert rt.agent.config.sampling.model_dump() == resolved.sampling.model_dump()
 
 
@@ -397,14 +397,14 @@ def test_max_turn_tokens_limit():
         task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt=None)),
     )
     trace.calls.append(vf.ModelCall(finish_reason="stop"))
-    assert limits.reached(trace) is None
+    assert limit_reached(limits, trace) is None
     # A length finish below the cap ran out of context: not this limit.
     usage = vf.Usage(prompt_tokens=100, completion_tokens=8)
     trace.calls.append(vf.ModelCall(finish_reason="length", usage=usage))
-    assert limits.reached(trace) is None
+    assert limit_reached(limits, trace) is None
     usage = vf.Usage(prompt_tokens=100, completion_tokens=16)
     trace.calls.append(vf.ModelCall(finish_reason="length", usage=usage))
-    assert limits.reached(trace) == "max_turn_tokens"
+    assert limit_reached(limits, trace) == "max_turn_tokens"
     trace.stop("max_turn_tokens")
     assert trace.is_truncated
 
@@ -413,7 +413,10 @@ def test_max_turn_tokens_limit():
 def test_max_turn_tokens_caps_sampling(max_tokens, expected):
     spec = vf.AgentConfig(max_turn_tokens=16)
     sampling = vf.SamplingConfig(max_tokens=max_tokens)
-    assert resolve_agent(spec, sampling=sampling).sampling.max_tokens == expected
+    assert (
+        vf.AgentParams.resolve(spec, model="m", sampling=sampling).sampling.max_tokens
+        == expected
+    )
 
 
 @pytest.mark.parametrize("pinned", [False, True])
@@ -421,8 +424,8 @@ def test_run_sampling_stays_with_run_client(pinned):
     run_sampling = vf.SamplingConfig(temperature=0.8, top_k=20)
     client = vf.EvalClientConfig(base_url="http://judge.invalid/v1") if pinned else None
     spec = vf.AgentConfig(client=client, sampling={"reasoning_effort": "high"})
-    resolved = resolve_agent(
-        spec, client=vf.TrainClientConfig(), sampling=run_sampling
+    resolved = vf.AgentParams.resolve(
+        spec, model="m", client=vf.TrainClientConfig(), sampling=run_sampling
     ).sampling
     expected = {"reasoning_effort": "high"}
     if not pinned:

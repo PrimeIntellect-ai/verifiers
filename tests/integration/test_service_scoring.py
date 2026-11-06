@@ -22,8 +22,8 @@ IMAGE = "python:3.11-slim"
 
 
 class ServiceHarness(vf.Harness):
-    async def launch(self, ctx, trace, runtime, endpoint, secret, mcp_urls, data):
-        return await runtime.run(
+    async def launch(self, data):
+        return await self.runtime.run(
             [
                 "python",
                 "-c",
@@ -148,8 +148,8 @@ async def test_service_scoring(tmp_path, mode, collect_fails, scoring_timeout):
             setup=600, finalize=60, scoring=1 if scoring_timeout else 120
         ),
     )
-    async with vf.Agent(config) as agent:
-        agent.harness = ServiceHarness(vf.HarnessConfig())
+    async with vf.make_agent(config) as agent:
+        agent.harness_type = ServiceHarness
         trace = await agent.run(task)
     assert all(backend.stopped for backend in SOLVERS.pop(trace.id, []))
     if mode == "isolated" and collect_fails:

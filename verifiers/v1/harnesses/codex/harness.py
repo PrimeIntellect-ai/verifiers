@@ -10,12 +10,10 @@ from typing import Literal
 import tomli_w
 
 from verifiers.v1.acp import ACPConfig, ACPHarness, ACPTurn
-from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig, PinnedVersion
 from verifiers.v1.harnesses.node import NODE_BIN_DIR, ensure_node
 from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
 from verifiers.v1.runtimes import Runtime
-from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
 
 logger = logging.getLogger(__name__)
@@ -103,21 +101,17 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
         )
         await super().setup(runtime)
 
-    async def prepare_acp(
-        self,
-        ctx: ModelContext,
-        trace: Trace,
-        runtime: Runtime,
-        endpoint: str,
-        secret: str,
-        mcp_urls: dict[str, str],
-        data: TaskData,
-    ) -> ACPConfig:
-        if data.system_prompt is not None and not isinstance(data.prompt, str):
-            system_prompt, prompt = data.system_prompt, data.prompt
+    async def prepare_acp(self) -> ACPConfig:
+        if self.wiring.data.system_prompt is not None and not isinstance(
+            self.wiring.data.prompt, str
+        ):
+            system_prompt, prompt = (
+                self.wiring.data.system_prompt,
+                self.wiring.data.prompt,
+            )
         else:
-            system_prompt, prompt = self.resolve_prompt(data)
-        env = await self.build_env(ctx, trace, runtime, endpoint, secret, mcp_urls)
+            system_prompt, prompt = self.resolve_prompt(self.wiring.data)
+        env = await self.build_env()
         return ACPConfig(
             env=env,
             command=[
@@ -176,17 +170,9 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
     def trace_home(trace: Trace) -> str:
         return f"/tmp/vf-codex-home-{trace.id}"
 
-    async def build_env(
-        self,
-        ctx: ModelContext,
-        trace: Trace,
-        runtime: Runtime,
-        endpoint: str,
-        secret: str,
-        mcp_urls: dict[str, str],
-    ) -> dict[str, str]:
-        home = self.trace_home(trace)
-        await self.install_skills(runtime, f"{home}/skills")
+    async def build_env(self) -> dict[str, str]:
+        home = self.trace_home(self.trace)
+        await self.install_skills(self.runtime, f"{home}/skills")
         mcp_config = "features={mcp_2026_07_28=true}\n" + (
             "mcp_servers={"
             + ",".join(
@@ -194,13 +180,13 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
                 f"{{url={json.dumps(url, ensure_ascii=False)},required=true,"
                 'omit_tools_from=["deferred","code_mode"],'
                 f"startup_timeout_sec=60.0,tool_timeout_sec={self.config.tool_timeout}}}"
-                for name, url in mcp_urls.items()
+                for name, url in self.wiring.mcp_urls.items()
             )
             + "}"
-            if mcp_urls
+            if self.wiring.mcp_urls
             else ""
         )
-        await runtime.write(f"{home}/config.toml", mcp_config.encode())
+        await self.runtime.write(f"{home}/config.toml", mcp_config.encode())
 
         features: dict[str, object] = {
             "apps": False,
@@ -211,7 +197,7 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
             **{tool: False for tool in self.config.disabled_tools or []},
         }
         config = {
-            "model": ctx.model,
+            "model": self.model.model,
             "features": features,
         }
         return {
@@ -223,8 +209,10 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
                     "methodId": "gateway",
                     "_meta": {
                         "gateway": {
-                            "baseUrl": endpoint,
-                            "headers": {"Authorization": f"Bearer {secret}"},
+                            "baseUrl": self.wiring.endpoint,
+                            "headers": {
+                                "Authorization": f"Bearer {self.wiring.secret}"
+                            },
                             "providerName": "Verifiers",
                         }
                     },

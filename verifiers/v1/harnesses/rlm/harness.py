@@ -17,12 +17,10 @@ from pydantic import (
 from pydantic_config import BaseConfig
 
 from verifiers.v1.acp import ACPConfig, ACPHarness, ACPTurn, JsonObject
-from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
 from verifiers.v1.runtimes import Runtime
-from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
 
 logger = logging.getLogger(__name__)
@@ -185,15 +183,7 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
         )
         await super().setup(runtime)
 
-    def _runtime_metadata(
-        self,
-        ctx: ModelContext,
-        trace: Trace,
-        runtime: Runtime,
-        endpoint: str,
-        secret: str,
-        system_prompt: str | None,
-    ) -> JsonObject:
+    def _runtime_metadata(self, system_prompt: str | None) -> JsonObject:
         compaction = self.config.compaction
         policy_knobs: dict[str, Any] = {
             "max_depth": self.config.max_depth,
@@ -202,7 +192,7 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
             "delegation_prompt": self.config.delegation_prompt,
             "exec_timeout": self.config.exec_timeout,
             "allow_git": self.config.allow_git,
-            "network_guidance": self._network_guidance(runtime),
+            "network_guidance": self._network_guidance(self.runtime),
             "max_total_turns": self.config.max_total_turns,
             "max_total_tokens": self.config.max_total_tokens or None,
             "max_tool_output_bytes": self.config.max_tool_output_bytes,
@@ -220,11 +210,11 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
             if text
         ]
         payload = {
-            "session_id": trace.id,
-            "model": ctx.model,
+            "session_id": self.trace.id,
+            "model": self.model.model,
             "provider": {
-                "base_url": endpoint,
-                "api_key": secret,
+                "base_url": self.wiring.endpoint,
+                "api_key": self.wiring.secret,
             },
             # None = passthrough: the key stays off the wire and nano-rlm's own
             # default applies.
@@ -244,15 +234,15 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
             ),
             "leaf_append_to_system_prompt": self.config.leaf_append_to_system_prompt,
             "skills": list(self.config.builtin_skills),
-            "kernel_env": dict(runtime.env),
+            "kernel_env": dict(self.runtime.env),
             "search_api_key": self.config.resolved_env.get("SERPER_API_KEY"),
         }
         if (
             "search" in self.config.builtin_skills
-            and isinstance(runtime.config, NetworkPolicyConfig)
-            and runtime.config.block
+            and isinstance(self.runtime.config, NetworkPolicyConfig)
+            and self.runtime.config.block
         ):
-            payload["network_block"] = runtime.config.block
+            payload["network_block"] = self.runtime.config.block
         if self.config.builtin_tools is not None:
             payload["builtin_tools"] = list(self.config.builtin_tools)
         return {RLM_RUNTIME_METADATA_KEY: payload}
@@ -266,24 +256,13 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
             return False
         return None
 
-    async def prepare_acp(
-        self,
-        ctx: ModelContext,
-        trace: Trace,
-        runtime: Runtime,
-        endpoint: str,
-        secret: str,
-        mcp_urls: dict[str, str],
-        data: TaskData,
-    ) -> ACPConfig:
-        system_prompt, prompt = self.resolve_prompt(data)
+    async def prepare_acp(self) -> ACPConfig:
+        system_prompt, prompt = self.resolve_prompt(self.wiring.data)
         return ACPConfig(
-            env={**self.config.resolved_env, "RLM_HOME": self._home(trace)},
+            env={**self.config.resolved_env, "RLM_HOME": self._home(self.trace)},
             command=[f"{self._install_dir()}/bin/rlm", "--acp"],
             prompt=prompt,
-            session_meta=self._runtime_metadata(
-                ctx, trace, runtime, endpoint, secret, system_prompt
-            ),
+            session_meta=self._runtime_metadata(system_prompt),
         )
 
     def _consume_snapshot(self, trace: Trace, metadata: dict[str, Any]) -> None:

@@ -14,12 +14,11 @@ import shutil
 from pathlib import Path
 
 import verifiers.v1 as vf
-from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.errors import SandboxError
 from verifiers.v1.harness import Harness
 from verifiers.v1.mcp.launch import serve
-from verifiers.v1.runtimes import ProgramResult, Runtime
+from verifiers.v1.runtimes import Runtime
 
 __all__ = ["AgentUserTaskset", "ScriptedAgentUserHarness"]
 
@@ -65,32 +64,22 @@ class AgentUserToolset(vf.Toolset[vf.ToolsetConfig]):
 class ScriptedAgentUserHarness(Harness[HarnessConfig]):
     SUPPORTS_MCP = True
 
-    async def launch(
-        self,
-        ctx: ModelContext,
-        trace: vf.Trace,
-        runtime: Runtime,
-        endpoint: str,
-        secret: str,
-        mcp_urls: dict[str, str],
-        data: vf.TaskData,
-        tool_interception_url: str | None = None,
-    ) -> ProgramResult:
-        script = await runtime.prepare_uv_script(UV_SCRIPT)
-        uv_user, uv_python = (await runtime.run(script, {})).stdout.split()
-        await runtime.write(WRITTEN, b"written by the agent user")
+    async def launch(self, data: vf.TaskData) -> vf.ProgramResult:
+        script = await self.runtime.prepare_uv_script(UV_SCRIPT)
+        uv_user, uv_python = (await self.runtime.run(script, {})).stdout.split()
+        await self.runtime.write(WRITTEN, b"written by the agent user")
         try:
-            await runtime.read(SECRET)
+            await self.runtime.read(SECRET)
             read_api = "ok"
         except SandboxError:
             read_api = "denied"
-        trace.info["agent_user_harness"] = {
+        self.trace.info["agent_user_harness"] = {
             "uv_user": uv_user,
             "uv_python": uv_python,
             "uv_script": script[-1],
             "read_secret_api": read_api,
         }
-        return await runtime.run(["sh", "-c", PROBE], {})
+        return await self.runtime.run(["sh", "-c", PROBE], {})
 
 
 class AgentUserData(vf.TaskData):

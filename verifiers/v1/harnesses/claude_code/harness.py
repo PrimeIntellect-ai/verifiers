@@ -4,13 +4,11 @@ import json
 from typing import Literal
 
 from verifiers.v1.acp import ACPConfig, ACPHarness
-from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import DialectName, HarnessConfig, PinnedVersion
 from verifiers.v1.harnesses.node import NODE_BIN_DIR, ensure_node
 from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
 from verifiers.v1.harnesses.utils.replay import drop_blank_text
 from verifiers.v1.runtimes import Runtime
-from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
 from verifiers.v1.types import Message
 
@@ -72,19 +70,10 @@ class ClaudeCodeHarness(ACPHarness[ClaudeCodeHarnessConfig]):
         )
         await super().setup(runtime)
 
-    async def prepare_acp(
-        self,
-        ctx: ModelContext,
-        trace: Trace,
-        runtime: Runtime,
-        endpoint: str,
-        secret: str,
-        mcp_urls: dict[str, str],
-        data: TaskData,
-    ) -> ACPConfig:
-        system_prompt, prompt = self.resolve_prompt(data)
-        config_dir = self.config_dir(trace)
-        await self.install_skills(runtime, f"{config_dir}/skills")
+    async def prepare_acp(self) -> ACPConfig:
+        system_prompt, prompt = self.resolve_prompt(self.wiring.data)
+        config_dir = self.config_dir(self.trace)
+        await self.install_skills(self.runtime, f"{config_dir}/skills")
         versions = {"version": self.config.version, "acp_version": ACP_VERSION}
         session_meta = {
             "claudeCode": {
@@ -94,16 +83,16 @@ class ClaudeCodeHarness(ACPHarness[ClaudeCodeHarnessConfig]):
                     # Evaluations do not need a model-generated next-user prompt.
                     "promptSuggestions": False,
                     # A supplied title prevents the adapter's background title-model call.
-                    "extraArgs": {"name": trace.id},
+                    "extraArgs": {"name": self.trace.id},
                 }
             },
             **({"systemPrompt": {"append": system_prompt}} if system_prompt else {}),
         }
         env = {
             **self.config.resolved_env,
-            "ANTHROPIC_BASE_URL": endpoint.removesuffix("/v1"),
-            "ANTHROPIC_API_KEY": secret,
-            "ANTHROPIC_MODEL": ctx.model,
+            "ANTHROPIC_BASE_URL": self.wiring.endpoint.removesuffix("/v1"),
+            "ANTHROPIC_API_KEY": self.wiring.secret,
+            "ANTHROPIC_MODEL": self.model.model,
             "CLAUDE_CODE_EXECUTABLE": CLAUDE_BIN.format(**versions),
             "CLAUDE_CONFIG_DIR": config_dir,
             "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",

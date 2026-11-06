@@ -2,7 +2,6 @@ import json
 import os
 from typing import Literal
 
-from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.harness import Harness
@@ -14,7 +13,6 @@ from verifiers.v1.harnesses.utils.launch import (
 )
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.task import TaskData
-from verifiers.v1.trace import Trace
 
 # Frames the model as a coding agent and names its local tools (a pure-text chat loop gets no
 # harness-injected prompt). The edit clause is appended only when the `edit` tool is enabled.
@@ -58,17 +56,7 @@ class BashHarness(Harness[BashHarnessConfig]):
     async def setup(self, runtime: Runtime) -> None:
         await runtime.prepare_uv_script(CHAT_PROGRAM_SOURCE, self.config.resolved_env)
 
-    async def launch(
-        self,
-        ctx: ModelContext,
-        trace: Trace,
-        runtime: Runtime,
-        endpoint: str,
-        secret: str,
-        mcp_urls: dict[str, str],
-        data: TaskData,
-        tool_interception_url: str | None = None,
-    ) -> ProgramResult:
+    async def launch(self, data: TaskData) -> ProgramResult:
         system_prompt, prompt = self.resolve_prompt(data)
         fragments = [BASH_SYSTEM_PROMPT]
         if self.config.edit:
@@ -91,8 +79,8 @@ class BashHarness(Harness[BashHarnessConfig]):
             system_prompt = None
         env = {**self.config.resolved_env}
         args = ["--bash"]
-        if tool_interception_url:
-            args.append(f"--tool-interception-url={tool_interception_url}")
+        if self.wiring.tool_interception_url:
+            args.append(f"--tool-interception-url={self.wiring.tool_interception_url}")
         args += compaction_args(self.config.compaction)
         if self.config.edit:
             args.append("--edit")
@@ -114,17 +102,14 @@ class BashHarness(Harness[BashHarnessConfig]):
                     "(the host env or the harness config's env)"
                 )
             args += ["--search", f"--serper-key={serper_key}"]
-            if isinstance(runtime.config, NetworkPolicyConfig) and runtime.config.block:
-                args.append(f"--search-block={json.dumps(runtime.config.block)}")
+            if (
+                isinstance(self.runtime.config, NetworkPolicyConfig)
+                and self.runtime.config.block
+            ):
+                args.append(f"--search-block={json.dumps(self.runtime.config.block)}")
         return await launch_chat_program(
+            self,
             CHAT_PROGRAM_SOURCE,
-            self.config,
-            ctx,
-            trace,
-            runtime,
-            endpoint,
-            secret,
-            mcp_urls,
             system_prompt,
             prompt,
             extra_args=args,

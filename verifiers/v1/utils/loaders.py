@@ -206,10 +206,6 @@ def load_taskset(config: TasksetConfig) -> Taskset:
     return taskset_class(config.id)(config)
 
 
-def load_harness(config: HarnessConfig) -> Harness:
-    return harness_class(config.id)(config)
-
-
 def load_judge(config: JudgeConfig) -> Judge:
     return judge_class(config.id)(config)
 
