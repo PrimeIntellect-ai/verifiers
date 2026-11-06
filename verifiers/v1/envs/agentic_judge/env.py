@@ -13,13 +13,14 @@ from pydantic import FiniteFloat
 
 import verifiers.v1 as vf
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
-from verifiers.v1.configs.scoring import resolve_scoring
+from verifiers.v1.configs.scoring import resolve_scoring, weighted_reward_range
 from verifiers.v1.judges.rubric import (
     Criterion,
     RubricVerdicts,
     criterion_metrics,
     drop_reason,
     load_criteria,
+    score_range,
     score_verdicts,
     weighted_score,
 )
@@ -311,6 +312,11 @@ class AgenticJudgeEnv(vf.Env[AgenticJudgeEnvConfig]):
             weighted_score(scores, criteria),
             weight=self.config.score.judge_weight,
         )
+        solution.reward_range = weighted_reward_range(
+            (self.config.score.task_weight, solution.reward_range),
+            (self.config.score.judge_weight, score_range(criteria)),
+        )
+        solution.pass_threshold = solution.reward_range[1]
 
     async def run(self, task: vf.Task, agents: vf.Agents) -> None:
         policy = resolve_scoring(task.scoring, self.config.solver.scoring)

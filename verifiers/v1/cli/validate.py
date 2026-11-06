@@ -55,9 +55,6 @@ SUMMARY_FILE = "summary.json"
 LOG_FILE = "logs/validate.log"
 FINAL_VALUES = {"valid": True, "invalid": False, "unchecked": None}
 REASONS = ("valid", "invalid", "unchecked", "error", "timeout")
-SOLVED = 1.0
-"""An untouched task whose reward reaches this already passes: its noop check is
-invalid. Lower (partial) rewards are recorded but pass the check."""
 
 ResultRow = dict[str, Any]
 
@@ -255,8 +252,8 @@ async def _score_untouched(
     task: Task, trace: Trace, runtime, deployment: Deployment, config: ValidateConfig
 ) -> bool | None:
     """Finalize and score the freshly set-up task exactly as a rollout would, with no
-    agent turn in between. Valid iff it does not already pass; `None` when the task
-    declares no reward to check."""
+    agent turn in between. Valid iff it does not already pass (reach the task's pass
+    threshold); `None` when the task declares no reward or no pass threshold."""
     policy = task.scoring
     isolated = policy.mode == "isolated"
     grader = task.grading_task(runtime, scoring=policy)
@@ -297,9 +294,9 @@ async def _score_untouched(
                     scoring_network(config.runtime, policy.network)
                 )
             await grader.score(trace, runtime, deployment)
-    if not trace.rewards:
+    if not trace.rewards or policy.threshold is None:
         return None
-    return trace.reward < SOLVED
+    return trace.reward < policy.threshold
 
 
 CHECKS = {"setup": _setup_only, "gold": _gold, "noop": _score_untouched}

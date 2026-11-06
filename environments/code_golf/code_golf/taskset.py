@@ -44,6 +44,11 @@ def extract_program(trace: vf.Trace) -> str:
 class CodeGolfData(vf.TaskData):
     expected: str
     """The exact stdout the program must produce."""
+    scoring: vf.ScoringConfig = vf.ScoringConfig(
+        reward_range=(0.0, 2.0), pass_threshold=1.0
+    )
+    """`correct` plus the half-weighted `most_concise` and `fastest` sibling rewards;
+    a correct program is a pass."""
 
 
 class CodeGolfTask(vf.Task[CodeGolfData]):

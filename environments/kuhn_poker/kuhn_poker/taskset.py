@@ -67,6 +67,10 @@ def parse_action(reply: str, legal: tuple[str, ...]) -> str | None:
 class KuhnPokerData(vf.TaskData):
     info: dict
     """The hand's RNG seed — the deal is reproducible from it."""
+    scoring: vf.ScoringConfig = vf.ScoringConfig(
+        reward_range=(-2.0, 2.0), pass_threshold=1.0
+    )
+    """A seat nets at most two chips either way; winning the hand is a pass."""
 
 
 class KuhnPokerTask(vf.Task[KuhnPokerData]):

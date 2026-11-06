@@ -50,6 +50,10 @@ class TextArenaConfig(vf.TasksetConfig):
 class TextArenaData(vf.TaskData):
     info: dict
     """The game id and RNG seed the env reproduces the episode from."""
+    scoring: vf.ScoringConfig = vf.ScoringConfig(
+        reward_range=(-1.0, 1.0), pass_threshold=1.0
+    )
+    """TextArena outcomes run from -1 (a loss or invalid move) to 1 (a win)."""
 
 
 class TextArenaTask(vf.Task[TextArenaData, vf.State, vf.TaskConfig]):

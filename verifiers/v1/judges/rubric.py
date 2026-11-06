@@ -125,6 +125,14 @@ def weighted_score(scores: dict[str, float], criteria: list[Criterion]) -> float
     return sum(c.weight * scores[c.name] for c in weighted) / total
 
 
+def score_range(criteria: list[Criterion]) -> tuple[float, float]:
+    """Bounds of `weighted_score` over `criteria`: a non-negative weighted mean stays
+    between the lowest and highest score any weighted criterion can give."""
+    weighted = [c for c in criteria if c.weight]
+    scores = [c.score(choice) for c in weighted for choice in c.choices]
+    return min(scores), max(scores)
+
+
 CRITERIA_ADAPTER = TypeAdapter(list[Criterion])
 
 

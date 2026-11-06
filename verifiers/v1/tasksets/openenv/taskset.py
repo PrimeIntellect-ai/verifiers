@@ -22,6 +22,9 @@ class OpenEnvData(vf.TaskData):
     use_docker: bool
     provider_kwargs: dict[str, Any]
     reset: dict[str, Any]
+    scoring: vf.ScoringConfig = vf.ScoringConfig(reward_range=(None, None))
+    """Each OpenEnv environment defines its own rewards, summed over steps: declare
+    their range with `--env.agent.scoring.reward_range`."""
 
 
 class OpenEnvConfig(vf.TasksetConfig):

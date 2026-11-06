@@ -22,7 +22,7 @@ from typing_extensions import TypeVar
 
 from verifiers.v1.configs.harness import SkillSource
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
-from verifiers.v1.configs.scoring import ScoringConfig
+from verifiers.v1.configs.scoring import SKIPPED_REWARD_PREFIX, ScoringConfig
 from verifiers.v1.configs.task import TaskConfig
 from verifiers.v1.errors import TaskError, boundary
 from verifiers.v1.state import StateT
@@ -227,15 +227,28 @@ class Task(Generic[DataT, StateT, ConfigT]):
         as a rollout would."""
         return None
 
-    async def rescore(self, trace: Trace) -> None:
+    async def rescore(self, trace: Trace, *, force: bool = False) -> None:
         """Score a finished trace again, offline: clear its rewards, metrics, judge
-        calls and drop, then run this task's signals that need only the trace."""
+        calls and drop, then run this task's signals that need only the trace.
+
+        A trace whose scoring the run skipped keeps its skip reward and is not scored.
+        With `force`, it is scored like any other trace, except after a format
+        violation: `score` never scores a transcript it cannot parse."""
         if trace.has_error:
             raise ValueError("the rollout errored: its transcript is incomplete")
         trace.info.pop("judge_calls", None)
-        trace.rewards, trace.metrics, trace.extra_usage = {}, {}, []
+        skipped = {
+            name: reward
+            for name, reward in trace.rewards.items()
+            if name.startswith(SKIPPED_REWARD_PREFIX)
+        }
+        if force:
+            format_violation = f"{SKIPPED_REWARD_PREFIX}format_violation"
+            skipped = {n: r for n, r in skipped.items() if n == format_violation}
+        trace.rewards, trace.metrics, trace.extra_usage = skipped, {}, []
         trace.dropped = None
-        await self.score(trace)
+        if not skipped:
+            await self.score(trace)
 
     def defer_scoring(self) -> Self:
         """An independent copy whose task signals are deferred.

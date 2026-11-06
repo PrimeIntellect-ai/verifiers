@@ -53,7 +53,7 @@ async def test_skip_scoring_on_truncated(run, skip):
     (trace,) = episode.traces
     assert trace.is_truncated and trace.ok
     if skip:
-        assert trace.reward == 0 and trace.rewards == {}
+        assert trace.reward == 0 and set(trace.rewards) == {"skipped/truncated"}
         assert trace.info["scoring_skipped"] == "truncated"
     else:
         assert trace.reward == 1
@@ -73,7 +73,7 @@ async def test_skip_scoring_on_timeout(run, skip):
     (trace,) = episode.traces
     assert trace.is_timeout and trace.ok
     if skip:
-        assert trace.reward == 0 and trace.rewards == {}
+        assert trace.reward == 0 and set(trace.rewards) == {"skipped/timeout"}
         assert trace.info["scoring_skipped"] == "timeout"
     else:
         assert trace.reward == 1
@@ -109,7 +109,7 @@ async def test_skip_scoring_on_stop(run, scripted_model, skip):
     (trace,) = episode.traces
     assert trace.stop_condition == "any_response" and trace.ok
     if skip:
-        assert trace.reward == 0 and trace.rewards == {}
+        assert trace.reward == 0 and set(trace.rewards) == {"skipped/any_response"}
         assert trace.info["scoring_skipped"] == "any_response"
     else:
         assert trace.reward == 1
