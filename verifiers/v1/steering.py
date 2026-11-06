@@ -59,12 +59,6 @@ async def switch_model(
     rollout = _by_trace.get(trace_id)
     if rollout is None or rollout.closed or not rollout.ok:
         return {"accepted": False, "reason": "no running agent", "trace_id": trace_id}
-    if not rollout.harness.SUPPORTS_MODEL_SWITCH:
-        return {
-            "accepted": False,
-            "reason": "harness does not support live model changes",
-            "trace_id": trace_id,
-        }
     if (model is None) == (pool is None):
         raise ValueError("supply either model or pool")
     if client is not None:
