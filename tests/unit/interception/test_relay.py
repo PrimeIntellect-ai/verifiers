@@ -2,6 +2,7 @@
 responses as they arrive, and on SIGHUP moves requests still waiting for their first
 event to the new upstream on the same client connection."""
 
+import asyncio
 import http.client
 import json
 import os
@@ -15,6 +16,7 @@ import time
 from collections.abc import Callable, Iterator
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -133,10 +135,12 @@ class Relay:
         self.config = tmp_path / "config.json"
         self.write(upstream, tokens)
         ready = tmp_path / "port"
+        self.failures = tmp_path / "failures"
         self.stderr = (tmp_path / "relay.log").open("w+")
         self.process = subprocess.Popen(
             [sys.executable, str(script), "--config", str(self.config)]
-            + ["--port", "0", "--ready", str(ready)],
+            + ["--port", "0", "--ready", str(ready)]
+            + ["--failures", str(self.failures)],
             stderr=self.stderr,
         )
         self.port = int(wait_for(lambda: ready.exists() and ready.read_text()))
@@ -360,6 +364,8 @@ def test_unreachable_upstream_answers_502_after_the_retry_window(make_relay):
     assert response.status == 502
     assert "unreachable for 1s" in json.loads(response.read())["error"]
     assert 1 <= time.monotonic() - started < 5
+    # The host reads the reason back to name the relay, not the harness, in the trace.
+    assert "unreachable for 1s" in relay.failures.read_text()
 
 
 def edge_page(status: int):
@@ -464,3 +470,40 @@ def test_body_cut_short_is_retried(upstreams, make_relay):
     assert response.status == 200
     assert response.read() == body
     assert len(attempts) == 2
+
+
+class FakeRuntime:
+    """Answers the relay's failure check with a fixed stdout."""
+
+    def __init__(self, stdout: str) -> None:
+        self.stdout = stdout
+
+    async def run(self, argv, env):
+        return SimpleNamespace(stdout=self.stdout, exit_code=0)
+
+
+@pytest.mark.parametrize(
+    ("stdout", "expected"),
+    [
+        (
+            "upstream unreachable for 300s: refused\n",
+            "upstream unreachable for 300s: refused",
+        ),
+        ("the relay exited\n", "the relay exited"),
+        ("", None),
+    ],
+    ids=["gave-up", "exited", "healthy"],
+)
+async def test_relay_failure_names_the_relay(monkeypatch, stdout, expected):
+    from verifiers.v1.errors import RelayError
+    from verifiers.v1.interception.relay import Relay
+
+    monkeypatch.setattr(Relay, "_start", lambda self: asyncio.sleep(0))
+    relay = Relay(FakeRuntime(stdout), "trace")
+    relay.upstream = "https://tunnel.example"
+    failure = await relay.failure()
+    if expected is None:
+        assert failure is None
+    else:
+        assert isinstance(failure, RelayError) and str(failure) == expected
+    await relay.stop()

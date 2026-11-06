@@ -20,10 +20,12 @@ reconnecting or being replaced. A retry is marked as one (`x-stainless-retry-cou
 so the interception server joins it to the request it already serves.
 
 Usage: relay_server.py --config <path> --port <port> [--ready <path>] [--pid <path>]
+                       [--failures <path>]
 
 The config file is JSON: `{"upstream": "https://host/base", "tokens": {"<box token>":
 "<upstream token>"}}`. Once listening, the relay writes its port to `--ready` and its
-process id to `--pid`.
+process id to `--pid`. Each request it gives up on appends its reason to `--failures`,
+so the host can tell a failure of the relay from one of the harness.
 """
 
 import argparse
@@ -169,8 +171,10 @@ def shutdown(sock: socket.socket) -> None:
 
 
 class Relay:
-    def __init__(self, path: str) -> None:
+    def __init__(self, path: str, failures: str | None = None) -> None:
         self.path = path
+        self.failures = failures
+        self.failures_lock = threading.Lock()
         self.config = Config.load(path)
         self.changed = threading.Condition()
         self.upstreams: set[Upstream] = set()
@@ -182,6 +186,16 @@ class Relay:
             upstream = Upstream()
             self.upstreams.add(upstream)
             return upstream, self.config
+
+    def record_failure(self, reason: str) -> None:
+        if self.failures is None:
+            return
+        with (
+            self.failures_lock,
+            contextlib.suppress(OSError),
+            open(self.failures, "a") as file,
+        ):
+            file.write(reason.replace("\n", " ") + "\n")
 
     def end(self, upstream: Upstream) -> None:
         with self.changed:
@@ -550,6 +564,7 @@ class Handler(BaseHTTPRequestHandler):
                     raise ClientGone from error
 
     def fail(self, message: str) -> None:
+        self.server.relay.record_failure(message)
         if self.sent_status is None:
             body = json.dumps({"error": f"relay: {message}"}).encode()
             self.send_response_only(502)
@@ -601,8 +616,9 @@ def main() -> None:
     parser.add_argument("--port", type=int, required=True)
     parser.add_argument("--ready")
     parser.add_argument("--pid")
+    parser.add_argument("--failures")
     args = parser.parse_args()
-    relay = Relay(args.config)
+    relay = Relay(args.config, args.failures)
     # Blocked before any thread starts, so threads inherit the mask and only the
     # `sigwait` below takes SIGHUP: a reload then never interrupts a handler.
     signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGHUP})

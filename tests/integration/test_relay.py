@@ -2,10 +2,10 @@
 call is in flight: its registration is deleted and its frpc connection drops, so it
 cannot log in again. The server opens a new tunnel, reroutes the box's relay to it, and
 the rollout finishes as if nothing happened: the waiting model call goes through once,
-on one branch.
+on one branch. A relay that dies is named in the trace (`RelayError`), not the harness
+that died on it.
 
-The model is scripted and holds its second reply until the test has dropped the tunnel
-and the server has replaced it."""
+The model is scripted and holds its second reply while the test breaks something."""
 
 import asyncio
 import json
@@ -20,6 +20,7 @@ import verifiers.v1 as vf
 from verifiers.v1.dialects.chat import ChatDialect
 from verifiers.v1.harnesses.bash import BashHarnessConfig
 from verifiers.v1.interception import InterceptionServer
+from verifiers.v1.interception.relay import Relay
 from verifiers.v1.utils.prime import load_prime_config
 
 pytestmark = pytest.mark.skipif(
@@ -179,3 +180,36 @@ async def test_rollout_survives_a_replaced_tunnel():
     # server was already serving.
     assert model.requests[1] == 1
     assert len(trace.branches) == 1
+
+
+async def test_a_dead_relay_is_named_in_the_trace(monkeypatch):
+    """The relay exits while a model call waits: the harness dies on the dropped
+    connection, and the trace records `RelayError`, not `HarnessError`."""
+    relays: list[Relay] = []
+    connect = Relay.connect
+
+    async def recording(self, upstream, tokens):
+        relays.append(self)
+        return await connect(self, upstream, tokens)
+
+    monkeypatch.setattr(Relay, "connect", recording)
+    async with HeldModel() as model, InterceptionServer(requires_tunnel=True) as server:
+        agent = vf.make_agent(
+            vf.AgentConfig(
+                harness=BashHarnessConfig(id="bash"),
+                runtime=vf.PrimeConfig(image="python:3.11-slim", labels=["vf-ci"]),
+                model="scripted",
+                client=vf.EvalClientConfig(base_url=model.url),
+            ),
+            interception=server,
+        )
+        run = asyncio.create_task(agent.run(vf.Task(vf.TaskData(idx=0, prompt="Go."))))
+        await asyncio.wait_for(model.held.wait(), 600)
+        (relay,) = relays
+        await relay.runtime.run(["sh", "-c", f'kill -9 "$(cat {relay.pid_path})"'], {})
+        trace = await asyncio.wait_for(run, 600)
+        model.release.set()
+
+    assert not trace.ok
+    assert [error.type for error in trace.errors] == ["RelayError"]
+    assert "the relay exited" in trace.errors[0].message

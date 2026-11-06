@@ -15,6 +15,7 @@ from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.configs.scoring import resolve_scoring
 from verifiers.v1.errors import (
     HarnessError,
+    RelayError,
     RolloutError,
     SandboxError,
     TaskError,
@@ -394,7 +395,7 @@ class Rollout:
                 if self._relay is not None:
                     # The harness holds the model secret anyway; the relay gets
                     # nothing more, so reading its config grants no capability.
-                    async with boundary(SandboxError, "starting the relay"):
+                    async with boundary(RelayError, "starting the relay"):
                         harness_base = await self._relay.connect(
                             base_url.rstrip("/"), {model_secret: model_secret}
                         )
@@ -657,6 +658,9 @@ class Rollout:
                 self.timeout("agent")
                 return False
             real = self._session.error
+            if real is None and self._relay is not None:
+                # A harness that dies on its relay's failure records the relay's.
+                real = await self._relay.failure()
             if real is not None and isinstance(e, RolloutError):
                 real.__cause__ = e
                 self.fail(real)

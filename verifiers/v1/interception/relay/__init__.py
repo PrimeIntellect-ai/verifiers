@@ -20,7 +20,7 @@ import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from verifiers.v1.errors import SandboxError, TunnelError
+from verifiers.v1.errors import RelayError, SandboxError, TunnelError
 
 if TYPE_CHECKING:
     from verifiers.v1.runtimes.runtime import Runtime
@@ -60,6 +60,11 @@ class Relay:
     def pid_path(self) -> str:
         return f"{self.dir}/pid"
 
+    @property
+    def failures_path(self) -> str:
+        """Where the relay appends the reason for each request it gives up on."""
+        return f"{self.dir}/failures"
+
     async def _start(self) -> None:
         # Each launch reads its port from a file of its own: a relay an earlier attempt
         # left in the box can never answer for this one.
@@ -70,6 +75,7 @@ class Relay:
         )
         program = await self.runtime.prepare_uv_script(RELAY_SOURCE, activate=False)
         args = ["--config", self.config_path, "--port", "0", "--ready", ready]
+        args += ["--failures", self.failures_path]
         await self.runtime.run_background(
             [*program, *args, "--pid", self.pid_path], {}, log=f"{self.dir}/relay.log"
         )
@@ -121,6 +127,23 @@ class Relay:
                 f"the relay did not reload: {result.stderr.strip()[-500:]}"
             )
         self.upstream, self.tokens = upstream, tokens
+
+    async def failure(self) -> RelayError | None:
+        """The relay's failure, if it gave up on a request or exited; for a harness that
+        died, so the trace names the relay rather than the harness."""
+        if not self.upstream:
+            return None
+        failures, pid = shlex.quote(self.failures_path), shlex.quote(self.pid_path)
+        check = (
+            f"tail -n 1 {failures} 2>/dev/null; "
+            f'kill -0 "$(cat {pid})" 2>/dev/null || echo "the relay exited"'
+        )
+        with contextlib.suppress(Exception):
+            result = await self.runtime.run(["sh", "-c", check], {})
+            reasons = result.stdout.strip().splitlines()
+            if reasons:
+                return RelayError("; ".join(reasons))
+        return None
 
     async def stop(self) -> None:
         """End the relay and remove its files; best effort, the box may be gone."""
