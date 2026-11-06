@@ -191,6 +191,97 @@ def test_routed_experts_none_when_absent():
     assert trace.branches[-1].routed_experts is None
 
 
+@pytest.mark.parametrize(
+    "rejected_metadata",
+    [
+        # One sampled token, two top-k rows.
+        {
+            "top_logprobs": vf.TopLogprobs.from_top_logprobs(
+                [[40], [41]], [[0.0], [0.0]]
+            )
+        },
+        # Eight bytes cannot fill the declared [9, 2, 1] routing shape.
+        {"routed_experts": {**_routed_payload(4, 0, 100), "shape": [9, 2, 1]}},
+        # A scalar decodes successfully but has no token axis to attribute.
+        {"routed_experts": {**_routed_payload(1, 0, 100, layers=1), "shape": []}},
+        # Prompt projection can reject after the training sidecars were checked.
+        {"renderer_prompt_ids": [10, 11, 12, 20, 21, 30, 31, 99]},
+    ],
+    ids=["top_logprobs", "routed_experts", "scalar_routing", "prompt_projection"],
+)
+@pytest.mark.parametrize(
+    "initial_modality_map", [{}, {10: 2}], ids=["text", "multimodal"]
+)
+def test_rejected_commit_leaves_the_graph_unchanged(
+    rejected_metadata, initial_modality_map
+):
+    """A turn whose training metadata is rejected must not leave its prompt tail or sampled
+    response in the graph, and must not rewrite the prefix's routing rows. Otherwise a retry
+    of the same request adds a second trainable branch next to the rejected one."""
+    trace = vf.Trace(
+        agent=vf.AgentInfo(config=vf.AgentConfig()),
+        task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt="x")),
+        mm_token_type_id_map=initial_modality_map,
+    )
+    user = vf.UserMessage(content="u1")
+    graph.prepare_turn(trace, [user]).commit(
+        vf.Response(
+            id="a",
+            created=0,
+            model="t",
+            message=vf.AssistantMessage(content="a1"),
+            finish_reason="stop",
+            tokens=TurnTokens(
+                prompt_ids=[10, 11, 12],
+                completion_ids=[20, 21],
+                message_spans=[(0, 2)],
+                routed_experts=_routed_payload(4, 0, 0),
+            ),
+        )
+    )
+    prompt = [user, vf.AssistantMessage(content="a1"), vf.UserMessage(content="u2")]
+    num_nodes = len(trace.nodes)
+    prefix_rows = trace.nodes[-1].routed_experts.copy()
+    before = trace.to_record()
+
+    def second_turn(content: str, **metadata) -> vf.Response:
+        return vf.Response(
+            id=content,
+            created=0,
+            model="t",
+            message=vf.AssistantMessage(content=content),
+            finish_reason="stop",
+            tokens=TurnTokens(
+                prompt_ids=[10, 11, 12, 20, 21, 30, 31],
+                completion_ids=[40],
+                message_spans=[(0, 2), None, (5, 7)],
+                mm_token_type_id_map={10: 1},
+                **{"routed_experts": _routed_payload(4, 4, 100), **metadata},
+            ),
+        )
+
+    with pytest.raises(ValueError):
+        graph.prepare_turn(trace, prompt).commit(
+            second_turn("rejected", **rejected_metadata)
+        )
+
+    assert len(trace.nodes) == num_nodes
+    assert trace.num_turns == 1
+    assert bool((trace.nodes[-1].routed_experts == prefix_rows).all())
+    assert trace.mm_token_type_id_map == initial_modality_map
+    assert trace.to_record() == before
+
+    graph.prepare_turn(trace, prompt).commit(second_turn("accepted"))
+    restored = vf.WireTrace.model_validate(trace.to_record())
+    assert restored.mm_token_type_id_map == {10: 1}
+    assert restored.branches[0].mm_token_type_ids.tolist() == [1, 0, 0, 0, 0, 0, 0, 0]
+    assert [
+        [message.content for message in branch.messages]
+        for branch in restored.branches
+        if branch.trainable
+    ] == [["u1", "a1", "u2", "accepted"]]
+
+
 def test_tool_call_hash_matches_v0_content_and_arguments_normalization():
     left = vf.AssistantMessage(
         content=None,
