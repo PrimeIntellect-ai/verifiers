@@ -818,8 +818,10 @@ class Rollout:
             # box is not idle, so no snapshot would match this turn's prefix.
             return
         assert self._harness_session is not None
-        # Copied before the first await: the reply may commit and run its hooks while
-        # the harness answers, and the checkpoint must hold the state before them.
+        # Read before the first await: the reply may commit and run its hooks while
+        # the harness answers, and the checkpoint must describe the idle box.
+        node = turn.prefix_node_ids[-1] if turn.prefix_node_ids else None
+        tail = list(turn.tail)
         state = copy.deepcopy(self.trace.state)
         info = copy.deepcopy(self.trace.info)
         pins = dict(self._session.pinned_tool_results)
@@ -847,11 +849,10 @@ class Rollout:
                 )
                 return None
             checkpoint_id = snapshot.id
-        node = turn.prefix_node_ids[-1] if turn.prefix_node_ids else None
         checkpoint = Checkpoint(
             id=checkpoint_id,
             node=node,
-            tail=list(turn.tail),
+            tail=tail,
             state=state,
             info=info,
             pins=pins,

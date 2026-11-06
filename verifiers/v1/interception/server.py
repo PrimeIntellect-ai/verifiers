@@ -1046,36 +1046,42 @@ class InterceptionServer(Interception):
                     error = e
                     raise
             finally:
-                if capture is not None:
-                    held = time.monotonic()
-                    try:
-                        checkpoint = await capture
-                    # A lost snapshot never fails the turn.
-                    except Exception:
-                        logger.warning(
-                            "checkpoint failed: id=%s", session.trace.id, exc_info=True
-                        )
-                    else:
-                        if checkpoint is not None:
-                            checkpoint.held = time.monotonic() - held
-                if node is None:
-                    turn.abandon()
-                # The turn's one per-exchange record: settings, timing, outcome, and
-                # the error that ended it (if any).
-                self.record_call(
-                    session,
-                    dialect,
-                    body,
-                    started,
-                    node=node,
-                    finish_reason=call_response.finish_reason
-                    if call_response
-                    else None,
-                    usage=call_response.usage if call_response else None,
-                    error=error,
-                    policy_paths=policy_paths,
-                    acp=acp,
-                )
+                try:
+                    if capture is not None:
+                        held = time.monotonic()
+                        try:
+                            # Shielded: a cancelled exchange leaves the snapshot to
+                            # finish in the background, where the rollout awaits it.
+                            checkpoint = await asyncio.shield(capture)
+                        # A lost snapshot never fails the turn.
+                        except Exception:
+                            logger.warning(
+                                "checkpoint failed: id=%s",
+                                session.trace.id,
+                                exc_info=True,
+                            )
+                        else:
+                            if checkpoint is not None:
+                                checkpoint.held = time.monotonic() - held
+                finally:
+                    if node is None:
+                        turn.abandon()
+                    # The turn's one per-exchange record: settings, timing, outcome,
+                    # and the error that ended it (if any).
+                    self.record_call(
+                        session,
+                        dialect,
+                        body,
+                        started,
+                        node=node,
+                        finish_reason=call_response.finish_reason
+                        if call_response
+                        else None,
+                        usage=call_response.usage if call_response else None,
+                        error=error,
+                        policy_paths=policy_paths,
+                        acp=acp,
+                    )
             return serve(call_response, events)
 
         if streaming:
