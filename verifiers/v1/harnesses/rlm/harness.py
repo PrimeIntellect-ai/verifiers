@@ -18,7 +18,11 @@ from pydantic_config import BaseConfig
 
 from verifiers.v1.acp import ACPConfig, ACPHarness, ACPTurn, JsonObject
 from verifiers.v1.clients import ModelContext
-from verifiers.v1.configs.harness import HarnessConfig
+from verifiers.v1.configs.harness import (
+    SEARCH_API_KEY_ENV,
+    HarnessConfig,
+    SearchProvider,
+)
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
 from verifiers.v1.runtimes import Runtime
@@ -71,7 +75,7 @@ class CompactionConfig(BaseConfig):
 class RLMHarnessConfig(HarnessConfig):
     dialect: Literal["chat_completions"] = "chat_completions"
     version: str = Field(
-        default="ae1cc01f8293987d18b09286b34d93c0dfbf8dac", min_length=1
+        default="4dc819aec4f9397ca0a57e3acd96d21249d54620", min_length=1
     )
     """Git ref (branch, tag, or commit) of nano-rlm to install. Must know every
     field this harness puts on the wire, i.e. be at least the default ref."""
@@ -84,6 +88,10 @@ class RLMHarnessConfig(HarnessConfig):
     builtin_tools: list[BuiltinTool] | None = None
     """Native tool selection; None uses nano-rlm's default and is omitted from the
     runtime contract. Explicit selection requires a nano-rlm ref supporting it."""
+    search_provider: SearchProvider = "serper"
+    """Backend of the `search` builtin skill: `serper` or `eco` (You.com Eco Search).
+    Its key is read from the harness `env`/`forward_env`: `SERPER_API_KEY` or
+    `YOU_API_KEY`."""
     compaction: CompactionConfig | bool | None = None
     """Context compaction: a `[compaction]` section (or `true`) enables it with the
     given settings, `false` disables it (an overflowing session then fails), and
@@ -245,7 +253,10 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
             "leaf_append_to_system_prompt": self.config.leaf_append_to_system_prompt,
             "skills": list(self.config.builtin_skills),
             "kernel_env": dict(runtime.env),
-            "search_api_key": self.config.resolved_env.get("SERPER_API_KEY"),
+            "search_api_key": self.config.resolved_env.get(
+                SEARCH_API_KEY_ENV[self.config.search_provider]
+            ),
+            "search_provider": self.config.search_provider,
         }
         if (
             "search" in self.config.builtin_skills
