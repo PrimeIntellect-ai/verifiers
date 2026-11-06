@@ -302,6 +302,20 @@ class Env(ABC, Generic[ConfigT]):
                 episode.is_timeout = True
             episode.errors.append(_as_error(e))
             return episode
+        # Env-recorded rewards land in finalize(), so the range check runs after it.
+        if out_of_range := [
+            f"trace {t.id} reward {t.reward:g} outside reward_range {list(t.reward_range)}"
+            for t in episode.traces
+            if t.ok and not t.is_dropped and not t.in_reward_range
+        ]:
+            episode.errors.append(
+                Error(
+                    type=EnvError.__name__,
+                    message="; ".join(out_of_range)
+                    + " (declare the task's range with scoring.reward_range)",
+                )
+            )
+            return episode
         # Both hooks and every trace concluded — stamp the attempt's verdict
         # (retry history merges into `errors` later without touching it).
         episode.ok = all(t.ok for t in episode.traces)

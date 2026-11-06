@@ -122,6 +122,25 @@ Both decorators accept `trace`, `runtime`, or `task` by parameter name (where `t
 
 For software engineering tasks, call `await vf.capture_patch(trace, runtime, base_commit=...)` in `finalize` so the agent's git diff is saved to `trace.info["patch"]` before your grading script modifies the working tree or checks out test files. Pass a dataset base commit (or record `await vf.resolve_head(runtime)` during `setup`) so commits created by the agent are included in the diff. If the container image already has untracked files before the agent starts, snapshot them in `setup` with `verifiers.v1.utils.git.snapshot_untracked(runtime)` and pass that list as `ignore=...` so they aren't swept into the agent's patch.
 
+### Reward range and pass threshold
+
+Declare the bounds of `trace.reward` on `TaskData.scoring`. Consumers read them from the trace (`trace.reward_range`, `trace.pass_threshold`, `trace.passed`):
+
+- `reward_range` is the inclusive `(low, high)` range of the total reward, weights and env-recorded rewards included. It defaults to `(0.0, 1.0)`. Use `None` for an unbounded side. An episode with a reward outside the range fails with an `EnvError`.
+- `pass_threshold` is the lowest reward that counts as a pass (`trace.passed`). It defaults to the range's high, so a binary task passes only on a perfect score. With an unbounded high, set it explicitly or the task has no pass.
+- `skip_rewards` gives the reward for a trace whose task scoring is skipped, by skip reason (`format_violation`, `truncated`, `timeout`, or a `skip_scoring` stop's name). An unlisted reason gets the range's low. A skip reward must lie inside the range and below the pass threshold. To make a skip worse than a wrong answer, widen the range to include it.
+
+```python
+class GameData(vf.TaskData):
+    scoring: vf.ScoringConfig = vf.ScoringConfig(
+        reward_range=(-1.0, 1.0),
+        pass_threshold=1.0,
+        skip_rewards={"format_violation": -1.0},
+    )
+```
+
+`agent.scoring` overrides these fields like the other scoring fields, for example `--env.agent.scoring.pass-threshold 0.8`. `skip_rewards` entries merge by reason.
+
 When a task has a known reference solution or gold check that can be verified without calling a model, implement `async def validate(self, runtime: vf.Runtime) -> bool | None` on the task; see [Debugging](debugging.md) for running validation checks from the CLI.
 
 ### File answers and shared scoring inputs
@@ -430,7 +449,7 @@ Decorate a task method with `@vf.stop` (synchronous or async) and return `True` 
 - `vf.Response` — while the model's response is buffered, before it is returned to the harness.
 - `vf.Trace` — before each model call, inspecting the trace accumulated so far.
 
-A stop ends the run, but the task still scores it. Pass `@vf.stop(skip_scoring=True)` (or set `skip_scoring = true` on a plugged stop) to skip task scoring for a trace that this stop ends. The trace then keeps no task rewards, metrics, or judge scores, so its reward is 0. `trace.info["scoring_skipped"]` records the stop's name. Task finalization and harness metrics still run, as with `agent.scoring.skip_on_truncated` (see [the agent](agent.md)).
+A stop ends the run, but the task still scores it. Pass `@vf.stop(skip_scoring=True)` (or set `skip_scoring = true` on a plugged stop) to skip task scoring for a trace that this stop ends. The trace then keeps no task rewards, metrics, or judge scores. It gets its skip reward instead, recorded as `skipped/<stop name>` (see [reward range and pass threshold](#reward-range-and-pass-threshold)). `trace.info["scoring_skipped"]` records the stop's name. Task finalization and harness metrics still run, as with `agent.scoring.skip_on_truncated` (see [the agent](agent.md)).
 
 When you want to inspect or rewrite traffic in flight without ending the rollout, use `@vf.intercept` on a method taking `vf.Request` or `vf.Response` (plus optional `trace`). Return a modified copy of the same type to replace the payload, or `None` to leave it untouched:
 

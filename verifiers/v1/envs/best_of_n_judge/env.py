@@ -17,6 +17,7 @@ import uuid
 from pydantic import BaseModel, ConfigDict, Field
 
 import verifiers.v1 as vf
+from verifiers.v1.configs.scoring import weighted_reward_range
 from verifiers.v1.envs.agentic_judge.env import (
     HIDDEN_REASONING,
     VERDICT_FILE,
@@ -287,6 +288,12 @@ class BestOfNJudgeEnv(BestOfNEnv, vf.Env[BestOfNJudgeEnvConfig]):
                     if reward is not None:
                         reward.weight *= self.config.score.task_weight
             attempt.record_reward("judge", score, weight=self.config.score.judge_weight)
+            # Rank scores lie in [0, 1]: the worst tier scores 0, the best 1.
+            attempt.reward_range = weighted_reward_range(
+                (self.config.score.task_weight, attempt.reward_range),
+                (self.config.score.judge_weight, (0.0, 1.0)),
+            )
+            attempt.pass_threshold = attempt.reward_range[1]
 
     async def _rank(
         self, task: vf.Task, attempts: list[vf.Trace], agents: vf.Agents
@@ -326,9 +333,10 @@ class BestOfNJudgeEnv(BestOfNEnv, vf.Env[BestOfNJudgeEnvConfig]):
         attempt's own task reward reached the threshold."""
         attempts = [t for t in episode.traces if t.agent.name == "agent"]
         top = max(t.reward for t in attempts)
+        threshold = self.solved_threshold(task)
         solved = float(
-            max(t.metrics["task_reward"] or 0.0 for t in attempts)
-            >= self.config.threshold
+            threshold is not None
+            and max(t.metrics["task_reward"] or 0.0 for t in attempts) >= threshold
         )
         for trace in attempts:
             trace.record_metric("best", float(trace.reward == top))

@@ -28,6 +28,7 @@ if TYPE_CHECKING:
 from verifiers.v1 import graph
 from verifiers.v1.configs.agent import AgentConfig, WireAgentConfig
 from verifiers.v1.configs.sampling import Sampling
+from verifiers.v1.configs.scoring import RewardRange
 from verifiers.v1.errors import ProviderError, stop_condition
 from verifiers.v1.graph import RECORD_FLOAT_DECIMALS, MessageNode
 from verifiers.v1.runtimes import RuntimeInfo
@@ -607,6 +608,12 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     rewards: dict[str, Reward | None] = Field(default_factory=dict)
     """Named, weighted rewards; `None` means scoring didn't run (e.g. because of a
     preceding error)."""
+    reward_range: RewardRange = (0.0, 1.0)
+    """Inclusive bounds of `reward`, from the rollout's resolved scoring policy
+    (`ScoringConfig.reward_range`). None leaves a side unbounded."""
+    pass_threshold: float | None = 1.0
+    """Lowest `reward` that counts as a pass, from the resolved scoring policy
+    (`ScoringConfig.threshold`). None when no reward counts as a pass."""
     metrics: dict[str, float | None] = Field(default_factory=dict)
     """Unweighted, named metrics; `None` as in `rewards`."""
     info: dict[str, Any] = Field(default_factory=dict)
@@ -678,6 +685,20 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     @property
     def reward(self) -> float:
         return sum(r.value for r in self.rewards.values() if r is not None)
+
+    @property
+    def passed(self) -> bool | None:
+        """Whether `reward` reaches `pass_threshold`; None without a threshold."""
+        if self.pass_threshold is None:
+            return None
+        return self.reward >= self.pass_threshold
+
+    @property
+    def in_reward_range(self) -> bool:
+        """Whether `reward` lies inside `reward_range`."""
+        lo, hi = self.reward_range
+        reward = self.reward
+        return (lo is None or reward >= lo) and (hi is None or reward <= hi)
 
     @property
     def is_format_violation(self) -> bool:

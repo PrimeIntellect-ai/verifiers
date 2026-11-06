@@ -12,7 +12,7 @@ from urllib.parse import urlsplit
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.agent import AgentConfig
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
-from verifiers.v1.configs.scoring import resolve_scoring
+from verifiers.v1.configs.scoring import SKIPPED_REWARD_PREFIX, resolve_scoring
 from verifiers.v1.errors import (
     HarnessError,
     RolloutError,
@@ -150,6 +150,8 @@ class Rollout:
             # The seat's resolved config, role overrides included — the agent
             # this trace can be reproduced with.
             agent=AgentInfo(config=agent_config),
+            reward_range=self._scoring_policy.reward_range,
+            pass_threshold=self._scoring_policy.threshold,
         )
         self.trace._replay_view = harness.replay_view
         if on_trace is not None:
@@ -875,6 +877,10 @@ class Rollout:
                                 skip_reason,
                             )
                             trace.info["scoring_skipped"] = skip_reason
+                            trace.record_reward(
+                                f"{SKIPPED_REWARD_PREFIX}{skip_reason}",
+                                self._scoring_policy.skip_reward(skip_reason),
+                            )
                         elif grader is not None:
                             try:
                                 await grade_task(
