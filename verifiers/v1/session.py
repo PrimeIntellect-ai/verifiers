@@ -177,8 +177,6 @@ class RolloutSession:
     """The model client serving this rollout's turns. The interception server assigns it at
     `register` (one server-owned client per distinct endpoint config), so every rollout it
     multiplexes shares one keepalive connection pool instead of opening its own."""
-    injected_model_key: str | None = field(default=None, repr=False)
-    """Sandbox credential required to authenticate the public trace ID as a model route."""
     proxy_mcp: MCPProxy | None = field(default=None, repr=False)
     """Register a host MCP backend on this session's interception server while serving."""
     error: "RolloutError | None" = None

@@ -5,9 +5,6 @@ from urllib.parse import SplitResult, urlsplit
 
 from pydantic import AnyHttpUrl
 
-MODEL_KEY_HEADER = "x-verifiers-model-key"
-"""Injected sandbox credential; the harness sends its trace ID separately for routing."""
-
 
 def normalize_network_host(host: str) -> str:
     """Canonicalize IDNs while preserving ASCII host patterns."""

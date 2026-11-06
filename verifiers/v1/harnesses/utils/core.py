@@ -4,7 +4,6 @@ import argparse
 import asyncio
 import json
 import logging
-import os
 import subprocess
 import traceback
 from contextlib import AsyncExitStack
@@ -500,9 +499,7 @@ async def main() -> None:
         base_url=args.base_url,
         api_key=args.api_key,
         timeout=httpx.Timeout(600.0 if args.bash else None, connect=5.0),
-        http_client=DefaultAsyncHttpxClient(
-            verify=os.environ.get("SSL_CERT_FILE") or certifi.where()
-        ),
+        http_client=DefaultAsyncHttpxClient(verify=certifi.where()),
     )
     tool_client = (
         httpx.AsyncClient(timeout=httpx.Timeout(None, connect=5.0))

@@ -7,11 +7,9 @@ import contextlib
 import io
 import logging
 import math
-import secrets
 import shlex
 import tempfile
 import uuid
-from collections import Counter
 from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -26,7 +24,7 @@ from prime_sandboxes.models import (
     validate_header_rules,
 )
 
-from verifiers.v1.configs.client import BaseClientConfig, resolve_headers
+from verifiers.v1.configs.client import BaseClientConfig
 from verifiers.v1.configs.runtime import NetworkPolicyConfig, PrimeConfig
 from verifiers.v1.dialects import DIALECTS
 from verifiers.v1.errors import SandboxError
@@ -42,7 +40,6 @@ from verifiers.v1.runtimes.limiters import creation_limiter
 from verifiers.v1.runtimes.runtime import Runtime
 from verifiers.v1.utils.aio import run_shielded
 from verifiers.v1.utils.artifacts import validate_runtime_mounts
-from verifiers.v1.utils.network import MODEL_KEY_HEADER
 from verifiers.v1.utils.prime import ensure_prime_auth
 from verifiers.v1.utils.scope import run_scope
 
@@ -182,7 +179,6 @@ class PrimeBackend(RuntimeBackend):
         # Live credentials never enter the serializable runtime config or trace.
         self._headers: dict[str, dict[str, str]] = {}
         self._env_secrets: set[tuple[str, str]] = set()
-        self._model_key_users: Counter[str] = Counter()
 
     @property
     def header_rules(self) -> dict[str, HeaderRule]:
@@ -242,7 +238,8 @@ class PrimeBackend(RuntimeBackend):
                 "Prime inference header injection requires HTTPS on port 443"
             )
         host = url.hostname or ""
-        headers = httpx.Headers(resolve_headers(config))
+        # Resolve only values explicitly forwarded to the sandbox, never host env.
+        headers = httpx.Headers()
         if key := forwarded.get(config.api_key_var):
             for dialect in DIALECTS:
                 headers.update(dialect.auth_headers(key))
@@ -266,47 +263,6 @@ class PrimeBackend(RuntimeBackend):
             self._env_secrets.update(forwarded.items())
             if self._client is not None:
                 await self._apply_network()
-
-    @asynccontextmanager
-    async def model_key(self, endpoint: str) -> AsyncIterator[str]:
-        """Share one injected credential per host until its last rollout exits."""
-        url = urlsplit(endpoint)
-        if url.scheme != "https" or url.port not in (None, 443):
-            raise SandboxError(
-                "Prime interception header injection requires HTTPS on port 443"
-            )
-        host = url.hostname or ""
-        acquired = False
-        try:
-            async with self._network_lock:
-                if not self._model_key_users[host]:
-                    self._headers.setdefault(host, {})[MODEL_KEY_HEADER] = (
-                        secrets.token_urlsafe(32)
-                    )
-                self._model_key_users[host] += 1
-                acquired = True
-                if self._model_key_users[host] == 1:
-                    if any(
-                        name.lower() in {"authorization", "x-api-key"}
-                        for name in self.header_rules[host].headers
-                    ):
-                        raise SandboxError(
-                            "interception header rules must preserve the harness routing ID"
-                        )
-                    await self._apply_network()
-                key = self._headers[host][MODEL_KEY_HEADER]
-            yield key
-        finally:
-            if acquired:
-                async with self._network_lock:
-                    self._model_key_users[host] -= 1
-                    if not self._model_key_users[host]:
-                        del self._model_key_users[host]
-                        del self._headers[host][MODEL_KEY_HEADER]
-                        if not self._headers[host]:
-                            del self._headers[host]
-                        if not self.stopped:
-                            await run_shielded(self._apply_network())
 
     @property
     def published_port(self) -> int:

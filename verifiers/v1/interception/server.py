@@ -69,7 +69,6 @@ from verifiers.v1.session import IdempotentRequest, ReplayResponse, RolloutSessi
 from verifiers.v1.trace import Error, ModelCall, PolicyEvent, TimeSpan
 from verifiers.v1.types import FinishReason, Response, Usage
 from verifiers.v1.utils.aio import run_shielded
-from verifiers.v1.utils.network import MODEL_KEY_HEADER
 
 logger = logging.getLogger(__name__)
 
@@ -357,7 +356,7 @@ class InterceptionServer(Interception):
         self.sessions: dict[str, RolloutSession] = {}
         self.clients: dict[str, Client] = {}
         self.state_sessions: dict[str, RolloutSession] = {}
-        self.routes: dict[str, RolloutSession] = {}
+        self.state_routes: dict[str, RolloutSession] = {}
         self.mcp_routes: dict[str, _MCPRoute] = {}
         self.state_service_secrets = frozenset(state_service_secrets)
         self.config = config or InterceptionServerConfig()
@@ -407,7 +406,7 @@ class InterceptionServer(Interception):
         state_secret = secrets.token_urlsafe(16)
         self.sessions[model_secret] = session
         self.state_sessions[state_secret] = session
-        self.routes[session.trace.id] = session
+        self.state_routes[session.trace.id] = session
         session.proxy_mcp = partial(self.proxy_mcp, model_secret)
         return model_secret, state_secret
 
@@ -416,8 +415,7 @@ class InterceptionServer(Interception):
         self.state_sessions.pop(state_secret, None)
         if session is not None:
             session.proxy_mcp = None
-            self.routes.pop(session.trace.id, None)
-            session.injected_model_key = None
+            self.state_routes.pop(session.trace.id, None)
             for capability, route in list(self.mcp_routes.items()):
                 if route.session is session:
                     del self.mcp_routes[capability]
@@ -567,20 +565,7 @@ class InterceptionServer(Interception):
         return response
 
     async def start(self) -> None:
-        @web.middleware
-        async def injected_model_key(request, handler):
-            # Keep injected credentials out of every upstream request, including MCP.
-            # Only model handlers use them; task state keeps its separate bearer.
-            if MODEL_KEY_HEADER in request.headers:
-                headers = request.headers.copy()
-                key = headers.popall(MODEL_KEY_HEADER)[0]
-                request = request.clone(headers=headers)
-                request["model_key"] = key
-            return await handler(request)
-
-        app = web.Application(
-            client_max_size=MAX_REQUEST_BODY, middlewares=[injected_model_key]
-        )
+        app = web.Application(client_max_size=MAX_REQUEST_BODY)
         app.router.add_get(HEALTH_PATH, self.handle_health)
         for dialect in DIALECTS:
             for route in dialect.routes:
@@ -655,7 +640,9 @@ class InterceptionServer(Interception):
         """`POST /tool`: the harness's gate asks whether to run a tool call — its
         `{tool_call_id, name, arguments}` in, the verdict of `RolloutSession.decide_tool`
         out. The model bearer keys it: it never alters what the model already received."""
-        session = self._model_session(request, DIALECTS[0])
+        session = self.sessions.get(
+            request.headers.get("Authorization", "").removeprefix("Bearer ")
+        )
         if session is None:
             return web.json_response({"error": "unauthorized"}, status=401)
         session.adopt(asyncio.current_task())
@@ -739,29 +726,10 @@ class InterceptionServer(Interception):
         )
         session.trace.notify()
 
-    def _model_session(
-        self, request: web.Request, dialect: Dialect
-    ) -> RolloutSession | None:
-        """Resolve either a normal bearer or a public route with an injected credential."""
-        route = dialect.secret(request.headers)
-        if session := self.sessions.get(route):
-            return session
-        session = self.routes.get(route)
-        if (
-            session is not None
-            and session.injected_model_key is not None
-            and secrets.compare_digest(
-                session.injected_model_key.encode(),
-                request.get("model_key", "").encode(),
-            )
-        ):
-            return session
-        return None
-
     async def handle_request(
         self, request: web.Request, dialect: Dialect
     ) -> web.StreamResponse:
-        session = self._model_session(request, dialect)
+        session = self.sessions.get(dialect.secret(request.headers))
         if session is None:
             logger.warning("interception: unauthorized request")
             return _error_response(dialect, "unauthorized", status=401)
@@ -1085,7 +1053,7 @@ class InterceptionServer(Interception):
     ) -> web.Response:
         """A non-model-turn side request (an `aux_route`, e.g. Anthropic's `count_tokens`):
         relayed as native JSON, never recorded on the trace."""
-        session = self._model_session(request, dialect)
+        session = self.sessions.get(dialect.secret(request.headers))
         if session is None:
             return _error_response(dialect, "unauthorized", status=401)
         session.adopt(asyncio.current_task())
@@ -1121,7 +1089,7 @@ class InterceptionServer(Interception):
         A pure relay from the session's endpoint config — never recorded on the trace, and a
         failure never fails the rollout."""
         for dialect in DIALECTS:
-            session = self._model_session(request, dialect)
+            session = self.sessions.get(dialect.secret(request.headers))
             if session is not None:
                 break
         else:
@@ -1157,7 +1125,7 @@ class InterceptionServer(Interception):
         secret = auth[len("Bearer ") :] if auth.startswith("Bearer ") else ""
         session = self.state_sessions.get(secret)
         if session is None and allow_service and secret in self.state_service_secrets:
-            session = self.routes.get(
+            session = self.state_routes.get(
                 request.headers.get("X-Verifiers-State-Route", "")
             )
         if session is not None:  # state writes must not land on a sealed trace either

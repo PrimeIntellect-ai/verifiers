@@ -29,7 +29,6 @@ _BLOCKED_REQUEST_HEADERS = (
             # The harness uses this rollout secret to authenticate with the localhost server.
             # The dialect adds the actual provider authorization after filtering.
             "authorization",
-            "x-api-key",
             # HTTPX recalculates these for the provider URL, JSON bytes, and supported decoders.
             "accept-encoding",
             "content-encoding",
