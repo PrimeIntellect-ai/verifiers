@@ -83,6 +83,8 @@ LOAD_IMAGES = (
     f'for f in {COMPOSE_IMAGES}/*.tar; do [ -e "$f" ] || continue; '
     'docker load -q -i "$f" && rm -f "$f" || exit 1; done'
 )
+# The network main joins when all its own are `internal` (see `compose_services`).
+HARNESS_NETWORK = "vf-harness"
 # A failed Compose command's error keeps this many characters of its output, from the
 # end: the cause (an unhealthy dependency, a failed build step) follows the progress
 # lines, and `up` also prints every build's log.
@@ -487,6 +489,23 @@ async def compose_services(
             if "workdir" in main:
                 main["working_dir"] = main.pop("workdir")
             overlay = {"services": {spec.workspace: main}}
+            # The harness runs in main and needs a routable network (its install, the
+            # model). A task that puts main's network owner only on `internal` networks
+            # (its target reachable on them, nothing else) gets one more, routed like a
+            # Compose default network; the other services stay where the task put them.
+            networks = resolved.get("networks", {})
+            joined = services[owner].get("networks") or {}
+            if joined and all(
+                networks.get(name, {}).get("internal") for name in joined
+            ):
+                if HARNESS_NETWORK in networks:
+                    raise SandboxError(
+                        f"Compose network {HARNESS_NETWORK!r} is reserved for the harness"
+                    )
+                overlay["networks"] = {HARNESS_NETWORK: {}}
+                overlay["services"].setdefault(owner, {})["networks"] = {
+                    HARNESS_NETWORK: {}
+                }
             if local:
                 assert isinstance(config, DockerConfig)
                 if config.cpu is not None:

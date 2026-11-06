@@ -197,3 +197,49 @@ async def test_up_failure_carries_the_failed_services_logs(monkeypatch, tmp_path
     assert "cache (running, unhealthy) logs:" in error
     tail = error.split("container db exited (1)")[1]
     assert "chat" not in tail and "main" not in tail
+
+
+async def test_main_only_on_internal_networks_joins_a_routed_one(monkeypatch, tmp_path):
+    """The harness in main needs a route out (its install, the model): a main the task
+    puts only on `internal` networks also joins a routed network, and nothing else does."""
+    from verifiers.v1.runtimes import compose as module
+
+    services = {
+        "main": {"image": "app", "networks": {"public-plane": None}},
+        "target": {"image": "svc", "networks": {"public-plane": None}},
+    }
+    resolved = {"services": services, "networks": {"public-plane": {"internal": True}}}
+
+    class Docker(FakeDocker):
+        async def __call__(self, *argv, env=None, input=None):
+            if "config" in argv:
+                return ProgramResult(0, json.dumps(resolved), "")
+            return await super().__call__(*argv, env=env, input=input)
+
+    compose = "services:\n  main:\n    image: app\n"
+    docker = Docker(services, "done")
+    monkeypatch.setattr(module, "cli", docker)
+    with pytest.raises(SandboxError):
+        async with module.compose_services(
+            DockerConfig(), _task(tmp_path, compose), {}, trust_compose=True
+        ):
+            pass
+    assert docker.overlay["networks"] == {module.HARNESS_NETWORK: {}}
+    assert docker.overlay["services"]["main"]["networks"] == {
+        module.HARNESS_NETWORK: {}
+    }
+    assert "networks" not in docker.overlay["services"].get("target", {})
+
+    # A main with any routed network (or Compose's default) keeps its own.
+    resolved["networks"]["judge-plane"] = {}
+    services["main"]["networks"]["judge-plane"] = None
+    docker = Docker(services, "done")
+    monkeypatch.setattr(module, "cli", docker)
+    (tmp_path / "routed").mkdir()
+    with pytest.raises(SandboxError):
+        async with module.compose_services(
+            DockerConfig(), _task(tmp_path / "routed", compose), {}, trust_compose=True
+        ):
+            pass
+    assert "networks" not in docker.overlay
+    assert "networks" not in docker.overlay["services"]["main"]
