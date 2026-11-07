@@ -236,6 +236,21 @@ describes the box it was written on (the saved egress gateway, the PID namespace
 init) is dropped first. A /run that is no longer a tmpfs (already bound) is left as it
 is; a box without `mount` keeps the empty tmpfs."""
 
+UNCAP_PROCESSES = (
+    "{ for p in /proc/[0-9]*; do p=${p#/proc/}; "
+    'prlimit --pid "$p" --nproc=unlimited:unlimited 2>/dev/null || '
+    "python3 -c 'import resource,sys; resource.prlimit(int(sys.argv[1]), "
+    'resource.RLIMIT_NPROC, (resource.RLIM_INFINITY,) * 2)\' "$p" 2>/dev/null; '
+    "done; } >/dev/null 2>&1;"
+)
+"""Lift the box's process cap, as Docker leaves a container's: a Prime box boots init with
+a hard RLIMIT_NPROC the kernel sizes from the box (3,809 on a 2-CPU, 4 GB one), and
+every command inherits it from the command daemon. A user cannot raise its own hard
+limit, so a grader that runs the agent's program under `prlimit --nproc=4096` failed
+outright, every case of it (CyberStrike r250's c-native-loader-triage). Raised on every
+process already running (init, the command daemon), so what they start from now on,
+dockerd and its containers included, inherits it."""
+
 _PID_NAMESPACE_FILE = "/run/vf-pid-namespace"
 _NAMESPACE_RECHECK_S = 30.0
 _REAPER = """
@@ -914,7 +929,7 @@ class PrimeBackend(RuntimeBackend):
                     "workdir",
                     lambda: self._client.execute_command(
                         self.info.id,
-                        f"{IMAGE_RUN} mkdir -p {shlex.quote(self.config.workdir)}"
+                        f"{IMAGE_RUN} {UNCAP_PROCESSES} mkdir -p {shlex.quote(self.config.workdir)}"
                         f" && mkdir -p -m 1777 /run/lock && {HOSTS_ENTRY}",
                         working_dir="/",
                     ),
