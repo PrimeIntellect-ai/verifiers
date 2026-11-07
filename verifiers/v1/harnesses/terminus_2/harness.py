@@ -1,4 +1,3 @@
-import logging
 from pathlib import Path
 from typing import Literal
 
@@ -8,9 +7,10 @@ from verifiers.v1.harness import Harness
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
+from verifiers.v1.utils.logging import get_logger
 
 PROGRAM_SOURCE = (Path(__file__).resolve().parent / "program.py").read_text()
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class Terminus2HarnessConfig(HarnessConfig):
@@ -76,5 +76,5 @@ class Terminus2Harness(Harness[Terminus2HarnessConfig]):
                 # Runtime teardown is the final backstop; preserve the rollout's
                 # result or original failure when this best-effort cleanup cannot run.
                 logger.warning(
-                    "failed to clean up Terminus 2 tmux server", exc_info=True
+                    "Failed to clean up the Terminus 2 tmux server", exc_info=True
                 )

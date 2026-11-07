@@ -1,7 +1,6 @@
 """Colocated execution, local Compose, and native Prime service VMs."""
 
 import asyncio
-import logging
 from contextlib import AsyncExitStack, asynccontextmanager
 from functools import partial
 
@@ -9,8 +8,9 @@ from verifiers.v1.runtimes import PrimeBackend, PrimeConfig
 from verifiers.v1.runtimes.compose import compose_services
 from verifiers.v1.runtimes.deployment import ServicesSpec, _DeploymentStrategy
 from verifiers.v1.runtimes.private_network import lan_host, private_network
+from verifiers.v1.utils.logging import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class _ColocatedDeployment(_DeploymentStrategy):
@@ -30,7 +30,9 @@ class _ColocatedDeployment(_DeploymentStrategy):
             try:
                 await deployment.execution_backend.stop()
             except Exception:
-                logger.warning("solver teardown failed before grading", exc_info=True)
+                logger.warning(
+                    "Failed to tear down the solver before grading", exc_info=True
+                )
 
 
 class _ContainerDeployment(_DeploymentStrategy):
@@ -55,7 +57,8 @@ class _ContainerDeployment(_DeploymentStrategy):
             await self._services.aclose()
         except Exception:
             logger.warning(
-                "solver services teardown failed before grading", exc_info=True
+                "Failed to tear down the solver services before grading",
+                exc_info=True,
             )
 
 
@@ -121,7 +124,9 @@ class _PrivateNetworkDeployment(_DeploymentStrategy):
             try:
                 await release()
             except Exception:
-                logger.warning("%s teardown failed before grading", what, exc_info=True)
+                logger.warning(
+                    "Failed to tear down %s before grading", what, exc_info=True
+                )
 
 
 class _NativeComposeDeployment(_PrivateNetworkDeployment):
