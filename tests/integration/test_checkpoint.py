@@ -5,7 +5,9 @@ before it, and finishes in a new harness process).
 Every case runs once per snapshot type (`SnapshotType`), on each harness and runtime
 that both declare `SUPPORTS_<TYPE>_SNAPSHOTS`; the other cells are collected as skips.
 A new snapshot type adds its cases without a change here. The retention policies run
-on one harness: what they keep or delete does not depend on it."""
+on one harness: what they keep or delete does not depend on it. Every case checks that
+the run leaks no snapshot: each one its boxes took is deleted on the platform, except
+the ones the policy keeps."""
 
 from collections.abc import Sequence
 from typing import get_args
@@ -19,6 +21,7 @@ from skill_codeword import SKILL
 from verifiers.v1.configs.runtime import SnapshotType
 from verifiers.v1.harness import RESTORE_PROMPT
 from verifiers.v1.rollout import kept
+from verifiers.v1.runtimes import PrimeBackend
 from verifiers.v1.types import content_text
 
 RETRIES = {"max_retries": 0, "rules": [{"type": "ProviderError", "max_retries": 1}]}
@@ -47,13 +50,45 @@ def checkpoint_env(snapshot_type: str, **checkpoint) -> dict:
     }
 
 
-async def on_platform(checkpoint: str) -> bool:
-    """Whether prime still holds `checkpoint`, restorable."""
+@pytest.fixture
+def taken(monkeypatch) -> list[str]:
+    """The ids of every snapshot the run's boxes take, in every attempt: also the
+    ones a restore rewinds past and the ones that never become restorable."""
+    ids: list[str] = []
+    snapshot = PrimeBackend.snapshot
+
+    async def recording(self):
+        result = await snapshot(self)
+        ids.append(result.id)
+        return result
+
+    monkeypatch.setattr(PrimeBackend, "snapshot", recording)
+    return ids
+
+
+async def platform_state(snapshot_id: str) -> str | None:
+    """The snapshot's state on prime, or None once it is gone."""
     async with AsyncSandboxClient() as client:
         try:
-            return (await client.get_checkpoint(checkpoint)).state == "DURABLE"
-        except Exception:  # noqa: BLE001 - a deleted checkpoint is not found
-            return False
+            return (await client.get_checkpoint(snapshot_id)).state
+        except Exception:  # noqa: BLE001 - a deleted snapshot is not found
+            return None
+
+
+async def assert_no_leaks(taken: list[str], kept_ids: set[str] = frozenset()) -> None:
+    """Every snapshot the run took is deleted, except `kept_ids`, which stay
+    restorable."""
+    assert taken
+    states = {snapshot_id: await platform_state(snapshot_id) for snapshot_id in taken}
+    leaked = {
+        snapshot_id: state
+        for snapshot_id, state in states.items()
+        if snapshot_id not in kept_ids and state not in (None, "DELETING")
+    }
+    assert leaked == {}
+    assert {
+        snapshot_id: states[snapshot_id] for snapshot_id in kept_ids
+    } == dict.fromkeys(kept_ids, "DURABLE")
 
 
 @pytest.mark.parametrize(
@@ -61,7 +96,9 @@ async def on_platform(checkpoint: str) -> bool:
     snapshot_grid(),
     indirect=["harness", "harness_runtime"],
 )
-async def test_retry_restores_checkpoint(run, snapshot_type, harness, harness_runtime):
+async def test_retry_restores_checkpoint(
+    run, taken, snapshot_type, harness, harness_runtime
+):
     """The box restores to the state before the turn that failed, the turns up to
     there stay sampled, the task's `setup` (a nonce the prompt never reveals) is not
     rerun, and the harness is told about the restore — the restored attempt builds on
@@ -70,6 +107,7 @@ async def test_retry_restores_checkpoint(run, snapshot_type, harness, harness_ru
     env = checkpoint_env(snapshot_type, interval=1)
     trace = await restored_trace(run, harness, harness_runtime, env)
     assert trace.num_turns >= FAIL_AFTER_TURNS
+    await assert_no_leaks(taken)
 
 
 @pytest.mark.parametrize(
@@ -77,12 +115,15 @@ async def test_retry_restores_checkpoint(run, snapshot_type, harness, harness_ru
     snapshot_grid(["bash"]),
     indirect=["harness", "harness_runtime"],
 )
-async def test_default_config_restores(run, snapshot_type, harness, harness_runtime):
+async def test_default_config_restores(
+    run, taken, snapshot_type, harness, harness_runtime
+):
     """With the default interval (every 10th turn), the retry restores the turn-1
     snapshot: the box as `setup` left it, before any tool call."""
     env = checkpoint_env(snapshot_type)
     trace = await restored_trace(run, harness, harness_runtime, env)
     assert len(trace.checkpoints) >= 1
+    await assert_no_leaks(taken)
 
 
 @pytest.mark.parametrize(
@@ -90,13 +131,16 @@ async def test_default_config_restores(run, snapshot_type, harness, harness_runt
     snapshot_grid(["rlm"], needs=("mcp", "skills")),
     indirect=["harness", "harness_runtime"],
 )
-async def test_rlm_with_skills_restores(run, snapshot_type, harness, harness_runtime):
+async def test_rlm_with_skills_restores(
+    run, taken, snapshot_type, harness, harness_runtime
+):
     """rlm keeps its session in a per-run skill home when it has skills: the retry
     must load the session from the same home the restored box holds."""
     config = harness.model_copy(update={"skills": [SKILL]})
     env = checkpoint_env(snapshot_type, interval=1)
     trace = await restored_trace(run, config, harness_runtime, env)
     assert trace.num_turns >= FAIL_AFTER_TURNS
+    await assert_no_leaks(taken)
 
 
 async def restored_trace(run, harness, harness_runtime, env):
@@ -150,7 +194,7 @@ async def restored_trace(run, harness, harness_runtime, env):
     indirect=["harness", "harness_runtime"],
 )
 async def test_checkpoint_retention(
-    run, snapshot_type, harness, harness_runtime, keep, after
+    run, taken, snapshot_type, harness, harness_runtime, keep, after
 ):
     """Snapshots the policy drops are deleted while the rollout runs, without breaking
     the newest one: the retry still restores it. When the run is final, `after` deletes
@@ -178,8 +222,7 @@ async def test_checkpoint_retention(
             if keep == "all":
                 # Snapshots still uploading when the run succeeded were never restorable.
                 assert live == [c.id for c in trace.checkpoints if c.time.end]
-        for checkpoint in trace.checkpoints:
-            assert await on_platform(checkpoint.id) == (not checkpoint.deleted)
+        await assert_no_leaks(taken, set(live))
     finally:
         async with AsyncSandboxClient() as client:
             for checkpoint in live:
