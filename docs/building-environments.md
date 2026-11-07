@@ -155,7 +155,7 @@ Both the solver and verifier must run on container-backed runtimes (`subprocess`
 
 List every file or directory the grader needs in `TaskData.artifacts` (along with any `exclude` glob patterns for directories). When restoring artifacts into the grading sandbox, verifiers replaces whatever exists under those paths, so keep agent output directories separate from locations where you install trusted tests or grader dependencies. By default, a missing artifact fails the rollout; if an output is optional, declare it with `vf.Artifact(source=..., required=False)` and handle its absence in your reward function.
 
-In addition to declared paths, `/logs/artifacts` is collected automatically whenever it exists. Collected archives are held in memory on the evaluator only until grading finishes (up to `TaskData.artifact_max_bytes`, which defaults to 256 MiB and accepts at most 1 GiB) and are not persisted in traces; if you want to keep small snippets of output on the trace, copy them into `trace.info` during `finalize`.
+In addition to declared paths, `/logs/artifacts` is collected automatically whenever it exists. Collected archives are held in memory on the evaluator only until grading finishes (up to 4 GiB per rollout) and are not persisted in traces; if you want to keep small snippets of output on the trace, copy them into `trace.info` during `finalize`.
 
 To copy private test suites or reference data into the grading sandbox without exposing them to the solver, implement `stage_verifier`. Unlike `setup` (which runs in both sandboxes and should only prepare inputs the agent is allowed to see), `stage_verifier` runs only in the grading sandbox after solver artifacts have been restored:
 

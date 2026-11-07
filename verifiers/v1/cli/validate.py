@@ -275,9 +275,7 @@ async def _score_untouched(
         )
         if isolated:
             if not trace.state.artifacts:
-                trace.state.artifacts = await collect(
-                    runtime, task.data.artifacts, max_bytes=task.data.artifact_max_bytes
-                )
+                trace.state.artifacts = await collect(runtime, task.data.artifacts)
             await deployment.stop_execution()
             await task.finalize_services(
                 trace,

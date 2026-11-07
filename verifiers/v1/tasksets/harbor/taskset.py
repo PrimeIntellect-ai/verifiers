@@ -43,7 +43,6 @@ from verifiers.v1.task import Task, TaskData, TaskResources, TaskTimeout
 from verifiers.v1.taskset import Taskset
 from verifiers.v1.trace import Trace
 from verifiers.v1.utils.artifacts import (
-    ARTIFACT_BYTES_LIMIT,
     ARTIFACTS_DIR,
     MAX_ARTIFACT_BYTES,
     Artifact,
@@ -78,8 +77,6 @@ class HarborTaskConfig(TaskConfig):
 
 
 class HarborConfig(TasksetConfig):
-    artifact_max_bytes: int = Field(MAX_ARTIFACT_BYTES, gt=0, le=ARTIFACT_BYTES_LIMIT)
-    """Total archive bytes collected from one solver, across all its services."""
     task: HarborTaskConfig = HarborTaskConfig()
     dataset: str = "harbor/hello-world"
     """A Harbor Hub package id ("org/name" or "org/name@ref"), where ref is a
@@ -368,7 +365,7 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
                     for artifact in self.data.artifacts
                     if artifact.service == service
                 ],
-                max_bytes=self.data.artifact_max_bytes - used,
+                max_bytes=MAX_ARTIFACT_BYTES - used,
                 sweep=service == "main",
             )
             # Every service restores into the grader's one filesystem.
@@ -836,7 +833,6 @@ def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborD
             mode="isolated" if verifier is not None else "shared",
             network=None if verifier is not None else shared_grading_network(parsed),
         ),
-        artifact_max_bytes=harbor_config.artifact_max_bytes,
         name=harbor_task.name,
         description=task.description if task else None,
         prompt=harbor_task.instruction.strip(),

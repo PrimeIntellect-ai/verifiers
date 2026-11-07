@@ -26,11 +26,7 @@ from verifiers.v1.configs.task import TaskConfig
 from verifiers.v1.errors import TaskError, boundary
 from verifiers.v1.state import StateT
 from verifiers.v1.types import Messages, content_text
-from verifiers.v1.utils.artifacts import (
-    ARTIFACT_BYTES_LIMIT,
-    MAX_ARTIFACT_BYTES,
-    Artifact,
-)
+from verifiers.v1.utils.artifacts import Artifact
 from verifiers.v1.utils.decorators import (
     discover_decorated,
     invoke_all,
@@ -133,8 +129,6 @@ class TaskData(BaseModel):
     on top of the implicitly collected `/logs/artifacts/` convention dir. Declare
     runtime outputs that must cross that boundary. A declared path that is missing at
     collection time fails the rollout."""
-    artifact_max_bytes: int = Field(MAX_ARTIFACT_BYTES, gt=0, le=ARTIFACT_BYTES_LIMIT)
-    """Total byte limit for collected artifact archives, including the convention dir."""
 
     timeout: TaskTimeout = TaskTimeout()
     resources: TaskResources = TaskResources()

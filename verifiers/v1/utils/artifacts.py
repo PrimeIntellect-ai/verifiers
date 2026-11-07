@@ -29,13 +29,9 @@ logger = get_logger(__name__)
 ARTIFACTS_DIR = "/logs/artifacts"
 """Implicit artifact directory; tasks that write here need no declaration."""
 
-MAX_ARTIFACT_BYTES = 256 * 1024 * 1024
-"""Default ceiling per collection. Collected archives stay in host memory until the episode is
-written, so the worst case is this times the number of in-flight rollouts."""
-
-ARTIFACT_BYTES_LIMIT = 1024 * 1024 * 1024
-"""Upper bound for any collection ceiling. Restoring uploads each archive in a single
-request, and the Prime SDK fails single uploads of about 2 GiB."""
+MAX_ARTIFACT_BYTES = 4 * 1024 * 1024 * 1024
+"""Total archive bytes collected from one rollout, across all its roots and services.
+Archives stay in host memory until the episode is written."""
 
 
 class Artifact(BaseModel):

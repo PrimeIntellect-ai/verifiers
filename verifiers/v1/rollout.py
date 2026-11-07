@@ -850,9 +850,7 @@ class Rollout:
                         ) and not trace.state.artifacts:
                             finalize_phase = "submission collection"
                             trace.state.artifacts = await collect(
-                                runtime,
-                                self.task.data.artifacts,
-                                max_bytes=self.task.data.artifact_max_bytes,
+                                runtime, self.task.data.artifacts
                             )
                     if grader is not None:
                         # The submission is collected: close the solver's session, then
