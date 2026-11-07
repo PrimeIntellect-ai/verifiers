@@ -40,6 +40,7 @@ from verifiers.v1.utils.memory import trim_memory_periodically
 from verifiers.v1.utils.retries import run_episode_with_retry
 
 logger = get_logger(__name__)
+_warned_invalid_rewards: set[type] = set()
 
 
 def _as_error(e: Exception) -> Error:
@@ -289,7 +290,7 @@ class Env(ABC, Generic[ConfigT]):
                 episode.is_timeout = True
             episode.errors.append(_as_error(e))
             # The completed subset is the crash-safe episode; ok stays False.
-            return episode
+            return self._discard_invalid_rewards(episode)
         try:
             async with asyncio.timeout(self.config.timeout.finalize):
                 async with boundary(EnvError, f"{type(self).__name__}.finalize()"):
@@ -303,10 +304,25 @@ class Env(ABC, Generic[ConfigT]):
                 )
                 episode.is_timeout = True
             episode.errors.append(_as_error(e))
-            return episode
+            return self._discard_invalid_rewards(episode)
         # Both hooks and every trace concluded — stamp the attempt's verdict
         # (retry history merges into `errors` later without touching it).
         episode.ok = all(t.ok for t in episode.traces)
+        return self._discard_invalid_rewards(episode)
+
+    def _discard_invalid_rewards(self, episode: Episode) -> Episode:
+        """A format-violating trace leaves the episode with no reward, whatever `run()`
+        or `finalize()` attached to it (#3072); warn once per env class."""
+        discarded = set()
+        for trace in episode.traces:
+            discarded |= trace.discard_invalid_rewards()
+        if discarded and type(self) not in _warned_invalid_rewards:
+            _warned_invalid_rewards.add(type(self))
+            logger.warning(
+                "Discarded rewards recorded on format-violating traces env=%s rewards=%s",
+                type(self).__name__,
+                sorted(discarded),
+            )
         return episode
 
     def slots(self, task: Task, n: int = 1) -> list[RunSlot]:
