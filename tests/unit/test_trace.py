@@ -299,7 +299,7 @@ def test_wire_trace_round_trip(history_type):
     tr.stop("done")
     prepare_turn(tr, [], request.tools).commit_prompt()
 
-    # the dump is plain pydantic — derived values are properties, so they're not serialized
+    # derived values are computed fields: serialized for readers, recomputed on load
     data = json.loads(tr.model_dump_json(exclude_none=True))
     assert "trace-test-" not in json.dumps(data)
     assert mcp["authorization"] == "trace-test-oauth-token"
@@ -317,14 +317,16 @@ def test_wire_trace_round_trip(history_type):
         vf.WireTrace.model_validate_json(chat_trace.model_dump_json()).tools
         == chat_request.tools
     )
-    assert "reward" not in data and "is_truncated" not in data
+    assert data["reward"] == 1.0 and data["is_truncated"] is False
+    assert data["num_branches"] == 2 and data["num_turns"] == 2
+    assert data["last_reply"] == "root answer" and data["has_error"] is True
     # exclude_none drops None FIELDS, not None dict values — unscored seeds survive
     assert data["rewards"]["solved"] is None and data["metrics"]["acc"] is None
 
     rt = vf.WireTrace.model_validate(data)
     assert rt.num_branches == tr.num_branches == 2  # branch topology survived
     assert rt.num_turns == tr.num_turns == 2
-    assert rt.reward == 1.0  # property recomputed from `rewards`, seeds contribute 0
+    assert rt.reward == 1.0  # recomputed from `rewards`, seeds contribute 0
     assert rt.rewards["solved"] is None
     assert rt.stop_condition == "done"
     assert rt.info == {"build": "ok"}

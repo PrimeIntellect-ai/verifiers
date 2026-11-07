@@ -57,7 +57,24 @@ def shuffled(xs, seed: int = 0) -> list[int]:
 
 
 def test_iteration_sets_idx_to_the_load_position() -> None:
-    assert idxs(finite()) == list(range(10))
+    original = list(finite())
+    assert idxs(original) == list(range(10))
+
+    class ChangedTaskset(FiniteTaskset):
+        def load(self):
+            return [count_task(i) for i in (10, 3, 1, 9)]
+
+    reloaded = list(ChangedTaskset(vf.TasksetConfig()))
+    assert idxs(reloaded) == list(range(4))
+    for task, old_index in zip(reloaded[1:], (3, 1, 9)):
+        assert task.key == original[old_index].key
+        assert task.hash != original[old_index].hash
+
+    task = vf.Task(vf.TaskData(idx=0, prompt="same row"))
+    assert task.with_data(idx=1).key == task.key
+    assert task.with_data(idx=1).hash != task.hash
+    assert task.with_data(prompt="changed row").key != task.key
+    assert task.with_data(id="first").key != task.with_data(id="second").key
 
 
 def test_include_keeps_tasks_that_any_list_names() -> None:
