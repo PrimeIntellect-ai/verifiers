@@ -58,6 +58,7 @@ from verifiers.v1.dialects.base import (
     is_sse_done_event,
 )
 from verifiers.v1.errors import (
+    InterceptionError,
     ProviderError,
     RolloutError,
     TaskError,
@@ -83,6 +84,8 @@ logger = logging.getLogger(__name__)
 # and the harness gets a 413. Allow large bodies; the upstream provider and the model's
 # context window are the real limits, this is just a host-OOM backstop.
 MAX_REQUEST_BODY = 1024**3  # 1 GiB (aiohttp's default is 1 MiB)
+HEALTH_CHECK_INTERVAL_SECONDS = 20
+HEALTH_CHECK_FAILURE_THRESHOLD = 2
 KEEPALIVE_INTERVAL_SECONDS = 3
 # A streamed turn commits its SSE stream only after this long: a result within it keeps
 # its HTTP status, and a longer one is kept alive well inside the tunnel's response-header
@@ -727,6 +730,12 @@ class InterceptionServer(Interception):
         self.port = 0
         self.base_url = ""  # set by `start`
         self.runner: web.AppRunner | None = None
+        self.healthy = True
+        self.server_id = secrets.token_hex(16)
+        # The native Tunnel exposes only a URL, not a provider registration id.
+        # This identity names this server's held exposure, including custom tunnels.
+        self.tunnel_id = secrets.token_hex(16) if self.tunnel is not None else None
+        self._health_watch: asyncio.Task[None] | None = None
 
     @property
     def load(self) -> int:
@@ -748,6 +757,8 @@ class InterceptionServer(Interception):
     def register(self, session: RolloutSession) -> tuple[str, str]:
         """Register separate capabilities for model inference and private task state, and
         assign the session its server-owned model client."""
+        if not self.healthy:
+            raise InterceptionError("interception server is unavailable")
         session.client = self._client(session.ctx.client)
         model_secret = secrets.token_urlsafe(16)
         state_secret = secrets.token_urlsafe(16)
@@ -773,6 +784,65 @@ class InterceptionServer(Interception):
             yield self.base_url, model_secret, state_secret
         finally:
             self.unregister(model_secret, state_secret)
+
+    async def handle_health(self, request: web.Request) -> web.Response:
+        return web.json_response(
+            {
+                "status": "ok" if self.healthy else "unhealthy",
+                "server_id": self.server_id,
+                "tunnel_id": self.tunnel_id,
+            },
+            status=200 if self.healthy else 503,
+        )
+
+    async def _probe_health(self, scope: str, base_url: str) -> bool:
+        """Probe an application-owned route, not the tunnel service's `/healthz`."""
+        try:
+            async with httpx.AsyncClient(
+                timeout=httpx.Timeout(5.0, connect=2.0)
+            ) as client:
+                response = await client.get(
+                    f"{base_url.rstrip('/')}/__interception/healthz"
+                )
+            observed = response.json()
+        except (httpx.HTTPError, ValueError):
+            return False
+        return (
+            response.status_code == 200
+            and isinstance(observed, dict)
+            and observed.get("status") == "ok"
+            and observed.get("server_id") == self.server_id
+            and observed.get("tunnel_id") == self.tunnel_id
+        )
+
+    async def _watch_health(self) -> None:
+        """Reject new rollouts after persistent failure; keep existing sessions intact."""
+        failures = 0
+        while self.healthy:
+            await asyncio.sleep(HEALTH_CHECK_INTERVAL_SECONDS)
+            if not self.healthy:
+                return
+            local = await self._probe_health("local", f"http://127.0.0.1:{self.port}")
+            public = await self._probe_health("public", self.base_url)
+            failures = 0 if local and public else failures + 1
+            if failures >= HEALTH_CHECK_FAILURE_THRESHOLD:
+                self.healthy = False
+                logger.warning(
+                    "interception quarantined: server_id=%s local=%s public=%s",
+                    self.server_id,
+                    local,
+                    public,
+                )
+
+    async def _stop_health_watch(self) -> None:
+        if self._health_watch is not None:
+            self._health_watch.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._health_watch
+
+    async def stop(self) -> None:
+        self.healthy = False
+        await super().stop()
 
     def _handler_for(self, dialect: Dialect):
         """Bind a route's dialect to the request handler — the route the SDK posts to is what
@@ -815,6 +885,7 @@ class InterceptionServer(Interception):
                 app.router.add_post(route, self._handler_for(dialect))
             for aux in dialect.aux_routes:
                 app.router.add_post(aux, self._aux_handler_for(dialect, aux))
+        app.router.add_get("/__interception/healthz", self.handle_health)
         app.router.add_get("/v1/models", self.handle_models)
         app.router.add_get("/v1/inbox", self.handle_inbox)
         # Tool servers use a state-only capability; the model bearer cannot reach these.
@@ -848,6 +919,15 @@ class InterceptionServer(Interception):
             self.base_url = await self.stack.enter_async_context(
                 self.tunnel.expose(self.port)
             )
+            local = await self._probe_health("local", f"http://127.0.0.1:{self.port}")
+            public = await self._probe_health("public", self.base_url)
+            self.healthy = local and public
+            if not self.healthy:
+                raise InterceptionError(
+                    "interception server failed startup health checks"
+                )
+            self._health_watch = asyncio.create_task(self._watch_health())
+            self.stack.push_async_callback(self._stop_health_watch)
 
     def _fail(
         self, session: RolloutSession, dialect: Dialect, error: RolloutError

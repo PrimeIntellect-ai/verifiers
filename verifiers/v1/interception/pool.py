@@ -16,7 +16,7 @@ import asyncio
 import contextlib
 import logging
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 
 from verifiers.v1.configs.interception import (
     ElasticInterceptionPoolConfig,
@@ -24,6 +24,7 @@ from verifiers.v1.configs.interception import (
     PrimeTunnelConfig,
     StaticInterceptionPoolConfig,
 )
+from verifiers.v1.errors import InterceptionError
 from verifiers.v1.interception.base import Interception, Slot
 from verifiers.v1.interception.server import InterceptionServer
 from verifiers.v1.session import RolloutSession
@@ -57,7 +58,10 @@ class StaticInterceptionPool(Interception):
     async def acquire(self, session: RolloutSession) -> AsyncIterator[Slot]:
         # server.acquire registers before its first yield, so concurrent acquires see the
         # updated load before choosing their own least-loaded server.
-        server = min(self.servers, key=lambda s: s.load)
+        healthy = [server for server in self.servers if server.healthy]
+        if not healthy:
+            raise InterceptionError("no healthy interception servers")
+        server = min(healthy, key=lambda s: s.load)
         async with server.acquire(session) as slot:
             yield slot
 
@@ -79,24 +83,54 @@ class ElasticInterceptionPool(Interception):
         self.state_service_secrets = state_service_secrets
         self.servers: list[InterceptionServer] = []
         self._lock = asyncio.Lock()
+        self._stopping = False
         self._warm_task: asyncio.Task[InterceptionServer] | None = None
 
     async def start(self) -> None:
         self._warm_task = asyncio.create_task(self._server())
 
     async def stop(self) -> None:
+        self._stopping = True
         if self._warm_task is not None:
             self._warm_task.cancel()
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await self._warm_task
-        await super().stop()
+        try:
+            async with self._lock:
+                await self._stop_servers()
+        finally:
+            await super().stop()
+
+    async def _stop_servers(self) -> None:
+        async with AsyncExitStack() as stack:
+            for server in self.servers:
+                stack.push_async_callback(self._stop_server, server)
+
+    async def _stop_server(self, server: InterceptionServer) -> None:
+        await server.stop()
+        self.servers.remove(server)
+
+    async def _prune(self) -> None:
+        """Close quarantined servers only once their registered rollouts have drained."""
+        for server in list(self.servers):
+            if server.healthy or server.load:
+                continue
+            try:
+                await server.stop()
+            except Exception:
+                logger.warning(
+                    "interception pool: server cleanup failed", exc_info=True
+                )
+            else:
+                self.servers.remove(server)
 
     async def _server(self) -> InterceptionServer:
         """A server with spare capacity — reuse one under `multiplex`, else bring up a new
-        one (its own tunnel, on `stack`, torn down with the pool). Acquires hold `_lock`;
+        one (owned before startup until drained or pool shutdown). Acquires hold `_lock`;
         the warm task runs before they reach this path."""
+        await self._prune()
         for server in self.servers:
-            if server.load < self.config.multiplex:
+            if server.healthy and server.load < self.config.multiplex:
                 return server
         # Pin prime explicitly — the only tunnel kind that can be minted on demand.
         server = InterceptionServer(
@@ -104,8 +138,13 @@ class ElasticInterceptionPool(Interception):
             self.requires_tunnel,
             self.state_service_secrets,
         )
-        await self.stack.enter_async_context(server)
         self.servers.append(server)
+        try:
+            await server.start()
+        except BaseException:
+            server.healthy = False
+            await self._prune()
+            raise
         logger.info(
             "interception pool: %d server(s), multiplex=%d",
             len(self.servers),
@@ -121,9 +160,15 @@ class ElasticInterceptionPool(Interception):
             self._warm_task = None
         # Register under the lock so concurrent acquires see each other's load.
         async with self._lock:
+            if self._stopping:
+                raise InterceptionError("interception pool is stopping")
             server = await self._server()
+            if self._stopping:
+                raise InterceptionError("interception pool is stopping")
             model_secret, state_secret = server.register(session)
         try:
             yield server.base_url, model_secret, state_secret
         finally:
             server.unregister(model_secret, state_secret)
+            async with self._lock:
+                await self._prune()
