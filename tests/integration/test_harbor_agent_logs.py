@@ -185,3 +185,19 @@ def test_an_artifact_into_the_grader_paths_is_left_out_of_its_task_alone(
         for task in harbor.HarborTaskset(harbor.HarborConfig())
     }
     assert tasks == {"forges-transcript": ["/app/out"], "plain": ["/app/out"]}
+
+
+async def test_setup_opens_harbors_log_directories_to_the_agent(tmp_path):
+    """Harbor makes /logs/{agent,verifier,artifacts} world-writable once the environment
+    is up, over an image that keeps them root-only: a reference solve.sh, run as the
+    task's agent user, may leave a note in /logs/verifier for its grader."""
+    task = harbor_task(tmp_path)
+    async with provision_runtime(vf.DockerConfig(image=IMAGE)) as runtime:
+        await runtime.run(
+            ["sh", "-c", "mkdir -p /logs/verifier && chmod 0700 /logs/verifier"], {}
+        )
+        await task.setup(runtime)
+        agent = runtime.with_user("nobody")
+        for path in harbor.HARBOR_LOG_DIRS:
+            wrote = await agent.run(["touch", f"{path}/note"], {})
+            assert wrote.exit_code == 0, (path, wrote.stderr)

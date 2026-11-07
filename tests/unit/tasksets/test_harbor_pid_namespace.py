@@ -29,6 +29,9 @@ class Box:
     async def run(self, argv, env):
         return ProgramResult(exit_code=0, stdout="", stderr="")
 
+    def with_user(self, user, home=None):
+        return self
+
 
 def compose_task(tmp_path) -> HarborTask:
     environment = tmp_path / "environment"

@@ -99,6 +99,8 @@ FINAL_REPLY = f"{AGENT_LOGS}/final_reply.md"
 """The solver's final reply, staged from the trace for graders (a judge criterion's
 evidence) beside its transcript."""
 GRADER_PATHS = ("/tests", "/logs/verifier", AGENT_LOGS)
+HARBOR_LOG_DIRS = (AGENT_LOGS, "/logs/verifier", "/logs/artifacts")
+"""The directories Harbor mounts into every environment, world-writable."""
 """Where a Harbor verifier keeps its tests, writes its reward and reads the agent's
 transcript: grader-owned, so no restored submission may land or link in them."""
 MAX_REWARD_BYTES = 1024 * 1024
@@ -439,6 +441,18 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
             if started is not None and trace is not None:
                 box = "verifier_" if dockerfile.parent.name == "tests" else ""
                 trace.info[f"{box}entrypoint"] = started
+        # Harbor opens its log directories once the environment is up, after the image's
+        # entrypoint (`ensure_dirs` over its mounts: `mkdir -p` and `chmod 777`, as root).
+        # An image may keep them root-only, and a reference run as the task's agent user
+        # may leave a note in /logs/verifier for its grader.
+        result = await runtime.with_user(None).run(
+            ["sh", "-c", 'mkdir -p "$@" && chmod 777 "$@"', "vf", *HARBOR_LOG_DIRS], {}
+        )
+        if result.exit_code:
+            raise TaskError(
+                f"opening {', '.join(HARBOR_LOG_DIRS)} failed (exit {result.exit_code}): "
+                f"{(result.stderr or result.stdout).strip()[-500:]}"
+            )
         if deployment is not None:
             declared = {
                 entry.service for entry in (*self.data.collect, *self.data.artifacts)
