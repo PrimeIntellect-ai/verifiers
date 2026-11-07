@@ -449,8 +449,22 @@ class PrimeBackend(RuntimeBackend):
     async def read(
         self, runtime: Runtime, path: str, max_bytes: int | None = None
     ) -> bytes:
+        if max_bytes is not None and runtime.user is None:
+            # Bound the read at the source with a private copy, then download that copy:
+            # the file API moves bytes 2-3x faster than an exec stream.
+            bounded = f"/tmp/vf-read-{uuid.uuid4().hex}"
+            copy = 'head -c "$1" -- "$2" > "$3"'
+            try:
+                result = await runtime.run(
+                    ["sh", "-c", copy, "sh", str(max_bytes), path, bounded], {}
+                )
+                if result.exit_code != 0:
+                    raise SandboxError(f"read {path!r}: {result.stderr.strip()[-500:]}")
+                return await self.read(runtime, bounded)
+            finally:
+                await runtime.run(["rm", "-f", bounded], {})
         # The file API acts as the default user; a user view reads through exec.
-        if max_bytes is not None or runtime.user is not None:
+        if runtime.user is not None:
             reader = "cat" if max_bytes is None else f"head -c {max_bytes}"
             try:
                 # Stream binary output: execute_command buffers base64 text for the

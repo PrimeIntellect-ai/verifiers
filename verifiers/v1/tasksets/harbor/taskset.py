@@ -43,6 +43,7 @@ from verifiers.v1.task import Task, TaskData, TaskResources, TaskTimeout
 from verifiers.v1.taskset import Taskset
 from verifiers.v1.trace import Trace
 from verifiers.v1.utils.artifacts import (
+    ARTIFACT_BYTES_LIMIT,
     ARTIFACTS_DIR,
     MAX_ARTIFACT_BYTES,
     Artifact,
@@ -77,7 +78,7 @@ class HarborTaskConfig(TaskConfig):
 
 
 class HarborConfig(TasksetConfig):
-    artifact_max_bytes: int = Field(MAX_ARTIFACT_BYTES, gt=0)
+    artifact_max_bytes: int = Field(MAX_ARTIFACT_BYTES, gt=0, le=ARTIFACT_BYTES_LIMIT)
     """Total archive bytes collected from one solver, across all its services."""
     task: HarborTaskConfig = HarborTaskConfig()
     dataset: str = "harbor/hello-world"
