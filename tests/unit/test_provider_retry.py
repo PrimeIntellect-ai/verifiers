@@ -847,3 +847,18 @@ def test_provider_wordings_behind_openrouter_are_refitted():
     assert (
         server._fit_output_to_window(ProviderError(over, status_code=400), body) is None
     )
+
+
+def test_safety_refusal_is_final():
+    from verifiers.v1.errors import ProviderError, safety_refusal, transient
+    from verifiers.v1.utils.retries import retryable_error
+
+    refused = ProviderError(
+        "upstream stream sent an error event: This content was flagged for possible "
+        "cybersecurity risk. If this seems wrong, try rephrasing your request.",
+        status_code=502,
+    )
+    assert safety_refusal(refused)
+    assert not transient(refused)
+    assert not retryable_error(refused)
+    assert transient(ProviderError("upstream 503", status_code=503))

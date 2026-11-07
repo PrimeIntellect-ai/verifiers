@@ -33,11 +33,13 @@ from tenacity import (
 from verifiers.v1.configs.client import ProviderRetryConfig
 from verifiers.v1.configs.retries import RetryConfig, RetryRule
 from verifiers.v1.errors import (
+    SAFETY_REFUSALS,
     HarnessError,
     InterceptionError,
     ProviderError,
     SandboxError,
     TaskError,
+    safety_refusal,
     transient,
 )
 
@@ -135,6 +137,8 @@ class RetryState:
         Return the triggering error so logs identify the actual retry cause.
         """
         for error in errors:
+            if any(text in (error.message or "") for text in SAFETY_REFUSALS):
+                continue  # the provider refuses the same content again
             for index, rule in enumerate(self.rules):
                 if rule.type is not None and error.type != rule.type:
                     continue
@@ -271,4 +275,6 @@ def retryable_error(error: BaseException) -> bool:
         return False
     if isinstance(error, SandboxError):
         return getattr(error, "kind", None) in RETRYABLE_SANDBOX_KINDS
+    if safety_refusal(error):
+        return False
     return isinstance(error, (ProviderError, HarnessError, InterceptionError))

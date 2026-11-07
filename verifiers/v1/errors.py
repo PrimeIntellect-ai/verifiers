@@ -72,14 +72,29 @@ it for ten minutes, then served them again. Final, it ended 114 rollouts. A mode
 not exist is named in its 404, so this one is retried within the call's budget."""
 
 
+SAFETY_REFUSALS = ("This content was flagged for possible cybersecurity risk",)
+"""A provider's safety refusal of the content itself (GPT 6.1 Sol, 2026-11-07: "This content was
+flagged for possible cybersecurity risk", sent as an error event on a 200 stream). The same
+conversation is refused again (93-111 retries of 6 CyberStrike attempts, 11-05, all refused), so
+it is final for the call and for the rollout (Parker 11-07: "dont retry for cybersecurity risk
+stoppages. just end it")."""
+
+
+def safety_refusal(error: BaseException) -> bool:
+    """Whether `error` is a provider's refusal of the content (`SAFETY_REFUSALS`)."""
+    return isinstance(error, ProviderError) and any(
+        text in str(error) for text in SAFETY_REFUSALS
+    )
+
+
 def transient(error: BaseException) -> bool:
     """Whether `error` is a provider failure that sending the same call again can get past:
     a 5xx (which includes a dropped connection, a timeout, and a truncated or malformed
     response), a 408, a 429, a replica's opaque rejection (`OPAQUE_REPLICA_REJECTION`), or
     the gateway's bare 404 for a deployment that is briefly gone (`GATEWAY_NOT_FOUND`).
-    Every other 4xx (an invalid request, a context overflow, auth) fails the same way
+    Never a safety refusal of the content (`SAFETY_REFUSALS`), whatever its status. Every other 4xx (an invalid request, a context overflow, auth) fails the same way
     again."""
-    if not isinstance(error, ProviderError):
+    if not isinstance(error, ProviderError) or safety_refusal(error):
         return False
     status = error.status_code
     if status == 400 and all(part in str(error) for part in OPAQUE_REPLICA_REJECTION):
