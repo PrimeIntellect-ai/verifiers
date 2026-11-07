@@ -141,9 +141,9 @@ class RuntimeSessionAgent(SessionAgent):
         # Tools may already have changed the workspace or an MCP service. Save
         # their results before the summarizer makes another fallible model call.
         self.accepted_history = list(messages[1:])
-        result = await super().summarize_messages(messages, *args, **kwargs)
-        self.accepted_history = list(result[1][1:])
-        return result
+        removed, active = await super().summarize_messages(messages, *args, **kwargs)
+        self.accepted_history = list(active[1:])
+        return removed, active
 
 
 class Session:
@@ -196,6 +196,7 @@ class Session:
                 skills_dir=args.skills_dir if Path(args.skills_dir).is_dir() else None,
                 cache_on_interrupt=False,
             ) as active_session:
+                # The pinned API requires the parent and its live session state.
                 session = RuntimeSessionAgent.from_agent(
                     active_session, active_session._output_state
                 )
