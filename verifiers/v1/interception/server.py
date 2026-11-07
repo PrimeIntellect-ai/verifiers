@@ -62,6 +62,7 @@ from verifiers.v1.errors import (
     RolloutError,
     TaskError,
     model_error,
+    safety_refusal,
 )
 from verifiers.v1.interception.base import Interception, Slot
 from verifiers.v1.interception.tunnel import Tunnel, make_tunnel
@@ -1481,6 +1482,10 @@ class InterceptionServer(Interception):
                     # harness SDK is told not to retry it on top.
                     error = e
                     session.error = e
+                    if safety_refusal(e):
+                        # The provider refuses this content again on every resend, so
+                        # the rollout ends here: later calls get "rollout stopped".
+                        session.trace.stop("safety_refusal")
                     logger.warning(
                         "model call failed: id=%s %s: %s",
                         session.trace.id,
