@@ -38,6 +38,7 @@ from acp.schema import (
 from openai import APIError
 from stirrup import Agent
 from stirrup.clients.chat_completions_client import ChatCompletionsClient
+from stirrup.core.agent import SessionAgent
 from stirrup.core.exceptions import OutputTokenLimitError
 from stirrup.core.models import UserMessage
 from stirrup.tools import LocalCodeExecToolProvider, WebToolProvider
@@ -126,6 +127,25 @@ class RuntimeCodeExecToolProvider(LocalCodeExecToolProvider):
                         await asyncio.wait_for(process.wait(), COMMAND_CLEANUP_TIMEOUT)
 
 
+class RuntimeSessionAgent(SessionAgent):
+    """Retain accepted history when a model or summarizer hits its output limit."""
+
+    async def step(self, messages, *args, **kwargs):
+        self.accepted_history = list(messages[1:])
+        result = await super().step(messages, *args, **kwargs)
+        assistant, tools, _ = result
+        self.accepted_history.extend([assistant, *tools])
+        return result
+
+    async def summarize_messages(self, messages, *args, **kwargs):
+        # Tools may already have changed the workspace or an MCP service. Save
+        # their results before the summarizer makes another fallible model call.
+        self.accepted_history = list(messages[1:])
+        result = await super().summarize_messages(messages, *args, **kwargs)
+        self.accepted_history = list(result[1][1:])
+        return result
+
+
 class Session:
     """One worker owns the tool context for its entire lifetime.
 
@@ -175,25 +195,21 @@ class Session:
             async with agent.session(
                 skills_dir=args.skills_dir if Path(args.skills_dir).is_dir() else None,
                 cache_on_interrupt=False,
-            ) as session:
+            ) as active_session:
+                session = RuntimeSessionAgent.from_agent(
+                    active_session, active_session._output_state
+                )
                 for name in json.loads(args.disabled_tools):
                     session.tools.pop(name, None)
                 self.ready.set_result(None)
                 history = []
                 while item := await self.queue.get():
                     prompt, current = item
+                    session.accepted_history = [*history, UserMessage(content=prompt)]
                     try:
-                        finish, groups, _ = await session.run(
-                            [
-                                *history,
-                                UserMessage(content=prompt),
-                            ]
-                        )
+                        finish, groups, _ = await session.run(session.accepted_history)
                     except OutputTokenLimitError as error:
-                        # Preserve the accepted tail before the rejected model call,
-                        # including the current user input and any compacted summary.
-                        if state := session._current_run_state:
-                            history = state.msgs[1:]
+                        history = session.accepted_history
                         current.set_exception(error)
                         current = None
                         continue
