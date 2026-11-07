@@ -401,6 +401,12 @@ class InterceptionServer(Interception):
             self.stack.push_async_callback(client.close)
         return client
 
+    def local_url(self, base_url: str) -> str | None:
+        # Both bind addresses, a tunnel's and the untunneled one, accept loopback.
+        if not self.port or base_url != self.base_url:
+            return None
+        return f"http://127.0.0.1:{self.port}"
+
     def register(self, session: RolloutSession) -> tuple[str, str]:
         """Register separate capabilities for model inference and private task state, and
         assign the session its server-owned model client."""
