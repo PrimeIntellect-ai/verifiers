@@ -7,6 +7,7 @@ server and `wiki_search` for an expensive worker-shared server.
 
 import verifiers.v1 as vf
 from glossary.servers.facts import FACTS, GlossaryToolset
+from verifiers.v1.types import content_text
 
 
 class GlossaryTaskConfig(vf.TaskConfig):
@@ -18,6 +19,12 @@ class GlossaryTaskData(vf.TaskData):
     """The fact the `lookup` tool returns for this task's entity."""
 
 
+def tagged_answer(reply: str) -> str:
+    _, opened, rest = reply.partition("<answer>")
+    answer, closed, _ = rest.partition("</answer>")
+    return answer.strip() if opened and closed else ""
+
+
 class GlossaryTask(vf.Task[GlossaryTaskData, vf.State, GlossaryTaskConfig]):
     @classmethod
     def toolsets(cls, config: GlossaryTaskConfig) -> list[vf.Toolset]:
@@ -25,9 +32,13 @@ class GlossaryTask(vf.Task[GlossaryTaskData, vf.State, GlossaryTaskConfig]):
 
     @vf.reward(weight=1.0)
     async def looked_up(self, trace: vf.Trace) -> float:
-        # The fact only reaches the answer if the model called the MCP tool.
-        last = trace.last_reply
-        return float(self.data.answer.lower() in (last or "").lower())
+        fact = self.data.answer
+        returned = any(
+            content_text(message.content).strip() == fact
+            for message in trace.tool_messages
+        )
+        reported = tagged_answer(trace.last_reply).lower() == fact.lower()
+        return float(returned and reported)
 
 
 class GlossaryConfig(vf.TasksetConfig):
