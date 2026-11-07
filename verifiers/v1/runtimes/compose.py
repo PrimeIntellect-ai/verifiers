@@ -73,6 +73,16 @@ PRIME_DOCKERD = (
 # stay backed by the host, which only reclaims free pages, and pulling and building multi-GB
 # images fills the cache in minutes. The host keeps dropping clean cache while the VM lives.
 PRIME_CACHE_DROP = "while sleep 5; do sync; echo 1 > /proc/sys/vm/drop_caches; done"
+# Prime's guest kernel sizes the connection-tracking table at 8,192 entries, and every
+# connection between the stack's containers (Docker's NAT and DNS rules track them) holds
+# one through TIME_WAIT. A grader that opens a thousand short connections in a few seconds
+# fills it, and the kernel then drops new SYNs (connects time out) and DNS replies (names
+# stop resolving). A Docker host's table is far larger; this matches a common default.
+PRIME_CONNTRACK = (
+    "modprobe nf_conntrack 2>/dev/null; "
+    "echo 262144 > /proc/sys/net/netfilter/nf_conntrack_max 2>/dev/null; "
+    "echo 65536 > /sys/module/nf_conntrack/parameters/hashsize 2>/dev/null; true"
+)
 # The project's name on its host VM, so a host restored from a checkpoint brings the same
 # containers (and the files they held) back up instead of creating new ones.
 PROJECT_FILE = "/var/lib/vf-compose/project"
@@ -637,6 +647,8 @@ async def provision_vm_host(
         # A cold or restored host can legitimately need more than one minute.
         while (await runtime.run(["docker", "info"], {})).exit_code:
             await asyncio.sleep(1)
+        if prime:
+            await runtime.run(["sh", "-c", PRIME_CONNTRACK], {})
         loaded = await runtime.run(["sh", "-c", LOAD_IMAGES], {})
         if loaded.exit_code:
             raise SandboxError(
