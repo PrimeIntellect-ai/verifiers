@@ -25,7 +25,6 @@ import asyncio
 import contextlib
 import hashlib
 import json
-import logging
 import secrets
 import time
 import traceback
@@ -70,8 +69,10 @@ from verifiers.v1.session import IdempotentRequest, ReplayResponse, RolloutSessi
 from verifiers.v1.trace import Error, ModelCall, PolicyEvent, TimeSpan
 from verifiers.v1.types import FinishReason, Response, Usage
 from verifiers.v1.utils.aio import run_shielded
+from verifiers.v1.utils.format import format_time
+from verifiers.v1.utils.logging import clip, get_logger, isolated
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 # Each session proxies one rollout's own harness requests, so aiohttp's default 1 MiB body
@@ -303,9 +304,8 @@ async def _buffered_stream(
             # like from here; its retry (if any) coalesces onto this turn.
             connected = False
             logger.warning(
-                "intercept stream: reader disconnected: id=%s after=%.1fs",
-                trace_id,
-                time.monotonic() - started,
+                "Lost the stream reader after %s",
+                format_time(time.monotonic() - started),
             )
         response = await task
         replay = _capture_response(response)
@@ -323,22 +323,27 @@ async def _buffered_stream(
                 await stream.write_eof()
             except ConnectionResetError:
                 logger.warning(
-                    "intercept stream: reader disconnected before the turn was served: "
-                    "id=%s after=%.1fs",
-                    trace_id,
-                    time.monotonic() - started,
+                    "Lost the stream reader before the turn was served after %s",
+                    format_time(time.monotonic() - started),
                 )
         return stream
     finally:
         if not task.done():
             logger.info(
-                "intercept stream: turn cancelled: id=%s after=%.1fs",
-                trace_id,
-                time.monotonic() - started,
+                "Cancelled the streamed turn after %s",
+                format_time(time.monotonic() - started),
             )
             task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await task
+
+
+@web.middleware
+async def _isolate_log_scope(request: web.Request, handler) -> web.StreamResponse:
+    """A keep-alive connection serves its requests in one task: each request starts
+    unscoped, and its handler enters its rollout's scope when it adopts the session."""
+    with isolated():
+        return await handler(request)
 
 
 class InterceptionServer(Interception):
@@ -380,7 +385,7 @@ class InterceptionServer(Interception):
     def _handle_tunnel_gone(self) -> None:
         """Fail this server's rollouts and take no more: their URL will never work again."""
         self.healthy = False
-        logger.error("interception unhealthy: url=%s", self.base_url)
+        logger.error("Lost the interception tunnel url=%s", self.base_url)
         for session in list(self.sessions.values()):
             session.error = TunnelError("interception tunnel lost")
             session.release()
@@ -566,7 +571,9 @@ class InterceptionServer(Interception):
         return response
 
     async def start(self) -> None:
-        app = web.Application(client_max_size=MAX_REQUEST_BODY)
+        app = web.Application(
+            client_max_size=MAX_REQUEST_BODY, middlewares=[_isolate_log_scope]
+        )
         app.router.add_get(HEALTH_PATH, self.handle_health)
         for dialect in DIALECTS:
             for route in dialect.routes:
@@ -595,9 +602,14 @@ class InterceptionServer(Interception):
         site = web.TCPSite(self.runner, self.host, bind_port)
         await site.start()
         self.port = site._server.sockets[0].getsockname()[1]  # actual bound port
-        logger.info("interception up: url=http://%s:%d", self.host, self.port)
+        logger.info(
+            "Started interception server url=http://%s:%d", self.host, self.port
+        )
         self.stack.callback(
-            logger.info, "interception down: url=http://%s:%d", self.host, self.port
+            logger.info,
+            "Stopped interception server url=http://%s:%d",
+            self.host,
+            self.port,
         )
         if self.tunnel is None:
             self.base_url = f"http://127.0.0.1:{self.port}"
@@ -615,9 +627,7 @@ class InterceptionServer(Interception):
         """Stash a model-turn-adjacent failure so the rollout re-raises it as the real
         cause, and report it to the harness as an HTTP error."""
         session.error = error
-        logger.warning(
-            "rollout %s failed: %s: %s", session.trace.id, type(error).__name__, error
-        )
+        logger.warning("Failed turn - %s: %s", type(error).__name__, clip(str(error)))
         return _error_response(
             dialect, str(error), status=getattr(error, "status_code", 502)
         )
@@ -644,9 +654,8 @@ class InterceptionServer(Interception):
         capabilities = list(dict.fromkeys(capabilities))
         if capabilities:
             logger.warning(
-                "interception removed provider content/capabilities blocked by the network "
-                "policy or unable to enforce it: id=%s paths=%s",
-                session.trace.id,
+                "Removed provider content or capabilities that the network policy "
+                "blocks or cannot enforce paths=%s",
                 ",".join(capabilities),
             )
         return mediated, capabilities
@@ -705,9 +714,7 @@ class InterceptionServer(Interception):
             except ValidationError:
                 # A malformed harness knob must not kill recording (this runs in the
                 # exchange's `finally`); the provider rejects the request on its own.
-                logger.warning(
-                    "unrecordable call settings: id=%s", session.trace.id, exc_info=True
-                )
+                logger.warning("Could not record call settings", exc_info=True)
         session.trace.calls.append(
             ModelCall(
                 node=node,
@@ -746,7 +753,7 @@ class InterceptionServer(Interception):
     ) -> web.StreamResponse:
         session = self.sessions.get(dialect.secret(request.headers))
         if session is None:
-            logger.warning("interception: unauthorized request")
+            logger.warning("Rejected an unauthorized request")
             return _error_response(dialect, "unauthorized", status=401)
         session.adopt(asyncio.current_task())
         started = time.monotonic()
@@ -755,11 +762,10 @@ class InterceptionServer(Interception):
         except ConnectionError:
             # Client dropped mid-upload.
             logger.warning(
-                "intercept: request body cut off: id=%s received=%d/%s bytes after=%.1fs",
-                session.trace.id,
+                "Lost the request body after %s received=%d/%s bytes",
+                format_time(time.monotonic() - started),
                 request.content.total_bytes,
                 request.content_length or "?",
-                time.monotonic() - started,
             )
             raise
         try:
@@ -784,9 +790,8 @@ class InterceptionServer(Interception):
             session.trace.id, acp.agent_session_id if acp is not None else None
         )
         logger.debug(
-            "intercept %s: id=%s stream=%s retry=%s",
+            "Received %s request stream=%s retry=%s",
             request.path,
-            session.trace.id,
             streaming,
             request.headers.get(RETRY_COUNT_HEADER, "0"),
         )
@@ -822,9 +827,7 @@ class InterceptionServer(Interception):
                 status=400,
             )
         if idempotent is not None and idempotent.response is not None:
-            logger.debug(
-                "intercept replay: id=%s (idempotent request)", session.trace.id
-            )
+            logger.debug("Replayed an idempotent request")
             idempotent.completed_at = now
             return _replay_response(idempotent.response)
 
@@ -845,9 +848,7 @@ class InterceptionServer(Interception):
         async def coalesced(
             inflight: "asyncio.Future[ReplayResponse | None]",
         ) -> web.Response:
-            logger.debug(
-                "intercept coalesce: id=%s (retry of in-flight turn)", session.trace.id
-            )
+            logger.debug("Coalesced a retry onto the in-flight turn")
             response = await asyncio.shield(inflight)
             if response is None:
                 return _error_response(dialect, "upstream attempt failed", status=503)
@@ -975,10 +976,15 @@ class InterceptionServer(Interception):
                             session_id=upstream_session_id,
                             turn=turn,
                         )
+                    usage = call_response.usage
                     logger.debug(
-                        "intercept turn: id=%s tools=%d",
-                        session.trace.id,
+                        "Served turn in %s tool_calls=%d%s",
+                        format_time(time.time() - started),
                         len(call_response.message.tool_calls or []),
+                        f" input_tokens={usage.input_tokens}"
+                        f" output_tokens={usage.completion_tokens}"
+                        if usage is not None
+                        else "",
                     )
                     if session.released:  # concluded while sampling — seal holds
                         return _error_response(dialect, "rollout concluded", status=409)
@@ -1023,10 +1029,7 @@ class InterceptionServer(Interception):
                     error = e
                     session.error = e
                     logger.warning(
-                        "model call failed: id=%s %s: %s",
-                        session.trace.id,
-                        type(e).__name__,
-                        e,
+                        "Model call failed - %s: %s", type(e).__name__, clip(str(e))
                     )
                     return _error_response(
                         dialect, str(e), status=getattr(e, "status_code", 502)
@@ -1034,10 +1037,7 @@ class InterceptionServer(Interception):
                 except Exception as e:  # noqa: BLE001 - surface as an API error
                     error = e
                     logger.warning(
-                        "model call failed: id=%s %s: %s",
-                        session.trace.id,
-                        type(e).__name__,
-                        e,
+                        "Model call failed - %s: %s", type(e).__name__, clip(str(e))
                     )
                     return _error_response(dialect, str(e), status=502)
                 except BaseException as e:
@@ -1097,7 +1097,7 @@ class InterceptionServer(Interception):
         if session is None:
             return _error_response(dialect, "unauthorized", status=401)
         session.adopt(asyncio.current_task())
-        logger.debug("intercept aux %s: id=%s", route, session.trace.id)
+        logger.debug("Received %s request", route)
         try:
             body = await request.json()
             body["model"] = session.ctx.model
@@ -1108,17 +1108,12 @@ class InterceptionServer(Interception):
         except RolloutError as e:
             # An aux call isn't a model turn, so don't clobber a pending turn error.
             session.error = session.error or e
-            logger.warning(
-                "aux call failed: id=%s %s: %s",
-                session.trace.id,
-                type(e).__name__,
-                e,
-            )
+            logger.warning("Aux call failed - %s: %s", type(e).__name__, clip(str(e)))
             return _error_response(
                 dialect, str(e), status=getattr(e, "status_code", 502)
             )
         except Exception as e:  # noqa: BLE001 - surface auxiliary relay failures
-            logger.warning("aux call failed: id=%s %s", session.trace.id, e)
+            logger.warning("Aux call failed - %s: %s", type(e).__name__, clip(str(e)))
             return _error_response(dialect, str(e), status=502)
         return web.json_response(result)
 
@@ -1135,7 +1130,7 @@ class InterceptionServer(Interception):
         else:
             return web.json_response({"error": "unauthorized"}, status=401)
         session.adopt(asyncio.current_task())
-        logger.debug("intercept models: id=%s", session.trace.id)
+        logger.debug("Received /v1/models request")
         config = session.ctx.client
         headers = httpx.Headers(resolve_headers(config))
         headers.update(dialect.auth_headers(resolve_api_key(config)))
@@ -1149,7 +1144,9 @@ class InterceptionServer(Interception):
                     join_url(config.base_url, "/v1/models"), headers=headers
                 )
         except httpx.HTTPError as e:
-            logger.warning("models call failed: id=%s %s", session.trace.id, e)
+            logger.warning(
+                "Models call failed - %s: %s", type(e).__name__, clip(str(e))
+            )
             return _error_response(dialect, str(e), status=502)
         return web.Response(
             body=upstream.content,
@@ -1178,7 +1175,7 @@ class InterceptionServer(Interception):
         session = self._session_for(request, allow_service=True)
         if session is None:
             return web.json_response({"error": "unauthorized"}, status=401)
-        logger.debug("intercept GET /state: id=%s", session.trace.id)
+        logger.debug("Received GET /state request")
         state = session.trace.state
         return web.Response(
             # TypeAdapter emits UTF-8 bytes directly, avoiding a JSON str copy in aiohttp.
@@ -1193,7 +1190,7 @@ class InterceptionServer(Interception):
         session = self._session_for(request)
         if session is None:
             return web.json_response({"error": "unauthorized"}, status=401)
-        logger.debug("intercept GET /task: id=%s", session.trace.id)
+        logger.debug("Received GET /task request")
         task = session.trace.task.data
         return web.json_response(
             {
@@ -1209,14 +1206,14 @@ class InterceptionServer(Interception):
         session = self._session_for(request, allow_service=True)
         if session is None:
             return web.json_response({"error": "unauthorized"}, status=401)
-        logger.debug("intercept PUT /state: id=%s", session.trace.id)
+        logger.debug("Received PUT /state request")
         state_cls = type(session.trace.state)
         raw = await request.read()
         try:
             new_state = session.state_adapter.validate_json(raw)
         except ValidationError as e:
             # Reject malformed, over-nested, or mismatched state before it enters the shared channel.
-            logger.warning("state PUT rejected: id=%s %s", session.trace.id, e)
+            logger.warning("Rejected PUT /state - %s", clip(str(e)))
             return web.json_response(
                 {"error": f"invalid state PUT for {state_cls.__name__}: {e}"},
                 status=400,

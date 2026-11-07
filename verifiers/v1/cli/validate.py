@@ -3,7 +3,6 @@
 import asyncio
 import contextlib
 import json
-import logging
 import os
 import shutil
 import sys
@@ -45,10 +44,11 @@ from verifiers.v1.utils.aio import run_shielded
 from verifiers.v1.utils.artifacts import collect
 from verifiers.v1.utils.compile import resolve_runtime_config
 from verifiers.v1.utils.decorators import invoke
+from verifiers.v1.utils.format import format_time
 from verifiers.v1.utils.interrupt import install_interrupt
-from verifiers.v1.utils.logging import setup_logging
+from verifiers.v1.utils.logging import get_logger, setup_logging
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 RESULTS_FILE = "results.jsonl"
 SUMMARY_FILE = "summary.json"
@@ -504,11 +504,11 @@ async def run_validate(config: ValidateConfig) -> list[dict]:
         await run_shielded(persist())
         detail = f" - {note}" if (note := _describe(row)) else ""
         logger.info(
-            "idx=%s valid=%s reason=%s (%.1fs)%s",
+            "idx=%s valid=%s reason=%s (%s)%s",
             row["index"],
             row["valid"],
             row["reason"],
-            row["elapsed"],
+            format_time(row["elapsed"]),
             detail,
         )
         return row

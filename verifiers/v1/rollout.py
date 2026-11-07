@@ -50,8 +50,17 @@ from verifiers.v1.trace import AgentInfo, Checkpoint, TimeSpan, Trace, TraceTask
 from verifiers.v1.types import Messages, Request, Response, SystemMessage, UserMessage
 from verifiers.v1.utils.artifacts import collect
 from verifiers.v1.utils.decorators import discover_decorated, invoke
+from verifiers.v1.utils.format import format_time
+from verifiers.v1.utils.logging import clip, get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
+
+
+def _group(name: str, fields: list[tuple[str, object]]) -> str:
+    """`name=(k=v k=v)`, or nothing when there are no fields."""
+    if not fields:
+        return ""
+    return f"{name}=({' '.join(f'{k}={v}' for k, v in fields)})"
 
 
 @dataclass(frozen=True)
@@ -291,7 +300,7 @@ class Rollout:
                 "placed into the box has completed"
             ) from error
         if not isinstance(error, RolloutError):
-            logger.exception("unexpected error in rollout %s", self.trace.id)
+            logger.exception("Failed rollout with an unexpected error")
         self._failed = True
         self._failure = error
         self.trace.record_error(error, attempt=self._attempt, stage=stage)
@@ -299,7 +308,7 @@ class Rollout:
     def timeout(self, stage: str) -> None:
         """Record `stage`'s expired deadline as this rollout's outcome: a stop, not
         a failure — no further segments run, but finalize and scoring still do."""
-        logger.info("rollout %s: %s timeout", self.trace.id, stage)
+        logger.debug("Hit the %s timeout", stage)
         self.trace.record_timeout(stage)
 
     async def open(self) -> bool:
@@ -336,22 +345,18 @@ class Rollout:
         assert self.trace.agent is not None  # minted with the trace
         self.trace.agent.runtime = runtime.info.model_copy()
         if self._restore is None:
-            logger.info(
-                "rollout start: id=%s task=%s harness=%s runtime=%s",
-                self.trace.id,
-                self.task.data.idx,
+            logger.debug(
+                "Starting rollout harness=%s runtime=%s",
                 self.harness.config.name,
                 self.runtime_config.type,
             )
         else:
             logger.info(
-                "rollout restore: id=%s task=%s harness=%s runtime=%s checkpoint=%s turns=%d",
-                self.trace.id,
-                self.task.data.idx,
-                self.harness.config.name,
-                self.runtime_config.type,
+                "Restoring rollout from checkpoint %s at turn %d harness=%s runtime=%s",
                 self._restore.id,
                 self.trace.num_turns,
+                self.harness.config.name,
+                self.runtime_config.type,
             )
         loop = asyncio.get_running_loop()
         setup_timeout: asyncio.Timeout | None = None
@@ -429,6 +434,7 @@ class Rollout:
                 # A restored box already holds the task's setup; only the harness's
                 # (idempotent) install runs again.
                 if self._restore is None:
+                    started = time.perf_counter()
                     async with boundary(TaskError, "task setup"):
                         await invoke(
                             self.task.setup,
@@ -438,9 +444,10 @@ class Rollout:
                                 "deployment": self.deployment,
                             },
                         )
-                    if self._restore is not None:
-                        # The trace's state and info are the checkpoint's, not setup's.
-                        self.trace.rewind_state(self._restore)
+                    logger.debug(
+                        "Set up task in %s", format_time(time.perf_counter() - started)
+                    )
+                started = time.perf_counter()
                 async with (
                     boundary(HarnessError, "harness setup"),
                 ):
@@ -448,6 +455,12 @@ class Rollout:
                         runtime, self.task.data.agent_user, self.task.data.agent_home
                     )
                     await self.harness.setup(self._agent_runtime)
+                logger.debug(
+                    "Set up %s harness in %s",
+                    self.harness.config.name,
+                    format_time(time.perf_counter() - started),
+                )
+                started = time.perf_counter()
                 # `base_url` is the interception server's reachable URL for this rollout.
                 # The harness reaches the model at `{base_url}/v1`; tool servers reach this
                 # rollout's `/state` + `/task` at `base_url` — it's universally reachable
@@ -493,6 +506,10 @@ class Rollout:
                             for name in self.deployment.tool_vms
                         },
                     )
+                )
+                logger.debug(
+                    "Started interception and tool servers in %s",
+                    format_time(time.perf_counter() - started),
                 )
                 # Setup and service provisioning are complete. Apply the runtime's
                 # execution policy while preserving the framework routes the agent uses.
@@ -646,6 +663,7 @@ class Rollout:
         self.trace.timing.setup.end = now
         self.trace.timing.agent.start = now
         self.trace.notify()
+        logger.debug("Starting agent")
         return not self._session.stopped
 
     async def steer(self, message: str, *, message_id: str | None = None) -> dict:
@@ -930,9 +948,12 @@ class Rollout:
             return
         try:
             await self.harness.cleanup(self.trace, runtime)
-        except Exception:
+        except Exception as e:
             logger.warning(
-                "harness cleanup failed (rollout %s)", self.trace.id, exc_info=True
+                "Failed to clean up harness - %s: %s",
+                type(e).__name__,
+                e,
+                exc_info=logger.isEnabledFor(logging.DEBUG),
             )
         self._harness_cleaned = True
 
@@ -990,7 +1011,12 @@ class Rollout:
                 "type": type(error).__name__,
                 "message": str(error),
             }
-            logger.warning("harness scoring failed", exc_info=True)
+            logger.warning(
+                "Failed to score harness - %s: %s",
+                type(error).__name__,
+                error,
+                exc_info=logger.isEnabledFor(logging.DEBUG),
+            )
 
     async def _close_harness(self) -> None:
         """Close the harness session, then the tool servers and interception. Idempotent.
@@ -1001,19 +1027,21 @@ class Rollout:
         if self._harness_session is not None:
             try:
                 await self._harness_session.close()
-            except Exception:
+            except Exception as e:
                 logger.warning(
-                    "harness session close failed (rollout %s)",
-                    self.trace.id,
-                    exc_info=True,
+                    "Failed to close harness session - %s: %s",
+                    type(e).__name__,
+                    e,
+                    exc_info=logger.isEnabledFor(logging.DEBUG),
                 )
         try:
             await self._stack.aclose()
-        except Exception:
+        except Exception as e:
             logger.warning(
-                "tool server or interception teardown failed (rollout %s)",
-                self.trace.id,
-                exc_info=True,
+                "Failed to stop tool servers or interception - %s: %s",
+                type(e).__name__,
+                e,
+                exc_info=logger.isEnabledFor(logging.DEBUG),
             )
 
     def _agent_finished(self) -> bool:
@@ -1070,6 +1098,12 @@ class Rollout:
         try:
             if trace.timing.agent.start and not trace.timing.agent.end:
                 trace.timing.agent.end = time.time()
+                logger.debug(
+                    "Stopped agent in %s turns=%d stop=%s",
+                    format_time(trace.timing.agent.duration),
+                    trace.num_turns,
+                    trace.stop_condition,
+                )
             if not self._agent_finished():
                 await self._close_harness()
             trace.notify()
@@ -1150,6 +1184,9 @@ class Rollout:
                 trace.timing.finalize.end = now
                 trace.timing.scoring.start = now
                 trace.notify()
+                logger.debug(
+                    "Finalized task in %s", format_time(trace.timing.finalize.duration)
+                )
                 scoring_deadline = (
                     loop.time() + max(0.0, self._timeouts.scoring - scoring_elapsed)
                     if self._timeouts.scoring is not None
@@ -1166,11 +1203,7 @@ class Rollout:
                     ):
                         # Cross-trace judgement runs later, after the runtime is gone.
                         if skip_reason := skip_reason or self._scoring_skip_reason():
-                            logger.info(
-                                "rollout %s: scoring skipped (%s)",
-                                trace.id,
-                                skip_reason,
-                            )
+                            logger.debug("Skipped scoring - %s", skip_reason)
                             trace.info["scoring_skipped"] = skip_reason
                         elif grader is not None:
                             try:
@@ -1236,6 +1269,9 @@ class Rollout:
                         await self._score_harness(runtime, self._metrics_deadline())
                 trace.timing.scoring.end = time.time()
                 trace.notify()
+                logger.debug(
+                    "Scored rollout in %s", format_time(trace.timing.scoring.duration)
+                )
         except Exception as e:  # noqa: BLE001 - finalize boundary records every rollout failure
             self.fail(e, stage="scoring" if trace.timing.scoring.start else "finalize")
         finally:
@@ -1265,6 +1301,7 @@ class Rollout:
             # Tear down here — the env's `score()` (later) needs only the traces,
             # not a live runtime. A borrowed runtime is its creator's to tear down,
             # not this rollout's.
+            started = time.perf_counter()
             try:
                 if self.deployment is not None:
                     await self.deployment.close()
@@ -1279,17 +1316,67 @@ class Rollout:
                     await runtime.backend.discard_snapshots(
                         runtime.backend.stray_snapshots
                     )
-            except Exception:
-                logger.warning("runtime teardown failed", exc_info=True)
-        logger.info(
-            "rollout done: id=%s task=%s reward=%.3f turns=%d stop=%s%s",
-            trace.id,
-            self.task.data.idx,
-            trace.reward,
-            trace.num_turns,
-            trace.last_error.type
-            if trace.last_error and not trace.ok
-            else trace.stop_condition,
-            f" dropped={trace.dropped!r}" if trace.is_dropped else "",
+            except Exception as e:
+                logger.warning(
+                    "Failed to tear down runtime - %s: %s",
+                    type(e).__name__,
+                    e,
+                    exc_info=logger.isEnabledFor(logging.DEBUG),
+                )
+            teardown = time.perf_counter() - started
+        timing = trace.timing
+        spans = (
+            ("boot", timing.boot),
+            ("setup", timing.setup),
+            ("agent", timing.agent),
+            ("finalize", timing.finalize),
+            ("score", timing.scoring),
         )
+        timings = [(k, format_time(v.duration)) for k, v in spans if v.start]
+        timings.append(("teardown", format_time(teardown)))
+        summary = " ".join(
+            filter(
+                None,
+                [
+                    f"stop={trace.stop_condition}" if trace.ok else "",
+                    f"turns={trace.num_turns} branches={trace.num_branches}",
+                    f"dropped={trace.dropped}" if trace.is_dropped else "",
+                    f"reward={trace.reward:.3f}" if trace.ok else "",
+                    _group(
+                        "rewards",
+                        [
+                            (k, "none" if r is None else f"{r.score:.3f}")
+                            for k, r in trace.rewards.items()
+                        ],
+                    ),
+                    _group(
+                        "metrics",
+                        [
+                            (k, "none" if v is None else f"{v:.4g}")
+                            for k, v in trace.metrics.items()
+                        ],
+                    ),
+                    _group(
+                        "tokens",
+                        [
+                            ("input", trace.num_input_tokens),
+                            ("output", trace.num_output_tokens),
+                        ],
+                    ),
+                    _group("timing", timings),
+                ],
+            )
+        )
+        elapsed = format_time(time.time() - timing.start)
+        if trace.ok:
+            logger.info("Finished rollout in %s %s", elapsed, summary)
+        else:
+            error = trace.last_error
+            logger.warning(
+                "Failed rollout in %s %s - %s: %s",
+                elapsed,
+                summary,
+                error.type if error else "Error",
+                clip(error.message) if error else "",
+            )
         return trace
