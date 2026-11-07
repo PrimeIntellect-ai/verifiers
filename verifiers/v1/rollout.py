@@ -48,6 +48,7 @@ from verifiers.v1.state import state_cls
 from verifiers.v1.task import Task, TaskData
 from verifiers.v1.trace import AgentInfo, Checkpoint, TimeSpan, Trace, TraceTask
 from verifiers.v1.types import Messages, Request, Response, SystemMessage, UserMessage
+from verifiers.v1.utils.aio import run_shielded
 from verifiers.v1.utils.artifacts import collect
 from verifiers.v1.utils.decorators import discover_decorated, invoke
 from verifiers.v1.utils.format import format_time
@@ -781,7 +782,9 @@ class Rollout:
             aborted.cancel()
             if not turn.done():
                 turn.cancel()
-                await asyncio.wait({turn})
+                # Joined even through another cancellation: a turn left running
+                # could still write the trace or use the box during teardown.
+                await run_shielded(asyncio.wait({turn}))
         if self._session.aborted is not None:
             if not turn.cancelled():
                 turn.exception()  # the abort decides the outcome, whatever the turn did
