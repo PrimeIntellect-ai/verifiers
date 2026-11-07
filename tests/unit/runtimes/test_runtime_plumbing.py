@@ -26,7 +26,11 @@ from verifiers.v1.harnesses.null import NullHarness, NullHarnessConfig
 from verifiers.v1.harnesses.terminus_2 import Terminus2Harness, Terminus2HarnessConfig
 from verifiers.v1.harnesses.utils.launch import launch_chat_program
 from verifiers.v1.runtimes.backends import prime
-from verifiers.v1.runtimes.backends.prime import PrimeBackend, PrimeConfig
+from verifiers.v1.runtimes.backends.prime import (
+    WITHOUT_PLATFORM_CA,
+    PrimeBackend,
+    PrimeConfig,
+)
 from verifiers.v1.runtimes.base import ProgramResult
 from verifiers.v1.task import TaskData
 from verifiers.v1.types import UserMessage
@@ -497,6 +501,10 @@ async def test_a_users_command_runs_in_a_session_of_its_own(runtime, no_sleep, t
     await runtime.bind().with_user("agent").run(["make", "test"], {})
     await runtime.bind().run(["true"], {})
     [(command, user), (root_command, root_user)] = client.started
+    assert command.startswith(WITHOUT_PLATFORM_CA)
+    assert root_command.startswith(WITHOUT_PLATFORM_CA)
+    command = command.removeprefix(WITHOUT_PLATFORM_CA)
+    root_command = root_command.removeprefix(WITHOUT_PLATFORM_CA)
     if tools:
         assert user is None
         assert command.startswith("exec setsid -w setpriv --reuid=agent ")
@@ -504,6 +512,40 @@ async def test_a_users_command_runs_in_a_session_of_its_own(runtime, no_sleep, t
     else:
         assert (command, user) == ("make test", "agent")
     assert (root_command, root_user) == ("true", None)
+
+
+@pytest.mark.parametrize(
+    ("value", "kept"),
+    [
+        ("/etc/ssl/platform-bundle.pem", "UNSET"),
+        ("/opt/image-ca.pem", "/opt/image-ca.pem"),
+    ],
+)
+def test_the_platforms_ca_bundle_variables_are_dropped_but_an_images_own_kept(
+    value, kept
+):
+    """Prime's daemon sets REQUESTS_CA_BUNDLE for every command, which makes `requests`
+    verify a self-signed service a grader's session opted out of (`verify = False`):
+    only the platform's own value is dropped."""
+    import subprocess
+
+    out = subprocess.run(
+        [
+            "sh",
+            "-c",
+            WITHOUT_PLATFORM_CA
+            + 'echo "${REQUESTS_CA_BUNDLE-UNSET} ${CURL_CA_BUNDLE-UNSET}"',
+        ],
+        env={
+            "PATH": os.environ["PATH"],
+            "REQUESTS_CA_BUNDLE": value,
+            "CURL_CA_BUNDLE": value,
+        },
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.split()
+    assert out == [kept, kept]
 
 
 class EgressClient(UserJobClient):
@@ -547,6 +589,7 @@ async def test_a_box_with_a_pid_namespace_runs_every_command_inside_it(
     await runtime.bind().run(["true"], {})
     await runtime.bind().with_user("agent").run(["make"], {})
     [(start, _), (root, _), (user, _)] = client.started
+    root = root.removeprefix(WITHOUT_PLATFORM_CA)
     assert "unshare --pid --fork --mount-proc" in start
     assert "exec python3 -I -S -c" in start  # an init that reaps orphans
     assert root.startswith("p=$(cat /run/vf-pid-namespace") and "nsenter -t" in root

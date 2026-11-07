@@ -220,21 +220,40 @@ IMAGE_RUN = (
     'mount --bind / "$m" && { [ -d "$m/run" ] && [ ! -L "$m/run" ] && '
     'rm -f "$m/run/vf-egress-gateway" "$m/run/vf-pid-namespace" '
     '"$m/run/vf-pid-namespace.parent" && cp -a /run/. "$m/run/" && '
-    'mount --bind "$m/run" /run; umount "$m"; }; rmdir "$m"; } >/dev/null 2>&1;'
+    '{ umount -l /run || mount --bind "$m/run" /run; }; umount "$m"; }; rmdir "$m"; } >/dev/null 2>&1;'
 )
 """Give back what the image keeps under /run (a service's socket directory, a checker's
 private work directory, made at build time), which the tmpfs Prime mounts there hides,
 as a container started from the image would have it: the image's /run is still on the
-root filesystem, under the mount, and a non-recursive bind of / reaches it. That
-directory itself is bound over the tmpfs, as Docker leaves it: what is under it is
-plain directories on the disk, which a grader can `rm -rf` and recreate (binding each
-one made it a mount point, EBUSY), and a checker that copies a workspace into its /run
-directory has the disk's room, not the tmpfs's few hundred MB. What Prime itself put
-in the tmpfs is copied over. /run then lives on the box's disk, so a checkpoint keeps
-it, as Docker keeps /run across a container's restart; the box's own state there that
-describes the box it was written on (the saved egress gateway, the PID namespace's
-init) is dropped first. A /run that is no longer a tmpfs (already bound) is left as it
-is; a box without `mount` keeps the empty tmpfs."""
+root filesystem, under the mount, and a non-recursive bind of / reaches it. What Prime
+itself put in the tmpfs is copied there, and the tmpfs is then detached (`umount -l`:
+a process holding a file open in it keeps it), so /run is the root filesystem's own
+directory, as Docker leaves it: what is under it is plain directories on the disk,
+which a grader can `rm -rf` and recreate (binding each one made it a mount point,
+EBUSY), and `rename` into it from elsewhere on the disk works (binding the directory
+over the tmpfs made /run a mount point of its own, and a grader moving a file from
+/var/lib into it failed with EXDEV: CyberStrike multipart-keep-filename-harden). A
+checker that copies a workspace into its /run directory has the disk's room, not the
+tmpfs's few hundred MB. A box that cannot detach it binds the directory over it instead.
+/run then lives on the box's disk, so a checkpoint keeps it, as Docker keeps /run
+across a container's restart; the box's own state there that describes the box it was
+written on (the saved egress gateway, the PID namespace's init) is dropped first. A
+/run that is no longer a tmpfs (already done) is left as it is; a box without `mount`
+keeps the empty tmpfs."""
+
+PLATFORM_CA_BUNDLE = "/etc/ssl/platform-bundle.pem"
+WITHOUT_PLATFORM_CA = "".join(
+    f'case "${{{var}-}}" in {PLATFORM_CA_BUNDLE}) unset {var};; esac; '
+    for var in ("REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE")
+)
+"""Drop the CA bundle variables Prime's command daemon sets for every command, as a
+Docker container has none: `requests` lets `REQUESTS_CA_BUNDLE`/`CURL_CA_BUNDLE`
+override a Session's `verify = False`, so a grader that logs in to the task's own
+self-signed HTTPS service with such a session failed certificate verification
+(CyberStrike java-ofbiz-hardening-defensive, 7 of 22 checks). The platform's bundle
+holds only the system's public CAs, so `requests` verifies as it does in Docker without
+it. Only the platform's own value is dropped: an image that sets its own bundle keeps it.
+`SSL_CERT_FILE` (the same bundle) stays: it changes nothing a Docker run would see."""
 
 UNCAP_PROCESSES = (
     "{ for p in /proc/[0-9]*; do p=${p#/proc/}; "
@@ -1221,7 +1240,7 @@ class PrimeBackend(RuntimeBackend):
             with contextlib.suppress(Exception):
                 await self._renew_namespace(self._namespace_root)
         if not self._pid_namespace or user is not None:
-            return command, user
+            return WITHOUT_PLATFORM_CA + command, user
         inner = shlex.quote(command)
         # Entering a mount namespace moves the working directory to its root: keep the
         # command's own, entered again by path inside the namespace. `--wd` alone keeps
@@ -1236,7 +1255,7 @@ class PrimeBackend(RuntimeBackend):
             f'-- sh -c \'cd -- "$0" 2>/dev/null; exec setsid -w sh -c "$1"\' '
             f'"$PWD" {inner}; fi; exec sh -c {inner}'
         )
-        return entered, None
+        return WITHOUT_PLATFORM_CA + entered, None
 
     async def _as_user(self, runtime: Runtime, command: str) -> tuple[str, str | None]:
         """`command` and the user the platform should start it as, for `runtime`'s user.
