@@ -85,6 +85,8 @@ LOAD_IMAGES = (
 )
 # The network main joins when all its own are `internal` (see `compose_services`).
 HARNESS_NETWORK = "vf-harness"
+# Main's command unless the task gives its own: Harbor's, exactly (see `compose_services`).
+HARBOR_MAIN_COMMAND = ["sh", "-c", "sleep infinity"]
 # A failed Compose command's error keeps this many characters of its output, from the
 # end: the cause (an unhealthy dependency, a failed build step) follows the progress
 # lines, and `up` also prints every build's log.
@@ -332,15 +334,15 @@ async def compose_services(
                 raise SandboxError(f"Compose services {clash} are declared twice")
             if errors := compose_file_errors(authored):
                 raise SandboxError("; ".join(errors))
+            # Harbor's own main command, verbatim: an image's entrypoint receives it
+            # (`exec runuser -u agent -- "$@"`), so it is what the task sees as PID 1, and
+            # graders that clear the agent's processes spare exactly this command
+            # (`runuser -u agent -- sh -c 'sleep infinity'`), or main stops mid-grade.
             base = {
                 "services": {
                     spec.workspace: {
                         "image": config.image,
-                        "command": [
-                            "sh",
-                            "-c",
-                            "trap 'exit 0' TERM; while :; do sleep 3600 & wait $!; done",
-                        ],
+                        "command": HARBOR_MAIN_COMMAND,
                     }
                 }
             }

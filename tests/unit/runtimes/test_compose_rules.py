@@ -243,3 +243,29 @@ async def test_main_only_on_internal_networks_joins_a_routed_one(monkeypatch, tm
             pass
     assert "networks" not in docker.overlay
     assert "networks" not in docker.overlay["services"]["main"]
+
+
+async def test_main_runs_harbors_own_command(monkeypatch, tmp_path):
+    # Images hand the command to `runuser -u agent -- "$@"`, and graders that clear the
+    # agent's processes spare exactly Harbor's `sh -c 'sleep infinity'`: any other command
+    # is killed, and main (and the grader's exec in it) with it.
+    from verifiers.v1.runtimes import compose as module
+
+    class Docker(FakeDocker):
+        async def __call__(self, *argv, env=None, input=None):
+            if "up" in argv:
+                files = [argv[i + 1] for i, a in enumerate(argv) if a == "-f"]
+                self.base = json.loads(Path(files[0]).read_text())
+            return await super().__call__(*argv, env=env, input=input)
+
+    docker = Docker({"main": {"image": "app"}}, "done")
+    monkeypatch.setattr(module, "cli", docker)
+    with pytest.raises(SandboxError):
+        async with module.compose_services(
+            DockerConfig(),
+            _task(tmp_path, "services:\n  main:\n    build: .\n"),
+            {},
+            trust_compose=True,
+        ):
+            pass
+    assert docker.base["services"]["main"]["command"] == ["sh", "-c", "sleep infinity"]
