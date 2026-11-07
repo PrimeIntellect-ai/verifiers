@@ -654,9 +654,9 @@ class Agent:
             return None
         harness = self.harness
         backend = backend_cls(self.config.runtime)
-        if harness.SUPPORTS_FILESYSTEM_SNAPSHOTS and (
-            backend.SUPPORTS_FILESYSTEM_SNAPSHOTS
-            or (config.boxless and not harness.EXECUTES_CODE)
+        if (
+            harness.SUPPORTS_FILESYSTEM_SNAPSHOTS
+            and backend.SUPPORTS_FILESYSTEM_SNAPSHOTS
         ):
             return config
         key = (harness.config.id, self.config.runtime.type)
@@ -760,9 +760,7 @@ class Agent:
                 )
                 trace = run.trace
                 snapshots.update((s.id, s) for s in run.rewound_snapshots)
-                snapshots.update(
-                    (c.snapshot.id, c.snapshot) for c in trace.checkpoints if c.snapshot
-                )
+                snapshots.update((c.snapshot.id, c.snapshot) for c in trace.checkpoints)
                 deleted.update(run.deleted_snapshots)
                 if target is not None and any(
                     error.stage == "setup" for error in trace.errors[seen:]

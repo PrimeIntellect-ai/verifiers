@@ -381,12 +381,9 @@ class Checkpoint(BaseModel):
     turn that followed. A retry restores it (`Trace.rewind`)."""
 
     id: str
-    """The snapshot's id, or this record's own for a box-less checkpoint."""
-    snapshot: Snapshot | None = None
-    """The box's snapshot (`RuntimeBackend.checkpoint`) a retry boots a new box from.
-    None for a box-less checkpoint (a harness that keeps nothing in its box, on a runtime
-    without snapshots): it restores into a fresh box whose task setup runs again, and
-    the trace and its typed state carry the rest."""
+    """The snapshot's id."""
+    snapshot: Snapshot
+    """The box's snapshot (`RuntimeBackend.snapshot`) a retry boots a new box from."""
     node: int | None = None
     """The last committed node whose conversation the box's state follows; None when
     the snapshot preceded the first turn."""
@@ -1089,7 +1086,7 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         position = ids.index(checkpoint.id) + 1
         rewound = self.checkpoints[position:]
         del self.checkpoints[position:]
-        dropped = [c.snapshot for c in rewound if c.snapshot is not None]
+        dropped = [c.snapshot for c in rewound]
         self.rewards = {}
         self.metrics = {}
         self.dropped = None

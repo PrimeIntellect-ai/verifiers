@@ -57,9 +57,6 @@ class RolloutCheckpointConfig(BaseConfig):
     after: Literal["delete", "keep"] = "delete"
     """What happens to the kept snapshots once the run is final: `"delete"` them, or
     `"keep"` them for their owner to delete."""
-    boxless: bool = False
-    """Also checkpoint a harness that runs no code (null) on a runtime without
-    snapshots, from the trace alone."""
 
 
 class AgentConfig(BaseConfig):

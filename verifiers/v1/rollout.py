@@ -186,8 +186,6 @@ class Rollout:
         self.deleted_snapshots: set[str] = set()
         """The snapshots this run deleted."""
         self._pruning = asyncio.Lock()
-        self._boxless = False
-        """Whether this run's checkpoints are box-less (no `Checkpoint.snapshot`)."""
         self.rewound_snapshots: list[Snapshot] = []
         """The snapshots of the checkpoints the restored trace dropped (taken after the
         one restored)."""
@@ -319,10 +317,9 @@ class Rollout:
                 # A restored trace keeps its id; its new box must not collide with the
                 # box an earlier attempt or process left behind.
                 name = f"{self.trace.id}-{uuid.uuid4().hex[:8]}"
-                if self._restore.snapshot is not None:
-                    config = backend_cls(config).restore_config(
-                        config, self._restore.snapshot
-                    )
+                config = backend_cls(config).restore_config(
+                    config, self._restore.snapshot
+                )
             self.runtime = make_backend(config, name=name).bind()
         elif (
             self._borrowed_runtime is not None
@@ -400,13 +397,10 @@ class Rollout:
                 finally:
                     # Providers may assign an ID before startup fails; retain it for diagnostics.
                     self.trace.agent.runtime = runtime.info.model_copy()
-                # A box snapshot needs a runtime that takes them; a harness that keeps
-                # nothing in its box is restorable from the trace alone (box-less).
-                self._boxless = not runtime.backend.SUPPORTS_FILESYSTEM_SNAPSHOTS
                 if (
                     self._checkpointing is not None
                     and self._borrowed_runtime is None
-                    and (not self._boxless or not self.harness.EXECUTES_CODE)
+                    and runtime.backend.SUPPORTS_FILESYSTEM_SNAPSHOTS
                 ):
                     self._session.checkpointer = self._checkpoint
                 if not self.task.scoring_deferred:
@@ -433,8 +427,8 @@ class Rollout:
                 self.trace.timing.setup.start = now
                 self.trace.notify()
                 # A restored box already holds the task's setup; only the harness's
-                # (idempotent) install runs again. A box-less restore boots a fresh box.
-                if self._restore is None or self._restore.snapshot is None:
+                # (idempotent) install runs again.
+                if self._restore is None:
                     async with boundary(TaskError, "task setup"):
                         await invoke(
                             self.task.setup,
@@ -837,20 +831,13 @@ class Rollout:
         if harness is None:
             return
         started = time.time()
-        snapshot: Snapshot | None = None
-        if self._boxless:
-            checkpoint_id = uuid.uuid4().hex
-        else:
-            try:
-                snapshot = await self.runtime.backend.snapshot()
-            except Exception:
-                logger.warning(
-                    "snapshot failed (rollout %s)", self.trace.id, exc_info=True
-                )
-                return None
-            checkpoint_id = snapshot.id
+        try:
+            snapshot = await self.runtime.backend.snapshot()
+        except Exception:
+            logger.warning("snapshot failed (rollout %s)", self.trace.id, exc_info=True)
+            return None
         checkpoint = Checkpoint(
-            id=checkpoint_id,
+            id=snapshot.id,
             node=node,
             tail=tail,
             state=state,
@@ -862,21 +849,16 @@ class Rollout:
             captured=time.time(),
         )
         self.trace.checkpoints.append(checkpoint)
-        if self._boxless:
-            # Nothing to upload: restorable as soon as it is recorded.
-            checkpoint.time.end = checkpoint.captured
-            self.trace.notify()
-        else:
-            self._durable[checkpoint_id] = asyncio.create_task(
-                self._make_durable(checkpoint)
-            )
+        self._durable[checkpoint.id] = asyncio.create_task(
+            self._make_durable(checkpoint)
+        )
         logger.debug(
-            "checkpoint %s taken: id=%s node=%s", checkpoint_id, self.trace.id, node
+            "checkpoint %s taken: id=%s node=%s", checkpoint.id, self.trace.id, node
         )
         return checkpoint
 
     async def _make_durable(self, checkpoint: Checkpoint) -> None:
-        assert self.runtime is not None and checkpoint.snapshot is not None
+        assert self.runtime is not None
         try:
             checkpoint.bytes = await self.runtime.backend.wait_snapshot(
                 checkpoint.snapshot
@@ -909,10 +891,7 @@ class Rollout:
                 *(
                     c.snapshot
                     for c in self.trace.checkpoints
-                    if c.snapshot is not None
-                    and c.time.end
-                    and not c.deleted
-                    and c.id not in keep
+                    if c.time.end and not c.deleted and c.id not in keep
                 ),
                 *(
                     s
@@ -994,7 +973,7 @@ class Rollout:
                             *(
                                 c.snapshot
                                 for c in self.trace.checkpoints
-                                if owned and c.snapshot is not None and not c.deleted
+                                if owned and not c.deleted
                             ),
                             *self.runtime.backend.stray_snapshots,
                         ]

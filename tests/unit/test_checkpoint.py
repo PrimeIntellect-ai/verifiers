@@ -50,7 +50,9 @@ def make_trace() -> vf.Trace:
 
 def test_rewind_restores_info_with_state():
     trace = make_trace()
-    checkpoint = Checkpoint(id="ck", node=1, info={"setup": "nonce"})
+    checkpoint = Checkpoint(
+        id="ck", snapshot=vf.Snapshot(id="ck"), node=1, info={"setup": "nonce"}
+    )
     trace.checkpoints.append(checkpoint)
     trace.info = {"setup": "nonce", "scoring_skipped": "stale"}
     trace.rewind(checkpoint)
@@ -59,7 +61,7 @@ def test_rewind_restores_info_with_state():
 
 def test_rewind_keeps_the_dropped_turns_calls():
     trace = make_trace()
-    checkpoint = Checkpoint(id="ck", node=0)
+    checkpoint = Checkpoint(id="ck", snapshot=vf.Snapshot(id="ck"), node=0)
     trace.checkpoints.append(checkpoint)
     trace.rewind(checkpoint)
     assert len(trace.nodes) == 1
@@ -90,8 +92,8 @@ def test_agent_time_splits_off_the_checkpoint_hold():
     trace.timing.agent.start, trace.timing.agent.end = 100.0, 120.0
     trace.calls.append(ModelCall(time=TimeSpan(start=105.0, end=110.0)))
     trace.checkpoints += [
-        Checkpoint(id="old", captured=90.0, held=3.0),
-        Checkpoint(id="new", captured=106.0, held=1.5),
+        Checkpoint(id="old", snapshot=vf.Snapshot(id="old"), captured=90.0, held=3.0),
+        Checkpoint(id="new", snapshot=vf.Snapshot(id="new"), captured=106.0, held=1.5),
     ]
     trace.split_agent_time()
     assert trace.timing.agent.checkpoint.duration == 1.5
@@ -173,7 +175,6 @@ def make_rollout(
     run._pruning = asyncio.Lock()
     run.deleted_snapshots = set()
     run.rewound_snapshots = []
-    run._boxless = False
     return run, backend
 
 
@@ -247,7 +248,10 @@ def test_keep_policies():
     assert kept(checkpoints, 2) == {"a", "c", "e"}
     assert kept(checkpoints, 3) == {"a", "d", "e"}
     # Deleted and not yet durable snapshots are never kept.
-    pending = [*durable("a", "b", deleted=("a",)), Checkpoint(id="c")]
+    pending = [
+        *durable("a", "b", deleted=("a",)),
+        Checkpoint(id="c", snapshot=vf.Snapshot(id="c")),
+    ]
     assert kept(pending, "all") == {"b"}
 
 
@@ -261,15 +265,6 @@ async def test_a_durable_snapshot_prunes_the_older_ones():
     assert sorted(backend.deleted) == ["old1", "old2", "rewound"]
     assert [c.id for c in run.trace.checkpoints if not c.deleted] == [newest.id]
     assert run.deleted_snapshots == {"old1", "old2", "rewound"}
-
-
-async def test_a_boxless_checkpoint_is_restorable_at_once():
-    run, backend = make_rollout()
-    run._boxless = True
-    checkpoint = await run._checkpoint(TURN)
-    assert checkpoint is not None and checkpoint.snapshot is None
-    assert checkpoint.time.end and backend.taken == 0
-    assert run.trace.checkpoints[-1] is checkpoint
 
 
 def gated(harness: str, runtime: vf.RuntimeConfig, **checkpoint) -> vf.Agent:
@@ -304,9 +299,3 @@ def test_unsupported_checkpointing_warns_once(caplog, monkeypatch):
             "a failed rollout retries from the start"
         ),
     ]
-
-
-def test_boxless_checkpointing_is_opt_in():
-    assert gated("null", vf.SubprocessConfig())._checkpointing() is None
-    assert gated("null", vf.SubprocessConfig(), boxless=True)._checkpointing()
-    assert gated("bash", vf.SubprocessConfig(), boxless=True)._checkpointing() is None
