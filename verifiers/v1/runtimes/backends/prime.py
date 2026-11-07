@@ -27,6 +27,7 @@ from verifiers.v1.runtimes.base import (
     ProgramResult,
     RuntimeBackend,
     RuntimeProcess,
+    Snapshot,
     parse_gpu,
 )
 from verifiers.v1.runtimes.limiters import creation_limiter
@@ -53,6 +54,9 @@ _OUTPUT_DEADLINE_SECONDS = 300
 _OUTPUT_RETRIES = 10
 """Re-reads of a finished job's output that the SDK still failed to fetch, before the
 exec is reported as failed."""
+_CHECKPOINT_DURABLE_SECONDS = 300
+"""How long a checkpoint gets to become restorable (`DURABLE`): the platform uploads it
+after the request returns, and only a durable one restores."""
 _PUBLIC_DOMAIN = "sandbox-v2-prod.pinfra.io"
 """Domain of the public URLs `https://<port>-<sandbox-id>.<domain>` that a LAN network's
 `internet` rule publishes ports at."""
@@ -152,6 +156,7 @@ class PrimeBackend(RuntimeBackend):
     SUPPORTS_USER_SWITCHING: ClassVar[bool] = True
     SUPPORTS_COMPOSE: ClassVar[bool] = True
     SUPPORTS_PORT_EXPOSURE: ClassVar[bool] = True
+    SUPPORTS_FILESYSTEM_SNAPSHOTS: ClassVar[bool] = True
 
     def __init__(self, config: PrimeConfig, name: str | None = None) -> None:
         ensure_prime_auth()
@@ -245,8 +250,8 @@ class PrimeBackend(RuntimeBackend):
                         CreateSandboxRequest(
                             name=self.name,
                             labels=list(dict.fromkeys(labels)),
-                            **source,
                             environment_vars=self.env,
+                            **source,
                             **{k: v for k, v in options.items() if v is not None},
                         )
                     )
@@ -269,10 +274,13 @@ class PrimeBackend(RuntimeBackend):
                 )
             await self._client.wait_for_creation(self.info.id, max_attempts=900)
             logger.debug(
-                "Started prime runtime %s in %s image=%s",
+                "Started prime runtime %s in %s image=%s%s",
                 self.info.id,
                 format_time(time.perf_counter() - started),
                 self.config.image,
+                f" checkpoint={self.config.checkpoint}"
+                if self.config.checkpoint
+                else "",
             )
             await self._client.execute_command(
                 self.info.id, f"mkdir -p {shlex.quote(self.config.workdir)}"
@@ -288,6 +296,59 @@ class PrimeBackend(RuntimeBackend):
             Exception
         ) as e:  # provisioning failure is one rollout's problem, not the eval's
             raise SandboxError(f"prime sandbox provisioning failed: {e}") from e
+
+    async def snapshot(self) -> Snapshot:
+        # The platform fixes the snapshot's content before the request returns, then
+        # uploads it. Until it is durable the snapshot is stray: the platform refuses
+        # to delete it while this box lives, so teardown frees it after.
+        async def create() -> Snapshot:
+            checkpoint = await self._client.checkpoint(self.info.id)
+            snapshot = Snapshot(id=checkpoint.id)
+            self.stray_snapshots.append(snapshot)
+            return snapshot
+
+        try:
+            return await run_shielded(create())
+        except Exception as e:
+            raise SandboxError(f"prime checkpoint failed: {e}") from e
+
+    async def wait_snapshot(self, snapshot: Snapshot) -> int | None:
+        started = time.monotonic()
+        try:
+            durable = await self._client.wait_for_checkpoint(
+                snapshot.id, timeout_seconds=_CHECKPOINT_DURABLE_SECONDS
+            )
+        except Exception as e:
+            raise SandboxError(f"prime checkpoint {snapshot.id}: {e}") from e
+        self.stray_snapshots.remove(snapshot)
+        logger.debug(
+            "prime: checkpoint %s durable after %.1fs on sandbox %s",
+            snapshot.id,
+            time.monotonic() - started,
+            self.info.id,
+        )
+        return durable.stored_bytes
+
+    async def discard_snapshots(self, snapshots: list[Snapshot]) -> list[str]:
+        # The platform refuses only the newest checkpoint of a running box (the parent
+        # of its live state); older ones go while it runs, their data kept as long as a
+        # newer one needs it. Usually called after teardown released `_client`.
+        deleted = []
+        async with leased_client() as client:
+            for snapshot in snapshots:
+                try:
+                    await client.delete_checkpoint(snapshot.id)
+                except Exception as e:  # noqa: BLE001 - provider cleanup is best-effort
+                    logger.warning(
+                        "prime: failed to delete checkpoint %s: %s", snapshot.id, e
+                    )
+                else:
+                    deleted.append(snapshot.id)
+        return deleted
+
+    @classmethod
+    def restore_config(cls, config: PrimeConfig, snapshot: Snapshot) -> PrimeConfig:
+        return config.model_copy(update={"checkpoint": snapshot.id})
 
     async def prepare_execution(
         self, routes: list[str] | None, network: NetworkPolicyConfig | None = None

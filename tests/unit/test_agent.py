@@ -18,6 +18,7 @@ class FailingSegmentRollout:
     closed = Rollout.closed
     fail = Rollout.fail
     step = Rollout.step
+    _turn = Rollout._turn
     timeout = Rollout.timeout
 
 
@@ -39,6 +40,7 @@ def make_rollout(trace: vf.Trace, session, time_remaining=None):
     run._opened = True
     run._closed = False
     run._failed = False
+    run._attempt = 0
     run._failure = None
     run._borrowed_runtime = None
     run.runtime = None
@@ -49,6 +51,8 @@ def make_rollout(trace: vf.Trace, session, time_remaining=None):
     run._session = SimpleNamespace(
         request_interceptors=[],
         error=None,
+        aborted=None,
+        abort_event=asyncio.Event(),
         stopped=False,
     )
     run.deadline_at = None
@@ -99,3 +103,33 @@ async def test_expired_deadline_is_a_timeout_when_the_runtime_reports_an_error()
 
     assert trace.is_timeout and not trace.errors
     assert trace.stop_condition == "agent_timeout"
+
+
+@pytest.mark.parametrize("outcome", ["keeps waiting", "dies"])
+async def test_request_hook_failure_fails_the_rollout(outcome):
+    """A request hook's failure is the task's verdict: it ends the segment at once and
+    fails the rollout, whatever the harness does meanwhile."""
+    trace = make_trace()
+    error = vf.ProviderError("hook refused the turn", status_code=503)
+    cancelled = []
+
+    class WaitingSession:
+        async def turn(self, messages):
+            run._session.aborted = error
+            run._session.abort_event.set()
+            try:
+                if outcome == "keeps waiting":
+                    await asyncio.sleep(60)
+                else:
+                    raise RuntimeError("harness died")
+            except asyncio.CancelledError:
+                cancelled.append(True)
+                raise
+
+    run = make_rollout(trace, WaitingSession(), time_remaining=5)
+
+    await asyncio.wait_for(Interaction(run).turn("next"), timeout=1)
+
+    assert [(e.type, e.stage) for e in trace.errors] == [("ProviderError", "agent")]
+    assert not trace.is_timeout
+    assert cancelled == ([True] if outcome == "keeps waiting" else [])

@@ -13,11 +13,12 @@ import weakref
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 
+from pydantic import BaseModel
 from pydantic_config import BaseConfig
 
-from verifiers.v1.configs.runtime import NetworkPolicyConfig
+from verifiers.v1.configs.runtime import NetworkPolicyConfig, SnapshotType
 from verifiers.v1.errors import SandboxError
 from verifiers.v1.utils.aio import run_shielded
 from verifiers.v1.utils.format import format_time
@@ -142,6 +143,15 @@ class BaseRuntimeInfo(BaseConfig):
     (`Agent.run(runtime=...)`) rather than provisioning its own."""
 
 
+class Snapshot(BaseModel):
+    """A snapshot of a box that new boxes can boot from (`RuntimeBackend.snapshot`,
+    `restore_config`), as many times as needed."""
+
+    id: str
+    """The provider's id for the snapshot."""
+    type: SnapshotType = "filesystem"
+
+
 @dataclass
 class RuntimeCache:
     """Framework state for one provisioned resource, kept off the backend contract:
@@ -186,6 +196,11 @@ class RuntimeBackend(ABC):
     """Digest-keyed PEP 723 scripts inside the runtime. Sandboxes own their `/tmp`;
     the host subprocess runtime overrides this with its per-user cache."""
 
+    SUPPORTS_FILESYSTEM_SNAPSHOTS: ClassVar[bool] = False
+    """Whether `snapshot` captures the box's filesystem for new boxes to boot from
+    (`restore_config`). Rollout checkpointing (`AgentConfig.checkpoint`) takes one at
+    model turns, so a retry continues from there instead of starting over."""
+
     info: BaseRuntimeInfo
 
     def __init__(self, name: str | None = None) -> None:
@@ -194,6 +209,9 @@ class RuntimeBackend(ABC):
         # Explicit process values (model credentials, proxy settings, etc.) override these.
         self.env: dict[str, str] = {}
         self.cache = RuntimeCache()
+        self.stray_snapshots: list[Snapshot] = []
+        """Snapshots this box took that never became restorable (a failed or cancelled
+        durability wait), so no trace records them; freed after the box is gone."""
         self._setup_claimed = False
         self._background: list[RuntimeProcess] = []
         self.stopped = False
@@ -219,6 +237,30 @@ class RuntimeBackend(ABC):
     @abstractmethod
     async def start(self) -> None:
         pass
+
+    async def snapshot(self) -> Snapshot:
+        """Snapshot the box and return it once its content is fixed: writes after this
+        returns are not in it. It becomes restorable only later (`wait_snapshot`); the
+        box keeps running."""
+        raise NotImplementedError(f"{type(self).__name__} does not support snapshots")
+
+    async def wait_snapshot(self, snapshot: Snapshot) -> int | None:
+        """Wait until `snapshot` is restorable and return its stored size in bytes,
+        when the provider reports it. Raises if it never becomes restorable. The box
+        must stay alive until then: its teardown fails a pending snapshot."""
+        raise NotImplementedError(f"{type(self).__name__} does not support snapshots")
+
+    async def discard_snapshots(self, snapshots: list[Snapshot]) -> list[str]:
+        """Free snapshots nothing will restore from and return the ids it freed.
+        Best-effort: a provider may refuse one a live box still needs (prime: the
+        newest one of a running box)."""
+        return []
+
+    @classmethod
+    def restore_config(cls, config: Any, snapshot: Snapshot) -> Any:
+        """The runtime config for a new box that boots from `snapshot` instead of the
+        task's image."""
+        raise NotImplementedError(f"{cls.__name__} does not support snapshots")
 
     async def stop(self) -> None:
         """Free the provisioned resource on the normal path (the owner's `finally`),

@@ -97,6 +97,8 @@ jobs:
             tests: tests/integration/test_user_echo.py
           - behavior: Resume Tool
             tests: tests/integration/test_resume_tool.py
+          - behavior: Checkpoint Restore
+            tests: tests/integration/test_checkpoint.py
           - behavior: User Sim
             tests: tests/integration/test_user_sim.py
           - behavior: Agent User
