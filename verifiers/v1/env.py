@@ -291,6 +291,8 @@ class Env(ABC, Generic[ConfigT]):
             episode.errors.append(_as_error(e))
             # The completed subset is the crash-safe episode; ok stays False.
             return self._discard_invalid_rewards(episode)
+        # finalize() ranks and compares traces: it never sees an invalid trace's reward.
+        self._discard_invalid_rewards(episode)
         try:
             async with asyncio.timeout(self.config.timeout.finalize):
                 async with boundary(EnvError, f"{type(self).__name__}.finalize()"):

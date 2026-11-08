@@ -48,6 +48,7 @@ class FormatGuardEnv(vf.Env[FormatGuardEnvConfig]):
 
     async def finalize(self, task, episode):
         for trace in episode.traces:
+            trace.record_metric("seen_reward", trace.reward)
             trace.record_reward("group", 1.0)
             trace.record_metric("group", 1.0)
 

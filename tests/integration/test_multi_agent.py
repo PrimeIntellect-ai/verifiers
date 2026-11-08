@@ -105,6 +105,7 @@ async def test_format_violations_keep_zero_reward(run, scripted_model, invalid):
         assert trace.ok and trace.dropped is None
         assert trace.metrics["group"] == 1.0  # metrics survive either way
         if trace.is_format_violation:
+            assert trace.metrics["seen_reward"] == 0.0  # finalize() saw no reward
             assert trace.rewards == {}
             assert trace.reward == 0.0
         else:
