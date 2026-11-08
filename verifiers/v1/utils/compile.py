@@ -4,7 +4,7 @@ them at construction where the pairing is statically decidable."""
 
 from collections.abc import Collection
 
-from verifiers.v1.configs.runtime import NetworkPolicyConfig
+from verifiers.v1.configs.runtime import NetworkPolicyConfig, PrimeConfig
 from verifiers.v1.harness import Harness
 from verifiers.v1.runtimes import (
     RuntimeConfig,
@@ -24,7 +24,8 @@ def resolve_runtime_config(
     image needs a container — refuse subprocess), apply its network policy, `workdir`,
     and requested `resources` where the runtime supports them. Precedence: cli/toml >
     task > default except that restrictions compose; an unsupported resource warns once
-    (deduped via `warned`)."""
+    (deduped via `warned`). A prime runtime's `min_cpu`/`min_memory` floors and
+    `resource_scale` then size the resolved CPU and memory."""
     config = base
     updates: dict = {}
     if task.data.image is not None:
@@ -74,6 +75,16 @@ def resolve_runtime_config(
         ):  # still the default → task may set it
             updates[resource] = value
         # else: cli/toml changed it from the default → it wins over the task
+    if isinstance(config, PrimeConfig) and (
+        config.min_cpu is not None
+        or config.min_memory is not None
+        or config.resource_scale != 1.0
+    ):
+        for resource, floor in (("cpu", config.min_cpu), ("memory", config.min_memory)):
+            value = max(updates.get(resource, getattr(config, resource)), floor or 0.0)
+            updates[resource] = value * config.resource_scale
+        # The resolved box has concrete sizes, so resolving it again keeps them.
+        updates.update(min_cpu=None, min_memory=None, resource_scale=1.0)
     config = config.model_copy(update=updates) if updates else config
     validate_artifact_mounts(config, (a.source for a in task.data.artifacts))
     return config
