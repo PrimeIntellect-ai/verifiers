@@ -53,7 +53,12 @@ def verifier_runtime(
     if isinstance(source, PrimeConfig):
         if policy.runtime is not None and source.checkpoint:
             raise TaskError("isolated verification requires an image, not a checkpoint")
-        source = source.model_copy(update={"checkpoint": None})
+        updates: dict = {"checkpoint": None}
+        if policy.runtime is None:
+            # A box inheriting the solver's runtime takes the task's size, not the
+            # solver box's floors and scale.
+            updates.update(min_cpu=None, min_memory=None, resource_scale=1.0)
+        source = source.model_copy(update=updates)
     # A task without its own image/workdir inherits the actual workspace's values,
     # including a Compose image or split execution configuration.
     task = task.with_data(

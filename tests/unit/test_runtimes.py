@@ -33,8 +33,10 @@ import pytest
 from pydantic import TypeAdapter, ValidationError
 
 import verifiers.v1 as vf
-from verifiers.v1.configs.runtime import NetworkPolicyConfig
+from verifiers.v1.configs.runtime import NetworkPolicyConfig, PrimeConfig
+from verifiers.v1.configs.scoring import ScoringConfig
 from verifiers.v1.errors import SandboxError, ToolsetError
+from verifiers.v1.grading import verifier_runtime
 from verifiers.v1.mcp import launch
 from verifiers.v1.mcp.toolset import ToolsetConfig
 from verifiers.v1.runtimes import (
@@ -169,6 +171,35 @@ def test_built_in_runtime_declares_its_features(name) -> None:
         "network_policies": isinstance(config, NetworkPolicyConfig),
     }
     assert declared == {f: name in runtimes for f, runtimes in SUPPORTED.items()}
+
+
+@pytest.mark.parametrize(
+    "resources,expected",
+    [
+        ({"cpu": 4, "memory": 8, "disk": 40}, (8, 32)),
+        ({"cpu": 4, "memory": 16, "disk": 100}, (8, 32)),
+        ({"cpu": 8, "memory": 32, "disk": 120}, (16, 64)),
+        ({"cpu": 16, "memory": 64, "disk": 40}, (32, 128)),
+        ({}, (8, 32)),
+    ],
+)
+def test_prime_resource_floors_and_scale(resources, expected) -> None:
+    base = PrimeConfig(min_cpu=4, min_memory=16, resource_scale=2)
+    resolved = resolve_runtime_config(base, task(resources=resources))
+    assert (resolved.cpu, resolved.memory) == expected
+    assert resolved.disk == resources.get("disk", base.disk)
+    assert resolve_runtime_config(resolved, task(resources=resources)) == resolved
+    # A verification box inheriting the solver's runtime takes the task's own size.
+    grader = verifier_runtime(
+        task(resources=resources),
+        SimpleNamespace(config=resolved),
+        base,
+        ScoringConfig(),
+    )
+    assert (grader.cpu, grader.memory) == (
+        resources.get("cpu", base.cpu),
+        resources.get("memory", base.memory),
+    )
 
 
 async def test_run(runtime) -> None:

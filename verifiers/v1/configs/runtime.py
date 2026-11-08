@@ -207,6 +207,15 @@ class PrimeConfig(NetworkPolicyConfig):
     """CPU cores."""
     memory: float = 2.0
     """Memory in GB."""
+    min_cpu: float | None = Field(None, gt=0)
+    """Floor on the resolved CPU cores (the task's or the configured value), applied
+    before ``resource_scale``. Sizes this runtime's boxes only: a fresh verification box
+    inheriting this config takes the task's size."""
+    min_memory: float | None = Field(None, gt=0)
+    """Floor on the resolved memory in GB, applied before ``resource_scale``."""
+    resource_scale: float = Field(1.0, gt=0)
+    """Multiplier on the resolved CPU cores and memory after the floors; disk and GPU
+    are unchanged."""
     gpu: str | None = None
     """GPU spec, e.g. "A100" or "A100:2" (a bare count = provider-chosen type)."""
     disk: float = 5.0
