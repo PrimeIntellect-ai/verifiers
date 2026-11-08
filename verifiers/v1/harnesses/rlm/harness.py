@@ -160,7 +160,7 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
         install = (
             f"rm -f {ready} && "
             "(command -v git >/dev/null 2>&1 || "
-            "{ apt-get update -qq && apt-get install -y -qq git; } && "
+            "{ apt-get update -qq && apt-get install -y -qq git; } || dnf install -y -q git || apk add --no-cache git && "
             f"rm -rf {checkout} && git clone https://{RLM_REPO} {checkout} && "
             f"git -C {checkout} checkout {shlex.quote(self.config.version)} && "
             # The editable install needs the files, not the history; agents searching
