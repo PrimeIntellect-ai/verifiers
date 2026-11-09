@@ -1,5 +1,4 @@
-import base64
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from typing import Annotated, Any, Literal
 
@@ -260,77 +259,31 @@ class WeightVersionSpan(BaseModel):
 
 
 @dataclass
-class SamplingMask:
-    """Sampling masks stored as flat int32 `ids` and `counts` arrays.
+class SamplerSupport:
+    """The sampler's support per token, in CSR form.
 
-    Each row contains the token ids that survived sampling filters for one completion
-    token. Row boundaries are recovered from `counts`.
+    Row `i` owns `counts[i]` entries of the flat int32 `ids` and, when the engine returned
+    them, of the float32 `logprobs` (the sampler's logprob of each id). A `replayed` row is
+    the exact set its token was sampled from under truncated sampling, with logprobs
+    normalized over that set. Any other row is a head of the sampler's full distribution,
+    independent of the sampled token.
     """
 
     ids: Any
     counts: Any
+    replayed: Any
+    logprobs: Any = None
 
     @classmethod
-    def from_sampling_mask(
-        cls, sampling_mask: list[list[int]] | dict[str, Any]
-    ) -> "SamplingMask":
-        """Build from vLLM's one-list-per-token masks, or from prime-rl's packed CSR
-        form: `{"ids", "counts"}`, each a base64 `{data, shape, dtype}` int32 array."""
-        if isinstance(sampling_mask, dict):
-            return cls(
-                ids=_decode_packed(sampling_mask["ids"], np.int32),
-                counts=_decode_packed(sampling_mask["counts"], np.int32),
-            )
-        counts = np.fromiter(
-            (len(row) for row in sampling_mask),
-            dtype=np.int32,
-            count=len(sampling_mask),
-        )
-        ids = (
-            np.concatenate([np.asarray(row, dtype=np.int32) for row in sampling_mask])
-            if int(counts.sum())
-            else np.empty(0, dtype=np.int32)
-        )
-        return cls(ids=ids, counts=counts)
-
-
-def _decode_packed(packed: dict[str, Any], dtype: type) -> np.ndarray:
-    array = np.frombuffer(base64.b64decode(packed["data"]), dtype=packed["dtype"])
-    return array.astype(dtype, copy=False)
-
-
-@dataclass
-class TopLogprobs:
-    """Top-k sampling head stored as flat `ids`, `logprobs` and `counts` arrays.
-
-    Each row holds one completion token's top-k sampler candidates in descending
-    probability order, independent of the sampled action. Row boundaries come from
-    `counts`; `ids` and `logprobs` share the same flat layout.
-    """
-
-    ids: Any
-    logprobs: Any
-    counts: Any
-
-    @classmethod
-    def from_top_logprobs(
-        cls, ids: list[list[int]], logprobs: list[list[float]]
-    ) -> "TopLogprobs":
-        if len(ids) != len(logprobs):
-            raise ValueError("top ids and logprobs must have one row per token")
-        counts = np.fromiter(
-            (len(row) for row in ids),
-            dtype=np.int32,
-            count=len(ids),
-        )
-        if any(len(ids[i]) != len(logprobs[i]) for i in range(len(ids))):
-            raise ValueError("top ids and logprobs rows must be the same length")
+    def from_response(cls, support: Mapping[str, Any]) -> "SamplerSupport":
+        """Build from the renderer client's `sampler_support`: one row per completion token."""
+        counts = np.asarray(support["counts"], dtype=np.int32)
+        logprobs = support["logprobs"]
         return cls(
-            ids=np.fromiter((token for row in ids for token in row), dtype=np.int32),
-            logprobs=np.fromiter(
-                (p for row in logprobs for p in row), dtype=np.float32
-            ),
+            ids=np.asarray(support["ids"], dtype=np.int32),
             counts=counts,
+            replayed=np.full(len(counts), bool(support["replayed"])),
+            logprobs=None if logprobs is None else np.asarray(logprobs, np.float32),
         )
 
 
@@ -366,16 +319,12 @@ class TurnTokens(BaseModel):
     # per token), attributed per node by the turn's `commit` into `MessageNode.routed_experts`,
     # then dropped. None unless the engine ran with `enable_return_routed_experts`.
     routed_experts: RoutedExperts | None = Field(default=None, exclude=True)
-    # Transient carrier (excluded): per-completion-token sampling masks,
+    # Transient carrier (excluded): the sampler's support per completion token,
     # attributed to the assistant node by the turn's `commit`, then dropped.
-    sampling_mask: SamplingMask | None = Field(default=None, exclude=True)
+    sampler_support: SamplerSupport | None = Field(default=None, exclude=True)
     # Transient carrier (excluded): the engine's weight-version spans over the completion,
     # attributed to the assistant node by the turn's `commit`, then dropped.
     weight_versions: list[WeightVersionSpan] | None = Field(default=None, exclude=True)
-
-    # Transient carrier (excluded): per-completion-token top-k sampling heads,
-    # attributed to the assistant node by the turn's `commit`, then dropped.
-    top_logprobs: TopLogprobs | None = Field(default=None, exclude=True)
 
     @field_serializer("prompt_ids", "completion_ids", "completion_logprobs")
     def serialize_stream(self, values: list | np.ndarray) -> list:
