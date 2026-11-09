@@ -72,6 +72,7 @@ for pyproject in "$prefix/bin/skills/"*/pyproject.toml; do
     set -- "$@" --editable "${pyproject%/pyproject.toml}"
 done
 uv pip install --python "$PRIME_AGENT_KERNEL_VENV/bin/python" "$@"
+touch "$prefix/.ready"
 """
 )
 
@@ -154,9 +155,13 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
 
     async def setup(self, runtime: Runtime) -> None:
         logger.info("prime-agent: ensuring commit %s is installed", self.config.commit)
+        prefix = f"{PRIME_AGENT_DIR}/{self.config.commit}"
         await ensure_installed(
             runtime,
             directory=PRIME_AGENT_DIR,
+            # Runs sharing a box install once: the install needs PyPI, which an earlier
+            # run's egress policy may already have closed.
+            ready=f"[ -f {prefix}/.ready ] && [ -x {prefix}/bin/prime-agent ]",
             install=INSTALL,
             env={
                 **self.config.resolved_env,
