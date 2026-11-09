@@ -159,6 +159,8 @@ if TYPE_CHECKING:
         TurnTokens,
         Usage,
         UserMessage,
+        VideoUrlContentPart,
+        VideoUrlSource,
     )
     from verifiers.v1.utils.artifacts import ARTIFACTS_DIR, Artifact, collect, restore
     from verifiers.v1.utils.decorators import intercept, metric, reward, stop, tool
@@ -330,6 +332,8 @@ _NAME_TO_MODULE = {
     "Usage": "verifiers.v1.types",
     "UserMessage": "verifiers.v1.types",
     "VersionInfo": "verifiers.v1.trace",
+    "VideoUrlContentPart": "verifiers.v1.types",
+    "VideoUrlSource": "verifiers.v1.types",
     "WireEpisode": "verifiers.v1.episode",
     "WireTaskData": "verifiers.v1.task",
     "WireTrace": "verifiers.v1.trace",
@@ -395,6 +399,8 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "ToolMessage",
     "Usage",
     "UserMessage",
+    "VideoUrlContentPart",
+    "VideoUrlSource",
     # task / trace / state
     "Task",
     "TaskData",
