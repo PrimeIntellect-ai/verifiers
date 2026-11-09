@@ -41,7 +41,9 @@ Harbor is a task-format adapter: its tasks work directly under `SingleAgentEnv`,
 
 For standard single-container tasks, verifiers requires a pullable container image rather than building Dockerfiles on the fly. To prepare images for your tasks, build each Dockerfile, push it to a registry, and set the resulting image reference on the task data. Compose tasks can build service images on the evaluator's Docker host. Harbor's Compose template variables are set as Harbor sets them: `CPUS` and `MEMORY` from the task's resources, `TEST_DIR`, and the log mount paths, whose mounts become project volumes shared by every service that mounts them. Local Docker runs the containers; Prime imports their filesystems and starts native service processes for the supported Compose subset (see [Deployment and services](runtimes.md#deployment-and-services)). Task subclasses can also declare prepared native VM services with `ServicesSpec` and start their processes during setup.
 
-When a Compose task's `main` service has no `image` or `build`, verifiers builds `environment/Dockerfile`. Setting `ignore_dockerfile = true` uses the runtime image instead; an explicit task image also takes precedence over the implicit build.
+Compose discovery checks `environment/` first, then the task root. In each directory, the first existing file wins in this order: `compose.yaml`, `compose.yml`, `docker-compose.yaml`, `docker-compose.yml`. Discovery never searches parent directories or `tests/`. Relative build contexts and bind paths resolve from the selected file's directory. An explicit `ComposeSpec.file` is used as given.
+
+When a Compose task's `main` service has no `image` or `build`, verifiers builds the `Dockerfile` beside the selected Compose file. Setting `ignore_dockerfile = true` uses the runtime image instead; an explicit task image also takes precedence over the implicit build.
 
 You can override each task's `image` and `verifier_image` in `load()` using `task.with_data(...)`, which returns a copy of the task with only the specified fields updated:
 

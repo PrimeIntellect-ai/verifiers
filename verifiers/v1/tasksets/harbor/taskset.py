@@ -8,7 +8,7 @@ grades that box. Either way the score lands in
 ``/logs/verifier/reward.json`` or the legacy ``reward.txt``.
 
 A pullable ``[environment].docker_image`` becomes ``TaskData.image``. Compose can build
-its workspace from ``environment/Dockerfile``. Single-container Dockerfile-only
+its workspace from the adjacent ``Dockerfile``. Single-container Dockerfile-only
 environments are rejected unless ``ignore_dockerfile``
 deliberately uses the harness runtime image. Tasks without an environment also use that
 image unless ``require_image`` is set. Separate verifiers prefer their own image
@@ -179,7 +179,7 @@ class HarborData(TaskData):
     mcp_servers: list[dict] = Field(default_factory=list)
     """Task-declared MCP servers, preserved for served-task reconstruction."""
     compose_build_dockerfile: bool = False
-    """Use environment/Dockerfile when Compose's workspace has no image or build."""
+    """Use the adjacent Dockerfile when Compose's workspace has no image or build."""
     verifier_image: str | None = None
     """Pullable image for a separate verifier, containing the complete `/tests` suite.
     None keeps the solver image and stages the task package's tests."""
@@ -218,9 +218,12 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
     def deployment_spec(self):
         from verifiers.v1.runtimes.compose import ComposeSpec
 
-        if (Path(self.data.task_dir) / "environment/docker-compose.yaml").is_file():
+        if self.data.task_dir and (
+            compose := find_compose_file(Path(self.data.task_dir))
+        ):
             return ComposeSpec(
                 self.data.task_dir,
+                file=str(compose.relative_to(self.data.task_dir)),
                 image_override=self.data.image is not None,
                 build_dockerfile=self.data.compose_build_dockerfile,
             )
@@ -713,6 +716,24 @@ def dataset_dir(config: HarborConfig) -> Path:
     return out
 
 
+def find_compose_file(task_dir: Path) -> Path | None:
+    """Find the solver's Compose file in environment/ first, then the task root.
+
+    Within each directory, prefer compose.yaml, compose.yml, docker-compose.yaml,
+    then docker-compose.yml. Never search parents or verifier definitions in tests/.
+    """
+    for directory in (task_dir / "environment", task_dir):
+        for name in (
+            "compose.yaml",
+            "compose.yml",
+            "docker-compose.yaml",
+            "docker-compose.yml",
+        ):
+            if (path := directory / name).is_file():
+                return path
+    return None
+
+
 def resolve_image(
     task_dir: Path,
     image: str | None,
@@ -730,15 +751,14 @@ def resolve_image(
     """
     if image:
         return image
-    compose = task_dir / "environment" / "docker-compose.yaml"
-    if not verifier and compose.is_file():
+    if not verifier and (compose := find_compose_file(task_dir)):
         import yaml
 
         main = yaml.safe_load(compose.read_text())["services"].get("main", {})
         if (
             main.get("image")
             or "build" in main
-            or (not ignore_dockerfile and (compose.parent / "Dockerfile").is_file())
+            or (compose.parent / "Dockerfile").is_file()
         ):
             return None
     section = "verifier.environment" if verifier else "environment"
@@ -809,9 +829,12 @@ def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborD
         else None
     )
     environment_dir = task_dir / "environment"
-    upload_environment = should_upload_environment_dir(
-        environment_dir,
-        docker_image=image,
+    upload_environment = (
+        should_upload_environment_dir(
+            environment_dir,
+            docker_image=image,
+        )
+        and find_compose_file(task_dir) is None
     )
     network = parsed.agent.explicit_phase_policy() or environment.resolve_baseline()
     task, meta = parsed.task, parsed.metadata
@@ -922,16 +945,18 @@ def parse_verifier_extras(
         )
     services = {entry.service for entry in (*artifacts, *hooks)} - {"main"}
     if services:
-        compose = task_dir / "environment" / "docker-compose.yaml"
+        compose = find_compose_file(task_dir)
         declared: set[str] = set()
-        if compose.is_file():
+        if compose is not None:
             import yaml
 
             declared = set(yaml.safe_load(compose.read_text())["services"])
         if missing := services - declared:
             raise ValueError(
                 f"{task_dir.name}: artifacts or collect hooks target services "
-                f"{sorted(missing)} that environment/docker-compose.yaml does not declare"
+                f"{sorted(missing)} that "
+                f"{compose.relative_to(task_dir) if compose else 'the task Compose file'} "
+                "does not declare"
             )
 
     return artifacts, hooks, parse_verifier_environment(task_dir, parsed, harbor_config)
