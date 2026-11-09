@@ -408,7 +408,7 @@ async def prepare_native(config: PrimeConfig, spec: ComposeSpec, env: dict[str, 
         project.argv[project.argv.index("-f") :] = ["-f", str(prepared_path)]
         # Stopped inspection containers need neither networks nor disk quotas.
         # Preserve the VM topology and storage settings in project.config.
-        await project.run("create")
+        await project.run("create", "--build")
         containers = await project.run(
             "ps", "--all", "--format", "{{.ID}} {{.Service}}"
         )
