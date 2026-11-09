@@ -39,14 +39,47 @@ class _ContainerDeployment(_DeploymentStrategy):
     async def start(self, d):
         if d.borrowed_runtime is not None:
             raise ValueError("a composed deployment cannot borrow a single target")
+        config = d.backend.config
+        self._vm_config = None
+        if isinstance(config, PrimeConfig):
+            config = config.model_copy(update={"workdir": d.backend._workdir_override})
+            self._vm_config = config
+        if d.compose_selection is None:
+            d.compose_selection = {
+                "mode": "vm" if self._vm_config else "docker",
+                "reason": "compose_mode=vm"
+                if self._vm_config
+                else "local Docker runtime",
+            }
+        logger.debug(
+            "Selected Compose placement mode=%s reason=%s",
+            *d.compose_selection.values(),
+        )
         self._services = await d.enter(AsyncExitStack())
         services, self._stop_main = await self._services.enter_async_context(
             compose_services(
-                d.backend.config, d.spec, d.env, trust_compose=d.config.trust_compose
+                config, d.spec, d.env, trust_compose=d.config.trust_compose
             )
         )
         d.target_backends = dict(services)
         d.execution_backend = d.harness_backend = services[d.spec.workspace]
+        self._workspace_image = d.execution_backend.config.image
+
+    @asynccontextmanager
+    async def verifier(self, deployment, config, env):
+        if (
+            self._vm_config is not None
+            and isinstance(config, PrimeConfig)
+            and config.image == self._workspace_image
+        ):
+            # Local tags and baked-in images belong to the Compose host. Recreate
+            # from trusted task inputs on a fresh host, never the solver's filesystem.
+            config = config.model_copy(update={"image": self._vm_config.image})
+            async with compose_services(config, deployment.spec, env) as (services, _):
+                yield services[deployment.spec.workspace]
+        else:
+            async with super().verifier(deployment, config, env) as backend:
+                yield backend
 
     async def stop_execution(self, d):
         await self._stop_main()
@@ -143,7 +176,10 @@ class _NativeComposeDeployment(_PrivateNetworkDeployment):
             yield backend
 
     async def start(self, d):
-        from verifiers.v1.runtimes.native_compose import NativeProcesses, prepare_native
+        from verifiers.v1.runtimes.native_compose import (
+            NativeProcesses,
+            prepare_native,
+        )
 
         if d.borrowed_runtime is not None:
             raise ValueError("a composed deployment cannot borrow a single target")
@@ -153,6 +189,11 @@ class _NativeComposeDeployment(_PrivateNetworkDeployment):
             ),
             d.spec,
             d.env,
+        )
+        d.compose_selection = {"mode": "native", "reason": "compose_mode=native"}
+        logger.debug(
+            "Selected Compose placement mode=%s reason=%s",
+            *d.compose_selection.values(),
         )
         main = services["main"]
         d.backend.config = main.config
@@ -211,6 +252,8 @@ def _deployment_strategy(config, backend, spec, tool_vms=None):
         return _PrivateNetworkDeployment()
     if spec is not None:
         if isinstance(backend, PrimeBackend):
+            if config.compose_mode == "vm":
+                return _ContainerDeployment()
             return _NativeComposeDeployment()
         if not backend.SUPPORTS_COMPOSE:
             raise ValueError(

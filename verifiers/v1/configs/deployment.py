@@ -10,3 +10,6 @@ class DeploymentConfig(BaseConfig):
     """Harness and tools share the workspace."""
     trust_compose: bool = False
     """Permit task-authored Compose privileges and bind mounts on local Docker."""
+    compose_mode: Literal["native", "vm"] = "native"
+    """Prime Compose placement: native service VMs or Docker Compose inside one VM.
+    Local Docker always uses Compose."""
