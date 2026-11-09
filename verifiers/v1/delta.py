@@ -12,17 +12,18 @@ a socket, a JSONL file, a queue. Both sides live here because the field lists tr
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Awaitable, Callable, Iterable
 from typing import Any, Self
 
 from pydantic import BaseModel
 
 from verifiers.v1.trace import Trace
-from verifiers.v1.utils.logging import get_logger
+from verifiers.v1.utils.logging import clip, get_logger
 
 logger = get_logger(__name__)
 
-HEADER_FIELDS = ("version", "id", "verifiers", "task", "run")
+HEADER_FIELDS = ("version", "id", "verifiers", "task")
 """Sent once, when a trace first appears."""
 
 LIST_FIELDS = (
@@ -96,11 +97,14 @@ class DeltaStreamer:
         self._scheduled: asyncio.Handle | None = None
         self._flushes: set[asyncio.Task] = set()
         self._lock = asyncio.Lock()
+        self._closed = False
 
     async def __aenter__(self) -> Self:
+        self._closed = False
         return self
 
     async def __aexit__(self, exc_type, exc, tb) -> None:
+        self._closed = True  # a trace notifying after the run sends nothing
         if self._scheduled is not None:
             self._scheduled.cancel()
             self._scheduled = None
@@ -116,7 +120,7 @@ class DeltaStreamer:
         self._changed(trace)
 
     def _changed(self, trace: Trace) -> None:
-        if self._scheduled is None:
+        if self._scheduled is None and not self._closed:
             self._scheduled = asyncio.get_running_loop().call_soon(self._start_flush)
 
     def _start_flush(self) -> None:
@@ -130,9 +134,14 @@ class DeltaStreamer:
             for trace_id, delta, cursor in self.diff():
                 try:
                     await self.send(delta)
-                except Exception:  # the cursor stays put: the next flush resends it
+                except (
+                    Exception
+                ) as e:  # the cursor stays put: the next flush resends it
                     logger.warning(
-                        "failed to send delta for %s", trace_id, exc_info=True
+                        "Failed to send trace delta - %s: %s",
+                        type(e).__name__,
+                        clip(str(e)),
+                        exc_info=logger.isEnabledFor(logging.DEBUG),
                     )
                     continue
                 if cursor is None:
@@ -159,11 +168,11 @@ class DeltaStreamer:
             cursor = sent.copy() if sent is not None else TraceCursor(trace)
             if sent is None:
                 delta["open"] = dump(trace, include=set(HEADER_FIELDS))
-            links = {}
+            links = {}  # str keys: binary wire formats forbid int map keys
             for index in range(cursor.sent["nodes"]):
                 node_links = trace.nodes[index].semantic_parents
                 if len(node_links) > cursor.links[index]:
-                    links[index] = [
+                    links[str(index)] = [
                         dump(link) for link in node_links[cursor.links[index] :]
                     ]
                     cursor.links[index] = len(node_links)
@@ -197,11 +206,7 @@ class DeltaStreamer:
                 delta["set"] = changed
             pending = [dump(message) for message in trace.pending]
             if pending != cursor.pending:
-                cursor.pending = pending
-                if (
-                    pending or "nodes" not in delta
-                ):  # landing nodes clear the preview by themselves
-                    delta["pending"] = pending
+                cursor.pending = delta["pending"] = pending
             if len(delta) > 1:
                 deltas.append((trace.id, delta, cursor))
         return deltas
@@ -246,8 +251,6 @@ class EpisodeAssembly:
                     ]
                 trace[field].extend(items)
         trace.update(delta.get("set") or {})
-        if "nodes" in delta:  # a committed turn absorbs the preview
-            trace["pending"] = []
         if "pending" in delta:
             trace["pending"] = delta["pending"]
 
