@@ -107,6 +107,12 @@ async def test_deltas_stream_once_and_reassemble_the_trace():
         add_turn(trace, "a2")
         trace.nodes[0].semantic_parents.append(ParentLink(node=1, type="reply"))
         await settle()
+        trace.extra_usage.append(Usage(prompt_tokens=1, completion_tokens=1))
+        trace.notify()
+        await asyncio.sleep(0)  # a flush is in flight
+        copy.deepcopy(trace)  # isolated grading copies the live trace mid-stream
+        await settle()
+        trace.extra_usage = [Usage(prompt_tokens=9, completion_tokens=9)]  # a rescore
         trace.record_reward("match", 1.0)
         trace.stop("agent_completed")
     # The exit flushed the tail (reward, stop) without re-sending any node.
@@ -125,6 +131,7 @@ async def test_deltas_stream_once_and_reassemble_the_trace():
     )
     assert rebuilt.nodes[0].semantic_parents == trace.nodes[0].semantic_parents
     assert rebuilt.rewards["match"].value == 1.0
+    assert rebuilt.extra_usage == trace.extra_usage
     assert raw["reward"] == trace.reward and raw["num_turns"] == trace.num_turns
 
 
@@ -144,6 +151,12 @@ async def test_a_retry_under_the_same_id_restarts_the_trace():
         traces[:] = [second]
         streamer.watch(second)
         add_turn(second, "b1")
+        second.errors.append(vf.Error(type="E", message="b"))
+        second.notify()
+        await settle()
+        # the agent prepends the abandoned attempts' errors once the retry finishes
+        second.errors = [vf.Error(type="E", message="a")] + second.errors
     (raw,) = assemble(sent).traces.values()
+    assert [error["message"] for error in raw["errors"]] == ["a", "b"]
     assert [node["message"]["content"] for node in raw["nodes"]] == ["q", "b1"]
     assert raw["attempt"] == 2

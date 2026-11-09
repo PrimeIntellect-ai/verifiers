@@ -29,12 +29,11 @@ HEADER_FIELDS = ("version", "id", "verifiers", "task")
 LIST_FIELDS = (
     "nodes",
     "calls",
-    "errors",
-    "extra_usage",
     "request_rewrites",
     "response_rewrites",
 )
-"""Append-only: each delta carries the items past the sent count."""
+"""Append-only: each delta carries the items past the sent count. Lists the library replaces
+(`errors` on a retry, `extra_usage` on a rescore) are scalars instead, re-sent whole."""
 
 SCALAR_FIELDS = tuple(
     sorted(
@@ -116,7 +115,9 @@ class DeltaStreamer:
             await self.flush()
 
     def watch(self, trace: Trace) -> None:
-        trace.watch(self._changed)
+        # A plain function, not the bound method: grading deep-copies traces mid-run, and a
+        # bound method would drag this streamer (and its asyncio tasks) into the copy.
+        trace.watch(lambda changed: self._changed(changed))
         self._changed(trace)
 
     def _changed(self, trace: Trace) -> None:
