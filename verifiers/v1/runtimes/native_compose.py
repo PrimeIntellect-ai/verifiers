@@ -115,6 +115,10 @@ _BIND_MAX_BYTES = 256 * 1024**2
 _STAGING = PurePosixPath("/.vf-compose")
 
 
+class NativeComposeUnsupported(SandboxError):
+    """Compose semantics that native VMs cannot preserve, found before creation."""
+
+
 @dataclass
 class NativeMount:
     """A bind of task files, or a service-local volume seeded from the image."""
@@ -152,7 +156,9 @@ def validate_native(project) -> dict[str, str]:
     }:
         raise SandboxError("Native Compose does not support secrets or configs")
     if any(set(volume) - {"name"} for volume in config.get("volumes", {}).values()):
-        raise SandboxError("Native Compose supports project volumes without drivers")
+        raise NativeComposeUnsupported(
+            "Native Compose supports project volumes without drivers"
+        )
     networks = config.get("networks", {})
     if any(
         set(network) - {"name", "internal", "ipam", "driver"}
@@ -258,7 +264,12 @@ def validate_native(project) -> dict[str, str]:
                     f"Native Compose dependency {name!r} -> {dependency!r} is unsupported"
                 )
         for volume in service.get("volumes", []):
-            if PurePosixPath(volume["target"]).is_relative_to(_STAGING):
+            target = PurePosixPath(volume["target"])
+            if not target.is_absolute() or ".." in target.parts:
+                raise SandboxError(
+                    f"Native Compose service {name!r} requires absolute mount targets without '..'"
+                )
+            if target.is_relative_to(_STAGING) or _STAGING.is_relative_to(target):
                 raise SandboxError(
                     f"Native Compose service {name!r} cannot mount at {_STAGING}"
                 )
@@ -267,24 +278,25 @@ def validate_native(project) -> dict[str, str]:
                 options = {
                     key for key, value in volume.get("bind", {}).items() if value
                 }
-                if not source.is_relative_to(task) or options - {
-                    "create_host_path",
-                    "selinux",
-                }:
+                if not source.is_relative_to(task):
                     raise SandboxError(
                         f"Native Compose service {name!r} can bind only task files"
+                    )
+                if not source.exists() and "create_host_path" not in options:
+                    raise SandboxError(
+                        f"Native Compose bind source for {name!r} does not exist: {source}"
+                    )
+                if options - {"create_host_path"}:
+                    raise NativeComposeUnsupported(
+                        f"Native Compose service {name!r} has unsupported bind options"
                     )
                 binds.append(
                     (name, volume["target"], source, bool(volume.get("read_only")))
                 )
                 continue
-            # Volumes copy image contents: no read-only, nocopy or subpath mount.
-            if (
-                volume["type"] != "volume"
-                or volume.get("read_only")
-                or any(volume.get("volume", {}).values())
-            ):
-                raise SandboxError(
+            # Volumes are seeded from the image before applying read-only protection.
+            if volume["type"] != "volume" or any(volume.get("volume", {}).values()):
+                raise NativeComposeUnsupported(
                     f"Native Compose service {name!r} supports only task binds and plain volumes"
                 )
             if volume.get("source"):
@@ -332,12 +344,12 @@ def validate_native(project) -> dict[str, str]:
     for volume, targets in mounts.items():
         names = sorted({name for name, _ in targets})
         if len(names) > 1:
-            raise SandboxError(
+            raise NativeComposeUnsupported(
                 f"Native Compose services {', '.join(names)} share volume "
-                f"{volume!r}; each service VM has its own disk"
+                f"{volume!r}; each service VM has its own disk and cannot share live files"
             )
         if len(targets) > 1:
-            raise SandboxError(
+            raise NativeComposeUnsupported(
                 f"Native Compose service {names[0]!r} mounts volume {volume!r} at "
                 "more than one path"
             )
@@ -348,7 +360,7 @@ def validate_native(project) -> dict[str, str]:
                 source.is_relative_to(other_source)
                 or other_source.is_relative_to(source)
             ):
-                raise SandboxError(
+                raise NativeComposeUnsupported(
                     f"Native Compose binds overlapping task files writable at "
                     f"{name}:{target} and {other}:{other_target}"
                 )
@@ -584,7 +596,7 @@ def _mounts(definition: dict, budget: int) -> list[NativeMount]:
             )
         else:
             # Exporting a stopped container omits newly created volume directories.
-            mounts.append(NativeMount(str(target)))
+            mounts.append(NativeMount(str(target), bool(volume.get("read_only"))))
     return sorted(
         mounts, key=lambda mount: (len(PurePosixPath(mount.target).parts), mount.target)
     )
@@ -621,12 +633,12 @@ async def _mount(runtime, name: str, mounts: list[NativeMount]) -> None:
         if mount.archive is None:
             # Docker seeds a new volume from the image's directory, owner and mode.
             unpack.append(
-                f"if [ -d {target} ]; then cp -a {target}/. {source}; else mkdir {source}; fi"
+                f"if [ -d {target} ]; then cp -a {target}/. {source}; else mkdir -m 755 {source}; fi"
             )
         else:
             await runtime.write(f"{source}.tar", mount.archive)
             unpack.append(
-                f"mkdir -p {source} && tar --numeric-owner -xf {source}.tar -C {source} && rm {source}.tar"
+                f"mkdir -p -m 755 {source} && tar --numeric-owner -xf {source}.tar -C {source} && rm {source}.tar"
             )
         if mount.file:
             source += "/file"
