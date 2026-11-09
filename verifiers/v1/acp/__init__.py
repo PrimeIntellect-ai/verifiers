@@ -352,7 +352,7 @@ class ACPHarnessSession(HarnessSession):
             try:
                 response = await self._request("prompt", config=config)
             except BaseException:
-                await run_shielded(self._stop(graceful=False))
+                await run_shielded(self._stop())
                 raise
         turn = _turn_result(response)
         self.trace.root_reply = turn.reply.strip()
@@ -377,26 +377,23 @@ class ACPHarnessSession(HarnessSession):
         _require_model_turn(self.trace, calls_before, result)
         return result
 
-    async def _stop(self, *, graceful: bool) -> dict[str, Any]:
+    async def _stop(self) -> None:
         process = self._process
         response_task = self._response_task
         stderr_task, self._stderr_task = self._stderr_task, None
         if process is None:
-            return {}
+            return
         response_metadata: dict[str, Any] = {}
         try:
-            if graceful:
-                with contextlib.suppress(BaseException):
-                    response = await asyncio.wait_for(
-                        self._request("shutdown"), timeout=10
-                    )
-                    result = response.get("result")
-                    if response.get("ok") and isinstance(result, dict):
-                        metadata = result.get("response_metadata")
-                        if isinstance(metadata, dict):
-                            response_metadata = metadata
+            with contextlib.suppress(BaseException):
+                response = await asyncio.wait_for(self._request("shutdown"), timeout=10)
+                result = response.get("result")
+                if response.get("ok") and isinstance(result, dict):
+                    metadata = result.get("response_metadata")
+                    if isinstance(metadata, dict):
+                        response_metadata = metadata
             for timeout, stop in (
-                (10 if graceful else 0.1, None),
+                (10, None),
                 (5, process.terminate),
                 (5, process.kill),
             ):
@@ -421,7 +418,10 @@ class ACPHarnessSession(HarnessSession):
                     stderr_task.cancel()
                 with contextlib.suppress(BaseException):
                     await stderr_task
-        return response_metadata
+        if response_metadata:
+            harness = cast(ACPHarness, self.harness)
+            harness._consume_protocol_metadata(self.trace, response_metadata)
+            harness.acp_close_result(self.trace, response_metadata)
 
     async def close(self) -> None:
         if self._closed:
@@ -433,10 +433,6 @@ class ACPHarnessSession(HarnessSession):
 
         async def close_process() -> None:
             async with self._lock:
-                response_metadata = await self._stop(graceful=True)
-                if response_metadata:
-                    harness = cast(ACPHarness, self.harness)
-                    harness._consume_protocol_metadata(self.trace, response_metadata)
-                    harness.acp_close_result(self.trace, response_metadata)
+                await self._stop()
 
         await run_shielded(close_process())
