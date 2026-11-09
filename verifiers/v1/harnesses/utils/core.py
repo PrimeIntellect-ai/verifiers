@@ -184,6 +184,9 @@ def run_search(
 
 
 def run_bash(command: str) -> str:
+    if not isinstance(command, str) or not command.strip():
+        # `bash -c ''` exits 0 with no output, which reads as a command that ran.
+        return "error: 'command' must be a non-empty string"
     try:
         result = subprocess.run(
             ["bash", "-c", command],
