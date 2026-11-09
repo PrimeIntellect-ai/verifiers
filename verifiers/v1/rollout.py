@@ -327,6 +327,8 @@ class Rollout:
                 finally:
                     # Providers may assign an ID before startup fails; retain it for diagnostics.
                     self.trace.agent.runtime = runtime.info.model_copy()
+                    if self.deployment.compose_selection is not None:
+                        self.trace.info["compose"] = self.deployment.compose_selection
                 if not self.task.scoring_deferred:
                     isolated = self._scoring_policy.mode == "isolated"
                     self._scoring_task = self.task.grading_task(

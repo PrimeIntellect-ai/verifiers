@@ -91,6 +91,7 @@ class Deployment:
         self.env = dict(env or {})
         self.config = config or DeploymentConfig()
         self.borrowed_runtime = borrowed_runtime
+        self.compose_selection: dict[str, str] | None = None
         from verifiers.v1.runtimes.strategies import _deployment_strategy
 
         self._strategy = _deployment_strategy(self.config, backend, spec, self.tool_vms)

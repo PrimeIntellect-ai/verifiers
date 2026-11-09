@@ -180,6 +180,8 @@ class HarborData(TaskData):
     """Task-declared MCP servers, preserved for served-task reconstruction."""
     compose_build_dockerfile: bool = False
     """Use the adjacent Dockerfile when Compose's workspace has no image or build."""
+    compose_host_image: str | None = None
+    """Image for a Compose VM host, optionally including baked-in service images."""
     verifier_image: str | None = None
     """Pullable image for a separate verifier, containing the complete `/tests` suite.
     Takes precedence over verifier_build."""
@@ -228,6 +230,7 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
                 file=str(compose.relative_to(self.data.task_dir)),
                 image_override=self.data.image is not None,
                 build_dockerfile=self.data.compose_build_dockerfile,
+                host_image=self.data.compose_host_image,
             )
         return super().deployment_spec()
 
