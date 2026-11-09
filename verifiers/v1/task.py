@@ -237,15 +237,21 @@ class Task(Generic[DataT, StateT, ConfigT]):
     async def rescore(
         self, trace: Trace, *, scoring: ScoringConfig | None = None
     ) -> None:
-        """Score a finished trace again, offline: clear its rewards, metrics, judge
-        calls and drop, then run this task's signals that need only the trace.
+        """Score a finished trace again, offline: clear its rewards, metrics, verifier
+        evidence and drop, then run this task's signals that need only the trace.
 
         Pass an isolated scoring policy to restore captured artifacts and run every
         signal in a fresh verifier through the ordinary grading lifecycle.
         """
         if trace.has_error:
             raise ValueError("the rollout errored: its transcript is incomplete")
-        for key in ("judge_calls", "scoring_diagnostics", "scoring_skipped"):
+        for key in (
+            "judge_calls",
+            "scoring_diagnostics",
+            "scoring_skipped",
+            "harbor_judge",
+            "harbor_composite",
+        ):
             trace.info.pop(key, None)
         trace.rewards, trace.metrics, trace.extra_usage = {}, {}, []
         trace.dropped = None
