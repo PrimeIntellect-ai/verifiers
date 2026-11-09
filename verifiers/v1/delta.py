@@ -195,11 +195,14 @@ class DeltaStreamer:
                 else:
                     delta[field] = [dump(item) for item in items]
                 cursor.sent[field] += len(items)
-            changed = {
-                field: value
-                for field, value in dump(trace, include=set(SCALAR_FIELDS)).items()
-                if cursor.scalars.get(field, ...) != value
-            }
+            changed = {}
+            for field, value in dump(trace, include=set(SCALAR_FIELDS)).items():
+                try:
+                    same = cursor.scalars.get(field, ...) == value
+                except Exception:  # noqa: BLE001 - arrays and tensors in `info` compare elementwise
+                    same = False
+                if not same:
+                    changed[field] = value
             if changed:
                 cursor.scalars.update(changed)
                 delta["set"] = changed

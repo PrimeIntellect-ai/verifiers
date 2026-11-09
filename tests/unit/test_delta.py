@@ -150,3 +150,17 @@ async def test_a_retry_under_the_same_id_restarts_the_trace():
     assert [error["message"] for error in raw["errors"]] == ["a", "b"]
     assert [node["message"]["content"] for node in raw["nodes"]] == ["q", "b1"]
     assert raw["attempt"] == 2
+
+
+@pytest.mark.asyncio
+async def test_an_array_in_info_survives_a_grading_copy():
+    trace = make_trace(info={"arr": np.zeros(2)})
+    streamer, sent = recorder([trace])
+    async with streamer:
+        streamer.watch(trace)
+        await settle()
+        # isolated grading: trace.info = result.info
+        trace.info = copy.deepcopy(trace.info)
+        trace.info["arr"][0] = 7.0
+        trace.notify()
+    assert assemble(sent).traces[trace.id]["info"]["arr"].tolist() == [7.0, 0.0]
