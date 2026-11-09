@@ -55,6 +55,7 @@ from verifiers.v1.state import State
 from verifiers.v1.task import Task, TaskData, TaskResources, TaskTimeout
 from verifiers.v1.taskset import Taskset
 from verifiers.v1.tasksets.harbor.judge import HarborJudgeConfig
+from verifiers.v1.tasksets.harbor.workers import HarborWorkerConfig
 from verifiers.v1.trace import Trace
 from verifiers.v1.utils.artifacts import (
     ARTIFACTS_DIR,
@@ -87,6 +88,9 @@ class HarborTaskConfig(TaskConfig):
     """Named verifier value used as the training reward; other values remain metrics."""
     judge: HarborJudgeConfig | None = None
     """Explicit native model, endpoint and sampling overrides for authored judges."""
+    worker: HarborWorkerConfig = HarborWorkerConfig()
+    """Fresh sandbox per native RewardKit Worker call. Use a clean image containing
+    Python 3.12+ and submission dependencies, without grader files or secrets."""
     mcp_servers: list[dict] = Field(default_factory=list)
     """Task-declared connections, bound from HarborData during construction."""
     mcp: ToolsetConfig = ToolsetConfig(colocated=True)

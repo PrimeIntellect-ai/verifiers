@@ -93,6 +93,8 @@ Install `harbor-rewardkit==0.2.4` in the evaluator project. Composite verifiers 
 
 Task Python runs only in a sandbox verifier runtime. The evaluator receives a JSON reward graph, prepares every judge's inputs before inference, and supplies native judge results to RewardKit's aggregation. Set `env.taskset.task.reward_key` to select the training reward; other named rewards and criterion scores remain metrics.
 
+Native Python criteria run each `rewardkit.Worker.run()` in a fresh Prime sandbox, including when the verifier itself uses Docker. `env.taskset.task.worker` accepts Prime runtime settings, defaulting to an offline `python:3.12-slim` image. A custom image must contain Python 3.12+ accessible to unprivileged users and the submission's dependencies, without grader files or secrets. Only the declared files, stdin, and Worker settings are transferred; the verifier's filesystem, environment, checkpoints, volumes, and private network are not inherited. Checkpoints and mounts are rejected. Prime credentials stay on the evaluator, and native sandbox cleanup runs before returning the result. Worker calls are serialized within each verifier, with 32 MiB limits on each request archive and result JSON. This does not intercept Workers launched by `test.sh`.
+
 Native judge reliability metrics use the prefix `harbor/reliability` for standalone judging and `harbor/<component>/reliability` for composite judging:
 
 - `criteria/<criterion>/agreement` and `criteria/<criterion>/valid_samples` copy RewardKit's sample diagnostics when available. Agreement measures consistency between valid samples, not correctness or confidence. Both metrics are omitted for a single sample; an all-invalid repeated result has `valid_samples = 0` and no agreement.

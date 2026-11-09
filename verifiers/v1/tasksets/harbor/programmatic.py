@@ -6,6 +6,7 @@
 import asyncio
 import importlib.util
 import json
+import runpy
 import sys
 from pathlib import Path
 
@@ -14,6 +15,7 @@ def main() -> None:
     spec = importlib.util.spec_from_file_location("vf_rewardkit", sys.argv[1])
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    runpy.run_path(sys.argv[5])["install"]()
     plan = asyncio.run(module.discover_plan(sys.argv[2], sys.argv[3]))
     Path(sys.argv[4]).write_text(json.dumps(plan, allow_nan=False))
 

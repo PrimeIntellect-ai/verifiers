@@ -7,6 +7,7 @@ from pathlib import Path
 from verifiers.v1.errors import TaskError
 
 from .judge import prepare_judge
+from .workers import run_programmatic
 
 
 async def grade_composite(task, runtime, trace, env):
@@ -34,7 +35,9 @@ async def grade_composite(task, runtime, trace, env):
     )
     await runtime.write(prefix + ".py", (source / "programmatic.py").read_bytes())
     await runtime.write(prefix + "-compat.py", (source / "rewardkit.py").read_bytes())
-    result = await runtime.run(
+    await runtime.write(prefix + "-worker.py", (source / "worker.py").read_bytes())
+    result = await run_programmatic(
+        runtime,
         [
             "python3",
             "-I",
@@ -43,8 +46,11 @@ async def grade_composite(task, runtime, trace, env):
             "/tests",
             runtime.config.workdir or "/app",
             prefix + ".json",
+            prefix + "-worker.py",
         ],
         env,
+        task.config.worker,
+        trace,
     )
     trace.info.setdefault("scoring_diagnostics", {})["harbor_programmatic"] = {
         "exit_code": result.exit_code,
