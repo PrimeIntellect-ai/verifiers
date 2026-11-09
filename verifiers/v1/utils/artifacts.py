@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import glob
 import hashlib
 import io
 import json
@@ -85,7 +86,7 @@ async def validate_runtime_mounts(
 ) -> None:
     """Reject relocated mounts and aliases that bypass lexical overlap checks."""
     mounts = getattr(runtime.config, "mounts", {})
-    if not mounts:
+    if not mounts and not workspace:
         return
     sources = list(sources)
     if workspace:
@@ -107,6 +108,8 @@ async def validate_runtime_mounts(
         '"$mount_path" >&2; exit 1; fi; done',
         "validate mount and artifact paths",
     )
+    if not mounts:
+        return
     # Read procfs through exec: file downloads may require seeking to EOF.
     mountinfo = await _run(runtime, "cat /proc/self/mountinfo", "read mount table")
     records = [line.split() for line in mountinfo.splitlines()]
@@ -409,15 +412,29 @@ async def _tar_out(
     runtime: Runtime, artifact: Artifact, budget: int, *, literal_excludes: bool = False
 ) -> bytes:
     path = f"/tmp/vf-artifact-{uuid.uuid4().hex}.tar"
+    source = artifact.source.lstrip("/")
+    prefix = ""
     excludes = " ".join(f"--exclude={shlex.quote(p)}" for p in artifact.exclude)
-    if literal_excludes:
-        excludes = "--anchored --no-wildcards " + excludes
+    if literal_excludes and artifact.exclude:
+        # GNU/BusyBox match the leading './' literally; BSD ignores it unless
+        # anchored with '^'. Escape patterns so mount names match exactly.
+        prefix = (
+            'tar_anchor=.; case "$(tar --version 2>/dev/null)" in '
+            "bsdtar*) tar_anchor=^.; esac; "
+        )
+        excludes = " ".join(
+            '--exclude="$tar_anchor"/'
+            + shlex.quote(glob.escape(p.replace("\\", "\\\\")).replace("$", "[$]"))
+            for p in artifact.exclude
+        )
+        source = "./" + source
     try:
         # macOS tar otherwise adds AppleDouble sidecars next to a directory root.
         await _run(
             runtime,
-            f"COPYFILE_DISABLE=1 tar -cf {shlex.quote(path)} -C / {excludes} -- "
-            f"{shlex.quote(artifact.source.lstrip('/'))}",
+            prefix
+            + f"COPYFILE_DISABLE=1 tar -cf {shlex.quote(path)} -C / {excludes} -- "
+            f"{shlex.quote(source)}",
             f"collect artifact {artifact.source!r}",
         )
         # The runtime enforces the remaining collection budget while transferring the

@@ -120,6 +120,35 @@ async def test_defer_scoring_defers_only_task_scoring() -> None:
     assert trace.reward == 0.0
 
 
+async def test_isolated_rescore_retains_only_current_verifier_evidence(
+    make_trace, monkeypatch
+) -> None:
+    trace = make_trace()
+    trace.ok = True
+    trace.stop("agent_completed")
+    trace.record_reward("reward", 0.2)
+    trace.info = {
+        "submission_id": "saved-1",
+        "harbor_judge": {"/tests/old.toml": {"score": 0.2}},
+        "harbor_composite": {"old": {"score": 0.2}},
+    }
+
+    async def grade_submission(task, trace, *, scoring):
+        trace.record_reward("reward", 0.75)
+        trace.info.setdefault("harbor_judge", {})["/tests/new.toml"] = {"score": 0.75}
+
+    monkeypatch.setattr("verifiers.v1.grading.grade_submission", grade_submission)
+    await vf.Task(trace.task.data).rescore(
+        trace, scoring=vf.ScoringConfig(mode="isolated")
+    )
+
+    assert trace.reward == 0.75
+    assert trace.info == {
+        "submission_id": "saved-1",
+        "harbor_judge": {"/tests/new.toml": {"score": 0.75}},
+    }
+
+
 def test_plugged_stops_set_skip_scoring(tmp_path) -> None:
     fns = tmp_path / "fns.py"
     fns.write_text(PLUGGED_FNS_PY)
