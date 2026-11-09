@@ -30,8 +30,9 @@ class VerifierComparison(BaseModel):
     def scores(self) -> dict[str, dict[str, float]]:
         """Named aggregate rewards and metrics (including RewardKit criteria).
 
-        Failed/dropped comparisons have no numeric verdict; their errors and billed
-        attempts remain on their traces. Names unique to one design remain here.
+        Failed/timed-out traces and dropped regrades have no numeric verdict. A
+        dropped original keeps its recorded scores for diagnosis and its drop reason
+        on the trace. Names unique to one design remain here.
         """
         return {
             label: {
@@ -46,7 +47,9 @@ class VerifierComparison(BaseModel):
                     if value is not None
                 },
             }
-            if trace.ok and not trace.is_timeout and not trace.is_dropped
+            if trace.ok
+            and not trace.is_timeout
+            and (label == "original" or not trace.is_dropped)
             else {}
             for label, trace in {"original": self.original, **self.traces}.items()
         }
@@ -163,8 +166,6 @@ async def compare_verifiers(
         result.task = TraceTask(
             type=type(task).__name__, data=task.data, key=task.key, hash=task.hash
         )
-        for key in ("harbor_judge", "harbor_composite"):
-            result.info.pop(key, None)
         provenance = {
             "source_trace_id": original.id,
             "source_task_hash": original.task.hash,
