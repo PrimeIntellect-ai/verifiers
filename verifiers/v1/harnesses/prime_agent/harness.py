@@ -37,6 +37,9 @@ INSTALL = (
     "set -e\n"
     + _ENSURE_UV
     + r"""
+# uv reads project settings (indexes, sources) from the working directory and its parents, which is the task's: a task
+# repo whose pyproject names extra indexes would make the install depend on them.
+cd "$VF_PRIME_AGENT_DIR"
 prefix="$VF_PRIME_AGENT_DIR/$PRIME_AGENT_COMMIT"
 if [ ! -x "$prefix/bin/prime-agent" ]; then
     case "$(uname -s)-$(uname -m)" in
