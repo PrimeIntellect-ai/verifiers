@@ -96,7 +96,6 @@ if TYPE_CHECKING:
         RuntimeInfo,
         RuntimeProcess,
         Snapshot,
-        SnapshotType,
     )
     from verifiers.v1.runtimes.compose import ComposeSpec
     from verifiers.v1.runtimes.deployment import Deployment, ServicesSpec
@@ -282,7 +281,6 @@ _NAME_TO_MODULE = {
     "RuntimeInfo": "verifiers.v1.runtimes",
     "RuntimeProcess": "verifiers.v1.runtimes",
     "Snapshot": "verifiers.v1.runtimes",
-    "SnapshotType": "verifiers.v1.runtimes",
     "Sampling": "verifiers.v1.configs.sampling",
     "SamplingConfig": "verifiers.v1.configs.sampling",
     "SamplingMask": "verifiers.v1.types",
@@ -494,7 +492,6 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "RuntimeConfig",
     "RuntimeInfo",
     "Snapshot",
-    "SnapshotType",
     "ProgramResult",
     "SubprocessConfig",
     "DockerConfig",

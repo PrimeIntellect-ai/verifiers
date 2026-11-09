@@ -11,8 +11,8 @@ the code.
 
 A harness without a capability the behavior needs is collected as a skip with its
 reason (`Harness.EXECUTES_CODE`, `SUPPORTS_MCP`, `SUPPORTS_SKILLS`, resume support via
-`SUPPORTS_RESUME` or a native session). A `<type>-snapshots` need (one per
-`SnapshotType`) asks both the harness and the runtime for `SUPPORTS_<TYPE>_SNAPSHOTS`.
+`SUPPORTS_RESUME` or a native session). A `snapshots` need asks both the harness and
+the runtime for `SUPPORTS_FILESYSTEM_SNAPSHOTS`.
 
 A runtime without a feature the behavior needs (`RuntimeBackend.SUPPORTS_*`, or a
 `NetworkPolicyConfig` for a network policy) skips the cell the same way. That a runtime
@@ -35,7 +35,7 @@ import pytest
 from pydantic import TypeAdapter
 
 import verifiers.v1 as vf
-from verifiers.v1.configs.runtime import NetworkPolicyConfig, SnapshotType
+from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.harness import Harness
 from verifiers.v1.runtimes import PrimeBackend, RuntimeConfig, backend_cls
 from verifiers.v1.utils.loaders import harness_class, harness_config_type
@@ -66,13 +66,8 @@ RUNTIME_FEATURES = {
     "expose": "port exposure",
     "compose": "Compose services",
     "services": "native service VMs",
-    **{f"{kind}-snapshots": f"{kind} snapshots" for kind in get_args(SnapshotType)},
+    "snapshots": "snapshots",
 }
-
-
-def snapshot_flag(kind: str) -> str:
-    """The flag a harness and a runtime both set for snapshots of `kind`."""
-    return f"SUPPORTS_{kind.upper()}_SNAPSHOTS"
 
 
 # Harness dialects that cannot run against the CI model yet.
@@ -147,14 +142,12 @@ def supports(runtime: str, feature: str) -> bool:
         return isinstance(config, NetworkPolicyConfig)
     if feature == "services":
         return issubclass(runtime_cls(runtime), PrimeBackend)
-    if feature.endswith("-snapshots"):
-        flag = snapshot_flag(feature.removesuffix("-snapshots"))
-        return getattr(runtime_cls(runtime), flag, False)
     flag = {
         "container": "SUPPORTS_TASK_IMAGES",
         "user": "SUPPORTS_USER_SWITCHING",
         "expose": "SUPPORTS_PORT_EXPOSURE",
         "compose": "SUPPORTS_COMPOSE",
+        "snapshots": "SUPPORTS_FILESYSTEM_SNAPSHOTS",
     }[feature]
     return getattr(runtime_cls(runtime), flag)
 
@@ -184,10 +177,8 @@ def unsupported(
         return f"{name} has no native skill support"
     if "resume" in needs and not resumes(cls):
         return f"{name} cannot resume an exchange"
-    for need in needs:
-        kind = need.removesuffix("-snapshots")
-        if kind != need and not getattr(cls, snapshot_flag(kind), False):
-            return f"{name} cannot restore {kind} snapshots"
+    if "snapshots" in needs and not cls.SUPPORTS_FILESYSTEM_SNAPSHOTS:
+        return f"{name} cannot restore a snapshot"
     runtime_needs = (*(("container",) if cls.NEEDS_CONTAINER else ()), *needs)
     for feature in runtime_needs:
         if feature in RUNTIME_FEATURES and not supports(runtime, feature):

@@ -17,7 +17,7 @@ from verifiers.v1.configs.client import ClientConfig
 from verifiers.v1.configs.deployment import DeploymentConfig
 from verifiers.v1.configs.harness import HarnessConfig, WireHarnessConfig
 from verifiers.v1.configs.retries import RetryConfig
-from verifiers.v1.configs.runtime import PrimeConfig, RuntimeConfig, SnapshotType
+from verifiers.v1.configs.runtime import PrimeConfig, RuntimeConfig
 from verifiers.v1.configs.sampling import SamplingConfig
 from verifiers.v1.configs.scoring import ScoringConfig
 from verifiers.v1.utils.generic import merge_defaults
@@ -40,23 +40,19 @@ class TimeoutConfig(BaseConfig):
 
 
 class RolloutCheckpointConfig(BaseConfig):
-    """Rollout checkpointing: snapshot the box at model turns, so a retry continues
-    from the newest snapshot instead of starting over. Needs a runtime and a harness
-    that set `SUPPORTS_FILESYSTEM_SNAPSHOTS`; elsewhere a retry starts over. Processes
-    the agent left running (background jobs, a REPL) are gone after a restore."""
+    """Rollout checkpointing: snapshot the box every n-th model turn, so a retry
+    continues from the newest snapshot instead of starting over. The runtime takes the
+    best snapshot it supports, and each checkpoint records its type. Needs a runtime
+    and a harness that set `SUPPORTS_FILESYSTEM_SNAPSHOTS`; elsewhere a retry starts
+    over. Every snapshot is deleted once the run is final."""
 
-    type: SnapshotType = "filesystem"
-    """What a snapshot captures."""
     interval: PositiveInt = 10
-    """Snapshot at every n-th model turn (the 1st, the 1+n-th, ...); a restore loses
-    up to n turns."""
-    keep: Literal["all", "last"] | PositiveInt = "last"
-    """Snapshots kept while the rollout runs: the newest (`"last"`), every one
-    (`"all"`), or every k-th plus the newest (`k`). A failed restore falls back to an
-    older kept one."""
-    after: Literal["delete", "keep"] = "delete"
-    """What happens to the kept snapshots once the run is final: `"delete"` them, or
-    `"keep"` them for their owner to delete."""
+    """Snapshot at every n-th model turn (the n-th, the 2n-th, ...): a rollout shorter
+    than n turns takes none, and a restore loses fewer than n turns."""
+    keep: Literal["last"] | PositiveInt = "last"
+    """Snapshots kept while the rollout runs: the newest (`"last"`), or every k-th plus
+    the newest (`k`; 1 keeps every one). A failed restore falls back to an older kept
+    one."""
 
 
 class AgentConfig(BaseConfig):

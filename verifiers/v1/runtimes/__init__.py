@@ -29,7 +29,6 @@ from verifiers.v1.runtimes.base import (
     RuntimeBackend,
     RuntimeProcess,
     Snapshot,
-    SnapshotType,
     register,
 )
 from verifiers.v1.runtimes.runtime import Runtime
@@ -111,7 +110,6 @@ __all__ = [
     "RuntimeInfo",
     "RuntimeProcess",
     "Snapshot",
-    "SnapshotType",
     "SubprocessBackend",
     "SubprocessConfig",
     "SubprocessRuntimeInfo",

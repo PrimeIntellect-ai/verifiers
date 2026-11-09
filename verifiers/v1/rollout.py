@@ -113,10 +113,10 @@ async def resolve_agent_runtime(
     return view
 
 
-def kept(checkpoints: list[Checkpoint], keep: Literal["all", "last"] | int) -> set[str]:
+def kept(checkpoints: list[Checkpoint], keep: Literal["last"] | int) -> set[str]:
     """The ids of the restorable `checkpoints` (durable, not deleted) that the `keep`
-    policy holds on to (`RolloutCheckpointConfig.keep`): the newest always, plus every one for
-    `"all"` or every k-th (by position, the 1st, the 1+k-th, ...) for `k`."""
+    policy holds on to (`RolloutCheckpointConfig.keep`): the newest always, plus every
+    k-th (by position, the 1st, the 1+k-th, ...) for `k`."""
     live = [
         (index, c)
         for index, c in enumerate(checkpoints)
@@ -124,8 +124,6 @@ def kept(checkpoints: list[Checkpoint], keep: Literal["all", "last"] | int) -> s
     ]
     if not live:
         return set()
-    if keep == "all":
-        return {c.id for _, c in live}
     held = {live[-1][1].id}
     if keep != "last":
         held.update(c.id for index, c in live if index % keep == 0)
@@ -164,8 +162,7 @@ class Rollout:
         model turns go upstream (on a runtime and a harness that support it) for a
         retry to restore, and deletes the ones its `keep` policy drops as newer ones
         become restorable; the owner of the retries deletes the rest once the run is
-        final (`RolloutCheckpointConfig.after`) — this rollout deletes them only when it
-        aborts."""
+        final — this rollout deletes them only when it aborts."""
         self._on_score = on_score
         self.task = task
         self.harness = harness
@@ -192,6 +189,9 @@ class Rollout:
         """The snapshots still on their way to restorable, by checkpoint id."""
         self._attempt = attempt
         self._restore: Checkpoint | None = None
+        self._restored_turn: int | None = None
+        """The turn the restored snapshot was taken at, which this run does not
+        snapshot again."""
         self._harness_data: TaskData | None = None
         self.deleted_snapshots: set[str] = set()
         """The snapshots this run deleted."""
@@ -203,6 +203,7 @@ class Rollout:
             self.trace, self._restore = restore
             self.trace.attempt = attempt
             self.rewound_snapshots = self.trace.rewind(self._restore)
+            self._restored_turn = self.trace.num_turns + 1
             self._restore.restored = True
         else:
             self.trace = Trace(
@@ -826,7 +827,11 @@ class Rollout:
     async def _capture(self, turn: graph.PendingTurn) -> Checkpoint | None:
         assert self.runtime is not None
         assert self._checkpointing is not None
-        if self.trace.num_turns % self._checkpointing.interval:
+        turn_number = self.trace.num_turns + 1
+        if (
+            turn_number % self._checkpointing.interval
+            or turn_number == self._restored_turn
+        ):
             return None
         if len(self.trace._pending) > 1:
             # Another request is in flight (parallel sub-agents share the trace): the
@@ -986,18 +991,16 @@ class Rollout:
             with contextlib.suppress(Exception):
                 await self.runtime.backend.stop()
         if self.runtime is not None:
-            # Snapshots kept `after` the run belong to their owner, an aborted run's too;
-            # strays were never restorable, so nobody else knows of them.
-            owned = self._checkpointing is None or self._checkpointing.after == "delete"
+            # Strays were never restorable, so nobody else knows of them.
             with contextlib.suppress(Exception):
                 self.record_deleted(
                     await self.runtime.backend.discard_snapshots(
                         [
-                            *(self.rewound_snapshots if owned else ()),
+                            *self.rewound_snapshots,
                             *(
                                 c.snapshot
                                 for c in self.trace.checkpoints
-                                if owned and not c.deleted
+                                if not c.deleted
                             ),
                             *self.runtime.backend.stray_snapshots,
                         ]

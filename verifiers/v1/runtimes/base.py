@@ -13,12 +13,12 @@ import weakref
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 from pydantic import BaseModel
 from pydantic_config import BaseConfig
 
-from verifiers.v1.configs.runtime import NetworkPolicyConfig, SnapshotType
+from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.errors import SandboxError
 from verifiers.v1.utils.aio import run_shielded
 from verifiers.v1.utils.format import format_time
@@ -149,7 +149,9 @@ class Snapshot(BaseModel):
 
     id: str
     """The provider's id for the snapshot."""
-    type: SnapshotType = "filesystem"
+    type: Literal["filesystem"] = "filesystem"
+    """What the snapshot captures, as the runtime took it: `filesystem` holds the box's
+    files, not its processes."""
 
 
 @dataclass

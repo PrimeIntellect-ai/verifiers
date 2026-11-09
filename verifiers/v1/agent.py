@@ -35,7 +35,7 @@ from verifiers.v1.dialects import parse_message
 from verifiers.v1.harness import Harness
 from verifiers.v1.interception import Interception, InterceptionServer
 from verifiers.v1.mcp import SharedToolServer
-from verifiers.v1.rollout import Rollout, RolloutTimeouts, kept
+from verifiers.v1.rollout import Rollout, RolloutTimeouts
 from verifiers.v1.runtimes import (
     Runtime,
     RuntimeConfig,
@@ -819,19 +819,12 @@ class Agent:
                     await asyncio.sleep(delay)
                     attempt += 1
             finally:
-                # The run is final (or cancelled): delete what `after` does not keep. Every
-                # box is gone by now, so the platform refuses none of them.
-                keep = (
-                    kept(run.trace.checkpoints, checkpointing.keep)
-                    if run is not None
-                    and checkpointing is not None
-                    and checkpointing.after == "keep"
-                    else set()
-                )
+                # The run is final (or cancelled): delete every snapshot left. Every box
+                # is gone by now, so the platform refuses none of them.
                 drop = [
                     snapshot
                     for snapshot_id, snapshot in sorted(snapshots.items())
-                    if snapshot_id not in deleted and snapshot_id not in keep
+                    if snapshot_id not in deleted
                 ]
                 if drop and run is not None and run.runtime is not None:
                     try:

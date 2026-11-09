@@ -77,12 +77,10 @@ skip_on_timeout = true
 
 `[env.agent.retries]` sets a retry budget per error type: `rules` are checked in order, and the first rule where all fields match sets the budget for that error; unmatched errors use the top-level `max_retries` budget.
 
-Rollout checkpointing is on by default: a retry restores the newest snapshot of the box and continues the trace from there, instead of starting over. It needs a runtime and a harness that set `SUPPORTS_FILESYSTEM_SNAPSHOTS` (prime; null, bash, rlm, codex, claude-code). Elsewhere a retry starts over. Set `--no-env.agent.checkpoint` to turn it off.
+Rollout checkpointing is on by default: a retry restores the newest snapshot of the box and continues the trace from there, instead of starting over. The runtime takes the best snapshot it supports, and each checkpoint records its type. It needs a runtime and a harness that set `SUPPORTS_FILESYSTEM_SNAPSHOTS` (prime; null, bash, rlm, codex, claude-code). Elsewhere a retry starts over. Every snapshot is deleted once the run is final. Set `--no-env.agent.checkpoint` to turn it off.
 
 ```toml
 [env.agent.checkpoint]
-type = "filesystem"  # what a snapshot captures
-interval = 10        # snapshot every 10th model turn
-keep = "last"        # snapshots kept while the rollout runs: "last", "all", or every k-th
-after = "delete"     # when the run is final: "delete" the kept snapshots, or "keep" them
+interval = 10  # snapshot at the 10th, 20th, ... model turn; shorter rollouts take none
+keep = "last"  # snapshots kept while the rollout runs: "last", or every k-th plus the newest
 ```

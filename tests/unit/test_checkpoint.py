@@ -156,7 +156,7 @@ class SlowBackend:
 
 
 def make_rollout(
-    interval: int = 1, keep: Literal["all", "last"] | int = "last"
+    interval: int = 1, keep: Literal["last"] | int = "last"
 ) -> tuple[Rollout, SlowBackend]:
     backend = SlowBackend()
     run = Rollout.__new__(Rollout)
@@ -175,6 +175,7 @@ def make_rollout(
     run._pruning = asyncio.Lock()
     run.deleted_snapshots = set()
     run.rewound_snapshots = []
+    run._restored_turn = None
     return run, backend
 
 
@@ -183,13 +184,20 @@ TURN = SimpleNamespace(prefix_node_ids=[0, 1], tail=[])
 
 async def test_checkpoint_interval_skips_turns():
     run, backend = make_rollout(interval=2)
-    assert await run._checkpoint(TURN) is None  # turn 2: 1 % 2
+    assert await run._checkpoint(TURN) is not None  # turn 2: the 2nd
     run.trace.nodes.append(MessageNode(parent=1, message=UserMessage(content="go")))
     run.trace.nodes.append(
         MessageNode(parent=2, message=AssistantMessage(content="ok"), sampled=True)
     )
-    assert await run._checkpoint(TURN) is not None  # turn 3: 2 % 2
+    assert await run._checkpoint(TURN) is None  # turn 3
     assert backend.taken == 1
+
+
+async def test_the_restored_turn_is_not_snapshotted_again():
+    run, backend = make_rollout(interval=2)
+    run._restored_turn = run.trace.num_turns + 1
+    assert await run._checkpoint(TURN) is None
+    assert backend.taken == 0
 
 
 async def test_checkpoint_becomes_durable_in_the_background():
@@ -244,7 +252,7 @@ def durable(*ids: str, deleted: tuple[str, ...] = ()) -> list[Checkpoint]:
 def test_keep_policies():
     checkpoints = durable("a", "b", "c", "d", "e")
     assert kept(checkpoints, "last") == {"e"}
-    assert kept(checkpoints, "all") == {"a", "b", "c", "d", "e"}
+    assert kept(checkpoints, 1) == {"a", "b", "c", "d", "e"}
     assert kept(checkpoints, 2) == {"a", "c", "e"}
     assert kept(checkpoints, 3) == {"a", "d", "e"}
     # Deleted and not yet durable snapshots are never kept.
@@ -252,7 +260,7 @@ def test_keep_policies():
         *durable("a", "b", deleted=("a",)),
         Checkpoint(id="c", snapshot=vf.Snapshot(id="c")),
     ]
-    assert kept(pending, "all") == {"b"}
+    assert kept(pending, 1) == {"b"}
 
 
 async def test_a_durable_snapshot_prunes_the_older_ones():

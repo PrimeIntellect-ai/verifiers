@@ -418,8 +418,8 @@ class Checkpoint(BaseModel):
     restored: bool = False
     """Whether a retry restored the run from this snapshot."""
     deleted: bool = False
-    """Whether the snapshot was deleted (`RolloutCheckpointConfig.keep`, `.after`): it
-    can no longer be restored."""
+    """Whether the snapshot was deleted (by `RolloutCheckpointConfig.keep`, or once the
+    run is final): it can no longer be restored."""
 
 
 def _concat(parts: list[list | np.ndarray], dtype: type[np.generic]) -> np.ndarray:

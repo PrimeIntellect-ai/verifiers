@@ -14,10 +14,6 @@ from verifiers.v1.utils.network import (
     parse_network_rule,
 )
 
-SnapshotType = Literal["filesystem"]
-"""What a runtime snapshot captures: `filesystem` holds the box's files, not its
-processes."""
-
 
 class BindMount(BaseConfig):
     """An existing file or directory on the container engine's host."""
