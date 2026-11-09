@@ -19,6 +19,15 @@ setting."""
 PinnedVersion = Annotated[str, Field(pattern=r"^[A-Za-z0-9._+-]+$")]
 """A release/tag a harness pins its program install to."""
 
+SearchProvider = Literal["serper", "eco"]
+"""A web search backend: Serper (Google results) or You.com Eco Search."""
+
+SEARCH_API_KEY_ENV: dict[SearchProvider, str] = {
+    "serper": "SERPER_API_KEY",
+    "eco": "YOU_API_KEY",
+}
+"""The environment variable that holds each search provider's API key."""
+
 
 SkillSource = Path | Annotated[dict[Literal["runtime"], str], Field(min_length=1)]
 

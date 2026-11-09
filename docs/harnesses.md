@@ -14,7 +14,7 @@ id = "bash"
 compaction = { summarize_at_tokens = 100000 }
 ```
 
-Web search is disabled by default; setting `search = true` enables it and requires `SERPER_API_KEY` on the evaluator host.
+Web search is disabled by default; setting `search = true` enables it and requires `SERPER_API_KEY` on the evaluator host. With `search_provider = "eco"` it searches with You.com Eco Search instead and requires `YOU_API_KEY`.
 
 ## A minimal harness implementation
 
