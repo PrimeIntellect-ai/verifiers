@@ -55,7 +55,10 @@ async def ensure_installed(
     else:
         # Install as root (system packages), keeping uv's Python in `directory`, then
         # open it to the agent user: some installers leave it private.
-        python_dir = {"UV_PYTHON_INSTALL_DIR": f"{directory}/python"}
+        python_dir = {
+            "UV_PYTHON_INSTALL_DIR": f"{directory}/python",
+            "UV_CACHE_DIR": f"{directory}/uv-cache",
+        }
         shareable = f"{guarded} && chmod -R a+rX {shlex.quote(directory)}"
         result = await runtime.with_user(None).run(
             ["sh", "-c", shareable], {**python_dir, **env}
