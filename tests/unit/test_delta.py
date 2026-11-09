@@ -7,13 +7,7 @@ import numpy as np
 import pytest
 
 import verifiers.v1 as vf
-from verifiers.v1.delta import (
-    HEADER_FIELDS,
-    LIST_FIELDS,
-    SCALAR_FIELDS,
-    DeltaStreamer,
-    EpisodeAssembly,
-)
+from verifiers.v1.delta import TRAINING_ARRAY_FIELDS, DeltaStreamer, EpisodeAssembly
 from verifiers.v1.graph import MessageNode
 from verifiers.v1.semantic import ParentLink
 from verifiers.v1.trace import ModelCall, TimeSpan, TraceTask
@@ -79,16 +73,6 @@ def assemble(deltas: list[dict]) -> EpisodeAssembly:
     return assembly
 
 
-def test_every_serialized_trace_field_is_streamed():
-    """A new Trace field streams without anyone listing it; a renamed header or list field fails here."""
-    serialized = {
-        name for name, info in vf.Trace.model_fields.items() if not info.exclude
-    }
-    serialized |= set(vf.Trace.model_computed_fields)
-    assert set(HEADER_FIELDS) | set(LIST_FIELDS) | set(SCALAR_FIELDS) == serialized
-    assert {"attempt", "reward", "last_reply"} <= set(SCALAR_FIELDS)
-
-
 @pytest.mark.asyncio
 async def test_deltas_stream_once_and_reassemble_the_trace():
     traces: list[vf.Trace] = []
@@ -104,6 +88,11 @@ async def test_deltas_stream_once_and_reassemble_the_trace():
         add_turn(trace, "a1")
         trace.nodes[1].routed_experts = np.arange(6, dtype=np.uint8).reshape(3, 2, 1)
         await settle()
+        trace.preview("request", [UserMessage(content="tool output")])
+        await settle()
+        pending = assemble(sent).traces[trace.id]["pending"]
+        assert [m["content"] for m in pending] == ["tool output"], "the preview streams"
+        trace.clear_preview("request")
         add_turn(trace, "a2")
         trace.nodes[0].semantic_parents.append(ParentLink(node=1, type="reply"))
         await settle()
@@ -123,15 +112,16 @@ async def test_deltas_stream_once_and_reassemble_the_trace():
     handed = copy.deepcopy(sent)
     raw = assemble(sent).traces[trace.id]
     assert sent == handed, "assembling never mutates a delta the caller holds"
-    raw.pop("pending")
-    rebuilt = vf.Trace.model_validate(raw)
-    assert rebuilt.messages == trace.messages
+    assert raw.pop("pending") == [], "a committed turn clears the preview"
+    rebuilt = vf.Trace[MyTask, vf.State, vf.AgentConfig].model_validate(raw)
     assert rebuilt.nodes[1].routed_experts is None, (
         "training arrays stay with the sender"
     )
-    assert rebuilt.nodes[0].semantic_parents == trace.nodes[0].semantic_parents
-    assert rebuilt.rewards["match"].value == 1.0
-    assert rebuilt.extra_usage == trace.extra_usage
+    # Every field the run set arrives, including ones no list in delta.py names.
+    sent_fields = {"nodes": {"__all__": TRAINING_ARRAY_FIELDS}}
+    assert rebuilt.model_dump(exclude=sent_fields) == trace.model_dump(
+        exclude=sent_fields
+    )
     assert raw["reward"] == trace.reward and raw["num_turns"] == trace.num_turns
 
 

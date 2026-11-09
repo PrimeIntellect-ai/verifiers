@@ -56,9 +56,9 @@ def dump(model: BaseModel, **kwargs: Any) -> dict:
 class TraceCursor:
     """What of one trace has been sent."""
 
-    def __init__(self, trace: Trace) -> None:
-        self.trace = trace
-        """The object this cursor diffs: a retry replaces it under the same id."""
+    def __init__(self, attempt: int) -> None:
+        self.attempt = attempt
+        """The attempt this cursor diffs: a retry keeps the trace id but not the attempt."""
         self.sent = dict.fromkeys(LIST_FIELDS, 0)
         self.links: list[int] = []
         """Per sent node, how many of its semantic links have been sent."""
@@ -67,7 +67,7 @@ class TraceCursor:
 
     def copy(self) -> TraceCursor:
         """A copy safe to advance; the stored values themselves are never mutated."""
-        cursor = TraceCursor(self.trace)
+        cursor = TraceCursor(self.attempt)
         cursor.sent, cursor.links, cursor.scalars = (
             dict(self.sent),
             list(self.links),
@@ -99,7 +99,6 @@ class DeltaStreamer:
         self._closed = False
 
     async def __aenter__(self) -> Self:
-        self._closed = False
         return self
 
     async def __aexit__(self, exc_type, exc, tb) -> None:
@@ -133,11 +132,10 @@ class DeltaStreamer:
     async def flush(self) -> None:
         async with self._lock:  # deltas must leave in diff order
             for trace_id, delta, cursor in self.diff():
+                # The cursor stays put on failure: the next flush resends it.
                 try:
                     await self.send(delta)
-                except (
-                    Exception
-                ) as e:  # the cursor stays put: the next flush resends it
+                except Exception as e:
                     logger.warning(
                         "Failed to send trace delta - %s: %s",
                         type(e).__name__,
@@ -164,9 +162,9 @@ class DeltaStreamer:
         for trace in traces:
             delta: dict[str, Any] = {"trace": trace.id}
             sent = self.cursors.get(trace.id)
-            if sent is not None and sent.trace is not trace:
+            if sent is not None and sent.attempt != trace.attempt:
                 sent = None  # a retry's fresh trace under the same id: reopen it from scratch
-            cursor = sent.copy() if sent is not None else TraceCursor(trace)
+            cursor = sent.copy() if sent is not None else TraceCursor(trace.attempt)
             if sent is None:
                 delta["open"] = dump(trace, include=set(HEADER_FIELDS))
             links = {}  # str keys: binary wire formats forbid int map keys
@@ -226,9 +224,8 @@ class EpisodeAssembly:
             self.traces.pop(trace_id, None)
             return
         trace = self.traces.get(trace_id)
-        if (
-            trace is None or "open" in delta
-        ):  # an `open` for a known id is a retry: start over
+        # An `open` for a known id is a retry: start over.
+        if trace is None or "open" in delta:
             trace = self.traces[trace_id] = {
                 **delta["open"],
                 **{f: [] for f in LIST_FIELDS},
