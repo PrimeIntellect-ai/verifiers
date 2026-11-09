@@ -4,6 +4,7 @@ import asyncio
 import copy
 import logging
 from contextlib import AsyncExitStack, contextmanager
+from dataclasses import replace
 from pathlib import PurePosixPath
 
 from verifiers.v1.configs.scoring import ScoringConfig
@@ -54,12 +55,14 @@ def verifier_runtime(
         if policy.runtime is not None and source.checkpoint:
             raise TaskError("isolated verification requires an image, not a checkpoint")
         source = source.model_copy(update={"checkpoint": None})
-    # A task without its own image/workdir inherits the actual workspace's values,
-    # including a Compose image or split execution configuration.
-    task = task.with_data(
-        image=task.data.image or getattr(solver_runtime.config, "image", None),
-        workdir=task.data.workdir or getattr(solver_runtime.config, "workdir", None),
-    )
+    # An image-based grader inherits unresolved values from the actual workspace.
+    # A build resolves its own image and workdir during provisioning.
+    if task.verifier_spec() is None:
+        task = task.with_data(
+            image=task.data.image or getattr(solver_runtime.config, "image", None),
+            workdir=task.data.workdir
+            or getattr(solver_runtime.config, "workdir", None),
+        )
     if policy.network is not None:
         task = task.with_data(network=policy.network)
     config = resolve_runtime_config(source, task)
@@ -69,17 +72,6 @@ def verifier_runtime(
         raise TaskError(
             f"isolated verification requires an isolated filesystem; the "
             f"{config.type} runtime cannot run images"
-        )
-    relative = [
-        a.source
-        for a in task.data.artifacts
-        if not PurePosixPath(a.source).is_absolute()
-    ]
-    solver_dir = PurePosixPath(getattr(solver_runtime.config, "workdir", "/") or "/app")
-    grader_dir = PurePosixPath(getattr(config, "workdir", "/") or "/app")
-    if relative and solver_dir != grader_dir:
-        raise TaskError(
-            f"cannot restore relative artifacts {relative!r} from {solver_dir} into {grader_dir}; use matching workdirs or absolute paths"
         )
     return config
 
@@ -147,12 +139,37 @@ async def grade_task(
                     asyncio.timeout(timeouts.setup),
                     boundary(TaskError, "verifier setup"),
                 ):
+                    spec = grader.verifier_spec()
+                    if spec is not None and policy.runtime is not None:
+                        spec = replace(
+                            spec,
+                            image_override=spec.image_override
+                            or "image" in policy.runtime.model_fields_set,
+                        )
                     runtime = await stack.enter_async_context(
                         deployment.verifier(
                             config,
                             env=grader.runtime_env(),
+                            spec=spec,
                         )
                     )
+                    # Builds resolve WORKDIR during provisioning. Check the actual
+                    # grader directory before restoring solver-relative artifacts.
+                    relative = [
+                        a.source
+                        for a in grader.data.artifacts
+                        if not PurePosixPath(a.source).is_absolute()
+                    ]
+                    solver_dir = PurePosixPath(
+                        getattr(deployment.workspace.config, "workdir", None) or "/app"
+                    )
+                    grader_dir = PurePosixPath(
+                        getattr(runtime.config, "workdir", None) or "/app"
+                    )
+                    if relative and solver_dir != grader_dir:
+                        raise TaskError(
+                            f"cannot restore relative artifacts {relative!r} from {solver_dir} into {grader_dir}; use matching workdirs or absolute paths"
+                        )
                     runtime = bind_scoring_env(runtime, policy)
                     await runtime.backend.prepare_setup()
                     await stage_verifier(grader, result, runtime)
