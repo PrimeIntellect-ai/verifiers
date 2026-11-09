@@ -56,7 +56,14 @@ class WorkspaceSnapshot:
             if not exists.exit_code:
                 archive = await _tar_out(
                     runtime,
-                    Artifact(source=str(root), exclude=[m.lstrip("/") for m in mounts]),
+                    Artifact(
+                        source=str(root),
+                        exclude=[
+                            m.lstrip("/")
+                            for m in mounts
+                            if PurePosixPath(m).is_relative_to(root)
+                        ],
+                    ),
                     budget,
                     literal_excludes=True,
                 )
@@ -105,9 +112,11 @@ class WorkspaceSnapshot:
             }
             prune = " -o ".join(f"-path {patterns[m]}" for m in mounts)
             keep = " ".join(f"! -path {patterns[p]}" for p in sorted(preserve))
+            # BusyBox find can leave batched -exec unflushed with -prune;
+            # remove each subtree immediately so stale image files cannot survive.
             cleanup.append(
                 f"find {shlex.quote(root)} -mindepth 1 \\( {prune} \\) -prune -o "
-                f"\\( {keep} -exec rm -rf -- {{}} + -prune \\)"
+                f"\\( {keep} -prune -exec rm -rf -- {{}} \\; \\)"
             )
         workdir = shlex.quote(runtime.config.workdir or "/app")
         await _run(
