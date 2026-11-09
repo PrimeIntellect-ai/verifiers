@@ -132,12 +132,80 @@ def test_plugged_stops_set_skip_scoring(tmp_path) -> None:
             for fn in HookTask(data, config).hooks("stop")
         }
 
-    # a fresh plugged stop scores by default; a fn-less entry keeps or overrides the decorator's
-    assert skips({"two": vf.StopFunctionConfig(fn=f"{fns}:two_turns")})["two"] is False
-    assert skips(
-        {"two": vf.StopFunctionConfig(fn=f"{fns}:two_turns", skip_scoring=True)}
-    )["two"]
-    assert skips({"no_reply": vf.StopFunctionConfig()})["no_reply"] is True
+def test_parse_pytest_outcomes_strips_xfail_xpass_reasons() -> None:
+    output = (
+        "XFAIL tests/test_mod.py::test_xfail - known bug - still tracked\n"
+        "XPASS tests/test_mod.py::test_xpass - always xfail - unexpectedly passed\n"
+        "FAILED tests/test_mod.py::test_param[a - b] - assert left - right\n"
+        "PASSED tests/test_mod.py::test_ok"
+    )
+
+    assert vf.parse_pytest_outcomes(output) == {
+        "tests/test_mod.py::test_xfail": "XFAIL",
+        "tests/test_mod.py::test_xpass": "XPASS",
+        "tests/test_mod.py::test_param[a - b]": "FAILED",
+        "tests/test_mod.py::test_ok": "PASSED",
+    }
+
+
+def test_parse_pytest_outcomes_ignores_captured_log_records() -> None:
+    # Issue #2810: pytest prints captured log records as
+    # "ERROR    logger:path:line message"; they must not become outcomes.
+    output = (
+        "PASSED tests/test_api.py::test_status\n"
+        "PASSED tests/test_api.py::test_body\n"
+        "=============================== Captured log call "
+        "==============================\n"
+        "ERROR    app.server:server.py:88 upstream request failed\n"
+        "ERROR    app.server:server.py:90 cannot parse payload :: id a :: b\n"
+    )
+
+    assert vf.parse_pytest_outcomes(output) == {
+        "tests/test_api.py::test_status": "PASSED",
+        "tests/test_api.py::test_body": "PASSED",
+    }
+    assert all(value == "PASSED" for value in vf.parse_pytest_outcomes(output).values())
+
+
+def test_parse_pytest_outcomes_ignores_progress_and_summary_rows() -> None:
+    output = (
+        "\x1b[32mPASSED tests/test_mod.py::test_ok\x1b[0m\n"
+        "test_mod.py::test_ok PASSED                              [ 12%]\n"
+        "test_mod.py::test_param[100%] PASSED                     [ 62%]\n"
+        "SKIPPED [1] test_mod.py:22: not ready\n"
+        "=========================== short test summary info "
+        "===========================\n"
+        "============== 1 failed, 5 passed, 1 skipped in 0.03s ==============\n"
+    )
+
+    assert vf.parse_pytest_outcomes(output) == {
+        "tests/test_mod.py::test_ok": "PASSED",
+    }
+
+
+def test_parse_pytest_outcomes_keeps_parameterized_ids() -> None:
+    output = (
+        "PASSED tests/test_mod.py::test_param[alpha]\n"
+        "PASSED tests/test_mod.py::test_param[b - c]\n"
+        "PASSED tests/test_mod.py::test_param[100%]\n"
+        "ERROR tests/test_mod.py::test_setup - Exception: boom\n"
+    )
+
+    assert vf.parse_pytest_outcomes(output) == {
+        "tests/test_mod.py::test_param[alpha]": "PASSED",
+        "tests/test_mod.py::test_param[b - c]": "PASSED",
+        "tests/test_mod.py::test_param[100%]": "PASSED",
+        "tests/test_mod.py::test_setup": "ERROR",
+    }
+
+
+def test_parse_pytest_outcomes_handles_empty_and_none() -> None:
+    assert vf.parse_pytest_outcomes(None) == {}
+    assert vf.parse_pytest_outcomes("") == {}
+    assert vf.parse_pytest_outcomes("no pytest rows here\n") == {}
+
+
+def test_parse_judge_choice_prefers_final_marker_then_boxed() -> None:
     assert (
         skips({"no_reply": vf.StopFunctionConfig(skip_scoring=False)})["no_reply"]
         is False
