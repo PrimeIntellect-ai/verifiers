@@ -811,14 +811,8 @@ def _attribute_routed_experts(
         off = end
 
 
-def _attribute_sampler_support(
-    trace: Trace, assistant_id: int, support: SamplerSupport | None
-) -> None:
-    """Attach a completion-aligned sampler support to the assistant node."""
-    if support is None:
-        return
-    node = trace.nodes[assistant_id]
-    num_sampled = np.count_nonzero(node.mask)
+def _check_sampler_support(support: SamplerSupport, num_sampled: int) -> None:
+    """A sampler support must hold one row per sampled token."""
     if (
         len(support.counts) != num_sampled
         or len(support.replayed) != num_sampled
@@ -826,8 +820,7 @@ def _attribute_sampler_support(
         or int(support.counts.sum()) != len(support.ids)
         or (support.logprobs is not None and len(support.logprobs) != len(support.ids))
     ):
-        raise ValueError("Sampler support must align with every sampled node token")
-    node.sampler_support = support
+        raise ValueError("Sampler support must align with every sampled token")
 
 
 def _project_prompt_attribution(
@@ -897,6 +890,9 @@ def _commit_turn(turn: PendingTurn, response: Response) -> int:
     trace = turn.trace
     prompt = turn.prompt
     tokens = response.tokens
+    # Checked before the turn writes any node, so a rejected response leaves the graph as it was.
+    if tokens is not None and tokens.sampler_support is not None:
+        _check_sampler_support(tokens.sampler_support, len(tokens.completion_ids))
     # Constant per renderer, so re-stamping every turn is idempotent.
     if tokens is not None and tokens.mm_token_type_id_map:
         trace.mm_token_type_id_map = tokens.mm_token_type_id_map
@@ -1106,9 +1102,8 @@ def _commit_turn(turn: PendingTurn, response: Response) -> int:
     )
 
     # The sampler support is completion-aligned, so only the sampled node carries it.
-    _attribute_sampler_support(
-        trace, assistant_id, tokens.sampler_support if tokens else None
-    )
+    if tokens is not None:
+        trace.nodes[assistant_id].sampler_support = tokens.sampler_support
 
     return assistant_id
 
