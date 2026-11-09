@@ -454,11 +454,15 @@ async def serve_in_runtime(
         cancelled = None
         for stop in (process.terminate, process.kill):
             try:
-                await run_shielded(asyncio.wait_for(stop(), 5))
-                await run_shielded(asyncio.wait_for(process.wait(), 5))
+                for action in (stop, process.wait):
+                    try:
+                        await run_shielded(asyncio.wait_for(action(), 5))
+                    except asyncio.CancelledError as error:
+                        cancelled = error
+                        # Finish waiting after cancellation, but preserve shielded failures.
+                        if error.__cause__ is not None:
+                            raise error.__cause__
                 break
-            except asyncio.CancelledError as error:
-                cancelled = error
             except Exception:
                 # Cleanup failures must not replace startup or grading errors.
                 logger.warning(
