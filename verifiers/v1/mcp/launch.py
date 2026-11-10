@@ -364,7 +364,7 @@ async def serve_in_runtime(
 
         try:
             runtime = await resolve_agent_runtime(runtime, server.config.user)
-        except (TaskError, SandboxError) as exc:
+        except (TaskError, SandboxError, ValueError) as exc:
             raise ToolsetError(
                 f"tool server {server.server_name!r} cannot run as user {server.config.user!r}"
             ) from exc
