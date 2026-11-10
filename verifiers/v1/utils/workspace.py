@@ -81,6 +81,7 @@ class WorkspaceSnapshot:
         cleanup = []
         for root, archive in self.archives.items():
             _validate_restore(root, archive, workspace=True)
+            directory = False
             mounts = [
                 PurePosixPath(m)
                 for m in self.mounts
@@ -90,6 +91,8 @@ class WorkspaceSnapshot:
                 with tarfile.open(fileobj=io.BytesIO(archive)) as tar:
                     for member in tar:
                         path = PurePosixPath("/") / member.name
+                        if path == PurePosixPath(root):
+                            directory = member.isdir()
                         if any(
                             path.is_relative_to(m)
                             or (m.is_relative_to(path) and not member.isdir())
@@ -99,7 +102,16 @@ class WorkspaceSnapshot:
                                 "Workspace archive overlaps a read-only mount"
                             )
             if not mounts:
-                cleanup.append(f"rm -rf -- {shlex.quote(root)}")
+                # A non-root image user can own the directory without being
+                # allowed to remove its entry from the parent (for example /app).
+                cleanup.append(
+                    f"if test -d {shlex.quote(root)}; then "
+                    f"find {shlex.quote(root)} -mindepth 1 -maxdepth 1 "
+                    "-exec rm -rf -- {} +; "
+                    f"else rm -f -- {shlex.quote(root)}; fi"
+                    if directory
+                    else f"rm -rf -- {shlex.quote(root)}"
+                )
                 continue
             # Keep mount targets and their ancestors; remove every other subtree
             # without descending into it. Fresh runtimes reattach the same mounts.
