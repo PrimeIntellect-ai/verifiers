@@ -433,7 +433,10 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
                 "mkdir -p /tests && tar -xzf /tmp/tests.tgz -C /tests"
             )
         # Verifier subprocesses can use different users; opening their log directory
-        # requires its owner or root, even when it is already writable.
+        # requires its owner or root, even when it is already writable. A grading box
+        # of its own starts with an empty log directory: anything already there came
+        # from the image or from the agent's restored artifacts, not from this grader.
+        isolated = wipe or self.scoring.mode == "isolated"
         setup = (
             runtime.with_user("root")
             if runtime.backend.SUPPORTS_USER_SWITCHING
@@ -443,6 +446,7 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
             (
                 setup,
                 (
+                    f"{'rm -rf /logs/verifier && ' if isolated else ''}"
                     f"mkdir -p /logs/verifier {ARTIFACTS_DIR} && "
                     f"chmod 777 /logs/verifier {ARTIFACTS_DIR}"
                 ),
