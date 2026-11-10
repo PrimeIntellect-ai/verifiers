@@ -37,6 +37,7 @@ from pydantic import (
     TypeAdapter,
     ValidationError,
     field_serializer,
+    field_validator,
 )
 
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
@@ -44,6 +45,7 @@ from verifiers.v1.configs.scoring import ScoringConfig
 from verifiers.v1.configs.task import TaskConfig
 from verifiers.v1.configs.taskset import TasksetConfig
 from verifiers.v1.errors import SandboxError, TaskError
+from verifiers.v1.mcp import ToolsetConfig
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.runtimes.deployment import Deployment
 from verifiers.v1.state import State
@@ -85,6 +87,15 @@ class HarborTaskConfig(TaskConfig):
     """Native model, endpoint and sampling overrides for authored judges."""
     mcp_servers: list[dict] = Field(default_factory=list)
     """Task-declared connections, bound from HarborData during construction."""
+    mcp: ToolsetConfig = ToolsetConfig(colocated=True)
+    """Native placement and execution settings for task-declared MCP tools."""
+
+    @field_validator("mcp")
+    @classmethod
+    def _mcp_placement(cls, config: ToolsetConfig) -> ToolsetConfig:
+        if not config.model_fields_set & {"colocated", "runtime", "service", "url"}:
+            config = config.model_copy(update={"colocated": True})
+        return config
 
     @field_serializer("judge")
     def _judge_overrides(
@@ -235,7 +246,7 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
         from .toolset import HarborMCPConfig, HarborMCPToolset
 
         return super().toolsets(config) + [
-            HarborMCPToolset(HarborMCPConfig(colocated=True, server=server))
+            HarborMCPToolset(HarborMCPConfig(**config.mcp.model_dump(), server=server))
             for server in config.mcp_servers
         ]
 
