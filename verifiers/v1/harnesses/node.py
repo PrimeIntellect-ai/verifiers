@@ -81,8 +81,9 @@ node_ok "$node/bin/node" || { echo "ACP adapters require patched Node.js (22.23.
 """
 
 
-async def ensure_node(runtime: Runtime) -> None:
-    """Install the shared Node runtime used by ACP adapter harnesses."""
+async def ensure_node(runtime: Runtime, *, never: bool = False) -> None:
+    """Install the shared Node runtime used by ACP adapter harnesses; `never` only
+    checks that it is there (`install="never"`)."""
     # The install replaces NODE_DIR wholesale, so the lock lives beside it.
     await ensure_installed(
         runtime,
@@ -91,4 +92,6 @@ async def ensure_node(runtime: Runtime) -> None:
         install=INSTALL,
         env={"VF_NODE_VERSION": NODE_VERSION},
         label="Node.js",
+        never=never,
+        check=f'"{NODE_BIN_DIR}/node" --version >/dev/null 2>&1',
     )

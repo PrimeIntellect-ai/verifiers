@@ -49,7 +49,7 @@ class OpenCodeHarness(ACPHarness[OpenCodeHarnessConfig]):
         return message
 
     async def setup(self, runtime: Runtime) -> None:
-        await ensure_node(runtime)
+        await ensure_node(runtime, never=self.config.install == "never")
         directory = f"{OPENCODE_DIR}/{self.config.version}"
         await ensure_installed(
             runtime,
@@ -62,6 +62,7 @@ class OpenCodeHarness(ACPHarness[OpenCodeHarnessConfig]):
                 "VF_OPENCODE_VERSION": self.config.version,
             },
             label="OpenCode",
+            never=self.config.install == "never",
         )
         await super().setup(runtime)
 

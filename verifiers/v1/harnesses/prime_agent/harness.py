@@ -165,6 +165,11 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
                 "PRIME_AGENT_KERNEL_VENV": self._kernel_venv(),
             },
             label="prime-agent",
+            never=self.config.install == "never",
+            check=(
+                '[ -x "$VF_PRIME_AGENT_DIR/$PRIME_AGENT_COMMIT/bin/prime-agent" ] && '
+                '[ -x "$PRIME_AGENT_KERNEL_VENV/bin/python" ]'
+            ),
         )
         await super().setup(runtime)
 

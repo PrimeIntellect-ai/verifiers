@@ -9,6 +9,11 @@ from verifiers.v1.utils.logging import get_logger
 
 logger = get_logger(__name__)
 
+
+class HarnessNotInstalled(RuntimeError):
+    """A harness configured with `install="never"` found its program missing or broken."""
+
+
 INSTALLED_MARKER = "vf-install-ran-8f3c1d"
 """Printed after a successful install, so the host can tell it from a `ready` skip."""
 
@@ -23,6 +28,8 @@ async def ensure_installed(
     ready: str | None = None,
     lock: str | None = None,
     shell: tuple[str, ...] = ("sh", "-c"),
+    never: bool = False,
+    check: str | None = None,
 ) -> bool:
     """Run `install` in `runtime` under a lock, so concurrent rollouts sharing the runtime
     install once and the rest wait. `ready` is a shell test that skips the install when it
@@ -36,9 +43,24 @@ async def ensure_installed(
     reinstalled. Without one, `install` runs every time and checks for itself, so it
     returns True and logs nothing.
 
+    `never` (the harness config's `install="never"`) installs nothing: it runs `check`
+    (by default `ready`; an install without `ready` must give one) and raises
+    `HarnessNotInstalled` naming `directory` and the check when it fails.
+
     The lock is `flock` (Linux, busybox) or `lockf` (macOS/BSD), both released when the holder
     dies; an image with neither falls back to a symlink spinlock whose owner is recorded as
     `pid:starttime` so a dead holder is reaped even if its pid was reused."""
+    if never:
+        test = check or ready
+        if test is None:
+            raise ValueError(f"{label} has no install check for install='never'")
+        result = await runtime.with_user(None).run(["sh", "-c", test], env)
+        if result.exit_code != 0:
+            raise HarnessNotInstalled(
+                f"{label} is not installed in {directory} and install='never' "
+                f"(check failed: {test})"
+            )
+        return False
     lock = shlex.quote(lock or f"{directory}/install.lock")
     ran = f"echo {INSTALLED_MARKER}"
     script = (

@@ -69,6 +69,7 @@ class HermesAgentHarness(ACPHarness[HermesAgentHarnessConfig]):
                 "VF_HERMES_VERSION": self.config.version,
             },
             label="Hermes Agent",
+            never=self.config.install == "never",
             shell=("bash", "-o", "pipefail", "-c"),
         )
         await super().setup(runtime)

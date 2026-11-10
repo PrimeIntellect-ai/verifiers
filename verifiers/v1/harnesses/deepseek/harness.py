@@ -39,7 +39,7 @@ class DeepSeekHarness(ACPHarness[DeepSeekHarnessConfig]):
     SUPPORTS_TOOL_INTERCEPTION = True
 
     async def setup(self, runtime: Runtime) -> None:
-        await ensure_node(runtime)
+        await ensure_node(runtime, never=self.config.install == "never")
         directory = DEEPSEEK_DIR.format(version=self.config.version)
         await ensure_installed(
             runtime,
@@ -51,6 +51,7 @@ class DeepSeekHarness(ACPHarness[DeepSeekHarnessConfig]):
                 "VF_DEEPSEEK_VERSION": self.config.version,
             },
             label="DeepSeek Harness",
+            never=self.config.install == "never",
         )
         await super().setup(runtime)
 

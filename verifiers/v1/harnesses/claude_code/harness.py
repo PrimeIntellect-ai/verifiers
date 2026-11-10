@@ -50,7 +50,7 @@ class ClaudeCodeHarness(ACPHarness[ClaudeCodeHarnessConfig]):
         return drop_blank_text(message)
 
     async def setup(self, runtime: Runtime) -> None:
-        await ensure_node(runtime)
+        await ensure_node(runtime, never=self.config.install == "never")
         versions = {"version": self.config.version, "acp_version": ACP_VERSION}
         directory = CLAUDE_ACP_DIR.format(**versions)
         packages = PACKAGES_DIR.format(**versions)
@@ -69,6 +69,7 @@ class ClaudeCodeHarness(ACPHarness[ClaudeCodeHarnessConfig]):
                 "VF_CLAUDE_ACP_VERSION": ACP_VERSION,
             },
             label="Claude Agent ACP",
+            never=self.config.install == "never",
         )
         await super().setup(runtime)
 
