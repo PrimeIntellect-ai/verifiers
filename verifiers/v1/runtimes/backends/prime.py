@@ -59,6 +59,7 @@ _CHECKPOINT_DURABLE_SECONDS = 300
 _PAUSE_SETTLE_SECONDS = 120
 """How long a pause or a resume gets to take effect; they take seconds."""
 _DEAD_STATUSES = frozenset({"ERROR", "TERMINATED", "TIMEOUT"})
+_STATUS_POLL_SECONDS = 0.3
 """How long a checkpoint gets to become restorable (`DURABLE`): the platform uploads it
 after the request returns, and only a durable one restores."""
 _PUBLIC_DOMAIN = "sandbox-v2-prod.pinfra.io"
@@ -70,10 +71,62 @@ _EXPOSE_TAG = "vf-exposed"
 BASE_LABELS: list[str] = []
 
 
+class _StatusPoller:
+    """Batched status lookups for the boxes that wait for a pause or a resume to take
+    effect: one request serves up to 100 boxes, so a save of every rollout of a run
+    costs a few requests per poll instead of one per box."""
+
+    def __init__(self, client: Any) -> None:
+        self.client = client
+        self.waiting: dict[str, asyncio.Future] = {}
+        self.task: asyncio.Task | None = None
+
+    async def next(self, sandbox_id: str) -> Any:
+        """The box's status at the next poll (one waiter per box)."""
+        future = asyncio.get_running_loop().create_future()
+        self.waiting[sandbox_id] = future
+        if self.task is None or self.task.done():
+            self.task = asyncio.create_task(self._run())
+        return await future
+
+    async def _run(self) -> None:
+        while self.waiting:
+            await asyncio.sleep(_STATUS_POLL_SECONDS)
+            waiting, self.waiting = self.waiting, {}
+            ids = list(waiting)
+            await asyncio.gather(
+                *(
+                    self._poll({i: waiting[i] for i in ids[start : start + 100]})
+                    for start in range(0, len(ids), 100)
+                )
+            )
+
+    async def _poll(self, waiting: dict[str, asyncio.Future]) -> None:
+        try:
+            response = await self.client.get_sandbox_statuses(list(waiting))
+        except Exception as error:  # noqa: BLE001 - each waiter reports it
+            results: dict[str, Any] = dict.fromkeys(waiting, error)
+        else:
+            results = {status.sandbox_id: status for status in response.statuses}
+            results.update(
+                (item.sandbox_id, SandboxError(f"{item.code}: {item.message}"))
+                for item in response.errors
+            )
+        for sandbox_id, future in waiting.items():
+            result = results.get(sandbox_id, SandboxError("no status returned"))
+            if future.done():
+                continue
+            if isinstance(result, Exception):
+                future.set_exception(result)
+            else:
+                future.set_result(result)
+
+
 @dataclass
 class _SharedClient:
     client: Any
     leases: int = 0
+    poller: _StatusPoller | None = None
 
 
 # One `AsyncSandboxClient` per event loop, leased by every live runtime on it. The SDK
@@ -358,9 +411,11 @@ class PrimeBackend(RuntimeBackend):
         """Wait until the platform reports `status` for this box after a pause or a
         resume (both return once accepted)."""
         deadline = time.monotonic() + _PAUSE_SETTLE_SECONDS
-        delay = 0.2
+        shared = _shared_clients[asyncio.get_running_loop()]
+        if shared.poller is None:
+            shared.poller = _StatusPoller(shared.client)
         while True:
-            box = await self._client.get(self.info.id)
+            box = await shared.poller.next(self.info.id)
             if box.status == status:
                 return
             if box.error_type == failure or box.status in _DEAD_STATUSES:
@@ -373,8 +428,6 @@ class PrimeBackend(RuntimeBackend):
                     f"prime sandbox {self.info.id} did not reach {status} within "
                     f"{_PAUSE_SETTLE_SECONDS}s"
                 )
-            await asyncio.sleep(delay)
-            delay = min(delay * 1.5, 2)
 
     async def wait_snapshot(self, snapshot: Snapshot) -> int | None:
         started = time.monotonic()
