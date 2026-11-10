@@ -37,7 +37,7 @@ from verifiers.v1.harness import Harness, HarnessSession
 from verifiers.v1.interception import Interception, serve_interception
 from verifiers.v1.interception.relay import Relay
 from verifiers.v1.mcp import SharedToolServer, serve_tools
-from verifiers.v1.restore import LIVE, RestorePoint
+from verifiers.v1.restore import LIVE, RestorePoint, unsaveable
 from verifiers.v1.runtimes import (
     Runtime,
     RuntimeConfig,
@@ -269,6 +269,11 @@ class Rollout:
         """Whether this run can take memory snapshots: decided at `open`, once the box,
         its relay and the task's tool servers are known. Its checkpoints at model turns
         take them when the config asks for them, and its owner's saves always do."""
+        self.unsaveable: str | None = "it has not booted its box yet"
+        """Why this run takes no memory snapshots, so `save` returns nothing; None when
+        it takes them."""
+        self.save_skipped: str | None = None
+        """Why the last `save` returned nothing."""
         self._capturing = asyncio.Lock()
         if self._restore is not None and self._restore.snapshot.type == "memory":
             # Set before the box boots: its relay repeats the requests that waited as
@@ -497,18 +502,18 @@ class Rollout:
                     # A box restored from memory still runs the harness.
                     if not memory_restore:
                         await self.harness.setup(self._agent_runtime)
-                self._memory = (
-                    self._checkpointing is not None
-                    and self._borrowed_runtime is None
-                    and runtime.backend.SUPPORTS_MEMORY_SNAPSHOTS
-                    and self.harness.SUPPORTS_MEMORY_RESTORE
+                self.unsaveable = unsaveable(self.trace.agent.config, self.harness) or (
+                    "it runs in a borrowed box"
+                    if self._borrowed_runtime is not None
                     # Everything the box reaches the host through must follow it to a
                     # new box: the relay does, tool servers and services do not.
-                    and self._relay is not None
-                    and not toolsets
-                    and not self._shared_tools
-                    and self.deployment.spec is None
+                    else "its task has tool servers or services of its own"
+                    if toolsets
+                    or self._shared_tools
+                    or self.deployment.spec is not None
+                    else None
                 )
+                self._memory = self.unsaveable is None and self._relay is not None
                 if memory_restore and not self._memory:
                     raise SandboxError(
                         "the rollout cannot continue from its memory snapshot"
@@ -1009,13 +1014,16 @@ class Rollout:
         (`save_all`). The owner holds the snapshot (`Checkpoint.pinned`). None when
         the rollout takes no memory snapshots (`RolloutCheckpointConfig`), runs no
         segment, or the snapshot did not become restorable."""
-        if not self._opened or self._closed or not self._memory:
-            logger.debug(
-                "Not saving rollout %s: memory=%s closed=%s",
-                self.trace.id,
-                self._memory,
-                self._closed,
-            )
+        self.save_skipped = None
+        if self._closed:
+            self.save_skipped = "it is finishing"
+        elif not self._memory:
+            self.save_skipped = self.unsaveable or "its box has no relay"
+        elif self._harness_session is None or (
+            self._harness_session.memory_state() is None
+        ):
+            self.save_skipped = "its harness program is not running (setup or scoring)"
+        if self.save_skipped is not None:
             return None
         task = asyncio.current_task()
         if task is not None:
@@ -1025,6 +1033,7 @@ class Rollout:
         finally:
             self._captures.discard(task)
         if checkpoint is None:
+            self.save_skipped = "its memory snapshot failed"
             return None
         # Before the next await: the trace moves on once replies flow again.
         point = RestorePoint.of(self.trace, checkpoint)
@@ -1032,6 +1041,7 @@ class Rollout:
         if durable is not None:
             await asyncio.wait({durable})
         if not checkpoint.time.end:
+            self.save_skipped = "its memory snapshot did not become restorable"
             return None
         return point
 

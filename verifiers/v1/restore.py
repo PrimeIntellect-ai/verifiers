@@ -31,6 +31,8 @@ from verifiers.v1.types import ToolMessage
 from verifiers.v1.utils.logging import get_logger
 
 if TYPE_CHECKING:
+    from verifiers.v1.configs.agent import AgentConfig
+    from verifiers.v1.harness import Harness
     from verifiers.v1.rollout import Rollout
     from verifiers.v1.task import Task
 
@@ -119,18 +121,48 @@ class RestorePoint:
         return trace, checkpoint
 
 
-async def save_all() -> list[RestorePoint]:
+def unsaveable(config: AgentConfig, harness: Harness | None = None) -> str | None:
+    """Why the rollouts of an agent with `config` take no memory snapshots, so `save_all`
+    returns no restore point for them; None when they take them. A task with tool
+    servers or services of its own rules its rollout out as well, which only the
+    rollout knows."""
+    from verifiers.v1.runtimes import backend_cls
+    from verifiers.v1.utils.loaders import harness_class
+
+    if config.checkpoint is None:
+        return "rollout checkpointing is off (agent.checkpoint)"
+    if not backend_cls(config.runtime).SUPPORTS_MEMORY_SNAPSHOTS:
+        return f"the {config.runtime.type!r} runtime takes no memory snapshots"
+    if harness is not None:
+        supported, name = harness.SUPPORTS_MEMORY_RESTORE, harness.config.id
+    elif config.harness is not None:
+        supported = harness_class(config.harness.id).SUPPORTS_MEMORY_RESTORE
+        name = config.harness.id
+    else:
+        return None
+    if not supported:
+        return f"harness {name!r} cannot continue from a memory snapshot"
+    return None
+
+
+async def save_all(skipped: dict[str, int] | None = None) -> list[RestorePoint]:
     """Take a memory checkpoint of every running rollout of this process and return
     their restore points. A rollout that takes no memory snapshots, runs no harness
     segment right now, or whose snapshot fails has none: it starts over when its owner
-    runs it again. The snapshots are pinned: the caller owns them."""
+    runs it again. `skipped` collects why, as a count per reason. The snapshots are
+    pinned: the caller owns them."""
 
     async def save(rollout: Rollout) -> RestorePoint | None:
         try:
-            return await rollout.save()
+            point = await rollout.save()
+            reason = rollout.save_skipped
         except Exception:
             logger.warning("saving rollout %s failed", rollout.trace.id, exc_info=True)
-            return None
+            point, reason = None, "its save raised an error"
+        if point is None and skipped is not None:
+            reason = reason or "unknown"
+            skipped[reason] = skipped.get(reason, 0) + 1
+        return point
 
     rollouts = list(LIVE)
     points = [

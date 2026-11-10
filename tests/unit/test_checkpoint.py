@@ -13,7 +13,7 @@ from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.agent import RolloutCheckpointConfig
 from verifiers.v1.configs.client import EvalClientConfig
 from verifiers.v1.graph import MessageNode
-from verifiers.v1.restore import RestorePoint
+from verifiers.v1.restore import RestorePoint, unsaveable
 from verifiers.v1.rollout import Rollout, kept
 from verifiers.v1.session import IdempotentRequest, ReplayResponse, RolloutSession
 from verifiers.v1.trace import (
@@ -188,6 +188,8 @@ def make_rollout(
     run._closed = False
     run._opened = True
     run._memory = False
+    run.unsaveable = "the 'fake' runtime takes no memory snapshots"
+    run.save_skipped = None
     run._capturing = asyncio.Lock()
     run._pruning = asyncio.Lock()
     run.deleted_snapshots = set()
@@ -349,6 +351,7 @@ def make_memory_rollout(
     )
     run._session = session
     run._memory = True
+    run.unsaveable = None
     run._relay = FakeRelay()  # type: ignore[assignment]
     run._secret = "box-secret"
     run._harness_session = SimpleNamespace(  # type: ignore[assignment]
@@ -451,6 +454,32 @@ async def test_a_rollout_without_memory_snapshots_saves_nothing():
     run, backend = make_rollout()
     assert await run.save() is None
     assert backend.taken == 0
+    assert run.save_skipped == "the 'fake' runtime takes no memory snapshots"
+
+
+async def test_a_save_between_segments_names_its_reason():
+    run, _, _ = make_memory_rollout(running=False)
+    assert await run.save() is None
+    assert run.save_skipped == "its harness program is not running (setup or scoring)"
+
+
+def test_unsaveable_names_what_rules_memory_snapshots_out():
+    def reason(harness: str, runtime: vf.RuntimeConfig, **config) -> str | None:
+        return unsaveable(
+            vf.AgentConfig(harness={"id": harness}, runtime=runtime, **config)
+        )
+
+    assert reason("bash", vf.PrimeConfig()) is None
+    assert reason("rlm", vf.PrimeConfig()) is None
+    assert reason("bash", vf.SubprocessConfig()) == (
+        "the 'subprocess' runtime takes no memory snapshots"
+    )
+    assert reason("terminus-2", vf.PrimeConfig()) == (
+        "harness 'terminus-2' cannot continue from a memory snapshot"
+    )
+    assert reason("bash", vf.PrimeConfig(), checkpoint=None) == (
+        "rollout checkpointing is off (agent.checkpoint)"
+    )
 
 
 async def test_an_owners_snapshot_outlives_the_rollout():
