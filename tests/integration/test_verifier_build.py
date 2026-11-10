@@ -63,7 +63,7 @@ async def test_verifier_build(tmp_path, runtime):
         "RUN useradd -m grader && mkdir /app /tests && chown grader /app /tests\n"
         "COPY baked.sh /tests/test.sh\n"
         "COPY marker /tests/marker\n"
-        "ENV BUILD_TOKEN=a$b\n"
+        "ENV BUILD_TOKEN=a\\$b\n"
         "WORKDIR /app\n"
         "USER grader\n"
         'ENTRYPOINT ["sh", "-c", "exit 42"]\n'
