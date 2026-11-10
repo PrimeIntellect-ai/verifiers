@@ -98,6 +98,7 @@ if TYPE_CHECKING:
     )
     from verifiers.v1.runtimes.compose import ComposeSpec
     from verifiers.v1.runtimes.deployment import Deployment, ServicesSpec
+    from verifiers.v1.runtimes.untrusted import UntrustedRuntime, untrusted
     from verifiers.v1.semantic import (
         ACP_SEMANTIC_EDGES_METADATA_KEY,
         ACPInfo,
@@ -333,6 +334,8 @@ _NAME_TO_MODULE = {
     "WireTrace": "verifiers.v1.trace",
     "WorkInfo": "verifiers.v1.trace",
     "capture_patch": "verifiers.v1.utils.git",
+    "untrusted": "verifiers.v1.runtimes.untrusted",
+    "UntrustedRuntime": "verifiers.v1.runtimes.untrusted",
     "collect": "verifiers.v1.utils.artifacts",
     "compare_stdout_results": "verifiers.v1.utils.score",
     "default_agent_harness": "verifiers.v1.configs.env",
@@ -547,6 +550,8 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "Artifact",
     "collect",
     "restore",
+    "untrusted",
+    "UntrustedRuntime",
     # scoring
     "compare_stdout_results",
     "extract_boxed_answer",
