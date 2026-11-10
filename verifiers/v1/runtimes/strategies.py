@@ -51,7 +51,10 @@ class _ContainerDeployment(_DeploymentStrategy):
                 if self._vm_config
                 else "local Docker runtime",
             }
-        logger.info("Compose placement: %s (%s)", *d.compose_selection.values())
+        logger.debug(
+            "Selected Compose placement mode=%s reason=%s",
+            *d.compose_selection.values(),
+        )
         self._services = await d.enter(AsyncExitStack())
         services, self._stop_main = await self._services.enter_async_context(
             compose_services(
@@ -174,41 +177,24 @@ class _NativeComposeDeployment(_PrivateNetworkDeployment):
 
     async def start(self, d):
         from verifiers.v1.runtimes.native_compose import (
-            NativeComposeUnsupported,
             NativeProcesses,
             prepare_native,
         )
 
         if d.borrowed_runtime is not None:
             raise ValueError("a composed deployment cannot borrow a single target")
-        d.compose_selection = {
-            "mode": "native",
-            "reason": "compose_mode=native"
-            if d.config.compose_mode == "native"
-            else "checking native Compose compatibility",
-        }
-        try:
-            services = await prepare_native(
-                d.backend.config.model_copy(
-                    update={"workdir": d.backend._workdir_override}
-                ),
-                d.spec,
-                d.env,
-            )
-        except NativeComposeUnsupported as error:
-            if d.config.compose_mode == "native":
-                raise
-            d.compose_selection = {"mode": "vm", "reason": str(error)}
-            d._strategy = _ContainerDeployment()
-            await d._strategy.start(d)
-            return
-        d.compose_selection = {
-            "mode": "native",
-            "reason": "compose_mode=native"
-            if d.config.compose_mode == "native"
-            else "Compose services are supported by native VMs",
-        }
-        logger.info("Compose placement: %s (%s)", *d.compose_selection.values())
+        services = await prepare_native(
+            d.backend.config.model_copy(
+                update={"workdir": d.backend._workdir_override}
+            ),
+            d.spec,
+            d.env,
+        )
+        d.compose_selection = {"mode": "native", "reason": "compose_mode=native"}
+        logger.debug(
+            "Selected Compose placement mode=%s reason=%s",
+            *d.compose_selection.values(),
+        )
         main = services["main"]
         d.backend.config = main.config
         for field, value in main.config.model_dump().items():

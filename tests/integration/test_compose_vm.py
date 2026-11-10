@@ -1,7 +1,9 @@
 """Compose keeps live shared volumes and network namespaces inside a Prime VM."""
 
+import asyncio
 import os
 
+import httpx
 import pytest
 
 import verifiers.v1 as vf
@@ -19,7 +21,7 @@ services:
     build: .
     working_dir: /app
     network_mode: service:world
-    volumes: [world_logs:/logs/world:ro]
+    volumes: [world_logs:/logs/world:ro, ../payload:/payload:ro]
     depends_on:
       world:
         condition: service_healthy
@@ -27,6 +29,7 @@ services:
     image: python:3.11-slim
     command: [sh, -c, "echo 42 > /logs/world/answer && exec python -m http.server 8080 --directory /logs/world"]
     volumes: [world_logs:/logs/world]
+    ports: ["8000:8080"]
     healthcheck:
       test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://localhost:8080/answer', timeout=2)"]
       interval: 1s
@@ -60,13 +63,45 @@ class ComposeVMTask(HarborTask):
             assert set(deployment.target_backends) == {"main", "world"}
             # A write after startup must be visible through main's read-only mount.
             await deployment.target("world").write("/logs/world/answer", b"43\n")
+            # Context upload and binary transfers must fit on disk, not host /tmp.
+            payload = await runtime.read("/payload")
+            await runtime.write("/app/copied", payload)
+            assert await runtime.read("/app/copied") == payload
+            await runtime.write("/app/probe", b"workspace")
+            process = await runtime.exec(
+                ["python", "-m", "http.server", "8000", "--directory", "/app"], {}
+            )
+            try:
+                # The sidecar already owns host port 8000; expose must translate.
+                url = await runtime.expose(8000)
+                async with httpx.AsyncClient(timeout=10) as client:
+                    async with asyncio.timeout(60):
+                        while True:
+                            try:
+                                response = await client.get(f"{url}/probe")
+                                if response.status_code == 200:
+                                    assert response.content == b"workspace"
+                                    break
+                            except httpx.TransportError:
+                                pass
+                            await asyncio.sleep(1)
+            finally:
+                await process.terminate()
+                await process.wait()
 
 
-@pytest.mark.parametrize("compose_mode", ["auto", "vm"])
 @pytest.mark.parametrize("scoring_mode", ["shared", "isolated"])
 @pytest.mark.prime
 @pytest.mark.skipif(not os.environ.get("PRIME_API_KEY"), reason="needs PRIME_API_KEY")
-async def test_compose_vm(tmp_path, compose_mode, scoring_mode):
+async def test_compose_vm(tmp_path, scoring_mode, monkeypatch):
+    async def no_local_docker(*args, **kwargs):
+        raise AssertionError("VM mode must not invoke evaluator Docker")
+
+    monkeypatch.setattr("verifiers.v1.runtimes.compose.cli", no_local_docker)
+    # Incompressible data exceeds the VM's small /tmp filesystem in the shared case.
+    (tmp_path / "payload").write_bytes(
+        os.urandom((72 if scoring_mode == "shared" else 1) * 1024**2)
+    )
     environment = tmp_path / "environment"
     environment.mkdir()
     (environment / "docker-compose.yaml").write_text(COMPOSE)
@@ -102,7 +137,7 @@ async def test_compose_vm(tmp_path, compose_mode, scoring_mode):
     config = vf.AgentConfig(
         model="unused",
         runtime=vf.PrimeConfig(cpu=2, memory=4, disk=10, labels=["vf-ci"]),
-        deployment=vf.DeploymentConfig(compose_mode=compose_mode),
+        deployment=vf.DeploymentConfig(compose_mode="vm"),
         scoring=vf.ScoringConfig(
             mode=scoring_mode, retries=vf.RetryConfig(max_retries=0)
         ),
@@ -113,7 +148,4 @@ async def test_compose_vm(tmp_path, compose_mode, scoring_mode):
         trace = await agent.run(task)
     assert trace.ok and trace.reward == 1, trace.errors
     assert trace.info["compose"]["mode"] == "vm"
-    if compose_mode == "auto":
-        assert "share volume" in trace.info["compose"]["reason"]
-    else:
-        assert trace.info["compose"]["reason"] == "compose_mode=vm"
+    assert trace.info["compose"]["reason"] == "compose_mode=vm"

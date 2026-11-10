@@ -227,6 +227,7 @@ class DockerBackend(RuntimeBackend):
         super().__init__(name)
         self.config = config
         self._host_backend = host_backend
+        self._host_service_port = SERVICE_PORT
         self.is_local = host_backend is None or host_backend.is_local
         self.info = (
             host_backend.info.model_copy(
@@ -251,6 +252,7 @@ class DockerBackend(RuntimeBackend):
         *,
         host_backend: RuntimeBackend | None = None,
         service_url: str | None = None,
+        host_service_port: int = SERVICE_PORT,
     ) -> AsyncIterator[DockerBackend]:
         """Borrow a Compose service container; its caller owns creation and removal.
         `service_url` is the host URL of a local workspace's published service port."""
@@ -258,6 +260,7 @@ class DockerBackend(RuntimeBackend):
             raise ValueError("Cannot attach runtime mounts to an existing container")
         backend = cls(config, host_backend=host_backend)
         backend._container = container
+        backend._host_service_port = host_service_port
         backend.info.borrowed = True  # cleanup never removes a borrowed container
         try:
             code, data, stderr = await backend._communicate_host(
@@ -465,7 +468,11 @@ class DockerBackend(RuntimeBackend):
 
     async def expose(self, port: int) -> str:
         if self._host_backend is not None:
-            return await self._host_backend.expose(port)
+            if port != SERVICE_PORT:
+                raise SandboxError(
+                    f"docker publishes only port {SERVICE_PORT}, not {port}"
+                )
+            return await self._host_backend.expose(self._host_service_port)
         if port != SERVICE_PORT or self._service_url is None:
             raise SandboxError(f"docker publishes only port {SERVICE_PORT}, not {port}")
         return self._service_url
@@ -725,7 +732,7 @@ class DockerBackend(RuntimeBackend):
         if self._host_backend is None:
             return await _communicate(*argv, input=input)
         # Stage bytes through the provider filesystem, never its text command logs.
-        temporary = f"/tmp/vf-io-{uuid.uuid4().hex}"
+        temporary = f"/vf-deployment/.io-{uuid.uuid4().hex}"
         command = f"{shlex.join(argv)} > {temporary}.out"
         try:
             if input is not None:
