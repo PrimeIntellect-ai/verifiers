@@ -751,16 +751,10 @@ def resolve_image(
     """
     if image:
         return image
-    if not verifier and (compose := find_compose_file(task_dir)):
-        import yaml
-
-        main = yaml.safe_load(compose.read_text())["services"].get("main", {})
-        if (
-            main.get("image")
-            or "build" in main
-            or (compose.parent / "Dockerfile").is_file()
-        ):
-            return None
+    if not verifier and find_compose_file(task_dir) is not None:
+        # Compose resolves the workspace image, including the runtime default.
+        # A Dockerfile elsewhere in the task does not belong to this definition.
+        return None
     section = "verifier.environment" if verifier else "environment"
     dockerfile = "tests/Dockerfile" if verifier else "environment/Dockerfile"
     if verifier and not (task_dir / dockerfile).is_file():
