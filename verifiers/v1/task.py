@@ -40,7 +40,7 @@ if TYPE_CHECKING:
     from verifiers.v1.judge import Judge
     from verifiers.v1.judges.agent import AgentJudgeRequest
     from verifiers.v1.mcp import Toolset
-    from verifiers.v1.runtimes import Runtime
+    from verifiers.v1.runtimes import Runtime, RuntimeInfo
     from verifiers.v1.runtimes.compose import ComposeSpec
     from verifiers.v1.runtimes.deployment import Deployment, ServicesSpec
     from verifiers.v1.trace import Trace
@@ -210,7 +210,9 @@ class Task(Generic[DataT, StateT, ConfigT]):
         """Task scoring defaults, including any task-format-specific defaults."""
         return self.data.scoring
 
-    def grading_task(self, runtime: Runtime, *, scoring: ScoringConfig) -> Self:
+    def grading_task(
+        self, runtime: Runtime | RuntimeInfo, *, scoring: ScoringConfig
+    ) -> Self:
         """Adapt scoring inputs to the resolved policy without changing the solver task."""
         return self
 
@@ -238,15 +240,26 @@ class Task(Generic[DataT, StateT, ConfigT]):
         as a rollout would."""
         return None
 
-    async def rescore(self, trace: Trace) -> None:
-        """Score a finished trace again, offline: clear its rewards, metrics, judge
-        calls and drop, then run this task's signals that need only the trace."""
+    async def rescore(
+        self, trace: Trace, *, scoring: ScoringConfig | None = None
+    ) -> None:
+        """Clear grading results and score a finished trace again.
+
+        Without a policy, run signals that need only the trace. An isolated policy
+        restores captured artifacts into fresh verifiers with the ordinary retries.
+        """
         if trace.has_error:
             raise ValueError("the rollout errored: its transcript is incomplete")
-        trace.info.pop("judge_calls", None)
+        for key in ("judge_calls", "scoring_diagnostics", "scoring_skipped"):
+            trace.info.pop(key, None)
         trace.rewards, trace.metrics, trace.extra_usage = {}, {}, []
         trace.dropped = None
-        await self.score(trace)
+        if scoring is None:
+            await self.score(trace)
+        else:
+            from verifiers.v1.grading import grade_submission
+
+            await grade_submission(self, trace, scoring=scoring)
 
     def defer_scoring(self) -> Self:
         """An independent copy whose task signals are deferred.
