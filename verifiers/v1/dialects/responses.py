@@ -369,7 +369,7 @@ class ResponsesDialect(Dialect[OpenAIResponse]):
             "truncation",
         }
     )
-    routes = ("/v1/responses",)
+    routes = ("/v1/responses", "/responses")
     upstream_path = "/responses"
     response_type = OpenAIResponse
 
