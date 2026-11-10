@@ -410,6 +410,9 @@ class PrimeBackend(RuntimeBackend):
         delay = 1.0
         while True:
             try:
+                # An earlier request may have taken effect after it was given up on.
+                if (await self._client.get(self.info.id)).status == "RUNNING":
+                    return
                 await self._client.resume(self.info.id)
                 await self._settle("RUNNING", "RESUME_FAILED")
                 return
