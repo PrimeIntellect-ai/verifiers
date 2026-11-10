@@ -462,6 +462,11 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
                     f"staging tests failed (exit {result.exit_code}): "
                     f"{(result.stderr or result.stdout).strip()[-500:]}"
                 )
+        if (await runtime.run(["test", "-f", "/tests/test.sh"], {})).exit_code:
+            from .judge import prepare_authored
+
+            # Install before the verifier's execution network policy takes effect.
+            await prepare_authored(runtime, resolve_env(self.scoring.env or {}))
 
     @reward(weight=1.0)
     async def solved(self, runtime: Runtime, trace: Trace) -> float | dict[str, float]:
