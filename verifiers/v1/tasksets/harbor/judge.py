@@ -213,7 +213,10 @@ async def grade_authored(task, runtime, trace, env):
         roots.update(workdir / p for p in trace.state.artifacts)
         roots.update(workdir / a.source for a in task.data.artifacts)
         baseline = tuple(roots)
-        for spec in plan["rewards"].values():
+        for name, reward in rewards.items():
+            if not isinstance(reward.judge, AgentJudge):
+                continue
+            spec = plan["rewards"][name]
             # Resolve aliases in the verifier so symlinked evidence captures its
             # actual target, including targets outside the working directory.
             for entry in spec["inputs"]:
