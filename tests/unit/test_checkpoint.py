@@ -23,13 +23,13 @@ from verifiers.v1.trace import (
     TimeSpan,
     TraceTask,
 )
-from verifiers.v1.utils.retries import RetryState
 from verifiers.v1.types import (
     AssistantMessage,
     ToolCall,
     ToolMessage,
     UserMessage,
 )
+from verifiers.v1.utils.retries import RetryState
 
 
 def make_trace() -> vf.Trace:
