@@ -417,6 +417,7 @@ async def prepare_judge(
                         files={
                             TRACE_FILE: trace.to_json(
                                 exclude={
+                                    "ok": True,
                                     "nodes": {
                                         "__all__": {
                                             "message": {
@@ -424,7 +425,7 @@ async def prepare_judge(
                                                 "provider_state",
                                             }
                                         }
-                                    }
+                                    },
                                 }
                             )
                         },
