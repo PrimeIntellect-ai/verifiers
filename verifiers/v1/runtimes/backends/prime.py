@@ -60,6 +60,8 @@ _PAUSE_SETTLE_SECONDS = 120
 """How long a pause or a resume gets to take effect; they take seconds."""
 _DEAD_STATUSES = frozenset({"ERROR", "TERMINATED", "TIMEOUT"})
 _STATUS_POLL_SECONDS = 0.3
+_FORK_ATTEMPTS = 3
+"""Creates of a box from a memory snapshot before its restore counts as failed."""
 _RESUME_RETRY_SECONDS = 600
 """How long a checkpoint gets to become restorable (`DURABLE`): the platform uploads it
 after the request returns, and only a durable one restores."""
@@ -248,7 +250,11 @@ class PrimeBackend(RuntimeBackend):
         return super().bind(env=env).with_user(self.user)
 
     async def start(self) -> None:
-        from prime_sandboxes import APIError, CreateSandboxRequest
+        from prime_sandboxes import (
+            APIError,
+            CreateSandboxRequest,
+            SandboxNotRunningError,
+        )
 
         started = time.perf_counter()
         self._client = _lease_client()
@@ -294,54 +300,74 @@ class PrimeBackend(RuntimeBackend):
         scope = run_scope()
         labels = [*BASE_LABELS, *self.config.labels, scope]
         try:
-            async with (
-                creation_limiter(
-                    (self.config.creates_per_min or 0) / 60,
-                    "prime-sandbox",
-                    scope,
-                )
-                or contextlib.nullcontext()
-            ):
-                for name in dict.fromkeys(m.name for m in self.config.mounts.values()):
-                    try:
-                        await self._client.volumes.create(name)
-                    except APIError as error:
-                        # Create returns 409 when this scoped name already exists,
-                        # including when another runtime creates it concurrently.
-                        if not str(error).startswith("HTTP 409:"):
-                            raise
-
-                # Shielded through the id capture: a cancel that aborts the POST
-                # mid-flight leaves the platform creating a sandbox this side
-                # never learned the id of — teardown() then cannot delete it
-                async def create_and_capture_id():
-                    sandbox = await self._client.create(
-                        CreateSandboxRequest(
-                            name=self.name,
-                            labels=list(dict.fromkeys(labels)),
-                            **({} if memory else {"environment_vars": self.env}),
-                            **source,
-                            **{k: v for k, v in options.items() if v is not None},
-                        )
+            attempts = _FORK_ATTEMPTS if memory else 1
+            for attempt in range(attempts):
+                async with (
+                    creation_limiter(
+                        (self.config.creates_per_min or 0) / 60,
+                        "prime-sandbox",
+                        scope,
                     )
-                    self.info.id = sandbox.id
-                    return sandbox
+                    or contextlib.nullcontext()
+                ):
+                    for name in dict.fromkeys(
+                        m.name for m in self.config.mounts.values()
+                    ):
+                        try:
+                            await self._client.volumes.create(name)
+                        except APIError as error:
+                            # Create returns 409 when this scoped name already exists,
+                            # including when another runtime creates it concurrently.
+                            if not str(error).startswith("HTTP 409:"):
+                                raise
 
-                sandbox = await run_shielded(create_and_capture_id())
-            # The create response says whether the platform already has the image:
-            # `pending_image_build_id` set means a first-use auto-build is running and the
-            # sandbox stays PENDING until it finishes (`wait_for_creation` gives that phase
-            # its own budget, separate from the normal boot attempts).
-            self.info.image_cached = sandbox.pending_image_build_id is None
-            if not self.info.image_cached:
-                logger.warning(
-                    "Building image %s on the platform for prime runtime %s - the "
-                    "first use of an image can take ~10 minutes, later runs start "
-                    "in seconds",
-                    self.config.image,
-                    self.info.id,
-                )
-            await self._client.wait_for_creation(self.info.id, max_attempts=900)
+                    # Shielded through the id capture: a cancel that aborts the POST
+                    # mid-flight leaves the platform creating a sandbox this side
+                    # never learned the id of — teardown() then cannot delete it
+                    async def create_and_capture_id():
+                        sandbox = await self._client.create(
+                            CreateSandboxRequest(
+                                name=self.name,
+                                labels=list(dict.fromkeys(labels)),
+                                **({} if memory else {"environment_vars": self.env}),
+                                **source,
+                                **{k: v for k, v in options.items() if v is not None},
+                            )
+                        )
+                        self.info.id = sandbox.id
+                        return sandbox
+
+                    sandbox = await run_shielded(create_and_capture_id())
+                # The create response says whether the platform already has the image:
+                # `pending_image_build_id` set means a first-use auto-build is running and the
+                # sandbox stays PENDING until it finishes (`wait_for_creation` gives that phase
+                # its own budget, separate from the normal boot attempts).
+                self.info.image_cached = sandbox.pending_image_build_id is None
+                if not self.info.image_cached:
+                    logger.warning(
+                        "Building image %s on the platform for prime runtime %s - the "
+                        "first use of an image can take ~10 minutes, later runs start "
+                        "in seconds",
+                        self.config.image,
+                        self.info.id,
+                    )
+                try:
+                    await self._client.wait_for_creation(self.info.id, max_attempts=900)
+                    break
+                except SandboxNotRunningError as error:
+                    # A box that continues an old memory snapshot also continues its
+                    # idle clock: the platform can end it as idle before it runs.
+                    if attempt + 1 == attempts:
+                        raise
+                    logger.warning(
+                        "Prime runtime %s ended before it ran from memory snapshot "
+                        "%s; creating it again (attempt %d/%d) - %s",
+                        self.info.id,
+                        self.config.checkpoint,
+                        attempt + 2,
+                        attempts,
+                        error,
+                    )
             logger.debug(
                 "Started prime runtime %s in %s image=%s%s",
                 self.info.id,

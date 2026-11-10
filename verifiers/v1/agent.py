@@ -817,6 +817,25 @@ class Agent:
                         failed_restores.add(target.id)
                     if trace.ok:
                         break
+                    if (
+                        restore is not None
+                        and target is not None
+                        and target.id == restore.checkpoint
+                        and target.id in failed_restores
+                    ):
+                        # The owner's restore point is an offer, not an attempt of
+                        # this run: without it the rollout would have started over,
+                        # so it does that now and keeps its retries.
+                        logger.warning(
+                            "Starting rollout over: restore point %s led nowhere - %s",
+                            target.id,
+                            clip(trace.errors[-1].message) if trace.errors else "",
+                        )
+                        history.extend(trace.errors)
+                        target = None
+                        attempt += 1
+                        budget += 1
+                        continue
                     if attempt >= budget:
                         break
                     if runtime is not None:

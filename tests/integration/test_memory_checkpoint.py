@@ -213,3 +213,59 @@ async def test_another_owner_continues_a_saved_rollout(taken, harness, harness_r
         snapshot_id
     ]
     await assert_no_leaks(taken)
+
+
+@pytest.mark.parametrize(
+    "harness,harness_runtime", grid(SHELLS, needs=NEEDS), indirect=True
+)
+async def test_a_restore_point_that_leads_nowhere_starts_the_rollout_over(
+    taken, harness, harness_runtime
+):
+    """A restore point whose snapshot the platform no longer restores costs the rollout
+    no retry: it starts over under the same trace id and finishes."""
+    config = _eval_config(
+        "memory-restore-v1",
+        harness=harness,
+        runtime=harness_runtime,
+        taskset_overrides={"task": {"fail_turn": 99}},
+        max_turns=12,
+        max_tokens=4096,
+    )
+    ctx = ModelContext(
+        client=config.client, model=config.model, sampling=config.sampling
+    )
+
+    first = load_environment(config.env)
+    (task,) = list(first.taskset)
+    async with first.serving():
+        (slot,) = first.slots(task)
+        running = asyncio.ensure_future(first.run_slot(slot, ctx))
+        try:
+            async with asyncio.timeout(600):
+                while not (slot.traces and slot.traces[0].num_turns >= 1):
+                    assert not running.done(), "the rollout ended before the save"
+                    await asyncio.sleep(0.2)
+            (point,) = await save_all()
+        finally:
+            running.cancel()
+            await asyncio.gather(running, return_exceptions=True)
+    snapshot_id = point.snapshot["id"]
+    point.snapshot["id"] = "no-such-checkpoint"
+
+    second = load_environment(config.env)
+    (task,) = list(second.taskset)
+    async with second.serving():
+        episode = await second.run_slot(RunSlot(task, id=slot.id, restore=point), ctx)
+    (trace,) = episode.traces
+    assert trace.ok, [error.message for error in trace.errors]
+    assert trace.id == point.id
+    assert trace.reward == 1.0
+    assert trace.attempt == 3
+
+    async with AsyncSandboxClient() as client, asyncio.timeout(300):
+        while (await client.get_checkpoint(snapshot_id)).state != "DURABLE":
+            await asyncio.sleep(2)
+    assert await PrimeBackend.discard([Snapshot(id=snapshot_id, type="memory")]) == [
+        snapshot_id
+    ]
+    await assert_no_leaks(taken)
