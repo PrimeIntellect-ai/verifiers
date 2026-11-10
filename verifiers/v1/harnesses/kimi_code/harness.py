@@ -57,7 +57,7 @@ class KimiCodeHarness(ACPHarness[KimiCodeHarnessConfig]):
         return drop_blank_text(message)
 
     async def setup(self, runtime: Runtime) -> None:
-        await ensure_node(runtime)
+        await ensure_node(runtime, never=self.config.install == "never")
         logger.debug("Ensuring Kimi Code %s is installed", self.config.version)
         await ensure_installed(
             runtime,
@@ -65,6 +65,8 @@ class KimiCodeHarness(ACPHarness[KimiCodeHarnessConfig]):
             install=INSTALL,
             env={"VF_KIMI_VERSION": self.config.version},
             label="Kimi Code",
+            never=self.config.install == "never",
+            check=f'[ "$(cat {KIMI_DIR}/.version 2>/dev/null)" = "$VF_KIMI_VERSION" ]',
         )
         await super().setup(runtime)
 

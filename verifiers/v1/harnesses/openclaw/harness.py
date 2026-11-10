@@ -159,6 +159,8 @@ class OpenClawHarness(ACPHarness[OpenClawHarnessConfig]):
                 "VF_OPENCLAW_VERSION": self.config.version,
             },
             label="OpenClaw",
+            never=self.config.install == "never",
+            check=f"[ -x {binary} ]",
             shell=("bash", "-o", "pipefail", "-c"),
         )
         await super().setup(runtime)

@@ -9,7 +9,7 @@ import pytest
 
 from verifiers.v1.configs.runtime import SubprocessConfig
 from verifiers.v1.harnesses.rlm import harness as rlm
-from verifiers.v1.harnesses.utils.install import ensure_installed
+from verifiers.v1.harnesses.utils.install import HarnessNotInstalled, ensure_installed
 from verifiers.v1.runtimes import Runtime, provision_runtime
 
 
@@ -98,3 +98,37 @@ async def test_rlm_installs_under_var_tmp_and_reuses_an_install_from_tmp(
         result = await runtime.run([binary], {})
         assert result.stdout.strip() == "legacy rlm", result
         assert harness._install_dir().startswith(str(tmp_path / "var"))
+
+
+async def test_never_checks_instead_of_installing(tmp_path: Path) -> None:
+    directory = str(tmp_path / "tool")
+    marker = tmp_path / "installed"
+
+    async def never(runtime: Runtime, ready: str | None, check: str | None = None):
+        return await ensure_installed(
+            runtime,
+            directory=directory,
+            ready=ready,
+            check=check,
+            install=f"touch {shlex.quote(str(marker))}",
+            env={},
+            label="tool",
+            never=True,
+        )
+
+    async with provision_runtime(SubprocessConfig()) as runtime:
+        assert await never(runtime, ready="true") is False
+        with pytest.raises(
+            HarnessNotInstalled, match=f"tool is not installed in {directory}"
+        ):
+            await never(runtime, ready="false")
+        # An install that checks for itself names its check for `never`.
+        assert await never(runtime, ready=None, check="true") is False
+        with pytest.raises(ValueError, match="no install check"):
+            await never(runtime, ready=None)
+    assert not marker.exists()
+
+
+def test_rlm_with_skills_cannot_use_never(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="install='never'"):
+        rlm.RLMHarnessConfig(skills=[tmp_path], install="never")

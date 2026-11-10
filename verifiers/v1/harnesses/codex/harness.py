@@ -76,7 +76,7 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
             raise RuntimeError(f"Codex {failure['category']}: {failure['title']}")
 
     async def setup(self, runtime: Runtime) -> None:
-        await ensure_node(runtime)
+        await ensure_node(runtime, never=self.config.install == "never")
         logger.debug(
             "Ensuring Codex %s and codex-acp %s are installed",
             self.config.version,
@@ -100,6 +100,7 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
                 "VF_CODEX_ACP_VERSION": ACP_VERSION,
             },
             label="codex",
+            never=self.config.install == "never",
         )
         await super().setup(runtime)
 
