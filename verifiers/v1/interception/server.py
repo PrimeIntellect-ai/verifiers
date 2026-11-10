@@ -54,6 +54,7 @@ from verifiers.v1.dialects.base import (
     PROVIDER_CAPABILITY_POLICY_CODE,
     is_sse_done_event,
 )
+from verifiers.v1.dialects.chat import ChatDialect
 from verifiers.v1.errors import (
     ProviderError,
     RolloutError,
@@ -817,7 +818,19 @@ class InterceptionServer(Interception):
             return _replay_response(idempotent.response)
 
         try:
-            model_request = dialect.parse_request(body)
+            if isinstance(dialect, ChatDialect) and isinstance(
+                body.get("messages"), list
+            ):
+                model_request = dialect.parse_request(body, session.last_request)
+                session.last_request = (
+                    [
+                        dict(raw) if isinstance(raw, dict) else raw
+                        for raw in body["messages"]
+                    ],
+                    list(model_request.messages),
+                )
+            else:
+                model_request = dialect.parse_request(body)
         except ValueError as error:
             return _error_response(dialect, str(error), status=400)
         if session.released:
