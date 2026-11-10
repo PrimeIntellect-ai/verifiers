@@ -326,9 +326,9 @@ def test_unsupported_checkpointing_warns_once(caplog, monkeypatch):
 
 class FakeRelay:
     upstream = "https://tunnel.example"
-    state = {"dir": "/tmp/vf-relay/t", "url": "http://127.0.0.1:4000"}
 
     def __init__(self) -> None:
+        self.state = {"dir": "/tmp/vf-relay/t", "url": "http://127.0.0.1:4000"}
         self.rerouted: list[str] = []
 
     async def reroute(self, upstream: str) -> None:
@@ -336,9 +336,11 @@ class FakeRelay:
 
 
 def make_memory_rollout(
-    job: dict | None = {"job_id": "j1"},
+    running: bool = True,
 ) -> tuple[Rollout, SlowBackend, RolloutSession]:
-    """A rollout that takes memory snapshots, with its harness segment running `job`."""
+    """A rollout that takes memory snapshots, with or without a harness segment that
+    runs."""
+    job = {"job_id": "j1"} if running else None
     run, backend = make_rollout()
     session = RolloutSession(
         ctx=ModelContext(model="m", client=EvalClientConfig()), trace=run.trace
@@ -382,7 +384,7 @@ async def test_a_memory_snapshot_holds_every_reply_until_the_box_runs_again():
     assert checkpoint.node == len(run.trace.nodes) - 1
     assert checkpoint.live == {
         "program": {"job": {"job_id": "j1"}},
-        "relay": FakeRelay.state,
+        "relay": run._relay.state,
         "secret": "box-secret",
     }
     # Only a reply the box may not have received yet is kept for its restore.
@@ -391,7 +393,7 @@ async def test_a_memory_snapshot_holds_every_reply_until_the_box_runs_again():
 
 
 async def test_no_memory_snapshot_without_a_running_segment():
-    run, backend, session = make_memory_rollout(job=None)
+    run, backend, session = make_memory_rollout(running=False)
     assert await run._checkpoint(TURN) is None
     assert backend.taken == 0 and session.flowing.is_set()
 

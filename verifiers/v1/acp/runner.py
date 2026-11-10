@@ -494,7 +494,8 @@ async def serve_socket(path: str) -> None:
     with suppress(FileNotFoundError):
         os.unlink(path)
     listener = await asyncio.start_unix_server(connected, path, limit=MAX_PACKET_BYTES)
-    with open(f"{path}.pid", "w") as file:
+    # A few bytes, once, before any request is served.
+    with open(f"{path}.pid", "w") as file:  # noqa: ASYNC230
         file.write(f"{os.getpid()}\n")
     try:
         async with listener:

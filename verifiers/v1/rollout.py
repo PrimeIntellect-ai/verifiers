@@ -37,6 +37,7 @@ from verifiers.v1.harness import Harness, HarnessSession
 from verifiers.v1.interception import Interception, serve_interception
 from verifiers.v1.interception.relay import Relay
 from verifiers.v1.mcp import SharedToolServer, serve_tools
+from verifiers.v1.restore import LIVE, RestorePoint
 from verifiers.v1.runtimes import (
     Runtime,
     RuntimeConfig,
@@ -45,7 +46,6 @@ from verifiers.v1.runtimes import (
     make_backend,
 )
 from verifiers.v1.runtimes.private_network import tool_vms
-from verifiers.v1.restore import LIVE, RestorePoint
 from verifiers.v1.session import (
     IdempotentRequest,
     RolloutLimits,

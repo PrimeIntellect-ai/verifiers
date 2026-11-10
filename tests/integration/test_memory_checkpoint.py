@@ -21,8 +21,8 @@ from verifiers.v1.env import RunSlot
 from verifiers.v1.harness import RESTORE_PROMPT
 from verifiers.v1.restore import save_all
 from verifiers.v1.runtimes import PrimeBackend, Snapshot
-from verifiers.v1.utils.loaders import harness_class, load_environment
 from verifiers.v1.types import content_text
+from verifiers.v1.utils.loaders import harness_class, load_environment
 
 RETRIES = {"max_retries": 0, "rules": [{"type": "ProviderError", "max_retries": 1}]}
 NEEDS = ("memory",)
@@ -44,16 +44,21 @@ def taken(monkeypatch) -> list[tuple[str, str]]:
     return snapshots
 
 
+async def platform_state(client: AsyncSandboxClient, snapshot_id: str) -> str | None:
+    """The snapshot's state on prime, or None once it is gone."""
+    try:
+        return (await client.get_checkpoint(snapshot_id)).state
+    except Exception:  # noqa: BLE001 - a deleted snapshot is not found
+        return None
+
+
 async def assert_no_leaks(taken: list[tuple[str, str]]) -> None:
     """Every snapshot the run took is deleted on the platform."""
     leaked = {}
     async with AsyncSandboxClient() as client:
         for snapshot_id, _ in taken:
-            try:
-                state = (await client.get_checkpoint(snapshot_id)).state
-            except Exception:  # noqa: BLE001 - a deleted snapshot is not found
-                continue
-            if state != "DELETING":
+            state = await platform_state(client, snapshot_id)
+            if state not in (None, "DELETING"):
                 leaked[snapshot_id] = state
     assert leaked == {}
 
