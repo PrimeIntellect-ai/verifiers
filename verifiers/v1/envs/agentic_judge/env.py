@@ -6,7 +6,6 @@ independent runtimes initialized by their task's setup.
 The judge has its own non-training trace and writes rubric verdicts to a file.
 """
 
-import asyncio
 import copy
 import re
 from collections.abc import Callable
@@ -375,6 +374,10 @@ class AgenticJudgeEnv(vf.Env[AgenticJudgeEnvConfig]):
                         update=request.network.model_dump(include={"allow", "block"})
                     )
             updates = {"image": config.image, "workdir": config.workdir}
+            if request.timeout is not None:
+                updates["timeout"] = request.task.data.timeout.model_copy(
+                    update={"agent": request.timeout}
+                )
             if isinstance(config, NetworkPolicyConfig):
                 updates["network"] = NetworkPolicyConfig(
                     allow=config.allow, block=config.block
@@ -408,17 +411,16 @@ class AgenticJudgeEnv(vf.Env[AgenticJudgeEnvConfig]):
             judge_agent.config = judge_agent.config.model_copy(
                 update={"model": model, "sampling": sampling}
             )
-            async with asyncio.timeout(request.timeout):
-                # Native provisioning, including agent retries, keeps workspace
-                # ownership, concurrency permits and cleanup inside the rollout.
-                return await judge_agent.run(
-                    judge_task,
-                    runtime=None if request.isolated else runtime,
-                    on_trace=request.on_trace,
-                )
+            # Native stage budgets keep provisioning separate from judging;
+            # retries retain workspace ownership, permits and cleanup.
+            return await judge_agent.run(
+                judge_task,
+                runtime=None if request.isolated else runtime,
+                on_trace=request.on_trace,
+            )
 
         async def judge(solution: vf.Trace, runtime: vf.Runtime) -> None:
-            if solution.info.get("authored_judging"):
+            if task.AUTHORED_JUDGES:
                 if (
                     self.config.task != JudgeTaskConfig()
                     or self.config.score != ScoreConfig()
