@@ -24,6 +24,7 @@ import binascii
 import hashlib
 import json
 import time
+import weakref
 from dataclasses import dataclass, fields
 from typing import TYPE_CHECKING, Any
 
@@ -309,7 +310,28 @@ def _canonical_tool_arguments(arguments: str) -> str:
 _PROVIDER_STATE_FIELDS = frozenset({"encrypted_content", "signature", "data", "phase"})
 
 
+_HASHES: dict[int, tuple[weakref.ref, str]] = {}
+"""`message_hash` per live message, by id: a message is never changed in place (a change is a
+copy), and a harness re-sends its whole conversation every turn, which is hashed three times."""
+
+
 def message_hash(message: Message) -> str:
+    """`_message_hash`, kept with the message while it lives."""
+    kept = _HASHES.get(id(message))
+    if kept is not None and kept[0]() is message:
+        return kept[1]
+    digest = _message_hash(message)
+    key = id(message)
+
+    def forget(ref: weakref.ref) -> None:
+        if (entry := _HASHES.get(key)) is not None and entry[0] is ref:
+            del _HASHES[key]
+
+    _HASHES[key] = weakref.ref(message, forget), digest
+    return digest
+
+
+def _message_hash(message: Message) -> str:
     """Stable content hash on the fields that round-trip through a prompt — role, content
     (None and "" equal), assistant reasoning content when present, assistant tool calls,
     opaque continuation state, tool call id. Two messages hash equal iff they're the same
