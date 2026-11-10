@@ -15,6 +15,7 @@ import asyncio
 import json
 import sys
 import tomllib
+from contextvars import ContextVar
 from importlib import import_module
 from importlib.metadata import PackageNotFoundError, distribution
 from pathlib import Path
@@ -36,7 +37,7 @@ if source.get("vcs_info", {}).get("commit_id") != REWARDKIT_REVISION:
         f"Native Harbor grading requires: uv add '{REWARDKIT_REQUIREMENT}'"
     )
 
-from rewardkit.agents import merge_usage
+from rewardkit.agents import AgentBackend, merge_usage, register_agent
 from rewardkit.judges import (
     _arun_agent_call,
     _build_judge_blocks,
@@ -44,6 +45,7 @@ from rewardkit.judges import (
     _fence,
     _join_labeled,
     _with_guard,
+    arun_agent,
     build_prompt,
 )
 from rewardkit.models import (
@@ -69,6 +71,19 @@ from rewardkit.runner import (
 
 evaluate_layout = _evaluate_layout
 fence_submission = _fence
+_agent_call = ContextVar("harbor_agent_call")
+
+
+class NativeAgentBackend(AgentBackend):
+    """A task-local native executor behind RewardKit's public backend contract."""
+
+    name = "verifiers"
+
+    async def run(self, prompt, schema, label):
+        return await _agent_call.get()(prompt, schema)
+
+
+register_agent(NativeAgentBackend)
 
 
 def load_native_trajectory(path: str | Path) -> dict | None:
@@ -112,6 +127,21 @@ class NativeReward(Reward):
             raise cause from exc
 
     async def _judge_once(self, judge) -> JudgeResult:
+        if isinstance(judge, AgentJudge):
+            token = _agent_call.set(self.call)
+            try:
+                # VF creates a fresh runtime for every backend.run, including
+                # parse retries; upstream's local workspace overlay is unnecessary.
+                return await arun_agent(
+                    judge.model_copy(
+                        update={"agent": NativeAgentBackend.name, "isolated": False}
+                    ),
+                    self.criteria,
+                    self.weights,
+                    system_prompt=self.system_prompt,
+                )
+            finally:
+                _agent_call.reset(token)
         criteria, weights = self.criteria, self.weights
         files = tuple(
             dict.fromkeys(f for c in criteria for f in (c.files or judge.files))
@@ -264,6 +294,19 @@ async def discover_plan(tests: str, workspace: str) -> dict:
             if node.judge
             else None,
             "contents": contents,
+            "inputs": [
+                {
+                    "path": str(Path(workspace) / filename),
+                    "resolved": str((Path(workspace) / filename).resolve()),
+                }
+                for filename in (
+                    *config.judge.files,
+                    *([config.judge.reference] if config.judge.reference else []),
+                    *(filename for c in config.criterion for filename in c.files),
+                )
+            ]
+            if config
+            else [],
             "scores": [s.model_dump() for s in node.scores],
             "warnings": node.warnings,
         }
