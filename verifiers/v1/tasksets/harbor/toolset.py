@@ -32,9 +32,9 @@ class HarborMCPAdapter(Toolset[HarborMCPConfig]):
     @asynccontextmanager
     async def serve(self, runtime: Runtime, **kwargs) -> AsyncIterator[str]:
         # Harbor commands and task-local URLs belong to the task environment.
-        port = await serve_in_runtime(self, runtime, exposed=False)
-        host = "localhost" if runtime.network_restricted else "127.0.0.1"
-        yield f"http://{host}:{port}/mcp"
+        async with serve_in_runtime(self, runtime, exposed=False) as port:
+            host = "localhost" if runtime.network_restricted else "127.0.0.1"
+            yield f"http://{host}:{port}/mcp"
 
     async def setup(self) -> None:
         spec = self.config.server
@@ -84,6 +84,13 @@ class HarborMCPAdapter(Toolset[HarborMCPConfig]):
             tools.extend(page.tools)
             cursor = page.next_cursor
             if cursor is None:
+                if allowed := self.config.server.get("allowed_tools"):
+                    missing = set(allowed) - {tool.name for tool in tools}
+                    if missing:
+                        raise ValueError(
+                            f"Unknown allowed MCP tools: {sorted(missing)}"
+                        )
+                    tools = [tool for tool in tools if tool.name in allowed]
                 return tools
             if cursor in seen_cursors:
                 raise ValueError("MCP tools pagination returned a repeated cursor")
