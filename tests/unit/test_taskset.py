@@ -102,6 +102,16 @@ def test_exclude_drops_tasks_that_any_list_names() -> None:
     assert idxs(finite().exclude(idx=":7", names=["t8"])) == [7, 9]
 
 
+def test_match_lists_extend_from_files(tmp_path) -> None:
+    (tmp_path / "idx.txt").write_text("0:2\n\n5\n")
+    (tmp_path / "names.txt").write_text(" t8 \nt9\n")
+    files = {"idx": tmp_path / "idx.txt", "names": tmp_path / "names.txt"}
+    assert idxs(finite().include(idx=[3], files=files)) == [0, 1, 3, 5, 8, 9]
+    config = vf.SelectConfig(exclude={"files": {"names": tmp_path / "names.txt"}})
+    assert config.exclude.names == ["t8", "t9"] and config.exclude.files.names is None
+    assert idxs(finite().select(config)) == list(range(8))
+
+
 def test_unmatched_entries_warn(caplog) -> None:
     with caplog.at_level(logging.WARNING):
         assert idxs(finite().include(names=["t1", "typo"], idx=[42])) == [1]
