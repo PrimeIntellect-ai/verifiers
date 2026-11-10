@@ -457,6 +457,10 @@ class PrimeBackend(RuntimeBackend):
                 try:
                     await client.delete_checkpoint(snapshot.id)
                 except Exception as e:  # noqa: BLE001 - provider cleanup is best-effort
+                    if "HTTP 404" in str(e):
+                        # Already gone: an owner that asks again must not ask forever.
+                        deleted.append(snapshot.id)
+                        continue
                     logger.warning(
                         "prime: failed to delete checkpoint %s: %s", snapshot.id, e
                     )
