@@ -207,6 +207,13 @@ shuffle = true
 limit = 100
 ```
 
+To keep long selections out of the config, point `files` at newline-delimited text files, one entry per line. Their lines extend the matching inline lists, and blank lines are skipped:
+
+```toml
+[select]
+exclude = { files = { ids = "broken_ids.txt" } }
+```
+
 Because `shuffle` (seeded by `select.seed`, which defaults to `0`) runs before `skip` and `limit`, increasing `limit` with the same seed extends the existing sample rather than drawing a different subset, and pairing `skip` with `limit` carves out disjoint splits.
 
 ## Lazy and infinite tasksets

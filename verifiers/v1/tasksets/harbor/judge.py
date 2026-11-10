@@ -23,6 +23,14 @@ class HarborJudgeConfig(JudgeConfig):
     """Include reasoning in full_trace; opaque provider state is always excluded."""
 
 
+async def prepare_authored(runtime, env):
+    """Resolve the worker's pinned dependencies without activating them in children."""
+    interpreter, script = await runtime.prepare_uv_script(
+        Path(__file__).with_name("rewardkit.py").read_bytes(), env, activate=False
+    )
+    return [interpreter, "-I", script]
+
+
 async def prepare_judge(task, runtime, trace, reward, raw, workspace=None):
     from rewardkit.agents import AgentAttempt
     from rewardkit.models import AgentJudge, JudgeTomlConfig, LLMJudge
@@ -163,14 +171,10 @@ async def grade_authored(task, runtime, trace, env):
             }
         ),
     )
-    await runtime.write(
-        prefix + ".py", Path(__file__).with_name("rewardkit.py").read_bytes()
-    )
+    worker = await prepare_authored(runtime, env)
     result = await runtime.run(
         [
-            "python3",
-            "-I",
-            prefix + ".py",
+            *worker,
             "/tests",
             runtime.config.workdir or "/app",
             prefix + ".json",
@@ -197,11 +201,14 @@ async def grade_authored(task, runtime, trace, env):
     if any(isinstance(r.judge, AgentJudge) for r in rewards.values()):
         workdir = PurePosixPath(runtime.config.workdir or "/app")
         roots = {
-            workdir,
             PurePosixPath("/tests"),
             PurePosixPath("/logs/verifier"),
             PurePosixPath(ARTIFACTS_DIR),
         }
+        # A root workdir is valid, but cannot be copied as an artifact. Capture
+        # the explicit submission and judge inputs instead of the whole image.
+        if workdir != PurePosixPath("/"):
+            roots.add(workdir)
         roots.update(workdir / p for p in trace.state.artifacts)
         roots.update(workdir / a.source for a in task.data.artifacts)
         baseline = tuple(roots)

@@ -15,6 +15,7 @@ async def test_skills(run, harness, harness_runtime):
         runtime=harness_runtime,
         max_turns=8,
         max_tokens=8192,
+        taskset_overrides={"finish_tool": harness.id == "stirrup"},
     )
     (trace,) = episode.traces
     assert_one_branch(trace, harness, forks=("openclaw",))
