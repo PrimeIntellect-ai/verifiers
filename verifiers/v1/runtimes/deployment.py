@@ -13,7 +13,6 @@ from verifiers.v1.runtimes import (
     Runtime,
     RuntimeBackend,
     RuntimeConfig,
-    make_backend,
     provision_backend,
 )
 from verifiers.v1.runtimes.base import (
@@ -178,12 +177,13 @@ class Deployment:
         self._stack.push_async_callback(stack.aclose)
         async with stack:
             if spec is not None:
-                verifier = Deployment(
-                    make_backend(config), spec=spec, env=env, config=self.config
+                from verifiers.v1.runtimes.builds import prepare_verifier_image
+
+                config, env, user = await prepare_verifier_image(config, spec, env)
+                backend = await stack.enter_async_context(
+                    provision_backend(config, env=env)
                 )
-                stack.push_async_callback(verifier.close)
-                await verifier.start()
-                yield verifier.workspace
+                yield backend.bind().with_user(user)
                 return
             backend = await stack.enter_async_context(
                 self._strategy.verifier(self, config, env)
