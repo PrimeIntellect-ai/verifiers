@@ -232,6 +232,10 @@ class RolloutSession:
     the reply waits for the capture (`Rollout` sets it when the rollout takes
     snapshots). Returns the checkpoint it took, if any."""
 
+    rescuer: Callable[[Exception], Awaitable[None]] | None = None
+    """Snapshots the rollout's box when a model call failed, before the harness gets
+    the error (`Rollout` sets it when the rollout takes snapshots)."""
+
     flowing: asyncio.Event = field(default_factory=asyncio.Event, repr=False)
     """Cleared while a memory snapshot of the box is taken (`hold`): nothing the box
     asked for is answered or written until it is set again, so the box the snapshot

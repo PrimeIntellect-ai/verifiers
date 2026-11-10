@@ -1,6 +1,7 @@
 """A retry restores the box's newest memory snapshot (memory-restore-v1: the reply of one
-model turn fails once; the retry boots a new box from the memory snapshot of that turn,
-and the harness program the box still runs gets the reply and finishes).
+model turn fails once and the box is snapshotted before the harness gets the error; the
+retry continues a new box from that snapshot, and the harness program the box still runs
+gets the reply and finishes).
 
 Every harness that continues from a memory snapshot (`Harness.SUPPORTS_MEMORY_RESTORE`)
 runs it on prime, the one runtime with memory snapshots. A process the task's `setup`
@@ -100,17 +101,31 @@ async def restored_trace(
 
 @pytest.mark.parametrize("harness,harness_runtime", grid(needs=NEEDS), indirect=True)
 async def test_retry_restores_checkpoint(run, taken, harness, harness_runtime):
-    """A snapshot at every turn. A harness with a shell fails at its second turn, so the
-    restored box holds the first turn's command and its harness goes on to the second;
-    a harness without one has a single turn, which fails."""
+    """The one snapshot of the run is taken when the model call fails. A harness with
+    a shell fails at its second turn, so the restored box holds the first turn's
+    command and its harness goes on to the second; a harness without one has a single
+    turn, which fails."""
     shell = harness_class(harness.id).EXECUTES_CODE
     trace = await restored_trace(
-        run, harness, harness_runtime, fail_turn=2 if shell else 1, interval=1
+        run, harness, harness_runtime, fail_turn=2 if shell else 1
     )
     if shell:
         assert trace.num_turns >= 2
         assert trace.metrics["copied"] == 1.0
-    assert taken
+    assert len(taken) == 1
+    await assert_no_leaks(taken)
+
+
+@pytest.mark.parametrize(
+    "harness,harness_runtime", grid(["bash"], needs=NEEDS), indirect=True
+)
+async def test_snapshots_at_turns_are_restored_too(
+    run, taken, harness, harness_runtime
+):
+    """With `interval`, the box is also snapshotted at model turns. The failed call
+    takes no second snapshot of the same turn: the retry restores the one of turn 2."""
+    trace = await restored_trace(run, harness, harness_runtime, fail_turn=2, interval=1)
+    assert [c.id for c in trace.checkpoints if c.restored] == [taken[1]]
     await assert_no_leaks(taken)
 
 

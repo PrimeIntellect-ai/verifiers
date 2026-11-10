@@ -79,6 +79,12 @@ skip_on_timeout = true
 
 Rollout checkpointing is on by default: a retry restores the newest snapshot of the box and continues the trace from there, instead of starting over.
 
+A rollout takes a snapshot only when it needs one:
+
+- When a model call fails with an error that the run retries (`[env.agent.retries]`). The snapshot is taken before the harness gets the error, so the box that the retry restores still waits for the reply and asks for the call again. A rollout that never fails takes no snapshot and is never stopped.
+- When its owner saves it (`save_all`, below).
+- With `interval`, also at every n-th model turn. This covers failures that leave no box to snapshot: the box died, or the harness program crashed. Without it, a retry after such a failure starts over.
+
 A snapshot holds the box's files and its memory. The restored box continues every process where the snapshot stopped it: the harness program, its sub-agents and shells, and the task's own processes. The harness gets no notice and starts no new process; a model call that was open is asked again. The snapshot stops the box for a few seconds.
 
 A rollout takes snapshots only when all of these hold. Otherwise a retry starts over, with a warning once per harness and runtime:
@@ -88,11 +94,11 @@ A rollout takes snapshots only when all of these hold. Otherwise a retry starts 
 - The rollout runs in a box of its own, not in a borrowed one.
 - The rollout has no tool servers, no shared tools and no services of its own. They reach the host at an address that does not follow the box to its restore.
 
-A retry also starts over when a restore fails before the restored attempt's first new turn. Every snapshot is deleted once the run is final. Set `--no-env.agent.checkpoint` to turn it off.
+A retry also starts over when a restore fails before the restored attempt's first new turn, unless a model call failed again. Every snapshot is deleted once the run is final. Set `--no-env.agent.checkpoint` to turn it off.
 
 ```toml
 [env.agent.checkpoint]
-interval = 10  # snapshot at the 10th, 20th, ... model turn; shorter rollouts take none
+# interval = 10  # also snapshot at the 10th, 20th, ... model turn (off by default)
 keep = "last"  # snapshots kept while the rollout runs: "last", or every k-th plus the newest
 ```
 

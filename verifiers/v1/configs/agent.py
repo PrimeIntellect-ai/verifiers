@@ -40,18 +40,21 @@ class TimeoutConfig(BaseConfig):
 
 
 class RolloutCheckpointConfig(BaseConfig):
-    """Rollout checkpointing: snapshot the box's files and memory every n-th model
-    turn, so a retry continues from the newest snapshot instead of starting over. The
-    restored box continues the harness program itself. A snapshot stops the box for a
-    few seconds. It needs a runtime that takes memory snapshots
+    """Rollout checkpointing: snapshot the box's files and memory when a model call
+    fails with an error the run retries, so the retry continues from there instead of
+    starting over. The snapshot is taken before the harness gets the error: the
+    restored box continues the harness program itself and asks for the call again. A
+    rollout that never fails takes no snapshot. A snapshot stops the box for a few
+    seconds. It needs a runtime that takes memory snapshots
     (`SUPPORTS_MEMORY_SNAPSHOTS`), a harness that runs detached from the host
     (`Harness.SUPPORTS_MEMORY_RESTORE`) and a rollout without tool servers or services
     of its own. Elsewhere a retry starts over. Every snapshot is deleted once the run
     is final."""
 
-    interval: PositiveInt = 10
-    """Snapshot at every n-th model turn (the n-th, the 2n-th, ...): a rollout shorter
-    than n turns takes none, and a restore loses fewer than n turns."""
+    interval: PositiveInt | None = None
+    """Also snapshot at every n-th model turn (the n-th, the 2n-th, ...), for failures
+    that leave no box to snapshot (the box died, the harness program crashed): a retry
+    then loses fewer than n turns instead of starting over. None takes none."""
     keep: Literal["last"] | PositiveInt = "last"
     """Snapshots kept while the rollout runs: the newest (`"last"`), or every k-th plus
     the newest (`k`; 1 keeps every one). A failed restore falls back to an older kept

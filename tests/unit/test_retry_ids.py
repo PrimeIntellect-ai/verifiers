@@ -39,6 +39,7 @@ async def test_agent_retries_keep_the_trace_id(monkeypatch):
         def __init__(self, *, on_trace, trace_id, attempt, **_):
             self.rewound_snapshots: list[str] = []
             self.deleted_snapshots: set[str] = set()
+            self.rescued = False
             self.trace = make_trace(id=trace_id, attempt=attempt)
             on_trace(self.trace)
 
@@ -69,8 +70,8 @@ async def test_agent_retries_keep_the_trace_id(monkeypatch):
 @pytest.mark.asyncio
 async def test_a_restore_that_leads_nowhere_is_not_picked_again(monkeypatch):
     """Attempt 1 takes a snapshot and fails. Attempt 2 restores it and fails before its
-    first new turn, as a harness that cannot load its session would every time. The
-    next retry starts over instead of restoring the same snapshot again."""
+    first new turn, with an error that no failed model call explains. The next retry
+    starts over instead of restoring the same snapshot again."""
     restores: list[str | None] = []
 
     class FakeRollout:
@@ -80,6 +81,7 @@ async def test_a_restore_that_leads_nowhere_is_not_picked_again(monkeypatch):
             restores.append(None if restore is None else restore[1].id)
             self.rewound_snapshots: list[vf.Snapshot] = []
             self.deleted_snapshots: set[str] = set()
+            self.rescued = False
             self.restored_turns = None
             if restore is None:
                 self.trace = make_trace(id=trace_id, attempt=attempt)

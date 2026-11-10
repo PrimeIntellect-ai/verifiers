@@ -794,6 +794,8 @@ class Agent:
                         attempt=first_attempt + attempt + 1,
                         restore=restoring_from,
                         checkpoint=checkpointing,
+                        # The retry after this attempt is still to be granted.
+                        retryable=(retry_state.allows if attempt < budget else None),
                     )
                     trace = run.trace
                     snapshots.update((s.id, s) for s in run.rewound_snapshots)
@@ -808,14 +810,16 @@ class Agent:
                         any(error.stage == "setup" for error in trace.errors[seen:])
                         or (
                             not trace.ok
+                            and not run.rescued
                             and run.restored_turns is not None
                             and trace.num_turns <= run.restored_turns
                         )
                     ):
                         # The restore led nowhere: the box never ran from it, or the
-                        # attempt failed before its first new turn (what the box was
-                        # doing at the snapshot fails the same way every time). The
-                        # next retry steps back to an older snapshot, or starts over.
+                        # attempt failed before its first new turn. The next retry
+                        # steps back to an older snapshot, or starts over. A model
+                        # call that failed again is not the snapshot's fault: its
+                        # retry restores the same box (`Rollout.rescued`).
                         failed_restores.add(target.id)
                     if trace.ok:
                         break
@@ -917,6 +921,7 @@ class Agent:
         attempt: int,
         restore: tuple[Trace, Checkpoint] | None = None,
         checkpoint: RolloutCheckpointConfig | None = None,
+        retryable: Callable[[Exception], bool] | None = None,
     ) -> Rollout:
         if collect_artifacts:
             _check_artifact_runtime(params["runtime_config"])
@@ -928,6 +933,7 @@ class Agent:
             trace_id=trace_id,
             restore=restore,
             checkpoint=checkpoint,
+            retryable=retryable,
             attempt=attempt,
             **params,
         )
