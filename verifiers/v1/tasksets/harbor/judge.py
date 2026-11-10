@@ -3,7 +3,7 @@
 import asyncio
 import json
 import uuid
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from openai import APITimeoutError
@@ -23,15 +23,22 @@ class HarborJudgeConfig(JudgeConfig):
     """Include reasoning in full_trace; opaque provider state is always excluded."""
 
 
-async def prepare_judge(task, runtime, trace, reward, raw):
+async def prepare_judge(task, runtime, trace, reward, raw, workspace=None):
     from rewardkit.agents import AgentAttempt
-    from rewardkit.models import JudgeTomlConfig, LLMJudge
+    from rewardkit.models import AgentJudge, JudgeTomlConfig, LLMJudge
 
     from .rewardkit import fence_submission
 
     authored = JudgeTomlConfig.model_validate(raw).judge
     if unsupported := {"version", "cwd", "atif_trajectory"} & authored.model_fields_set:
         raise TaskError(f"Unsupported native judge options: {sorted(unsupported)}")
+    if reward.judge.timeout <= 0:
+        raise TaskError("judge.timeout must be positive")
+    if isinstance(reward.judge, AgentJudge):
+        from .agent import prepare_agent_judge
+
+        await prepare_agent_judge(task, runtime, trace, reward, authored, workspace)
+        return
     if not isinstance(reward.judge, LLMJudge):
         raise TaskError("This native judge requires a RewardKit LLM rubric")
     if "model" in authored.model_fields_set:
@@ -40,8 +47,6 @@ async def prepare_judge(task, runtime, trace, reward, raw):
         )
     if authored.mcp_servers or "isolated" in authored.model_fields_set:
         raise TaskError("judge.mcp_servers and judge.isolated require an agent judge")
-    if reward.judge.timeout <= 0:
-        raise TaskError("judge.timeout must be positive")
     settings = (
         task.config.judge.model_dump(exclude_unset=True) if task.config.judge else {}
     )
@@ -130,6 +135,10 @@ async def prepare_judge(task, runtime, trace, reward, raw):
 
 
 async def grade_authored(task, runtime, trace, env):
+    from rewardkit.models import AgentJudge
+
+    from verifiers.v1.utils.artifacts import ARTIFACTS_DIR, Artifact, collect
+
     from .rewardkit import evaluate_layout, restore_plan
 
     if not runtime.backend.SUPPORTS_TASK_IMAGES:
@@ -184,11 +193,46 @@ async def grade_authored(task, runtime, trace, env):
         raise TaskError(
             f"Harbor reward key {task.config.reward_key!r} is missing: {sorted(names)}"
         )
+    workspace = None
+    if any(isinstance(r.judge, AgentJudge) for r in rewards.values()):
+        workdir = PurePosixPath(runtime.config.workdir or "/app")
+        roots = {
+            workdir,
+            PurePosixPath("/tests"),
+            PurePosixPath("/logs/verifier"),
+            PurePosixPath(ARTIFACTS_DIR),
+        }
+        roots.update(workdir / p for p in trace.state.artifacts)
+        roots.update(workdir / a.source for a in task.data.artifacts)
+        baseline = tuple(roots)
+        for spec in plan["rewards"].values():
+            # Resolve aliases in the verifier so symlinked evidence captures its
+            # actual target, including targets outside the working directory.
+            for entry in spec["inputs"]:
+                path, resolved = (
+                    PurePosixPath(entry["path"]),
+                    PurePosixPath(entry["resolved"]),
+                )
+                if path != resolved and not any(
+                    path.is_relative_to(root) for root in baseline
+                ):
+                    raise TaskError(
+                        f"Judge input alias {path} must be inside a captured workspace root"
+                    )
+                roots.add(resolved)
+        # All samples and retries start from this immutable, post-programmatic state.
+        workspace = await collect(
+            runtime,
+            [Artifact(source=str(root), required=False) for root in sorted(roots)],
+            max_bytes=512 * 1024 * 1024,
+            sweep=False,
+            workspace=True,
+        )
     # Check every judge before making any inference calls.
     for name, reward in rewards.items():
         if reward.judge is not None:
             await prepare_judge(
-                task, runtime, trace, reward, plan["rewards"][name]["config"]
+                task, runtime, trace, reward, plan["rewards"][name]["config"], workspace
             )
     for name, reward in rewards.items():
         if reward.judge is not None:
