@@ -12,7 +12,6 @@ from dataclasses import dataclass
 from typing import Literal
 from urllib.parse import urlsplit
 
-from verifiers.v1 import graph
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.agent import AgentConfig, RolloutCheckpointConfig
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
@@ -53,7 +52,7 @@ from verifiers.v1.session import (
     hook_boundary,
 )
 from verifiers.v1.state import state_cls
-from verifiers.v1.task import Task, TaskData
+from verifiers.v1.task import Task
 from verifiers.v1.trace import AgentInfo, Checkpoint, TimeSpan, Trace, TraceTask
 from verifiers.v1.types import Messages, Request, Response, SystemMessage, UserMessage
 from verifiers.v1.utils.aio import run_shielded
@@ -207,7 +206,6 @@ class Rollout:
         """The model turns the restored trace held when this run began (None for a run
         that did not restore). The next turn is the one the snapshot was taken at, which
         this run does not snapshot again."""
-        self._harness_data: TaskData | None = None
         self.deleted_snapshots: set[str] = set()
         """The snapshots this run deleted."""
         self._pruning = asyncio.Lock()
@@ -280,7 +278,7 @@ class Rollout:
         """Whether an owner holds the box's replies past its save (`save(hold=True)`)."""
         self._release_timer: asyncio.TimerHandle | None = None
         self._capturing = asyncio.Lock()
-        if self._restore is not None and self._restore.snapshot.type == "memory":
+        if self._restore is not None:
             # Set before the box boots: its relay repeats the requests that waited as
             # soon as it reaches this session.
             self._session.pinned_tool_results.update(self._restore.pins)
@@ -400,9 +398,7 @@ class Rollout:
                 self.harness.config.name,
                 self.runtime_config.type,
             )
-        memory_restore = (
-            self._restore is not None and self._restore.snapshot.type == "memory"
-        )
+        restored = self._restore is not None
         loop = asyncio.get_running_loop()
         setup_timeout: asyncio.Timeout | None = None
         setup_deadline = (
@@ -470,8 +466,7 @@ class Rollout:
                 self.trace.timing.boot.end = now
                 self.trace.timing.setup.start = now
                 self.trace.notify()
-                # A restored box already holds the task's setup; only the harness's
-                # (idempotent) install runs again.
+                # A restored box already holds the task's setup.
                 if self._restore is None:
                     started = time.perf_counter()
                     async with boundary(TaskError, "task setup"):
@@ -499,13 +494,11 @@ class Rollout:
                         self._relay = Relay(
                             runtime,
                             self.trace.id,
-                            running=self._restore.live["relay"]
-                            if memory_restore
-                            else None,
+                            running=self._restore.live["relay"] if restored else None,
                         )
                         self._stack.push_async_callback(self._relay.stop)
-                    # A box restored from memory still runs the harness.
-                    if not memory_restore:
+                    # A restored box still runs the harness.
+                    if not restored:
                         await self.harness.setup(self._agent_runtime)
                 self.unsaveable = unsaveable(self.trace.agent.config, self.harness) or (
                     "it runs in a borrowed box"
@@ -519,20 +512,14 @@ class Rollout:
                     else None
                 )
                 self._memory = self.unsaveable is None and self._relay is not None
-                if memory_restore and not self._memory:
+                if restored and not self._memory:
                     raise SandboxError(
                         "the rollout cannot continue from its memory snapshot"
                     )
                 if (
                     self._checkpointing is not None
                     and self._borrowed_runtime is None
-                    and (
-                        self._memory
-                        or (
-                            runtime.backend.SUPPORTS_FILESYSTEM_SNAPSHOTS
-                            and self.harness.can_restore()
-                        )
-                    )
+                    and self._memory
                 ):
                     self._session.checkpointer = self._checkpoint
                 logger.debug(
@@ -572,7 +559,7 @@ class Rollout:
                 # A harness restored from memory still sends the secret it got at its
                 # launch; the relay swaps it for this session's.
                 self._secret = (
-                    self._restore.live["secret"] if memory_restore else model_secret
+                    self._restore.live["secret"] if restored else model_secret
                 )
                 if self._relay is not None:
                     # The harness holds the model secret anyway; the relay gets
@@ -728,7 +715,6 @@ class Rollout:
                             )
                             else {}
                         )
-                        self._harness_data = harness_data
                         self._harness_session = await self.harness.session(
                             self.ctx,
                             self.trace,
@@ -796,15 +782,12 @@ class Rollout:
         self,
         messages: Messages | None = None,
         *,
-        intercepted: int = 0,
         on_input: Callable[[], None] | None = None,
     ) -> bool:
         """Run ONE segment: the harness program to its exit. With `messages`, the
         segment resumes the exchange with the user's turn(s) (`Harness.resume` —
         for an exchange the user opens, this is also the first segment, on an
         empty conversation); without, it launches on the task's own prompt.
-        The first `intercepted` messages pass to the harness as they are — they were
-        intercepted when the trace first saw them (a restored checkpoint's tail).
         Returns whether the exchange can continue — a refused turn (limit,
         @stop), a failure (an expired agent timeout included), or a segment that
         made no progress all end it."""
@@ -826,15 +809,11 @@ class Rollout:
         try:
             async with deadline:
                 assert self._harness_session is not None
-                if (
-                    messages is not None
-                    and len(messages) > intercepted
-                    and self._session.request_interceptors
-                ):
+                if messages is not None and self._session.request_interceptors:
                     prepared, rewrites = await self._session.prepare_users(
-                        Request(messages=messages[intercepted:])
+                        Request(messages=messages)
                     )
-                    messages = [*messages[:intercepted], *prepared.messages]
+                    messages = prepared.messages
                     self.trace.request_rewrites.extend(rewrites)
                     if self._session.stopped:
                         return False
@@ -914,28 +893,15 @@ class Rollout:
         return False
 
     async def restore(self) -> bool:
-        """Run the restored attempt's first segment: a new harness process in the box
-        restored from the checkpoint continues the conversation the checkpoint left
-        off at (`HarnessSession.restore`), told that the box was restored."""
+        """Run the restored attempt's first segment: the box restored from the
+        checkpoint still runs the harness program, so this waits for it
+        (`HarnessSession.reattach`) instead of starting one."""
         checkpoint = self._restore
-        assert checkpoint is not None and self._harness_data is not None
-        assert self._harness_session is not None
-        if checkpoint.snapshot.type == "memory":
-            # The box still runs the segment: wait for it instead of starting one.
-            self._harness_session.reattach(checkpoint.live["program"])
-            return await self.step()
-        # The relaunch re-emits the session's system prompt (the task's, plus a
-        # network notice) through the program's own system message; the tail's copy
-        # would double it.
-        system = self._harness_data.system_prompt
-        tail = [m for m in checkpoint.tail if m.role != "system" or system is None]
-        self._session.pinned_tool_results.update(checkpoint.pins)
-        self._session.mark_intercepted(self.trace.messages, tail)
-        messages = self._harness_session.restore(checkpoint.harness, tail)
-        # Only the restore notice is new; user hooks prepare it like any user turn.
-        return await self.step(messages, intercepted=len(messages) - 1)
+        assert checkpoint is not None and self._harness_session is not None
+        self._harness_session.reattach(checkpoint.live["program"])
+        return await self.step()
 
-    async def _checkpoint(self, turn: graph.PendingTurn) -> Checkpoint | None:
+    async def _checkpoint(self) -> Checkpoint | None:
         if self._closed:
             # Settling may have drained `_captures` already: a snapshot taken now
             # would start its upload after the box is gone.
@@ -944,74 +910,18 @@ class Rollout:
         if task is not None:
             self._captures.add(task)
         try:
-            return await self._capture(turn)
+            return await self._capture()
         finally:
             self._captures.discard(task)
 
-    async def _capture(self, turn: graph.PendingTurn) -> Checkpoint | None:
-        assert self.runtime is not None
+    async def _capture(self) -> Checkpoint | None:
         assert self._checkpointing is not None
         turn_number = self.trace.num_turns + 1
         if turn_number % self._checkpointing.interval or (
             self.restored_turns is not None and turn_number == self.restored_turns + 1
         ):
             return None
-        if self._memory and self._checkpointing.snapshot == "memory":
-            return await self._capture_memory()
-        if not (
-            self.runtime.backend.SUPPORTS_FILESYSTEM_SNAPSHOTS
-            and self.harness.can_restore()
-        ):
-            return None
-        if len(self.trace._pending) > 1:
-            # Another request is in flight (parallel sub-agents share the trace): the
-            # box is not idle, so no snapshot would match this turn's prefix.
-            return
-        assert self._harness_session is not None
-        # Read before the first await: the reply may commit and run its hooks while
-        # the harness answers, and the checkpoint must describe the idle box.
-        node = turn.prefix_node_ids[-1] if turn.prefix_node_ids else None
-        tail = list(turn.tail)
-        state = copy.deepcopy(self.trace.state)
-        info = copy.deepcopy(self.trace.info)
-        pins = dict(self._session.pinned_tool_results)
-        try:
-            harness = await self._harness_session.checkpoint_state()
-        except Exception:
-            logger.warning(
-                "harness checkpoint state failed (rollout %s)",
-                self.trace.id,
-                exc_info=True,
-            )
-            return
-        if harness is None:
-            return
-        started = time.time()
-        try:
-            snapshot = await self.runtime.backend.snapshot()
-        except Exception:
-            logger.warning("snapshot failed (rollout %s)", self.trace.id, exc_info=True)
-            return None
-        checkpoint = Checkpoint(
-            id=snapshot.id,
-            node=node,
-            tail=tail,
-            state=state,
-            info=info,
-            pins=pins,
-            harness=harness,
-            snapshot=snapshot,
-            time=TimeSpan(start=started),
-            captured=time.time(),
-        )
-        self.trace.checkpoints.append(checkpoint)
-        self._durable[checkpoint.id] = asyncio.create_task(
-            self._make_durable(checkpoint)
-        )
-        logger.debug(
-            "checkpoint %s taken: id=%s node=%s", checkpoint.id, self.trace.id, node
-        )
-        return checkpoint
+        return await self._take_snapshot()
 
     async def save(self, *, hold: bool = False) -> RestorePoint | None:
         """Take a memory checkpoint of the running rollout now and return its restore
@@ -1038,7 +948,7 @@ class Rollout:
             self._captures.add(task)
         self._held = hold
         try:
-            checkpoint = await self._capture_memory(pinned=True)
+            checkpoint = await self._take_snapshot(pinned=True)
         finally:
             self._captures.discard(task)
         if checkpoint is None:
@@ -1060,7 +970,7 @@ class Rollout:
             self._release_timer = None
         self._session.resume()
 
-    async def _capture_memory(self, *, pinned: bool = False) -> Checkpoint | None:
+    async def _take_snapshot(self, *, pinned: bool = False) -> Checkpoint | None:
         """Snapshot the box with its memory. Nothing the box asked for is answered
         while the snapshot is taken (`RolloutSession.hold`), so the box it stops has
         seen exactly the trace as recorded here; a box restored from it asks again
@@ -1091,7 +1001,7 @@ class Rollout:
                 }
                 started = time.time()
                 try:
-                    snapshot = await self.runtime.backend.snapshot(memory=True)
+                    snapshot = await self.runtime.backend.snapshot()
                 except Exception:
                     logger.warning(
                         "memory snapshot failed (rollout %s)",

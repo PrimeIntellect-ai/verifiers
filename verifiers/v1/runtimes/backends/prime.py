@@ -216,7 +216,6 @@ class PrimeBackend(RuntimeBackend):
     SUPPORTS_USER_SWITCHING: ClassVar[bool] = True
     SUPPORTS_COMPOSE: ClassVar[bool] = True
     SUPPORTS_PORT_EXPOSURE: ClassVar[bool] = True
-    SUPPORTS_FILESYSTEM_SNAPSHOTS: ClassVar[bool] = True
     SUPPORTS_MEMORY_SNAPSHOTS: ClassVar[bool] = True
 
     def __init__(self, config: PrimeConfig, name: str | None = None) -> None:
@@ -395,32 +394,26 @@ class PrimeBackend(RuntimeBackend):
         ) as e:  # provisioning failure is one rollout's problem, not the eval's
             raise SandboxError(f"prime sandbox provisioning failed: {e}") from e
 
-    async def snapshot(self, *, memory: bool = False) -> Snapshot:
-        # The platform fixes the snapshot's content before the request returns, then
-        # uploads it. Until it is durable the snapshot is stray: the platform refuses
-        # to delete it while this box lives, so teardown frees it after.
+    async def snapshot(self) -> Snapshot:
+        # A pause is the platform's memory snapshot: it stops the box, and the resume
+        # continues it. The platform uploads the snapshot after the pause. Until it is
+        # durable the snapshot is stray: the platform refuses to delete it while this
+        # box lives, so teardown frees it after.
         async def create() -> Snapshot:
-            if memory:
-                # A pause is the platform's memory snapshot: it stops the box, and the
-                # resume continues it. Shielded as one: a box left paused never runs
-                # its rollout again.
-                self._awake.clear()
+            # Shielded as one: a box left paused never runs its rollout again.
+            self._awake.clear()
+            try:
+                paused = await self._client.pause(self.info.id)
+                snapshot = Snapshot(id=paused.checkpoint_id)
+                self.stray_snapshots.append(snapshot)
                 try:
-                    paused = await self._client.pause(self.info.id)
-                    snapshot = Snapshot(id=paused.checkpoint_id, type="memory")
-                    self.stray_snapshots.append(snapshot)
-                    try:
-                        await self._settle("PAUSED", "PAUSE_FAILED")
-                    except BaseException:
-                        self.stray_snapshots.remove(snapshot)
-                        raise
-                    await self._resume()
-                finally:
-                    self._awake.set()
-                return snapshot
-            checkpoint = await self._client.checkpoint(self.info.id)
-            snapshot = Snapshot(id=checkpoint.id)
-            self.stray_snapshots.append(snapshot)
+                    await self._settle("PAUSED", "PAUSE_FAILED")
+                except BaseException:
+                    self.stray_snapshots.remove(snapshot)
+                    raise
+                await self._resume()
+            finally:
+                self._awake.set()
             return snapshot
 
         try:
@@ -526,10 +519,7 @@ class PrimeBackend(RuntimeBackend):
     @classmethod
     def restore_config(cls, config: PrimeConfig, snapshot: Snapshot) -> PrimeConfig:
         return config.model_copy(
-            update={
-                "checkpoint": snapshot.id,
-                "restore_memory": snapshot.type == "memory",
-            }
+            update={"checkpoint": snapshot.id, "restore_memory": True}
         )
 
     async def prepare_execution(

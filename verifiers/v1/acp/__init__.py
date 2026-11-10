@@ -17,7 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.errors import HarnessError, InterceptionError
-from verifiers.v1.harness import RESTORE_PROMPT, Harness, HarnessSession
+from verifiers.v1.harness import Harness, HarnessSession
 from verifiers.v1.runtimes import ProgramResult, Runtime, RuntimeProcess
 from verifiers.v1.runtimes.base import current_program
 from verifiers.v1.semantic import (
@@ -26,7 +26,7 @@ from verifiers.v1.semantic import (
 )
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
-from verifiers.v1.types import Messages, UserMessage
+from verifiers.v1.types import Messages
 from verifiers.v1.utils.aio import run_shielded
 
 ACP_SOURCE = (Path(__file__).resolve().parent / "runner.py").read_text()
@@ -77,16 +77,7 @@ class ACPConfig:
 class ACPHarness(Harness[ConfigT]):
     """Harness backed by one live ACP process and native session per rollout."""
 
-    LOADS_SESSIONS: ClassVar[bool] = False
-    """Whether the pinned agent implements ACP `session/load`, so a new process can
-    continue a session from its files in the box. An agent that does not advertise
-    `loadSession` at runtime takes no snapshots either way."""
-
     SUPPORTS_MEMORY_RESTORE: ClassVar[bool] = True
-
-    @classmethod
-    def can_restore(cls) -> bool:
-        return cls.LOADS_SESSIONS
 
     async def setup(self, runtime: Runtime) -> None:
         await runtime.prepare_uv_script(
@@ -255,10 +246,6 @@ class ACPHarnessSession(HarnessSession):
         self._responses: dict[int, asyncio.Future] = {}
         self._request_id = 0
         self._response_task: asyncio.Task | None = None
-        self._session_id: str | None = None
-        """The agent's ACP session id, once a checkpoint asked for it."""
-        self._restore_id: str | None = None
-        """The session the next process loads from the restored box (`restore`)."""
         self._detached: list[str] | None = None
         """The runner's argv once it runs as a job of the box (`memory`): each request
         is then a job too, since no connection from the host survives a stopped box."""
@@ -400,28 +387,6 @@ class ACPHarnessSession(HarnessSession):
             if not future.done():
                 future.cancel()
 
-    async def checkpoint_state(self) -> dict[str, Any] | None:
-        # The agent keeps its session in files of the box, so a restored box can load
-        # it in a new process — if the agent advertises `loadSession`.
-        if self._session_id is None:
-            if not self._running:
-                return None
-            response = await self._request("session")
-            result = response.get("result")
-            if not response.get("ok") or not isinstance(result, dict):
-                raise RuntimeError(response.get("error") or "ACP session query failed")
-            if not result.get("load_session") or result.get("session_id") is None:
-                return None
-            self._session_id = result["session_id"]
-        return {"acp_session_id": self._session_id}
-
-    def restore(self, state: dict[str, Any], tail: Messages) -> Messages:
-        # The agent's own session files hold the conversation, the tail included as
-        # far as it flushed them; the restored process takes only the notice.
-        self._restore_id = state["acp_session_id"]
-        self._session_id = self._restore_id
-        return [UserMessage(content=RESTORE_PROMPT)]
-
     async def steer(self, message: str, *, message_id: str | None = None) -> dict:
         if self._closed:
             raise RuntimeError("ACP session is closed")
@@ -464,7 +429,6 @@ class ACPHarnessSession(HarnessSession):
         )
         config = {
             "command": self.config.command,
-            "load_session_id": self._restore_id,
             "user_contents": user_contents,
             "mcp_urls": self.mcp_urls,
             "mcp_headers": self.harness.config.resolve_mcp_headers(self.mcp_urls),
@@ -491,10 +455,6 @@ class ACPHarnessSession(HarnessSession):
             except BaseException:
                 await run_shielded(self._stop(graceful=False))
                 raise
-            finally:
-                # Only the restored box's first process loads the session; later
-                # turns continue the live one.
-                self._restore_id = None
         return self._finish(response, calls_before)
 
     def _finish(self, response: JsonObject, calls_before: int) -> ProgramResult:

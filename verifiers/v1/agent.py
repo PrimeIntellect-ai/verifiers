@@ -35,7 +35,7 @@ from verifiers.v1.dialects import parse_message
 from verifiers.v1.harness import Harness
 from verifiers.v1.interception import Interception, InterceptionServer
 from verifiers.v1.mcp import SharedToolServer
-from verifiers.v1.restore import RestorePoint, restoring
+from verifiers.v1.restore import RestorePoint, restoring, unsaveable
 from verifiers.v1.rollout import Rollout, RolloutTimeouts
 from verifiers.v1.runtimes import (
     Runtime,
@@ -662,20 +662,12 @@ class Agent:
         config = self.config.checkpoint
         if config is None:
             return None
-        harness = self.harness
-        backend = backend_cls(self.config.runtime)
-        if harness.can_restore() and backend.SUPPORTS_FILESYSTEM_SNAPSHOTS:
+        reason = unsaveable(self.config, self.harness)
+        if reason is None:
             return config
-        if harness.SUPPORTS_MEMORY_RESTORE and backend.SUPPORTS_MEMORY_SNAPSHOTS:
-            return config
-        key = (harness.config.id, self.config.runtime.type)
+        key = (self.harness.config.id, self.config.runtime.type)
         if key not in _checkpointing_warned:
             _checkpointing_warned.add(key)
-            reason = (
-                f"harness {harness.config.id!r} does not support it"
-                if not harness.can_restore()
-                else f"the {self.config.runtime.type!r} runtime takes no snapshots"
-            )
             logger.warning(
                 "rollout checkpointing is off: %s; a failed rollout retries from the "
                 "start",
@@ -810,9 +802,9 @@ class Agent:
                             and trace.num_turns <= run.restored_turns
                         )
                     ):
-                        # The restore led nowhere: the box never booted from it, or the
-                        # attempt failed before its first new turn (a harness that
-                        # cannot load its session fails the same way every time). The
+                        # The restore led nowhere: the box never ran from it, or the
+                        # attempt failed before its first new turn (what the box was
+                        # doing at the snapshot fails the same way every time). The
                         # next retry steps back to an older snapshot, or starts over.
                         failed_restores.add(target.id)
                     if trace.ok:

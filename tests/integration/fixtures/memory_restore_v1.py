@@ -2,8 +2,8 @@
 box's newest memory snapshot and continues the harness program the box still runs.
 
 `setup` starts a process in the box that holds a nonce only in its memory and hands it
-to whoever reads `nonce.fifo`. The nonce is on no disk, so a box that boots from a
-filesystem snapshot cannot answer; a box that continues from a memory snapshot can.
+to whoever reads `nonce.fifo`. The nonce is on no disk, so only a box that continues
+the process from a memory snapshot can answer.
 The reward reads the nonce from the process. The task asks a harness with a shell for
 two commands that build on each other, and a metric checks the file they leave.
 

@@ -24,7 +24,6 @@ from verifiers.v1.trace import (
 )
 from verifiers.v1.types import (
     AssistantMessage,
-    Request,
     ToolCall,
     ToolMessage,
     UserMessage,
@@ -104,57 +103,25 @@ def test_agent_time_splits_off_the_checkpoint_hold():
     assert trace.timing.agent.harness.duration == 15.0
 
 
-async def test_restored_tail_is_not_intercepted_twice():
-    trace = make_trace()
-    seen: list[str] = []
-
-    def tag(request: Request) -> Request:
-        for message in request.messages:
-            if isinstance(message, ToolMessage | UserMessage):
-                seen.append(str(message.content))
-                if isinstance(message, ToolMessage):
-                    message.content = f"{message.content} [tagged]"
-        return request
-
-    session = RolloutSession(
-        ctx=ModelContext(model="m", client=EvalClientConfig()),
-        trace=trace,
-        request_interceptors=[tag],
-    )
-    tail = [
-        ToolMessage(tool_call_id="c1", content="out [tagged]"),
-        UserMessage(content="go on"),
-    ]
-    session.mark_intercepted(trace.messages, tail)
-    request = Request(messages=[*trace.messages, *tail])
-    rewritten, records, _ = await session.rewrite_request(request)
-    assert rewritten.messages == request.messages
-    assert records == []
-    assert seen == []
-
-
 class SlowBackend:
-    """Captures at once; becomes durable when the test says so."""
+    """Stops the box for a snapshot until the test lets it run again; the snapshot
+    becomes durable when the test says so."""
 
     def __init__(self) -> None:
-        self.SUPPORTS_FILESYSTEM_SNAPSHOTS = True
         self.durable = asyncio.Event()
         self.stopped = asyncio.Event()
-        """Set once a memory snapshot has stopped the box."""
+        """Set once a snapshot has stopped the box."""
         self.running = asyncio.Event()
-        """A memory snapshot returns when the test lets the box run again."""
+        """A snapshot returns when this is set: the box runs again."""
         self.fail = False
         self.taken = 0
         self.deleted: list[str] = []
 
-    async def snapshot(self, *, memory: bool = False) -> vf.Snapshot:
+    async def snapshot(self) -> vf.Snapshot:
         self.taken += 1
-        if memory:
-            self.stopped.set()
-            await self.running.wait()
-        return vf.Snapshot(
-            id=f"ck{self.taken}", type="memory" if memory else "filesystem"
-        )
+        self.stopped.set()
+        await self.running.wait()
+        return vf.Snapshot(id=f"ck{self.taken}")
 
     async def wait_snapshot(self, snapshot: vf.Snapshot) -> int | None:
         await self.durable.wait()
@@ -168,27 +135,50 @@ class SlowBackend:
         return ids
 
 
+class FakeRelay:
+    upstream = "https://tunnel.example"
+
+    def __init__(self) -> None:
+        self.state = {"dir": "/tmp/vf-relay/t", "url": "http://127.0.0.1:4000"}
+        self.rerouted: list[str] = []
+
+    async def reroute(self, upstream: str) -> None:
+        self.rerouted.append(upstream)
+
+
 def make_rollout(
-    interval: int = 1, keep: Literal["last"] | int = "last"
-) -> tuple[Rollout, SlowBackend]:
+    interval: int = 1,
+    keep: Literal["last"] | int = "last",
+    *,
+    running: bool = True,
+    stops: bool = False,
+) -> tuple[Rollout, SlowBackend, RolloutSession]:
+    """A rollout that takes snapshots, with or without a harness segment that runs.
+    With `stops`, a snapshot keeps the box stopped until the test sets
+    `backend.running`."""
     backend = SlowBackend()
+    if not stops:
+        backend.running.set()
+    job = {"job_id": "j1"} if running else None
     run = Rollout.__new__(Rollout)
     run.trace = make_trace()  # one turn so far
     run.runtime = SimpleNamespace(backend=backend)  # type: ignore[assignment]
-    run.harness = SimpleNamespace(can_restore=lambda: True)  # type: ignore[assignment]
-
-    async def checkpoint_state() -> dict:
-        return {}
-
-    run._harness_session = SimpleNamespace(checkpoint_state=checkpoint_state)  # type: ignore[assignment]
-    run._session = SimpleNamespace(pinned_tool_results={})  # type: ignore[assignment]
+    session = RolloutSession(
+        ctx=ModelContext(model="m", client=EvalClientConfig()), trace=run.trace
+    )
+    run._session = session
+    run._harness_session = SimpleNamespace(  # type: ignore[assignment]
+        memory_state=lambda: None if job is None else {"job": job}
+    )
+    run._relay = FakeRelay()  # type: ignore[assignment]
+    run._secret = "box-secret"
     run._checkpointing = RolloutCheckpointConfig(interval=interval, keep=keep)
     run._durable = {}
     run._captures = set()
     run._closed = False
     run._opened = True
-    run._memory = False
-    run.unsaveable = "the 'fake' runtime takes no memory snapshots"
+    run._memory = True
+    run.unsaveable = None
     run.save_skipped = None
     run._held = False
     run._release_timer = None
@@ -197,33 +187,30 @@ def make_rollout(
     run.deleted_snapshots = set()
     run.rewound_snapshots = []
     run.restored_turns = None
-    return run, backend
-
-
-TURN = SimpleNamespace(prefix_node_ids=[0, 1], tail=[])
+    return run, backend, session
 
 
 async def test_checkpoint_interval_skips_turns():
-    run, backend = make_rollout(interval=2)
-    assert await run._checkpoint(TURN) is not None  # turn 2: the 2nd
+    run, backend, _ = make_rollout(interval=2)
+    assert await run._checkpoint() is not None  # turn 2: the 2nd
     run.trace.nodes.append(MessageNode(parent=1, message=UserMessage(content="go")))
     run.trace.nodes.append(
         MessageNode(parent=2, message=AssistantMessage(content="ok"), sampled=True)
     )
-    assert await run._checkpoint(TURN) is None  # turn 3
+    assert await run._checkpoint() is None  # turn 3
     assert backend.taken == 1
 
 
 async def test_the_restored_turn_is_not_snapshotted_again():
-    run, backend = make_rollout(interval=2)
+    run, backend, _ = make_rollout(interval=2)
     run.restored_turns = run.trace.num_turns
-    assert await run._checkpoint(TURN) is None
+    assert await run._checkpoint() is None
     assert backend.taken == 0
 
 
 async def test_checkpoint_becomes_durable_in_the_background():
-    run, backend = make_rollout(interval=1)
-    checkpoint = await run._checkpoint(TURN)
+    run, backend, _ = make_rollout(interval=1)
+    checkpoint = await run._checkpoint()
     assert checkpoint is not None and checkpoint.captured
     assert checkpoint.time.end == 0 and checkpoint.bytes is None
     backend.durable.set()
@@ -233,8 +220,8 @@ async def test_checkpoint_becomes_durable_in_the_background():
 
 
 async def test_a_checkpoint_that_never_becomes_durable_is_dropped():
-    run, backend = make_rollout(interval=1)
-    await run._checkpoint(TURN)
+    run, backend, _ = make_rollout(interval=1)
+    await run._checkpoint()
     backend.fail = True
     backend.durable.set()
     await run._settle_checkpoints(wait=True)
@@ -242,16 +229,16 @@ async def test_a_checkpoint_that_never_becomes_durable_is_dropped():
 
 
 async def test_settling_without_a_retry_stops_waiting():
-    run, _ = make_rollout(interval=1)
-    checkpoint = await run._checkpoint(TURN)
+    run, _, _ = make_rollout(interval=1)
+    checkpoint = await run._checkpoint()
     await asyncio.wait_for(run._settle_checkpoints(wait=False), timeout=1)
     assert run._durable == {}
     assert run.trace.checkpoints == [checkpoint] and checkpoint.time.end == 0
 
 
 async def test_a_closing_run_takes_no_checkpoint():
-    run, backend = make_rollout(interval=1)
-    capture = asyncio.create_task(run._checkpoint(TURN))
+    run, backend, _ = make_rollout(interval=1)
+    capture = asyncio.create_task(run._checkpoint())
     run._closed = True
     await run._settle_checkpoints(wait=True)
     assert await capture is None
@@ -285,11 +272,11 @@ def test_keep_policies():
 
 
 async def test_a_durable_snapshot_prunes_the_older_ones():
-    run, backend = make_rollout(keep="last")
+    run, backend, _ = make_rollout(keep="last")
     run.trace.checkpoints = durable("old1", "old2")
     run.rewound_snapshots = [vf.Snapshot(id="rewound")]
     backend.durable.set()
-    newest = await run._checkpoint(TURN)
+    newest = await run._checkpoint()
     await run._settle_checkpoints(wait=True)
     assert sorted(backend.deleted) == ["old1", "old2", "rewound"]
     assert [c.id for c in run.trace.checkpoints if not c.deleted] == [newest.id]
@@ -320,50 +307,18 @@ def test_unsupported_checkpointing_warns_once(caplog, monkeypatch):
     warnings = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
     assert warnings == [
         (
-            "rollout checkpointing is off: the 'subprocess' runtime takes no "
+            "rollout checkpointing is off: the 'subprocess' runtime takes no memory "
             "snapshots; a failed rollout retries from the start"
         ),
         (
-            "rollout checkpointing is off: harness 'terminus-2' does not support it; "
-            "a failed rollout retries from the start"
+            "rollout checkpointing is off: harness 'terminus-2' cannot continue from "
+            "a memory snapshot; a failed rollout retries from the start"
         ),
     ]
 
 
-class FakeRelay:
-    upstream = "https://tunnel.example"
-
-    def __init__(self) -> None:
-        self.state = {"dir": "/tmp/vf-relay/t", "url": "http://127.0.0.1:4000"}
-        self.rerouted: list[str] = []
-
-    async def reroute(self, upstream: str) -> None:
-        self.rerouted.append(upstream)
-
-
-def make_memory_rollout(
-    running: bool = True,
-) -> tuple[Rollout, SlowBackend, RolloutSession]:
-    """A rollout that takes memory snapshots, with or without a harness segment that
-    runs."""
-    job = {"job_id": "j1"} if running else None
-    run, backend = make_rollout()
-    session = RolloutSession(
-        ctx=ModelContext(model="m", client=EvalClientConfig()), trace=run.trace
-    )
-    run._session = session
-    run._memory = True
-    run.unsaveable = None
-    run._relay = FakeRelay()  # type: ignore[assignment]
-    run._secret = "box-secret"
-    run._harness_session = SimpleNamespace(  # type: ignore[assignment]
-        memory_state=lambda: None if job is None else {"job": job}
-    )
-    return run, backend, session
-
-
-async def test_a_memory_snapshot_holds_every_reply_until_the_box_runs_again():
-    run, backend, session = make_memory_rollout()
+async def test_a_snapshot_holds_every_reply_until_the_box_runs_again():
+    run, backend, session = make_rollout(stops=True)
     session.idempotent_requests = {
         "retry:/v1/chat/completions:aa": IdempotentRequest(
             binding=("/v1/chat/completions", b"aa"),
@@ -377,7 +332,7 @@ async def test_a_memory_snapshot_holds_every_reply_until_the_box_runs_again():
         ),
         "open": IdempotentRequest(binding=("/v1/chat/completions", b"cc")),
     }
-    capture = asyncio.create_task(run._checkpoint(TURN))
+    capture = asyncio.create_task(run._checkpoint())
     await backend.stopped.wait()
     # The box is stopped: nothing it asked for may be answered.
     assert not session.flowing.is_set()
@@ -387,7 +342,7 @@ async def test_a_memory_snapshot_holds_every_reply_until_the_box_runs_again():
     assert session.flowing.is_set()
     # The stop killed the box's connections: its relay opens new ones.
     assert run._relay.rerouted == ["https://tunnel.example"]
-    assert checkpoint.snapshot == vf.Snapshot(id="ck1", type="memory")
+    assert checkpoint.snapshot == vf.Snapshot(id="ck1")
     assert checkpoint.node == len(run.trace.nodes) - 1
     assert checkpoint.live == {
         "program": {"job": {"job_id": "j1"}},
@@ -400,24 +355,24 @@ async def test_a_memory_snapshot_holds_every_reply_until_the_box_runs_again():
 
 
 async def test_no_memory_snapshot_without_a_running_segment():
-    run, backend, session = make_memory_rollout(running=False)
-    assert await run._checkpoint(TURN) is None
+    run, backend, session = make_rollout(running=False)
+    assert await run._checkpoint() is None
     assert backend.taken == 0 and session.flowing.is_set()
 
 
 async def test_a_failed_memory_snapshot_lets_replies_flow_again():
-    run, backend, session = make_memory_rollout()
+    run, backend, session = make_rollout()
 
-    async def failing(*, memory: bool = False):
+    async def failing():
         raise vf.SandboxError("pause refused")
 
     backend.snapshot = failing  # type: ignore[method-assign]
-    assert await run._checkpoint(TURN) is None
+    assert await run._checkpoint() is None
     assert session.flowing.is_set() and run.trace.checkpoints == []
 
 
 async def test_save_returns_a_restore_point_another_process_can_open():
-    run, backend, session = make_memory_rollout()
+    run, backend, session = make_rollout()
     session.pinned_tool_results = {
         ("prefix", "c1"): ToolMessage(tool_call_id="c1", content="pinned")
     }
@@ -431,7 +386,7 @@ async def test_save_returns_a_restore_point_another_process_can_open():
 
     point = pickle.loads(pickle.dumps(point))
     assert point.id == run.trace.id
-    assert point.snapshot == {"id": "ck1", "type": "memory"}
+    assert point.snapshot == {"id": "ck1"}
     task = vf.Task(vf.TaskData(idx=0, prompt="q"))
     trace, restored = point.open(task)
     assert trace.id == run.trace.id and trace.num_turns == run.trace.num_turns
@@ -446,7 +401,7 @@ async def test_save_returns_a_restore_point_another_process_can_open():
 async def test_save_returns_before_the_snapshot_is_durable():
     """The owner gets the restore point once the box runs again; the snapshot becomes
     durable in the background, and the rollout's teardown waits for it."""
-    run, backend, _ = make_memory_rollout()
+    run, backend, _ = make_rollout()
     backend.running.set()
     point = await run.save()
     (checkpoint,) = run.trace.checkpoints
@@ -457,21 +412,21 @@ async def test_save_returns_before_the_snapshot_is_durable():
 
 
 async def test_a_held_save_answers_the_box_only_after_release():
-    run, backend, session = make_memory_rollout()
+    run, backend, session = make_rollout()
     backend.running.set()
     assert await run.save(hold=True) is not None
     assert not session.flowing.is_set()
     # A checkpoint of the run's own under the hold does not end it.
-    await run._checkpoint(TURN)
+    await run._checkpoint()
     assert not session.flowing.is_set()
     run.release()
     assert session.flowing.is_set() and run._release_timer is None
 
 
 async def test_a_failed_held_save_does_not_hold_the_box():
-    run, backend, session = make_memory_rollout()
+    run, backend, session = make_rollout()
 
-    async def failing(*, memory: bool = False):
+    async def failing():
         raise vf.SandboxError("pause refused")
 
     backend.snapshot = failing  # type: ignore[method-assign]
@@ -481,14 +436,15 @@ async def test_a_failed_held_save_does_not_hold_the_box():
 
 
 async def test_a_rollout_without_memory_snapshots_saves_nothing():
-    run, backend = make_rollout()
+    run, backend, _ = make_rollout()
+    run._memory, run.unsaveable = False, "the 'fake' runtime takes no memory snapshots"
     assert await run.save() is None
     assert backend.taken == 0
     assert run.save_skipped == "the 'fake' runtime takes no memory snapshots"
 
 
 async def test_a_save_between_segments_names_its_reason():
-    run, _, _ = make_memory_rollout(running=False)
+    run, _, _ = make_rollout(running=False)
     assert await run.save() is None
     assert run.save_skipped == "its harness program is not running (setup or scoring)"
 
@@ -515,7 +471,7 @@ def test_unsaveable_names_what_rules_memory_snapshots_out():
 async def test_an_owners_snapshot_outlives_the_rollout():
     """A pinned snapshot is not under the keep policy, is not deleted with the run's
     own, and becomes durable even when the run settles without a retry to wait for."""
-    run, backend, _ = make_memory_rollout()
+    run, backend, _ = make_rollout()
     backend.running.set()
     saving = asyncio.create_task(run.save())
     await asyncio.sleep(0)
@@ -529,26 +485,8 @@ async def test_an_owners_snapshot_outlives_the_rollout():
     assert await saving is not None
     (pinned,) = run.trace.checkpoints
     # A newer snapshot of the run's own does not prune the owner's.
-    newest = await run._checkpoint(TURN)
+    newest = await run._checkpoint()
     await run._settle_checkpoints(wait=True)
     assert backend.deleted == []
     assert kept(run.trace.checkpoints, "last") == {newest.id}
     assert not pinned.deleted
-
-
-async def test_filesystem_snapshots_at_turns_leave_saves_to_the_owner():
-    """`snapshot = "filesystem"` picks the snapshot of the checkpoints at model turns;
-    an owner's save still takes a memory snapshot."""
-    run, backend, _ = make_memory_rollout()
-    run._checkpointing = RolloutCheckpointConfig(interval=1, snapshot="filesystem")
-
-    async def checkpoint_state() -> dict:
-        return {}
-
-    run._harness_session.checkpoint_state = checkpoint_state
-    backend.running.set()
-    backend.durable.set()
-    at_turn = await run._checkpoint(TURN)
-    assert at_turn.snapshot.type == "filesystem"
-    point = await run.save()
-    assert point.snapshot["type"] == "memory"

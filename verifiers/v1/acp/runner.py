@@ -87,8 +87,6 @@ class VerifiersACPClient(Client):
         self.stop_reason: str | None = None
         self.response_metadata: dict[str, Any] = {}
         self.update_metadata: list[dict[str, Any]] = []
-        self.loading = False
-        """Set while `session/load` replays the history, which no turn reports."""
 
     def reset(self) -> None:
         self.visible_reply = ""
@@ -106,8 +104,6 @@ class VerifiersACPClient(Client):
         )
 
     async def session_update(self, session_id: str, update: Any, **kwargs: Any) -> None:
-        if self.loading:
-            return
         metadata = dict(kwargs)
         if isinstance(field_meta := getattr(update, "field_meta", None), dict):
             metadata.update(field_meta)
@@ -271,37 +267,18 @@ class ACPSession:
             self.supports_steering = (initialized.field_meta or {}).get(
                 "steering", {}
             ).get("supported") is True
-            load_id = config.get("load_session_id")
-            if load_id is None:
-                session = await self.connection.new_session(
-                    cwd=os.getcwd(),
-                    mcp_servers=mcp_servers(config),
-                    **config["session_meta"],
-                )
-                session_id = session.session_id
-            else:
-                # A box restored from a checkpoint: the agent's session files are
-                # here, its process is not. Load the session in this new process.
-                if not (self.capabilities and self.capabilities.load_session):
-                    raise RuntimeError("ACP agent does not support session/load")
-                self.client.loading = True
-                try:
-                    await self.connection.load_session(
-                        cwd=os.getcwd(),
-                        session_id=load_id,
-                        mcp_servers=mcp_servers(config),
-                        **config["session_meta"],
-                    )
-                finally:
-                    self.client.loading = False
-                session_id = load_id
+            session = await self.connection.new_session(
+                cwd=os.getcwd(),
+                mcp_servers=mcp_servers(config),
+                **config["session_meta"],
+            )
         except BaseException:
             with suppress(BaseException):
                 await self.stack.aclose()
             self._reset()
             raise
-        self.session_id = session_id
-        self.is_new = load_id is None
+        self.session_id = session.session_id
+        self.is_new = True
 
     async def run(self, config: dict) -> ACPTurn:
         gate = config.get("tool_interception")
@@ -403,13 +380,6 @@ class Server:
                 result = await session.steer(
                     request["message"], request.get("message_id")
                 )
-            elif operation == "session":
-                result = {
-                    "session_id": session.session_id,
-                    "load_session": bool(
-                        session.capabilities and session.capabilities.load_session
-                    ),
-                }
             elif operation == "shutdown":
                 if self.tasks:
                     await asyncio.gather(*self.tasks, return_exceptions=True)

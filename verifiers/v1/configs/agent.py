@@ -40,22 +40,14 @@ class TimeoutConfig(BaseConfig):
 
 
 class RolloutCheckpointConfig(BaseConfig):
-    """Rollout checkpointing: snapshot the box every n-th model turn, so a retry
-    continues from the newest snapshot instead of starting over. Each checkpoint
-    records the type of its snapshot. A memory snapshot holds the box's processes, so
-    the restored box continues the harness program itself; it needs a runtime that
-    takes them (`SUPPORTS_MEMORY_SNAPSHOTS`), a harness that runs detached from the host
+    """Rollout checkpointing: snapshot the box's files and memory every n-th model
+    turn, so a retry continues from the newest snapshot instead of starting over. The
+    restored box continues the harness program itself. A snapshot stops the box for a
+    few seconds. It needs a runtime that takes memory snapshots
+    (`SUPPORTS_MEMORY_SNAPSHOTS`), a harness that runs detached from the host
     (`Harness.SUPPORTS_MEMORY_RESTORE`) and a rollout without tool servers or services
-    of its own. A filesystem snapshot holds the box's files; it needs a runtime that
-    takes them (`SUPPORTS_FILESYSTEM_SNAPSHOTS`) and a harness whose new process can
-    continue the rollout (`Harness.can_restore`). Elsewhere a retry starts over. Every
-    snapshot is deleted once the run is final."""
-
-    snapshot: Literal["memory", "filesystem"] = "memory"
-    """The snapshot to take at model turns: `memory` where the rollout supports it and
-    a filesystem snapshot elsewhere, or always `filesystem`. A memory snapshot stops
-    the box for a few seconds; a filesystem snapshot does not. An owner's save
-    (`save_all`) takes a memory snapshot either way."""
+    of its own. Elsewhere a retry starts over. Every snapshot is deleted once the run
+    is final."""
 
     interval: PositiveInt = 10
     """Snapshot at every n-th model turn (the n-th, the 2n-th, ...): a rollout shorter

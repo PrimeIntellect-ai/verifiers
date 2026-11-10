@@ -376,21 +376,17 @@ def min_new_input_tokens(calls: Iterable[ModelCall]) -> Iterator[tuple[ModelCall
 
 
 class Checkpoint(BaseModel):
-    """A snapshot of the rollout's box taken as a model turn went upstream: the box holds
-    the effects of every message in `node`'s conversation plus `tail`, and nothing of the
-    turn that followed. A retry restores it (`Trace.rewind`)."""
+    """A snapshot of the rollout's running box, memory included: the box holds the
+    effects of `node`'s conversation and still runs the harness program. A retry
+    restores it (`Trace.rewind`) into a new box that continues every process."""
 
     id: str
     """The snapshot's id."""
     snapshot: Snapshot
-    """The box's snapshot (`RuntimeBackend.snapshot`) a retry boots a new box from."""
+    """The box's snapshot (`RuntimeBackend.snapshot`) a retry continues a new box from."""
     node: int | None = None
-    """The last committed node whose conversation the box's state follows; None when
-    the snapshot preceded the first turn."""
-    tail: Messages = Field(default_factory=list, exclude=True)
-    """The turn's prompt messages after `node` that had no node yet (tool results, user
-    turns): with `node`'s conversation, the prompt a restored harness continues from.
-    Live-only — a retry restores it in the process that took the snapshot."""
+    """The last committed node when the snapshot was taken; None before the first
+    turn. The restored box asks again for whatever was open after it."""
     state: Any = Field(None, exclude=True)
     """The trace's typed state as the snapshot was taken (tool servers write it over
     `/state`), restored with the box so a retry sees one consistent world. Live-only."""
@@ -398,14 +394,14 @@ class Checkpoint(BaseModel):
     """`Trace.info` as the snapshot was taken, restored with `state`. Live-only."""
     pins: dict[tuple[str, str], ToolMessage] = Field(default_factory=dict, exclude=True)
     """The rollout's pinned tool results as the snapshot was taken
-    (`RolloutSession.pinned_tool_results`): a restored harness re-sends its own
-    copies, which must be pinned again to match the trace. Live-only."""
+    (`RolloutSession.pinned_tool_results`): the restored box re-sends its own copies,
+    which must be pinned again to match the trace. Live-only."""
     live: dict[str, Any] = Field(default_factory=dict, exclude=True)
-    """What continues the box of a memory snapshot: the harness program's job
+    """What continues the restored box: the harness program's job
     (`HarnessSession.memory_state`), the box's relay and the secret the harness holds.
     Live-only."""
     replays: dict[str, Any] = Field(default_factory=dict, exclude=True)
-    """The replies the server had just sent when a memory snapshot stopped the box
+    """The replies the server had just sent when the snapshot stopped the box
     (`RolloutSession.idempotent_requests`): the restored box asks again for one that had
     not arrived, and gets the reply the trace already holds. Live-only."""
     time: TimeSpan = Field(default_factory=TimeSpan)
@@ -418,9 +414,6 @@ class Checkpoint(BaseModel):
     longer, since the snapshot runs alongside it."""
     bytes: int | None = None
     """The snapshot's stored size, which the provider bills, once it is durable."""
-    harness: dict[str, Any] = Field(default_factory=dict)
-    """What the harness session needs to continue in a box restored from the snapshot
-    (`HarnessSession.checkpoint_state`), e.g. an ACP agent's session id."""
     restored: bool = False
     """Whether a retry restored the run from this snapshot."""
     pinned: bool = False

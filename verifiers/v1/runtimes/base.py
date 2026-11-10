@@ -14,7 +14,7 @@ from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Mapping
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, ClassVar, Literal
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from pydantic import BaseModel
 from pydantic_config import BaseConfig
@@ -145,15 +145,12 @@ class BaseRuntimeInfo(BaseConfig):
 
 
 class Snapshot(BaseModel):
-    """A snapshot of a box that new boxes can boot from (`RuntimeBackend.snapshot`,
-    `restore_config`), as many times as needed."""
+    """A snapshot of a box's files and memory (`RuntimeBackend.snapshot`). A new box
+    made from it (`restore_config`) continues every process where the snapshot stopped
+    it; any number of boxes can."""
 
     id: str
     """The provider's id for the snapshot."""
-    type: Literal["filesystem", "memory"] = "filesystem"
-    """What the snapshot captures, as the runtime took it: `filesystem` holds the box's
-    files, not its processes; `memory` holds its files and its memory, so a box that
-    boots from it continues every process where the snapshot stopped it."""
 
 
 @dataclass
@@ -222,14 +219,11 @@ class RuntimeBackend(ABC):
     """Digest-keyed PEP 723 scripts inside the runtime. Sandboxes own their `/tmp`;
     the host subprocess runtime overrides this with its per-user cache."""
 
-    SUPPORTS_FILESYSTEM_SNAPSHOTS: ClassVar[bool] = False
-    """Whether `snapshot` captures the box's filesystem for new boxes to boot from
-    (`restore_config`). Rollout checkpointing (`AgentConfig.checkpoint`) takes one at
-    model turns, so a retry continues from there instead of starting over."""
-
     SUPPORTS_MEMORY_SNAPSHOTS: ClassVar[bool] = False
-    """Whether `snapshot(memory=True)` captures the box's memory with its filesystem, so
-    a new box continues the processes of the old one (`attach`)."""
+    """Whether `snapshot` captures the box's memory with its files, so a new box
+    continues the processes of the old one (`restore_config`, `attach`). Rollout
+    checkpointing (`AgentConfig.checkpoint`) takes one at model turns, so a retry
+    continues from there instead of starting over."""
 
     info: BaseRuntimeInfo
 
@@ -268,12 +262,10 @@ class RuntimeBackend(ABC):
     async def start(self) -> None:
         pass
 
-    async def snapshot(self, *, memory: bool = False) -> Snapshot:
-        """Snapshot the box and return it once its content is fixed: writes after this
-        returns are not in it. It becomes restorable only later (`wait_snapshot`); the
-        box keeps running. With `memory` the snapshot holds the box's memory too: the
-        box stops while it is taken and runs again when this returns, and its
-        connections to the outside may be dead."""
+    async def snapshot(self) -> Snapshot:
+        """Snapshot the box's files and memory. The box stops while the snapshot is
+        taken and runs again when this returns; its connections to the outside may be
+        dead by then. The snapshot becomes restorable only later (`wait_snapshot`)."""
         raise NotImplementedError(f"{type(self).__name__} does not support snapshots")
 
     async def attach(self, runtime: Runtime, job: dict[str, Any]) -> ProgramResult:
@@ -303,8 +295,8 @@ class RuntimeBackend(ABC):
 
     @classmethod
     def restore_config(cls, config: Any, snapshot: Snapshot) -> Any:
-        """The runtime config for a new box that boots from `snapshot` instead of the
-        task's image."""
+        """The runtime config for a new box that continues `snapshot` instead of
+        booting the task's image."""
         raise NotImplementedError(f"{cls.__name__} does not support snapshots")
 
     async def stop(self) -> None:

@@ -1040,7 +1040,7 @@ class InterceptionServer(Interception):
             # before the reply returns matches the prompt exactly (tool results in, this
             # reply not yet). It runs alongside the model call; the reply waits for it.
             capture = (
-                asyncio.create_task(session.checkpointer(turn))
+                asyncio.create_task(session.checkpointer())
                 if session.checkpointer is not None
                 else None
             )
