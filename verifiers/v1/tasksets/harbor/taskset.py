@@ -44,6 +44,7 @@ from verifiers.v1.configs.scoring import ScoringConfig
 from verifiers.v1.configs.task import TaskConfig
 from verifiers.v1.configs.taskset import TasksetConfig
 from verifiers.v1.errors import SandboxError, TaskError
+from verifiers.v1.mcp import ToolsetConfig
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.runtimes.deployment import Deployment
 from verifiers.v1.state import State
@@ -85,6 +86,12 @@ class HarborTaskConfig(TaskConfig):
     """Native model, endpoint and sampling overrides for authored judges."""
     mcp_servers: list[dict] = Field(default_factory=list)
     """Task-declared connections, bound from HarborData during construction."""
+    mcp: ToolsetConfig = ToolsetConfig()
+    """Execution settings for task-authored MCP tools, placed in the task runtime by default."""
+
+    @field_serializer("mcp")
+    def _mcp_settings(self, mcp: ToolsetConfig, info: SerializationInfo) -> dict:
+        return mcp.model_dump(mode=info.mode, exclude_unset=True)
 
     @field_serializer("judge")
     def _judge_overrides(
@@ -235,7 +242,11 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
         from .toolset import HarborMCPAdapter, HarborMCPConfig
 
         return super().toolsets(config) + [
-            HarborMCPAdapter(HarborMCPConfig(server=server))
+            HarborMCPAdapter(
+                HarborMCPConfig(
+                    **config.mcp.model_dump(exclude_unset=True), server=server
+                )
+            )
             for server in config.mcp_servers
         ]
 
