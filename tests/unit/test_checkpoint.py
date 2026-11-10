@@ -137,6 +137,7 @@ class SlowBackend:
     """Captures at once; becomes durable when the test says so."""
 
     def __init__(self) -> None:
+        self.SUPPORTS_FILESYSTEM_SNAPSHOTS = True
         self.durable = asyncio.Event()
         self.stopped = asyncio.Event()
         """Set once a memory snapshot has stopped the box."""
@@ -174,6 +175,7 @@ def make_rollout(
     run = Rollout.__new__(Rollout)
     run.trace = make_trace()  # one turn so far
     run.runtime = SimpleNamespace(backend=backend)  # type: ignore[assignment]
+    run.harness = SimpleNamespace(can_restore=lambda: True)  # type: ignore[assignment]
 
     async def checkpoint_state() -> dict:
         return {}
@@ -473,3 +475,21 @@ async def test_an_owners_snapshot_outlives_the_rollout():
     assert backend.deleted == []
     assert kept(run.trace.checkpoints, "last") == {newest.id}
     assert not pinned.deleted
+
+
+async def test_filesystem_snapshots_at_turns_leave_saves_to_the_owner():
+    """`snapshot = "filesystem"` picks the snapshot of the checkpoints at model turns;
+    an owner's save still takes a memory snapshot."""
+    run, backend, _ = make_memory_rollout()
+    run._checkpointing = RolloutCheckpointConfig(interval=1, snapshot="filesystem")
+
+    async def checkpoint_state() -> dict:
+        return {}
+
+    run._harness_session.checkpoint_state = checkpoint_state
+    backend.running.set()
+    backend.durable.set()
+    at_turn = await run._checkpoint(TURN)
+    assert at_turn.snapshot.type == "filesystem"
+    point = await run.save()
+    assert point.snapshot["type"] == "memory"

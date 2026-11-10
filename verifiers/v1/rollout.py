@@ -266,8 +266,9 @@ class Rollout:
             gates_tools=harness.SUPPORTS_TOOL_INTERCEPTION,
         )
         self._memory = False
-        """Whether this run takes memory snapshots: decided at `open`, once the box,
-        its relay and the task's tool servers are known."""
+        """Whether this run can take memory snapshots: decided at `open`, once the box,
+        its relay and the task's tool servers are known. Its checkpoints at model turns
+        take them when the config asks for them, and its owner's saves always do."""
         self._capturing = asyncio.Lock()
         if self._restore is not None and self._restore.snapshot.type == "memory":
             # Set before the box boots: its relay repeats the requests that waited as
@@ -498,7 +499,6 @@ class Rollout:
                         await self.harness.setup(self._agent_runtime)
                 self._memory = (
                     self._checkpointing is not None
-                    and self._checkpointing.snapshot == "memory"
                     and self._borrowed_runtime is None
                     and runtime.backend.SUPPORTS_MEMORY_SNAPSHOTS
                     and self.harness.SUPPORTS_MEMORY_RESTORE
@@ -946,8 +946,13 @@ class Rollout:
             self.restored_turns is not None and turn_number == self.restored_turns + 1
         ):
             return None
-        if self._memory:
+        if self._memory and self._checkpointing.snapshot == "memory":
             return await self._capture_memory()
+        if not (
+            self.runtime.backend.SUPPORTS_FILESYSTEM_SNAPSHOTS
+            and self.harness.can_restore()
+        ):
+            return None
         if len(self.trace._pending) > 1:
             # Another request is in flight (parallel sub-agents share the trace): the
             # box is not idle, so no snapshot would match this turn's prefix.

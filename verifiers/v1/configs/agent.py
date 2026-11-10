@@ -52,9 +52,10 @@ class RolloutCheckpointConfig(BaseConfig):
     snapshot is deleted once the run is final."""
 
     snapshot: Literal["memory", "filesystem"] = "memory"
-    """The snapshot to take: `memory` where the rollout supports it and a filesystem
-    snapshot elsewhere, or always `filesystem`. A memory snapshot stops the box for a
-    few seconds; a filesystem snapshot does not."""
+    """The snapshot to take at model turns: `memory` where the rollout supports it and
+    a filesystem snapshot elsewhere, or always `filesystem`. A memory snapshot stops
+    the box for a few seconds; a filesystem snapshot does not. An owner's save
+    (`save_all`) takes a memory snapshot either way."""
 
     interval: PositiveInt = 10
     """Snapshot at every n-th model turn (the n-th, the 2n-th, ...): a rollout shorter
