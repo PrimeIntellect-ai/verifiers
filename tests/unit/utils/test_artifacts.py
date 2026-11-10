@@ -94,3 +94,21 @@ def test_system_tar_lists_exactly_what_python_read() -> None:
     ).stdout.decode()
 
     assert listing.splitlines() == python_names
+
+
+def test_restore_refuses_sparse_members() -> None:
+    # A few header bytes declare a terabyte: rebuilding it would fill host memory.
+    header = tarfile.TarInfo("app/results/hole")
+    header.type = tarfile.GNUTYPE_SPARSE
+    block = bytearray(header.tobuf(format=tarfile.GNU_FORMAT))
+    block[386:398] = b"00000000000\0"  # first sparse entry: offset 0
+    block[398:410] = b"00000000000\0"  # ... holding 0 bytes of data
+    block[483:495] = b"%011o\0" % (1 << 40)  # real size
+    block[148:156] = b" " * 8
+    block[148:156] = b"%06o\0 " % sum(block)
+    archive = bytes(block) + bytes(2 * tarfile.BLOCKSIZE)
+
+    runtime = RecordingRuntime()
+    with pytest.raises(RuntimeError, match="sparse"):
+        asyncio.run(restore(runtime, {"/app/results": archive}))
+    assert runtime.written == []

@@ -525,6 +525,15 @@ def _validate_restore(root: str, archive: bytes | None) -> None:
                     raise RuntimeError(
                         f"artifact member {member.name!r} is a link or special file"
                     )
+                if member.issparse():
+                    # A sparse member declares its full size in a few header bytes,
+                    # and rebuilding the archive on the host would write every hole
+                    # out as zeros. GNU tar only writes these with --sparse; bsdtar
+                    # writes them for any file with holes.
+                    raise RuntimeError(
+                        f"artifact member {member.name!r} is a sparse file, which "
+                        "cannot be restored"
+                    )
                 if member.isfile():
                     regular_files.add(member_path)
             # Check after reading the whole archive, so a later symlink cannot
