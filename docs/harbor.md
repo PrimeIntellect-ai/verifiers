@@ -139,7 +139,7 @@ One behavioral difference from `harbor run` is worth noting: **A failing collect
 
 Setting `[verifier].environment_mode = "separate"` grades the task in a fresh container that the agent never touched ([Harbor verifier docs](https://www.harborframework.com/docs/tasks/verifier)). The rollout lifecycle collects the solver's declared artifacts and `/logs/artifacts/` while its deployment is alive, stops the workspace before collecting sidecar evidence, tears down the solver deployment, and provisions a fresh grading target. It then restores the artifacts, stages the verifier tests, and records the resulting rewards and metrics onto the solver's trace. Setup, artifact restoration, and scoring retry in fresh targets according to `agent.scoring.retries` (defaulting to two retries) before failing the attempt.
 
-A `[verifier.environment]` that relies on `tests/Dockerfile` without a pre-built `docker_image` must be built, pushed to a registry, and referenced via `docker_image` (or `verifier_image`). Setting `ignore_dockerfile = true` falls back to running the verifier inside the solver's image and logs a warning since that diverges from the task's declared verifier environment. Setting `ignore_separate_verifier = true` forces every task back into shared grading inside the solver's container, trading grading isolation for a single sandbox per task.
+A separate verifier with `tests/Dockerfile` builds its image from `tests/` on the evaluator's Docker host. Docker runs that image in an ordinary isolated container; Prime imports its filesystem and provisions a fresh VM. The image supplies the complete `/tests` suite, workdir, environment, and execution user. An explicit verifier `docker_image` or `verifier_image` takes precedence over the build. Grader builds do not require Compose trust and honor the scoring network policy. Relative artifact paths require matching solver and grader workdirs; use absolute paths when they differ. Setting `ignore_separate_verifier = true` grades inside the solver's container.
 
 ## Limitations
 
@@ -147,5 +147,5 @@ verifiers does not yet support every Harbor feature. The main current limitation
 
 - Outside Compose, container `ENTRYPOINT`s are replaced with a keepalive process, so services required by the task or by `[environment.healthcheck]` must be started during setup rather than relying on the image entrypoint.
 - A restricted shared-box verifier beside a public agent phase grades with open network: the box started without a policy. Use separate verification (`environment_mode = "separate"`) when such a grader needs its own policy or runtime.
-- Verifier images defined via `tests/Dockerfile` must be built and published in advance.
+- Separate verifier Compose services are unsupported; use a bundled verifier image or `tests/Dockerfile`.
 - [Multi-step tasks](https://www.harborframework.com/docs/tasks/multi-step) are not supported.
