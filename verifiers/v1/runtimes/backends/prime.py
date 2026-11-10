@@ -24,6 +24,7 @@ from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes.base import (
     SERVICE_PORT,
     BaseRuntimeInfo,
+    Program,
     ProgramResult,
     RuntimeBackend,
     RuntimeProcess,
@@ -55,6 +56,9 @@ _OUTPUT_RETRIES = 10
 """Re-reads of a finished job's output that the SDK still failed to fetch, before the
 exec is reported as failed."""
 _CHECKPOINT_DURABLE_SECONDS = 300
+_PAUSE_SETTLE_SECONDS = 120
+"""How long a pause or a resume gets to take effect; they take seconds."""
+_DEAD_STATUSES = frozenset({"ERROR", "TERMINATED", "TIMEOUT"})
 """How long a checkpoint gets to become restorable (`DURABLE`): the platform uploads it
 after the request returns, and only a durable one restores."""
 _PUBLIC_DOMAIN = "sandbox-v2-prod.pinfra.io"
@@ -157,6 +161,7 @@ class PrimeBackend(RuntimeBackend):
     SUPPORTS_COMPOSE: ClassVar[bool] = True
     SUPPORTS_PORT_EXPOSURE: ClassVar[bool] = True
     SUPPORTS_FILESYSTEM_SNAPSHOTS: ClassVar[bool] = True
+    SUPPORTS_MEMORY_SNAPSHOTS: ClassVar[bool] = True
 
     def __init__(self, config: PrimeConfig, name: str | None = None) -> None:
         ensure_prime_auth()
@@ -174,6 +179,10 @@ class PrimeBackend(RuntimeBackend):
         self._expose_network_id: str | None = None
         self._exposed_ports: list[int] = []
         self._expose_lock = asyncio.Lock()
+        self._awake = asyncio.Event()
+        """Cleared while a memory snapshot stops the box: the platform refuses every
+        call into a stopped box, so calls wait for it."""
+        self._awake.set()
 
     @property
     def published_port(self) -> int:
@@ -213,7 +222,13 @@ class PrimeBackend(RuntimeBackend):
                 {"mount_path": target, **mount.model_dump()}
                 for target, mount in self.config.mounts.items()
             ]
-        if self.config.checkpoint:
+        memory = bool(self.config.checkpoint and self.config.restore_memory)
+        if memory:
+            # The box continues the snapshot's own processes: the platform fixes its
+            # shape, environment and volumes to the paused box's and refuses others.
+            source = {"checkpoint_id": self.config.checkpoint, "restore_memory": True}
+            options = {"timeout_minutes": -1, "idle_timeout_minutes": idle_minutes}
+        elif self.config.checkpoint:
             source = {"checkpoint_id": self.config.checkpoint}
         else:
             source = {
@@ -250,7 +265,7 @@ class PrimeBackend(RuntimeBackend):
                         CreateSandboxRequest(
                             name=self.name,
                             labels=list(dict.fromkeys(labels)),
-                            environment_vars=self.env,
+                            **({} if memory else {"environment_vars": self.env}),
                             **source,
                             **{k: v for k, v in options.items() if v is not None},
                         )
@@ -282,6 +297,9 @@ class PrimeBackend(RuntimeBackend):
                 if self.config.checkpoint
                 else "",
             )
+            if memory:
+                # The paused box was already prepared; its processes run again.
+                return
             await self._client.execute_command(
                 self.info.id, f"mkdir -p {shlex.quote(self.config.workdir)}"
             )
@@ -297,11 +315,30 @@ class PrimeBackend(RuntimeBackend):
         ) as e:  # provisioning failure is one rollout's problem, not the eval's
             raise SandboxError(f"prime sandbox provisioning failed: {e}") from e
 
-    async def snapshot(self) -> Snapshot:
+    async def snapshot(self, *, memory: bool = False) -> Snapshot:
         # The platform fixes the snapshot's content before the request returns, then
         # uploads it. Until it is durable the snapshot is stray: the platform refuses
         # to delete it while this box lives, so teardown frees it after.
         async def create() -> Snapshot:
+            if memory:
+                # A pause is the platform's memory snapshot: it stops the box, and the
+                # resume continues it. Shielded as one: a box left paused never runs
+                # its rollout again.
+                self._awake.clear()
+                try:
+                    paused = await self._client.pause(self.info.id)
+                    snapshot = Snapshot(id=paused.checkpoint_id, type="memory")
+                    self.stray_snapshots.append(snapshot)
+                    try:
+                        await self._settle("PAUSED", "PAUSE_FAILED")
+                    except BaseException:
+                        self.stray_snapshots.remove(snapshot)
+                        raise
+                    await self._client.resume(self.info.id)
+                    await self._settle("RUNNING", "RESUME_FAILED")
+                finally:
+                    self._awake.set()
+                return snapshot
             checkpoint = await self._client.checkpoint(self.info.id)
             snapshot = Snapshot(id=checkpoint.id)
             self.stray_snapshots.append(snapshot)
@@ -311,6 +348,33 @@ class PrimeBackend(RuntimeBackend):
             return await run_shielded(create())
         except Exception as e:
             raise SandboxError(f"prime checkpoint failed: {e}") from e
+
+    def _stopped_by_snapshot(self, error: Exception) -> bool:
+        """Whether a call failed because a memory snapshot had stopped the box: the
+        call is safe to repeat once the box runs again."""
+        return not self._awake.is_set() or "sandbox is paused" in str(error).lower()
+
+    async def _settle(self, status: str, failure: str) -> None:
+        """Wait until the platform reports `status` for this box after a pause or a
+        resume (both return once accepted)."""
+        deadline = time.monotonic() + _PAUSE_SETTLE_SECONDS
+        delay = 0.2
+        while True:
+            box = await self._client.get(self.info.id)
+            if box.status == status:
+                return
+            if box.error_type == failure or box.status in _DEAD_STATUSES:
+                raise SandboxError(
+                    f"prime sandbox {self.info.id} did not reach {status}: "
+                    f"{box.status} {box.error_type or ''} {box.error_message or ''}"
+                )
+            if time.monotonic() > deadline:
+                raise SandboxError(
+                    f"prime sandbox {self.info.id} did not reach {status} within "
+                    f"{_PAUSE_SETTLE_SECONDS}s"
+                )
+            await asyncio.sleep(delay)
+            delay = min(delay * 1.5, 2)
 
     async def wait_snapshot(self, snapshot: Snapshot) -> int | None:
         started = time.monotonic()
@@ -348,7 +412,12 @@ class PrimeBackend(RuntimeBackend):
 
     @classmethod
     def restore_config(cls, config: PrimeConfig, snapshot: Snapshot) -> PrimeConfig:
-        return config.model_copy(update={"checkpoint": snapshot.id})
+        return config.model_copy(
+            update={
+                "checkpoint": snapshot.id,
+                "restore_memory": snapshot.type == "memory",
+            }
+        )
 
     async def prepare_execution(
         self, routes: list[str] | None, network: NetworkPolicyConfig | None = None
@@ -398,8 +467,14 @@ class PrimeBackend(RuntimeBackend):
         )
 
     async def run(
-        self, runtime: Runtime, argv: list[str], env: dict[str, str]
+        self,
+        runtime: Runtime,
+        argv: list[str],
+        env: dict[str, str],
+        *,
+        program: Program | None = None,
     ) -> ProgramResult:
+        await self._awake.wait()
         try:
             # Poll directly so rollout cancellation owns the execution timeout.
             job = await self._client.start_background_job(
@@ -409,13 +484,41 @@ class PrimeBackend(RuntimeBackend):
                 env=runtime.process_env(env),
                 user=runtime.user,
             )
+        except (
+            Exception
+        ) as e:  # a sandbox/API failure is one rollout's problem, not the eval's
+            raise SandboxError(f"prime exec failed: {e}") from e
+        if program is not None:
+            program.job = job.model_dump()
+        try:
+            return await self._wait_job(job)
+        finally:
+            if program is not None:
+                program.job = None
+
+    async def attach(self, runtime: Runtime, job: dict[str, Any]) -> ProgramResult:
+        from prime_sandboxes import BackgroundJob
+
+        # The job's files and process came with the snapshot; only the box is new.
+        return await self._wait_job(
+            BackgroundJob(**{**job, "sandbox_id": self.info.id})
+        )
+
+    async def _wait_job(self, job: Any) -> ProgramResult:
+        try:
             delay = 0.1
             output_retries = 0
             missing = None
             while True:
-                result = await self._client.get_background_job(
-                    self.info.id, job, timeout=_OUTPUT_DEADLINE_SECONDS
-                )
+                await self._awake.wait()
+                try:
+                    result = await self._client.get_background_job(
+                        self.info.id, job, timeout=_OUTPUT_DEADLINE_SECONDS
+                    )
+                except Exception as e:
+                    if not self._stopped_by_snapshot(e):
+                        raise
+                    continue
                 # Under load the SDK can see a job finish yet miss its output (its bounded
                 # output reads expire while queued) and reports that as `*_error`. The job
                 # is done, so asking again re-reads the output.
@@ -494,6 +597,7 @@ class PrimeBackend(RuntimeBackend):
     async def run_background(
         self, runtime: Runtime, argv: list[str], env: dict[str, str], log: str
     ) -> None:
+        await self._awake.wait()
         # A server-owned job runs without a client stream for its whole life.
         command = f"exec {shlex.join(argv)} > {shlex.quote(log)} 2>&1 < /dev/null"
         try:
@@ -510,6 +614,7 @@ class PrimeBackend(RuntimeBackend):
     async def read(
         self, runtime: Runtime, path: str, max_bytes: int | None = None
     ) -> bytes:
+        await self._awake.wait()
         # The file API acts as the default user; a user view reads through exec.
         if max_bytes is not None or runtime.user is not None:
             reader = "cat" if max_bytes is None else f"head -c {max_bytes}"
@@ -558,6 +663,7 @@ class PrimeBackend(RuntimeBackend):
             raise SandboxError(f"read {path!r}: {e}") from e
 
     async def write(self, runtime: Runtime, path: str, data: bytes) -> None:
+        await self._awake.wait()
         # The gateway creates missing parents and uploads binary data without command-line
         # limits. Resolve relative paths here because uploads do not use this runtime's workdir.
         target = (

@@ -234,6 +234,21 @@ class RolloutSession:
     the reply waits for the capture (`Rollout` sets it when its runtime supports
     checkpoints and a retry may restore one). Returns the checkpoint it took, if any."""
 
+    flowing: asyncio.Event = field(default_factory=asyncio.Event, repr=False)
+    """Cleared while a memory snapshot of the box is taken (`hold`): nothing the box
+    asked for is answered or written until it is set again, so the box the snapshot
+    stops has seen exactly what the trace held when the hold began."""
+
+    def __post_init__(self) -> None:
+        self.flowing.set()
+
+    def hold(self) -> None:
+        """Stop answering the box: replies, tool verdicts and state writes wait."""
+        self.flowing.clear()
+
+    def resume(self) -> None:
+        self.flowing.set()
+
     @property
     def stopped(self) -> bool:
         return self.trace.stop_condition is not None

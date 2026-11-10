@@ -12,7 +12,8 @@ the code.
 A harness without a capability the behavior needs is collected as a skip with its
 reason (`Harness.EXECUTES_CODE`, `SUPPORTS_MCP`, `SUPPORTS_SKILLS`, resume support via
 `SUPPORTS_RESUME` or a native session). A `snapshots` need asks the runtime for
-`SUPPORTS_FILESYSTEM_SNAPSHOTS` and the harness for `Harness.can_restore`.
+`SUPPORTS_FILESYSTEM_SNAPSHOTS` and the harness for `Harness.can_restore`; a `memory`
+need asks them for `SUPPORTS_MEMORY_SNAPSHOTS` and `Harness.SUPPORTS_MEMORY_RESTORE`.
 
 A runtime without a feature the behavior needs (`RuntimeBackend.SUPPORTS_*`, or a
 `NetworkPolicyConfig` for a network policy) skips the cell the same way. That a runtime
@@ -68,6 +69,7 @@ RUNTIME_FEATURES = {
     "compose": "Compose services",
     "services": "native service VMs",
     "snapshots": "snapshots",
+    "memory": "memory snapshots",
 }
 
 
@@ -152,6 +154,7 @@ def supports(runtime: str, feature: str) -> bool:
         "expose": "SUPPORTS_PORT_EXPOSURE",
         "compose": "SUPPORTS_COMPOSE",
         "snapshots": "SUPPORTS_FILESYSTEM_SNAPSHOTS",
+        "memory": "SUPPORTS_MEMORY_SNAPSHOTS",
     }[feature]
     return getattr(runtime_cls(runtime), flag)
 
@@ -183,6 +186,8 @@ def unsupported(
         return f"{name} cannot resume an exchange"
     if "snapshots" in needs and not cls.can_restore():
         return f"{name} cannot restore a snapshot"
+    if "memory" in needs and not cls.SUPPORTS_MEMORY_RESTORE:
+        return f"{name} cannot continue from a memory snapshot"
     runtime_needs = (*(("container",) if cls.NEEDS_CONTAINER else ()), *needs)
     for feature in runtime_needs:
         if feature in RUNTIME_FEATURES and not supports(runtime, feature):

@@ -15,7 +15,8 @@ from verifiers.v1.errors import (
     SandboxError,
     boundary,
 )
-from verifiers.v1.runtimes import ProgramResult, Runtime
+from verifiers.v1.runtimes import Program, ProgramResult, Runtime
+from verifiers.v1.runtimes.base import current_program
 from verifiers.v1.task import TaskData
 from verifiers.v1.types import Message, Messages, UserMessage
 from verifiers.v1.utils.decorators import (
@@ -77,6 +78,11 @@ class Harness(ABC, Generic[ConfigT]):
     that installs and drives a third-party program — on the host (subprocess) it
     leaks host state (auth, config, processes) both ways. Only the minimal
     in-house loops (`bash`, `null`) override to False."""
+
+    SUPPORTS_MEMORY_RESTORE: ClassVar[bool] = False
+    """Whether a box restored from a memory snapshot continues this harness: its
+    program runs as a job of the box that the host only waits for (`Runtime.run(...,
+    program=)`), and it reaches the host only through the endpoint it was given."""
 
     @classmethod
     def can_restore(cls) -> bool:
@@ -382,6 +388,13 @@ class HarnessSession:
         self.data = data
         self.tool_interception_url = tool_interception_url
         self._closed = False
+        self.program = Program()
+        """The main program's job while a segment runs (`Runtime.run(..., program=)`)."""
+        self.memory = False
+        """Whether the rollout takes memory snapshots: the session then keeps no
+        connection into the box that a stopped box would break."""
+        self._attached: dict[str, Any] | None = None
+        """The state of the segment the restored box still runs (`reattach`)."""
 
     async def steer(self, message: str, *, message_id: str | None = None) -> dict:
         """Deliver a user message during a running turn, if supported by the harness."""
@@ -395,9 +408,33 @@ class HarnessSession:
             raise HarnessError(
                 f"harness {self.harness.config.id!r} session is already closed"
             )
-        async with boundary(HarnessError, f"harness {self.harness.config.id!r}"):
-            result = await self._run(messages)
+        attached, self._attached = self._attached, None
+        token = current_program.set(self.program)
+        try:
+            async with boundary(HarnessError, f"harness {self.harness.config.id!r}"):
+                if attached is not None:
+                    result = await self._continue(attached)
+                else:
+                    result = await self._run(messages)
+        finally:
+            current_program.reset(token)
         await self.harness._check_result(self.trace, self.runtime, result)
+
+    def memory_state(self) -> dict[str, Any] | None:
+        """What `reattach` needs to continue the running segment in a box restored from
+        a memory snapshot taken now, or None when no segment runs."""
+        if self.program.job is None:
+            return None
+        return {"job": dict(self.program.job)}
+
+    def reattach(self, state: dict[str, Any]) -> None:
+        """Prepare this new session for a box restored from a memory snapshot: its
+        first `turn` waits for the segment the box still runs instead of starting
+        one. `state` is what `memory_state` returned when the snapshot was taken."""
+        self._attached = state
+
+    async def _continue(self, state: dict[str, Any]) -> ProgramResult:
+        return await self.runtime.attach(state["job"])
 
     async def _run(self, messages: Messages | None) -> ProgramResult:
         if messages is None:

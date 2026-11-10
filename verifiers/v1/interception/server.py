@@ -747,6 +747,7 @@ class InterceptionServer(Interception):
         if session.released:
             return web.json_response({"error": "rollout concluded"}, status=409)
         body = from_json(await request.read())
+        await session.flowing.wait()
         try:
             return web.json_response(
                 await session.decide_tool(
@@ -903,6 +904,7 @@ class InterceptionServer(Interception):
         if idempotent is not None and idempotent.response is not None:
             logger.debug("Replayed an idempotent request")
             idempotent.completed_at = now
+            await session.flowing.wait()
             return _replay_response(idempotent.response)
 
         try:
@@ -938,6 +940,7 @@ class InterceptionServer(Interception):
             response = await asyncio.shield(inflight)
             if response is None:
                 return _error_response(dialect, "upstream attempt failed", status=503)
+            await session.flowing.wait()
             return _replay_response(response)
 
         if idempotent.inflight is not None:
@@ -1168,6 +1171,8 @@ class InterceptionServer(Interception):
                         policy_paths=policy_paths,
                         acp=acp,
                     )
+            # A memory snapshot under way must not see this reply reach the box.
+            await session.flowing.wait()
             return serve(call_response, events)
 
         if streaming:
@@ -1304,6 +1309,7 @@ class InterceptionServer(Interception):
                 {"error": f"invalid state PUT for {state_cls.__name__}: {e}"},
                 status=400,
             )
+        await session.flowing.wait()
         if session.released:  # the trace is sealed — a straggler write must not land
             return web.json_response({"error": "rollout concluded"}, status=409)
         session.trace.state = new_state

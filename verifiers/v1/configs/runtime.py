@@ -214,6 +214,9 @@ class PrimeConfig(NetworkPolicyConfig):
     checkpoint: str | None = None
     """A DURABLE filesystem checkpoint to start from instead of ``image`` (see the SDK's
     ``checkpoint`` and ``wait_for_checkpoint``)."""
+    restore_memory: bool = False
+    """With ``checkpoint``: continue the processes of the paused sandbox that the checkpoint
+    holds the memory of, instead of booting from its disk."""
     idle_timeout: float | None = 3600
     """Seconds of inactivity before the sandbox self-deletes (None disables)."""
     creates_per_min: int | None = None

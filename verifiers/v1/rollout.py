@@ -45,7 +45,12 @@ from verifiers.v1.runtimes import (
     make_backend,
 )
 from verifiers.v1.runtimes.private_network import tool_vms
-from verifiers.v1.session import RolloutLimits, RolloutSession, hook_boundary
+from verifiers.v1.session import (
+    IdempotentRequest,
+    RolloutLimits,
+    RolloutSession,
+    hook_boundary,
+)
 from verifiers.v1.state import state_cls
 from verifiers.v1.task import Task, TaskData
 from verifiers.v1.trace import AgentInfo, Checkpoint, TimeSpan, Trace, TraceTask
@@ -80,6 +85,10 @@ class RolloutTimeouts:
     """Combined budget (in seconds) for harness metrics and task scoring, including
     isolated verifier setup and retries. Finalization has its own budget."""
 
+
+REPLAY_SECONDS = 30
+"""A memory checkpoint keeps the replies the server sent this recently: one of them may
+not have reached the box when the snapshot stopped it."""
 
 _HOME_PROBE = (
     "home=$(awk -F: -v u=\"$1\" '$1 == u { print $6 }' /etc/passwd); "
@@ -255,6 +264,19 @@ class Rollout:
             response_stops=[fn for boundary, fn in stops if boundary is Response],
             gates_tools=harness.SUPPORTS_TOOL_INTERCEPTION,
         )
+        self._memory = False
+        """Whether this run takes memory snapshots: decided at `open`, once the box,
+        its relay and the task's tool servers are known."""
+        self._capturing = asyncio.Lock()
+        if self._restore is not None and self._restore.snapshot.type == "memory":
+            # Set before the box boots: its relay repeats the requests that waited as
+            # soon as it reaches this session.
+            self._session.pinned_tool_results.update(self._restore.pins)
+            now = time.monotonic()
+            for key, (binding, response) in self._restore.replays.items():
+                self._session.idempotent_requests[key] = IdempotentRequest(
+                    binding=binding, response=response, completed_at=now
+                )
         self._stack = AsyncExitStack()
         self._failed = False
         self._failure: Exception | None = None
@@ -365,6 +387,9 @@ class Rollout:
                 self.harness.config.name,
                 self.runtime_config.type,
             )
+        memory_restore = (
+            self._restore is not None and self._restore.snapshot.type == "memory"
+        )
         loop = asyncio.get_running_loop()
         setup_timeout: asyncio.Timeout | None = None
         setup_deadline = (
@@ -409,12 +434,6 @@ class Rollout:
                 finally:
                     # Providers may assign an ID before startup fails; retain it for diagnostics.
                     self.trace.agent.runtime = runtime.info.model_copy()
-                if (
-                    self._checkpointing is not None
-                    and self._borrowed_runtime is None
-                    and runtime.backend.SUPPORTS_FILESYSTEM_SNAPSHOTS
-                ):
-                    self._session.checkpointer = self._checkpoint
                 if not self.task.scoring_deferred:
                     isolated = self._scoring_policy.mode == "isolated"
                     self._scoring_task = self.task.grading_task(
@@ -464,9 +483,46 @@ class Rollout:
                     # A harness in a remote box reaches the interception server through
                     # a relay in its box, which starts alongside the harness setup.
                     if not runtime.is_local:
-                        self._relay = Relay(runtime, self.trace.id)
+                        self._relay = Relay(
+                            runtime,
+                            self.trace.id,
+                            running=self._restore.live["relay"]
+                            if memory_restore
+                            else None,
+                        )
                         self._stack.push_async_callback(self._relay.stop)
-                    await self.harness.setup(self._agent_runtime)
+                    # A box restored from memory still runs the harness.
+                    if not memory_restore:
+                        await self.harness.setup(self._agent_runtime)
+                self._memory = (
+                    self._checkpointing is not None
+                    and self._checkpointing.snapshot == "memory"
+                    and self._borrowed_runtime is None
+                    and runtime.backend.SUPPORTS_MEMORY_SNAPSHOTS
+                    and self.harness.SUPPORTS_MEMORY_RESTORE
+                    # Everything the box reaches the host through must follow it to a
+                    # new box: the relay does, tool servers and services do not.
+                    and self._relay is not None
+                    and not toolsets
+                    and not self._shared_tools
+                    and self.deployment.spec is None
+                )
+                if memory_restore and not self._memory:
+                    raise SandboxError(
+                        "the rollout cannot continue from its memory snapshot"
+                    )
+                if (
+                    self._checkpointing is not None
+                    and self._borrowed_runtime is None
+                    and (
+                        self._memory
+                        or (
+                            runtime.backend.SUPPORTS_FILESYSTEM_SNAPSHOTS
+                            and self.harness.can_restore()
+                        )
+                    )
+                ):
+                    self._session.checkpointer = self._checkpoint
                 logger.debug(
                     "Set up %s harness in %s",
                     self.harness.config.name,
@@ -501,15 +557,19 @@ class Rollout:
                     )
                 )
                 harness_base = runtime.host_url(base_url.rstrip("/")).rstrip("/")
+                # A harness restored from memory still sends the secret it got at its
+                # launch; the relay swaps it for this session's.
+                self._secret = (
+                    self._restore.live["secret"] if memory_restore else model_secret
+                )
                 if self._relay is not None:
                     # The harness holds the model secret anyway; the relay gets
                     # nothing more, so reading its config grants no capability.
                     async with boundary(RelayError, "starting the relay"):
                         harness_base = await self._relay.connect(
-                            base_url.rstrip("/"), {model_secret: model_secret}
+                            base_url.rstrip("/"), {self._secret: model_secret}
                         )
                 self._endpoint = f"{harness_base}/v1"
-                self._secret = model_secret
                 services = (
                     {
                         name: self.deployment.target(name)
@@ -667,6 +727,7 @@ class Rollout:
                             harness_data,
                             **session_kwargs,
                         )
+                        self._harness_session.memory = self._memory
         except TimeoutError as e:
             # Only our expired setup budget owns the timeout; a provider can
             # raise its own TimeoutError before the overall deadline.
@@ -847,6 +908,10 @@ class Rollout:
         checkpoint = self._restore
         assert checkpoint is not None and self._harness_data is not None
         assert self._harness_session is not None
+        if checkpoint.snapshot.type == "memory":
+            # The box still runs the segment: wait for it instead of starting one.
+            self._harness_session.reattach(checkpoint.live["program"])
+            return await self.step()
         # The relaunch re-emits the session's system prompt (the task's, plus a
         # network notice) through the program's own system message; the tail's copy
         # would double it.
@@ -879,6 +944,8 @@ class Rollout:
             self.restored_turns is not None and turn_number == self.restored_turns + 1
         ):
             return None
+        if self._memory:
+            return await self._capture_memory()
         if len(self.trace._pending) > 1:
             # Another request is in flight (parallel sub-agents share the trace): the
             # box is not idle, so no snapshot would match this turn's prefix.
@@ -926,6 +993,100 @@ class Rollout:
         )
         logger.debug(
             "checkpoint %s taken: id=%s node=%s", checkpoint.id, self.trace.id, node
+        )
+        return checkpoint
+
+    async def save(self) -> Checkpoint | None:
+        """Take a memory checkpoint of the running rollout now, for its owner; None
+        when the rollout takes none (`RolloutCheckpointConfig`) or runs no segment."""
+        if not self._opened or self._closed or not self._memory:
+            return None
+        task = asyncio.current_task()
+        if task is not None:
+            self._captures.add(task)
+        try:
+            return await self._capture_memory()
+        finally:
+            self._captures.discard(task)
+
+    async def _capture_memory(self) -> Checkpoint | None:
+        """Snapshot the box with its memory. Nothing the box asked for is answered
+        while the snapshot is taken (`RolloutSession.hold`), so the box it stops has
+        seen exactly the trace as recorded here; a box restored from it asks again
+        for what was still open."""
+        assert self.runtime is not None and self._relay is not None
+        session = self._session
+        if self._harness_session is None:
+            return None
+        async with self._capturing:
+            if self._closed:
+                return None
+            session.hold()
+            try:
+                program = self._harness_session.memory_state()
+                if program is None:
+                    return None
+                node = len(self.trace.nodes) - 1 if self.trace.nodes else None
+                state = copy.deepcopy(self.trace.state)
+                info = copy.deepcopy(self.trace.info)
+                pins = dict(session.pinned_tool_results)
+                now = time.monotonic()
+                replays = {
+                    key: (request.binding, request.response)
+                    for key, request in session.idempotent_requests.items()
+                    if request.response is not None
+                    and request.completed_at is not None
+                    and now - request.completed_at <= REPLAY_SECONDS
+                }
+                started = time.time()
+                try:
+                    snapshot = await self.runtime.backend.snapshot(memory=True)
+                except Exception:
+                    logger.warning(
+                        "memory snapshot failed (rollout %s)",
+                        self.trace.id,
+                        exc_info=True,
+                    )
+                    return None
+                captured = time.time()
+                # The box's connections to the server did not survive the stop: its
+                # relay opens new ones and repeats the requests that wait.
+                try:
+                    await self._relay.reroute(self._relay.upstream)
+                except Exception:
+                    logger.warning(
+                        "relay did not reconnect after a memory snapshot (rollout %s)",
+                        self.trace.id,
+                        exc_info=True,
+                    )
+            finally:
+                session.resume()
+        checkpoint = Checkpoint(
+            id=snapshot.id,
+            node=node,
+            state=state,
+            info=info,
+            pins=pins,
+            replays=replays,
+            live={
+                "program": program,
+                "relay": self._relay.state,
+                "secret": self._secret,
+            },
+            snapshot=snapshot,
+            time=TimeSpan(start=started),
+            captured=captured,
+        )
+        self.trace.checkpoints.append(checkpoint)
+        self._durable[checkpoint.id] = asyncio.create_task(
+            self._make_durable(checkpoint)
+        )
+        logger.debug(
+            "memory checkpoint %s taken in %s: id=%s node=%s",
+            checkpoint.id,
+            format_time(captured - started),
+            self.trace.id,
+            node,
         )
         return checkpoint
 

@@ -11,13 +11,14 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import PurePosixPath
 from types import MappingProxyType
-from typing import Self
+from typing import Any, Self
 
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes.base import (
     _ENSURE_UV,
     _INSTALL_CURL,
+    Program,
     ProgramResult,
     RuntimeBackend,
     RuntimeProcess,
@@ -112,9 +113,20 @@ class Runtime:
         )
         await self.backend.prepare_execution([], policy)
 
-    async def run(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
-        """Run `argv` to completion and collect its output."""
+    async def run(
+        self, argv: list[str], env: dict[str, str], *, program: Program | None = None
+    ) -> ProgramResult:
+        """Run `argv` to completion and collect its output. `program` marks the run as
+        a harness's main program: a runtime that takes memory snapshots records the
+        job there while it runs, for `attach`."""
+        if program is not None and self.backend.SUPPORTS_MEMORY_SNAPSHOTS:
+            return await self.backend.run(self, argv, env, program=program)
         return await self.backend.run(self, argv, env)
+
+    async def attach(self, job: dict[str, Any]) -> ProgramResult:
+        """Wait for the job a box started before the memory snapshot this box booted
+        from, and return its result like `run`."""
+        return await self.backend.attach(self, job)
 
     async def exec(self, argv: list[str], env: dict[str, str]) -> RuntimeProcess:
         """Start `argv` and return a handle that streams its stdio."""

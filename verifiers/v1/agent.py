@@ -665,6 +665,12 @@ class Agent:
         backend = backend_cls(self.config.runtime)
         if harness.can_restore() and backend.SUPPORTS_FILESYSTEM_SNAPSHOTS:
             return config
+        if (
+            config.snapshot == "memory"
+            and harness.SUPPORTS_MEMORY_RESTORE
+            and backend.SUPPORTS_MEMORY_SNAPSHOTS
+        ):
+            return config
         key = (harness.config.id, self.config.runtime.type)
         if key not in _checkpointing_warned:
             _checkpointing_warned.add(key)

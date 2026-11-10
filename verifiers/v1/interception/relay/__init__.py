@@ -42,15 +42,27 @@ class Relay:
     known, so its start overlaps the harness setup; `connect` points it at the
     interception server, `reroute` moves it, `stop` ends it."""
 
-    def __init__(self, runtime: Runtime, name: str) -> None:
+    def __init__(
+        self, runtime: Runtime, name: str, *, running: dict[str, str] | None = None
+    ) -> None:
+        """`running` is the `state` of a relay the box already runs (a box restored
+        from a memory snapshot): nothing is launched, and `connect` moves that relay."""
         self.runtime = runtime
-        self.dir = f"{RELAY_ROOT}/{name}"
-        self.url = ""
+        self.dir = f"{RELAY_ROOT}/{name}" if running is None else running["dir"]
+        self.url = "" if running is None else running["url"]
         """The base URL the harness reaches the interception server at, once launched."""
         self.upstream = ""
         self.tokens: dict[str, str] = {}
         self._connected = asyncio.Event()
-        self._launch = asyncio.create_task(self._start())
+        self._launch = asyncio.create_task(
+            self._start() if running is None else asyncio.sleep(0)
+        )
+
+    @property
+    def state(self) -> dict[str, str]:
+        """What a later `Relay(..., running=)` needs to take this relay over in a box
+        restored from a memory snapshot."""
+        return {"dir": self.dir, "url": self.url}
 
     @property
     def config_path(self) -> str:

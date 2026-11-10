@@ -25,6 +25,7 @@ from verifiers.v1.runtimes.backends.subprocess import (
 )
 from verifiers.v1.runtimes.base import (
     BaseRuntimeInfo,
+    Program,
     ProgramResult,
     RuntimeBackend,
     RuntimeProcess,
@@ -103,6 +104,7 @@ __all__ = [
     "PrimeBackend",
     "PrimeConfig",
     "PrimeRuntimeInfo",
+    "Program",
     "ProgramResult",
     "Runtime",
     "RuntimeBackend",

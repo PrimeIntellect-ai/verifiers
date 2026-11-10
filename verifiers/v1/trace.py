@@ -400,6 +400,14 @@ class Checkpoint(BaseModel):
     """The rollout's pinned tool results as the snapshot was taken
     (`RolloutSession.pinned_tool_results`): a restored harness re-sends its own
     copies, which must be pinned again to match the trace. Live-only."""
+    live: dict[str, Any] = Field(default_factory=dict, exclude=True)
+    """What continues the box of a memory snapshot: the harness program's job
+    (`HarnessSession.memory_state`), the box's relay and the secret the harness holds.
+    Live-only."""
+    replays: dict[str, Any] = Field(default_factory=dict, exclude=True)
+    """The replies the server had just sent when a memory snapshot stopped the box
+    (`RolloutSession.idempotent_requests`): the restored box asks again for one that had
+    not arrived, and gets the reply the trace already holds. Live-only."""
     time: TimeSpan = Field(default_factory=TimeSpan)
     """From the snapshot request until it was durable (restorable); `end` stays 0 while
     it is not."""

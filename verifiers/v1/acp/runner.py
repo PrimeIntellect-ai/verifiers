@@ -384,21 +384,20 @@ def write_packet(stream: Any, value: dict) -> None:
     stream.flush()
 
 
-async def serve_stream() -> None:
-    session = ACPSession()
-    reader = asyncio.StreamReader()
-    protocol = asyncio.StreamReaderProtocol(reader)
-    await asyncio.get_running_loop().connect_read_pipe(
-        lambda: protocol, sys.stdin.buffer
-    )
-    tasks: set[asyncio.Task] = set()
-    prompt_lock = asyncio.Lock()
+class Server:
+    """Serves the host's session requests, over whichever transport carries them."""
 
-    async def handle(request: dict) -> None:
+    def __init__(self) -> None:
+        self.session = ACPSession()
+        self.tasks: set[asyncio.Task] = set()
+        self.prompt_lock = asyncio.Lock()
+
+    async def handle(self, request: dict) -> dict:
+        session = self.session
         operation = request.get("operation")
         try:
             if operation == "prompt":
-                async with prompt_lock:
+                async with self.prompt_lock:
                     result = asdict(await session.run(request["config"]))
             elif operation == "steer":
                 result = await session.steer(
@@ -412,6 +411,8 @@ async def serve_stream() -> None:
                     ),
                 }
             elif operation == "shutdown":
+                if self.tasks:
+                    await asyncio.gather(*self.tasks, return_exceptions=True)
                 result = {"response_metadata": await session.close()}
             else:
                 raise ValueError(f"unknown ACP session operation: {operation!r}")
@@ -425,27 +426,105 @@ async def serve_stream() -> None:
             if operation == "prompt":
                 response["result"] = asdict(session.client.turn_result())
         response["id"] = request.get("id")
+        return response
+
+    def spawn(self, request: dict, reply) -> asyncio.Task:
+        """Handle `request` in a task of its own and hand its response to `reply`."""
+
+        async def run() -> None:
+            reply(await self.handle(request))
+
+        task = asyncio.create_task(run())
+        self.tasks.add(task)
+        task.add_done_callback(self.tasks.discard)
+        return task
+
+    async def close(self) -> None:
+        for task in self.tasks:
+            task.cancel()
+        if self.tasks:
+            await asyncio.gather(*self.tasks, return_exceptions=True)
+        await self.session.close()
+
+
+async def serve_stream() -> None:
+    server = Server()
+    reader = asyncio.StreamReader()
+    protocol = asyncio.StreamReaderProtocol(reader)
+    await asyncio.get_running_loop().connect_read_pipe(
+        lambda: protocol, sys.stdin.buffer
+    )
+
+    def reply(response: dict) -> None:
         write_packet(sys.stdout.buffer, response)
 
     try:
         while request := await read_packet(reader):
             if request.get("operation") == "shutdown":
-                if tasks:
-                    await asyncio.gather(*tasks)
-                await handle(request)
+                reply(await server.handle(request))
                 break
-            task = asyncio.create_task(handle(request))
-            tasks.add(task)
-            task.add_done_callback(tasks.discard)
+            server.spawn(request, reply)
     finally:
-        for task in tasks:
-            task.cancel()
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
-        await session.close()
+        await server.close()
 
 
-async def main() -> None:
+async def serve_socket(path: str) -> None:
+    """Serve session requests on a Unix socket, one per connection, until a shutdown
+    request: the host's memory snapshots stop the box, which no connection from the
+    host survives, so each request comes from a job of the box (`call`) instead."""
+    server = Server()
+    stopped = asyncio.Event()
+
+    async def connected(
+        reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+    ) -> None:
+        try:
+            request = await read_packet(reader)
+            if request is None:
+                return
+            response = await server.handle(request)
+            data = json.dumps(response, ensure_ascii=False).encode()
+            writer.write(len(data).to_bytes(8, "big") + data)
+            await writer.drain()
+            if request.get("operation") == "shutdown":
+                stopped.set()
+        finally:
+            writer.close()
+
+    with suppress(FileNotFoundError):
+        os.unlink(path)
+    listener = await asyncio.start_unix_server(connected, path, limit=MAX_PACKET_BYTES)
+    with open(f"{path}.pid", "w") as file:
+        file.write(f"{os.getpid()}\n")
+    try:
+        async with listener:
+            await stopped.wait()
+    finally:
+        await server.close()
+
+
+def call(path: str, request_path: str, reply_path: str) -> None:
+    """Send the request in `request_path` to the server on the socket at `path` and
+    write its response to `reply_path`."""
+    import socket
+
+    with open(request_path, "rb") as file:
+        data = file.read()
+    with socket.socket(socket.AF_UNIX) as connection:
+        connection.connect(path)
+        connection.sendall(len(data).to_bytes(8, "big") + data)
+        stream = connection.makefile("rb")
+        size = int.from_bytes(stream.read(8), "big")
+        response = stream.read(size)
+    if len(response) != size:
+        raise EOFError("ACP runner closed the connection before its response")
+    staged = f"{reply_path}.tmp"
+    with open(staged, "wb") as file:
+        file.write(response)
+    os.replace(staged, reply_path)
+
+
+async def main(socket_path: str | None) -> None:
     task = asyncio.current_task()
     loop = asyncio.get_running_loop()
     if task is not None:
@@ -453,8 +532,15 @@ async def main() -> None:
             with suppress(NotImplementedError):
                 loop.add_signal_handler(sig, task.cancel)
     with suppress(asyncio.CancelledError):
-        await serve_stream()
+        if socket_path is None:
+            await serve_stream()
+        else:
+            await serve_socket(socket_path)
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    arguments = sys.argv[1:]
+    if arguments[:1] == ["--call"]:
+        call(*arguments[1:4])
+    else:
+        asyncio.run(main(arguments[1] if arguments[:1] == ["--socket"] else None))
