@@ -154,9 +154,7 @@ def validate_native(project) -> dict[str, str]:
         "networks",
         "volumes",
     }:
-        raise NativeComposeUnsupported(
-            "Native Compose does not support secrets or configs"
-        )
+        raise SandboxError("Native Compose does not support secrets or configs")
     if any(set(volume) - {"name"} for volume in config.get("volumes", {}).values()):
         raise NativeComposeUnsupported(
             "Native Compose supports project volumes without drivers"
@@ -168,7 +166,7 @@ def validate_native(project) -> dict[str, str]:
         or network.get("driver", "bridge") != "bridge"
         for network in networks.values()
     ):
-        raise NativeComposeUnsupported(
+        raise SandboxError(
             "Native Compose supports bridge project networks with optional internal isolation"
         )
     aliases = {}
@@ -195,7 +193,7 @@ def validate_native(project) -> dict[str, str]:
     for name, service in config["services"].items():
         unsupported = set(service) - _SERVICE_FIELDS
         if unsupported:
-            raise NativeComposeUnsupported(
+            raise SandboxError(
                 f"Native Compose service {name!r} does not support: "
                 + ", ".join(sorted(unsupported))
             )
@@ -306,7 +304,7 @@ def validate_native(project) -> dict[str, str]:
         # Docker's default bridge network: no project network, so no service names.
         mode = service.get("network_mode")
         if mode not in {None, "bridge", "default"} and network_owners[name] == name:
-            raise NativeComposeUnsupported(
+            raise SandboxError(
                 f"Native Compose service {name!r} does not support network_mode {mode!r}"
             )
         attached = service.get("networks", {})

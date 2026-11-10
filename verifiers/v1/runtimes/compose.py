@@ -249,14 +249,12 @@ async def compose_project(
             buffer = io.BytesIO()
             with tarfile.open(fileobj=buffer, mode="w:gz") as archive:
                 archive.add(directory, arcname=".")
-            await host_backend.bind().write(
-                "/tmp/vf-deployment.tar.gz", buffer.getvalue()
-            )
+            await host_backend.bind().write("/vf-deployment.tar.gz", buffer.getvalue())
             staged = await host_backend.bind().run(
                 [
                     "sh",
                     "-c",
-                    f"mkdir -p {root} && tar -xzf /tmp/vf-deployment.tar.gz -C {root} && rm /tmp/vf-deployment.tar.gz",
+                    f"mkdir -p {root} && tar -xzf /vf-deployment.tar.gz -C {root} && rm /vf-deployment.tar.gz",
                 ],
                 {},
             )
@@ -444,9 +442,7 @@ async def compose_services(
                 main["deploy"] = {"resources": {"limits": limits}}
             if services[owner].get("network_mode") != "host":
                 publish["ports"] = [
-                    f"127.0.0.1::{SERVICE_PORT}"
-                    if local
-                    else f"{SERVICE_PORT}:{SERVICE_PORT}"
+                    f"127.0.0.1::{SERVICE_PORT}" if local else str(SERVICE_PORT)
                 ]
             if local and sys.platform != "linux":
                 publish["extra_hosts"] = {"host.docker.internal": "host-gateway"}
@@ -464,13 +460,18 @@ async def compose_services(
                 "ps", "--all", "--format", "{{.ID}} {{.Service}}"
             )
             service_url = None
-            if local:
+            host_service_port = SERVICE_PORT
+            if services[owner].get("network_mode") != "host":
                 published = await compose("port", owner, str(SERVICE_PORT))
-                service_url = "http://" + next(
+                address = next(
                     address
                     for address in published.splitlines()
-                    if address.startswith("127.0.0.1:")
+                    if address.startswith("127.0.0.1:" if local else "0.0.0.0:")
                 )
+                if local:
+                    service_url = "http://" + address
+                else:
+                    host_service_port = int(address.rsplit(":", 1)[1])
             backends: dict[str, DockerBackend] = {}
             for line in containers.splitlines():
                 container, service = line.split()
@@ -479,6 +480,7 @@ async def compose_services(
                         config,
                         container,
                         host_backend=host,
+                        host_service_port=host_service_port,
                         service_url=service_url if service == spec.workspace else None,
                     )
                 )
