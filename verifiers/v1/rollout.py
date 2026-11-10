@@ -87,6 +87,8 @@ class RolloutTimeouts:
     isolated verifier setup and retries. Finalization has its own budget."""
 
 
+HOLD_SECONDS = 120
+"""How long a saved rollout waits for its owner's `release` before it goes on by itself."""
 REPLAY_SECONDS = 30
 """A memory checkpoint keeps the replies the server sent this recently: one of them may
 not have reached the box when the snapshot stopped it."""
@@ -274,6 +276,9 @@ class Rollout:
         it takes them."""
         self.save_skipped: str | None = None
         """Why the last `save` returned nothing."""
+        self._held = False
+        """Whether an owner holds the box's replies past its save (`save(hold=True)`)."""
+        self._release_timer: asyncio.TimerHandle | None = None
         self._capturing = asyncio.Lock()
         if self._restore is not None and self._restore.snapshot.type == "memory":
             # Set before the box boots: its relay repeats the requests that waited as
@@ -1008,12 +1013,15 @@ class Rollout:
         )
         return checkpoint
 
-    async def save(self) -> RestorePoint | None:
+    async def save(self, *, hold: bool = False) -> RestorePoint | None:
         """Take a memory checkpoint of the running rollout now and return its restore
         point, for an owner that continues the rollout in another process
-        (`save_all`). The owner holds the snapshot (`Checkpoint.pinned`). None when
-        the rollout takes no memory snapshots (`RolloutCheckpointConfig`), runs no
-        segment, or the snapshot did not become restorable."""
+        (`save_all`). The owner holds the snapshot (`Checkpoint.pinned`); it becomes
+        restorable from any node in the background, and this run's teardown waits for
+        that. With `hold`, nothing the box asked for is answered until `release`, so
+        the rollout cannot move past its restore point while the owner records it.
+        None when the rollout takes no memory snapshots (`unsaveable`), runs no
+        segment, or the snapshot failed; `save_skipped` then says which."""
         self.save_skipped = None
         if self._closed:
             self.save_skipped = "it is finishing"
@@ -1028,22 +1036,29 @@ class Rollout:
         task = asyncio.current_task()
         if task is not None:
             self._captures.add(task)
+        self._held = hold
         try:
             checkpoint = await self._capture_memory(pinned=True)
         finally:
             self._captures.discard(task)
         if checkpoint is None:
+            self.release()
             self.save_skipped = "its memory snapshot failed"
             return None
-        # Before the next await: the trace moves on once replies flow again.
-        point = RestorePoint.of(self.trace, checkpoint)
-        durable = self._durable.get(checkpoint.id)
-        if durable is not None:
-            await asyncio.wait({durable})
-        if not checkpoint.time.end:
-            self.save_skipped = "its memory snapshot did not become restorable"
-            return None
-        return point
+        if hold:
+            # An owner that never releases must not stall the rollout for good.
+            self._release_timer = asyncio.get_running_loop().call_later(
+                HOLD_SECONDS, self.release
+            )
+        return RestorePoint.of(self.trace, checkpoint)
+
+    def release(self) -> None:
+        """Answer the box again after a `save(hold=True)`."""
+        self._held = False
+        if self._release_timer is not None:
+            self._release_timer.cancel()
+            self._release_timer = None
+        self._session.resume()
 
     async def _capture_memory(self, *, pinned: bool = False) -> Checkpoint | None:
         """Snapshot the box with its memory. Nothing the box asked for is answered
@@ -1096,7 +1111,8 @@ class Rollout:
                         exc_info=True,
                     )
             finally:
-                session.resume()
+                if not self._held:
+                    session.resume()
         checkpoint = Checkpoint(
             id=snapshot.id,
             node=node,

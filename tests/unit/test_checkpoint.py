@@ -190,6 +190,8 @@ def make_rollout(
     run._memory = False
     run.unsaveable = "the 'fake' runtime takes no memory snapshots"
     run.save_skipped = None
+    run._held = False
+    run._release_timer = None
     run._capturing = asyncio.Lock()
     run._pruning = asyncio.Lock()
     run.deleted_snapshots = set()
@@ -425,7 +427,7 @@ async def test_save_returns_a_restore_point_another_process_can_open():
     point = await run.save()
     assert isinstance(point, RestorePoint)
     (checkpoint,) = run.trace.checkpoints
-    assert checkpoint.pinned and checkpoint.time.end
+    assert checkpoint.pinned
 
     point = pickle.loads(pickle.dumps(point))
     assert point.id == run.trace.id
@@ -441,13 +443,41 @@ async def test_save_returns_a_restore_point_another_process_can_open():
     assert trace.rewind(restored) == []
 
 
-async def test_save_waits_for_a_durable_snapshot():
+async def test_save_returns_before_the_snapshot_is_durable():
+    """The owner gets the restore point once the box runs again; the snapshot becomes
+    durable in the background, and the rollout's teardown waits for it."""
     run, backend, _ = make_memory_rollout()
     backend.running.set()
-    backend.fail = True
+    point = await run.save()
+    (checkpoint,) = run.trace.checkpoints
+    assert point is not None and not checkpoint.time.end
     backend.durable.set()
-    assert await run.save() is None
-    assert run.trace.checkpoints == []
+    await run._settle_checkpoints(wait=False)
+    assert checkpoint.time.end
+
+
+async def test_a_held_save_answers_the_box_only_after_release():
+    run, backend, session = make_memory_rollout()
+    backend.running.set()
+    assert await run.save(hold=True) is not None
+    assert not session.flowing.is_set()
+    # A checkpoint of the run's own under the hold does not end it.
+    await run._checkpoint(TURN)
+    assert not session.flowing.is_set()
+    run.release()
+    assert session.flowing.is_set() and run._release_timer is None
+
+
+async def test_a_failed_held_save_does_not_hold_the_box():
+    run, backend, session = make_memory_rollout()
+
+    async def failing(*, memory: bool = False):
+        raise vf.SandboxError("pause refused")
+
+    backend.snapshot = failing  # type: ignore[method-assign]
+    assert await run.save(hold=True) is None
+    assert session.flowing.is_set()
+    assert run.save_skipped == "its memory snapshot failed"
 
 
 async def test_a_rollout_without_memory_snapshots_saves_nothing():

@@ -145,16 +145,26 @@ def unsaveable(config: AgentConfig, harness: Harness | None = None) -> str | Non
     return None
 
 
-async def save_all(skipped: dict[str, int] | None = None) -> list[RestorePoint]:
+def release_all() -> None:
+    """Let every rollout that `save_all(hold=True)` holds go on."""
+    for rollout in list(LIVE):
+        rollout.release()
+
+
+async def save_all(
+    skipped: dict[str, int] | None = None, *, hold: bool = False
+) -> list[RestorePoint]:
     """Take a memory checkpoint of every running rollout of this process and return
     their restore points. A rollout that takes no memory snapshots, runs no harness
     segment right now, or whose snapshot fails has none: it starts over when its owner
     runs it again. `skipped` collects why, as a count per reason. The snapshots are
-    pinned: the caller owns them."""
+    pinned: the caller owns them. With `hold`, each saved rollout waits at its restore
+    point until `release_all`, so the caller can record which rollouts are still
+    running without one of them finishing meanwhile."""
 
     async def save(rollout: Rollout) -> RestorePoint | None:
         try:
-            point = await rollout.save()
+            point = await rollout.save(hold=hold)
             reason = rollout.save_skipped
         except Exception:
             logger.warning("saving rollout %s failed", rollout.trace.id, exc_info=True)
