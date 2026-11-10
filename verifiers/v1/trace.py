@@ -423,6 +423,9 @@ class Checkpoint(BaseModel):
     (`HarnessSession.checkpoint_state`), e.g. an ACP agent's session id."""
     restored: bool = False
     """Whether a retry restored the run from this snapshot."""
+    pinned: bool = False
+    """Whether the rollout's owner holds the snapshot (`save_all`): no rollout deletes
+    it, the owner does."""
     deleted: bool = False
     """Whether the snapshot was deleted (by `RolloutCheckpointConfig.keep`, or once the
     run is final): it can no longer be restored."""
@@ -1093,7 +1096,7 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         position = ids.index(checkpoint.id) + 1
         rewound = self.checkpoints[position:]
         del self.checkpoints[position:]
-        dropped = [c.snapshot for c in rewound]
+        dropped = [c.snapshot for c in rewound if not c.pinned]
         self.rewards = {}
         self.metrics = {}
         self.dropped = None

@@ -45,6 +45,7 @@ from verifiers.v1.runtimes import (
     make_backend,
 )
 from verifiers.v1.runtimes.private_network import tool_vms
+from verifiers.v1.restore import LIVE, RestorePoint
 from verifiers.v1.session import (
     IdempotentRequest,
     RolloutLimits,
@@ -131,7 +132,7 @@ def kept(checkpoints: list[Checkpoint], keep: Literal["last"] | int) -> set[str]
     live = [
         (index, c)
         for index, c in enumerate(checkpoints)
-        if c.time.end and not c.deleted
+        if c.time.end and not c.deleted and not c.pinned
     ]
     if not live:
         return set()
@@ -346,6 +347,7 @@ class Rollout:
         interception slot and tool servers. Returns whether the exchange can
         proceed; a setup failure is captured onto the trace."""
         self._opened = True
+        LIVE.add(self)
         self.trace.timing.boot.start = time.time()
         self.trace.notify()
         if self._borrowed_runtime is None:
@@ -996,20 +998,33 @@ class Rollout:
         )
         return checkpoint
 
-    async def save(self) -> Checkpoint | None:
-        """Take a memory checkpoint of the running rollout now, for its owner; None
-        when the rollout takes none (`RolloutCheckpointConfig`) or runs no segment."""
+    async def save(self) -> RestorePoint | None:
+        """Take a memory checkpoint of the running rollout now and return its restore
+        point, for an owner that continues the rollout in another process
+        (`save_all`). The owner holds the snapshot (`Checkpoint.pinned`). None when
+        the rollout takes no memory snapshots (`RolloutCheckpointConfig`), runs no
+        segment, or the snapshot did not become restorable."""
         if not self._opened or self._closed or not self._memory:
             return None
         task = asyncio.current_task()
         if task is not None:
             self._captures.add(task)
         try:
-            return await self._capture_memory()
+            checkpoint = await self._capture_memory(pinned=True)
         finally:
             self._captures.discard(task)
+        if checkpoint is None:
+            return None
+        # Before the next await: the trace moves on once replies flow again.
+        point = RestorePoint.of(self.trace, checkpoint)
+        durable = self._durable.get(checkpoint.id)
+        if durable is not None:
+            await asyncio.wait({durable})
+        if not checkpoint.time.end:
+            return None
+        return point
 
-    async def _capture_memory(self) -> Checkpoint | None:
+    async def _capture_memory(self, *, pinned: bool = False) -> Checkpoint | None:
         """Snapshot the box with its memory. Nothing the box asked for is answered
         while the snapshot is taken (`RolloutSession.hold`), so the box it stops has
         seen exactly the trace as recorded here; a box restored from it asks again
@@ -1076,6 +1091,7 @@ class Rollout:
             snapshot=snapshot,
             time=TimeSpan(start=started),
             captured=captured,
+            pinned=pinned,
         )
         self.trace.checkpoints.append(checkpoint)
         self._durable[checkpoint.id] = asyncio.create_task(
@@ -1124,7 +1140,10 @@ class Rollout:
                 *(
                     c.snapshot
                     for c in self.trace.checkpoints
-                    if c.time.end and not c.deleted and c.id not in keep
+                    if c.time.end
+                    and not c.deleted
+                    and not c.pinned
+                    and c.id not in keep
                 ),
                 *(
                     s
@@ -1178,6 +1197,7 @@ class Rollout:
         (a cancellation mid-setup, a lifetime bug raised to the caller) means the
         driver will never reach `close()`. Safe after a partial `close()`."""
         self._closed = True
+        LIVE.discard(self)
         await self._settle_checkpoints(wait=False)
         if self._harness_session is not None:
             with contextlib.suppress(Exception):
@@ -1207,7 +1227,7 @@ class Rollout:
                             *(
                                 c.snapshot
                                 for c in self.trace.checkpoints
-                                if not c.deleted
+                                if not c.deleted and not c.pinned
                             ),
                             *self.runtime.backend.stray_snapshots,
                         ]
@@ -1305,6 +1325,7 @@ class Rollout:
         if self._closed:
             return self.trace
         self._closed = True
+        LIVE.discard(self)
         trace = self.trace
         skip_reason = self._scoring_skip_reason()
         runtime = self.runtime

@@ -35,6 +35,7 @@ from verifiers.v1.dialects import parse_message
 from verifiers.v1.harness import Harness
 from verifiers.v1.interception import Interception, InterceptionServer
 from verifiers.v1.mcp import SharedToolServer
+from verifiers.v1.restore import RestorePoint, restoring
 from verifiers.v1.rollout import Rollout, RolloutTimeouts
 from verifiers.v1.runtimes import (
     Runtime,
@@ -712,6 +713,7 @@ class Agent:
         on_trace: Callable[[Trace], None] | None = None,
         collect_artifacts: bool = False,
         on_score: Callable[[Trace, Runtime], Awaitable[None]] | None = None,
+        restore: RestorePoint | None = None,
     ) -> Trace:
         """Run this agent on `task` once and return the trace: one segment — the
         program runs on the task's prompt until it exits (a multi-turn exchange
@@ -727,7 +729,10 @@ class Agent:
         checkpoint whose restore failed is skipped, and without one the retry starts
         over. Every attempt's trace keeps the run's id with its own `attempt`, and the
         final trace keeps every attempt's errors. `on_score(trace, runtime)` runs after task scoring in
-        the selected verifier workspace, inside its timeout and retry boundary."""
+        the selected verifier workspace, inside its timeout and retry boundary.
+        `restore` continues a rollout another process saved (`save_all`) instead of
+        starting one: its trace, in a new box from its memory checkpoint; the episode's
+        restore point (`RunSlot.restore`) is taken the same way."""
         if self._closed:
             raise RuntimeError("Agent is closed; create a new agent")
         retry = self.config.retries
@@ -737,6 +742,23 @@ class Agent:
         history: list[Error] = []  # errors of the attempts started over from
         trace: Trace | None = None
         target: Checkpoint | None = None  # the checkpoint the next attempt restores
+        first_attempt = 0  # the attempts the trace made before this run
+        pending = restoring.get()
+        if restore is None and pending:
+            restore = pending.pop()
+        if restore is not None:
+            if checkpointing is None:
+                logger.warning(
+                    "Starting rollout %s over: this agent takes no checkpoints, so it "
+                    "cannot continue from its restore point",
+                    restore.id,
+                )
+            else:
+                trace, target = restore.open(task)
+                trace_id = trace.id
+                first_attempt = trace.attempt
+                if on_trace is not None:
+                    on_trace(trace)
         snapshots: dict[str, Snapshot] = {}  # every box snapshot any attempt took
         deleted: set[str] = set()
         failed_restores: set[str] = set()
@@ -751,14 +773,18 @@ class Agent:
         with scope(trace=short_id(trace_id), agent=self._log_name):
             try:
                 while True:
-                    restoring = (
+                    restoring_from = (
                         (trace, target)
                         if trace is not None and target is not None
                         else None
                     )
                     # This attempt's own errors decide — a restored trace still carries
                     # the earlier attempts'.
-                    seen = len(restoring[0].errors) if restoring is not None else 0
+                    seen = (
+                        len(restoring_from[0].errors)
+                        if restoring_from is not None
+                        else 0
+                    )
                     run = await self._run_once(
                         task,
                         runtime,
@@ -767,14 +793,17 @@ class Agent:
                         collect_artifacts,
                         on_score,
                         trace_id=trace_id,
-                        attempt=attempt + 1,
-                        restore=restoring,
+                        attempt=first_attempt + attempt + 1,
+                        restore=restoring_from,
                         checkpoint=checkpointing,
                     )
                     trace = run.trace
                     snapshots.update((s.id, s) for s in run.rewound_snapshots)
+                    # An owner's snapshots (`save_all`) are the owner's to delete.
                     snapshots.update(
-                        (c.snapshot.id, c.snapshot) for c in trace.checkpoints
+                        (c.snapshot.id, c.snapshot)
+                        for c in trace.checkpoints
+                        if not c.pinned
                     )
                     deleted.update(run.deleted_snapshots)
                     if target is not None and (

@@ -393,7 +393,8 @@ class PrimeBackend(RuntimeBackend):
         )
         return durable.stored_bytes
 
-    async def discard_snapshots(self, snapshots: list[Snapshot]) -> list[str]:
+    @classmethod
+    async def discard(cls, snapshots: list[Snapshot]) -> list[str]:
         # The platform refuses only the newest checkpoint of a running box (the parent
         # of its live state); older ones go while it runs, their data kept as long as a
         # newer one needs it. Usually called after teardown released `_client`.

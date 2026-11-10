@@ -293,6 +293,12 @@ class RuntimeBackend(ABC):
         """Free snapshots nothing will restore from and return the ids it freed.
         Best-effort: a provider may refuse one a live box still needs (prime: the
         newest one of a running box)."""
+        return await self.discard(snapshots)
+
+    @classmethod
+    async def discard(cls, snapshots: list[Snapshot]) -> list[str]:
+        """`discard_snapshots` without a box: for an owner that holds snapshots past
+        the boxes that took them (`Checkpoint.pinned`)."""
         return []
 
     @classmethod
