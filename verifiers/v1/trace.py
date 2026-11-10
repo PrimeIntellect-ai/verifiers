@@ -30,7 +30,7 @@ from verifiers.v1.configs.agent import AgentConfig, WireAgentConfig
 from verifiers.v1.configs.sampling import Sampling
 from verifiers.v1.errors import ProviderError, stop_condition
 from verifiers.v1.graph import RECORD_FLOAT_DECIMALS, MessageNode
-from verifiers.v1.runtimes import RuntimeInfo
+from verifiers.v1.runtimes import RuntimeInfo, Snapshot
 from verifiers.v1.semantic import ACPInfo, ParentLink, SemanticEdgeSet
 from verifiers.v1.state import State, StateT
 from verifiers.v1.task import DataT, WireTaskData
@@ -250,6 +250,8 @@ class TimeSplit(BaseModel):
 class AgentSpan(TimeSpan):
     model: TimeSplit = Field(default_factory=TimeSplit)
     harness: TimeSplit = Field(default_factory=TimeSplit)
+    checkpoint: TimeSplit = Field(default_factory=TimeSplit)
+    """Time the model replies waited for checkpoint captures (`Checkpoint.held`)."""
 
 
 class Timing(BaseModel):
@@ -266,6 +268,10 @@ class Error(BaseModel):
     message: str
     status_code: int | None = None
     traceback: str | None = None
+    attempt: int = 0
+    """The run attempt that captured it: 0 for the first, then one per retry."""
+    stage: str | None = None
+    """The rollout stage that failed (`setup`, `agent`, `finalize`, `scoring`), when known."""
 
 
 class VersionInfo(BaseModel):
@@ -367,6 +373,51 @@ def min_new_input_tokens(calls: Iterable[ModelCall]) -> Iterator[tuple[ModelCall
             continue
         yield call, max(0, call.usage.input_tokens - prev_total)
         prev_total = call.usage.total_tokens
+
+
+class Checkpoint(BaseModel):
+    """A snapshot of the rollout's box taken as a model turn went upstream: the box holds
+    the effects of every message in `node`'s conversation plus `tail`, and nothing of the
+    turn that followed. A retry restores it (`Trace.rewind`)."""
+
+    id: str
+    """The snapshot's id."""
+    snapshot: Snapshot
+    """The box's snapshot (`RuntimeBackend.snapshot`) a retry boots a new box from."""
+    node: int | None = None
+    """The last committed node whose conversation the box's state follows; None when
+    the snapshot preceded the first turn."""
+    tail: Messages = Field(default_factory=list, exclude=True)
+    """The turn's prompt messages after `node` that had no node yet (tool results, user
+    turns): with `node`'s conversation, the prompt a restored harness continues from.
+    Live-only — a retry restores it in the process that took the snapshot."""
+    state: Any = Field(None, exclude=True)
+    """The trace's typed state as the snapshot was taken (tool servers write it over
+    `/state`), restored with the box so a retry sees one consistent world. Live-only."""
+    info: dict[str, Any] | None = Field(None, exclude=True)
+    """`Trace.info` as the snapshot was taken, restored with `state`. Live-only."""
+    pins: dict[tuple[str, str], ToolMessage] = Field(default_factory=dict, exclude=True)
+    """The rollout's pinned tool results as the snapshot was taken
+    (`RolloutSession.pinned_tool_results`): a restored harness re-sends its own
+    copies, which must be pinned again to match the trace. Live-only."""
+    time: TimeSpan = Field(default_factory=TimeSpan)
+    """From the snapshot request until it was durable (restorable); `end` stays 0 while
+    it is not."""
+    captured: float = 0.0
+    """When the request returned: the snapshot's content was fixed from then on."""
+    held: float = 0.0
+    """Seconds the turn's reply waited for the capture; 0 when the model call took
+    longer, since the snapshot runs alongside it."""
+    bytes: int | None = None
+    """The snapshot's stored size, which the provider bills, once it is durable."""
+    harness: dict[str, Any] = Field(default_factory=dict)
+    """What the harness session needs to continue in a box restored from the snapshot
+    (`HarnessSession.checkpoint_state`), e.g. an ACP agent's session id."""
+    restored: bool = False
+    """Whether a retry restored the run from this snapshot."""
+    deleted: bool = False
+    """Whether the snapshot was deleted (by `RolloutCheckpointConfig.keep`, or once the
+    run is final): it can no longer be restored."""
 
 
 def _concat(parts: list[list | np.ndarray], dtype: type[np.generic]) -> np.ndarray:
@@ -594,6 +645,9 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     """Request changes made by `@intercept`, in execution order."""
     response_rewrites: list[InterceptRecord] = Field(default_factory=list)
     """Response changes made by `@intercept`, in execution order."""
+    checkpoints: list[Checkpoint] = Field(default_factory=list)
+    """Snapshots of the run's box, oldest first — one per model turn on a runtime that
+    supports them; a retry restores the newest."""
 
     rewards: dict[str, Reward | None] = Field(default_factory=dict)
     """Named, weighted rewards; `None` means scoring didn't run (e.g. because of a
@@ -634,6 +688,14 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     _pending: dict[int, list[Message]] = PrivateAttr(default_factory=dict)
     """The messages of the request in flight that no node holds yet (the harness's tool
     results and user turns): a preview for live watchers until the turn commits."""
+    _generation: int = PrivateAttr(default=0)
+    """Bumped by `rewind`: the graph is no longer an extension of what it was, so a
+    consumer streaming it incrementally starts over."""
+
+    @property
+    def generation(self) -> int:
+        """How many times the trace was rewound (`rewind`)."""
+        return self._generation
 
     def watch(self, on_change: Callable[[Trace], None]) -> None:
         """Have `on_change` called at each of this trace's phase changes and turns."""
@@ -883,6 +945,11 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         return self.errors[-1] if self.errors else None
 
     @property
+    def has_restored(self) -> bool:
+        """Whether a retry restored this run from a checkpoint rather than starting over."""
+        return any(checkpoint.restored for checkpoint in self.checkpoints)
+
+    @property
     def transcript(self) -> str:
         """Text transcript of the last branch's messages; tool outputs are omitted."""
         branches = self.branches
@@ -956,13 +1023,22 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
             self.dropped = reason
 
     def split_agent_time(self) -> None:
-        """Split the agent span into model and harness time."""
+        """Split the agent span into model, checkpoint and harness time."""
         span = self.timing.agent
         if not span.end:
             return
-        model = sum(call.time.duration for call in self.calls)
-        span.model.duration = min(model, span.duration)
-        span.harness.duration = span.duration - span.model.duration
+        # A restored trace keeps the calls and checkpoints of the attempts before
+        # this span.
+        calls = sum(
+            call.time.duration for call in self.calls if call.time.start >= span.start
+        )
+        # A call's span includes the time its reply waited for the capture.
+        held = sum(c.held for c in self.checkpoints if c.captured >= span.start)
+        span.checkpoint.duration = min(held, calls, span.duration)
+        span.model.duration = min(calls, span.duration) - span.checkpoint.duration
+        span.harness.duration = (
+            span.duration - span.model.duration - span.checkpoint.duration
+        )
 
     def record_timeout(self, stage: str) -> None:
         """Record a stage deadline's expiry, and stop the trace as `<stage>_timeout`.
@@ -971,7 +1047,58 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         self.is_timeout = True
         self.stop(f"{stage}_timeout", override=True)
 
-    def record_error(self, error: Exception) -> None:
+    def rewind_state(self, checkpoint: Checkpoint) -> None:
+        """Set the typed state and `info` back to `checkpoint`'s."""
+        if checkpoint.state is not None:
+            self.state = copy.deepcopy(checkpoint.state)
+        if checkpoint.info is not None:
+            self.info = copy.deepcopy(checkpoint.info)
+
+    def rewind(self, checkpoint: Checkpoint) -> list[Snapshot]:
+        """Roll the graph back to `checkpoint` — the nodes committed after it go, its own
+        conversation stays sampled — and reopen the trace for another attempt: the outcome
+        stamps reset, while `errors` and every call stay as the attempts' history (the
+        calls of the dropped nodes unlinked, so usage still counts them). Returns the
+        later box snapshots this drops."""
+        keep = 0 if checkpoint.node is None else checkpoint.node + 1
+        if keep > len(self.nodes):
+            raise ValueError(f"checkpoint {checkpoint.id!r} is past this trace's graph")
+        ids = [c.id for c in self.checkpoints]
+        if checkpoint.id not in ids:
+            raise ValueError(f"checkpoint {checkpoint.id!r} is not on this trace")
+        del self.nodes[keep:]
+        for node in self.nodes:
+            node.semantic_parents = [
+                link for link in node.semantic_parents if link.node < keep
+            ]
+        self._head_index = {}
+        self._pending = {}
+        self._generation += 1
+        for call in self.calls:
+            if call.node is not None and call.node >= keep:
+                call.node = None
+        self.rewind_state(checkpoint)
+        # The restored rollout re-stamps every stage span; the run's start stays.
+        self.timing = Timing(start=self.timing.start)
+        # Checkpoints are in the order they were taken: the ones after `checkpoint` hold
+        # the future it rewinds past, including those at its own node.
+        position = ids.index(checkpoint.id) + 1
+        rewound = self.checkpoints[position:]
+        del self.checkpoints[position:]
+        dropped = [c.snapshot for c in rewound]
+        self.rewards = {}
+        self.metrics = {}
+        self.dropped = None
+        self.root_reply = None
+        self.is_completed = False
+        self.ok = False
+        self.stop_condition = None
+        self.is_timeout = False
+        return dropped
+
+    def record_error(
+        self, error: Exception, *, attempt: int = 0, stage: str | None = None
+    ) -> None:
         """Record an error, and stop the trace as failed: `<boundary>_error` for a
         typed rollout error (`errors.stop_condition`), `error` for any other."""
         self.errors.append(
@@ -979,6 +1106,8 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
                 type=type(error).__name__,
                 message=str(error),
                 status_code=getattr(error, "status_code", None),
+                attempt=attempt,
+                stage=stage,
                 # Provider errors already carry the actionable upstream diagnostic.
                 # Keep full tracebacks for every other failure.
                 traceback=None

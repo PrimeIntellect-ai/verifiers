@@ -1,10 +1,11 @@
 """One env agent's config: who plays the seat, and its per-run caps."""
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import (
     BaseModel,
     Field,
+    PositiveInt,
     SerializationInfo,
     SerializeAsAny,
     field_serializer,
@@ -36,6 +37,23 @@ class TimeoutConfig(BaseConfig):
     scoring: float | None = Field(None, gt=0)
     """Combined budget (in seconds) for harness metrics and task scoring, including
     isolated verifier setup and retries. Finalization has its own budget."""
+
+
+class RolloutCheckpointConfig(BaseConfig):
+    """Rollout checkpointing: snapshot the box every n-th model turn, so a retry
+    continues from the newest snapshot instead of starting over. The runtime takes the
+    best snapshot it supports, and each checkpoint records its type. Needs a runtime
+    that takes snapshots (`SUPPORTS_FILESYSTEM_SNAPSHOTS`) and a harness whose new
+    process can continue the rollout (`Harness.can_restore`); elsewhere a retry starts
+    over. Every snapshot is deleted once the run is final."""
+
+    interval: PositiveInt = 10
+    """Snapshot at every n-th model turn (the n-th, the 2n-th, ...): a rollout shorter
+    than n turns takes none, and a restore loses fewer than n turns."""
+    keep: Literal["last"] | PositiveInt = "last"
+    """Snapshots kept while the rollout runs: the newest (`"last"`), or every k-th plus
+    the newest (`k`; 1 keeps every one). A failed restore falls back to an older kept
+    one."""
 
 
 class AgentConfig(BaseConfig):
@@ -75,6 +93,12 @@ class AgentConfig(BaseConfig):
 
     timeout: TimeoutConfig = TimeoutConfig()
     retries: RetryConfig = RetryConfig()
+    checkpoint: RolloutCheckpointConfig | None = Field(
+        default_factory=RolloutCheckpointConfig
+    )
+    """Rollout checkpointing, on by default: snapshot the box as turns go upstream, so
+    a retry restores the newest snapshot instead of starting over (see
+    `RolloutCheckpointConfig`). None turns it off."""
 
     network_notice: bool = True
     """Include the runtime's network restrictions in the agent's prompt."""

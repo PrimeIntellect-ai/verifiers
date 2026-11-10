@@ -4,7 +4,7 @@ import asyncio
 import os
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, ClassVar, Generic, TypeVar
+from typing import TYPE_CHECKING, Any, ClassVar, Generic, TypeVar
 
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import DialectName, HarnessConfig, skill_destination
@@ -17,7 +17,7 @@ from verifiers.v1.errors import (
 )
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.task import TaskData
-from verifiers.v1.types import Message, Messages
+from verifiers.v1.types import Message, Messages, UserMessage
 from verifiers.v1.utils.decorators import (
     discover_decorated,
     invoke_all,
@@ -39,6 +39,16 @@ config, so it fires once per process, not once per rollout."""
 
 
 ConfigT = TypeVar("ConfigT", bound=HarnessConfig)
+
+RESTORE_PROMPT = (
+    "Your workspace was restored from a filesystem checkpoint taken before your last "
+    "model turn, and you are continuing in a new process. Files are as they were at "
+    "the checkpoint. Background processes, running shells, sub-agents, and in-memory "
+    "state such as REPL variables from before the restore are gone; start again "
+    "whatever you still need. Your last action may not have taken effect, so check "
+    "before you rely on it. Continue the task."
+)
+"""The user turn a harness gets after a restore (`HarnessSession.restore`)."""
 
 
 class Harness(ABC, Generic[ConfigT]):
@@ -67,6 +77,14 @@ class Harness(ABC, Generic[ConfigT]):
     that installs and drives a third-party program — on the host (subprocess) it
     leaks host state (auth, config, processes) both ways. Only the minimal
     in-house loops (`bash`, `null`) override to False."""
+
+    @classmethod
+    def can_restore(cls) -> bool:
+        """Whether a new process of this harness can continue a rollout in a box
+        restored from a snapshot (`AgentConfig.checkpoint`): the default relaunches on
+        the trace's transcript, so a harness that resumes that way (`SUPPORTS_RESUME`)
+        can."""
+        return cls.SUPPORTS_RESUME
 
     def __init__(self, config: ConfigT) -> None:
         self.config = config
@@ -409,6 +427,21 @@ class HarnessSession:
             messages,
             self.tool_interception_url,
         )
+
+    async def checkpoint_state(self) -> dict[str, Any] | None:
+        """What `restore` needs to continue in a box restored from a checkpoint taken
+        now, or None when this session cannot be restored (no checkpoint is taken).
+        The default relaunches on the trace's transcript and needs nothing."""
+        return {}
+
+    def restore(self, state: dict[str, Any], tail: Messages) -> Messages:
+        """Prepare this new session to continue a rollout in a box restored from a
+        checkpoint, and return the messages of its first segment. `state` is what
+        `checkpoint_state` returned when the checkpoint was taken; `tail` is the
+        checkpoint's uncommitted prompt after the trace's branch. The default
+        relaunches on the branch plus `tail`, then tells the program about the
+        restore (`RESTORE_PROMPT`)."""
+        return [*tail, UserMessage(content=RESTORE_PROMPT)]
 
     async def close(self) -> None:
         """Close session-owned resources. Idempotent."""

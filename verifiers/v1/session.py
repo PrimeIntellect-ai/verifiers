@@ -33,7 +33,7 @@ from verifiers.v1.configs.harness import DialectName
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.errors import HarnessError, RolloutError, TaskError
 from verifiers.v1.harnesses.utils.compaction import bound_tool_message
-from verifiers.v1.trace import InterceptRecord, Trace
+from verifiers.v1.trace import Checkpoint, InterceptRecord, Trace
 from verifiers.v1.types import (
     AssistantMessage,
     Messages,
@@ -191,6 +191,10 @@ class RolloutSession:
     when its program dies on it the rollout records this original error instead of a secondary
     `HarnessError`. A harness that completes cleanly after the failure handled it. Reset before
     each model turn, so a successful retry clears it."""
+    aborted: "RolloutError | None" = None
+    """A request hook's failure: the task, not the provider, refused a turn. The rollout
+    ends the running segment with it (`Rollout.step`); the harness never sees it."""
+    abort_event: asyncio.Event = field(default_factory=asyncio.Event)
     idempotent_requests: dict[str, IdempotentRequest] = field(default_factory=dict)
     """Explicit keys or marked SDK retries mapped to their replay state."""
     released: bool = False
@@ -219,6 +223,12 @@ class RolloutSession:
     last_request: tuple[list, Messages] = ((), [])
     """The last chat request's raw messages (copied: the server rewrites a body in place) and
     their parse, which the next request's equal prefix reuses instead of parsing again."""
+    checkpointer: Callable[[graph.PendingTurn], Awaitable[Checkpoint | None]] | None = (
+        None
+    )
+    """Snapshots the rollout's box as a turn goes upstream, alongside the model call;
+    the reply waits for the capture (`Rollout` sets it when its runtime supports
+    checkpoints and a retry may restore one). Returns the checkpoint it took, if any."""
 
     @property
     def stopped(self) -> bool:
@@ -394,6 +404,21 @@ class RolloutSession:
             ):
                 self.pinned_tool_results[tool_keys[position]] = after
         return current, records, None
+
+    def mark_intercepted(self, branch: Messages, tail: Messages) -> None:
+        """Treat `tail`, which follows `branch` and was intercepted in an earlier
+        attempt (a restored checkpoint's), as prepared: the harness re-sends it, and
+        a non-idempotent hook must not rewrite it twice."""
+        request = Request(messages=[*branch, *tail])
+        for position, key in self.tool_result_keys(request).items():
+            message = request.messages[position]
+            if position >= len(branch) and isinstance(message, ToolMessage):
+                self.pinned_tool_results.setdefault(key, message)
+        self.prepared_users.update(
+            graph.message_hash(message)
+            for message in tail
+            if isinstance(message, UserMessage)
+        )
 
     def consume_prepared(self, messages: Messages) -> None:
         """Forget pre-harness user rewrites only after their model request commits."""
@@ -616,6 +641,12 @@ class RolloutSession:
             enter_scope(self.log_scope)
         self.tasks.add(task)
         task.add_done_callback(self.tasks.discard)
+
+    def abort(self, error: "RolloutError") -> None:
+        """End the running segment with `error`. The first abort wins."""
+        if self.aborted is None:
+            self.aborted = error
+            self.abort_event.set()
 
     def release(self) -> None:
         """Seal the session: no further trace mutation, and in-flight handlers cancel."""
