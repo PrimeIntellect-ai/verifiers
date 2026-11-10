@@ -44,7 +44,7 @@ SCALAR_FIELDS = tuple(
 )
 """Every other serialized field, derived values included: re-sent whole whenever its value changes."""
 
-TRAINING_ARRAY_FIELDS = frozenset({"routed_experts", "sampling_mask", "top_logprobs"})
+TRAINING_ARRAY_FIELDS = frozenset({"routed_experts", "sampler_support"})
 """Node fields holding per-token training arrays; never streamed."""
 
 

@@ -25,10 +25,9 @@ from verifiers.v1.types import (
     AssistantMessage,
     FinishReason,
     Response,
-    SamplingMask,
+    SamplerSupport,
     Tool,
     ToolCall,
-    TopLogprobs,
     TurnTokens,
     Usage,
     WeightVersionSpan,
@@ -190,19 +189,12 @@ def response_from_generate(
             mm_placeholders=mm_placeholders,
             mm_token_type_id_map=mm_token_type_id_map,
             routed_experts=result.get("routed_experts"),
-            sampling_mask=SamplingMask.from_sampling_mask(mask)
-            if (mask := result.get("sampling_mask"))
+            sampler_support=SamplerSupport.from_response(support)
+            if (support := result.get("sampler_support")) is not None
             else None,
             weight_versions=[WeightVersionSpan(**span) for span in spans]
             if (spans := result.get("weight_versions"))
             else None,
-            top_logprobs=(
-                TopLogprobs.from_top_logprobs(
-                    result["completion_top_ids"], result["completion_top_logprobs"]
-                )
-                if result.get("completion_top_ids") is not None
-                else None
-            ),
         ),
     )
 
