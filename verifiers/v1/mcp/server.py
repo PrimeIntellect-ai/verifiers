@@ -274,6 +274,7 @@ class ServerBase(Generic[ConfigT, StateT]):
 
     def _serve(self) -> None:
         import asyncio
+        import signal
         import socket
         from pathlib import Path
 
@@ -300,6 +301,13 @@ class ServerBase(Generic[ConfigT, StateT]):
 
             from verifiers.v1.interception.tunnel.base import HEALTH_PATH
 
+            # Uvicorn replays SIGTERM after serving. Cancel this task so provider
+            # cleanup runs through the outer stack, including during setup.
+            serving = asyncio.current_task()
+            assert serving is not None
+            asyncio.get_running_loop().add_signal_handler(
+                signal.SIGTERM, serving.cancel
+            )
             try:
                 async with (
                     self._exit_stack,
