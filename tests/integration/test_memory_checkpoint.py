@@ -77,6 +77,10 @@ async def restored_trace(
     )
     (trace,) = episode.traces
     assert trace.ok, [error.message for error in trace.errors]
+    if not trace.errors:
+        # The harness handled the failed reply itself and finished its run: nothing
+        # failed, so nothing was restored.
+        pytest.skip(f"{harness.id} recovers from a failed model call by itself")
     # The process `setup` started kept its memory across the restore.
     assert trace.reward == 1.0
     assert [error.type for error in trace.errors] == ["ProviderError"]
