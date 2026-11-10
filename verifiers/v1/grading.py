@@ -3,7 +3,7 @@
 import asyncio
 import copy
 import logging
-from contextlib import AsyncExitStack, contextmanager
+from contextlib import AsyncExitStack, contextmanager, nullcontext
 from pathlib import PurePosixPath
 
 from verifiers.v1.configs.scoring import ScoringConfig
@@ -123,6 +123,7 @@ async def grade_task(
     *,
     scoring_elapsed: float = 0.0,
     on_score=None,
+    scoring_context=nullcontext,
 ) -> None:
     await deployment.prepare_verifier()
     # Provisioning, scoring, and retry backoff share the remaining scoring budget.
@@ -161,6 +162,7 @@ async def grade_task(
                     async with (
                         asyncio.timeout_at(deadline),
                         boundary(TaskError, "verifier scoring"),
+                        scoring_context(result),
                     ):
                         await grader.score(result, runtime, deployment)
                         if on_score is not None:
