@@ -472,6 +472,9 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
             from .judge import prepare_authored
 
             # Install before the verifier's execution network policy takes effect.
+            # A shared box still carries the solver's restrictions at this point.
+            if self.scoring.mode == "shared":
+                await runtime.backend.prepare_setup()
             await prepare_authored(runtime, resolve_env(self.scoring.env or {}))
 
     @reward(weight=1.0)
