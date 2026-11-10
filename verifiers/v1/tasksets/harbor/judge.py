@@ -328,6 +328,7 @@ async def run_judge(task, runtime, trace, path="/tests/judge.toml"):
                         files={
                             TRACE_FILE: trace.to_json(
                                 exclude={
+                                    "ok": True,
                                     "nodes": {
                                         "__all__": {
                                             "message": {
@@ -335,7 +336,7 @@ async def run_judge(task, runtime, trace, path="/tests/judge.toml"):
                                                 "provider_state",
                                             }
                                         }
-                                    }
+                                    },
                                 }
                             )
                         },
