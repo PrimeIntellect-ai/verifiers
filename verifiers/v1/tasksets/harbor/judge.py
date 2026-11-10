@@ -201,11 +201,14 @@ async def grade_authored(task, runtime, trace, env):
     if any(isinstance(r.judge, AgentJudge) for r in rewards.values()):
         workdir = PurePosixPath(runtime.config.workdir or "/app")
         roots = {
-            workdir,
             PurePosixPath("/tests"),
             PurePosixPath("/logs/verifier"),
             PurePosixPath(ARTIFACTS_DIR),
         }
+        # A root workdir is valid, but cannot be copied as an artifact. Capture
+        # the explicit submission and judge inputs instead of the whole image.
+        if workdir != PurePosixPath("/"):
+            roots.add(workdir)
         roots.update(workdir / p for p in trace.state.artifacts)
         roots.update(workdir / a.source for a in task.data.artifacts)
         baseline = tuple(roots)
