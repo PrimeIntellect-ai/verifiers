@@ -90,6 +90,17 @@ async def test_reference_prompt_fences_the_response(
     assert structure.count("Response:") == 1
 
 
+async def test_reference_prompt_keeps_literal_placeholders(
+    fake_judge_model, make_trace
+):
+    # Fields are filled in one pass, so a reply that contains "{fence}" or "{answer}" keeps
+    # them as written, even when its own five-backtick block makes the fence longer.
+    reply = "Literal {fence} and {answer}.\n`````\ncode\n`````"
+    trace = make_trace(reply=reply)
+    await vf.ReferenceJudge().score(trace.task.data, trace)
+    assert "Response:\n``````\n" + reply + "\n``````" in fake_judge_model[0]
+
+
 async def test_reference_prompt_plain_inputs_unchanged(fake_judge_model, make_trace):
     # Inputs without backticks keep the plain ``` layout.
     trace = make_trace()
