@@ -77,10 +77,18 @@ skip_on_timeout = true
 
 `[env.agent.retries]` sets a retry budget per error type: `rules` are checked in order, and the first rule where all fields match sets the budget for that error; unmatched errors use the top-level `max_retries` budget.
 
-Rollout checkpointing is on by default: a retry restores the newest snapshot of the box and continues the trace from there, instead of starting over. The runtime takes the best snapshot it supports, and each checkpoint records its type. It needs a runtime that takes snapshots (prime) and a harness whose new process can continue the rollout: one that resumes on the transcript (`SUPPORTS_RESUME`: null, bash, browser-use) or an ACP harness whose agent loads its session from files (`LOADS_SESSIONS`: claude-code, codex, rlm). Elsewhere a retry starts over, as it does when a restore fails before the restored attempt's first new turn. Every snapshot is deleted once the run is final. Set `--no-env.agent.checkpoint` to turn it off.
+Rollout checkpointing is on by default: a retry restores the newest snapshot of the box and continues the trace from there, instead of starting over. Each checkpoint records the type of its snapshot:
+
+- A **memory** snapshot holds the box's files and its memory. The restored box continues every process where the snapshot stopped it: the harness program, its sub-agents and shells, and the task's own processes. The harness gets no notice and starts no new process; a model call that was open is asked again. The snapshot stops the box for a few seconds. It needs a runtime that takes memory snapshots (prime), a harness that runs detached from the host (`SUPPORTS_MEMORY_RESTORE`: null, bash and the ACP harnesses), and a rollout without tool servers or services of its own.
+- A **filesystem** snapshot holds the box's files. The retry starts a new harness process in the restored box and tells it that its processes are gone. It needs a runtime that takes snapshots (prime) and a harness whose new process can continue the rollout: one that resumes on the transcript (`SUPPORTS_RESUME`: null, bash, browser-use) or an ACP harness whose agent loads its session from files (`LOADS_SESSIONS`: claude-code, codex, rlm).
+
+A rollout takes memory snapshots where it can and filesystem snapshots elsewhere. Without either, a retry starts over, as it does when a restore fails before the restored attempt's first new turn. Every snapshot is deleted once the run is final. Set `--no-env.agent.checkpoint` to turn it off.
 
 ```toml
 [env.agent.checkpoint]
+snapshot = "memory"  # or "filesystem": never stop the box for a snapshot
 interval = 10  # snapshot at the 10th, 20th, ... model turn; shorter rollouts take none
 keep = "last"  # snapshots kept while the rollout runs: "last", or every k-th plus the newest
 ```
+
+An owner that outlives its process, such as a training run that stops and resumes, saves its running rollouts instead of waiting for a failure. `verifiers.v1.restore.save_all()` takes a memory snapshot of every running rollout of the process now and returns a `RestorePoint` for each: plain data the owner stores. A later process continues a rollout from its point with `RunSlot(task, id=..., restore=point)` (or `Agent.run(task, restore=point)`): same trace, a new box, and the harness program still running. The owner holds these snapshots; it deletes them with `PrimeBackend.discard` once nothing will restore them.

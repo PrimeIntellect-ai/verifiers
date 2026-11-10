@@ -32,6 +32,8 @@ A Prime tunnel can drop for a while (its client reconnects) or for good (the tun
 - While the tunnel cannot be reached, the relay retries the model call for up to 5 minutes, so the harness does not see a tunnel that reconnects.
 - When a tunnel is lost for good, its interception server opens a new tunnel and points each relay at the new URL. A model call that was in flight goes through the new tunnel; the server joins it to the call it already serves, so the trace gets no second turn.
 
+A box restored from a memory snapshot (`agent.checkpoint`) still runs its relay. The new rollout points that relay at its own interception server and maps the secret the harness holds to the new session's secret, so the harness keeps its URL and its secret. Model calls that were open when the snapshot stopped the box go to the new server.
+
 A rollout with tool servers or deployment services still fails on a lost tunnel, because they reach the interception server at the tunnel URL. The relay is a uv script, like the harness programs and tool servers verifiers already runs in the box. A relay that does not start, gives up on a request or exits fails the rollout with a `RelayError`.
 
 ## Finishing a rollout

@@ -2,6 +2,8 @@
 what a restored attempt must not redo."""
 
 import asyncio
+import pickle
+import time
 from types import SimpleNamespace
 from typing import Literal
 
@@ -11,8 +13,9 @@ from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.agent import RolloutCheckpointConfig
 from verifiers.v1.configs.client import EvalClientConfig
 from verifiers.v1.graph import MessageNode
+from verifiers.v1.restore import RestorePoint
 from verifiers.v1.rollout import Rollout, kept
-from verifiers.v1.session import RolloutSession
+from verifiers.v1.session import IdempotentRequest, ReplayResponse, RolloutSession
 from verifiers.v1.trace import (
     Checkpoint,
     ModelCall,
@@ -135,13 +138,22 @@ class SlowBackend:
 
     def __init__(self) -> None:
         self.durable = asyncio.Event()
+        self.stopped = asyncio.Event()
+        """Set once a memory snapshot has stopped the box."""
+        self.running = asyncio.Event()
+        """A memory snapshot returns when the test lets the box run again."""
         self.fail = False
         self.taken = 0
         self.deleted: list[str] = []
 
-    async def snapshot(self) -> vf.Snapshot:
+    async def snapshot(self, *, memory: bool = False) -> vf.Snapshot:
         self.taken += 1
-        return vf.Snapshot(id=f"ck{self.taken}")
+        if memory:
+            self.stopped.set()
+            await self.running.wait()
+        return vf.Snapshot(
+            id=f"ck{self.taken}", type="memory" if memory else "filesystem"
+        )
 
     async def wait_snapshot(self, snapshot: vf.Snapshot) -> int | None:
         await self.durable.wait()
@@ -172,6 +184,9 @@ def make_rollout(
     run._durable = {}
     run._captures = set()
     run._closed = False
+    run._opened = True
+    run._memory = False
+    run._capturing = asyncio.Lock()
     run._pruning = asyncio.Lock()
     run.deleted_snapshots = set()
     run.rewound_snapshots = []
@@ -307,3 +322,152 @@ def test_unsupported_checkpointing_warns_once(caplog, monkeypatch):
             "a failed rollout retries from the start"
         ),
     ]
+
+
+class FakeRelay:
+    upstream = "https://tunnel.example"
+    state = {"dir": "/tmp/vf-relay/t", "url": "http://127.0.0.1:4000"}
+
+    def __init__(self) -> None:
+        self.rerouted: list[str] = []
+
+    async def reroute(self, upstream: str) -> None:
+        self.rerouted.append(upstream)
+
+
+def make_memory_rollout(
+    job: dict | None = {"job_id": "j1"},
+) -> tuple[Rollout, SlowBackend, RolloutSession]:
+    """A rollout that takes memory snapshots, with its harness segment running `job`."""
+    run, backend = make_rollout()
+    session = RolloutSession(
+        ctx=ModelContext(model="m", client=EvalClientConfig()), trace=run.trace
+    )
+    run._session = session
+    run._memory = True
+    run._relay = FakeRelay()  # type: ignore[assignment]
+    run._secret = "box-secret"
+    run._harness_session = SimpleNamespace(  # type: ignore[assignment]
+        memory_state=lambda: None if job is None else {"job": job}
+    )
+    return run, backend, session
+
+
+async def test_a_memory_snapshot_holds_every_reply_until_the_box_runs_again():
+    run, backend, session = make_memory_rollout()
+    session.idempotent_requests = {
+        "retry:/v1/chat/completions:aa": IdempotentRequest(
+            binding=("/v1/chat/completions", b"aa"),
+            response=ReplayResponse(200, b"{}", "application/json"),
+            completed_at=time.monotonic(),
+        ),
+        "old": IdempotentRequest(
+            binding=("/v1/chat/completions", b"bb"),
+            response=ReplayResponse(200, b"{}", "application/json"),
+            completed_at=time.monotonic() - 3600,
+        ),
+        "open": IdempotentRequest(binding=("/v1/chat/completions", b"cc")),
+    }
+    capture = asyncio.create_task(run._checkpoint(TURN))
+    await backend.stopped.wait()
+    # The box is stopped: nothing it asked for may be answered.
+    assert not session.flowing.is_set()
+    assert run._relay.rerouted == []
+    backend.running.set()
+    checkpoint = await capture
+    assert session.flowing.is_set()
+    # The stop killed the box's connections: its relay opens new ones.
+    assert run._relay.rerouted == ["https://tunnel.example"]
+    assert checkpoint.snapshot == vf.Snapshot(id="ck1", type="memory")
+    assert checkpoint.node == len(run.trace.nodes) - 1
+    assert checkpoint.live == {
+        "program": {"job": {"job_id": "j1"}},
+        "relay": FakeRelay.state,
+        "secret": "box-secret",
+    }
+    # Only a reply the box may not have received yet is kept for its restore.
+    assert list(checkpoint.replays) == ["retry:/v1/chat/completions:aa"]
+    assert not checkpoint.pinned
+
+
+async def test_no_memory_snapshot_without_a_running_segment():
+    run, backend, session = make_memory_rollout(job=None)
+    assert await run._checkpoint(TURN) is None
+    assert backend.taken == 0 and session.flowing.is_set()
+
+
+async def test_a_failed_memory_snapshot_lets_replies_flow_again():
+    run, backend, session = make_memory_rollout()
+
+    async def failing(*, memory: bool = False):
+        raise vf.SandboxError("pause refused")
+
+    backend.snapshot = failing  # type: ignore[method-assign]
+    assert await run._checkpoint(TURN) is None
+    assert session.flowing.is_set() and run.trace.checkpoints == []
+
+
+async def test_save_returns_a_restore_point_another_process_can_open():
+    run, backend, session = make_memory_rollout()
+    session.pinned_tool_results = {
+        ("prefix", "c1"): ToolMessage(tool_call_id="c1", content="pinned")
+    }
+    run.trace.info = {"nonce": "n"}
+    backend.running.set()
+    backend.durable.set()
+    point = await run.save()
+    assert isinstance(point, RestorePoint)
+    (checkpoint,) = run.trace.checkpoints
+    assert checkpoint.pinned and checkpoint.time.end
+
+    point = pickle.loads(pickle.dumps(point))
+    assert point.id == run.trace.id
+    assert point.snapshot == {"id": "ck1", "type": "memory"}
+    task = vf.Task(vf.TaskData(idx=0, prompt="q"))
+    trace, restored = point.open(task)
+    assert trace.id == run.trace.id and trace.num_turns == run.trace.num_turns
+    assert restored is trace.checkpoints[0] and restored.pinned
+    assert restored.info == {"nonce": "n"}
+    assert restored.pins == session.pinned_tool_results
+    assert restored.live == checkpoint.live
+    # The restored trace rewinds to the point like a retry's.
+    assert trace.rewind(restored) == []
+
+
+async def test_save_waits_for_a_durable_snapshot():
+    run, backend, _ = make_memory_rollout()
+    backend.running.set()
+    backend.fail = True
+    backend.durable.set()
+    assert await run.save() is None
+    assert run.trace.checkpoints == []
+
+
+async def test_a_rollout_without_memory_snapshots_saves_nothing():
+    run, backend = make_rollout()
+    assert await run.save() is None
+    assert backend.taken == 0
+
+
+async def test_an_owners_snapshot_outlives_the_rollout():
+    """A pinned snapshot is not under the keep policy, is not deleted with the run's
+    own, and becomes durable even when the run settles without a retry to wait for."""
+    run, backend, _ = make_memory_rollout()
+    backend.running.set()
+    saving = asyncio.create_task(run.save())
+    await asyncio.sleep(0)
+    while not run.trace.checkpoints:
+        await asyncio.sleep(0)
+    settling = asyncio.create_task(run._settle_checkpoints(wait=False))
+    await asyncio.sleep(0)
+    assert not settling.done()
+    backend.durable.set()
+    await settling
+    assert await saving is not None
+    (pinned,) = run.trace.checkpoints
+    # A newer snapshot of the run's own does not prune the owner's.
+    newest = await run._checkpoint(TURN)
+    await run._settle_checkpoints(wait=True)
+    assert backend.deleted == []
+    assert kept(run.trace.checkpoints, "last") == {newest.id}
+    assert not pinned.deleted
