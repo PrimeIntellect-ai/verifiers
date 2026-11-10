@@ -12,14 +12,13 @@ from mcp.client.streamable_http import streamable_http_client
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import CallToolResult, Tool
-from pydantic_config import BaseConfig
 
-from verifiers.v1.mcp import Toolset
+from verifiers.v1.mcp import Toolset, ToolsetConfig
 from verifiers.v1.mcp.launch import serve_in_runtime
 from verifiers.v1.runtimes import Runtime
 
 
-class HarborMCPConfig(BaseConfig):
+class HarborMCPConfig(ToolsetConfig):
     server: dict[str, Any]
     """One declaration already validated by Harbor's task parser."""
 
@@ -31,7 +30,11 @@ class HarborMCPAdapter(Toolset[HarborMCPConfig]):
 
     @asynccontextmanager
     async def serve(self, runtime: Runtime, **kwargs) -> AsyncIterator[str]:
-        # Harbor commands and task-local URLs belong to the task environment.
+        if self.config.model_fields_set & {"runtime", "service", "url"}:
+            async with super().serve(runtime, **kwargs) as url:
+                yield url
+            return
+        # Harbor commands and task-local URLs belong to the task environment by default.
         async with serve_in_runtime(self, runtime, exposed=False) as port:
             host = "localhost" if runtime.network_restricted else "127.0.0.1"
             yield f"http://{host}:{port}/mcp"
