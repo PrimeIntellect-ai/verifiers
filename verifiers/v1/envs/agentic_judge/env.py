@@ -377,7 +377,7 @@ class AgenticJudgeEnv(vf.Env[AgenticJudgeEnvConfig]):
                 return await judge_agent.run(judge_task, runtime=runtime)
 
         async def judge(solution: vf.Trace, runtime: vf.Runtime) -> None:
-            if solution.info.get("authored_judging"):
+            if task.AUTHORED_JUDGES:
                 if (
                     self.config.task != JudgeTaskConfig()
                     or self.config.score != ScoreConfig()
