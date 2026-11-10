@@ -509,12 +509,25 @@ class ChatDialect(Dialect[ChatCompletion]):
             )
         return mediated, capabilities
 
-    def parse_request(self, body: RawRequest) -> Request:
+    def parse_request(
+        self, body: RawRequest, last: tuple[list, Messages] = ((), [])
+    ) -> Request:
+        """`last`: an earlier request's raw messages and their parse; the messages this one
+        begins with that are equal to its, as sent, are taken from it."""
         if body.get("n", 1) != 1:
             raise ValueError("chat completions require n=1")
         messages: Messages = []
         tool_names: dict[str, str] = {}
-        for raw in body.get("messages", []):
+        before, parsed = last
+        for index, raw in enumerate(body.get("messages", [])):
+            if index < len(before) and raw == before[index]:
+                message = parsed[index]
+                messages.append(message)
+                if isinstance(message, AssistantMessage):
+                    for call in message.tool_calls or []:
+                        tool_names[call.id] = call.name
+                continue
+            before = ()
             message = parse_message(raw)
             if isinstance(message, ToolMessage) and message.name is None:
                 name = tool_names.get(message.tool_call_id)

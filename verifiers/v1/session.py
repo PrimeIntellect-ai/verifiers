@@ -216,6 +216,9 @@ class RolloutSession:
     gated_tools: set[tuple[str, str]] = field(default_factory=set)
     """Calls the harness's gate asked about before executing."""
     prepared_users: Counter[str] = field(default_factory=Counter)
+    last_request: tuple[list, Messages] = ((), [])
+    """The last chat request's raw messages (copied: the server rewrites a body in place) and
+    their parse, which the next request's equal prefix reuses instead of parsing again."""
 
     @property
     def stopped(self) -> bool:
