@@ -87,7 +87,6 @@ async def test_a_restore_that_leads_nowhere_is_not_picked_again(monkeypatch):
                 self.trace = restore[0]
                 self.trace.attempt = attempt
                 self.restored_turns = self.trace.num_turns
-            on_trace(self.trace)
 
         async def open(self) -> bool:
             if self.trace.attempt == 1:

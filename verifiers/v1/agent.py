@@ -771,9 +771,8 @@ class Agent:
                         (c.snapshot.id, c.snapshot) for c in trace.checkpoints
                     )
                     deleted.update(run.deleted_snapshots)
-                    if (
-                        target is not None
-                        and any(error.stage == "setup" for error in trace.errors[seen:])
+                    if target is not None and (
+                        any(error.stage == "setup" for error in trace.errors[seen:])
                         or (
                             not trace.ok
                             and run.restored_turns is not None
