@@ -1005,6 +1005,12 @@ class Rollout:
         the rollout takes no memory snapshots (`RolloutCheckpointConfig`), runs no
         segment, or the snapshot did not become restorable."""
         if not self._opened or self._closed or not self._memory:
+            logger.debug(
+                "Not saving rollout %s: memory=%s closed=%s",
+                self.trace.id,
+                self._memory,
+                self._closed,
+            )
             return None
         task = asyncio.current_task()
         if task is not None:
@@ -1169,8 +1175,11 @@ class Rollout:
         await asyncio.gather(*self._captures, return_exceptions=True)
         tasks = list(self._durable.values())
         if not wait:
-            for task in tasks:
-                task.cancel()
+            # An owner waits for its snapshots whatever becomes of this run (`save`).
+            pinned = {c.id for c in self.trace.checkpoints if c.pinned}
+            for checkpoint_id, task in self._durable.items():
+                if checkpoint_id not in pinned:
+                    task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
         # A task cancelled before it first ran never reached its own cleanup.
         for checkpoint_id, task in list(self._durable.items()):

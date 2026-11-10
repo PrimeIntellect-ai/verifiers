@@ -8,14 +8,21 @@ started holds a nonce only in its memory: the reward reads it from the restored 
 a box that booted from the snapshot's files alone would fail. Every case checks that the
 run leaks no snapshot."""
 
+import asyncio
+import pickle
+
 import pytest
+from conftest import _eval_config
 from grid import grid
 from prime_sandboxes import AsyncSandboxClient
 
+from verifiers.v1.clients import ModelContext
+from verifiers.v1.env import RunSlot
 from verifiers.v1.harness import RESTORE_PROMPT
-from verifiers.v1.runtimes import PrimeBackend
+from verifiers.v1.restore import save_all
+from verifiers.v1.runtimes import PrimeBackend, Snapshot
+from verifiers.v1.utils.loaders import harness_class, load_environment
 from verifiers.v1.types import content_text
-from verifiers.v1.utils.loaders import harness_class
 
 RETRIES = {"max_retries": 0, "rules": [{"type": "ProviderError", "max_retries": 1}]}
 NEEDS = ("memory",)
@@ -131,4 +138,69 @@ async def test_filesystem_snapshots_stay_selectable(
     assert trace.has_restored
     assert {kind for _, kind in taken} == {"filesystem"}
     assert trace.reward == 0.0
+    await assert_no_leaks(taken)
+
+
+@pytest.mark.parametrize(
+    "harness,harness_runtime", grid(SHELLS, needs=NEEDS), indirect=True
+)
+async def test_another_owner_continues_a_saved_rollout(taken, harness, harness_runtime):
+    """`save_all` checkpoints a running rollout for its owner. The rollout is then
+    cancelled with everything it holds, and its restore point goes through a pickle. A
+    second env, with a server, a tunnel and secrets of its own, continues the rollout
+    from the point: in a new box, with the harness program and the task's process
+    still running."""
+    config = _eval_config(
+        "memory-restore-v1",
+        harness=harness,
+        runtime=harness_runtime,
+        taskset_overrides={"task": {"fail_turn": 99}},
+        max_turns=12,
+        max_tokens=4096,
+    )
+    ctx = ModelContext(
+        client=config.client, model=config.model, sampling=config.sampling
+    )
+
+    first = load_environment(config.env)
+    (task,) = list(first.taskset)
+    async with first.serving():
+        (slot,) = first.slots(task)
+        running = asyncio.ensure_future(first.run_slot(slot, ctx))
+        try:
+            # Past its first turn: the box holds work the trace recorded.
+            async with asyncio.timeout(600):
+                while not (slot.traces and slot.traces[0].num_turns >= 1):
+                    assert not running.done(), "the rollout ended before the save"
+                    await asyncio.sleep(0.2)
+            (point,) = await save_all()
+        finally:
+            running.cancel()
+            await asyncio.gather(running, return_exceptions=True)
+    turns_saved = len([node for node in point.trace["nodes"] if node["sampled"]])
+    point = pickle.loads(pickle.dumps(point))
+
+    second = load_environment(config.env)
+    (task,) = list(second.taskset)
+    async with second.serving():
+        episode = await second.run_slot(RunSlot(task, id=slot.id, restore=point), ctx)
+    (trace,) = episode.traces
+    assert trace.ok, [error.message for error in trace.errors]
+    assert trace.id == point.id
+    assert trace.reward == 1.0
+    assert trace.metrics["copied"] == 1.0, [
+        (n.message.role, n.sampled, str(n.message.model_dump(exclude_none=True))[:600])
+        for n in trace.nodes
+    ]
+    assert trace.has_restored and trace.attempt == 2
+    assert trace.num_turns > turns_saved >= 1
+    assert sum(node.parent is None for node in trace.nodes) == 1
+    # The owner holds the snapshot: no rollout deleted it.
+    (snapshot_id,) = [c.id for c in trace.checkpoints if c.pinned]
+    assert snapshot_id == point.checkpoint
+    async with AsyncSandboxClient() as client:
+        assert (await client.get_checkpoint(snapshot_id)).state == "DURABLE"
+    assert await PrimeBackend.discard([Snapshot(id=snapshot_id, type="memory")]) == [
+        snapshot_id
+    ]
     await assert_no_leaks(taken)

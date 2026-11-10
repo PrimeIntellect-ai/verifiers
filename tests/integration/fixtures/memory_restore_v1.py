@@ -23,8 +23,11 @@ FIFO = "nonce.fifo"
 STEP_ONE = "step1.txt"
 DONE = "done.txt"
 READ = f"timeout 10 cat {FIFO}"
-# The nonce is the script's first argument: it lives in the process, not in a file.
-SERVER = f'rm -f {FIFO}; mkfifo {FIFO}; while :; do printf %s "$1" > {FIFO}; done'
+# The nonce is the script's first argument: it lives in the process, not in a file. The
+# sleep lets a reader see the end of one copy before the next write opens the FIFO.
+SERVER = (
+    f'rm -f {FIFO}; mkfifo {FIFO}; while :; do printf %s "$1" > {FIFO}; sleep 0.5; done'
+)
 
 
 class MemoryRestoreTaskConfig(vf.TaskConfig):

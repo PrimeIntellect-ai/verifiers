@@ -132,5 +132,11 @@ async def save_all() -> list[RestorePoint]:
             logger.warning("saving rollout %s failed", rollout.trace.id, exc_info=True)
             return None
 
-    points = await asyncio.gather(*(save(rollout) for rollout in list(LIVE)))
-    return [point for point in points if point is not None]
+    rollouts = list(LIVE)
+    points = [
+        point
+        for point in await asyncio.gather(*(save(rollout) for rollout in rollouts))
+        if point is not None
+    ]
+    logger.info("Saved %d of %d running rollouts", len(points), len(rollouts))
+    return points
