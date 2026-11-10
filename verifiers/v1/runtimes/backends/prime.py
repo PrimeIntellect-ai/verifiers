@@ -60,6 +60,7 @@ _PAUSE_SETTLE_SECONDS = 120
 """How long a pause or a resume gets to take effect; they take seconds."""
 _DEAD_STATUSES = frozenset({"ERROR", "TERMINATED", "TIMEOUT"})
 _STATUS_POLL_SECONDS = 0.3
+_RESUME_RETRY_SECONDS = 600
 """How long a checkpoint gets to become restorable (`DURABLE`): the platform uploads it
 after the request returns, and only a durable one restores."""
 _PUBLIC_DOMAIN = "sandbox-v2-prod.pinfra.io"
@@ -387,8 +388,7 @@ class PrimeBackend(RuntimeBackend):
                     except BaseException:
                         self.stray_snapshots.remove(snapshot)
                         raise
-                    await self._client.resume(self.info.id)
-                    await self._settle("RUNNING", "RESUME_FAILED")
+                    await self._resume()
                 finally:
                     self._awake.set()
                 return snapshot
@@ -401,6 +401,32 @@ class PrimeBackend(RuntimeBackend):
             return await run_shielded(create())
         except Exception as e:
             raise SandboxError(f"prime checkpoint failed: {e}") from e
+
+    async def _resume(self) -> None:
+        """Resume the paused box. The pause freed its memory on its node, which another
+        box may have taken: the platform then refuses the resume until there is room
+        again, so ask until it runs or `_RESUME_RETRY_SECONDS` passed."""
+        deadline = time.monotonic() + _RESUME_RETRY_SECONDS
+        delay = 1.0
+        while True:
+            try:
+                await self._client.resume(self.info.id)
+                await self._settle("RUNNING", "RESUME_FAILED")
+                return
+            except Exception as e:
+                if time.monotonic() > deadline:
+                    raise SandboxError(
+                        f"prime sandbox {self.info.id} did not resume after its "
+                        f"memory snapshot: {e}"
+                    ) from e
+                logger.warning(
+                    "prime: sandbox %s did not resume, asking again in %.0fs: %s",
+                    self.info.id,
+                    delay,
+                    e,
+                )
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, 15)
 
     def _stopped_by_snapshot(self, error: Exception) -> bool:
         """Whether a call failed because a memory snapshot had stopped the box: the
