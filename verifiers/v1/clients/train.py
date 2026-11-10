@@ -166,13 +166,8 @@ def response_from_generate(
             tool_calls=tool_calls,
         ),
         finish_reason=finish,
-        # Preserve provider cache/reasoning details through the same accounting as chat.
-        # Older endpoints/renderers may omit usage; exact token lengths remain a fallback.
-        usage=Usage.from_openai(CompletionUsage.model_validate(result["usage"]))
-        if result.get("usage") is not None
-        else Usage(
-            prompt_tokens=len(prompt_ids), completion_tokens=len(completion_ids)
-        ),
+        # Require provider usage to preserve cache and reasoning accounting.
+        usage=Usage.from_openai(CompletionUsage.model_validate(result["usage"])),
         # The streams are already typed arrays, so skip revalidation.
         tokens=TurnTokens.model_construct(
             prompt_ids=prompt_ids,
