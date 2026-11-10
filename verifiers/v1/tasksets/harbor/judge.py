@@ -61,6 +61,7 @@ async def prepare_judge(task, runtime, trace, reward, raw):
         "reasoning_effort": reward.judge.reasoning_effort
     } | settings.get("sampling", {})
     judge = Judge(JudgeConfig(**settings))
+    reward.judge = reward.judge.model_copy(update={"model": judge.config.model})
     response = [{"type": "text", "text": trace.last_reply}]
     if view == "full_trace":
         exclude = {"provider_state"}
