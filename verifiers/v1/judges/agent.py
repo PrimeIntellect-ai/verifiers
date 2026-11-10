@@ -15,6 +15,7 @@ class AgentJudgeRequest:
     model: str | None = None
     sampling: SamplingConfig | None = None
     timeout: float | None = None
+    """Per-attempt solve budget; provisioning uses the native setup budget."""
     isolated: bool = False
     """Run in a fresh native runtime; task.setup restores its captured inputs."""
     network: NetworkPolicyConfig | None = None
