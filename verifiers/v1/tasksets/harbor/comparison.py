@@ -96,7 +96,8 @@ async def compare_verifiers(
             update={"mode": "isolated"}
         )
         artifacts = {}
-        for artifact in [*trace.task.data.artifacts, *task.data.artifacts]:
+        declared = [*trace.task.data.artifacts, *task.data.artifacts]
+        for artifact in declared:
             source = PurePosixPath(artifact.source)
             if not source.is_absolute():
                 service = getattr(artifact, "service", "main")
@@ -118,15 +119,19 @@ async def compare_verifiers(
             for source, artifact in artifacts.items()
         ):
             raise ValueError(f"{label}: a required submission artifact is absent")
-        task = task.with_data(artifacts=list(artifacts.values()))
+        # Check main-service relative paths before resolving them to absolute
+        # archive keys. Sidecar paths use their own saved workdirs, not the solver's.
         config = verifier_runtime(
-            task.grading_task(solver, scoring=policy),
+            task.with_data(
+                artifacts=[a for a in declared if a.service == "main"]
+            ).grading_task(solver, scoring=policy),
             solver,
             trace.agent.config.runtime,
             policy,
         )
         if any(not mount.read_only for mount in getattr(config, "mounts", {}).values()):
             raise ValueError("comparison verifiers cannot share writable mounts")
+        task = task.with_data(artifacts=list(artifacts.values()))
         prepared[label] = task, policy
     for label, (task, policy) in prepared.items():
         result = copy.deepcopy(comparison.original)
