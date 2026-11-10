@@ -375,7 +375,7 @@ async def compose_services(
             compose_argv += ["-f", f"{root}/overlay.json"]
 
             # Cancellation stops the CLI; the stack removes the project.
-            await compose("up", "--build", "--detach", "--wait")
+            await compose("up", "--detach", "--wait")
             containers = await compose(
                 "ps", "--all", "--format", "{{.ID}} {{.Service}}"
             )

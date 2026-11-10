@@ -62,7 +62,7 @@ jobs:
                 hf-tokenizers-${{ runner.os }}-
 
       - name: Install dependencies
-        run: uv sync
+        run: uv sync --extra harbor
 
       - name: Run unit tests
         run: uv run pytest tests/unit -vv -n auto
@@ -106,6 +106,8 @@ jobs:
             tests: tests/integration/test_service_scoring.py
           - behavior: Native Compose
             tests: tests/integration/test_native_compose.py
+          - behavior: Verifier Build
+            tests: tests/integration/test_verifier_build.py
           - behavior: Tool VMs
             tests: tests/integration/test_tool_vms.py
           - behavior: Mounts
@@ -156,7 +158,7 @@ jobs:
                 hf-tokenizers-${{ runner.os }}-
 
       - name: Install dependencies
-        run: uv sync
+        run: uv sync --extra harbor
 
       - name: Resolve wiki-search corpus revision
         if: matrix.behavior == 'Examples'
