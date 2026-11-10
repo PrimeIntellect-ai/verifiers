@@ -7,7 +7,7 @@ from abc import abstractmethod
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, TypeAlias, TypeVar, cast
+from typing import Any, ClassVar, TypeAlias, TypeVar, cast
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -69,6 +69,15 @@ class ACPConfig:
 
 class ACPHarness(Harness[ConfigT]):
     """Harness backed by one live ACP process and native session per rollout."""
+
+    LOADS_SESSIONS: ClassVar[bool] = False
+    """Whether the pinned agent implements ACP `session/load`, so a new process can
+    continue a session from its files in the box. An agent that does not advertise
+    `loadSession` at runtime takes no snapshots either way."""
+
+    @classmethod
+    def can_restore(cls) -> bool:
+        return cls.LOADS_SESSIONS
 
     async def setup(self, runtime: Runtime) -> None:
         await runtime.prepare_uv_script(

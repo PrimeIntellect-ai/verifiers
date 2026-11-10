@@ -175,7 +175,7 @@ def make_rollout(
     run._pruning = asyncio.Lock()
     run.deleted_snapshots = set()
     run.rewound_snapshots = []
-    run._restored_turn = None
+    run.restored_turns = None
     return run, backend
 
 
@@ -195,7 +195,7 @@ async def test_checkpoint_interval_skips_turns():
 
 async def test_the_restored_turn_is_not_snapshotted_again():
     run, backend = make_rollout(interval=2)
-    run._restored_turn = run.trace.num_turns + 1
+    run.restored_turns = run.trace.num_turns
     assert await run._checkpoint(TURN) is None
     assert backend.taken == 0
 

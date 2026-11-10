@@ -63,7 +63,7 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = False  # TODO
     SUPPORTS_MCP = True
     SUPPORTS_SKILLS = True
-    SUPPORTS_FILESYSTEM_SNAPSHOTS = True
+    LOADS_SESSIONS = True
     SUPPORTS_TOOL_INTERCEPTION = True
 
     def acp_turn_result(self, trace: Trace, result: ACPTurn) -> None:

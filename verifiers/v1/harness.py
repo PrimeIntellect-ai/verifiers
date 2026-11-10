@@ -63,13 +63,6 @@ class Harness(ABC, Generic[ConfigT]):
     SUPPORTS_RESUME: ClassVar[bool] = False
     """Whether the default `resume()` can relaunch this harness from the
     accumulated Messages transcript."""
-    SUPPORTS_FILESYSTEM_SNAPSHOTS: ClassVar[bool] = False
-    """Whether a new process of this harness can continue a rollout in a box restored
-    from a filesystem checkpoint (`HarnessSession.restore`), so a retry restores the
-    newest checkpoint instead of starting over (`AgentConfig.checkpoint`). A rollout
-    checkpoints only when its runtime backend sets `SUPPORTS_FILESYSTEM_SNAPSHOTS` too. Distinct
-    from `SUPPORTS_RESUME`: a restore never finds a live process, its program
-    continues from the conversation the trace or its own session files hold."""
     EXECUTES_CODE: ClassVar[bool] = True
     """Whether the program hands the model local execution in the runtime — true for
     every real harness; the tool-less chat loops (`null`) override to False. Read
@@ -84,6 +77,14 @@ class Harness(ABC, Generic[ConfigT]):
     that installs and drives a third-party program — on the host (subprocess) it
     leaks host state (auth, config, processes) both ways. Only the minimal
     in-house loops (`bash`, `null`) override to False."""
+
+    @classmethod
+    def can_restore(cls) -> bool:
+        """Whether a new process of this harness can continue a rollout in a box
+        restored from a snapshot (`AgentConfig.checkpoint`): the default relaunches on
+        the trace's transcript, so a harness that resumes that way (`SUPPORTS_RESUME`)
+        can."""
+        return cls.SUPPORTS_RESUME
 
     def __init__(self, config: ConfigT) -> None:
         self.config = config

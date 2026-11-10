@@ -2,8 +2,8 @@
 dies as turn 3 goes upstream; the retry restores the newest snapshot, keeps the turns
 before it, and finishes in a new harness process).
 
-Every harness that declares `SUPPORTS_FILESYSTEM_SNAPSHOTS` runs it on prime, the one
-runtime with snapshots; the others are collected as skips. The retention policies run
+Every harness that can continue in a new process (`Harness.can_restore`) runs it on
+prime, the one runtime with snapshots; the others are collected as skips. The retention policies run
 on one harness: what they keep or delete does not depend on it. Every case checks that
 the run leaks no snapshot: each one its boxes took is deleted on the platform once the
 run is final."""

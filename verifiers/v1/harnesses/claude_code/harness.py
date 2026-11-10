@@ -42,7 +42,7 @@ class ClaudeCodeHarness(ACPHarness[ClaudeCodeHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
     SUPPORTS_SKILLS = True
-    SUPPORTS_FILESYSTEM_SNAPSHOTS = True
+    LOADS_SESSIONS = True
     SUPPORTS_TOOL_INTERCEPTION = True
 
     # Claude Code drops whitespace-only text blocks on replay. Closed source: observed

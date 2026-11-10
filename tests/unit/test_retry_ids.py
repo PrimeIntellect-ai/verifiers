@@ -6,6 +6,7 @@ import pytest
 import verifiers.v1 as vf
 import verifiers.v1.agent as agent_module
 import verifiers.v1.utils.retries as retries_module
+from verifiers.v1.configs.agent import RolloutCheckpointConfig
 from verifiers.v1.env import Env, RunSlot
 
 RETRIES = vf.RetryConfig(max_retries=2)
@@ -63,6 +64,58 @@ async def test_agent_retries_keep_the_trace_id(monkeypatch):
     assert {t.id for t in minted} == {trace.id}
     assert trace.attempt == 3
     assert [e.type for e in trace.errors] == ["SandboxError", "SandboxError"]
+
+
+@pytest.mark.asyncio
+async def test_a_restore_that_leads_nowhere_is_not_picked_again(monkeypatch):
+    """Attempt 1 takes a snapshot and fails. Attempt 2 restores it and fails before its
+    first new turn, as a harness that cannot load its session would every time. The
+    next retry starts over instead of restoring the same snapshot again."""
+    restores: list[str | None] = []
+
+    class FakeRollout:
+        runtime = None
+
+        def __init__(self, *, on_trace, trace_id, attempt, restore=None, **_):
+            restores.append(None if restore is None else restore[1].id)
+            self.rewound_snapshots: list[vf.Snapshot] = []
+            self.deleted_snapshots: set[str] = set()
+            self.restored_turns = None
+            if restore is None:
+                self.trace = make_trace(id=trace_id, attempt=attempt)
+            else:
+                self.trace = restore[0]
+                self.trace.attempt = attempt
+                self.restored_turns = self.trace.num_turns
+            on_trace(self.trace)
+
+        async def open(self) -> bool:
+            if self.trace.attempt == 1:
+                self.trace.checkpoints.append(
+                    vf.Checkpoint(
+                        id="c1",
+                        snapshot=vf.Snapshot(id="c1"),
+                        time=vf.TimeSpan(start=1.0, end=2.0),
+                    )
+                )
+            if self.trace.attempt < 3:
+                self.trace.errors.append(FAILURE)
+            else:
+                self.trace.ok = True
+            return False
+
+        async def close(self) -> vf.Trace:
+            return self.trace
+
+    monkeypatch.setattr(agent_module, "Rollout", FakeRollout)
+    agent = vf.Agent(vf.AgentConfig(model="test-model", retries=RETRIES))
+    monkeypatch.setattr(agent, "_rollout_params", lambda *args: {})
+    monkeypatch.setattr(agent, "_checkpointing", lambda: RolloutCheckpointConfig())
+
+    trace = await agent.run(vf.Task(vf.TaskData(idx=0, prompt=None)))
+
+    assert restores == [None, "c1", None]
+    assert trace.ok and trace.attempt == 3
 
 
 @pytest.mark.asyncio

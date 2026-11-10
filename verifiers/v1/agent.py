@@ -663,17 +663,14 @@ class Agent:
             return None
         harness = self.harness
         backend = backend_cls(self.config.runtime)
-        if (
-            harness.SUPPORTS_FILESYSTEM_SNAPSHOTS
-            and backend.SUPPORTS_FILESYSTEM_SNAPSHOTS
-        ):
+        if harness.can_restore() and backend.SUPPORTS_FILESYSTEM_SNAPSHOTS:
             return config
         key = (harness.config.id, self.config.runtime.type)
         if key not in _checkpointing_warned:
             _checkpointing_warned.add(key)
             reason = (
                 f"harness {harness.config.id!r} does not support it"
-                if not harness.SUPPORTS_FILESYSTEM_SNAPSHOTS
+                if not harness.can_restore()
                 else f"the {self.config.runtime.type!r} runtime takes no snapshots"
             )
             logger.warning(
@@ -774,10 +771,19 @@ class Agent:
                         (c.snapshot.id, c.snapshot) for c in trace.checkpoints
                     )
                     deleted.update(run.deleted_snapshots)
-                    if target is not None and any(
-                        error.stage == "setup" for error in trace.errors[seen:]
+                    if (
+                        target is not None
+                        and any(error.stage == "setup" for error in trace.errors[seen:])
+                        or (
+                            not trace.ok
+                            and run.restored_turns is not None
+                            and trace.num_turns <= run.restored_turns
+                        )
                     ):
-                        # The box never booted from it: the next retry steps back.
+                        # The restore led nowhere: the box never booted from it, or the
+                        # attempt failed before its first new turn (a harness that
+                        # cannot load its session fails the same way every time). The
+                        # next retry steps back to an older snapshot, or starts over.
                         failed_restores.add(target.id)
                     if trace.ok:
                         break

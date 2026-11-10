@@ -189,9 +189,10 @@ class Rollout:
         """The snapshots still on their way to restorable, by checkpoint id."""
         self._attempt = attempt
         self._restore: Checkpoint | None = None
-        self._restored_turn: int | None = None
-        """The turn the restored snapshot was taken at, which this run does not
-        snapshot again."""
+        self.restored_turns: int | None = None
+        """The model turns the restored trace held when this run began (None for a run
+        that did not restore). The next turn is the one the snapshot was taken at, which
+        this run does not snapshot again."""
         self._harness_data: TaskData | None = None
         self.deleted_snapshots: set[str] = set()
         """The snapshots this run deleted."""
@@ -203,7 +204,7 @@ class Rollout:
             self.trace, self._restore = restore
             self.trace.attempt = attempt
             self.rewound_snapshots = self.trace.rewind(self._restore)
-            self._restored_turn = self.trace.num_turns + 1
+            self.restored_turns = self.trace.num_turns
             self._restore.restored = True
         else:
             self.trace = Trace(
@@ -828,9 +829,8 @@ class Rollout:
         assert self.runtime is not None
         assert self._checkpointing is not None
         turn_number = self.trace.num_turns + 1
-        if (
-            turn_number % self._checkpointing.interval
-            or turn_number == self._restored_turn
+        if turn_number % self._checkpointing.interval or (
+            self.restored_turns is not None and turn_number == self.restored_turns + 1
         ):
             return None
         if len(self.trace._pending) > 1:

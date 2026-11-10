@@ -75,7 +75,7 @@ Class-level capability flags declare which optional features your harness implem
 - `APPENDS_SYSTEM_PROMPT`: passes `TaskData.system_prompt` as a separate system message; when `False`, `resolve_prompt` prepends it to the first user message instead.
 - `SUPPORTS_MCP`: indicates that `launch` wires `mcp_urls` into the program.
 - `SUPPORTS_RESUME`: indicates that a multi-turn exchange can restart from the conversation so far (programs with native session state should override `resume` or `session` instead). Note that live mid-turn steering requires a `HarnessSession` that implements `steer`; conversation resume support alone is not enough (see [message delivery](agent.md#messages-during-an-active-turn)).
-- `SUPPORTS_FILESYSTEM_SNAPSHOTS`: indicates that a new process of the harness can continue a rollout in a box restored from a filesystem snapshot (`agent.checkpoint`). Keep per-rollout state in the box (for example under `/tmp/vf-<harness>-runs/<trace id>`), so the snapshot holds it.
+- `LOADS_SESSIONS` (ACP harnesses): indicates that the pinned agent implements ACP `session/load`, so a new process can continue a rollout in a box restored from a snapshot (`agent.checkpoint`). A harness with `SUPPORTS_RESUME` needs nothing more: a restore relaunches it on the transcript. Keep per-rollout state in the box (for example under `/tmp/vf-<harness>-runs/<trace id>`), so the snapshot holds it.
 - `SUPPORTS_SKILLS`: indicates that the harness calls `install_skills` to copy configured skills into the directory where the program discovers them.
 - `SUPPORTS_TOOL_INTERCEPTION`: indicates that the harness checks tool calls against the rollout's tool gate (`tool_interception_url`) before executing them.
 

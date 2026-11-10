@@ -142,7 +142,7 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
     SUPPORTS_SKILLS = True
-    SUPPORTS_FILESYSTEM_SNAPSHOTS = True
+    LOADS_SESSIONS = True
     _skills_install_dir: str | None = None
 
     async def setup(self, runtime: Runtime) -> None:

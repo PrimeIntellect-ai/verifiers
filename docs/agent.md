@@ -77,7 +77,7 @@ skip_on_timeout = true
 
 `[env.agent.retries]` sets a retry budget per error type: `rules` are checked in order, and the first rule where all fields match sets the budget for that error; unmatched errors use the top-level `max_retries` budget.
 
-Rollout checkpointing is on by default: a retry restores the newest snapshot of the box and continues the trace from there, instead of starting over. The runtime takes the best snapshot it supports, and each checkpoint records its type. It needs a runtime and a harness that set `SUPPORTS_FILESYSTEM_SNAPSHOTS` (prime; null, bash, rlm, codex, claude-code). Elsewhere a retry starts over. Every snapshot is deleted once the run is final. Set `--no-env.agent.checkpoint` to turn it off.
+Rollout checkpointing is on by default: a retry restores the newest snapshot of the box and continues the trace from there, instead of starting over. The runtime takes the best snapshot it supports, and each checkpoint records its type. It needs a runtime that takes snapshots (prime) and a harness whose new process can continue the rollout: one that resumes on the transcript (`SUPPORTS_RESUME`: null, bash, browser-use) or an ACP harness whose agent loads its session from files (`LOADS_SESSIONS`: claude-code, codex, rlm). Elsewhere a retry starts over, as it does when a restore fails before the restored attempt's first new turn. Every snapshot is deleted once the run is final. Set `--no-env.agent.checkpoint` to turn it off.
 
 ```toml
 [env.agent.checkpoint]

@@ -43,7 +43,8 @@ class RolloutCheckpointConfig(BaseConfig):
     """Rollout checkpointing: snapshot the box every n-th model turn, so a retry
     continues from the newest snapshot instead of starting over. The runtime takes the
     best snapshot it supports, and each checkpoint records its type. Needs a runtime
-    and a harness that set `SUPPORTS_FILESYSTEM_SNAPSHOTS`; elsewhere a retry starts
+    that takes snapshots (`SUPPORTS_FILESYSTEM_SNAPSHOTS`) and a harness whose new
+    process can continue the rollout (`Harness.can_restore`); elsewhere a retry starts
     over. Every snapshot is deleted once the run is final."""
 
     interval: PositiveInt = 10

@@ -11,8 +11,8 @@ the code.
 
 A harness without a capability the behavior needs is collected as a skip with its
 reason (`Harness.EXECUTES_CODE`, `SUPPORTS_MCP`, `SUPPORTS_SKILLS`, resume support via
-`SUPPORTS_RESUME` or a native session). A `snapshots` need asks both the harness and
-the runtime for `SUPPORTS_FILESYSTEM_SNAPSHOTS`.
+`SUPPORTS_RESUME` or a native session). A `snapshots` need asks the runtime for
+`SUPPORTS_FILESYSTEM_SNAPSHOTS` and the harness for `Harness.can_restore`.
 
 A runtime without a feature the behavior needs (`RuntimeBackend.SUPPORTS_*`, or a
 `NetworkPolicyConfig` for a network policy) skips the cell the same way. That a runtime
@@ -177,7 +177,7 @@ def unsupported(
         return f"{name} has no native skill support"
     if "resume" in needs and not resumes(cls):
         return f"{name} cannot resume an exchange"
-    if "snapshots" in needs and not cls.SUPPORTS_FILESYSTEM_SNAPSHOTS:
+    if "snapshots" in needs and not cls.can_restore():
         return f"{name} cannot restore a snapshot"
     runtime_needs = (*(("container",) if cls.NEEDS_CONTAINER else ()), *needs)
     for feature in runtime_needs:
