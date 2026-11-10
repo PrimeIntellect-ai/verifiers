@@ -2,6 +2,8 @@
 conversation each turn (echo-user-sim), across the harness x runtime grid; and the
 caller drives an agent turn by turn through `agent.interaction`."""
 
+import os
+
 import pytest
 from grid import assert_one_branch, grid
 
@@ -71,3 +73,34 @@ async def test_interaction(live_ctx):
     assert trace.stop_condition == "user_closed"  # closing the interaction ended it
     assert trace.num_turns == 2
     assert trace.num_branches == 1
+
+
+class WritesAnswer(vf.Task):
+    async def setup(self, trace, runtime):
+        await runtime.write("/app/answer.txt", b"done")
+
+
+@pytest.mark.prime
+@pytest.mark.skipif(not os.environ.get("PRIME_API_KEY"), reason="needs PRIME_API_KEY")
+async def test_interaction_collects_artifacts(scripted_model):
+    """An interaction collects the task's declared artifacts at close, as `run` does."""
+    from verifiers.v1.harnesses.null import NullHarnessConfig
+
+    agent = vf.make_agent(
+        vf.AgentConfig(
+            harness=NullHarnessConfig(id="null"),
+            runtime=vf.PrimeConfig(labels=["vf-ci"]),
+            model="scripted",
+            client={"type": "eval", **scripted_model},
+        ),
+    )
+    task = WritesAnswer(
+        vf.TaskData(
+            idx=0, prompt=None, artifacts=[vf.Artifact(source="/app/answer.txt")]
+        )
+    )
+    async with agent.interaction(task, collect_artifacts=True) as interaction:
+        await interaction.turn("hello")
+    trace = interaction.trace
+    assert trace.errors == []
+    assert "/app/answer.txt" in trace.state.artifacts
