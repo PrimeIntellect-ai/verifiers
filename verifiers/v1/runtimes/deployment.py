@@ -75,7 +75,7 @@ class Deployment:
 
     def __init__(
         self,
-        backend: RuntimeBackend,
+        backend: RuntimeBackend | None = None,
         *,
         spec: ComposeSpec | ServicesSpec | None = None,
         tool_vms: Mapping[str, PrimeConfig] | None = None,
@@ -93,7 +93,12 @@ class Deployment:
         self.borrowed_runtime = borrowed_runtime
         from verifiers.v1.runtimes.strategies import _deployment_strategy
 
-        self._strategy = _deployment_strategy(self.config, backend, spec, self.tool_vms)
+        # Saved submissions need only verifier ownership, with no solver to start.
+        self._strategy = (
+            _deployment_strategy(self.config, backend, spec, self.tool_vms)
+            if backend is not None
+            else _DeploymentStrategy()
+        )
         self.target_backends: dict[str, RuntimeBackend] = {}
         self.hosts: dict[str, str] = {}
         """LAN hostnames of native services or tool servers on their own VMs."""
