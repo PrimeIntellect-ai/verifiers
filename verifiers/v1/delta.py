@@ -81,9 +81,12 @@ class DeltaStreamer:
     """Sends the current traces' changes as deltas, one flush per burst of changes.
 
     `watch` subscribes a trace; each `Trace.notify` schedules a flush, and changes landing in the
-    same loop iteration share it. Use as an async context manager around the run: a clean exit
-    flushes the final state, a failed one cancels pending sends. A cursor advances only once its
-    delta is sent, so a failed send is diffed again at the next flush."""
+    same loop iteration share it. A flush diffs only the traces that notified since their last
+    delta was sent (and those never sent), so its cost follows what changed, not how many traces
+    are watched. Use as an async context manager around the run: a clean exit flushes the final
+    state of every trace, notified or not; a failed one cancels pending sends. A cursor advances
+    only once its delta is sent, so a failed send leaves its trace to be diffed again at the next
+    flush."""
 
     def __init__(
         self,
@@ -93,6 +96,10 @@ class DeltaStreamer:
         self.traces = traces
         self.send = send
         self.cursors: dict[str, TraceCursor] = {}
+        self._dirty: dict[str, int] = {}
+        """Trace id -> the change that last marked it. A sent delta clears the mark only if no
+        change came in while it was being sent."""
+        self._changes = 0
         self._scheduled: asyncio.Handle | None = None
         self._flushes: set[asyncio.Task] = set()
         self._lock = asyncio.Lock()
@@ -111,7 +118,7 @@ class DeltaStreamer:
                 task.cancel()
         await asyncio.gather(*self._flushes, return_exceptions=True)
         if exc_type is None:
-            await self.flush()
+            await self.flush(everything=True)
 
     def watch(self, trace: Trace) -> None:
         # A plain function, not the bound method: grading deep-copies traces mid-run, and a
@@ -120,6 +127,8 @@ class DeltaStreamer:
         self._changed(trace)
 
     def _changed(self, trace: Trace) -> None:
+        self._changes += 1
+        self._dirty[trace.id] = self._changes
         if self._scheduled is None and not self._closed:
             self._scheduled = asyncio.get_running_loop().call_soon(self._start_flush)
 
@@ -129,9 +138,12 @@ class DeltaStreamer:
         self._flushes.add(task)
         task.add_done_callback(self._flushes.discard)
 
-    async def flush(self) -> None:
+    async def flush(self, everything: bool = False) -> None:
+        """Send the deltas of the traces that notified; `everything`: of every trace, for a
+        change no `notify` announced."""
         async with self._lock:  # deltas must leave in diff order
-            for trace_id, delta, cursor in self.diff():
+            marks = dict(self._dirty)
+            for trace_id, delta, cursor in self.diff(everything):
                 # The cursor stays put on failure: the next flush resends it.
                 try:
                     await self.send(delta)
@@ -147,10 +159,15 @@ class DeltaStreamer:
                     self.cursors.pop(trace_id, None)
                 else:
                     self.cursors[trace_id] = cursor
+                if trace_id in marks and self._dirty.get(trace_id) == marks[trace_id]:
+                    del self._dirty[trace_id]
 
-    def diff(self) -> list[tuple[str, dict, TraceCursor | None]]:
-        """Each trace's delta, with its cursor as it stands once that delta is sent (None for a
-        discard). Nothing is committed here: `flush` stores a cursor only after its send."""
+    def diff(
+        self, everything: bool = False
+    ) -> list[tuple[str, dict, TraceCursor | None]]:
+        """Each notified trace's delta (`everything`: each trace's), with its cursor as it stands
+        once that delta is sent (None for a discard). Nothing is committed here: `flush` stores
+        a cursor only after its send."""
         traces = list(self.traces())
         live = {trace.id for trace in traces}
         # A trace that left the live set (a retried attempt) is discarded on the other side too.
@@ -159,11 +176,16 @@ class DeltaStreamer:
             for gone in self.cursors
             if gone not in live
         ]
+        for gone in [gone for gone in self._dirty if gone not in live]:
+            if gone not in self.cursors:  # never sent, or its discard already went
+                del self._dirty[gone]
         for trace in traces:
             delta: dict[str, Any] = {"trace": trace.id}
             sent = self.cursors.get(trace.id)
             if sent is not None and sent.attempt != trace.attempt:
                 sent = None  # a retry's fresh trace under the same id: reopen it from scratch
+            if sent is not None and not everything and trace.id not in self._dirty:
+                continue  # nothing announced since its last delta
             cursor = sent.copy() if sent is not None else TraceCursor(trace.attempt)
             if sent is None:
                 delta["open"] = dump(trace, include=set(HEADER_FIELDS))
@@ -211,6 +233,8 @@ class DeltaStreamer:
                 cursor.pending = delta["pending"] = pending
             if len(delta) > 1:
                 deltas.append((trace.id, delta, cursor))
+            else:
+                self._dirty.pop(trace.id, None)
         return deltas
 
 

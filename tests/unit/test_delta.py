@@ -56,14 +56,14 @@ def add_turn(trace: vf.Trace, reply: str) -> None:
     trace.notify()
 
 
-def recorder(traces: list[vf.Trace]):
+def recorder(traces: list[vf.Trace], kind: type[DeltaStreamer] = DeltaStreamer):
     """A streamer over `traces` whose `send` keeps a copy of each delta, as a wire would."""
     sent: list[dict] = []
 
     async def send(delta: dict) -> None:
         sent.append(copy.deepcopy(delta))
 
-    return DeltaStreamer(lambda: traces, send), sent
+    return kind(lambda: traces, send), sent
 
 
 def assemble(deltas: list[dict]) -> EpisodeAssembly:
@@ -164,3 +164,99 @@ async def test_an_array_in_info_survives_a_grading_copy():
         trace.info["arr"][0] = 7.0
         trace.notify()
     assert assemble(sent).traces[trace.id]["info"]["arr"].tolist() == [7.0, 0.0]
+
+
+class EveryTrace(DeltaStreamer):
+    """Diffs every watched trace at each flush, as the streamer did before it kept marks."""
+
+    def diff(self, everything: bool = False):
+        return super().diff(everything=True)
+
+
+async def three_traces(streamer: DeltaStreamer, traces: list[vf.Trace]) -> None:
+    async with streamer:
+        for trace in traces:
+            streamer.watch(trace)
+        await settle()
+        for turn in range(4):
+            for index, trace in enumerate(traces):
+                if (turn + index) % 2:
+                    add_turn(trace, f"{index}.{turn}")
+            await settle()
+        traces[1].nodes[1].semantic_parents.append(
+            ParentLink(node=0, type="compaction")
+        )
+        traces[1].notify()
+        traces[2].record_reward("match", 1.0)
+        traces[2].notify()
+        await settle()
+        traces[0].info["late"] = True  # no notify: rides the exit's flush
+
+
+def untimed(value):
+    """`value` without wall-clock stamps, which differ between two runs of one scenario."""
+    if isinstance(value, dict):
+        return {
+            k: untimed(v) for k, v in value.items() if k not in ("timestamp", "start")
+        }
+    if isinstance(value, list):
+        return [untimed(item) for item in value]
+    return value
+
+
+@pytest.mark.asyncio
+async def test_a_flush_sends_what_diffing_every_trace_sends():
+    """Diffing only the notified traces sends the same deltas, in the same order, as diffing
+    every trace when every change notifies; the exit's flush catches an unannounced change."""
+    runs = []
+    for kind in (DeltaStreamer, EveryTrace):
+        traces = [make_trace(id=f"t{index}") for index in range(3)]
+        streamer, sent = recorder(traces, kind)
+        await three_traces(streamer, traces)
+        runs.append(sent)
+    assert untimed(runs[0]) == untimed(runs[1])
+    assert {"late": True}.items() <= runs[0][-1]["set"]["info"].items()
+
+
+@pytest.mark.asyncio
+async def test_a_flush_diffs_only_the_traces_that_notified():
+    """A notify costs its own trace's diff: other watched traces are not diffed, and one
+    whose delta failed to send is diffed again at the next flush, whoever triggers it."""
+    traces = [make_trace(), make_trace()]
+    first, second = traces
+    sent: list[str] = []
+    fail = False
+
+    async def send(delta: dict) -> None:
+        if fail:
+            raise OSError("host unreachable")
+        sent.append(delta["trace"])
+
+    async with DeltaStreamer(lambda: traces, send) as streamer:
+        for trace in traces:
+            streamer.watch(trace)
+        await settle()
+        sent.clear()
+        diffed: list[str] = []
+        dump_trace = streamer.diff
+
+        def diff(everything: bool = False):
+            deltas = dump_trace(everything)
+            diffed.extend(trace_id for trace_id, _, _ in deltas)
+            return deltas
+
+        streamer.diff = diff
+        second.info["note"] = "no notify yet"
+        add_turn(first, "a1")
+        await settle()
+        assert sent == diffed == [first.id]
+        fail = True
+        add_turn(first, "a2")
+        await settle()
+        fail = False
+        second.notify()
+        await settle()
+        assert sent == [first.id, first.id, second.id]
+        sent.clear()
+        second.record_reward("match", 1.0)
+    assert sent == [second.id], "the exit flushes what no notify announced"
