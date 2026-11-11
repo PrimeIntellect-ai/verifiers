@@ -35,7 +35,7 @@ from verifiers.v1.dialects import parse_message
 from verifiers.v1.harness import Harness
 from verifiers.v1.interception import Interception, InterceptionServer
 from verifiers.v1.mcp import SharedToolServer
-from verifiers.v1.restore import RestorePoint, restoring, unsaveable
+from verifiers.v1.restore import open_restore, restoring, unsaveable
 from verifiers.v1.rollout import Rollout, RolloutTimeouts
 from verifiers.v1.runtimes import (
     Runtime,
@@ -711,7 +711,7 @@ class Agent:
         on_trace: Callable[[Trace], None] | None = None,
         collect_artifacts: bool = False,
         on_score: Callable[[Trace, Runtime], Awaitable[None]] | None = None,
-        restore: RestorePoint | None = None,
+        restore: dict[str, Any] | None = None,
     ) -> Trace:
         """Run this agent on `task` once and return the trace: one segment — the
         program runs on the task's prompt until it exits (a multi-turn exchange
@@ -730,7 +730,7 @@ class Agent:
         the selected verifier workspace, inside its timeout and retry boundary.
         `restore` continues a rollout another process saved (`save_all`) instead of
         starting one: its trace, in a new box from its memory checkpoint; the episode's
-        restore point (`RunSlot.restore`) is taken the same way."""
+        saved trace (`RunSlot.restore`) is taken the same way."""
         if self._closed:
             raise RuntimeError("Agent is closed; create a new agent")
         retry = self.config.retries
@@ -741,6 +741,7 @@ class Agent:
         trace: Trace | None = None
         target: Checkpoint | None = None  # the checkpoint the next attempt restores
         first_attempt = 0  # the attempts the trace made before this run
+        offered: str | None = None  # the checkpoint of the owner's saved trace
         pending = restoring.get()
         if restore is None and pending:
             restore = pending.pop()
@@ -748,11 +749,12 @@ class Agent:
             if checkpointing is None:
                 logger.warning(
                     "Starting rollout %s over: this agent takes no checkpoints, so it "
-                    "cannot continue from its restore point",
-                    restore.id,
+                    "cannot continue from its saved trace",
+                    restore.get("id"),
                 )
             else:
-                trace, target = restore.open(task)
+                trace, target = open_restore(restore, task)
+                offered = target.id
                 trace_id = trace.id
                 first_attempt = trace.attempt
                 if on_trace is not None:
@@ -824,16 +826,15 @@ class Agent:
                     if trace.ok:
                         break
                     if (
-                        restore is not None
-                        and target is not None
-                        and target.id == restore.checkpoint
+                        target is not None
+                        and target.id == offered
                         and target.id in failed_restores
                     ):
-                        # The owner's restore point is an offer, not an attempt of
+                        # The owner's saved trace is an offer, not an attempt of
                         # this run: without it the rollout would have started over,
                         # so it does that now and keeps its retries.
                         logger.warning(
-                            "Starting rollout over: restore point %s led nowhere - %s",
+                            "Starting rollout over: saved trace %s led nowhere - %s",
                             target.id,
                             clip(trace.errors[-1].message) if trace.errors else "",
                         )

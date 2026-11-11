@@ -9,7 +9,7 @@ import uuid
 from collections.abc import Awaitable, Callable
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal
 from urllib.parse import urlsplit
 
 from verifiers.v1.clients import ModelContext
@@ -36,7 +36,7 @@ from verifiers.v1.harness import Harness, HarnessSession
 from verifiers.v1.interception import Interception, serve_interception
 from verifiers.v1.interception.relay import Relay
 from verifiers.v1.mcp import SharedToolServer, serve_tools
-from verifiers.v1.restore import LIVE, RestorePoint, unsaveable
+from verifiers.v1.restore import LIVE, restorable, unsaveable
 from verifiers.v1.runtimes import (
     Runtime,
     RuntimeConfig,
@@ -529,7 +529,8 @@ class Rollout:
                     and self._memory
                 ):
                     self._session.checkpointer = self._checkpoint
-                    self._session.rescuer = self._rescue
+                    if self._checkpointing.on_error:
+                        self._session.rescuer = self._rescue
                 logger.debug(
                     "Set up %s harness in %s",
                     self.harness.config.name,
@@ -961,13 +962,14 @@ class Rollout:
     def _last_node(self) -> int | None:
         return len(self.trace.nodes) - 1 if self.trace.nodes else None
 
-    async def save(self, *, hold: bool = False) -> RestorePoint | None:
-        """Take a memory checkpoint of the running rollout now and return its restore
-        point, for an owner that continues the rollout in another process
-        (`save_all`). The owner holds the snapshot (`Checkpoint.pinned`); it becomes
-        restorable from any node in the background, and this run's teardown waits for
-        that. With `hold`, nothing the box asked for is answered until `release`, so
-        the rollout cannot move past its restore point while the owner records it.
+    async def save(self, *, hold: bool = False) -> dict[str, Any] | None:
+        """Take a memory checkpoint of the running rollout now and return its trace as
+        saved (`restorable`), for an owner that continues the rollout in another
+        process (`save_all`). The owner holds the snapshot (`Checkpoint.pinned`); it
+        becomes restorable from any node in the background, and this run's teardown
+        waits for that. With `hold`, nothing the box asked for is answered until
+        `release`, so the rollout cannot move past its checkpoint while the owner
+        records it.
         None when the rollout takes no memory snapshots (`unsaveable`), runs no
         segment, or the snapshot failed; `save_skipped` then says which."""
         self.save_skipped = None
@@ -998,7 +1000,7 @@ class Rollout:
             self._release_timer = asyncio.get_running_loop().call_later(
                 HOLD_SECONDS, self.release
             )
-        return RestorePoint.of(self.trace, checkpoint)
+        return restorable(self.trace, checkpoint)
 
     def release(self) -> None:
         """Answer the box again after a `save(hold=True)`."""

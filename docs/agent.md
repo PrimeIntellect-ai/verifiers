@@ -77,13 +77,14 @@ skip_on_timeout = true
 
 `[env.agent.retries]` sets a retry budget per error type: `rules` are checked in order, and the first rule where all fields match sets the budget for that error; unmatched errors use the top-level `max_retries` budget.
 
-Rollout checkpointing is on by default: a retry restores the newest snapshot of the box and continues the trace from there, instead of starting over.
+Rollout checkpointing is on by default: a rollout can be snapshotted, and a retry restores the newest snapshot of the box and continues the trace from there, instead of starting over.
 
-A rollout takes a snapshot only when it needs one:
+By default a rollout takes a snapshot only when its owner saves it (`save_all`, below). Two settings add snapshots that the rollout takes by itself:
 
-- When a model call fails with an error that the run retries (`[env.agent.retries]`). The snapshot is taken before the harness gets the error, so the box that the retry restores still waits for the reply and asks for the call again. A rollout that never fails takes no snapshot and is never stopped.
-- When its owner saves it (`save_all`, below).
-- With `interval`, also at every n-th model turn. This covers failures that leave no box to snapshot: the box died, or the harness program crashed. Without it, a retry after such a failure starts over.
+- `on_error`: when a model call fails with an error that the run retries (`[env.agent.retries]`). The snapshot is taken before the harness gets the error, so the box that the retry restores still waits for the reply and asks for the call again. This helps only when the harness would end on the error. A harness that handles a failed call itself never uses the snapshot.
+- `interval`: at every n-th model turn. This covers failures that leave no box to snapshot: the box died, or the harness program crashed.
+
+Without a snapshot, a retry starts over.
 
 A snapshot holds the box's files and its memory. The restored box continues every process where the snapshot stopped it: the harness program, its sub-agents and shells, and the task's own processes. The harness gets no notice and starts no new process; a model call that was open is asked again. The snapshot stops the box for a few seconds.
 
@@ -98,8 +99,9 @@ A retry also starts over when a restore fails before the restored attempt's firs
 
 ```toml
 [env.agent.checkpoint]
-# interval = 10  # also snapshot at the 10th, 20th, ... model turn (off by default)
+# on_error = true  # snapshot when a model call fails with an error the run retries (off by default)
+# interval = 10    # snapshot at the 10th, 20th, ... model turn (off by default)
 keep = "last"  # snapshots kept while the rollout runs: "last", or every k-th plus the newest
 ```
 
-An owner that outlives its process, such as a training run that stops and resumes, saves its running rollouts instead of waiting for a failure. `verifiers.v1.restore.save_all()` takes a memory snapshot of every running rollout of the process now and returns a `RestorePoint` for each: plain data the owner stores. A later process continues a rollout from its point with `RunSlot(task, id=..., restore=point)` (or `Agent.run(task, restore=point)`): same trace, a new box, and the harness program still running. The owner holds these snapshots; it deletes them with `PrimeBackend.discard` once nothing will restore them. A restore point continues one rollout: an episode with more than one agent run cannot continue from the point of one of them, and starts over.
+An owner that outlives its process, such as a training run that stops and resumes, saves its running rollouts instead of waiting for a failure. `verifiers.v1.restore.save_all()` takes a memory snapshot of every running rollout of the process now and returns the trace of each as plain data the owner stores. The trace holds everything a restore needs, on the entry of its checkpoint. A later process continues a rollout from its saved trace with `RunSlot(task, id=..., restore=trace)` (or `Agent.run(task, restore=trace)`): same trace, a new box, and the harness program still running. The owner holds these snapshots; it deletes them with `PrimeBackend.discard` once nothing will restore them. A saved trace continues one rollout: an episode with more than one agent run cannot continue from the trace of one of them, and starts over.

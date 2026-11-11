@@ -40,19 +40,26 @@ class TimeoutConfig(BaseConfig):
 
 
 class RolloutCheckpointConfig(BaseConfig):
-    """Rollout checkpointing: snapshot the box's files and memory when a model call
-    fails with an error the run retries, so the retry continues from there instead of
-    starting over. The snapshot is taken before the harness gets the error: the
-    restored box continues the harness program itself and asks for the call again. A
-    rollout that never fails takes no snapshot. A snapshot stops the box for a few
-    seconds. It needs a runtime that takes memory snapshots
+    """Rollout checkpointing: snapshot the box's files and memory, so a retry or
+    another process continues the rollout from there instead of starting over. The
+    restored box continues the harness program itself and asks again for the model
+    call that was open. By default a rollout takes a snapshot only when its owner
+    saves it (`save_all`); `on_error` and `interval` add snapshots the rollout takes
+    by itself. A snapshot stops the box for a few seconds. It needs a runtime that
+    takes memory snapshots
     (`SUPPORTS_MEMORY_SNAPSHOTS`), a harness that runs detached from the host
     (`Harness.SUPPORTS_MEMORY_RESTORE`) and a rollout without tool servers or services
     of its own. Elsewhere a retry starts over. Every snapshot is deleted once the run
     is final."""
 
+    on_error: bool = False
+    """Snapshot when a model call fails with an error the run retries, before the
+    harness gets the error: the retry continues the box that still waits for the
+    reply. It helps when the harness would end on the error; a harness that handles a
+    failed call itself (its SDK retries, or a sub-agent is started again) never uses
+    the snapshot."""
     interval: PositiveInt | None = None
-    """Also snapshot at every n-th model turn (the n-th, the 2n-th, ...), for failures
+    """Snapshot at every n-th model turn (the n-th, the 2n-th, ...), for failures
     that leave no box to snapshot (the box died, the harness program crashed): a retry
     then loses fewer than n turns instead of starting over. None takes none."""
     keep: Literal["last"] | PositiveInt = "last"
@@ -101,9 +108,9 @@ class AgentConfig(BaseConfig):
     checkpoint: RolloutCheckpointConfig | None = Field(
         default_factory=RolloutCheckpointConfig
     )
-    """Rollout checkpointing, on by default: snapshot the box as turns go upstream, so
-    a retry restores the newest snapshot instead of starting over (see
-    `RolloutCheckpointConfig`). None turns it off."""
+    """Rollout checkpointing, on by default: the rollout can be snapshotted, so its
+    owner can save it and a retry restores its newest snapshot instead of starting
+    over (see `RolloutCheckpointConfig`). None turns it off."""
 
     network_notice: bool = True
     """Include the runtime's network restrictions in the agent's prompt."""

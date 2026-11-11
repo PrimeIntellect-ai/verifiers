@@ -20,7 +20,7 @@ from subagent_restore import sub_agent_turns
 
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.env import RunSlot
-from verifiers.v1.restore import save_all
+from verifiers.v1.restore import restore_entry, save_all
 from verifiers.v1.runtimes import PrimeBackend, Snapshot
 from verifiers.v1.utils.loaders import harness_class, load_environment
 
@@ -73,7 +73,12 @@ async def restored_trace(
         harness=harness,
         runtime=harness_runtime,
         taskset_overrides={"task": {"fail_turn": fail_turn}},
-        env={"agent": {"retries": RETRIES, "checkpoint": checkpoint}},
+        env={
+            "agent": {
+                "retries": RETRIES,
+                "checkpoint": {"on_error": True, **checkpoint},
+            }
+        },
         max_turns=12,
         max_tokens=4096,
     )
@@ -175,7 +180,7 @@ async def test_another_owner_continues_a_saved_rollout(taken, harness, harness_r
     )
 
     slot, point = await saved_rollout(config, ctx)
-    turns_saved = len([node for node in point.trace["nodes"] if node["sampled"]])
+    turns_saved = len([node for node in point["nodes"] if node["sampled"]])
     point = pickle.loads(pickle.dumps(point))
 
     second = load_environment(config.env)
@@ -184,7 +189,7 @@ async def test_another_owner_continues_a_saved_rollout(taken, harness, harness_r
         episode = await second.run_slot(RunSlot(task, id=slot.id, restore=point), ctx)
     (trace,) = episode.traces
     assert trace.ok, [error.message for error in trace.errors]
-    assert trace.id == point.id
+    assert trace.id == point["id"]
     assert trace.reward == 1.0
     assert trace.metrics["copied"] == 1.0, [
         (n.message.role, n.sampled, str(n.message.model_dump(exclude_none=True))[:600])
@@ -195,7 +200,7 @@ async def test_another_owner_continues_a_saved_rollout(taken, harness, harness_r
     assert sum(node.parent is None for node in trace.nodes) == 1
     # The owner holds the snapshot: no rollout deleted it.
     (snapshot_id,) = [c.id for c in trace.checkpoints if c.pinned]
-    assert snapshot_id == point.checkpoint
+    assert snapshot_id == restore_entry(point)["id"]
     async with AsyncSandboxClient() as client:
         assert (await client.get_checkpoint(snapshot_id)).state == "DURABLE"
     assert await PrimeBackend.discard([Snapshot(id=snapshot_id)]) == [snapshot_id]
@@ -223,8 +228,8 @@ async def test_a_restore_point_that_leads_nowhere_starts_the_rollout_over(
     )
 
     slot, point = await saved_rollout(config, ctx)
-    snapshot_id = point.snapshot["id"]
-    point.snapshot["id"] = "no-such-checkpoint"
+    snapshot = restore_entry(point)["snapshot"]
+    snapshot_id, snapshot["id"] = snapshot["id"], "no-such-checkpoint"
 
     second = load_environment(config.env)
     (task,) = list(second.taskset)
@@ -232,7 +237,7 @@ async def test_a_restore_point_that_leads_nowhere_starts_the_rollout_over(
         episode = await second.run_slot(RunSlot(task, id=slot.id, restore=point), ctx)
     (trace,) = episode.traces
     assert trace.ok, [error.message for error in trace.errors]
-    assert trace.id == point.id
+    assert trace.id == point["id"]
     assert trace.reward == 1.0
     assert trace.attempt == 3
 
@@ -267,7 +272,7 @@ async def test_another_owner_continues_running_sub_agents(
     slot, point = await saved_rollout(
         config, ctx, ready=lambda trace: all(sub_agent_turns(trace).values())
     )
-    saved = len(point.trace["nodes"])
+    saved = len(point["nodes"])
     point = pickle.loads(pickle.dumps(point))
 
     second = load_environment(config.env)

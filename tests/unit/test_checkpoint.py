@@ -14,7 +14,7 @@ from verifiers.v1.configs.agent import RolloutCheckpointConfig
 from verifiers.v1.configs.client import EvalClientConfig
 from verifiers.v1.configs.retries import RetryConfig
 from verifiers.v1.graph import MessageNode
-from verifiers.v1.restore import RestorePoint, unsaveable
+from verifiers.v1.restore import open_restore, restore_entry, unsaveable
 from verifiers.v1.rollout import Rollout, kept
 from verifiers.v1.session import IdempotentRequest, ReplayResponse, RolloutSession
 from verifiers.v1.trace import (
@@ -348,6 +348,7 @@ def test_retry_state_tells_whether_an_error_gets_a_retry_without_spending_it():
 def test_checkpointing_is_on_by_default():
     assert vf.AgentConfig().checkpoint == RolloutCheckpointConfig()
     assert RolloutCheckpointConfig().interval is None
+    assert not RolloutCheckpointConfig().on_error
     assert gated("bash", vf.PrimeConfig())._checkpointing() is not None
 
 
@@ -423,7 +424,7 @@ async def test_a_failed_memory_snapshot_lets_replies_flow_again():
     assert session.flowing.is_set() and run.trace.checkpoints == []
 
 
-async def test_save_returns_a_restore_point_another_process_can_open():
+async def test_save_returns_a_trace_another_process_can_continue():
     run, backend, session = make_rollout()
     session.pinned_tool_results = {
         ("prefix", "c1"): ToolMessage(tool_call_id="c1", content="pinned")
@@ -431,16 +432,20 @@ async def test_save_returns_a_restore_point_another_process_can_open():
     run.trace.info = {"nonce": "n"}
     backend.running.set()
     backend.durable.set()
-    point = await run.save()
-    assert isinstance(point, RestorePoint)
+    saved = await run.save()
+    assert saved is not None
     (checkpoint,) = run.trace.checkpoints
     assert checkpoint.pinned
+    # The running rollout's own trace does not carry the saved fields.
+    assert checkpoint.restore is None
+    assert "restore" not in run.trace.model_dump()["checkpoints"][0]
 
-    point = pickle.loads(pickle.dumps(point))
-    assert point.id == run.trace.id
-    assert point.snapshot == {"id": "ck1"}
+    saved = pickle.loads(pickle.dumps(saved))
+    assert saved["id"] == run.trace.id
+    assert restore_entry(saved)["snapshot"] == {"id": "ck1"}
     task = vf.Task(vf.TaskData(idx=0, prompt="q"))
-    trace, restored = point.open(task)
+    trace, restored = open_restore(saved, task)
+    assert restored.restore is None
     assert trace.id == run.trace.id and trace.num_turns == run.trace.num_turns
     assert restored is trace.checkpoints[0] and restored.pinned
     assert restored.info == {"nonce": "n"}

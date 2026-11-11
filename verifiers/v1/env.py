@@ -9,6 +9,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import (
+    Any,
     Generic,
     TypeVar,
 )
@@ -30,7 +31,7 @@ from verifiers.v1.interception import (
     requires_tunnel,
 )
 from verifiers.v1.mcp import SharedToolServer, serve_shared
-from verifiers.v1.restore import RestorePoint, restoring
+from verifiers.v1.restore import restoring
 from verifiers.v1.runtimes import SubprocessConfig, runtime_is_local
 from verifiers.v1.task import Task
 from verifiers.v1.trace import Error, Trace, TraceTask
@@ -68,7 +69,7 @@ class RunSlot:
     episode: Episode | None = None
     done: bool = False
     started: float | None = None
-    restore: RestorePoint | None = None
+    restore: dict[str, Any] | None = None
     """A rollout another process saved (`save_all`): the episode's first attempt
     continues it instead of starting one."""
 
@@ -250,7 +251,7 @@ class Env(ABC, Generic[ConfigT]):
         on_discard: Callable[[Trace], None] | None = None,
         episode_id: str | None = None,
         attempt: int = 1,
-        restore: RestorePoint | None = None,
+        restore: dict[str, Any] | None = None,
     ) -> Episode:
         """One episode of `task`, minted as the wire atom: `setup()` then `run()`
         over fresh agents, then `finalize()`. Its agents run one at a time

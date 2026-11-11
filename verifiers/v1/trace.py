@@ -404,6 +404,10 @@ class Checkpoint(BaseModel):
     """The replies the server had just sent when the snapshot stopped the box
     (`RolloutSession.idempotent_requests`): the restored box asks again for one that had
     not arrived, and gets the reply the trace already holds. Live-only."""
+    restore: dict[str, Any] | None = Field(None, exclude_if=lambda value: value is None)
+    """The live-only fields above as plain data, on a trace saved for another process
+    to continue (`verifiers.v1.restore.restorable`); None on a running rollout's
+    checkpoint, which holds them live."""
     time: TimeSpan = Field(default_factory=TimeSpan)
     """From the snapshot request until it was durable (restorable); `end` stays 0 while
     it is not."""
