@@ -190,7 +190,8 @@ async def compose_project(
             and (
                 authored.get("include")
                 or any(
-                    service.get("extends") for service in authored["services"].values()
+                    service.get("extends")
+                    for service in authored.get("services", {}).values()
                 )
             )
         ):
@@ -203,46 +204,12 @@ async def compose_project(
                 raise SandboxError(f"Compose {kind} must use project-scoped names")
         # Native Compose renames containers on the build host and keeps the name as an alias.
         if isinstance(config, DockerConfig) and any(
-            service.get("container_name") for service in authored["services"].values()
+            service.get("container_name")
+            for service in authored.get("services", {}).values()
         ):
             raise SandboxError(
                 "Remove container_name so Compose can name each rollout's services"
             )
-        base = {
-            "services": {
-                spec.workspace: {
-                    "image": config.image,
-                    "command": [
-                        "sh",
-                        "-c",
-                        "trap 'exit 0' TERM; while :; do sleep 3600 & wait $!; done",
-                    ],
-                }
-            },
-            "volumes": {_harbor_volume(name): {} for name in HARBOR_LOG_MOUNTS},
-        }
-        if {"image", "build"} & authored["services"].get(spec.workspace, {}).keys():
-            # A template default must not replace an authored image or skip its build.
-            del base["services"][spec.workspace]["image"]
-        elif (
-            (spec.build_dockerfile or spec.file is None)
-            and not spec.image_override
-            and (task_dir / Path(compose_file).parent / "Dockerfile").is_file()
-        ):
-            del base["services"][spec.workspace]["image"]
-            base["services"][spec.workspace]["build"] = {
-                "context": ".",
-                "dockerfile": "Dockerfile",
-            }
-        elif spec.file is None and not spec.image_override:
-            raise SandboxError(f"No Dockerfile in {spec.directory}")
-        (directory / "base.json").write_text(json.dumps(base))
-        # env.json is a Compose file: escape `$` so values reach the service verbatim.
-        escaped = {key: value.replace("$", "$$") for key, value in environment.items()}
-        (directory / "env.json").write_text(
-            json.dumps({"services": {spec.workspace: {"environment": escaped}}})
-        )
-
         root = str(directory)
         if host_backend is not None:
             root = "/vf-deployment"
@@ -287,12 +254,6 @@ async def compose_project(
                 if host_backend is not None
                 else os.devnull,
             ]
-        for file in [
-            "base.json",
-            *([f"task/{spec.file}"] if spec.file else []),
-            "env.json",
-        ]:
-            compose_argv += ["-f", f"{root}/{file}"]
         compose_env.update(
             (key, value)
             for key, value in environment.items()
@@ -314,6 +275,75 @@ async def compose_project(
             compose_env["CPUS"] = f"{config.cpu:g}"
         if config.memory is not None:
             compose_env["MEMORY"] = f"{round(config.memory * 1024)}M"
+
+        authored_file = f"task/{spec.file}" if spec.file else None
+        if host_backend is not None and authored.get("include"):
+            # Includes own their resources: resolve them before merging workspace
+            # defaults and overrides, or Compose rejects duplicate service names.
+            compose_argv += ["-f", f"{root}/{authored_file}"]
+            authored = json.loads(
+                await compose("config", "--no-consistency", "--format", "json")
+            )
+            del compose_argv[-2:]
+            # Config emits null for an absent command; retain our workspace default
+            # unless the included service declares a concrete command.
+            main = authored.get("services", {}).get(spec.workspace, {})
+            if main.get("command") is None:
+                main.pop("command", None)
+            authored_file = "authored.json"
+            await host_backend.bind().write(
+                f"{root}/{authored_file}",
+                json.dumps(authored).encode(),
+            )
+        base = {
+            "services": {
+                spec.workspace: {
+                    "image": config.image,
+                    "command": [
+                        "sh",
+                        "-c",
+                        "trap 'exit 0' TERM; while :; do sleep 3600 & wait $!; done",
+                    ],
+                }
+            },
+            "volumes": {_harbor_volume(name): {} for name in HARBOR_LOG_MOUNTS},
+        }
+        if {"image", "build"} & authored.get("services", {}).get(
+            spec.workspace, {}
+        ).keys():
+            # A template default must not replace an authored image or skip its build.
+            del base["services"][spec.workspace]["image"]
+        elif (
+            (spec.build_dockerfile or spec.file is None)
+            and not spec.image_override
+            and (task_dir / Path(compose_file).parent / "Dockerfile").is_file()
+        ):
+            del base["services"][spec.workspace]["image"]
+            base["services"][spec.workspace]["build"] = {
+                "context": ".",
+                "dockerfile": "Dockerfile",
+            }
+        elif spec.file is None and not spec.image_override:
+            raise SandboxError(f"No Dockerfile in {spec.directory}")
+        # env.json is a Compose file: escape `$` so values reach the service verbatim.
+        escaped = {key: value.replace("$", "$$") for key, value in environment.items()}
+        definitions = {
+            "base.json": base,
+            "env.json": {"services": {spec.workspace: {"environment": escaped}}},
+        }
+        for file, definition in definitions.items():
+            if host_backend is None:
+                (directory / file).write_text(json.dumps(definition))
+            else:
+                await host_backend.bind().write(
+                    f"{root}/{file}", json.dumps(definition).encode()
+                )
+        for file in [
+            "base.json",
+            *([authored_file] if authored_file else []),
+            "env.json",
+        ]:
+            compose_argv += ["-f", f"{root}/{file}"]
 
         if isinstance(config, PrimeConfig) and host_backend is None:
             # Resolve filenames without loading them: task env files cannot read host secrets.

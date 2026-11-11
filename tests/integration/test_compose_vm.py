@@ -106,7 +106,11 @@ async def test_compose_vm(tmp_path, scoring_mode, monkeypatch):
     )
     environment = tmp_path / "environment"
     environment.mkdir()
-    (environment / "docker-compose.yaml").write_text(COMPOSE)
+    if scoring_mode == "isolated":
+        (environment / "docker-compose.yaml").write_text("include: [services.yaml]\n")
+        (environment / "services.yaml").write_text(COMPOSE)
+    else:
+        (environment / "docker-compose.yaml").write_text(COMPOSE)
     (environment / "Dockerfile").write_text(f"FROM {IMAGE}\nWORKDIR /app\n")
     tests = tmp_path / "tests"
     tests.mkdir()
