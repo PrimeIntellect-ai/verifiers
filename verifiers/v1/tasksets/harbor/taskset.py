@@ -963,11 +963,16 @@ def parse_verifier_extras(
     if services:
         compose = find_compose_file(task_dir)
         declared: set[str] = set()
+        includes = False
         if compose is not None:
             import yaml
 
-            declared = set(yaml.safe_load(compose.read_text())["services"])
-        if missing := services - declared:
+            definition = yaml.safe_load(compose.read_text())
+            declared = set(definition.get("services", {}))
+            includes = bool(definition.get("include"))
+        # Included models resolve on the deployment host. setup() checks all hook
+        # targets against the running deployment once those services are known.
+        if not includes and (missing := services - declared):
             raise ValueError(
                 f"{task_dir.name}: artifacts or collect hooks target services "
                 f"{sorted(missing)} that "
