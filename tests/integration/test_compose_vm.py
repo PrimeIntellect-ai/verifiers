@@ -15,7 +15,9 @@ from verifiers.v1.tasksets.harbor.taskset import (
     HarborTask,
 )
 
-COMPOSE = """\
+IMAGE = "public.ecr.aws/docker/library/python@sha256:b701198cb708b68d9413ca67d6311bd97c9389a2c5fe4da0511fc652642366cd"
+
+COMPOSE = f"""\
 services:
   main:
     build: .
@@ -26,7 +28,7 @@ services:
       world:
         condition: service_healthy
   world:
-    image: python:3.11-slim
+    image: {IMAGE}
     command: [sh, -c, "echo 42 > /logs/world/answer && exec python -m http.server 8080 --directory /logs/world"]
     volumes: [world_logs:/logs/world]
     ports: ["8000:8080"]
@@ -35,7 +37,7 @@ services:
       interval: 1s
       retries: 30
 volumes:
-  world_logs: {}
+  world_logs: {{}}
 """
 
 
@@ -105,7 +107,7 @@ async def test_compose_vm(tmp_path, scoring_mode, monkeypatch):
     environment = tmp_path / "environment"
     environment.mkdir()
     (environment / "docker-compose.yaml").write_text(COMPOSE)
-    (environment / "Dockerfile").write_text("FROM python:3.11-slim\nWORKDIR /app\n")
+    (environment / "Dockerfile").write_text(f"FROM {IMAGE}\nWORKDIR /app\n")
     tests = tmp_path / "tests"
     tests.mkdir()
     (tests / "test.sh").write_text(
