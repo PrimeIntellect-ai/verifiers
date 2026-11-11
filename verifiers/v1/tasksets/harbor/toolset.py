@@ -8,6 +8,7 @@ from mcp.client.sse import sse_client
 from mcp.client.stdio import StdioServerParameters, stdio_client
 from mcp.client.streamable_http import streamable_http_client
 from mcp.server.mcpserver import Context, MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import CallToolResult, Tool
 
 from verifiers.v1.mcp import Toolset, ToolsetConfig
@@ -79,6 +80,10 @@ class HarborMCPToolset(Toolset[HarborMCPConfig]):
     async def call_tool(
         self, name: str, arguments: dict[str, Any], context: Context | None = None
     ) -> CallToolResult:
+        if name not in {tool.name for tool in await self.list_tools()}:
+            raise ToolError(
+                f"MCP tool {name!r} is not listed by server {self.server_name!r}"
+            )
         return await self.client.call_tool(name, arguments)
 
 
