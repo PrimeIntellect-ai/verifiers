@@ -495,7 +495,8 @@ async def compose_services(
                 published = await compose("port", owner, str(SERVICE_PORT))
                 # Prefer IPv4 when both families have mappings, but accept an
                 # IPv6-only Docker host. Local publication stays on IPv4 loopback.
-                prefixes = ("127.0.0.1:",) if local else ("0.0.0.0:", "[::]:")
+                # Compose v2 emits :::port; newer releases bracket the host IP.
+                prefixes = ("127.0.0.1:",) if local else ("0.0.0.0:", "[::]:", ":::")
                 address = next(
                     (
                         address
