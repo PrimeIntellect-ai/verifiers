@@ -363,6 +363,7 @@ class Rollout:
                     if not runtime.is_local:
                         self._relay = Relay(runtime, self.trace.id)
                         self._stack.push_async_callback(self._relay.stop)
+                        await self._relay.installed()
                     await self.harness.setup(self._agent_runtime)
                 # `base_url` is the interception server's reachable URL for this rollout.
                 # The harness reaches the model at `{base_url}/v1`; tool servers reach this

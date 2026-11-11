@@ -39,8 +39,9 @@ def relay_config(upstream: str, tokens: dict[str, str]) -> bytes:
 
 class Relay:
     """A rollout's relay in its box. It launches when created, before its upstream is
-    known, so its start overlaps the harness setup; `connect` points it at the
-    interception server, `reroute` moves it, `stop` ends it."""
+    known, so its start overlaps the harness setup once its program is installed
+    (`installed`); `connect` points it at the interception server, `reroute` moves it,
+    `stop` ends it."""
 
     def __init__(self, runtime: Runtime, name: str) -> None:
         self.runtime = runtime
@@ -50,6 +51,7 @@ class Relay:
         self.upstream = ""
         self.tokens: dict[str, str] = {}
         self._connected = asyncio.Event()
+        self._installed = asyncio.Event()
         self._launch = asyncio.create_task(self._start())
 
     @property
@@ -74,6 +76,7 @@ class Relay:
             self.config_path, relay_config("http://127.0.0.1:9", {})
         )
         program = await self.runtime.prepare_uv_script(RELAY_SOURCE, activate=False)
+        self._installed.set()
         args = ["--config", self.config_path, "--port", "0", "--ready", ready]
         args += ["--failures", self.failures_path]
         await self.runtime.run_background(
@@ -90,6 +93,19 @@ class Relay:
                     f"the relay did not start within {RELAY_START_SECONDS}s"
                 )
             await asyncio.sleep(0.1)
+
+    async def installed(self) -> None:
+        """Wait until the relay's program is in the box, or its launch failed. The
+        install puts `uv` in the box when it has none, and a harness setup that does
+        the same must not run at the same time: one would run the other's half-written
+        binary."""
+        waiter = asyncio.create_task(self._installed.wait())
+        try:
+            await asyncio.wait(
+                {waiter, self._launch}, return_when=asyncio.FIRST_COMPLETED
+            )
+        finally:
+            waiter.cancel()
 
     async def connect(self, upstream: str, tokens: dict[str, str]) -> str:
         """Point the relay at the interception server once it runs, and return the base
