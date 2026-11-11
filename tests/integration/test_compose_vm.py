@@ -9,10 +9,9 @@ import pytest
 import verifiers.v1 as vf
 from verifiers.v1.configs.agent import TimeoutConfig
 from verifiers.v1.tasksets.harbor.taskset import (
-    CollectHook,
-    HarborArtifact,
-    HarborData,
+    HarborConfig,
     HarborTask,
+    parse_task,
 )
 
 IMAGE = "public.ecr.aws/docker/library/python@sha256:b701198cb708b68d9413ca67d6311bd97c9389a2c5fe4da0511fc652642366cd"
@@ -124,22 +123,15 @@ async def test_compose_vm(tmp_path, scoring_mode, monkeypatch):
         )
         + "echo 1 > /logs/verifier/reward.txt\n"
     )
-    task = ComposeVMTask(
-        HarborData(
-            prompt="Read the shared world logs",
-            task_dir=str(tmp_path),
-            artifacts=[
-                HarborArtifact(source="/app/answer"),
-                HarborArtifact(source="/evidence/answer", service="world"),
-            ],
-            collect=[
-                CollectHook(
-                    service="world",
-                    command="mkdir -p /evidence && cp /logs/world/answer /evidence/answer",
-                )
-            ],
-        )
+    (tmp_path / "instruction.md").write_text("Read the shared world logs")
+    (tmp_path / "task.toml").write_text(
+        'version = "1.0"\n'
+        'artifacts = [{source = "/app/answer"}, {source = "/evidence/answer", service = "world"}]\n'
+        "[[verifier.collect]]\n"
+        'service = "world"\n'
+        'command = "mkdir -p /evidence && cp /logs/world/answer /evidence/answer"\n'
     )
+    task = ComposeVMTask(parse_task(tmp_path, 0, HarborConfig()))
     config = vf.AgentConfig(
         model="unused",
         runtime=vf.PrimeConfig(cpu=2, memory=4, disk=10, labels=["vf-ci"]),
