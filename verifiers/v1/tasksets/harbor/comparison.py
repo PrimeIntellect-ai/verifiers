@@ -156,7 +156,9 @@ async def compare_verifiers(
                     clip(str(error)),
                     exc_info=logger.isEnabledFor(logging.DEBUG),
                 )
-                if result.ok and not result.is_timeout:
+                if isinstance(error, TimeoutError):
+                    result.record_timeout("scoring")
+                elif result.ok and not result.is_timeout:
                     result.record_error(error)
             finally:
                 result.timing.scoring.end = time.time()
