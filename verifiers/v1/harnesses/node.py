@@ -11,13 +11,37 @@ node=/var/tmp/vf-node
 # Node bundles Brotli; a newer major alone does not prove CVE-2026-111497 is fixed.
 node_ok() { "$1" -e 'const [a,b,c]=process.versions.node.split(".").map(Number); const f={22:[23,4],24:[22,1],26:[12,1]}[a]; process.exit(f && (b>f[0] || b===f[0] && c>=f[1]) ? 0 : 1)'; }
 
+install_node() {
+    if [ -x "$node/bin/node" ] && [ -x "$node/bin/npm" ] \
+        && [ "$("$node/bin/node" --version 2>/dev/null)" = "v$VF_NODE_VERSION" ]; then
+        return
+    fi
+    # Finish downloading, extracting and validating before replacing the shared installation.
+    download_dir=$(mktemp -d "$node.XXXXXX")
+    trap 'rm -rf "$download_dir"' EXIT
+    curl -fsSL --retry 5 --retry-all-errors "https://nodejs.org/dist/v$VF_NODE_VERSION/node-v$VF_NODE_VERSION-$1.tar.gz" \
+        -o "$download_dir/node.tar.gz"
+    mkdir "$download_dir/node"
+    tar -xzf "$download_dir/node.tar.gz" -C "$download_dir/node" --strip-components=1
+    node_ok "$download_dir/node/bin/node"
+    rm -rf "$node"
+    mv "$download_dir/node" "$node"
+}
+
 if [ -f /etc/alpine-release ]; then
-    apk add --upgrade --no-cache curl ca-certificates nodejs-current npm >/dev/null
-    mkdir -p "$node/bin"
-    # apk installs into /usr/bin. An image-provided /usr/local/bin/node may
-    # appear first on PATH, so link the binaries that apk just installed.
-    ln -sf /usr/bin/node "$node/bin/node"
-    ln -sf /usr/bin/npm "$node/bin/npm"
+    if [ "$(uname -m)" = x86_64 ]; then
+        # Old task images' repositories lack patched Node. Use its musl build
+        # with bundled npm, without replacing the task's system Node or Alpine release.
+        apk add --no-cache curl ca-certificates libstdc++ libatomic >/dev/null
+        install_node linux-x64-musl
+    else
+        # Node publishes musl binaries only for x64; retain apk on other architectures.
+        apk add --upgrade --no-cache curl ca-certificates nodejs-current npm >/dev/null
+        mkdir -p "$node/bin"
+        # An image-provided /usr/local/bin/node may appear first on PATH.
+        ln -sf /usr/bin/node "$node/bin/node"
+        ln -sf /usr/bin/npm "$node/bin/npm"
+    fi
 else
     if ! command -v curl >/dev/null 2>&1 \
         && ! (apt-get update -qq && apt-get install -y -qq curl ca-certificates >/dev/null); then
@@ -64,18 +88,8 @@ else
         )
     fi
     case "$(uname -s)" in Linux) node_os=linux ;; Darwin) node_os=darwin ;; *) echo "unsupported os: $(uname -s)" >&2; exit 1 ;; esac
-    if [ ! -x "$node/bin/node" ] || [ "$("$node/bin/node" --version 2>/dev/null)" != "v$VF_NODE_VERSION" ]; then
-        case "$(uname -m)" in aarch64|arm64) node_arch=arm64 ;; *) node_arch=x64 ;; esac
-        # Finish downloading and extracting before replacing the shared installation.
-        download_dir=$(mktemp -d "$node.XXXXXX")
-        trap 'rm -rf "$download_dir"' EXIT
-        curl -fsSL --retry 5 --retry-all-errors "https://nodejs.org/dist/v$VF_NODE_VERSION/node-v$VF_NODE_VERSION-${node_os}-${node_arch}.tar.gz" \
-            -o "$download_dir/node.tar.gz"
-        mkdir "$download_dir/node"
-        tar -xzf "$download_dir/node.tar.gz" -C "$download_dir/node" --strip-components=1
-        rm -rf "$node"
-        mv "$download_dir/node" "$node"
-    fi
+    case "$(uname -m)" in aarch64|arm64) node_arch=arm64 ;; *) node_arch=x64 ;; esac
+    install_node "$node_os-$node_arch"
 fi
 node_ok "$node/bin/node" || { echo "ACP adapters require patched Node.js (22.23.4, 24.22.1 or 26.12.1 minimum)" >&2; exit 1; }
 """
