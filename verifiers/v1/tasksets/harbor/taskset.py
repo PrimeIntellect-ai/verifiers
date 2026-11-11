@@ -763,7 +763,10 @@ def resolve_image(
     if compose.is_file():
         import yaml
 
-        main = yaml.safe_load(compose.read_text())["services"].get("main", {})
+        definition = yaml.safe_load(compose.read_text())
+        if definition.get("include"):
+            return None
+        main = definition["services"].get("main", {})
         if (
             main.get("image")
             or "build" in main
@@ -946,11 +949,16 @@ def parse_verifier_extras(
     if services:
         compose = task_dir / "environment" / "docker-compose.yaml"
         declared: set[str] = set()
+        includes = False
         if compose.is_file():
             import yaml
 
-            declared = set(yaml.safe_load(compose.read_text())["services"])
-        if missing := services - declared:
+            definition = yaml.safe_load(compose.read_text())
+            declared = set(definition.get("services", {}))
+            includes = bool(definition.get("include"))
+        # Included models resolve on the deployment host. setup() checks all hook
+        # targets against the running deployment once those services are known.
+        if not includes and (missing := services - declared):
             raise ValueError(
                 f"{task_dir.name}: artifacts or collect hooks target services "
                 f"{sorted(missing)} that environment/docker-compose.yaml does not declare"
