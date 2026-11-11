@@ -50,7 +50,12 @@ if [ ! -x "$prefix/bin/prime-agent" ]; then
     tarball="prime-agent-$PRIME_AGENT_RELEASE_VERSION-$platform.tar.gz"
     download_dir="$(mktemp -d "$VF_PRIME_AGENT_DIR/install.XXXXXX")"
     trap 'rm -rf "$download_dir"' EXIT
-    curl -fsSL --retry 5 --retry-all-errors "$release_url/$tarball" -o "$download_dir/$tarball"
+    # Retry in the shell: task images may have curl older than --retry-all-errors.
+    for attempt in 1 2 3 4 5 6; do
+        curl -fsSL "$release_url/$tarball" -o "$download_dir/$tarball" && break
+        [ "$attempt" -lt 6 ] || exit 1
+        sleep "$attempt"
+    done
     printf '%s  %s\n' "$sha" "$tarball" > "$download_dir/SHA256SUMS"
     if command -v sha256sum >/dev/null; then
         (cd "$download_dir" && sha256sum -c SHA256SUMS)

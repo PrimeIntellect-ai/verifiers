@@ -69,8 +69,13 @@ else
         # Finish downloading and extracting before replacing the shared installation.
         download_dir=$(mktemp -d "$node.XXXXXX")
         trap 'rm -rf "$download_dir"' EXIT
-        curl -fsSL --retry 5 --retry-all-errors "https://nodejs.org/dist/v$VF_NODE_VERSION/node-v$VF_NODE_VERSION-${node_os}-${node_arch}.tar.gz" \
-            -o "$download_dir/node.tar.gz"
+        # Retry in the shell: task images may have curl older than --retry-all-errors.
+        for attempt in 1 2 3 4 5 6; do
+            curl -fsSL "https://nodejs.org/dist/v$VF_NODE_VERSION/node-v$VF_NODE_VERSION-${node_os}-${node_arch}.tar.gz" \
+                -o "$download_dir/node.tar.gz" && break
+            [ "$attempt" -lt 6 ] || exit 1
+            sleep "$attempt"
+        done
         mkdir "$download_dir/node"
         tar -xzf "$download_dir/node.tar.gz" -C "$download_dir/node" --strip-components=1
         rm -rf "$node"
