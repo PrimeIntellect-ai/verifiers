@@ -503,6 +503,7 @@ class Rollout:
                             running=self._restore.live["relay"] if restored else None,
                         )
                         self._stack.push_async_callback(self._relay.stop)
+                        await self._relay.installed()
                     # A restored box still runs the harness.
                     if not restored:
                         await self.harness.setup(self._agent_runtime)
