@@ -47,6 +47,7 @@ class DecisionJudge(Judge[float, DecisionJudgeConfig]):
         self, *, trace: Trace | None = None, **fields: Any
     ) -> JudgeResponse[float]:
         request = {
+            **self.config.sampling.model_dump(exclude_none=True),
             "model": self.config.model,
             "state": fields,
             "questions": {
