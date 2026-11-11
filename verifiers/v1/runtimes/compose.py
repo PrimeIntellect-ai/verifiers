@@ -1,4 +1,4 @@
-"""Task services on local Docker Compose or a Prime VM hosting Docker."""
+"""Task services on local Docker Compose or a Prime VM, from Linux or macOS."""
 
 import asyncio
 import atexit
@@ -117,7 +117,7 @@ async def compose_project(
             [
                 *project,
                 "--env-file",
-                os.devnull,
+                "/dev/null",
                 "down",
                 "--volumes",
                 "--remove-orphans",
@@ -248,11 +248,7 @@ async def compose_project(
                 raise SandboxError("Native Compose .env must be inside the task")
             compose_argv += [
                 "--env-file",
-                f"{project_dir}/.env"
-                if env_file.exists()
-                else "/dev/null"
-                if host_backend is not None
-                else os.devnull,
+                f"{project_dir}/.env" if env_file.exists() else "/dev/null",
             ]
         compose_env.update(
             (key, value)
@@ -497,11 +493,22 @@ async def compose_services(
             host_service_port = SERVICE_PORT
             if services[owner].get("network_mode") != "host":
                 published = await compose("port", owner, str(SERVICE_PORT))
+                # Prefer IPv4 when both families have mappings, but accept an
+                # IPv6-only Docker host. Local publication stays on IPv4 loopback.
+                prefixes = ("127.0.0.1:",) if local else ("0.0.0.0:", "[::]:")
                 address = next(
-                    address
-                    for address in published.splitlines()
-                    if address.startswith("127.0.0.1:" if local else "0.0.0.0:")
+                    (
+                        address
+                        for prefix in prefixes
+                        for address in published.splitlines()
+                        if address.startswith(prefix)
+                    ),
+                    None,
                 )
+                if address is None:
+                    raise SandboxError(
+                        f"Compose did not publish workspace port {SERVICE_PORT}"
+                    )
                 if local:
                     service_url = "http://" + address
                 else:
