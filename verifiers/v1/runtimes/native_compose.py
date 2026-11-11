@@ -24,7 +24,11 @@ from verifiers.v1.runtimes import PrimeConfig
 from verifiers.v1.runtimes.backends.docker import cli
 from verifiers.v1.runtimes.backends.prime import leased_client
 from verifiers.v1.runtimes.base import RuntimeBackend, RuntimeProcess
-from verifiers.v1.runtimes.compose import ComposeSpec, compose_project
+from verifiers.v1.runtimes.compose import (
+    ComposeSpec,
+    NativeComposeUnsupported,
+    compose_project,
+)
 from verifiers.v1.runtimes.private_network import lan_host
 from verifiers.v1.utils.aio import run_shielded
 from verifiers.v1.utils.logging import get_logger
@@ -115,10 +119,6 @@ _BIND_MAX_BYTES = 256 * 1024**2
 _STAGING = PurePosixPath("/.vf-compose")
 
 
-class NativeComposeUnsupported(SandboxError):
-    """Compose semantics that native VMs cannot preserve, found before creation."""
-
-
 @dataclass
 class NativeMount:
     """A bind of task files, or a service-local volume seeded from the image."""
@@ -147,6 +147,44 @@ class NativeService:
 
 def validate_native(project) -> dict[str, str]:
     config = project.config
+    task = (project.directory / "task").resolve()
+    # Validate task paths across every service before selecting another placement.
+    # An unsupported field must not hide a missing input or evaluator-host bind.
+    for name, service in config["services"].items():
+        build = service.get("build", {})
+        if build:
+            context = Path(build["context"]).resolve()
+            dockerfile = (context / build.get("dockerfile", "Dockerfile")).resolve()
+            if not context.is_relative_to(task) or not dockerfile.is_relative_to(task):
+                raise SandboxError(
+                    f"Compose build inputs for {name!r} must be inside the task"
+                )
+            if not context.is_dir() or (
+                "dockerfile_inline" not in build and not dockerfile.is_file()
+            ):
+                raise SandboxError(f"Compose build inputs for {name!r} do not exist")
+        for volume in service.get("volumes", []):
+            target = PurePosixPath(volume["target"])
+            if not target.is_absolute() or ".." in target.parts:
+                raise SandboxError(
+                    f"Compose service {name!r} requires absolute mount targets without '..'"
+                )
+            if target.is_relative_to(_STAGING) or _STAGING.is_relative_to(target):
+                raise SandboxError(
+                    f"Compose service {name!r} cannot mount at {_STAGING}"
+                )
+            if volume["type"] == "bind":
+                source = Path(volume["source"]).resolve()
+                if not source.is_relative_to(task):
+                    raise SandboxError(
+                        f"Compose service {name!r} can bind only task files"
+                    )
+                if not source.exists() and not volume.get("bind", {}).get(
+                    "create_host_path"
+                ):
+                    raise SandboxError(
+                        f"Compose bind source for {name!r} does not exist: {source}"
+                    )
     # Compose keeps top-level `x-*` extension blocks (YAML anchors); they configure nothing.
     if {key for key in config if not key.startswith("x-")} - {
         "name",
@@ -154,7 +192,9 @@ def validate_native(project) -> dict[str, str]:
         "networks",
         "volumes",
     }:
-        raise SandboxError("Native Compose does not support secrets or configs")
+        raise NativeComposeUnsupported(
+            "Native Compose does not support secrets or configs"
+        )
     if any(set(volume) - {"name"} for volume in config.get("volumes", {}).values()):
         raise NativeComposeUnsupported(
             "Native Compose supports project volumes without drivers"
@@ -166,13 +206,12 @@ def validate_native(project) -> dict[str, str]:
         or network.get("driver", "bridge") != "bridge"
         for network in networks.values()
     ):
-        raise SandboxError(
+        raise NativeComposeUnsupported(
             "Native Compose supports bridge project networks with optional internal isolation"
         )
     aliases = {}
     mounts: dict[str, set[tuple[str, str]]] = {}
     binds: list[tuple[str, str, Path, bool]] = []
-    task = (project.directory / "task").resolve()
     services = config["services"]
     network_owners = {}
     for name, service in services.items():
@@ -193,7 +232,7 @@ def validate_native(project) -> dict[str, str]:
     for name, service in config["services"].items():
         unsupported = set(service) - _SERVICE_FIELDS
         if unsupported:
-            raise SandboxError(
+            raise NativeComposeUnsupported(
                 f"Native Compose service {name!r} does not support: "
                 + ", ".join(sorted(unsupported))
             )
@@ -221,20 +260,8 @@ def validate_native(project) -> dict[str, str]:
                 )
         build = service.get("build", {})
         if set(build) - _BUILD_FIELDS:
-            raise SandboxError(
+            raise NativeComposeUnsupported(
                 f"Native Compose service {name!r} has unsupported build options"
-            )
-        if build and not Path(build["context"]).resolve().is_relative_to(
-            (project.directory / "task").resolve()
-        ):
-            raise SandboxError(
-                f"Native Compose build context for {name!r} must be inside the task"
-            )
-        if build and not (
-            Path(build["context"]) / build.get("dockerfile", "Dockerfile")
-        ).resolve().is_relative_to((project.directory / "task").resolve()):
-            raise SandboxError(
-                f"Native Compose Dockerfile for {name!r} must be inside the task"
             )
         deploy = service.get("deploy", {})
         resources = deploy.get("resources", {})
@@ -245,13 +272,14 @@ def validate_native(project) -> dict[str, str]:
             or {key for key, value in resources.items() if value} - {"limits"}
             or set(resources.get("limits", {})) - {"cpus", "memory"}
         ):
-            raise SandboxError(
+            raise NativeComposeUnsupported(
                 f"Native Compose service {name!r} has unsupported deploy options"
             )
         for dependency, options in service.get("depends_on", {}).items():
+            if dependency not in config["services"]:
+                raise SandboxError(f"Unknown Compose dependency {dependency!r}")
             if (
-                dependency not in config["services"]
-                or options.get("restart")
+                options.get("restart")
                 or not options.get("required", True)
                 or options["condition"]
                 not in {
@@ -260,32 +288,15 @@ def validate_native(project) -> dict[str, str]:
                     "service_completed_successfully",
                 }
             ):
-                raise SandboxError(
+                raise NativeComposeUnsupported(
                     f"Native Compose dependency {name!r} -> {dependency!r} is unsupported"
                 )
         for volume in service.get("volumes", []):
-            target = PurePosixPath(volume["target"])
-            if not target.is_absolute() or ".." in target.parts:
-                raise SandboxError(
-                    f"Native Compose service {name!r} requires absolute mount targets without '..'"
-                )
-            if target.is_relative_to(_STAGING) or _STAGING.is_relative_to(target):
-                raise SandboxError(
-                    f"Native Compose service {name!r} cannot mount at {_STAGING}"
-                )
             if volume["type"] == "bind":
                 source = Path(volume["source"]).resolve()
                 options = {
                     key for key, value in volume.get("bind", {}).items() if value
                 }
-                if not source.is_relative_to(task):
-                    raise SandboxError(
-                        f"Native Compose service {name!r} can bind only task files"
-                    )
-                if not source.exists() and "create_host_path" not in options:
-                    raise SandboxError(
-                        f"Native Compose bind source for {name!r} does not exist: {source}"
-                    )
                 if options - {"create_host_path"}:
                     raise NativeComposeUnsupported(
                         f"Native Compose service {name!r} has unsupported bind options"
@@ -304,7 +315,7 @@ def validate_native(project) -> dict[str, str]:
         # Docker's default bridge network: no project network, so no service names.
         mode = service.get("network_mode")
         if mode not in {None, "bridge", "default"} and network_owners[name] == name:
-            raise SandboxError(
+            raise NativeComposeUnsupported(
                 f"Native Compose service {name!r} does not support network_mode {mode!r}"
             )
         attached = service.get("networks", {})
@@ -372,6 +383,11 @@ async def prepare_native(config: PrimeConfig, spec: ComposeSpec, env: dict[str, 
     if spec.workspace != "main" or config.checkpoint or config.gpu:
         raise SandboxError("Native Compose requires a CPU image workspace named 'main'")
     async with compose_project(config, spec, env) as project:
+        if spec.image_override:
+            main = project.config["services"][spec.workspace]
+            main["image"] = config.image
+            main.pop("build", None)
+            main.pop("pull_policy", None)
         network_owners = validate_native(project)
         prepared = {
             **project.config,
@@ -396,11 +412,6 @@ async def prepare_native(config: PrimeConfig, spec: ComposeSpec, env: dict[str, 
                     f"{project.config['name']}-{name}"
                 )
         main = prepared["services"]["main"]
-        if spec.image_override:
-            # The task image replaces an authored build; Compose pulls it only when missing.
-            main["image"] = config.image
-            main.pop("build", None)
-            main.pop("pull_policy", None)
         if config.workdir is not None:
             main["working_dir"] = config.workdir
         prepared_path = project.directory / "native.json"
