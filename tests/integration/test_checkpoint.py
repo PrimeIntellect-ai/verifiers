@@ -16,6 +16,7 @@ import pytest
 from conftest import _eval_config
 from grid import grid
 from prime_sandboxes import AsyncSandboxClient
+from subagent_restore import sub_agent_turns
 
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.env import RunSlot
@@ -26,6 +27,8 @@ from verifiers.v1.utils.loaders import harness_class, load_environment
 RETRIES = {"max_retries": 0, "rules": [{"type": "ProviderError", "max_retries": 1}]}
 NEEDS = ("memory",)
 SHELLS = ["bash", "rlm"]
+# rlm with its guidance on how to hand work to sub-agents.
+SUB_AGENTS = {"id": "rlm", "delegation_prompt": True}
 
 
 @pytest.fixture
@@ -99,6 +102,27 @@ async def restored_trace(
     return trace
 
 
+async def saved_rollout(config, ctx, ready=lambda trace: trace.num_turns >= 1):
+    """Run the config's one rollout until `ready(trace)`, checkpoint it with `save_all`,
+    and cancel it with everything it holds. Returns its slot and its restore point. By
+    default the rollout is past its first turn: the box holds work the trace recorded."""
+    env = load_environment(config.env)
+    (task,) = list(env.taskset)
+    async with env.serving():
+        (slot,) = env.slots(task)
+        running = asyncio.ensure_future(env.run_slot(slot, ctx))
+        try:
+            async with asyncio.timeout(600):
+                while not (slot.traces and ready(slot.traces[0])):
+                    assert not running.done(), "the rollout ended before the save"
+                    await asyncio.sleep(0.2)
+            (point,) = await save_all()
+        finally:
+            running.cancel()
+            await asyncio.gather(running, return_exceptions=True)
+    return slot, point
+
+
 @pytest.mark.parametrize("harness,harness_runtime", grid(needs=NEEDS), indirect=True)
 async def test_retry_restores_checkpoint(run, taken, harness, harness_runtime):
     """The one snapshot of the run is taken when the model call fails. A harness with
@@ -150,21 +174,7 @@ async def test_another_owner_continues_a_saved_rollout(taken, harness, harness_r
         client=config.client, model=config.model, sampling=config.sampling
     )
 
-    first = load_environment(config.env)
-    (task,) = list(first.taskset)
-    async with first.serving():
-        (slot,) = first.slots(task)
-        running = asyncio.ensure_future(first.run_slot(slot, ctx))
-        try:
-            # Past its first turn: the box holds work the trace recorded.
-            async with asyncio.timeout(600):
-                while not (slot.traces and slot.traces[0].num_turns >= 1):
-                    assert not running.done(), "the rollout ended before the save"
-                    await asyncio.sleep(0.2)
-            (point,) = await save_all()
-        finally:
-            running.cancel()
-            await asyncio.gather(running, return_exceptions=True)
+    slot, point = await saved_rollout(config, ctx)
     turns_saved = len([node for node in point.trace["nodes"] if node["sampled"]])
     point = pickle.loads(pickle.dumps(point))
 
@@ -212,20 +222,7 @@ async def test_a_restore_point_that_leads_nowhere_starts_the_rollout_over(
         client=config.client, model=config.model, sampling=config.sampling
     )
 
-    first = load_environment(config.env)
-    (task,) = list(first.taskset)
-    async with first.serving():
-        (slot,) = first.slots(task)
-        running = asyncio.ensure_future(first.run_slot(slot, ctx))
-        try:
-            async with asyncio.timeout(600):
-                while not (slot.traces and slot.traces[0].num_turns >= 1):
-                    assert not running.done(), "the rollout ended before the save"
-                    await asyncio.sleep(0.2)
-            (point,) = await save_all()
-        finally:
-            running.cancel()
-            await asyncio.gather(running, return_exceptions=True)
+    slot, point = await saved_rollout(config, ctx)
     snapshot_id = point.snapshot["id"]
     point.snapshot["id"] = "no-such-checkpoint"
 
@@ -242,5 +239,51 @@ async def test_a_restore_point_that_leads_nowhere_starts_the_rollout_over(
     async with AsyncSandboxClient() as client, asyncio.timeout(300):
         while (await client.get_checkpoint(snapshot_id)).state != "DURABLE":
             await asyncio.sleep(2)
+    assert await PrimeBackend.discard([Snapshot(id=snapshot_id)]) == [snapshot_id]
+    await assert_no_leaks(taken)
+
+
+@pytest.mark.parametrize(
+    "harness,harness_runtime", grid([SUB_AGENTS], needs=NEEDS), indirect=True
+)
+async def test_another_owner_continues_running_sub_agents(
+    taken, harness, harness_runtime
+):
+    """A rollout is saved while two sub-agents of its harness are at work (subagent-
+    restore). The second owner's box continues both: neither is started again, each
+    takes its next turns, and each reads its nonce from a process that only a box with
+    its memory still runs."""
+    config = _eval_config(
+        "subagent-restore",
+        harness=harness,
+        runtime=harness_runtime,
+        max_turns=40,
+        max_tokens=4096,
+        rollout_timeout=600,
+    )
+    ctx = ModelContext(
+        client=config.client, model=config.model, sampling=config.sampling
+    )
+    slot, point = await saved_rollout(
+        config, ctx, ready=lambda trace: all(sub_agent_turns(trace).values())
+    )
+    saved = len(point.trace["nodes"])
+    point = pickle.loads(pickle.dumps(point))
+
+    second = load_environment(config.env)
+    (task,) = list(second.taskset)
+    async with second.serving():
+        episode = await second.run_slot(RunSlot(task, id=slot.id, restore=point), ctx)
+    (trace,) = episode.traces
+    assert trace.ok, [error.message for error in trace.errors]
+    assert trace.has_restored and trace.attempt == 2
+    assert trace.reward == 1.0
+    for name, turns in sub_agent_turns(trace).items():
+        # At work when the box was saved, and at work again in the restored box.
+        assert [turn for turn in turns if turn < saved], name
+        assert [turn for turn in turns if turn >= saved], name
+    # The coordinator and each sub-agent started once: three conversations.
+    assert sum(node.parent is None for node in trace.nodes) == 3
+    (snapshot_id,) = [c.id for c in trace.checkpoints if c.pinned]
     assert await PrimeBackend.discard([Snapshot(id=snapshot_id)]) == [snapshot_id]
     await assert_no_leaks(taken)
