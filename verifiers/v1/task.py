@@ -247,6 +247,7 @@ class Task(Generic[DataT, StateT, ConfigT]):
 
         Without a policy, run signals that need only the trace. An isolated policy
         restores captured artifacts into fresh verifiers with the ordinary retries.
+        Grading failures propagate without changing the original rollout's status.
         """
         if trace.has_error:
             raise ValueError("the rollout errored: its transcript is incomplete")
@@ -259,7 +260,25 @@ class Task(Generic[DataT, StateT, ConfigT]):
         else:
             from verifiers.v1.grading import grade_submission
 
-            await grade_submission(self, trace, scoring=scoring)
+            status = (
+                trace.ok,
+                trace.is_completed,
+                trace.stop_condition,
+                trace.is_timeout,
+                list(trace.errors),
+            )
+            try:
+                await grade_submission(self, trace, scoring=scoring)
+            finally:
+                # A failed grader does not make the saved solver transcript
+                # incomplete. Keep it eligible for a later rescore attempt.
+                (
+                    trace.ok,
+                    trace.is_completed,
+                    trace.stop_condition,
+                    trace.is_timeout,
+                    trace.errors,
+                ) = status
 
     def defer_scoring(self) -> Self:
         """An independent copy whose task signals are deferred.
