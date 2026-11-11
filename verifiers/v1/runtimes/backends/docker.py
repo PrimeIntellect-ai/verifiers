@@ -227,7 +227,7 @@ class DockerBackend(RuntimeBackend):
         super().__init__(name)
         self.config = config
         self._host_backend = host_backend
-        self._host_service_port = SERVICE_PORT
+        self._host_service_port: int | None = None
         self.is_local = host_backend is None or host_backend.is_local
         self.info = (
             host_backend.info.model_copy(
@@ -252,7 +252,7 @@ class DockerBackend(RuntimeBackend):
         *,
         host_backend: RuntimeBackend | None = None,
         service_url: str | None = None,
-        host_service_port: int = SERVICE_PORT,
+        host_service_port: int | None = None,
     ) -> AsyncIterator[DockerBackend]:
         """Borrow a Compose service container; its caller owns creation and removal.
         `service_url` is the host URL of a local workspace's published service port."""
@@ -468,9 +468,9 @@ class DockerBackend(RuntimeBackend):
 
     async def expose(self, port: int) -> str:
         if self._host_backend is not None:
-            if port != SERVICE_PORT:
+            if port != SERVICE_PORT or self._host_service_port is None:
                 raise SandboxError(
-                    f"docker publishes only port {SERVICE_PORT}, not {port}"
+                    f"Compose publishes only the workspace's port {SERVICE_PORT}"
                 )
             return await self._host_backend.expose(self._host_service_port)
         if port != SERVICE_PORT or self._service_url is None:
