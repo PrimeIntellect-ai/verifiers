@@ -281,7 +281,11 @@ async def compose_project(
                 raise SandboxError("Native Compose .env must be inside the task")
             compose_argv += [
                 "--env-file",
-                f"{project_dir}/.env" if env_file.exists() else os.devnull,
+                f"{project_dir}/.env"
+                if env_file.exists()
+                else "/dev/null"
+                if host_backend is not None
+                else os.devnull,
             ]
         for file in [
             "base.json",
@@ -480,7 +484,9 @@ async def compose_services(
                         config,
                         container,
                         host_backend=host,
-                        host_service_port=host_service_port,
+                        host_service_port=host_service_port
+                        if service == spec.workspace
+                        else None,
                         service_url=service_url if service == spec.workspace else None,
                     )
                 )
