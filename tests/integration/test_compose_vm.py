@@ -149,6 +149,7 @@ async def test_compose_vm(tmp_path, scoring_mode, compose_mode, monkeypatch):
     assert trace.ok and trace.reward == 1, trace.errors
     assert trace.info["compose"]["mode"] == "vm"
     if compose_mode == "auto":
-        assert "share volume" in trace.info["compose"]["reason"]
+        reason = "include or extends" if scoring_mode == "isolated" else "share volume"
+        assert reason in trace.info["compose"]["reason"]
     else:
         assert trace.info["compose"]["reason"] == "compose_mode=vm"
