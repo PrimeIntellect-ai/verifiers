@@ -223,6 +223,10 @@ class PrimeConfig(NetworkPolicyConfig):
     """Pace sandbox creation to this many per minute, enforced run-wide across every
     process of the run (None/<= 0 disables it). (Tunnel creation is limited separately
     — see interception.tunnel.prime.tunnel_limiter.)"""
+    snapshots_per_min: int | None = None
+    """Pace memory snapshots (a pause and a resume each) to this many per minute,
+    run-wide like ``creates_per_min`` (None/<= 0 disables it). An owner that saves
+    every running rollout at once (`save_all`) then spreads its pauses out."""
 
     mounts: dict[str, PrimeVolume] = Field(default_factory=dict)
     """Guest paths mapped to Prime volumes, created if missing before the VM.

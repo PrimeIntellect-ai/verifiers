@@ -417,7 +417,15 @@ class PrimeBackend(RuntimeBackend):
             return snapshot
 
         try:
-            return await run_shielded(create())
+            async with (
+                creation_limiter(
+                    (self.config.snapshots_per_min or 0) / 60,
+                    "prime-snapshot",
+                    run_scope(),
+                )
+                or contextlib.nullcontext()
+            ):
+                return await run_shielded(create())
         except Exception as e:
             raise SandboxError(f"prime checkpoint failed: {e}") from e
 
