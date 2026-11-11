@@ -22,8 +22,16 @@ async def prepare_verifier_image(
     if isinstance(config, PrimeConfig):
         from verifiers.v1.runtimes.native_compose import prepare_native
 
-        service = (await prepare_native(config, spec, env))[spec.workspace]
-        return service.config, {**service.image_env, **env}, service.user
+        # Filesystem preparation uses CPU inspection containers. The fresh grader
+        # still receives the GPU requested by its task or scoring runtime.
+        service = (
+            await prepare_native(config.model_copy(update={"gpu": None}), spec, env)
+        )[spec.workspace]
+        return (
+            service.config.model_copy(update={"gpu": config.gpu}),
+            {**service.image_env, **env},
+            service.user,
+        )
     if not isinstance(config, DockerConfig):
         raise SandboxError(f"Verifier builds are not supported by {config.type}")
     docker_env = {key: os.environ[key] for key in DOCKER_ENV if key in os.environ}
