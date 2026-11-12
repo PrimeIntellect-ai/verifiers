@@ -51,6 +51,7 @@ FILESYSTEM_BOOTSTRAP_DIRS = (
     "/lib32",
     "/lib64",
     "/libx32",
+    "/libexec",
     "/etc",
     *(
         f"{prefix}/{name}"
@@ -62,6 +63,7 @@ FILESYSTEM_BOOTSTRAP_DIRS = (
             "lib32",
             "lib64",
             "libx32",
+            "libexec",
             "etc",
             "share",
         )
