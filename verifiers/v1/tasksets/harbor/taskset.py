@@ -470,7 +470,14 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
         # script the same way, and scripts do grade the agent's work at `$PWD`.
         # The reward file is authoritative even when the script exits nonzero.
         result = await runtime.run(
-            ["bash", "/tests/test.sh"], resolve_env(self.scoring.env or {})
+            ["bash", "/tests/test.sh"],
+            resolve_env(
+                {
+                    key: value
+                    for key, value in (self.scoring.env or {}).items()
+                    if key not in runtime.env
+                }
+            ),
         )
         trace.info.setdefault("scoring_diagnostics", {})["harbor"] = {
             "exit_code": result.exit_code,
@@ -557,7 +564,14 @@ def verifier_box_data(data: HarborData) -> HarborData:
             "upload_environment": data.upload_environment
             if data.verifier_image is None
             else False,
-            "env": dict(verifier.env),
+            "env": {
+                **verifier.env,
+                **(
+                    dict.fromkeys(data.scoring.judge.env, "")
+                    if data.scoring.judge is not None
+                    else {}
+                ),
+            },
             "healthcheck": verifier.healthcheck,
             "skills": [],
             "mcp_servers": [],

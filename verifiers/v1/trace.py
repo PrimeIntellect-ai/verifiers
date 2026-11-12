@@ -39,6 +39,7 @@ from verifiers.v1.types import (
     FinishReason,
     Message,
     Messages,
+    Response,
     SamplerSupport,
     Tool,
     ToolMessage,
@@ -924,19 +925,18 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         *,
         name: str,
         request: Mapping[str, Any],
-        response: JudgeResponse,
+        response: JudgeResponse | Response,
     ) -> None:
         """Record one complete judge request/response exchange."""
         response_record = response.model_dump()
-        message = AssistantMessage(content=response_record.pop("text"))
+        if not isinstance(response, Response):
+            message = AssistantMessage(content=response_record.pop("text"))
+            response_record = {"message": message.model_dump(), **response_record}
         self.info.setdefault("judge_calls", []).append(
             {
                 "name": name,
                 "request": copy.deepcopy(dict(request)),
-                "response": {
-                    "message": message.model_dump(),
-                    **response_record,
-                },
+                "response": response_record,
             }
         )
         if response.usage is not None:
