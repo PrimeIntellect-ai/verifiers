@@ -222,6 +222,10 @@ class Task(Generic[DataT, StateT, ConfigT]):
         """Prepare trusted verifier-only inputs after artifacts are restored."""
         return
 
+    def validate_artifacts(self, artifacts: Mapping[str, bytes | None]) -> None:
+        """Reject task-specific artifact roots before the verifier is modified."""
+        return
+
     async def validate(self, runtime: Runtime) -> bool | None:
         """Check the ground truth, or return None when no model-free check exists.
 
