@@ -41,6 +41,7 @@ class EchoAgenticTask(vf.Task[EchoAgenticData]):
 
 
 class EchoAgenticConfig(vf.TasksetConfig):
+    unconfined: bool = False
     phrase: str = "hello world"
 
 
@@ -50,6 +51,7 @@ class EchoAgenticTaskset(vf.Taskset[EchoAgenticTask, EchoAgenticConfig]):
         return [
             EchoAgenticTask(
                 EchoAgenticData(
+                    **({"filesystem": None} if self.config.unconfined else {}),
                     idx=0,
                     prompt=(
                         f"Use the bash tool to write exactly the text '{phrase}' to a file "

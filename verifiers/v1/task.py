@@ -114,10 +114,14 @@ class TaskData(BaseModel):
     """Home directory for `agent_user`; None uses the account's passwd home.
     Must already exist and be writable by that user."""
 
-    filesystem: FilesystemPolicyConfig | None = None
-    """Optional OS-enforced filesystem access for the agent and its child processes.
-    Trusted setup and grading retain their original runtime view. Requires a runtime
-    that can enforce the policy; unsupported runtimes fail before agent execution."""
+    filesystem: FilesystemPolicyConfig | None = Field(
+        default_factory=lambda: FilesystemPolicyConfig(writable=None)
+    )
+    """OS-enforced filesystem access for the agent and its child processes, enabled
+    by default. The default allows writes to the agent's workdir, home, temporary
+    directories and /logs/artifacts while hiding framework setup and grading files.
+    Trusted setup and grading retain their original view. Unsupported runtimes fail;
+    set None explicitly to run without confinement, including host subprocess runs."""
 
     skills: list[SkillSource] = Field(default_factory=list)
     """Skill sources installed before the harness's configured skills for this task."""

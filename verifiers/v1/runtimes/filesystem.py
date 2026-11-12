@@ -38,6 +38,35 @@ _BOOTSTRAP_EMPTY = (
     "ENV",
 )
 _BOOTSTRAP_PATH = "/usr/sbin:/usr/bin:/sbin:/bin"
+_INSTALL_BUBBLEWRAP = r"""
+set -eu
+if ! command -v bwrap >/dev/null; then
+    if command -v apt-get >/dev/null; then
+        apt-get update -qq
+        DEBIAN_FRONTEND=noninteractive apt-get install -y -qq bubblewrap
+    elif command -v apk >/dev/null; then
+        apk add --no-cache bubblewrap
+    else
+        echo 'install bubblewrap in the task image to enable filesystem confinement' >&2
+        exit 1
+    fi
+fi
+bwrap --help | grep -q -- --disable-userns || {
+    echo 'filesystem confinement requires bubblewrap with --disable-userns support' >&2
+    exit 1
+}
+"""
+_DEFAULT_WRITABLE = r"""
+set -eu
+for path in "$(pwd -P)" "${HOME:-}" "${TMPDIR:-/tmp}" /tmp /var/tmp /logs/artifacts; do
+    [ -n "$path" ] || continue
+    case "$path" in /*) ;; *) echo 'default writable paths must be absolute' >&2; exit 1;; esac
+    canonical=$(readlink -f -- "$path")
+    # A container can start at /; that must never make its entire filesystem writable.
+    [ "$canonical" != / ] || continue
+    printf '%s\0' "$canonical"
+done
+"""
 _PREPARE_DIRECTORIES = r"""
 set -eu
 mode=$1
@@ -248,6 +277,17 @@ class FilesystemSandbox:
         ]
 
 
+async def prepare_filesystem_tools(runtime: Runtime) -> None:
+    """Install the namespace tool during trusted setup, before restricting egress."""
+    trusted = runtime.backend.bind(env=bootstrap_env({})).with_user("root")
+    result = await trusted.run(["/bin/sh", "-c", _INSTALL_BUBBLEWRAP], {})
+    if result.exit_code:
+        raise SandboxError(
+            "cannot prepare filesystem confinement - "
+            + (result.stderr or result.stdout).strip()[-1000:]
+        )
+
+
 async def prepare_private_directory(runtime: Runtime) -> str:
     """Keep trusted setup scratch on disk, outside every agent-writable tree."""
     trusted = runtime.backend.bind(env=bootstrap_env({})).with_user("root")
@@ -295,6 +335,47 @@ async def prepare_filesystem(
             "cannot prepare default hidden directories - "
             + defaults.stderr.strip()[-1000:]
         )
+    if policy.writable is None:
+        scratch = await trusted.run(
+            [
+                "/bin/sh",
+                "-c",
+                _PREPARE_DIRECTORIES,
+                "filesystem-policy",
+                "1777",
+                "/tmp",
+                "/var/tmp",
+                "/logs/artifacts",
+            ],
+            {},
+        )
+        if scratch.exit_code:
+            raise SandboxError(
+                "cannot prepare default writable directories - "
+                + scratch.stderr.strip()[-1000:]
+            )
+        discovered = await runtime.run(
+            ["/bin/sh", "-c", _DEFAULT_WRITABLE], bootstrap_env({})
+        )
+        if discovered.exit_code:
+            raise SandboxError(
+                "cannot resolve default writable directories - "
+                + discovered.stderr.strip()[-1000:]
+            )
+        roots = list(dict.fromkeys(discovered.stdout.rstrip("\0").split("\0")))
+        # HOME, workdir and TMPDIR can nest; bind each tree only once.
+        roots = [
+            path
+            for path in roots
+            if not any(
+                path != other and PurePosixPath(path).is_relative_to(other)
+                for other in roots
+            )
+        ]
+        policy = FilesystemPolicyConfig.model_validate(
+            {**policy.model_dump(), "writable": roots}
+        )
+    assert policy.writable is not None
     paths = list(dict.fromkeys((*policy.readable, *policy.writable, *policy.hidden)))
     probe = await runtime.run(
         ["/bin/sh", "-c", _PROBE, "filesystem-policy", *paths],

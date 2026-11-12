@@ -25,6 +25,8 @@ async def ensure_installed(
     The lock is `flock` (Linux, busybox) or `lockf` (macOS/BSD), both released when the holder
     dies; an image with neither falls back to a symlink spinlock whose owner is recorded as
     `pid:starttime` so a dead holder is reaped even if its pid was reused."""
+    # Writable trees are checked for hard-link aliases before agent confinement.
+    env = {"UV_LINK_MODE": "copy", **env}
     lock = shlex.quote(lock or f"{directory}/install.lock")
     script = f"{ready} || ({install})" if ready else install
     run = f"{shlex.join(shell)} {shlex.quote(script)}"

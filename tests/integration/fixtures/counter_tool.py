@@ -41,6 +41,7 @@ def any_response(response: vf.Response) -> bool:
 
 
 class CounterConfig(vf.TasksetConfig):
+    unconfined: bool = False
     task: CounterTaskConfig = CounterTaskConfig()
 
 
@@ -49,6 +50,7 @@ class CounterTaskset(vf.Taskset[CounterTask, CounterConfig]):
         return [
             CounterTask(
                 vf.TaskData(
+                    **({"filesystem": None} if self.config.unconfined else {}),
                     idx=0,
                     prompt=(
                         f"Call the `bump` tool from the `counter` MCP server {TARGET} times, "
