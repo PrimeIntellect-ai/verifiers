@@ -206,6 +206,126 @@ def test_malformed_anthropic_block_types_do_not_raise() -> None:
     assert isinstance(updated, dict)
 
 
+def _collect_markers(value):
+    if isinstance(value, dict):
+        marker = value.get("cache_control")
+        if isinstance(marker, dict) and marker.get("type") == "ephemeral":
+            yield marker
+        for item in value.values():
+            yield from _collect_markers(item)
+    elif isinstance(value, list):
+        for item in value:
+            yield from _collect_markers(item)
+
+
+@pytest.mark.parametrize(
+    ("dialect", "body"),
+    [
+        (AnthropicDialect(), _anthropic_body(history=True)),
+        (ChatDialect(), _chat_body(history=True)),
+    ],
+)
+def test_long_retention_marks_every_generated_marker(dialect, body) -> None:
+    updated = maybe_add_prompt_cache_control(
+        dialect,
+        body,
+        "https://api.pinference.ai/api/v1",
+        cache_retention="long",
+    )
+
+    markers = list(_collect_markers(updated))
+    assert len(markers) == 3
+    assert all(marker == {"type": "ephemeral", "ttl": "1h"} for marker in markers)
+
+
+@pytest.mark.parametrize(
+    ("dialect", "body"),
+    [
+        (AnthropicDialect(), _anthropic_body(history=True)),
+        (ChatDialect(), _chat_body(history=True)),
+    ],
+)
+def test_short_retention_marks_three_blocks_without_ttl(dialect, body) -> None:
+    updated = maybe_add_prompt_cache_control(
+        dialect, body, "https://api.pinference.ai/api/v1"
+    )
+
+    markers = list(_collect_markers(updated))
+    assert len(markers) == 3
+    assert all(marker == {"type": "ephemeral"} for marker in markers)
+
+
+def test_tool_use_input_is_not_a_caller_marker() -> None:
+    body = _anthropic_body(history=True)
+    body["messages"] = [
+        {"role": "user", "content": "Find the bug."},
+        {
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "tool_use",
+                    "id": "call_1",
+                    "name": "lookup",
+                    "input": {"cache_control": "data"},
+                }
+            ],
+        },
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "call_1",
+                    "content": "result",
+                }
+            ],
+        },
+    ]
+
+    updated = maybe_add_prompt_cache_control(
+        AnthropicDialect(), body, "https://api.pinference.ai/api/v1"
+    )
+
+    markers = list(_collect_markers(updated))
+    assert len(markers) == 3
+    assert any(
+        block.get("cache_control") == CACHE
+        for block in updated["messages"][-1]["content"]
+    )
+
+
+def test_chat_assistant_prefill_is_not_marked() -> None:
+    body = _chat_body(history=True)
+    body["messages"].append({"role": "assistant", "content": "prefill"})
+
+    updated = maybe_add_prompt_cache_control(
+        ChatDialect(), body, "https://api.pinference.ai/api/v1"
+    )
+
+    assert updated["messages"][-1] == {"role": "assistant", "content": "prefill"}
+    assert "cache_control" not in updated["messages"][-1]
+
+
+def test_env_retention_none_disables_and_whitespace_long_promotes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    body = _anthropic_body()
+    original = deepcopy(body)
+    monkeypatch.setenv("PI_CACHE_RETENTION", "none")
+
+    disabled = maybe_add_prompt_cache_control(
+        AnthropicDialect(), body, "https://api.pinference.ai/api/v1"
+    )
+    assert disabled is body
+    assert body == original
+
+    monkeypatch.setenv("PI_CACHE_RETENTION", " long ")
+    promoted = maybe_add_prompt_cache_control(
+        AnthropicDialect(), body, "https://api.pinference.ai/api/v1"
+    )
+    assert promoted["tools"][-1]["cache_control"]["ttl"] == "1h"
+
+
 def test_nested_tool_result_marker_suppresses_injection() -> None:
     body = _anthropic_body(history=True)
     body["messages"][-1]["content"] = [

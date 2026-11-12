@@ -33,23 +33,48 @@ def _has_marker(value: Any) -> bool:
     return isinstance(value, Mapping) and not _CACHE_MARKERS.isdisjoint(value)
 
 
-def _contains_marker(value: Any) -> bool:
-    """Find a marker anywhere, including nested tool-result content."""
-    if isinstance(value, Mapping):
-        if _has_marker(value):
-            return True
-        return any(
-            _contains_marker(item)
-            for key, item in value.items()
-            if key not in _SCHEMA_KEYS
-        )
-    if isinstance(value, list):
-        return any(_contains_marker(item) for item in value)
-    return False
+def _content_has_marker(content: Any) -> bool:
+    if isinstance(content, Mapping):
+        return _has_marker(content)
+    if not isinstance(content, list):
+        return False
+    return any(isinstance(block, Mapping) and _has_marker(block) for block in content)
 
 
 def _has_caller_marker(body: Mapping[str, Any]) -> bool:
-    return _contains_marker(body)
+    """Only scan positions where Anthropic honors cache markers.
+
+    Tool-use inputs, tool arguments, metadata, and JSON schemas can contain a
+    ``cache_control`` key without being prompt-cache markers.
+    """
+    if _has_marker(body):
+        return True
+    if _content_has_marker(body.get("system")):
+        return True
+    messages = body.get("messages")
+    if isinstance(messages, list):
+        for message in messages:
+            if not isinstance(message, Mapping):
+                continue
+            if _has_marker(message):
+                return True
+            content = message.get("content")
+            if _content_has_marker(content):
+                return True
+            if isinstance(content, list):
+                for block in content:
+                    if (
+                        isinstance(block, Mapping)
+                        and block.get("type") == "tool_result"
+                        and _content_has_marker(block.get("content"))
+                    ):
+                        return True
+    tools = body.get("tools")
+    if isinstance(tools, list):
+        for tool in tools:
+            if _has_marker(tool):
+                return True
+    return False
 
 
 def resolve_cache_retention(
@@ -58,8 +83,9 @@ def resolve_cache_retention(
     """Explicit setting wins, then ``PI_CACHE_RETENTION=long``, then short."""
     if cache_retention is not None:
         return cache_retention
-    if os.environ.get("PI_CACHE_RETENTION", "").casefold() == "long":
-        return "long"
+    env = os.environ.get("PI_CACHE_RETENTION", "").strip().casefold()
+    if env in {"none", "short", "long"}:
+        return env
     return "short"
 
 
@@ -227,8 +253,15 @@ def _mark_chat(body: dict[str, Any], marker: dict[str, str]) -> bool:
             applied = True
             break
 
-    if _has_chat_history(messages):
-        marked = _mark_last_text_block(messages[-1], marker)
+    last_message = messages[-1] if messages else None
+    last_role = last_message.get("role") if isinstance(last_message, dict) else None
+    if (
+        _has_chat_history(messages)
+        and isinstance(last_message, dict)
+        and isinstance(last_role, str)
+        and last_role in {"user", "tool"}
+    ):
+        marked = _mark_last_text_block(last_message, marker)
         if marked is not None:
             updated_messages[-1] = marked
             messages_changed = True
