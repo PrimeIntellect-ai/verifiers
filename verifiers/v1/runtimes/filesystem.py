@@ -55,6 +55,148 @@ for path do
     fi
 done
 """
+_HARDLINK_PROBE = r"""
+set -eu
+label=$1
+shift
+command -v find >/dev/null || {
+    echo 'filesystem alias validation requires find' >&2
+    exit 1
+}
+for path do
+    alias=$(find "$path" -type f -links +1 -print -quit)
+    [ -z "$alias" ] || {
+        printf 'filesystem %s tree contains a hard-linked file: %s\n' "$label" "$alias" >&2
+        exit 1
+    }
+done
+"""
+_MOUNT_ALIAS_PROBE = r"""
+set -eu
+mode=$1
+protected=$2
+shift 2
+
+contains() {
+    [ "$1" = / ] && return 0
+    [ "$1" = "$2" ] && return 0
+    case "$2" in "$1"/*) return 0;; esac
+    return 1
+}
+
+resolve_identity() {
+    target=$1
+    resolved_device=
+    resolved_root=
+    resolved_length=-1
+    resolved_ambiguous=false
+    while IFS=' ' read -r _ _ device root mountpoint _; do
+        root=$(printf '%b' "$root")
+        mountpoint=$(printf '%b' "$mountpoint")
+        contains "$mountpoint" "$target" || continue
+        length=${#mountpoint}
+        [ "$length" -lt "$resolved_length" ] && continue
+        if [ "$length" -eq "$resolved_length" ]; then
+            resolved_ambiguous=true
+            continue
+        fi
+        resolved_ambiguous=false
+        resolved_device=$device
+        if [ "$mountpoint" = / ]; then
+            suffix=$target
+        else
+            suffix=${target#"$mountpoint"}
+        fi
+        if [ "$root" = / ]; then
+            resolved_root=${suffix:-/}
+        else
+            resolved_root=${root%/}$suffix
+        fi
+        resolved_length=$length
+    done < /proc/self/mountinfo
+    if [ "$resolved_ambiguous" = true ]; then
+        printf 'ambiguous filesystem identity for %s: stacked mounts\n' "$target" >&2
+        exit 1
+    fi
+    [ -n "$resolved_device" ] || {
+        printf 'cannot resolve filesystem identity for %s\n' "$target" >&2
+        exit 1
+    }
+}
+
+check_identity() {
+    protected_path=$1
+    protected_device=$2
+    protected_root=$3
+    shift 3
+    while IFS=' ' read -r _ _ device root mountpoint _; do
+        [ "$device" = "$protected_device" ] || continue
+        root=$(printf '%b' "$root")
+        mountpoint=$(printf '%b' "$mountpoint")
+        for candidate do
+            if contains "$candidate" "$mountpoint"; then
+                visible_path=$mountpoint
+                visible_root=$root
+            elif contains "$mountpoint" "$candidate"; then
+                visible_path=$candidate
+                if [ "$mountpoint" = / ]; then
+                    suffix=$candidate
+                else
+                    suffix=${candidate#"$mountpoint"}
+                fi
+                visible_root=${root%/}$suffix
+            else
+                continue
+            fi
+            # A candidate inside a mount exposes only that source subtree, not
+            # the whole mount (e.g. /alias/work does not expose /alias/etc).
+            if contains "$visible_root" "$protected_root"; then
+                if [ "$visible_root" = / ]; then
+                    suffix=$protected_root
+                else
+                    suffix=${protected_root#"$visible_root"}
+                fi
+                alias_path=${visible_path%/}$suffix
+                alias_path=${alias_path:-/}
+            elif contains "$protected_root" "$visible_root"; then
+                alias_path=$visible_path
+            else
+                continue
+            fi
+            # Compare the exposed path, not its containing mount: hiding a bind
+            # target must also reject the original source still visible at /.
+            contains "$protected_path" "$alias_path" && continue
+            printf 'filesystem %s path aliases protected tree: %s and %s\n' \
+                "$mode" "$alias_path" "$protected_path" >&2
+            exit 1
+        done
+    done < /proc/self/mountinfo
+}
+
+check_protected() {
+    protected_path=$1
+    shift
+    resolve_identity "$protected_path"
+    check_identity "$protected_path" "$resolved_device" "$resolved_root" "$@"
+    # A protected tree can contain mounts backed by unrelated devices or roots.
+    # Masking the parent hides these too, so reject their exposed aliases as well.
+    while IFS=' ' read -r _ _ child_device child_root child_path _; do
+        child_path=$(printf '%b' "$child_path")
+        [ "$child_path" = "$protected_path" ] && continue
+        contains "$protected_path" "$child_path" || continue
+        child_root=$(printf '%b' "$child_root")
+        check_identity "$protected_path" "$child_device" "$child_root" "$@"
+    done < /proc/self/mountinfo
+}
+
+if [ "$protected" = bootstrap ]; then
+    for protected_path in /usr /bin /sbin /lib /lib64 /etc; do
+        check_protected "$protected_path" "$@"
+    done
+else
+    check_protected "$protected" "$@"
+fi
+"""
 
 
 def bootstrap_env(env: dict[str, str]) -> dict[str, str]:
@@ -108,6 +250,53 @@ async def prepare_filesystem(
             f"cannot prepare filesystem policy (exit code {probe.exit_code}) - "
             + probe.stderr.strip()[-1000:]
         )
+    trusted = runtime.with_user("root")
+    for label, roots in (("writable", policy.writable), ("hidden", policy.hidden)):
+        if not roots:
+            continue
+        links = await trusted.run(
+            ["/bin/sh", "-c", _HARDLINK_PROBE, "filesystem-policy", label, *roots],
+            bootstrap_env({}),
+        )
+        if links.exit_code:
+            raise SandboxError(
+                "cannot prepare filesystem policy - " + links.stderr.strip()[-1000:]
+            )
+    if policy.writable:
+        aliases = await trusted.run(
+            [
+                "/bin/sh",
+                "-c",
+                _MOUNT_ALIAS_PROBE,
+                "filesystem-policy",
+                "writable",
+                "bootstrap",
+                *policy.writable,
+            ],
+            bootstrap_env({}),
+        )
+        if aliases.exit_code:
+            raise SandboxError(
+                "cannot prepare filesystem policy - " + aliases.stderr.strip()[-1000:]
+            )
+    visible = list(dict.fromkeys((*policy.readable, *policy.writable)))
+    for hidden in policy.hidden:
+        aliases = await trusted.run(
+            [
+                "/bin/sh",
+                "-c",
+                _MOUNT_ALIAS_PROBE,
+                "filesystem-policy",
+                "readable",
+                hidden,
+                *visible,
+            ],
+            bootstrap_env({}),
+        )
+        if aliases.exit_code:
+            raise SandboxError(
+                "cannot prepare filesystem policy - " + aliases.stderr.strip()[-1000:]
+            )
     binary, workdir, *kinds = fields
     if not binary.startswith(("/usr/", "/bin/", "/sbin/")):
         raise SandboxError(
