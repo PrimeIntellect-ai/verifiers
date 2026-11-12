@@ -126,8 +126,6 @@ def _make_tar(directory: Path, digest: str) -> bytes:
 
     def include(member: tarfile.TarInfo) -> tarfile.TarInfo | None:
         path = directory / member.name
-        if selected.excluded(path):
-            return None
         if not path.resolve().is_relative_to(selected.root):
             raise ValueError(f"Task input escapes task directory: {path}")
         if not (member.isfile() or member.isdir() or member.issym() or member.islnk()):
@@ -135,6 +133,22 @@ def _make_tar(directory: Path, digest: str) -> bytes:
         return member
 
     with tarfile.open(fileobj=buffer, mode="w:gz") as archive:
+
+        def add(path: Path) -> None:
+            # TarFile.gettarinfo remembers hard-link inodes before calling its
+            # filter. Excluded paths must never enter that inode table.
+            if selected.excluded(path):
+                return
+            archive.add(
+                path,
+                arcname=str(path.relative_to(directory)),
+                recursive=False,
+                filter=include,
+            )
+            if path.is_dir() and not path.is_symlink():
+                for child in sorted(path.iterdir()):
+                    add(child)
+
         for item in sorted(directory.iterdir()):
-            archive.add(item, arcname=item.name, filter=include)
+            add(item)
     return buffer.getvalue()
