@@ -79,6 +79,30 @@ for path do
     mkdir -p -m "$mode" -- "$path"
 done
 """
+_PREPARE_PRIVATE = r"""
+set -eu
+root=$1
+owner=$2
+[ "$(readlink -m -- "$root")" = "$root" ] || exit 1
+mkdir -p -m 755 -- "$root"
+[ "$(stat -c %u -- "$root")" = 0 ] || {
+    echo 'framework private root must be owned by root' >&2; exit 1
+}
+chmod 755 -- "$root"
+directory=$root/$owner
+[ "$(readlink -m -- "$directory")" = "$directory" ] || {
+    echo 'framework private directory must not contain symlinks' >&2; exit 1
+}
+if mkdir -m 700 -- "$directory" 2>/dev/null; then
+    chown "$owner" -- "$directory"
+else
+    [ -d "$directory" ] && [ "$(stat -c %u -- "$directory")" = "$owner" ] || {
+        echo 'framework private directory has an unexpected owner or type' >&2; exit 1
+    }
+fi
+chmod 700 -- "$directory"
+printf %s "$directory"
+"""
 _PROBE = r"""
 set -eu
 binary=$(command -v bwrap) || { echo 'bubblewrap is not installed' >&2; exit 1; }
@@ -290,15 +314,19 @@ async def prepare_filesystem_tools(runtime: Runtime) -> None:
 
 async def prepare_private_directory(runtime: Runtime) -> str:
     """Keep trusted setup scratch on disk, outside every agent-writable tree."""
+    identity = await runtime.run(["id", "-u"], bootstrap_env({}))
+    owner = identity.stdout.strip()
+    if identity.exit_code or not owner.isdecimal():
+        raise SandboxError("cannot resolve the framework setup user")
     trusted = runtime.backend.bind(env=bootstrap_env({})).with_user("root")
     result = await trusted.run(
         [
             "/bin/sh",
             "-c",
-            _PREPARE_DIRECTORIES,
+            _PREPARE_PRIVATE,
             "filesystem-policy",
-            "1777",
             FRAMEWORK_PRIVATE_DIR,
+            owner,
         ],
         {},
     )
@@ -307,7 +335,7 @@ async def prepare_private_directory(runtime: Runtime) -> str:
             "cannot prepare framework private directory - "
             + result.stderr.strip()[-1000:]
         )
-    return FRAMEWORK_PRIVATE_DIR
+    return result.stdout
 
 
 async def prepare_filesystem(
