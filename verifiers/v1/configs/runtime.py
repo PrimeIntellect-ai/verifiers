@@ -40,11 +40,15 @@ class BindMount(BaseConfig):
 
 Mount = TypeVar("Mount", bound=BaseConfig)
 
+FRAMEWORK_PRIVATE_DIR = "/.vf-private"
+FILESYSTEM_DEFAULT_HIDDEN = (FRAMEWORK_PRIVATE_DIR, "/tests", "/logs/verifier")
+
 
 class FilesystemPolicyConfig(BaseConfig):
     """Agent filesystem view, enforced by bubblewrap in a Linux sandbox.
 
-    Paths must exist, be absolute, and contain no symlink components. The image
+    Paths must be absolute and contain no symlink components. Default hidden
+    directories are prepared automatically; other paths must exist. The image
     must provide bubblewrap with user namespaces and --disable-userns support.
     Writable and hidden trees must not contain hard-linked files; mount aliases
     that expose a hidden tree or protected bootstrap files are rejected. Unsupported
@@ -60,10 +64,12 @@ class FilesystemPolicyConfig(BaseConfig):
     writable. A writable tree cannot contain a readable or hidden rule: its
     writable parent could otherwise relocate the protected source between
     commands. Writes persist in the underlying runtime."""
-    hidden: list[str] = Field(default_factory=list)
-    """Existing paths masked after all other mounts. Directories become empty,
-    read-only mounts and files become `/dev/null`. `/proc` and `/dev`
-    are always private to the process sandbox."""
+    hidden: list[str] = Field(default_factory=lambda: list(FILESYSTEM_DEFAULT_HIDDEN))
+    """Paths masked after all other mounts. Always includes `/.vf-private` for
+    framework setup files, `/tests`, and `/logs/verifier`; missing default directories
+    are created during trusted setup. Additional paths must already exist.
+    Directories become empty, read-only mounts and files become `/dev/null`.
+    `/proc` and `/dev` are always private to the process sandbox."""
 
     @field_validator("readable", "writable", "hidden")
     @classmethod
@@ -82,6 +88,11 @@ class FilesystemPolicyConfig(BaseConfig):
             normalized.append("/" + str(path).lstrip("/"))
         return list(dict.fromkeys(normalized))
 
+    @field_validator("hidden")
+    @classmethod
+    def include_default_hidden(cls, paths: list[str]) -> list[str]:
+        return list(dict.fromkeys((*FILESYSTEM_DEFAULT_HIDDEN, *paths)))
+
     @model_validator(mode="after")
     def validate_roots(self) -> Self:
         # New shells and bubblewrap must load trusted code before entering the
@@ -99,6 +110,13 @@ class FilesystemPolicyConfig(BaseConfig):
                 raise ValueError("filesystem writable paths must not overlap")
         for value in self.writable:
             path = PurePosixPath(value)
+            if any(
+                path.is_relative_to(root) or PurePosixPath(root).is_relative_to(path)
+                for root in FILESYSTEM_DEFAULT_HIDDEN
+            ):
+                raise ValueError(
+                    f"filesystem writable path {value!r} overlaps a default hidden tree"
+                )
             if any(
                 path.is_relative_to(root) or root.is_relative_to(path)
                 for root in bootstrap
