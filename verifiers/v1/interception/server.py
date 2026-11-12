@@ -41,7 +41,7 @@ from pydantic_core import PydanticSerializationError, from_json, to_json
 from verifiers.v1 import graph
 from verifiers.v1.clients import Client, resolve_client
 from verifiers.v1.clients.base import join_url
-from verifiers.v1.clients.client import collect_stream
+from verifiers.v1.clients.client import RelayReply
 from verifiers.v1.configs.client import (
     BaseClientConfig,
     TrainClientConfig,
@@ -50,7 +50,10 @@ from verifiers.v1.configs.client import (
 )
 from verifiers.v1.configs.interception import InterceptionServerConfig
 from verifiers.v1.dialects import DIALECTS, Dialect
-from verifiers.v1.dialects.base import PROVIDER_CAPABILITY_POLICY_CODE
+from verifiers.v1.dialects.base import (
+    PROVIDER_CAPABILITY_POLICY_CODE,
+    is_sse_done_event,
+)
 from verifiers.v1.dialects.chat import ChatDialect
 from verifiers.v1.errors import (
     ProviderError,
@@ -231,6 +234,35 @@ def _prune_idempotent_requests(session: RolloutSession, now: float) -> None:
         )[:excess]:
             if session.idempotent_requests.get(key) is request:
                 session.idempotent_requests.pop(key)
+
+
+async def _collect_stream(
+    dialect: Dialect, reply: RelayReply
+) -> tuple[Response, bytes]:
+    """Read a relayed provider stream whole: the assembled response and the events to serve
+    for it. Comment-only events (the provider's own keepalives) are dropped; the served
+    stream sends its own."""
+    events = bytearray()
+    parser = dialect.stream_parser()
+    saw_terminal = False
+    try:
+        async for chunk in reply.chunks:
+            if not any(line.startswith(b"data:") for line in chunk.splitlines()):
+                continue
+            events += chunk
+            saw_terminal |= dialect.is_terminal_event(chunk)
+            if parser.on_done is not None and is_sse_done_event(chunk):
+                parser.on_done()
+            parser.feed(chunk)
+        if not saw_terminal:
+            raise ProviderError("upstream stream ended before its terminal event")
+        return parser.finish(), bytes(events)
+    except RolloutError:
+        raise
+    except Exception as e:  # a malformed provider stream
+        raise ProviderError(str(e)) from e
+    finally:
+        await reply.close()
 
 
 async def _buffered_stream(
@@ -925,13 +957,7 @@ class InterceptionServer(Interception):
                             headers=upstream_headers,
                             session_id=upstream_session_id,
                         )
-                        # The provider's events are served on as is; the served
-                        # stream sends its own keepalives.
-                        relayed = bytearray()
-                        call_response = await collect_stream(
-                            dialect, reply, events=relayed
-                        )
-                        events = bytes(relayed)
+                        call_response, events = await _collect_stream(dialect, reply)
                     else:
                         call_response = await session.client.get_response(
                             dialect,

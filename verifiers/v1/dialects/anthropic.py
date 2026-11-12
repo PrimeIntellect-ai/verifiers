@@ -666,7 +666,7 @@ class AnthropicDialect(Dialect[AnthropicMessage]):
             event("message_stop", {"type": "message_stop"}),
         ]
 
-    def stream_parser(self, body: RawRequest | None = None) -> StreamParser:
+    def stream_parser(self) -> StreamParser:
         return AnthropicStreamParser(self.validate_response)
 
     def parse_sampling(self, body: RawRequest) -> Sampling:
