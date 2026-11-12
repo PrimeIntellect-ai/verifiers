@@ -10,6 +10,7 @@ from pathlib import PurePosixPath
 from typing import TYPE_CHECKING
 
 from verifiers.v1.configs.runtime import (
+    FILESYSTEM_BOOTSTRAP_DIRS,
     FILESYSTEM_DEFAULT_HIDDEN,
     FRAMEWORK_PRIVATE_DIR,
     FilesystemPolicyConfig,
@@ -61,6 +62,7 @@ set -eu
 for path in "$(pwd -P)" "${HOME:-}" "${TMPDIR:-/tmp}" /tmp /var/tmp /logs/artifacts; do
     [ -n "$path" ] || continue
     case "$path" in /*) ;; *) echo 'default writable paths must be absolute' >&2; exit 1;; esac
+    [ -d "$path" ] || continue
     canonical=$(readlink -f -- "$path")
     # A container can start at /; that must never make its entire filesystem writable.
     [ "$canonical" != / ] || continue
@@ -93,13 +95,14 @@ directory=$root/$owner
 [ "$(readlink -m -- "$directory")" = "$directory" ] || {
     echo 'framework private directory must not contain symlinks' >&2; exit 1
 }
-if mkdir -m 700 -- "$directory" 2>/dev/null; then
-    chown "$owner" -- "$directory"
-else
-    [ -d "$directory" ] && [ "$(stat -c %u -- "$directory")" = "$owner" ] || {
-        echo 'framework private directory has an unexpected owner or type' >&2; exit 1
-    }
-fi
+mkdir -p -m 700 -- "$directory"
+# Another trusted setup can observe mkdir before chown. The locked-down parent
+# lets only root create entries, so either call can finish that ownership change.
+case "$(stat -c %u -- "$directory")" in
+    0|"$owner") ;;
+    *) echo 'framework private directory has an unexpected owner or type' >&2; exit 1;;
+esac
+chown "$owner" -- "$directory"
 chmod 700 -- "$directory"
 printf %s "$directory"
 """
@@ -258,8 +261,10 @@ check_protected() {
     done < /proc/self/mountinfo
 }
 
+"""
+_MOUNT_ALIAS_PROBE += f"""
 if [ "$protected" = bootstrap ]; then
-    for protected_path in /usr /bin /sbin /lib /lib64 /etc; do
+    for protected_path in {shlex.join(FILESYSTEM_BOOTSTRAP_DIRS)}; do
         check_protected "$protected_path" "$@"
     done
 else
@@ -462,7 +467,7 @@ async def prepare_filesystem(
                 "cannot prepare filesystem policy - " + aliases.stderr.strip()[-1000:]
             )
     binary, workdir, *kinds = fields
-    if not binary.startswith(("/usr/", "/bin/", "/sbin/")):
+    if not binary.startswith(("/usr/bin/", "/usr/sbin/", "/bin/", "/sbin/")):
         raise SandboxError(
             "bubblewrap must be installed in a protected system directory"
         )
