@@ -71,6 +71,7 @@ class EvalClient(Client):
     def __init__(self, config: BaseClientConfig) -> None:
         self.base_url = config.base_url
         self.api_key = resolve_api_key(config)
+        self.cache_retention = getattr(config, "cache_retention", None)
         # Keep endpoint headers separate so they can override intercepted request headers before
         # the dialect's provider authentication is applied.
         self.headers = resolve_headers(config)
@@ -85,7 +86,9 @@ class EvalClient(Client):
         turn: PendingTurn | None = None,
         headers: Mapping[str, str] | None = None,
     ) -> Response:
-        body = maybe_add_prompt_cache_control(dialect, body, self.base_url)
+        body = maybe_add_prompt_cache_control(
+            dialect, body, self.base_url, self.cache_retention
+        )
         resp = await self._request(
             join_url(self.base_url, dialect.upstream_path),
             body,
@@ -179,7 +182,9 @@ class EvalClient(Client):
     ) -> RelayReply:
         # Relay complete SSE events so the interception server can safely insert keepalives
         # between them. Error responses are mapped before any event is handed back.
-        body = maybe_add_prompt_cache_control(dialect, body, self.base_url)
+        body = maybe_add_prompt_cache_control(
+            dialect, body, self.base_url, self.cache_retention
+        )
         resp = await self._request(
             join_url(self.base_url, dialect.upstream_path),
             body,
