@@ -394,6 +394,25 @@ def test_claude_substring_is_not_an_anthropic_model() -> None:
     assert body == original
 
 
+@pytest.mark.parametrize(
+    "last_message",
+    [
+        {"role": "tool", "tool_call_id": "call_1", "content": "file contents"},
+        {"role": "function", "name": "read_file", "content": "file contents"},
+    ],
+)
+def test_chat_tool_content_stays_string_with_message_marker(last_message) -> None:
+    body = _chat_body(history=True)
+    body["messages"][-1] = last_message
+
+    updated = maybe_add_prompt_cache_control(
+        ChatDialect(), body, "https://api.pinference.ai/api/v1"
+    )
+
+    assert updated["messages"][-1]["content"] == "file contents"
+    assert updated["messages"][-1]["cache_control"] == CACHE
+
+
 def test_caller_marker_and_ttl_are_left_alone() -> None:
     body = _anthropic_body()
     body["system"] = [
