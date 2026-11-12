@@ -124,7 +124,8 @@ def _mark_last_tool(
         if anthropic:
             # Server tools (web search, computer use, ...) do not accept a
             # cache marker; fall back to the last custom tool.
-            if tool.get("type") not in {None, "custom"} or "name" not in tool:
+            tool_type = tool.get("type")
+            if (tool_type is not None and tool_type != "custom") or "name" not in tool:
                 continue
         elif tool.get("type") != "function":
             continue

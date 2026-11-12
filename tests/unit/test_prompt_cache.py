@@ -195,6 +195,18 @@ def test_malformed_chat_roles_do_not_raise() -> None:
     assert isinstance(updated, dict)
 
 
+def test_malformed_tool_type_does_not_raise() -> None:
+    body = _anthropic_body()
+    body["tools"] = [{"type": [], "name": "bad", "input_schema": {"type": "object"}}]
+
+    updated = maybe_add_prompt_cache_control(
+        AnthropicDialect(), body, "https://api.pinference.ai/api/v1"
+    )
+
+    assert "cache_control" not in updated["tools"][0]
+    assert updated["system"][-1]["cache_control"] == CACHE
+
+
 def test_malformed_anthropic_block_types_do_not_raise() -> None:
     body = _anthropic_body(history=True)
     body["messages"][-1]["content"] = [{"type": [], "text": "bad"}]
