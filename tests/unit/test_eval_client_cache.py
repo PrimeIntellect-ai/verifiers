@@ -107,6 +107,39 @@ async def test_relay_sends_configured_retention() -> None:
     assert body == original
 
 
+@pytest.mark.asyncio
+async def test_none_retention_passes_through() -> None:
+    client = EvalClient(EvalClientConfig(base_url=BASE_URL, cache_retention="none"))
+    client._request = AsyncMock(return_value=_response())  # type: ignore[method-assign]
+    body = _body()
+    original = deepcopy(body)
+
+    await client.get_response(ChatDialect(), body, SamplingConfig())
+
+    sent = client._request.await_args.args[1]
+    assert "cache_control" not in json.dumps(sent)
+    assert body == original
+
+
+@pytest.mark.asyncio
+async def test_non_gateway_base_url_passes_through() -> None:
+    client = EvalClient(
+        EvalClientConfig(
+            base_url="https://api.anthropic.com/v1",
+            cache_retention="long",
+        )
+    )
+    client._request = AsyncMock(return_value=_response())  # type: ignore[method-assign]
+    body = _body()
+    original = deepcopy(body)
+
+    await client.get_response(ChatDialect(), body, SamplingConfig())
+
+    sent = client._request.await_args.args[1]
+    assert "cache_control" not in json.dumps(sent)
+    assert body == original
+
+
 def test_config_rejects_unknown_retention() -> None:
     with pytest.raises(ValidationError):
         EvalClientConfig(cache_retention="forever")  # type: ignore[arg-type]
