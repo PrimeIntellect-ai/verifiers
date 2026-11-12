@@ -264,52 +264,53 @@ class DockerBackend(RuntimeBackend):
             raise SandboxError(
                 f"docker mount inspection failed: {mountinfo.stderr.strip()}"
             )
-        identities: dict[str, tuple[str, PurePosixPath, bool]] = {}
+        declared = {PurePosixPath(mount["Destination"]): mount for mount in mounts}
+        if len(declared) != len(mounts):
+            raise SandboxError("docker returned duplicate mount destinations")
+        resolved: dict[PurePosixPath, DockerMount] = {}
         for line in mountinfo.stdout.splitlines():
             fields = line.split()
-            if len(fields) < 10 or "-" not in fields[6:-3]:
+            if len(fields) < 6:
                 raise SandboxError("docker returned malformed mount information")
-            target = _mountinfo_path(fields[4])
-            if target in identities:
+            target = PurePosixPath(_mountinfo_path(fields[4]))
+            parents = [path for path in declared if target.is_relative_to(path)]
+            if not parents:
+                continue
+            if target in resolved:
                 raise SandboxError(
-                    f"docker returned ambiguous stacked mounts at {target!r}"
+                    f"docker mount {str(target)!r} is ambiguous: stacked mounts"
                 )
-            identities[target] = (
-                fields[2],
-                PurePosixPath(_mountinfo_path(fields[3])),
-                "ro" in fields[5].split(",") or "ro" in fields[-1].split(","),
-            )
-        resolved: dict[str, DockerMount] = {}
-        for mount in mounts:
-            target = mount["Destination"]
-            identity = identities.get(target)
-            if identity is None:
+            try:
+                separator = fields.index("-", 6)
+                options = set(fields[5].split(","))
+                super_options = set(fields[separator + 3].split(","))
+            except (ValueError, IndexError) as exc:
                 raise SandboxError(
-                    f"docker mount {target!r} is missing from the container mount table"
-                )
+                    "docker returned malformed mount information"
+                ) from exc
+            if any(
+                len(flags & {"rw", "ro"}) != 1 for flags in (options, super_options)
+            ):
+                raise SandboxError("docker returned ambiguous mount permissions")
+            parent = max(parents, key=lambda path: len(path.parts))
+            mount = declared[parent]
             source = mount.get("Source") or mount.get("Name") or mount.get("Type", "")
+            if source.startswith("/"):
+                source = str(PurePosixPath(source) / target.relative_to(parent))
+            # Recursive binds can expose a writable submount even when Docker
+            # reports the declared parent as read-only. Use each actual mount's
+            # device, root and effective mount/superblock permissions.
             resolved[target] = DockerMount(
-                target=target,
+                target=str(target),
                 source=source,
-                read_only=identity[2],
-                device=identity[0],
-                root=identity[1],
+                read_only="ro" in options or "ro" in super_options,
+                device=fields[2],
+                root=PurePosixPath(_mountinfo_path(fields[3])),
             )
-            # Recursive binds can expose mounts from unrelated source trees.
-            # A read-only parent does not imply read-only descendants on every
-            # Docker/kernel combination; use each mount's effective flags.
-            for nested, (device, root, read_only) in identities.items():
-                if nested == target or not PurePosixPath(nested).is_relative_to(target):
-                    continue
-                resolved.setdefault(
-                    nested,
-                    DockerMount(
-                        target=nested,
-                        source=str(root),
-                        read_only=read_only,
-                        device=device,
-                        root=root,
-                    ),
+        for target in declared:
+            if target not in resolved:
+                raise SandboxError(
+                    f"docker mount {str(target)!r} is missing from the container mount table"
                 )
         self.mounts = tuple(resolved.values())
 

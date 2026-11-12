@@ -372,15 +372,26 @@ async def serve_in_runtime(
         env["TMPDIR"] = runtime.env.get("TMPDIR") or runtime.info.id
     # Discover the image/task TMPDIR through the same confined view as the
     # server. Port discovery and logging must not require extra writable roots.
+    # Prefer disk-backed /var/tmp to Prime's small /tmp, but accept the native
+    # scratch default when it is the only writable directory in the view.
     temporary = await runtime.run(
         [
             "/bin/sh",
             "-c",
-            (
-                'directory=${TMPDIR:-/tmp}; case "$directory" in /*) ;; *) exit 1;; esac; '
-                '[ -d "$directory" ] && [ -w "$directory" ] && '
-                '[ -x "$directory" ] && printf %s "$directory"'
-            ),
+            """
+usable() {
+    case "$1" in /*) ;; *) return 1;; esac
+    [ -d "$1" ] && [ -w "$1" ] && [ -x "$1" ]
+}
+if [ -n "${TMPDIR:-}" ]; then set -- "$TMPDIR"; fi
+for directory do
+    if usable "$directory"; then printf %s "$directory"; exit 0; fi
+done
+exit 1
+""",
+            "mcp-temp",
+            "/var/tmp",
+            runtime.temp_path(env=env),
         ],
         {key: value for key, value in env.items() if key == "TMPDIR"},
     )
