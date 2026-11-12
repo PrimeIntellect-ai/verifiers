@@ -44,4 +44,3 @@ A trace records the message graph, rewards, metrics, errors, and one per-call re
 - [Harnesses](harnesses.md) — How to build custom harnesses
 - [Agent](agent.md) — How to run standalone agents
 - [Env](env.md) — How to build multi-agent environments
-- [GEPA](gepa.md) — Optimize a taskset's system prompt

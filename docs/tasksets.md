@@ -191,7 +191,7 @@ taskset.include(idx=["0:100"]).exclude(names=["broken"]).shuffle(seed=0).take(5)
 
 `include` keeps and `exclude` drops tasks matching any of `idx` (integers or non-negative Python slice strings like `"0:100"`, `"100:"`, or `"::2"`), `ids`, `keys`, or `names`; a task matches when any provided list names it. Any filter entry that matches nothing logs a warning once the stream has been consumed.
 
-The debug, validate, and GEPA entrypoints all accept a `select` config and apply it via `taskset.select(config.select)`, which chains the views in a fixed order: `include`, `exclude`, `shuffle`, `skip`, `limit`:
+The run, debug, and validate entrypoints all accept a `select` config and apply it via `taskset.select(config.select)`, which chains the views in a fixed order: `include`, `exclude`, `shuffle`, `skip`, `limit`:
 
 ```bash
 uv run vf-validate gsm8k --select.include.idx 0:100                 # the first 100 tasks

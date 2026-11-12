@@ -1400,15 +1400,6 @@ http = [
 ]
 
 [[package]]
-name = "gepa"
-version = "0.1.4"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/95/56/925779e5690971f1b022f7d107caf015c33ec09560261273ec137e23a8f2/gepa-0.1.4.tar.gz", hash = "sha256:6dd153a676ae5481764860d19286a9c0e8ddb5ef70d7f13044faf24978bdb6b8", size = 351343, upload-time = "2026-07-15T14:53:59.929Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/fd/77/5b3a281cfd9caaa9e68349b434cf27f1ca448003ee0067a1ae2184dc52d1/gepa-0.1.4-py3-none-any.whl", hash = "sha256:12b971039599625c156d2231f6d72a29c31a22e9c237689459b5f1a3c353f532", size = 290167, upload-time = "2026-07-15T14:53:58.422Z" },
-]
-
-[[package]]
 name = "glossary"
 version = "0.1.0"
 source = { editable = "environments/glossary" }
@@ -5071,7 +5062,6 @@ default-groups = ["dev", "examples"]
 dependencies = [
     { name = "aiohttp" },
     { name = "anthropic" },
-    { name = "gepa" },
     { name = "h11" },
     { name = "httpx" },
     { name = "httpx2" },

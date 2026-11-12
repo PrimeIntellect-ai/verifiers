@@ -17,7 +17,7 @@ class SharedTasksetConfig(BaseConfig):
     """Config passed to each task, under `--env.taskset.task.*`."""
     system_prompt: Path | None = None
     """File whose text overrides each task's `TaskData.system_prompt` on
-    iteration (e.g. a GEPA `best_system_prompt.txt`)."""
+    iteration."""
 
 
 class TasksetConfig(SharedTasksetConfig):
