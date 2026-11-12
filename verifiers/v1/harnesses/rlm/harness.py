@@ -31,7 +31,11 @@ BuiltinSkill = Literal["bash", "edit", "fetch", "search"]
 BuiltinTool = Literal["bash", "edit", "fetch", "ipython"]
 
 RLM_REPO = "github.com/PrimeIntellect-ai/nano-rlm.git"
-RLM_CACHE_DIR = "/tmp/vf-rlm"
+# Under /var/tmp like every other harness: image builds and agents clean /tmp, which is
+# often a tmpfs, and a missing install is reinstalled from the network.
+RLM_CACHE_DIR = "/var/tmp/vf-rlm"
+RLM_LEGACY_CACHE_DIR = "/tmp/vf-rlm"
+"""Where installs lived before; a working one there is linked instead of reinstalled."""
 RLM_STATE_DIR = "/tmp/vf-rlm-state"
 RLM_RUNTIME_METADATA_KEY = "ai.prime.rlm/runtime-v1"
 RLM_SESSION_METADATA_KEY = "ai.prime.rlm/session-v1"
@@ -174,14 +178,25 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
             f"RLM_CHECKOUT_PATH={checkout} bash {checkout}/install.sh && "
             f"touch {ready})"
         )
-        logger.debug("Ensuring rlm %s is installed", self.config.version)
+        check = f"[ -f {ready} ] && [ -x {binary} ]"
+        if self._skills_install_dir is None:
+            # An image that installed this version under the old /tmp path keeps using
+            # it: link its bin/ instead of resolving dependencies again from the network.
+            legacy = f"{RLM_LEGACY_CACHE_DIR}-{self._cache_key()}"
+            check = (
+                f"{check} || {{ [ -f {legacy}/.ready ] && [ -x {legacy}/bin/rlm ] && "
+                f"rm -rf {directory}/bin && ln -s {legacy}/bin {directory}/bin && "
+                f"touch {ready}; }}"
+            )
+            # A link left dangling by a later /tmp cleanup is replaced by the install.
+            install = f"rm -rf {directory}/bin && {install}"
         env = self.config.resolved_env.copy()
         extra_uv_args = env.get("RLM_EXTRA_UV_ARGS", "")
         env["RLM_EXTRA_UV_ARGS"] = f"{extra_uv_args} --with mcp~=1.28".strip()
         await ensure_installed(
             runtime,
             directory=directory,
-            ready=f"[ -f {ready} ] && [ -x {binary} ]",
+            ready=check,
             install=install,
             env=env,
             label="rlm",
@@ -330,6 +345,8 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
             return None
         return f"{self._skills_install_dir}/home"
 
+    def _cache_key(self) -> str:
+        return hashlib.sha256(self.config.version.encode()).hexdigest()
+
     def _install_dir(self) -> str:
-        cache_key = hashlib.sha256(self.config.version.encode()).hexdigest()
-        return self._skills_install_dir or f"{RLM_CACHE_DIR}-{cache_key}"
+        return self._skills_install_dir or f"{RLM_CACHE_DIR}-{self._cache_key()}"
