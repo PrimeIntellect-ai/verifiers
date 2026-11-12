@@ -45,6 +45,7 @@ class Runtime:
     user: str | None = None
     home: str | None = None
     _filesystem: FilesystemSandbox | None = None
+    _filesystem_path: str | None = None
 
     def __post_init__(self) -> None:
         if self.user is not None and not self.backend.SUPPORTS_USER_SWITCHING:
@@ -71,7 +72,26 @@ class Runtime:
         """
         if self._filesystem is not None:
             raise ValueError("cannot replace an active filesystem policy")
-        return replace(self, _filesystem=await prepare_filesystem(self, policy))
+        sandbox = await prepare_filesystem(self, policy)
+        # Bootstrap commands need a trusted PATH, while the confined task must
+        # retain the image's PATH (which can select its interpreter or virtualenv).
+        # Clear loader/startup hooks before reading it through an absolute shell.
+        environment = bootstrap_env(self._process_env({}))
+        environment.pop("PATH")
+        if "PATH" in self.env:
+            environment["PATH"] = self.env["PATH"]
+        inherited = await self.with_env(environment).run(
+            ["/bin/sh", "-c", 'printf %s "$PATH"'], {}
+        )
+        if inherited.exit_code:
+            raise SandboxError(
+                "cannot read the task PATH before filesystem confinement"
+            )
+        return replace(
+            self,
+            _filesystem=sandbox,
+            _filesystem_path=inherited.stdout,
+        )
 
     def _process_env(self, env: dict[str, str]) -> dict[str, str]:
         home = {} if self.home is None else {"HOME": self.home}
@@ -83,7 +103,17 @@ class Runtime:
 
     def _command(self, argv: list[str], env: dict[str, str]) -> list[str]:
         return (
-            self._filesystem.command(argv, self._process_env(env))
+            self._filesystem.command(
+                argv,
+                {
+                    **(
+                        {"PATH": self._filesystem_path}
+                        if self._filesystem_path is not None
+                        else {}
+                    ),
+                    **self._process_env(env),
+                },
+            )
             if self._filesystem is not None
             else argv
         )
