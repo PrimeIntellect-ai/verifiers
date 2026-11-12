@@ -180,6 +180,8 @@ class HarborData(TaskData):
     """Task-declared MCP servers, preserved for served-task reconstruction."""
     compose_build_dockerfile: bool = False
     """Use the adjacent Dockerfile when Compose's workspace has no image or build."""
+    compose_host_image: str | None = None
+    """Image for a Compose VM host, optionally including baked-in service images."""
     verifier_image: str | None = None
     """Pullable image for a separate verifier, containing the complete `/tests` suite.
     Takes precedence over verifier_build."""
@@ -228,6 +230,7 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
                 file=str(compose.relative_to(self.data.task_dir)),
                 image_override=self.data.image is not None,
                 build_dockerfile=self.data.compose_build_dockerfile,
+                host_image=self.data.compose_host_image,
             )
         return super().deployment_spec()
 
@@ -960,11 +963,16 @@ def parse_verifier_extras(
     if services:
         compose = find_compose_file(task_dir)
         declared: set[str] = set()
+        includes = False
         if compose is not None:
             import yaml
 
-            declared = set(yaml.safe_load(compose.read_text())["services"])
-        if missing := services - declared:
+            definition = yaml.safe_load(compose.read_text())
+            declared = set(definition.get("services", {}))
+            includes = bool(definition.get("include"))
+        # Included models resolve on the deployment host. setup() checks all hook
+        # targets against the running deployment once those services are known.
+        if not includes and (missing := services - declared):
             raise ValueError(
                 f"{task_dir.name}: artifacts or collect hooks target services "
                 f"{sorted(missing)} that "
