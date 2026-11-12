@@ -343,7 +343,8 @@ async def test_network_policies(runtime) -> None:
     if not isinstance(runtime, NetworkPolicyConfig):
         with refused(runtime, ValueError, "does not enforce network policies"):
             resolve_runtime_config(
-                runtime, task(network=NetworkPolicyConfig(allow=["pypi.org"]))
+                runtime,
+                task(filesystem=None, network=NetworkPolicyConfig(allow=["pypi.org"])),
             )
         return
     probe = (

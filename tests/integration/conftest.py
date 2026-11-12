@@ -127,6 +127,9 @@ def _eval_config(
     is no run-level harness, so a single-agent test's `harness` lands on the `agent`
     seat and a multi-agent test pins its seats through `env` role fields instead."""
     taskset_cfg = {"id": taskset, **(taskset_overrides or {})}
+    if runtime and runtime.get("type") == "subprocess":
+        # Host-debug fixtures explicitly opt out; container cells exercise defaults.
+        taskset_cfg["unconfined"] = True
     env_cfg = dict(env or {})
     _label_prime_runtimes(taskset_cfg)
     if harness:
