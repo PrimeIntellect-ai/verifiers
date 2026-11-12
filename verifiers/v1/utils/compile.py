@@ -56,7 +56,8 @@ def resolve_runtime_config(
     ):
         raise ValueError(
             f"task {task.data.idx!r} requires a filesystem policy, but the "
-            f"{config.type} runtime does not enforce one"
+            f"{config.type} runtime does not enforce one; use a supported runtime "
+            "or explicitly set TaskData.filesystem=None to opt out"
         )
     if task.data.filesystem is not None and isinstance(config, DockerConfig):
         updates["user_namespaces"] = True

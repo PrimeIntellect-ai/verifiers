@@ -58,10 +58,11 @@ class FilesystemPolicyConfig(BaseConfig):
 
     readable: list[str] = Field(default_factory=lambda: ["/"])
     """Trees exposed read-only. The default exposes the sandbox's filesystem."""
-    writable: list[str] = Field(default_factory=list)
-    """Trees exposed read-write, including reads. No home, workdir or temporary
-    directory is implicitly writable. System/bootstrap directories cannot be
-    writable. A writable tree cannot contain a readable or hidden rule: its
+    writable: list[str] | None = Field(default_factory=list)
+    """Trees exposed read-write, including reads. An empty list grants no writes.
+    None selects the agent's workdir, home, TMPDIR, /tmp, /var/tmp and /logs/artifacts
+    at runtime, as used by TaskData's default policy. System/bootstrap directories
+    cannot be writable. A writable tree cannot contain a readable or hidden rule: its
     writable parent could otherwise relocate the protected source between
     commands. Writes persist in the underlying runtime."""
     hidden: list[str] = Field(default_factory=lambda: list(FILESYSTEM_DEFAULT_HIDDEN))
@@ -73,7 +74,9 @@ class FilesystemPolicyConfig(BaseConfig):
 
     @field_validator("readable", "writable", "hidden")
     @classmethod
-    def validate_paths(cls, paths: list[str]) -> list[str]:
+    def validate_paths(cls, paths: list[str] | None) -> list[str] | None:
+        if paths is None:
+            return None
         normalized = []
         for value in paths:
             path = PurePosixPath(value)
@@ -101,14 +104,14 @@ class FilesystemPolicyConfig(BaseConfig):
             PurePosixPath(path)
             for path in ("/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc")
         )
-        writable = [PurePosixPath(value) for value in self.writable]
+        writable = [PurePosixPath(value) for value in self.writable or ()]
         for index, path in enumerate(writable):
             if any(
                 path.is_relative_to(other) or other.is_relative_to(path)
                 for other in writable[:index]
             ):
                 raise ValueError("filesystem writable paths must not overlap")
-        for value in self.writable:
+        for value in self.writable or ():
             path = PurePosixPath(value)
             if any(
                 path.is_relative_to(root) or PurePosixPath(root).is_relative_to(path)
@@ -131,7 +134,7 @@ class FilesystemPolicyConfig(BaseConfig):
                 raise ValueError(
                     f"filesystem writable path {value!r} contains a protected rule"
                 )
-        for value in (*self.writable, *self.hidden):
+        for value in (*(self.writable or ()), *self.hidden):
             path = PurePosixPath(value)
             if any(
                 path.is_relative_to(root) or root.is_relative_to(path)

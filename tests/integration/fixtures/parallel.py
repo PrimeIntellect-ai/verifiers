@@ -75,10 +75,19 @@ class ParallelTask(vf.Task):
         return float(trace.num_turns >= 1)
 
 
-class ParallelTaskset(vf.Taskset[ParallelTask, vf.TasksetConfig]):
+class ParallelConfig(vf.TasksetConfig):
+    unconfined: bool = False
+
+
+class ParallelTaskset(vf.Taskset[ParallelTask, ParallelConfig]):
     def load(self) -> list[ParallelTask]:
         return [
             ParallelTask(
-                vf.TaskData(idx=0, system_prompt="Be brief.", prompt="Reply with OK.")
+                vf.TaskData(
+                    idx=0,
+                    system_prompt="Be brief.",
+                    prompt="Reply with OK.",
+                    **({"filesystem": None} if self.config.unconfined else {}),
+                )
             )
         ]
