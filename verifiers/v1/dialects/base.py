@@ -304,6 +304,11 @@ class Dialect(ABC, Generic[RespT]):
         """Whether the request asks for a streamed (SSE) response."""
         return bool(body.get("stream"))
 
+    def stream_request(self, body: RawRequest) -> RawRequest:
+        """`body` asking for a streamed response, for a client that streams a call the
+        program made unstreamed and assembles the reply (`EvalClientConfig.stream`)."""
+        return {**body, "stream": True}
+
     def is_terminal_event(self, chunk: bytes) -> bool:
         """Whether this complete SSE event ends the model's turn for the client. The
         interception server withholds the terminal event (and anything after it) until the
@@ -374,8 +379,11 @@ class Dialect(ABC, Generic[RespT]):
         """Serialize a rewritten response as a minimal native SSE stream."""
 
     @abstractmethod
-    def stream_parser(self) -> StreamParser:
-        """Create the per-request incremental parser for a native SSE response."""
+    def stream_parser(self, body: RawRequest | None = None) -> StreamParser:
+        """Create the per-request incremental parser for a native SSE response. `body` is
+        the request when the assembled reply stands in for an unstreamed one
+        (`stream_request`), so the parser can match unstreamed semantics a provider's stream
+        doesn't."""
 
     @abstractmethod
     def apply_overrides(

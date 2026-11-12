@@ -11,6 +11,8 @@ from verifiers.v1.configs.client import (
 )
 from verifiers.v1.configs.sampling import Sampling, SamplingConfig
 from verifiers.v1.dialects import Dialect
+from verifiers.v1.dialects.base import StreamParser, is_sse_done_event
+from verifiers.v1.errors import ProviderError, RolloutError
 from verifiers.v1.graph import PendingTurn
 from verifiers.v1.types import Response
 
@@ -26,6 +28,39 @@ class RelayReply:
     content_type: str
     chunks: AsyncIterator[bytes]
     close: Callable[[], Awaitable[None]]
+
+
+async def collect_stream(
+    dialect: Dialect,
+    reply: RelayReply,
+    *,
+    parser: StreamParser | None = None,
+    events: bytearray | None = None,
+) -> Response:
+    """Read a relayed provider stream whole into the assembled response, then close it.
+    Comment-only events (the provider's own keepalives) are skipped; the rest are appended
+    to `events` when given, for a caller that serves them on."""
+    parser = parser or dialect.stream_parser()
+    saw_terminal = False
+    try:
+        async for chunk in reply.chunks:
+            if not any(line.startswith(b"data:") for line in chunk.splitlines()):
+                continue
+            if events is not None:
+                events += chunk
+            saw_terminal |= dialect.is_terminal_event(chunk)
+            if parser.on_done is not None and is_sse_done_event(chunk):
+                parser.on_done()
+            parser.feed(chunk)
+        if not saw_terminal:
+            raise ProviderError("upstream stream ended before its terminal event")
+        return parser.finish()
+    except RolloutError:
+        raise
+    except Exception as e:  # a malformed provider stream
+        raise ProviderError(str(e)) from e
+    finally:
+        await reply.close()
 
 
 class Client(ABC):

@@ -78,6 +78,11 @@ class EvalClientConfig(BaseClientConfig):
     cache_retention: Literal["none", "short", "long"] | None = None
     """Anthropic prompt-cache lifetime. ``None`` follows ``PI_CACHE_RETENTION``
     (short by default); ``long`` emits ``ttl: "1h"``; ``none`` disables markers."""
+    stream: bool = False
+    """Request every model call as a stream and assemble it into the response the program
+    asked for. Bytes keep flowing while a long reply is generated, so a proxy that drops
+    idle or long-running unstreamed calls doesn't cut it. Calls the program streams itself
+    are relayed as streams either way."""
 
 
 class TrainClientConfig(BaseClientConfig):

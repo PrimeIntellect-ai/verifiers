@@ -8,7 +8,12 @@ from pydantic import ValidationError
 from pydantic_core import from_json, to_json
 
 from verifiers.v1.clients.base import build_async_httpx, join_url
-from verifiers.v1.clients.client import SESSION_ID_HEADER, Client, RelayReply
+from verifiers.v1.clients.client import (
+    SESSION_ID_HEADER,
+    Client,
+    RelayReply,
+    collect_stream,
+)
 from verifiers.v1.clients.prompt_cache import maybe_add_prompt_cache_control
 from verifiers.v1.configs.client import (
     BaseClientConfig,
@@ -75,6 +80,7 @@ class EvalClient(Client):
         # Keep endpoint headers separate so they can override intercepted request headers before
         # the dialect's provider authentication is applied.
         self.headers = resolve_headers(config)
+        self.stream = getattr(config, "stream", False)
         self.client = build_async_httpx(config)
 
     async def get_response(
@@ -86,6 +92,16 @@ class EvalClient(Client):
         turn: PendingTurn | None = None,
         headers: Mapping[str, str] | None = None,
     ) -> Response:
+        if self.stream:
+            # Stream the call and assemble the native response the program asked for: the
+            # parser keeps the provider's object shape, so it is served like an unstreamed one.
+            # `relay` applies the prompt-cache markers.
+            reply = await self.relay(
+                dialect, dialect.stream_request(body), session_id, headers
+            )
+            return await collect_stream(
+                dialect, reply, parser=dialect.stream_parser(body)
+            )
         body = maybe_add_prompt_cache_control(
             dialect, body, self.base_url, self.cache_retention
         )
@@ -195,14 +211,20 @@ class EvalClient(Client):
         async def chunks():
             buffer = bytearray()
             search_from = 0
-            async for chunk in resp.aiter_bytes():
-                buffer += chunk
-                while match := _SSE_EVENT_END.search(buffer, search_from):
-                    yield bytes(buffer[: match.end()])
-                    del buffer[: match.end()]
-                    search_from = 0
-                # A delimiter is at most four bytes and can straddle chunks.
-                search_from = max(0, len(buffer) - 3)
+            try:
+                async for chunk in resp.aiter_bytes():
+                    buffer += chunk
+                    while match := _SSE_EVENT_END.search(buffer, search_from):
+                        yield bytes(buffer[: match.end()])
+                        del buffer[: match.end()]
+                        search_from = 0
+                    # A delimiter is at most four bytes and can straddle chunks.
+                    search_from = max(0, len(buffer) - 3)
+            # A stream that stalls or drops mid-reply is a retryable provider failure.
+            except httpx.TimeoutException as e:
+                raise model_error(str(e), status_code=504) from e
+            except httpx.HTTPError as e:
+                raise model_error(str(e), status_code=502) from e
             if buffer:
                 yield bytes(buffer)
 

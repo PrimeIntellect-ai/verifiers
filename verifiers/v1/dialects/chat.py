@@ -287,6 +287,9 @@ class ChatStreamParser(StreamParser):
     finish_reason: str | None = None
     usage: dict | None = None
     head: dict | None = None
+    forbid_tool_calls: bool = False
+    """The request set `tool_choice: "none"`: drop streamed calls and finish with `stop`, as
+    unstreamed replies do (vLLM's stream still parses and returns them)."""
 
     def feed(self, raw: bytes) -> None:
         chunk = parse_sse_event(raw)
@@ -371,6 +374,11 @@ class ChatStreamParser(StreamParser):
             for index in sorted(self.tool_calls)
             if self.tool_calls[index].get("type") in _CLIENT_TOOL_TYPES
         ]
+        finish_reason = self.finish_reason or "stop"
+        if self.forbid_tool_calls:
+            tool_calls = []
+            if finish_reason == "tool_calls":
+                finish_reason = "stop"
         if tool_calls:
             self.message["tool_calls"] = tool_calls
         if self.reasoning_details:
@@ -385,7 +393,7 @@ class ChatStreamParser(StreamParser):
                 {
                     "index": 0,
                     "message": self.message,
-                    "finish_reason": self.finish_reason or "stop",
+                    "finish_reason": finish_reason,
                 }
             ],
             "usage": self.usage,
@@ -590,8 +598,21 @@ class ChatDialect(Dialect[ChatCompletion]):
         }
         return [f"data: {json.dumps(chunk)}\n\n".encode(), b"data: [DONE]\n\n"]
 
-    def stream_parser(self) -> StreamParser:
-        return ChatStreamParser()
+    def stream_request(self, body: RawRequest) -> RawRequest:
+        # Usage arrives only when asked for, in a final chunk without choices.
+        return {
+            **body,
+            "stream": True,
+            "stream_options": {
+                **(body.get("stream_options") or {}),
+                "include_usage": True,
+            },
+        }
+
+    def stream_parser(self, body: RawRequest | None = None) -> StreamParser:
+        return ChatStreamParser(
+            forbid_tool_calls=body is not None and body.get("tool_choice") == "none"
+        )
 
     def apply_overrides(
         self, body: RawRequest, model: str, sampling: SamplingConfig

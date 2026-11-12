@@ -746,7 +746,7 @@ class ResponsesDialect(Dialect[OpenAIResponse]):
             b"data: [DONE]\n\n",
         ]
 
-    def stream_parser(self) -> StreamParser:
+    def stream_parser(self, body: RawRequest | None = None) -> StreamParser:
         return ResponsesStreamParser()
 
     def apply_overrides(
