@@ -192,7 +192,9 @@ class OpenClawHarness(ACPHarness[OpenClawHarnessConfig]):
     ) -> ACPConfig:
         system_prompt, prompt = self.resolve_prompt(data)
         provider, _, model_id = ctx.model.partition("/")
-        state_dir = f".vf-openclaw/{trace.id}"
+        state_dir = runtime.temp_path(
+            "vf-openclaw", trace.id, env=self.config.resolved_env
+        )
         config_path = f"{state_dir}/openclaw.json"
         skills_dir = f"{state_dir}/skills"
         provider_config = {
@@ -276,5 +278,7 @@ class OpenClawHarness(ACPHarness[OpenClawHarnessConfig]):
         )
 
     async def cleanup(self, trace: Trace, runtime: Runtime) -> None:
-        state_dir = f".vf-openclaw/{trace.id}"
+        state_dir = runtime.temp_path(
+            "vf-openclaw", trace.id, env=self.config.resolved_env
+        )
         await remove_dir(runtime, state_dir, "OpenClaw state")

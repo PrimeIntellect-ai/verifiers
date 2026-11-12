@@ -170,11 +170,12 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
         await runtime.write(path, tomli_w.dumps(settings).encode())
 
     async def cleanup(self, trace: Trace, runtime: Runtime) -> None:
-        await remove_dir(runtime, self.trace_home(trace), "Codex home")
+        await remove_dir(runtime, self.trace_home(trace, runtime), "Codex home")
 
-    @staticmethod
-    def trace_home(trace: Trace) -> str:
-        return f"/tmp/vf-codex-home-{trace.id}"
+    def trace_home(self, trace: Trace, runtime: Runtime) -> str:
+        return runtime.temp_path(
+            f"vf-codex-home-{trace.id}", env=self.config.resolved_env
+        )
 
     async def build_env(
         self,
@@ -185,7 +186,7 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
         secret: str,
         mcp_urls: dict[str, str],
     ) -> dict[str, str]:
-        home = self.trace_home(trace)
+        home = self.trace_home(trace, runtime)
         await self.install_skills(runtime, f"{home}/skills")
         mcp_config = "features={mcp_2026_07_28=true}\n" + (
             "mcp_servers={"

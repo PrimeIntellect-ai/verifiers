@@ -245,7 +245,7 @@ async def _cached_package(src: Path) -> tuple[str, bytes]:
 async def _install_in_sandbox(server: ServerBase, agent_runtime: Runtime) -> str:
     # Dependency installation is trusted setup as the backend's default user.
     # The server itself keeps the agent's user and filesystem policy when launched.
-    runtime = agent_runtime.backend.bind(env=agent_runtime.env)
+    runtime = agent_runtime.backend.bind(env=agent_runtime.env).with_user(None)
     # Prime VMs mount /tmp as a small tmpfs, while the runtime workdir lives on
     # the VM's root disk. Keep source, build scratch space, and uv's cache on the
     # durable runtime filesystem so ordinary dependency installs cannot exhaust
@@ -374,7 +374,7 @@ async def serve_in_runtime(
     if fixed is not None:
         env["MCP_PORT"] = str(fixed)
     else:
-        port_file = f"/tmp/vf-port-{uuid.uuid4().hex}"
+        port_file = runtime.temp_path(f"vf-port-{uuid.uuid4().hex}", env=env)
         env["MCP_PORT_FILE"] = port_file
     python = sys.executable
     if runtime.type != "subprocess":
@@ -390,10 +390,9 @@ async def serve_in_runtime(
             "-c",
             f'export PATH="{path}"; exec {shlex.join(command)}',
         ]
-    log = f"vf_tool_{server.server_name}.log"
-    if runtime.user is not None:
-        # The agent user may not be able to write the workdir.
-        log = f"/tmp/vf_tool_{server.server_name}-{uuid.uuid4().hex[:8]}.log"
+    log = runtime.temp_path(
+        f"vf_tool_{server.server_name}-{uuid.uuid4().hex[:8]}.log", env=env
+    )
     loop = asyncio.get_running_loop()
     # Servers without a toolset config, such as custom `ServerBase` subclasses, keep the default.
     timeouts = (

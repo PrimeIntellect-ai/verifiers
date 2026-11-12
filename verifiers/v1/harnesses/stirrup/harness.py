@@ -52,7 +52,9 @@ class StirrupHarness(ACPHarness[StirrupHarnessConfig]):
         data: TaskData,
     ) -> ACPConfig:
         system_prompt, prompt = self.resolve_text_prompt(data)
-        skills_dir = f"/tmp/vf-stirrup-{trace.id}/skills"
+        skills_dir = runtime.temp_path(
+            f"vf-stirrup-{trace.id}", "skills", env=self.config.resolved_env
+        )
         await self.install_skills(runtime, skills_dir)
         program = await runtime.prepare_uv_script(
             self._source(), self.config.resolved_env, activate=False
@@ -77,4 +79,8 @@ class StirrupHarness(ACPHarness[StirrupHarnessConfig]):
         )
 
     async def cleanup(self, trace: Trace, runtime: Runtime) -> None:
-        await remove_dir(runtime, f"/tmp/vf-stirrup-{trace.id}", "Stirrup skills")
+        await remove_dir(
+            runtime,
+            runtime.temp_path(f"vf-stirrup-{trace.id}", env=self.config.resolved_env),
+            "Stirrup skills",
+        )

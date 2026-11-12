@@ -4,7 +4,7 @@ them at construction where the pairing is statically decidable."""
 
 from collections.abc import Collection
 
-from verifiers.v1.configs.runtime import NetworkPolicyConfig
+from verifiers.v1.configs.runtime import DockerConfig, NetworkPolicyConfig
 from verifiers.v1.harness import Harness
 from verifiers.v1.runtimes import (
     RuntimeConfig,
@@ -58,6 +58,8 @@ def resolve_runtime_config(
             f"task {task.data.idx!r} requires a filesystem policy, but the "
             f"{config.type} runtime does not enforce one"
         )
+    if task.data.filesystem is not None and isinstance(config, DockerConfig):
+        updates["user_namespaces"] = True
     if task.data.network.network_restricted:
         if not isinstance(config, NetworkPolicyConfig):
             raise ValueError(

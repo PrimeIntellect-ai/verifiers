@@ -76,6 +76,13 @@ class FilesystemSandbox:
 
     def command(self, argv: list[str], env: dict[str, str]) -> list[str]:
         return [
+            # Docker exec can be parented by a short-lived runc thread. Keep a
+            # shell waiting for bwrap so --die-with-parent tracks this process,
+            # rather than killing the sandbox when that thread exits.
+            "/bin/sh",
+            "-c",
+            '"$@"; status=$?; exit "$status"',
+            "filesystem-policy",
             *self.prefix,
             *(arg for key, value in env.items() for arg in ("--setenv", key, value)),
             "--",
@@ -98,7 +105,8 @@ async def prepare_filesystem(
     fields = probe.stdout.splitlines()
     if probe.exit_code or len(fields) != len(paths) + 2:
         raise SandboxError(
-            "cannot prepare filesystem policy - " + probe.stderr.strip()[-1000:]
+            f"cannot prepare filesystem policy (exit code {probe.exit_code}) - "
+            + probe.stderr.strip()[-1000:]
         )
     binary, workdir, *kinds = fields
     if not binary.startswith(("/usr/", "/bin/", "/sbin/")):
@@ -142,8 +150,8 @@ async def prepare_filesystem(
     if result.exit_code:
         raise SandboxError(
             "filesystem isolation requires working bubblewrap user namespaces, "
-            "--disable-userns and an accessible shell/workdir - "
-            + result.stderr.strip()[-1000:]
+            "--disable-userns and an accessible shell/workdir "
+            f"(exit code {result.exit_code}) - " + result.stderr.strip()[-1000:]
         )
     return sandbox
 

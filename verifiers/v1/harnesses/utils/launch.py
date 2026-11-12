@@ -94,7 +94,10 @@ async def launch_chat_program(
     if isinstance(prompt, str):
         args.append(f"--prompt={prompt}")
     elif prompt is not None:
-        path = f".vf-initial-messages-{trace.id}.json"
+        path = runtime.temp_path(
+            f"vf-initial-messages-{trace.id}.json",
+            env=env if env is not None else config.resolved_env,
+        )
         await runtime.write(
             path,
             json.dumps([message_to_wire(message) for message in prompt]).encode(),

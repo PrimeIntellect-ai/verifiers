@@ -26,7 +26,6 @@ logger = get_logger(__name__)
 KEY_VAR = "PI_INTERCEPT_KEY"
 
 PI_DIR = "/var/tmp/vf-pi"
-STATE_ROOT = "/tmp/vf-pi-runs"
 PACKAGES_DIR = f"{PI_DIR}/mcp"
 PI_BIN = f"{PACKAGES_DIR}/node_modules/.bin/pi"
 ACP_VERSION = "0.0.34"
@@ -105,7 +104,9 @@ class PiHarness(ACPHarness[PiHarnessConfig]):
         data: TaskData,
     ) -> ACPConfig:
         system_prompt, prompt = self.resolve_prompt(data)
-        agent_dir = f"{STATE_ROOT}/{trace.id}"
+        agent_dir = runtime.temp_path(
+            "vf-pi-runs", trace.id, env=self.config.resolved_env
+        )
         skills_dir = f"{agent_dir}/skills"
         await self.install_skills(runtime, skills_dir)
         reasoning = ctx.sampling.reasoning_effort not in (
@@ -204,7 +205,11 @@ class PiHarness(ACPHarness[PiHarnessConfig]):
         )
 
     async def cleanup(self, trace: Trace, runtime: Runtime) -> None:
-        await remove_dir(runtime, f"{STATE_ROOT}/{trace.id}", "Pi state")
+        await remove_dir(
+            runtime,
+            runtime.temp_path("vf-pi-runs", trace.id, env=self.config.resolved_env),
+            "Pi state",
+        )
 
     async def gate_tools(
         self, config: ACPConfig, runtime: Runtime, url: str, secret: str

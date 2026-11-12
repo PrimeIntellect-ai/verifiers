@@ -32,7 +32,6 @@ BuiltinTool = Literal["bash", "edit", "fetch", "ipython"]
 
 RLM_REPO = "github.com/PrimeIntellect-ai/nano-rlm.git"
 RLM_CACHE_DIR = "/tmp/vf-rlm"
-RLM_STATE_DIR = "/tmp/vf-rlm-state"
 RLM_RUNTIME_METADATA_KEY = "ai.prime.rlm/runtime-v1"
 RLM_SESSION_METADATA_KEY = "ai.prime.rlm/session-v1"
 
@@ -147,7 +146,9 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
     async def setup(self, runtime: Runtime) -> None:
         if self.config.skills:
             # Editable skill packages and uv's tool environment must belong to this run.
-            self._skills_install_dir = f"{RLM_CACHE_DIR}-skills-{secrets.token_hex(16)}"
+            self._skills_install_dir = runtime.temp_path(
+                f"vf-rlm-skills-{secrets.token_hex(16)}", env=self.config.resolved_env
+            )
             await self.install_skills(runtime, f"{self._skills_home()}/skills")
         directory = self._install_dir()
         binary = f"{directory}/bin/rlm"
@@ -155,21 +156,22 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
         ready = f"{directory}/.ready"
         # install.sh installs the Python skill packages under $RLM_HOME/skills.
         home = self._skills_home()
-        home_env = f"RLM_HOME={home} " if home else ""
+        home_env = f"RLM_HOME={shlex.quote(home)} " if home else ""
         # install.sh fetches curl/uv itself; add git only when the image lacks it.
         install = (
-            f"rm -f {ready} && "
+            f"rm -f {shlex.quote(ready)} && "
             "(command -v git >/dev/null 2>&1 || "
             "{ apt-get update -qq && apt-get install -y -qq git; } || dnf install -y -q git || apk add --no-cache git && "
-            f"rm -rf {checkout} && git clone https://{RLM_REPO} {checkout} && "
-            f"git -C {checkout} checkout {shlex.quote(self.config.version)} && "
+            f"rm -rf {shlex.quote(checkout)} && git clone https://{RLM_REPO} {shlex.quote(checkout)} && "
+            f"git -C {shlex.quote(checkout)} checkout {shlex.quote(self.config.version)} && "
             # The editable install needs the files, not the history; agents searching
             # their workspace for a repository must not find the harness's own.
-            f"rm -rf {checkout}/.git && "
-            f"{home_env}UV_INSTALL_DIR={directory}/bin UV_TOOL_BIN_DIR={directory}/bin "
-            f"UV_TOOL_DIR={directory}/tools "
-            f"RLM_CHECKOUT_PATH={checkout} bash {checkout}/install.sh && "
-            f"touch {ready})"
+            f"rm -rf {shlex.quote(checkout + '/.git')} && "
+            f"{home_env}UV_INSTALL_DIR={shlex.quote(directory + '/bin')} "
+            f"UV_TOOL_BIN_DIR={shlex.quote(directory + '/bin')} "
+            f"UV_TOOL_DIR={shlex.quote(directory + '/tools')} "
+            f"RLM_CHECKOUT_PATH={shlex.quote(checkout)} bash {shlex.quote(checkout + '/install.sh')} && "
+            f"touch {shlex.quote(ready)})"
         )
         logger.debug("Ensuring rlm %s is installed", self.config.version)
         env = self.config.resolved_env.copy()
@@ -178,7 +180,7 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
         await ensure_installed(
             runtime,
             directory=directory,
-            ready=f"[ -f {ready} ] && [ -x {binary} ]",
+            ready=f"[ -f {shlex.quote(ready)} ] && [ -x {shlex.quote(binary)} ]",
             install=install,
             env=env,
             label="rlm",
@@ -278,7 +280,7 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
     ) -> ACPConfig:
         system_prompt, prompt = self.resolve_prompt(data)
         return ACPConfig(
-            env={**self.config.resolved_env, "RLM_HOME": self._home(trace)},
+            env={**self.config.resolved_env, "RLM_HOME": self._home(trace, runtime)},
             command=[f"{self._install_dir()}/bin/rlm", "--acp"],
             prompt=prompt,
             session_meta=self._runtime_metadata(
@@ -306,14 +308,25 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
             self._consume_snapshot(trace, response_metadata)
 
     async def cleanup(self, trace: Trace, runtime: Runtime) -> None:
-        await runtime.run(["rm", "-rf", f"{RLM_STATE_DIR}/{trace.id}"], {})
+        await runtime.run(
+            [
+                "rm",
+                "-rf",
+                runtime.temp_path(
+                    "vf-rlm-state", trace.id, env=self.config.resolved_env
+                ),
+            ],
+            {},
+        )
         if self._skills_install_dir is not None:
             await remove_dir(
                 runtime, self._skills_install_dir, "RLM skill installation"
             )
 
-    def _home(self, trace: Trace) -> str:
-        return self._skills_home() or f"{RLM_STATE_DIR}/{trace.id}/home"
+    def _home(self, trace: Trace, runtime: Runtime) -> str:
+        return self._skills_home() or runtime.temp_path(
+            "vf-rlm-state", trace.id, "home", env=self.config.resolved_env
+        )
 
     def _skills_home(self) -> str | None:
         """rlm's home for a run that carries skills: they sit in its `skills/`, where

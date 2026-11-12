@@ -67,7 +67,7 @@ class DeepSeekHarness(ACPHarness[DeepSeekHarnessConfig]):
         if self.config.disabled_tools:
             raise ValueError("DeepSeek minimal ACP does not support disabling tools")
 
-        home = f"/tmp/vf-deepseek/{trace.id}"
+        home = runtime.temp_path("vf-deepseek", trace.id, env=self.config.resolved_env)
         system_prompt, prompt = self.resolve_prompt(data)
         # Keep the upstream minimal tree; replace only its SDK stdio front door.
         # https://github.com/deepseek-ai/deepseek-harness/tree/dsh-v0.2.1-rc.5/packages/bundle/sdk-minimal
@@ -149,4 +149,8 @@ class DeepSeekHarness(ACPHarness[DeepSeekHarnessConfig]):
         await runtime.write(patch_path, json.dumps(patches).encode())
 
     async def cleanup(self, trace: Trace, runtime: Runtime) -> None:
-        await remove_dir(runtime, f"/tmp/vf-deepseek/{trace.id}", "DeepSeek state")
+        await remove_dir(
+            runtime,
+            runtime.temp_path("vf-deepseek", trace.id, env=self.config.resolved_env),
+            "DeepSeek state",
+        )
