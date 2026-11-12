@@ -159,33 +159,17 @@ class ReplayResponse:
 
 
 @dataclass
-class RolloutSession:
+class InferenceSession:
     ctx: ModelContext
     trace: Trace
     network_policy: NetworkPolicyConfig = field(default_factory=NetworkPolicyConfig)
     """The resolved execution policy, including task-level restrictions."""
-    trace_stops: list[Callable[..., Awaitable[bool] | bool]] = field(
-        default_factory=list
-    )
-    limits: RolloutLimits = field(default_factory=RolloutLimits)
-    request_interceptors: list[Callable] = field(default_factory=list)
-    response_interceptors: list[Callable] = field(default_factory=list)
-    request_stops: list[Callable] = field(default_factory=list)
-    response_stops: list[Callable] = field(default_factory=list)
-    on_turn_input: Callable[[], None] | None = None
-    """One-shot acknowledgement when a resumed harness reaches model inference."""
     log_scope: LogScope = field(default_factory=current_scope)
-    """The rollout's log scope, re-entered by the handler tasks that serve it."""
-    gates_tools: bool = False
-    """Whether the harness asks `/tool` before executing each call (see
-    `Harness.SUPPORTS_TOOL_INTERCEPTION`). Without that gate a pre-execution rewrite
-    cannot be enforced, so it ends the rollout instead of letting the call run."""
+    """The session's log scope, re-entered by the handler tasks that serve it."""
     client: Client | None = None
-    """The model client serving this rollout's turns. The interception server assigns it at
-    `register` (one server-owned client per distinct endpoint config), so every rollout it
+    """The model client serving this session. The interception server assigns it at
+    `register` (one server-owned client per distinct endpoint config), so every session it
     multiplexes shares one keepalive connection pool instead of opening its own."""
-    proxy_mcp: MCPProxy | None = field(default=None, repr=False)
-    """Register a host MCP backend on this session's interception server while serving."""
     error: "RolloutError | None" = None
     """The latest unresolved model-call failure. The harness only sees it as an HTTP error, so
     when its program dies on it the rollout records this original error instead of a secondary
@@ -201,6 +185,52 @@ class RolloutSession:
     """Handler tasks currently serving this session. aiohttp does not cancel a handler when
     its client disconnects, so a request whose program died at teardown would keep driving
     the exchange (upstream call, simulator turn) — unregistering cancels these instead."""
+
+    def adopt(self, task: "asyncio.Task | None") -> None:
+        """Track a handler task serving this session, for cancellation at release.
+        Callers adopt in the same synchronous stretch that fetched the session, so
+        `release()` can't interleave; the released check keeps the seal even if a
+        future caller breaks that invariant (an await before adopting)."""
+        if task is None:
+            return
+        if self.released:  # sealed while this handler was scheduled — don't serve
+            task.cancel()
+            return
+        if task is asyncio.current_task():
+            enter_scope(self.log_scope)
+        self.tasks.add(task)
+        task.add_done_callback(self.tasks.discard)
+
+    def release(self) -> None:
+        """Seal the session: no further trace mutation, and in-flight handlers cancel."""
+        self.released = True
+        for task in list(self.tasks):
+            task.cancel()
+
+
+@dataclass
+class JudgeSession(InferenceSession):
+    """Concurrent grader calls recorded outside the solver message graph."""
+
+
+@dataclass
+class RolloutSession(InferenceSession):
+    trace_stops: list[Callable[..., Awaitable[bool] | bool]] = field(
+        default_factory=list
+    )
+    limits: RolloutLimits = field(default_factory=RolloutLimits)
+    request_interceptors: list[Callable] = field(default_factory=list)
+    response_interceptors: list[Callable] = field(default_factory=list)
+    request_stops: list[Callable] = field(default_factory=list)
+    response_stops: list[Callable] = field(default_factory=list)
+    on_turn_input: Callable[[], None] | None = None
+    """One-shot acknowledgement when a resumed harness reaches model inference."""
+    gates_tools: bool = False
+    """Whether the harness asks `/tool` before executing each call (see
+    `Harness.SUPPORTS_TOOL_INTERCEPTION`). Without that gate a pre-execution rewrite
+    cannot be enforced, so it ends the rollout instead of letting the call run."""
+    proxy_mcp: MCPProxy | None = field(default=None, repr=False)
+    """Register a host MCP backend on this session's interception server while serving."""
     tool_decisions: dict[tuple[str, str], ToolMessage | None] = field(
         default_factory=dict
     )
@@ -601,27 +631,6 @@ class RolloutSession:
     def state_adapter(self) -> TypeAdapter:
         """The rollout's state codec, built only when a state channel is used."""
         return TypeAdapter(type(self.trace.state))
-
-    def adopt(self, task: "asyncio.Task | None") -> None:
-        """Track a handler task serving this session, for cancellation at release.
-        Callers adopt in the same synchronous stretch that fetched the session, so
-        `release()` can't interleave; the released check keeps the seal even if a
-        future caller breaks that invariant (an await before adopting)."""
-        if task is None:
-            return
-        if self.released:  # sealed while this handler was scheduled — don't serve
-            task.cancel()
-            return
-        if task is asyncio.current_task():
-            enter_scope(self.log_scope)
-        self.tasks.add(task)
-        task.add_done_callback(self.tasks.discard)
-
-    def release(self) -> None:
-        """Seal the session: no further trace mutation, and in-flight handlers cancel."""
-        self.released = True
-        for task in list(self.tasks):
-            task.cancel()
 
     async def refused(self) -> str | None:
         """The framework's limits (turns / token budget) and `@stop` checks, run before each

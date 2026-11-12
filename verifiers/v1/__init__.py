@@ -44,7 +44,7 @@ if TYPE_CHECKING:
         SubprocessConfig,
     )
     from verifiers.v1.configs.sampling import Sampling, SamplingConfig
-    from verifiers.v1.configs.scoring import ScoringConfig
+    from verifiers.v1.configs.scoring import ScoringConfig, ScoringJudgeConfig
     from verifiers.v1.configs.select import (
         SelectCLIConfig,
         SelectConfig,
@@ -281,6 +281,7 @@ _NAME_TO_MODULE = {
     "SamplerSupport": "verifiers.v1.types",
     "SandboxError": "verifiers.v1.errors",
     "ScoringConfig": "verifiers.v1.configs.scoring",
+    "ScoringJudgeConfig": "verifiers.v1.configs.scoring",
     "ServicesSpec": "verifiers.v1.runtimes.deployment",
     "Segment": "verifiers.v1.agent",
     "SelectCLIConfig": "verifiers.v1.configs.select",
@@ -568,6 +569,7 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "DeploymentConfig",
     "ServicesSpec",
     "ScoringConfig",
+    "ScoringJudgeConfig",
 ]
 
 

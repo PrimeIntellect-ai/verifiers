@@ -18,7 +18,7 @@ from verifiers.v1.interception.pool import (
 )
 from verifiers.v1.interception.server import InterceptionServer
 from verifiers.v1.runtimes import Runtime, runtime_is_local
-from verifiers.v1.session import RolloutSession
+from verifiers.v1.session import InferenceSession
 
 if TYPE_CHECKING:
     from verifiers.v1.mcp import SharedToolServer
@@ -68,7 +68,7 @@ def make_interception(
 async def serve_interception(
     interception: Interception | None,
     runtime: Runtime,
-    session: RolloutSession,
+    session: InferenceSession,
     servers: list,
     shared_tools: "dict[str, SharedToolServer]",
 ) -> AsyncIterator[Slot]:

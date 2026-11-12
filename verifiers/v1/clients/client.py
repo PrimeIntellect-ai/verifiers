@@ -6,7 +6,6 @@ from dataclasses import dataclass, field
 
 from verifiers.v1.configs.client import (
     BaseClientConfig,
-    ClientConfig,
     TrainClientConfig,
 )
 from verifiers.v1.configs.sampling import Sampling, SamplingConfig
@@ -86,5 +85,5 @@ class ModelContext:
     """Model, endpoint config, and sampling for one rollout."""
 
     model: str
-    client: ClientConfig
+    client: BaseClientConfig
     sampling: Sampling = field(default_factory=Sampling)

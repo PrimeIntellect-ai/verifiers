@@ -33,6 +33,7 @@ from verifiers.v1.grading import (
     bind_scoring_env,
     grade_task,
     scoring_network,
+    scoring_session,
     verifier_runtime,
 )
 from verifiers.v1.runtimes import make_backend
@@ -296,7 +297,15 @@ async def _score_untouched(
                 await runtime.set_network(
                     scoring_network(config.runtime, policy.network)
                 )
-            await grader.score(trace, runtime, deployment)
+            async with scoring_session(
+                trace,
+                runtime,
+                policy,
+                network=scoring_network(config.runtime, policy.network)
+                if policy.network is not None
+                else None,
+            ) as scoring_runtime:
+                await grader.score(trace, scoring_runtime, deployment)
     if not trace.rewards:
         return None
     return trace.reward < SOLVED

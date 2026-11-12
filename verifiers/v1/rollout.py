@@ -25,6 +25,7 @@ from verifiers.v1.grading import (
     bind_scoring_env,
     grade_task,
     scoring_network,
+    scoring_session,
     scoring_transaction,
     verifier_runtime,
 )
@@ -926,6 +927,7 @@ class Rollout:
                                     self.deployment,
                                     on_score=self._on_score,
                                     scoring_elapsed=scoring_elapsed,
+                                    interception=self._interception,
                                 )
                             except TimeoutError:
                                 self.timeout("scoring")
@@ -960,11 +962,23 @@ class Rollout:
                                                 self._scoring_policy.network,
                                             )
                                         )
-                                await self._scoring_task.score(
-                                    trace, scoring_runtime, self.deployment
-                                )
-                                if self._on_score is not None:
-                                    await self._on_score(trace, scoring_runtime)
+                                async with scoring_session(
+                                    trace,
+                                    scoring_runtime,
+                                    self._scoring_policy,
+                                    interception=self._interception,
+                                    network=scoring_network(
+                                        self.trace.agent.config.runtime,
+                                        self._scoring_policy.network,
+                                    )
+                                    if self._scoring_policy.network is not None
+                                    else None,
+                                ) as scoring_runtime:
+                                    await self._scoring_task.score(
+                                        trace, scoring_runtime, self.deployment
+                                    )
+                                    if self._on_score is not None:
+                                        await self._on_score(trace, scoring_runtime)
                 except TimeoutError:
                     self.timeout("scoring")
                     if self._on_score is not None:
