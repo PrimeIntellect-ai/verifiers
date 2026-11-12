@@ -141,6 +141,8 @@ class PrimeBackend(RuntimeBackend):
     SUPPORTS_TASK_IMAGES: ClassVar[bool] = True
     SUPPORTS_USER_SWITCHING: ClassVar[bool] = True
     SUPPORTS_STOP_CONFIRMATION: ClassVar[bool] = True
+    SUPPORTS_MEMORY_LIMIT: ClassVar[bool] = True
+    SUPPORTS_DISK_LIMIT: ClassVar[bool] = True
     SUPPORTS_COMPOSE: ClassVar[bool] = True
     SUPPORTS_PORT_EXPOSURE: ClassVar[bool] = True
 
