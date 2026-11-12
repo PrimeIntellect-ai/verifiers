@@ -136,7 +136,7 @@ def _mark_last_anthropic_block(message: dict[str, Any]) -> bool:
         if not isinstance(block, dict):
             continue
         block_type = block.get("type")
-        if block_type not in _ANTHROPIC_BLOCK_TYPES:
+        if not isinstance(block_type, str) or block_type not in _ANTHROPIC_BLOCK_TYPES:
             continue
         if block_type == "text" and not (
             isinstance(block.get("text"), str) and block["text"]
@@ -150,10 +150,10 @@ def _mark_last_anthropic_block(message: dict[str, Any]) -> bool:
 def _leading_instruction_messages(messages: list[Any]) -> list[dict[str, Any]]:
     instructions: list[dict[str, Any]] = []
     for message in messages:
-        if not isinstance(message, dict) or message.get("role") not in {
-            "system",
-            "developer",
-        }:
+        if not isinstance(message, dict):
+            break
+        role = message.get("role")
+        if not isinstance(role, str) or role not in {"system", "developer"}:
             break
         instructions.append(message)
     return instructions
@@ -165,6 +165,8 @@ def _has_chat_history(messages: list[Any]) -> bool:
         if not isinstance(message, dict):
             continue
         role = message.get("role")
+        if not isinstance(role, str):
+            continue
         if role == "user":
             user_turns += 1
         elif role in {"assistant", "tool"}:

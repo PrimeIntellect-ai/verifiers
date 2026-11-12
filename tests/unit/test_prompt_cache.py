@@ -122,6 +122,29 @@ def test_anthropic_server_tool_is_not_marked() -> None:
     assert updated["system"][-1]["cache_control"] == CACHE
 
 
+def test_malformed_chat_roles_do_not_raise() -> None:
+    body = _chat_body(history=True)
+    body["messages"][0]["role"] = []
+    body["messages"][-1]["role"] = []
+
+    updated = maybe_add_prompt_cache_control(
+        ChatDialect(), body, "https://api.pinference.ai/api/v1"
+    )
+
+    assert isinstance(updated, dict)
+
+
+def test_malformed_anthropic_block_types_do_not_raise() -> None:
+    body = _anthropic_body(history=True)
+    body["messages"][-1]["content"] = [{"type": [], "text": "bad"}]
+
+    updated = maybe_add_prompt_cache_control(
+        AnthropicDialect(), body, "https://api.pinference.ai/api/v1"
+    )
+
+    assert isinstance(updated, dict)
+
+
 def test_caller_marker_and_ttl_are_left_alone() -> None:
     body = _anthropic_body()
     body["system"] = [
