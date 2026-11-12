@@ -178,6 +178,12 @@ class RuntimeBackend(ABC):
     SUPPORTS_STOP_CONFIRMATION: ClassVar[bool] = False
     """Whether `verify_stopped` can confirm the provider resource was terminated."""
 
+    SUPPORTS_MEMORY_LIMIT: ClassVar[bool] = False
+    """Whether a positive `config.memory` enforces a runtime-wide memory ceiling."""
+
+    SUPPORTS_DISK_LIMIT: ClassVar[bool] = False
+    """Whether a positive `config.disk` enforces a runtime-wide storage ceiling."""
+
     SUPPORTS_PORT_EXPOSURE: ClassVar[bool] = False
     """Whether `expose` can publish a port inside this runtime to the outside, so a
     server here is reachable from another runtime."""
