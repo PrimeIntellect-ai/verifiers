@@ -18,9 +18,24 @@ from verifiers.v1.utils.network import (
 class BindMount(BaseConfig):
     """An existing file or directory on the container engine's host."""
 
-    source: str = Field(pattern=r"^/[^\x00]*$")
-    """Absolute host path. The runtime never creates or removes the source."""
+    source: str
+    """Normalized absolute host path with no parent segments. The runtime never
+    creates or removes the source."""
     read_only: bool = True
+
+    @field_validator("source")
+    @classmethod
+    def validate_source(cls, value: str) -> str:
+        path = PurePosixPath(value)
+        if (
+            not value.startswith("/")
+            or ".." in path.parts
+            or any(char in value for char in ("\x00", "\n", "\r"))
+        ):
+            raise ValueError(
+                "bind mount sources must be absolute with no '..', NUL or newline"
+            )
+        return "/" + str(path).lstrip("/")
 
 
 Mount = TypeVar("Mount", bound=BaseConfig)
@@ -31,8 +46,10 @@ class FilesystemPolicyConfig(BaseConfig):
 
     Paths must exist, be absolute, and contain no symlink components. The image
     must provide bubblewrap with user namespaces and --disable-userns support.
-    Unsupported runtimes or kernels fail closed. Setup and grading retain the
-    original filesystem; this policy applies to agent processes and file tools.
+    Writable and hidden trees must not contain hard-linked files; mount aliases
+    that expose a hidden tree or protected bootstrap files are rejected. Unsupported
+    runtimes or kernels fail closed. Setup and grading retain the original filesystem;
+    this policy applies to agent processes and file tools.
     """
 
     readable: list[str] = Field(default_factory=lambda: ["/"])
