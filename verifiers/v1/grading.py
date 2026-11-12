@@ -106,6 +106,7 @@ def bind_scoring_env(runtime: Runtime, policy: ScoringConfig) -> Runtime:
 
 async def stage_verifier(task: Task, trace: Trace, runtime: Runtime) -> None:
     artifacts = dict(trace.state.artifacts)
+    task.validate_artifacts(artifacts)
     async with boundary(TaskError, "verifier task setup"):
         await invoke(task.setup, {"trace": trace, "runtime": runtime})
     await restore(runtime, artifacts)

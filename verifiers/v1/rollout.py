@@ -39,7 +39,7 @@ from verifiers.v1.runtimes import (
 from verifiers.v1.runtimes.private_network import tool_vms
 from verifiers.v1.session import RolloutLimits, RolloutSession, hook_boundary
 from verifiers.v1.state import state_cls
-from verifiers.v1.task import Task
+from verifiers.v1.task import Task, task_key
 from verifiers.v1.trace import AgentInfo, Trace, TraceTask
 from verifiers.v1.types import Messages, Request, Response, SystemMessage, UserMessage
 from verifiers.v1.utils.artifacts import collect
@@ -161,6 +161,9 @@ class Rollout:
             # The seat's resolved config, role overrides included — the agent
             # this trace can be reproduced with.
             agent=AgentInfo(config=agent_config),
+        )
+        self.trace.info["task_config_sha256"] = task_key(
+            task.config.model_dump(mode="json")
         )
         self.trace._replay_view = harness.replay_view
         if on_trace is not None:
