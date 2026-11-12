@@ -28,6 +28,7 @@ import tempfile
 import time
 import uuid
 from collections.abc import AsyncIterator
+from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import ClassVar
 from urllib.parse import urlsplit
@@ -69,6 +70,19 @@ control.sendmsg([b"listener"], [(socket.SOL_SOCKET, socket.SCM_RIGHTS, array.arr
 
 class DockerRuntimeInfo(DockerConfig, BaseRuntimeInfo):
     pass
+
+
+@dataclass(frozen=True)
+class DockerMount:
+    target: str
+    source: str
+    read_only: bool
+    device: str
+    root: PurePosixPath
+
+
+def _mountinfo_path(value: str) -> str:
+    return re.sub(r"\\([0-7]{3})", lambda match: chr(int(match[1], 8)), value)
 
 
 async def _communicate(
@@ -228,6 +242,56 @@ class DockerBackend(RuntimeBackend):
         self._stopped = False
         self._proxy: EgressProxy | None = None
         self._cut = False
+        self.mounts: tuple[DockerMount, ...] = ()
+
+    async def _inspect_mounts(self) -> None:
+        assert self._container is not None
+        inspected = await cli(
+            "docker", "inspect", "--format", "{{json .Mounts}}", self._container
+        )
+        if inspected.exit_code != 0:
+            raise SandboxError(
+                f"docker mount inspection failed: {inspected.stderr.strip()}"
+            )
+        mounts = json.loads(inspected.stdout)
+        if not mounts:
+            self.mounts = ()
+            return
+        mountinfo = await cli(
+            "docker", "exec", self._container, "cat", "/proc/self/mountinfo"
+        )
+        if mountinfo.exit_code != 0:
+            raise SandboxError(
+                f"docker mount inspection failed: {mountinfo.stderr.strip()}"
+            )
+        identities = {}
+        for line in mountinfo.stdout.splitlines():
+            fields = line.split()
+            if len(fields) < 6:
+                raise SandboxError("docker returned malformed mount information")
+            identities[_mountinfo_path(fields[4])] = (
+                fields[2],
+                PurePosixPath(_mountinfo_path(fields[3])),
+            )
+        resolved = []
+        for mount in mounts:
+            target = mount["Destination"]
+            identity = identities.get(target)
+            if identity is None:
+                raise SandboxError(
+                    f"docker mount {target!r} is missing from the container mount table"
+                )
+            source = mount.get("Source") or mount.get("Name") or mount.get("Type", "")
+            resolved.append(
+                DockerMount(
+                    target=target,
+                    source=source,
+                    read_only=not mount.get("RW", False),
+                    device=identity[0],
+                    root=identity[1],
+                )
+            )
+        self.mounts = tuple(resolved)
 
     @classmethod
     @contextlib.asynccontextmanager
@@ -263,6 +327,7 @@ class DockerBackend(RuntimeBackend):
             backend.info.id = container
             backend.info.image = backend.config.image
             backend.info.workdir = backend.config.workdir
+            await backend._inspect_mounts()
             backend._service_url = service_url
             if service_url is not None:
                 await backend._start_proxy(
@@ -426,6 +491,7 @@ class DockerBackend(RuntimeBackend):
         if made.exit_code != 0:
             raise SandboxError(f"docker workdir setup failed: {made.stderr.strip()}")
         await validate_runtime_mounts(self.bind(), [])
+        await self._inspect_mounts()
         published = await cli("docker", "port", self._container, f"{SERVICE_PORT}/tcp")
         host_port = (published.stdout.split() or [""])[0].rpartition(":")[2]
         if published.exit_code != 0 or not host_port.isdigit():
