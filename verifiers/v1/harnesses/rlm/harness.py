@@ -20,10 +20,12 @@ from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
+from verifiers.v1.harnesses.utils.remote_runtime import prepare_remote_bridge
 from verifiers.v1.runtimes import Runtime
+from verifiers.v1.runtimes.process import ensure_process_sandbox, execution_command
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
-from verifiers.v1.utils.logging import get_logger
+from verifiers.v1.utils.logging import clip, get_logger
 
 logger = get_logger(__name__)
 
@@ -140,15 +142,35 @@ class RLMHarnessConfig(HarnessConfig):
 class RLMHarness(ACPHarness[RLMHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
+    ISOLATES_TOOL_EXECUTION = True
     SUPPORTS_SKILLS = True
+    SUPPORTS_SPLIT_EXECUTION = True
+    SUPPORTS_SPLIT_TOOL_INTERCEPTION = True
     _skills_install_dir: str | None = None
 
     async def setup(self, runtime: Runtime) -> None:
+        if not runtime._remote_tools_only:
+            await ensure_process_sandbox(runtime)
         if self.config.skills:
             # Editable skill packages and uv's tool environment must belong to this run.
             self._skills_install_dir = runtime.temp_path(
                 f"vf-rlm-skills-{secrets.token_hex(16)}", env=self.config.resolved_env
             )
+        await self._install(runtime, self.config.resolved_env)
+        if runtime._remote_tools_only:
+            assert runtime._execution_bridge is not None
+            await self._install(runtime._execution_bridge.setup_runtime, {})
+        await super().setup(runtime)
+
+    async def remote_tools(self, runtime: Runtime, data: TaskData):
+        # The native execution worker owns the persistent IPython session. Its
+        # framed transport consults the same gate before each execution request.
+        if data.filesystem is not None:
+            assert runtime._execution_bridge is not None
+            await ensure_process_sandbox(runtime._execution_bridge.setup_runtime)
+
+    async def _install(self, runtime: Runtime, install_env: dict[str, str]) -> None:
+        if self.config.skills:
             await self.install_skills(runtime, f"{self._skills_home()}/skills")
         directory = self._install_dir()
         binary = f"{directory}/bin/rlm"
@@ -174,7 +196,7 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
             f"touch {shlex.quote(ready)})"
         )
         logger.debug("Ensuring rlm %s is installed", self.config.version)
-        env = self.config.resolved_env.copy()
+        env = install_env.copy()
         extra_uv_args = env.get("RLM_EXTRA_UV_ARGS", "")
         env["RLM_EXTRA_UV_ARGS"] = f"{extra_uv_args} --with mcp~=1.28".strip()
         await ensure_installed(
@@ -185,7 +207,11 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
             env=env,
             label="rlm",
         )
-        await super().setup(runtime)
+
+    async def agent_runtime(self, runtime: Runtime, data: TaskData) -> Runtime:
+        # RLM's ACP supervisor holds the model credential. Its split execution
+        # worker, prepared in prepare_acp(), gets the task's filesystem policy.
+        return runtime
 
     def _runtime_metadata(
         self,
@@ -195,6 +221,8 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
         endpoint: str,
         secret: str,
         system_prompt: str | None,
+        worker_command: list[str] | None = None,
+        worker_cwd: str | None = None,
     ) -> JsonObject:
         compaction = self.config.compaction
         policy_knobs: dict[str, Any] = {
@@ -246,7 +274,13 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
             ),
             "leaf_append_to_system_prompt": self.config.leaf_append_to_system_prompt,
             "skills": list(self.config.builtin_skills),
-            "kernel_env": dict(runtime.env),
+            "kernel_env": dict(
+                runtime._execution_bridge.runtime.env
+                if getattr(runtime, "_execution_bridge", None) is not None
+                else runtime.env
+            ),
+            "execution_command": worker_command,
+            "execution_cwd": worker_cwd,
             "search_api_key": self.config.resolved_env.get("SERPER_API_KEY"),
         }
         if (
@@ -279,12 +313,58 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
         data: TaskData,
     ) -> ACPConfig:
         system_prompt, prompt = self.resolve_prompt(data)
+        rlm_home = self._home(trace, runtime)
+        result = await runtime.run(["mkdir", "-p", f"{rlm_home}/sessions"], {})
+        if result.exit_code:
+            raise RuntimeError(
+                "cannot prepare RLM session directory - "
+                + (clip(result.stderr or result.stdout) or "unknown error")
+            )
+        if runtime._remote_tools_only:
+            assert runtime._execution_bridge is not None
+            workspace = runtime._execution_bridge.runtime
+            if data.filesystem is not None:
+                # RLM's ordinary runtime view deliberately leaves the supervisor
+                # outside this policy; in split mode only the worker gets it.
+                workspace = await workspace.with_filesystem(data.filesystem)
+                runtime._execution_bridge.runtime = workspace
+            worker = f"rlm-{trace.id}"
+            runtime._execution_bridge.register(
+                worker,
+                [f"{self._install_dir()}/tools/rlm/bin/python", "-m", "rlm.execution"],
+                {"RLM_HOME": rlm_home},
+            )
+            root = endpoint.removesuffix("/v1").rstrip("/")
+            worker_command = await prepare_remote_bridge(
+                runtime,
+                f"{root}/execution",
+                secret,
+                worker,
+                protocol="rlm",
+                tool_url=f"{root}/tool",
+            )
+            worker_cwd = workspace.info.workdir
+        else:
+            worker_command, worker_cwd = await execution_command(
+                runtime,
+                self._install_dir(),
+                rlm_home,
+                data.filesystem,
+            )
         return ACPConfig(
-            env={**self.config.resolved_env, "RLM_HOME": self._home(trace, runtime)},
+            env={**self.config.resolved_env, "RLM_HOME": rlm_home},
             command=[f"{self._install_dir()}/bin/rlm", "--acp"],
             prompt=prompt,
+            required_agent_metadata="ai.prime.rlm/execution-v1",
             session_meta=self._runtime_metadata(
-                ctx, trace, runtime, endpoint, secret, system_prompt
+                ctx,
+                trace,
+                runtime,
+                endpoint,
+                secret,
+                system_prompt,
+                worker_command,
+                worker_cwd,
             ),
         )
 

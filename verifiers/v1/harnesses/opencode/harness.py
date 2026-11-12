@@ -8,15 +8,17 @@ from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import DialectName, HarnessConfig, PinnedVersion
 from verifiers.v1.harnesses.node import ensure_node
 from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
+from verifiers.v1.harnesses.utils.remote import NativeRemoteTools
 from verifiers.v1.harnesses.utils.replay import drop_blank_text
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
-from verifiers.v1.types import Message
+from verifiers.v1.types import Message, ToolCall
 
 OPENCODE_DIR = "/var/tmp/vf-opencode"
 KEY_VAR = "VF_OPENCODE_API_KEY"
 MCP_READY = (Path(__file__).resolve().parent / "mcp-ready.js").read_bytes()
+TOOL_GATE = (Path(__file__).resolve().parent / "gate.js").read_bytes()
 
 INSTALL = r"""
 set -e
@@ -38,6 +40,44 @@ class OpenCodeHarness(ACPHarness[OpenCodeHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
     SUPPORTS_SKILLS = True
+    SUPPORTS_TOOL_INTERCEPTION = True
+    SUPPORTS_SPLIT_EXECUTION = True
+
+    async def remote_tools(self, runtime: Runtime, data: TaskData) -> NativeRemoteTools:
+        return NativeRemoteTools(
+            runtime, "opencode", tuple(self.config.disabled_tools or ())
+        )
+
+    def can_gate_tool(self, call: ToolCall) -> bool:
+        # OpenCode builds its Code Mode wrapper after registry transforms.
+        return call.name != "execute"
+
+    async def gate_tools(
+        self, config: ACPConfig, runtime: Runtime, url: str, secret: str
+    ) -> None:
+        plugin_dir = f"{config.env['XDG_CONFIG_HOME']}/tool-gate"
+        config.ready_file = f"{plugin_dir}/ready"
+        await runtime.write(f"{plugin_dir}/index.js", TOOL_GATE)
+        settings = json.loads(config.env["OPENCODE_CONFIG_CONTENT"])
+        if runtime._remote_tools_only:
+            # Upstream exposes Code Mode's catalog as direct tools when execute is
+            # disabled. Each such tool then passes the replacement executor in A;
+            # no model-authored JavaScript is evaluated by A's Code Mode runtime.
+            settings["permissions"].append(
+                {"action": "execute", "resource": "*", "effect": "deny"}
+            )
+        settings.setdefault("plugins", []).append(
+            {
+                "package": plugin_dir,
+                "options": {
+                    "url": url,
+                    "secret": secret,
+                    "remote": runtime._remote_tools_only,
+                    "readyFile": config.ready_file,
+                },
+            }
+        )
+        config.env["OPENCODE_CONFIG_CONTENT"] = json.dumps(settings)
 
     # OpenCode drops whitespace-only assistant text on replay over Anthropic messages.
     # Recheck on version bumps:

@@ -33,6 +33,7 @@ from verifiers.v1.configs.harness import DialectName
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.errors import HarnessError, RolloutError, TaskError
 from verifiers.v1.harnesses.utils.compaction import bound_tool_message
+from verifiers.v1.runtimes.bridge import ExecutionBridge
 from verifiers.v1.trace import InterceptRecord, Trace
 from verifiers.v1.types import (
     AssistantMessage,
@@ -53,7 +54,7 @@ from verifiers.v1.utils.logging import (
 
 logger = get_logger(__name__)
 
-MCPProxy = Callable[[str], AbstractAsyncContextManager[str]]
+MCPProxy = Callable[[str, str], AbstractAsyncContextManager[str]]
 
 
 def hook_boundary(handler: Callable, *, allow_trace: bool) -> type:
@@ -206,6 +207,14 @@ class RolloutSession:
     )
     """The pre-execution verdict per proposed call occurrence: None to run it, else the result
     the policy put in its place — that call must not execute."""
+    remote_tool_handler: Callable[[ToolCall], Awaitable[ToolMessage]] | None = None
+    execution_bridge: ExecutionBridge | None = None
+    tool_gate_can_deny: Callable[[ToolCall], bool] | None = None
+    check_tool_call: Callable | None = None
+    native_tool_decisions: dict[tuple[int, str], tuple[str, dict]] = field(
+        default_factory=dict
+    )
+    _tool_gate_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     pinned_tool_results: dict[tuple[str, str], ToolMessage] = field(
         default_factory=dict
     )
@@ -481,12 +490,17 @@ class RolloutSession:
         harness's gate denies it and the model sees the rewritten result instead. Returns
         the name of the stop that fired, if any."""
         assistant = self.trace.nodes[node].message
-        if not (self.request_interceptors or self.request_stops) or not (
-            isinstance(assistant, AssistantMessage) and assistant.tool_calls
-        ):
+        if not (
+            self.request_interceptors or self.request_stops or self.remote_tool_handler
+        ) or not (isinstance(assistant, AssistantMessage) and assistant.tool_calls):
             return None
         branch = graph.path(self.trace, node)
         for call in assistant.tool_calls:
+            if self.check_tool_call is not None:
+                self.check_tool_call(
+                    call,
+                    intercepted=bool(self.request_interceptors or self.request_stops),
+                )
             probe = ToolMessage(tool_call_id=call.id, content="", name=call.name)
             request = Request(messages=[*branch, probe], tools=self.trace.tools or None)
             key = self.tool_result_keys(request)[len(branch)]
@@ -503,15 +517,26 @@ class RolloutSession:
             if verdict == probe:
                 self.tool_decisions[key] = None
                 continue
-            if not self.gates_tools:
+            if not self.gates_tools or (
+                self.tool_gate_can_deny is not None
+                and not self.tool_gate_can_deny(call)
+            ):
                 # The harness would run the call regardless; only ending the rollout keeps
                 # the transcript and the sandbox in agreement.
                 return records[-1].handler
             self.tool_decisions[key] = verdict
+        if self.remote_tool_handler is not None and not self.gates_tools:
+            raise HarnessError("split tool execution requires a harness tool gate")
         return None
 
     async def decide_tool(
         self, tool_call_id: str, name: str | None = None, arguments: object = None
+    ) -> dict:
+        async with self._tool_gate_lock:
+            return await self._decide_tool(tool_call_id, name, arguments)
+
+    async def _decide_tool(
+        self, tool_call_id: str, name: str | None, arguments: object
     ) -> dict:
         """Answer the harness's gate for a call it is about to execute with the verdict
         `gate_tool_calls` recorded. Native gates may wrap the model's call id or carry it
@@ -560,6 +585,16 @@ class RolloutSession:
             ] or matches
         if len(matches) == 1:
             leaf, call = matches[0]
+            deferred = getattr(self.remote_tool_handler, "defer_until_gate", False)
+            if (
+                self.remote_tool_handler is not None
+                and not deferred
+                and (
+                    (name is not None and name != call.name)
+                    or not same_arguments(call, arguments)
+                )
+            ):
+                raise HarnessError("split tool gate call differs from the sampled call")
             branch = graph.path(self.trace, leaf)
             request = Request(
                 messages=[*branch, ToolMessage(tool_call_id=call.id, content="")]
@@ -567,35 +602,121 @@ class RolloutSession:
             key = self.tool_result_keys(request)[len(branch)]
             self.gated_tools.add(key)
             verdict = self.tool_decisions.get(key)
-        elif matches or not name or len(leaves) != 1:
+            if deferred and verdict is None:
+                return await self._decide_native_tool(
+                    leaf, tool_call_id, name or call.name, arguments
+                )
+            if self.remote_tool_handler is not None and verdict is None:
+                if key not in self.tool_decisions:
+                    raise HarnessError("split tool gate has no policy decision")
+                verdict = await self.remote_tool_handler(call)
+                if verdict.tool_call_id != call.id or verdict.name != call.name:
+                    raise HarnessError("remote tool handler returned the wrong call")
+                verdict = ToolMessage.model_validate(
+                    bound_tool_message(verdict.model_dump(exclude_none=True))
+                )
+                self.tool_decisions[key] = verdict
+                self.pinned_tool_results[key] = verdict
+        elif matches or not name:
             raise HarnessError(
                 f"tool gate asked about {tool_call_id!r}, which matches "
                 f"{len(matches)} proposed calls"
             )
         else:
-            *branch, assistant = graph.path(self.trace, leaves[0][0])
-            assert isinstance(assistant, AssistantMessage)
-            call = ToolCall(id=tool_call_id, name=name, arguments=json.dumps(arguments))
-            assistant = assistant.model_copy(
-                update={"tool_calls": [*(assistant.tool_calls or []), call]}
+            deferred = getattr(self.remote_tool_handler, "defer_until_gate", False)
+            if self.remote_tool_handler is not None and not deferred:
+                raise HarnessError("split tool gate received an unsampled call")
+            # Native workers issue trusted setup and host-status operations
+            # before a model response, or while the active leaf is a tool result.
+            # They still cross the same request policies as generated operations.
+            native_worker = self.execution_bridge is not None
+            native_leaves = (
+                graph.leaves(self.trace)
+                if deferred or native_worker
+                else [leaf for leaf, _ in leaves]
             )
-            probe = ToolMessage(tool_call_id=call.id, content="", name=name)
-            request, records, stopped = await self.rewrite_request(
-                Request(
-                    messages=[*branch, assistant, probe], tools=self.trace.tools or None
+            if len(native_leaves) > 1 or (
+                not native_leaves and not (deferred or native_worker)
+            ):
+                raise HarnessError(
+                    "native tool gate requires one active conversation branch"
                 )
+            return await self._decide_native_tool(
+                native_leaves[0] if native_leaves else -1, tool_call_id, name, arguments
             )
-            self.trace.request_rewrites.extend(records)
-            if stopped is not None:
-                self.trace.stop(stopped)
-                return {"action": "stop", "reason": stopped}
+        if verdict is None:
+            return {"action": "allow"}
+        return {"action": "deny", "message": verdict.model_dump(exclude_none=True)}
+
+    async def _decide_native_tool(
+        self, leaf: int, tool_call_id: str, name: str, arguments: object
+    ) -> dict:
+        """Judge native commands after their harness has resolved arguments.
+
+        Some environments also issue setup commands before the first model turn.
+        These use the same policy boundary and retry receipts as sampled calls.
+        """
+        native_key = (leaf, tool_call_id)
+        fingerprint = json.dumps([name, arguments], sort_keys=True)
+        if receipt := self.native_tool_decisions.get(native_key):
+            previous, decision = receipt
+            if previous != fingerprint:
+                raise HarnessError(
+                    "native tool call id was reused with different arguments"
+                )
+            return decision
+        branch = graph.path(self.trace, leaf) if leaf >= 0 else []
+        call = ToolCall(id=tool_call_id, name=name, arguments=json.dumps(arguments))
+        if branch and isinstance(branch[-1], AssistantMessage):
+            assistant = branch.pop()
+            assistant = assistant.model_copy(
+                update={
+                    "tool_calls": [
+                        *(
+                            previous
+                            for previous in assistant.tool_calls or []
+                            if previous.id != call.id
+                        ),
+                        call,
+                    ]
+                }
+            )
+        else:
+            assistant = AssistantMessage(content="", tool_calls=[call])
+        probe = ToolMessage(tool_call_id=call.id, content="", name=name)
+        request, records, stopped = await self.rewrite_request(
+            Request(
+                messages=[*branch, assistant, probe], tools=self.trace.tools or None
+            )
+        )
+        self.trace.request_rewrites.extend(records)
+        if stopped is not None:
+            self.trace.stop(stopped)
+            decision = {"action": "stop", "reason": stopped}
+        else:
             verdict = request.messages[-1]
             assert isinstance(verdict, ToolMessage)
             if verdict == probe:
                 verdict = None
-        if verdict is None:
-            return {"action": "allow"}
-        return {"action": "deny", "message": verdict.model_dump(exclude_none=True)}
+                if self.remote_tool_handler is not None:
+                    verdict = await self.remote_tool_handler(call)
+                    if verdict.tool_call_id != call.id or verdict.name != call.name:
+                        raise HarnessError(
+                            "remote tool handler returned the wrong native call"
+                        )
+                    verdict = ToolMessage.model_validate(
+                        bound_tool_message(verdict.model_dump(exclude_none=True))
+                    )
+            decision = (
+                {"action": "allow"}
+                if verdict is None
+                else {
+                    "action": "deny",
+                    "message": verdict.model_dump(exclude_none=True),
+                }
+            )
+        self.native_tool_decisions[native_key] = (fingerprint, decision)
+        return decision
 
     @cached_property
     def state_adapter(self) -> TypeAdapter:

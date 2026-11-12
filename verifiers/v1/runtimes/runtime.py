@@ -10,7 +10,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import PurePosixPath
 from types import MappingProxyType
-from typing import Self
+from typing import TYPE_CHECKING, Self
 
 from verifiers.v1.configs.runtime import FilesystemPolicyConfig, NetworkPolicyConfig
 from verifiers.v1.errors import SandboxError
@@ -30,6 +30,9 @@ from verifiers.v1.runtimes.filesystem import (
     write_file,
 )
 
+if TYPE_CHECKING:
+    from verifiers.v1.runtimes.bridge import ExecutionBridge
+
 
 @dataclass(frozen=True, eq=False)
 class Runtime:
@@ -46,6 +49,8 @@ class Runtime:
     home: str | None = None
     _filesystem: FilesystemSandbox | None = None
     _filesystem_path: str | None = None
+    _remote_tools_only: bool = False
+    _execution_bridge: ExecutionBridge | None = None
 
     def __post_init__(self) -> None:
         if self.user is not None and not self.backend.SUPPORTS_USER_SWITCHING:

@@ -22,6 +22,7 @@ from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.configs.sampling import SamplingConfig
 from verifiers.v1.episode import Episode
 from verifiers.v1.utils.loaders import harness_config_type
+from verifiers.v1.utils.prime import load_prime_config
 
 CI_MODEL = "internal/deepseek-v4.1-flash-1017-ci"
 CI_REASONING_EFFORT = "low"
@@ -73,6 +74,9 @@ def pytest_configure(config) -> None:
     config.addinivalue_line(
         "markers", "opencode: integration cells on the OpenCode harness"
     )
+    config.addinivalue_line(
+        "markers", "terminus_2: integration cells on the Terminus 2 harness"
+    )
     fixtures = str(Path(__file__).parent / "fixtures")
     existing = os.environ.get("PYTHONPATH", "")
     if fixtures not in existing.split(os.pathsep):
@@ -84,9 +88,11 @@ def pytest_configure(config) -> None:
 def pytest_collection_modifyitems(config, items) -> None:
     """Skip the model-driven tests when no model endpoint is configured; the rest
     (scripted harness behaviors, the examples' own key check) decide for themselves."""
-    if os.environ.get("PRIME_API_KEY"):
+    if os.environ.get("PRIME_API_KEY") or load_prime_config().get("api_key"):
         return
-    skip = pytest.mark.skip(reason="needs PRIME_API_KEY")
+    skip = pytest.mark.skip(
+        reason="needs Prime credentials (PRIME_API_KEY or prime login)"
+    )
     for item in items:
         if LIVE_FIXTURES & set(getattr(item, "fixturenames", ())):
             item.add_marker(skip)

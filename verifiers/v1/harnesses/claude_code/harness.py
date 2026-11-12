@@ -8,6 +8,7 @@ from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import DialectName, HarnessConfig, PinnedVersion
 from verifiers.v1.harnesses.node import NODE_BIN_DIR, ensure_node
 from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
+from verifiers.v1.harnesses.utils.remote import NativeRemoteTools
 from verifiers.v1.harnesses.utils.replay import drop_blank_text
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import TaskData
@@ -42,11 +43,17 @@ class ClaudeCodeHarness(ACPHarness[ClaudeCodeHarnessConfig]):
     SUPPORTS_MCP = True
     SUPPORTS_SKILLS = True
     SUPPORTS_TOOL_INTERCEPTION = True
+    SUPPORTS_SPLIT_EXECUTION = True
 
     # Claude Code drops whitespace-only text blocks on replay. Closed source: observed
     # with 2.1.314, recheck on version bumps.
     def replay_view(self, message: Message, dialect: DialectName | None) -> Message:
         return drop_blank_text(message)
+
+    async def remote_tools(self, runtime: Runtime, data: TaskData) -> NativeRemoteTools:
+        return NativeRemoteTools(
+            runtime, "claude_code", tuple(self.config.disabled_tools or ())
+        )
 
     async def setup(self, runtime: Runtime) -> None:
         await ensure_node(runtime)

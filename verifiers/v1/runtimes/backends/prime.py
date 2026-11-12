@@ -152,6 +152,8 @@ class PrimeBackend(RuntimeBackend):
     SUPPORTS_USER_SWITCHING: ClassVar[bool] = True
     SUPPORTS_FILESYSTEM_POLICY: ClassVar[bool] = True
     SUPPORTS_COMPOSE: ClassVar[bool] = True
+    SUPPORTS_STOP_CONFIRMATION: ClassVar[bool] = True
+
     SUPPORTS_PORT_EXPOSURE: ClassVar[bool] = True
 
     def __init__(self, config: PrimeConfig, name: str | None = None) -> None:
@@ -571,3 +573,32 @@ class PrimeBackend(RuntimeBackend):
                     )
         finally:
             await _release_client(client)
+
+    async def verify_stopped(self) -> None:
+        from prime_sandboxes.core import APIError
+
+        if not self.stopped or self.info.borrowed:
+            raise SandboxError(
+                "cannot confirm termination of a live or borrowed sandbox"
+            )
+        if self.info.id is None:
+            return
+        try:
+            async with asyncio.timeout(60), leased_client() as client:
+                delay = 0.2
+                while True:
+                    try:
+                        sandbox = await client.get(self.info.id)
+                    except APIError as error:
+                        if str(error).startswith("HTTP 404"):
+                            return
+                        raise
+                    if (
+                        sandbox.status in {"TERMINATED", "TIMEOUT"}
+                        and sandbox.terminated_at is not None
+                    ):
+                        return
+                    await asyncio.sleep(delay)
+                    delay = min(delay * 2, 3)
+        except Exception as error:
+            raise SandboxError("could not confirm Prime sandbox termination") from error

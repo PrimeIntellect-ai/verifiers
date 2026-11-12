@@ -82,6 +82,8 @@ class Deployment:
         env: dict[str, str] | None = None,
         config: DeploymentConfig | None = None,
         borrowed_runtime: Runtime | None = None,
+        harness_config: RuntimeConfig | None = None,
+        execution_network: RuntimeConfig | None = None,
     ):
         self.backend = backend
         self.spec = spec
@@ -91,6 +93,9 @@ class Deployment:
         self.env = dict(env or {})
         self.config = config or DeploymentConfig()
         self.borrowed_runtime = borrowed_runtime
+        self.harness_config = harness_config
+        self.execution_network = execution_network
+        self.control_routes: list[str] = []
         from verifiers.v1.runtimes.strategies import _deployment_strategy
 
         self._strategy = _deployment_strategy(self.config, backend, spec, self.tool_vms)
@@ -155,6 +160,11 @@ class Deployment:
         if self.borrowed_runtime is not None:
             return self.borrowed_runtime.with_env(self.env)
         return self.execution_backend.bind(env=self.env)
+
+    @property
+    def _harness_runtime(self) -> Runtime:
+        """The trusted harness view, separate from the workspace in split mode."""
+        return self.harness_backend.bind(env={})
 
     def target(self, name: str) -> Runtime:
         """Access a named service or workspace through an execution view."""

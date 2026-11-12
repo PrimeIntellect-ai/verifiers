@@ -7,6 +7,7 @@ from typing import Literal
 from verifiers.v1.acp import ACPConfig, ACPHarness
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import DialectName, HarnessConfig, PinnedVersion
+from verifiers.v1.harnesses.hermes_agent.remote import HermesRemoteTools
 from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
 from verifiers.v1.harnesses.utils.replay import strip_text
 from verifiers.v1.runtimes import Runtime
@@ -21,8 +22,12 @@ INSTALL = f"""
 set -e
 {_ENSURE_UV}
 command -v curl >/dev/null || (apt-get update -qq && apt-get install -y -qq curl ca-certificates >/dev/null)
-curl -fsSL "https://github.com/NousResearch/hermes-agent/archive/refs/tags/$VF_HERMES_VERSION.tar.gz" \\
-    | tar -xz --strip-components=1 -C "$VF_HERMES_DIR"
+archive=$(mktemp)
+trap 'rm -f "$archive"' EXIT
+curl -fsSL --retry 4 --retry-all-errors --retry-delay 2 --retry-max-time 90 \\
+    "https://codeload.github.com/NousResearch/hermes-agent/tar.gz/refs/tags/$VF_HERMES_VERSION" \\
+    -o "$archive"
+tar -xzf "$archive" --strip-components=1 -C "$VF_HERMES_DIR"
 # Replay one reasoning key: strict providers reject Hermes' duplicated aliases on custom routes.
 # Recheck: https://github.com/NousResearch/hermes-agent/blob/v0.22.5/agent/message_sanitization.py#L660
 sed -i '/^_REASONING_CARRIER_ROUTES: tuple = (/a\\
@@ -47,6 +52,35 @@ class HermesAgentHarness(ACPHarness[HermesAgentHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
     SUPPORTS_SKILLS = True
+    SUPPORTS_TOOL_INTERCEPTION = True
+    SUPPORTS_SPLIT_EXECUTION = True
+
+    async def remote_tools(self, runtime: Runtime, data: TaskData) -> HermesRemoteTools:
+        assert runtime._execution_bridge is not None
+        directory = HERMES_DIR.format(version=self.config.version)
+        # Install only tool code in B; no model credentials or A configuration.
+        await ensure_installed(
+            runtime._execution_bridge.setup_runtime,
+            directory=directory,
+            ready=f"test -f {directory}/.ready",
+            install=INSTALL,
+            env={
+                "AGENT_HERMES_DIR": directory,
+                "AGENT_HERMES_VERSION": self.config.version,
+            },
+            label="Hermes execution tools",
+            shell=("bash", "-o", "pipefail", "-c"),
+        )
+        home = "/tmp/verifiers-hermes-tools"
+        await runtime.write(f"{home}/config.yaml", b"{}")
+        return HermesRemoteTools(runtime, f"{directory}/.venv/bin/python", home)
+
+    async def gate_tools(
+        self, config: ACPConfig, runtime: Runtime, url: str, secret: str
+    ) -> None:
+        config.env["VF_TOOL_GATE_URL"] = url
+        config.env["VF_TOOL_GATE_SECRET"] = secret
+        config.env["VF_REMOTE_TOOLS_ONLY"] = "1" if runtime._remote_tools_only else "0"
 
     # Hermes strips stored assistant text and pads missing reasoning with " " on
     # routes requiring reasoning replay. Recheck on version bumps:

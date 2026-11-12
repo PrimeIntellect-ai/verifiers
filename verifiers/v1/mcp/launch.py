@@ -22,6 +22,7 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.errors import ToolsetError
 from verifiers.v1.interception.tunnel import PrimeTunnel
+from verifiers.v1.mcp.auth import MCPURL
 from verifiers.v1.mcp.server import (
     STATE_ROUTE_PARAM,
     STATE_SIGNATURE_PARAM,
@@ -358,6 +359,7 @@ async def serve_in_runtime(
     listen_all: bool = False,
     state_url: str | None = None,
     state_secret: str = "",
+    mcp_secret: str,
 ) -> int:
     """Start a server and return its bound port.
 
@@ -371,6 +373,7 @@ async def serve_in_runtime(
         "VF_CONFIG": server.config.model_dump_json(),
         "VF_STATE_URL": state_url or "",
         "VF_STATE_SECRET": state_secret,
+        "TOOL_SERVICE_MCP_SECRET": mcp_secret,
     }
     if runtime.type == "subprocess":
         # Keep provider temp files in the runtime workdir so cleanup removes them.
@@ -501,6 +504,7 @@ async def reachable_url(
 class _ServedServer:
     url: str
     runtime: Runtime
+    mcp_secret: str
 
 
 @contextlib.asynccontextmanager
@@ -520,6 +524,7 @@ async def _serve(
     colocated = getattr(cfg, "colocated", False)
     service = getattr(cfg, "service", None)
     own_vm = (placements or {}).get(server.server_name)
+    mcp_secret = secrets.token_urlsafe(32)
     if service is not None or own_vm is not None:
         # The harness reaches the server over the deployment's network: a Compose
         # service by its name, a VM of its own by its LAN name.
@@ -551,8 +556,9 @@ async def _serve(
                 else None
             ),
             state_secret=state_secret,
+            mcp_secret=mcp_secret,
         )
-        yield _ServedServer(f"http://{host}:{port}/mcp", runtime)
+        yield _ServedServer(f"http://{host}:{port}/mcp", runtime, mcp_secret)
         return
     async with contextlib.AsyncExitStack() as stack:
         # Colocated servers inherit the harness cut. A separately provisioned filtered
@@ -596,6 +602,7 @@ async def _serve(
             exposed=exposed,
             state_url=state_url,
             state_secret=state_secret,
+            mcp_secret=mcp_secret,
         )
         # The harness consumes the server, and decides reachability: colocated when the
         # server shares the harness's runtime, reached with the harness's locality (read
@@ -616,9 +623,9 @@ async def _serve(
             backend = await runtime.expose(port)
             # Register after startup, and revoke/drain before releasing the runtime.
             url = await stack.enter_async_context(
-                proxy_mcp(f"{backend.rstrip('/')}/mcp")
+                proxy_mcp(f"{backend.rstrip('/')}/mcp", mcp_secret)
             )
-            yield _ServedServer(url, runtime)
+            yield _ServedServer(url, runtime, mcp_secret)
             return
         base = await stack.enter_async_context(
             reachable_url(
@@ -629,7 +636,7 @@ async def _serve(
             base = base.replace("127.0.0.1", "localhost", 1)
         elif not colocated and harness_runtime is not None:
             base = harness_runtime.host_url(base)
-        yield _ServedServer(f"{base.rstrip('/')}/mcp", runtime)
+        yield _ServedServer(f"{base.rstrip('/')}/mcp", runtime, mcp_secret)
 
 
 @contextlib.asynccontextmanager
@@ -657,7 +664,7 @@ async def serve(
         hosts=hosts,
         placements=placements,
     ) as served:
-        yield served.url
+        yield MCPURL(served.url, served.mcp_secret)
 
 
 @dataclass(frozen=True)
@@ -676,6 +683,7 @@ class SharedToolServer:
     external: bool = False
     runtime: Runtime | None = field(default=None, repr=False)
     state_secret: str = field(default="", repr=False)
+    mcp_secret: str = field(default="", repr=False)
 
 
 @contextlib.asynccontextmanager
@@ -727,6 +735,7 @@ async def serve_shared(toolsets: list[Toolset], harness_is_local: bool = True):
                     local=served.runtime.is_local,
                     runtime=served.runtime,
                     state_secret=state_secret,
+                    mcp_secret=served.mcp_secret,
                 )
             logger.info("Started shared tool server %s url=%s", name, servers[name].url)
         yield servers
@@ -740,7 +749,7 @@ def _shared_url_for_rollout(
 ) -> str:
     """Attach signed state coordinates; the shared server keeps its bearer private."""
     if not state_base or not server.state_secret:
-        return visible_url
+        return MCPURL(visible_url, server.mcp_secret)
     state_url = f"{state_base.rstrip('/')}/state"
     if server.runtime is not None:
         state_url = server.runtime.host_url(state_url)
@@ -751,7 +760,7 @@ def _shared_url_for_rollout(
     query[STATE_SIGNATURE_PARAM] = state_signature(
         server.state_secret, state_url, state_route
     )
-    return urlunsplit(parts._replace(query=urlencode(query)))
+    return MCPURL(urlunsplit(parts._replace(query=urlencode(query))), server.mcp_secret)
 
 
 @contextlib.asynccontextmanager
