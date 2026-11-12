@@ -3,8 +3,10 @@
 import asyncio
 import json
 import shlex
+from dataclasses import dataclass, field
 
-from verifiers.v1.runtimes import Runtime
+from verifiers.v1.runtimes import ProgramResult, Runtime
+from verifiers.v1.runtimes.base import RuntimeProcess
 from verifiers.v1.types import ToolCall, ToolMessage
 
 # Embedded in Python harness programs so their native environment adapters use
@@ -54,8 +56,66 @@ def remote_shell_result(content):
 """
 
 
-def remote_shell_tools(runtime: Runtime):
+_SHELL_WORKER = r"""
+import json, os, subprocess, sys
+for line in sys.stdin:
+    request = json.loads(line)
+    result = subprocess.run(request["argv"], env={**os.environ, **request["env"]},
+                            capture_output=True, text=True, errors="replace")
+    print(json.dumps({"stdout": result.stdout, "stderr": result.stderr,
+                      "exit_code": result.returncode}), flush=True)
+"""
+
+
+@dataclass
+class _ShellWorker:
+    """Keep detached commands inside one confined process tree until teardown."""
+
+    runtime: Runtime
+    process: RuntimeProcess | None = None
+    stderr_task: asyncio.Task | None = None
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    buffer: bytes = b""
+
+    async def aclose(self) -> None:
+        if self.process is not None:
+            await self.process.kill()
+            self.process = None
+        if self.stderr_task is not None:
+            self.stderr_task.cancel()
+            await asyncio.gather(self.stderr_task, return_exceptions=True)
+            self.stderr_task = None
+        self.buffer = b""
+
+    async def run(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
+        async with self.lock:
+            if self.process is None:
+                self.process = await self.runtime.exec(
+                    ["python3", "-u", "-c", _SHELL_WORKER], {}
+                )
+
+                async def drain() -> None:
+                    assert self.process is not None
+                    async for _ in self.process.stderr:
+                        pass
+
+                self.stderr_task = asyncio.create_task(drain())
+            try:
+                await self.process.write(
+                    (json.dumps({"argv": argv, "env": env}) + "\n").encode()
+                )
+                while b"\n" not in self.buffer:
+                    self.buffer += await anext(self.process.stdout)
+                line, self.buffer = self.buffer.split(b"\n", 1)
+                return ProgramResult(**json.loads(line))
+            except BaseException:
+                await self.aclose()
+                raise
+
+
+def remote_shell_tools(runtime: Runtime, *, persistent: bool = False):
     """Preserve native environment result fields for shell-only harnesses."""
+    worker = _ShellWorker(runtime) if persistent else None
 
     async def execute(call: ToolCall) -> ToolMessage:
         args = json.loads(call.arguments or "{}")
@@ -73,7 +133,8 @@ def remote_shell_tools(runtime: Runtime):
             raise TypeError("remote command environment must contain strings")
         try:
             async with asyncio.timeout(args.get("timeout") or 86400):
-                result = await runtime.run(["sh", "-c", command], env)
+                executor = worker or runtime
+                result = await executor.run(["sh", "-c", command], env)
             output = {
                 "stdout": result.stdout,
                 "stderr": result.stderr,
@@ -94,6 +155,8 @@ def remote_shell_tools(runtime: Runtime):
         )
 
     execute.defer_until_gate = True
+    if worker is not None:
+        execute.aclose = worker.aclose
     return execute
 
 

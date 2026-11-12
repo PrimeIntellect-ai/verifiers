@@ -38,7 +38,8 @@ class Terminus2Harness(Harness[Terminus2HarnessConfig]):
         )
 
     async def remote_tools(self, runtime: Runtime, data: TaskData):
-        return remote_shell_tools(runtime)
+        # tmux must survive between commands inside the same filesystem namespace.
+        return remote_shell_tools(runtime, persistent=True)
 
     async def setup(self, runtime: Runtime) -> None:
         source = self._source()

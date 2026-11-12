@@ -42,7 +42,7 @@ touch {ready}
 """
 EXECUTOR_INSTALL = r"""
 set -e
-export PATH="/var/tmp/agent-tools/node/bin:$PATH"
+export PATH="{node_bin}:$PATH"
 npm install --prefix {directory} --ignore-scripts --no-audit --no-fund \
     --omit=dev "@openai/codex@$AGENT_CODEX_VERSION" >/dev/null
 """
@@ -153,7 +153,9 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
             runtime,
             directory=directory,
             ready=f"[ -x {EXECUTOR_BIN.format(version=self.config.version)} ]",
-            install=EXECUTOR_INSTALL.replace("{directory}", directory),
+            install=EXECUTOR_INSTALL.replace("{directory}", directory).replace(
+                "{node_bin}", NODE_BIN_DIR
+            ),
             # Harness environment overrides belong to A, never the task worker.
             env={"AGENT_CODEX_VERSION": self.config.version},
             label="Codex executor",

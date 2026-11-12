@@ -65,8 +65,8 @@ class HermesAgentHarness(ACPHarness[HermesAgentHarnessConfig]):
             ready=f"test -f {directory}/.ready",
             install=INSTALL,
             env={
-                "AGENT_HERMES_DIR": directory,
-                "AGENT_HERMES_VERSION": self.config.version,
+                "VF_HERMES_DIR": directory,
+                "VF_HERMES_VERSION": self.config.version,
             },
             label="Hermes execution tools",
             shell=("bash", "-o", "pipefail", "-c"),
