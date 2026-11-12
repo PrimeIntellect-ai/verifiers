@@ -1,5 +1,5 @@
 """Which of a taskset's tasks a run uses: `Taskset.select(SelectConfig)`, under
-`--select.*` on the eval, debug, validate and GEPA CLIs (`SelectCLIConfig`)."""
+`--select.*` on the run, debug and validate CLIs (`SelectCLIConfig`)."""
 
 import re
 import sys
