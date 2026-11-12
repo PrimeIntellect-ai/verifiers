@@ -42,6 +42,31 @@ Mount = TypeVar("Mount", bound=BaseConfig)
 
 FRAMEWORK_PRIVATE_DIR = "/.vf-private"
 FILESYSTEM_DEFAULT_HIDDEN = (FRAMEWORK_PRIVATE_DIR, "/tests", "/logs/verifier")
+# Protect the code and configuration loaded before entering the mount namespace,
+# while allowing application trees such as /usr/src/app and /usr/local/src/app.
+FILESYSTEM_BOOTSTRAP_DIRS = (
+    "/bin",
+    "/sbin",
+    "/lib",
+    "/lib32",
+    "/lib64",
+    "/libx32",
+    "/etc",
+    *(
+        f"{prefix}/{name}"
+        for prefix in ("/usr", "/usr/local")
+        for name in (
+            "bin",
+            "sbin",
+            "lib",
+            "lib32",
+            "lib64",
+            "libx32",
+            "etc",
+            "share",
+        )
+    ),
+)
 
 
 class FilesystemPolicyConfig(BaseConfig):
@@ -60,11 +85,13 @@ class FilesystemPolicyConfig(BaseConfig):
     """Trees exposed read-only. The default exposes the sandbox's filesystem."""
     writable: list[str] | None = Field(default_factory=list)
     """Trees exposed read-write, including reads. An empty list grants no writes.
-    None selects the agent's workdir, home, TMPDIR, /tmp, /var/tmp and /logs/artifacts
-    at runtime, as used by TaskData's default policy. System/bootstrap directories
-    cannot be writable. A writable tree cannot contain a readable or hidden rule: its
-    writable parent could otherwise relocate the protected source between
-    commands. Writes persist in the underlying runtime."""
+    None selects existing directories among the agent's workdir, home, TMPDIR, /tmp,
+    /var/tmp and /logs/artifacts at runtime, as used by TaskData's default policy.
+    System executable, library, configuration and shared-data trees cannot be writable.
+    Application directories such as /usr/src/app can be writable. A writable tree
+    cannot contain a readable or hidden rule: its writable parent could otherwise
+    relocate the protected source between commands. Writes persist in the
+    underlying runtime."""
     hidden: list[str] = Field(default_factory=lambda: list(FILESYSTEM_DEFAULT_HIDDEN))
     """Paths masked after all other mounts. Always includes `/.vf-private` for
     framework setup files, `/tests`, and `/logs/verifier`; missing default directories
@@ -100,10 +127,7 @@ class FilesystemPolicyConfig(BaseConfig):
     def validate_roots(self) -> Self:
         # New shells and bubblewrap must load trusted code before entering the
         # restricted mount namespace, including the dynamic loader's config.
-        bootstrap = tuple(
-            PurePosixPath(path)
-            for path in ("/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc")
-        )
+        bootstrap = tuple(PurePosixPath(path) for path in FILESYSTEM_BOOTSTRAP_DIRS)
         writable = [PurePosixPath(value) for value in self.writable or ()]
         for index, path in enumerate(writable):
             if any(

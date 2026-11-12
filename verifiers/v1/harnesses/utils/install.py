@@ -46,11 +46,13 @@ async def ensure_installed(
     script = f"{ready} || ({install})" if ready else install
     # npm post-install scripts can hard-link their binaries. Detach only this
     # framework-owned installation, under its lock, before the agent can use it.
+    # Give the installer its own shell: putting its body on the left of &&
+    # suppresses `set -e`. Keep both steps inside the same installation lock.
     script = (
-        f"({script}) && sh -c {shlex.quote(_COPY_LINKED_FILES)} "
+        f"{shlex.join(shell)} {shlex.quote(script)} && sh -c {shlex.quote(_COPY_LINKED_FILES)} "
         f"harness-install {shlex.quote(directory)}"
     )
-    run = f"{shlex.join(shell)} {shlex.quote(script)}"
+    run = f"sh -c {shlex.quote(script)}"
     # The owner token is pid:starttime (starttime from /proc where readable), so a reused pid
     # does not pass as the live holder. A lock that is not a symlink (left behind by
     # flock/lockf) or whose owner is gone is stale and reaped; `kill -0 ""` succeeds under
