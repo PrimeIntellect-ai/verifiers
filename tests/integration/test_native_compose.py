@@ -104,11 +104,14 @@ class ComposeTask(HarborTask):
         trace.info["isolation_checked"] = True
 
 
-@pytest.mark.parametrize("mode", ["shared", "isolated"])
+@pytest.mark.parametrize(
+    "mode,compose_file",
+    [("shared", "compose.yaml"), ("isolated", "environment/compose.yml")],
+)
 @pytest.mark.prime
 @pytest.mark.skipif(not os.environ.get("PRIME_API_KEY"), reason="needs PRIME_API_KEY")
-async def test_native_compose(tmp_path, mode):
-    environment = tmp_path / "environment"
+async def test_native_compose(tmp_path, mode, compose_file):
+    environment = (tmp_path / compose_file).parent
     (environment / "web").mkdir(parents=True)
     (environment / "web" / "answer").write_text("42\n")
     (environment / "Dockerfile.web").write_text(
@@ -116,7 +119,7 @@ async def test_native_compose(tmp_path, mode):
         "RUN mkdir /seeded && echo seed > /seeded/value && "
         "chown 1234:2345 /seeded && chmod 750 /seeded\n"
     )
-    (environment / "docker-compose.yaml").write_text(COMPOSE)
+    (tmp_path / compose_file).write_text(COMPOSE)
     tests = tmp_path / "tests"
     tests.mkdir()
     (tests / "test.sh").write_text(
