@@ -27,6 +27,7 @@ from verifiers.v1.dialects.base import (
     append_user_notice,
     parse_sse_event,
 )
+from verifiers.v1.errors import ProviderError
 from verifiers.v1.types import (
     AssistantMessage,
     FinishReason,
@@ -292,6 +293,15 @@ class ChatStreamParser(StreamParser):
         chunk = parse_sse_event(raw)
         if chunk is None:
             return
+        # A provider fails a stream mid-way with a chunk carrying `error` (which the OpenAI
+        # SDK raises on) and/or finishing with "error": fail the turn, not a partial reply.
+        error = chunk.get("error")
+        if error or any(
+            choice.get("finish_reason") == "error"
+            for choice in chunk.get("choices") or []
+        ):
+            message = error.get("message") if isinstance(error, dict) else error
+            raise ProviderError(f"upstream stream failed: {message or 'unknown error'}")
         if self.head is None:
             self.head = chunk
         self.usage = chunk.get("usage") or self.usage
