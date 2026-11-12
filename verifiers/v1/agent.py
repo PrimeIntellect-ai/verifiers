@@ -95,6 +95,16 @@ def resolve_rollout_timeouts(timeout: TimeoutConfig, task: Task) -> RolloutTimeo
     )
 
 
+def _check_artifact_runtime(runtime_config: RuntimeConfig) -> None:
+    """Artifact collection reads the task's paths out of the box, so the box needs a
+    filesystem of its own."""
+    if not backend_cls(runtime_config).SUPPORTS_TASK_IMAGES:
+        raise TypeError(
+            "artifact collection requires a runtime with its own filesystem; the "
+            f"{runtime_config.type} runtime cannot run images"
+        )
+
+
 def _check_borrowed_placement(
     task: Task, runtime: Runtime, base_config: RuntimeConfig
 ) -> None:
@@ -749,14 +759,8 @@ class Agent:
         attempt: int,
     ) -> Trace:
         params = self._rollout_params(task, runtime, dict(shared_tools or {}))
-        if (
-            collect_artifacts
-            and not backend_cls(params["runtime_config"]).SUPPORTS_TASK_IMAGES
-        ):
-            raise TypeError(
-                "artifact collection requires a runtime with its own filesystem; the "
-                f"{params['runtime_config'].type} runtime cannot run images"
-            )
+        if collect_artifacts:
+            _check_artifact_runtime(params["runtime_config"])
         run = Rollout(
             task=task,
             on_trace=on_trace,
@@ -788,6 +792,7 @@ class Agent:
         runtime: Runtime | None = None,
         tools: Mapping[str, SharedToolServer] | None = None,
         on_trace: Callable[[Trace], None] | None = None,
+        collect_artifacts: bool = False,
     ) -> AsyncIterator[Interaction]:
         """Interact with this agent turn-by-turn: a full rollout of `task` where
         the CALLER is the run's user — the one exchange surface. Yields an
@@ -803,7 +808,8 @@ class Agent:
         caller's to hide: hand the interaction a task whose `data.prompt` is None
         and keep the scenario on a scoring-side field (the user-sim env's contract).
 
-        `runtime` and `tools` borrow live resources from their owners, just as
+        `runtime` and `tools` borrow live resources from their owners, and
+        `collect_artifacts` captures the task's declared artifacts at close, just as
         they do for `run()`; an env supplies its taskset's shared tools
         automatically for tasks loaded from that taskset.
 
@@ -820,10 +826,13 @@ class Agent:
         trace_id = uuid.uuid4().hex
         with scope(trace=short_id(trace_id), agent=self._log_name):
             params = self._rollout_params(task, runtime, dict(tools or {}))
+            if collect_artifacts:
+                _check_artifact_runtime(params["runtime_config"])
             run = Rollout(
                 task=task,
                 has_user=True,
                 on_trace=on_trace,
+                collect_artifacts=collect_artifacts,
                 trace_id=trace_id,
                 **params,
             )
@@ -1030,6 +1039,7 @@ class _EpisodeAgent(Agent):
         runtime: Runtime | None = None,
         tools: Mapping[str, SharedToolServer] | None = None,
         on_trace: Callable[[Trace], None] | None = None,
+        collect_artifacts: bool = False,
     ) -> AsyncIterator[Interaction]:
         """The agent's `interaction`, with every trace stamped with its standing
         at mint and captured in `completed` at close — an interaction driven from
@@ -1051,6 +1061,7 @@ class _EpisodeAgent(Agent):
                 runtime=runtime,
                 tools=tools if tools is not None else self._shared_for(task),
                 on_trace=self._watch(remember),
+                collect_artifacts=collect_artifacts,
             ) as interaction:
                 yield interaction
         finally:
