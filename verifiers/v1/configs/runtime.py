@@ -241,6 +241,11 @@ class DockerConfig(NetworkPolicyConfig):
     image: str = "python:3.11-slim"
     workdir: str | None = None
     """Working directory override; None uses the task's workdir, or /app."""
+    user_namespaces: bool = False
+    """Allow bubblewrap's nested namespaces by disabling Docker's seccomp profile
+    and system-path masks. Enabled when resolving a task with a filesystem policy.
+    Directly provisioned runtimes must opt in before calling with_filesystem().
+    Host namespace limits and AppArmor/SELinux restrictions still apply."""
     # TaskData.resources uses these units; non-default runtime config values take precedence.
     cpu: float | None = None
     """Pin the container to this many CPU cores. None = unlimited."""

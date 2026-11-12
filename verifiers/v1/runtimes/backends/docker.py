@@ -314,6 +314,13 @@ class DockerBackend(RuntimeBackend):
         # Engine names are global; cleanup must never target a caller's existing container.
         self._container = f"vf-{uuid.uuid4().hex}"
         options = ["--network", "bridge", "--publish", f"127.0.0.1::{SERVICE_PORT}"]
+        if self.config.user_namespaces:
+            options += [
+                "--security-opt",
+                "seccomp=unconfined",
+                "--security-opt",
+                "systempaths=unconfined",
+            ]
         if not _LINUX:
             options += ["--add-host", f"{_HOST_ALIAS}:host-gateway"]
         if self._restricted:

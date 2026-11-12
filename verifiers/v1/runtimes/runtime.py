@@ -179,6 +179,15 @@ class Runtime:
         except Exception:  # noqa: BLE001 - failing to exec at all means the box is gone
             return False
 
+    def temp_path(self, *parts: str, env: Mapping[str, str] | None = None) -> str:
+        """Framework scratch path under the process's explicit TMPDIR, or /tmp.
+
+        The selected directory still needs to exist and be writable in the view;
+        this never adds a filesystem-policy exception.
+        """
+        directory = (env or {}).get("TMPDIR") or self.env.get("TMPDIR") or "/tmp"
+        return str(PurePosixPath(directory).joinpath(*parts))
+
     async def prepare_uv_script(
         self,
         script: str | bytes,
@@ -194,11 +203,11 @@ class Runtime:
         data = script.encode() if isinstance(script, str) else script
         digest = hashlib.sha256(data).hexdigest()
         # Each user needs its own writable script dir and uv environment.
-        directory = (
-            self.backend.scripts_dir
-            if self.user is None
-            else f"{self.backend.scripts_dir}-{self.user}"
-        )
+        directory = self.backend.scripts_dir
+        if (env or {}).get("TMPDIR") or self.env.get("TMPDIR"):
+            directory = self.temp_path("vf-scripts", env=env)
+        if self.user is not None:
+            directory = f"{directory}-{self.user}"
         path = f"{directory}/{digest}.py"
         if path not in self.backend.cache.uv_interpreters:
             async with self.backend.cache.uv_locks.setdefault(path, asyncio.Lock()):

@@ -15,7 +15,6 @@ from verifiers.v1.trace import Trace
 from verifiers.v1.types import Message
 
 OPENCODE_DIR = "/var/tmp/vf-opencode"
-STATE_ROOT = "/tmp/vf-opencode-runs"
 KEY_VAR = "VF_OPENCODE_API_KEY"
 MCP_READY = (Path(__file__).resolve().parent / "mcp-ready.js").read_bytes()
 
@@ -75,7 +74,9 @@ class OpenCodeHarness(ACPHarness[OpenCodeHarnessConfig]):
         mcp_urls: dict[str, str],
         data: TaskData,
     ) -> ACPConfig:
-        root = f"{STATE_ROOT}/{trace.id}"
+        root = runtime.temp_path(
+            "vf-opencode-runs", trace.id, env=self.config.resolved_env
+        )
         config_dir = f"{root}/config/opencode"
         await self.install_skills(runtime, f"{config_dir}/skills")
         system_prompt, prompt = self.resolve_prompt(data)
@@ -144,4 +145,10 @@ class OpenCodeHarness(ACPHarness[OpenCodeHarnessConfig]):
         )
 
     async def cleanup(self, trace: Trace, runtime: Runtime) -> None:
-        await remove_dir(runtime, f"{STATE_ROOT}/{trace.id}", "OpenCode state")
+        await remove_dir(
+            runtime,
+            runtime.temp_path(
+                "vf-opencode-runs", trace.id, env=self.config.resolved_env
+            ),
+            "OpenCode state",
+        )

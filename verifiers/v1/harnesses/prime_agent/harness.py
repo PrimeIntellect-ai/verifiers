@@ -26,7 +26,6 @@ PRIME_AGENT_COMMIT: Literal["ea9d9602ec0938d9e454e8963107cd85af1565c6"] = (
 )
 PRIME_AGENT_VERSION = "0.10.2"
 PRIME_AGENT_DIR = "/var/tmp/vf-prime-agent"
-STATE_ROOT = "/tmp/vf-prime-agent-runs"
 LIFECYCLE_META_NAMESPACE = "ai.primeintellect.prime-agent"
 KEY_VAR = "PRIME_AGENT_INTERCEPT_KEY"
 ENV_AGENT_DIR = "PRIME_AGENT_CODING_AGENT_DIR"
@@ -182,7 +181,7 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
                 "surface is ipython"
             )
 
-        root = self._root(trace)
+        root = self._root(trace, runtime)
         agent_dir = f"{root}/agent"
         skills_dir = f"{agent_dir}/skills"
         created = await runtime.run(
@@ -273,7 +272,7 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
             ]
 
         return ACPConfig(
-            env=self._env(trace, secret),
+            env=self._env(trace, runtime, secret),
             # Expand the sandbox's PATH while keeping every agent argument literal.
             command=[
                 "/bin/sh",
@@ -287,7 +286,7 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
         )
 
     async def cleanup(self, trace: Trace, runtime: Runtime) -> None:
-        root = self._root(trace)
+        root = self._root(trace, runtime)
         await remove_dir(runtime, root, "prime-agent state")
 
     def _bin(self) -> str:
@@ -298,13 +297,14 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
         agent user can read the venv the root run bootstrapped."""
         return f"{PRIME_AGENT_DIR}/{self.config.commit}/kernel-venv"
 
-    @staticmethod
-    def _root(trace: Trace) -> str:
+    def _root(self, trace: Trace, runtime: Runtime) -> str:
         digest = hashlib.sha256(trace.id.encode()).hexdigest()[:16]
-        return f"{STATE_ROOT}/{digest}"
+        return runtime.temp_path(
+            "vf-prime-agent-runs", digest, env=self.config.resolved_env
+        )
 
-    def _env(self, trace: Trace, secret: str) -> dict[str, str]:
-        root = self._root(trace)
+    def _env(self, trace: Trace, runtime: Runtime, secret: str) -> dict[str, str]:
+        root = self._root(trace, runtime)
         return {
             **self.config.resolved_env,
             KEY_VAR: secret,
