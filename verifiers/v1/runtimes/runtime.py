@@ -253,7 +253,9 @@ class Runtime:
                     command = (
                         f"mv -f {shlex.quote(tmp)} {shlex.quote(path)} "
                         f"&& {{ {_ENSURE_UV}; }} "
-                        f"&& uv sync --script {shlex.quote(path)} -q --no-config "
+                        # Prepared environments may become writable agent trees;
+                        # do not introduce aliases to uv's dependency cache.
+                        f"&& uv sync --script {shlex.quote(path)} -q --no-config --link-mode copy "
                         f"&& uv python find --script {shlex.quote(path)} --no-config"
                     )
                     # Bootstrap dependencies before task networking is restricted;

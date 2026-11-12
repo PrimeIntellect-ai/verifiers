@@ -264,16 +264,22 @@ class DockerBackend(RuntimeBackend):
             raise SandboxError(
                 f"docker mount inspection failed: {mountinfo.stderr.strip()}"
             )
-        identities = {}
+        identities: dict[str, tuple[str, PurePosixPath, bool]] = {}
         for line in mountinfo.stdout.splitlines():
             fields = line.split()
-            if len(fields) < 6:
+            if len(fields) < 10 or "-" not in fields[6:-3]:
                 raise SandboxError("docker returned malformed mount information")
-            identities[_mountinfo_path(fields[4])] = (
+            target = _mountinfo_path(fields[4])
+            if target in identities:
+                raise SandboxError(
+                    f"docker returned ambiguous stacked mounts at {target!r}"
+                )
+            identities[target] = (
                 fields[2],
                 PurePosixPath(_mountinfo_path(fields[3])),
+                "ro" in fields[5].split(",") or "ro" in fields[-1].split(","),
             )
-        resolved = []
+        resolved: dict[str, DockerMount] = {}
         for mount in mounts:
             target = mount["Destination"]
             identity = identities.get(target)
@@ -282,16 +288,30 @@ class DockerBackend(RuntimeBackend):
                     f"docker mount {target!r} is missing from the container mount table"
                 )
             source = mount.get("Source") or mount.get("Name") or mount.get("Type", "")
-            resolved.append(
-                DockerMount(
-                    target=target,
-                    source=source,
-                    read_only=not mount.get("RW", False),
-                    device=identity[0],
-                    root=identity[1],
-                )
+            resolved[target] = DockerMount(
+                target=target,
+                source=source,
+                read_only=identity[2],
+                device=identity[0],
+                root=identity[1],
             )
-        self.mounts = tuple(resolved)
+            # Recursive binds can expose mounts from unrelated source trees.
+            # A read-only parent does not imply read-only descendants on every
+            # Docker/kernel combination; use each mount's effective flags.
+            for nested, (device, root, read_only) in identities.items():
+                if nested == target or not PurePosixPath(nested).is_relative_to(target):
+                    continue
+                resolved.setdefault(
+                    nested,
+                    DockerMount(
+                        target=nested,
+                        source=str(root),
+                        read_only=read_only,
+                        device=device,
+                        root=root,
+                    ),
+                )
+        self.mounts = tuple(resolved.values())
 
     @classmethod
     @contextlib.asynccontextmanager

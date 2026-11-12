@@ -83,6 +83,10 @@ def verifier_runtime(
     task = task.with_data(
         image=task.data.image or getattr(solver_runtime.config, "image", None),
         workdir=task.data.workdir or getattr(solver_runtime.config, "workdir", None),
+        # Scoring uses a trusted view, independent of the agent's execution identity
+        # and filesystem boundary. Keep image, artifact and network validation.
+        agent_user=None,
+        filesystem=None,
     )
     if policy.network is not None:
         task = task.with_data(network=policy.network)

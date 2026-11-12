@@ -217,10 +217,12 @@ class PiHarness(ACPHarness[PiHarnessConfig]):
         agent_dir = config.env["PI_CODING_AGENT_DIR"]
         await runtime.write(f"{agent_dir}/gate.mjs", GATE_EXTENSION.encode())
         gated = f"{agent_dir}/pi-gated"
+        command = shlex.join(
+            [config.env["PI_ACP_PI_COMMAND"], "--extension", f"{agent_dir}/gate.mjs"]
+        )
         await runtime.write(
             gated,
-            f"#!/bin/sh\nexec {config.env['PI_ACP_PI_COMMAND']} "
-            f'--extension {agent_dir}/gate.mjs "$@"\n'.encode(),
+            f'#!/bin/sh\nexec {command} "$@"\n'.encode(),
         )
         await runtime.run(["chmod", "+x", gated], {})
         config.env["PI_ACP_PI_COMMAND"] = gated
