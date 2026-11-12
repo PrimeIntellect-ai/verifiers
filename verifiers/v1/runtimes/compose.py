@@ -32,6 +32,11 @@ from verifiers.v1.utils.logging import get_logger
 
 logger = get_logger(__name__)
 
+
+class NativeComposeUnsupported(SandboxError):
+    """Compose semantics that native VMs cannot preserve, found before creation."""
+
+
 # Docker routing and credential-helper lookup need these; local Compose must not see
 # unrelated evaluator secrets through shell interpolation.
 DOCKER_ENV = (
@@ -184,6 +189,18 @@ async def compose_project(
             if spec.file is not None
             else {"services": {spec.workspace: {}}}
         )
+        for kind in ("volumes", "networks"):
+            if host_backend is None:
+                resources = list(authored.get(kind, {}).values())
+                if any(value and value.get("external") for value in resources):
+                    raise SandboxError(
+                        f"External Compose {kind} require explicit VM mode and a host "
+                        "that already provides them"
+                    )
+                if any(value and value.get("name") for value in resources):
+                    raise NativeComposeUnsupported(
+                        f"Compose {kind} must use project-scoped names"
+                    )
         if (
             isinstance(config, PrimeConfig)
             and host_backend is None
@@ -195,13 +212,9 @@ async def compose_project(
                 )
             )
         ):
-            raise SandboxError("Native Compose does not support include or extends")
-        for kind in ("volumes", "networks"):
-            if host_backend is None and any(
-                value and (value.get("name") or value.get("external"))
-                for value in authored.get(kind, {}).values()
-            ):
-                raise SandboxError(f"Compose {kind} must use project-scoped names")
+            raise NativeComposeUnsupported(
+                "Native Compose does not support include or extends"
+            )
         # Native Compose renames containers on the build host and keeps the name as an alias.
         if isinstance(config, DockerConfig) and any(
             service.get("container_name")

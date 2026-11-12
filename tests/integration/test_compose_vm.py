@@ -91,14 +91,16 @@ class ComposeVMTask(HarborTask):
                 await process.wait()
 
 
+@pytest.mark.parametrize("compose_mode", ["vm", "auto"])
 @pytest.mark.parametrize("scoring_mode", ["shared", "isolated"])
 @pytest.mark.prime
 @pytest.mark.skipif(not os.environ.get("PRIME_API_KEY"), reason="needs PRIME_API_KEY")
-async def test_compose_vm(tmp_path, scoring_mode, monkeypatch):
+async def test_compose_vm(tmp_path, scoring_mode, compose_mode, monkeypatch):
     async def no_local_docker(*args, **kwargs):
         raise AssertionError("VM mode must not invoke evaluator Docker")
 
-    monkeypatch.setattr("verifiers.v1.runtimes.compose.cli", no_local_docker)
+    if compose_mode == "vm":
+        monkeypatch.setattr("verifiers.v1.runtimes.compose.cli", no_local_docker)
     # Incompressible data exceeds the VM's small /tmp filesystem in the shared case.
     (tmp_path / "payload").write_bytes(
         os.urandom((72 if scoring_mode == "shared" else 1) * 1024**2)
@@ -135,7 +137,7 @@ async def test_compose_vm(tmp_path, scoring_mode, monkeypatch):
     config = vf.AgentConfig(
         model="unused",
         runtime=vf.PrimeConfig(cpu=2, memory=4, disk=10, labels=["vf-ci"]),
-        deployment=vf.DeploymentConfig(compose_mode="vm"),
+        deployment=vf.DeploymentConfig(compose_mode=compose_mode),
         scoring=vf.ScoringConfig(
             mode=scoring_mode, retries=vf.RetryConfig(max_retries=0)
         ),
@@ -146,4 +148,8 @@ async def test_compose_vm(tmp_path, scoring_mode, monkeypatch):
         trace = await agent.run(task)
     assert trace.ok and trace.reward == 1, trace.errors
     assert trace.info["compose"]["mode"] == "vm"
-    assert trace.info["compose"]["reason"] == "compose_mode=vm"
+    if compose_mode == "auto":
+        reason = "include or extends" if scoring_mode == "isolated" else "share volume"
+        assert reason in trace.info["compose"]["reason"]
+    else:
+        assert trace.info["compose"]["reason"] == "compose_mode=vm"

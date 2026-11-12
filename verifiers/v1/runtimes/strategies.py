@@ -177,20 +177,34 @@ class _NativeComposeDeployment(_PrivateNetworkDeployment):
 
     async def start(self, d):
         from verifiers.v1.runtimes.native_compose import (
+            NativeComposeUnsupported,
             NativeProcesses,
             prepare_native,
         )
 
         if d.borrowed_runtime is not None:
             raise ValueError("a composed deployment cannot borrow a single target")
-        services = await prepare_native(
-            d.backend.config.model_copy(
-                update={"workdir": d.backend._workdir_override}
-            ),
-            d.spec,
-            d.env,
-        )
-        d.compose_selection = {"mode": "native", "reason": "compose_mode=native"}
+        try:
+            services = await prepare_native(
+                d.backend.config.model_copy(
+                    update={"workdir": d.backend._workdir_override}
+                ),
+                d.spec,
+                d.env,
+            )
+        except NativeComposeUnsupported as error:
+            if d.config.compose_mode != "auto":
+                raise
+            d.compose_selection = {"mode": "vm", "reason": str(error)}
+            d._strategy = _ContainerDeployment()
+            await d._strategy.start(d)
+            return
+        d.compose_selection = {
+            "mode": "native",
+            "reason": "compose_mode=native"
+            if d.config.compose_mode == "native"
+            else "Compose services are supported by native VMs",
+        }
         logger.debug(
             "Selected Compose placement mode=%s reason=%s",
             *d.compose_selection.values(),
