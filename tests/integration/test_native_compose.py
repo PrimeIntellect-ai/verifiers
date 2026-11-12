@@ -21,9 +21,11 @@ services:
       web:
         condition: service_healthy
   web:
-    image: {IMAGE}
+    build:
+      context: .
+      dockerfile: Dockerfile.web
     command: [python, -m, http.server, "8000", --directory, /srv]
-    volumes: [./web:/srv:ro]
+    volumes: [./web:/srv:ro, seeded:/seeded:ro, empty:/empty:ro]
     networks: [front]
     healthcheck:
       test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://localhost:8000/answer', timeout=2)"]
@@ -37,6 +39,9 @@ networks:
   front: {{}}
   back:
     internal: true
+volumes:
+  seeded: {{}}
+  empty: {{}}
 """
 
 
@@ -77,6 +82,19 @@ class ComposeTask(HarborTask):
         web, vault = deployment.target("web"), deployment.target("vault")
         # The bound task files are read-only, as declared.
         assert (await web.run(["sh", "-c", "echo x > /srv/answer"], {})).exit_code
+        # Service-local volumes retain image contents, ownership and permissions.
+        seeded = await web.run(
+            [
+                "sh",
+                "-c",
+                "cat /seeded/value && stat -c '%u:%g:%a' /seeded && stat -c '%u:%g:%a' /empty",
+            ],
+            {},
+        )
+        assert seeded.exit_code == 0
+        assert seeded.stdout.splitlines() == ["seed", "1234:2345:750", "0:0:755"]
+        for path in ("/seeded/value", "/empty/value"):
+            assert (await web.run(["sh", "-c", f"echo changed > {path}"], {})).exit_code
         # Names resolve only across a shared network, and LAN rules follow the same lines.
         assert (await web.run(fetch("http://vault:8000/secret", 5), {})).exit_code
         lan = f"http://{deployment.hosts['vault']}:8000/secret"
@@ -93,6 +111,11 @@ async def test_native_compose(tmp_path, mode):
     environment = tmp_path / "environment"
     (environment / "web").mkdir(parents=True)
     (environment / "web" / "answer").write_text("42\n")
+    (environment / "Dockerfile.web").write_text(
+        f"FROM {IMAGE}\n"
+        "RUN mkdir /seeded && echo seed > /seeded/value && "
+        "chown 1234:2345 /seeded && chmod 750 /seeded\n"
+    )
     (environment / "docker-compose.yaml").write_text(COMPOSE)
     tests = tmp_path / "tests"
     tests.mkdir()
