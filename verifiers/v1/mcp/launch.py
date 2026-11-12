@@ -36,6 +36,7 @@ from verifiers.v1.runtimes import (
     provision_backend,
 )
 from verifiers.v1.runtimes.base import _ENSURE_UV
+from verifiers.v1.runtimes.filesystem import prepare_private_directory
 from verifiers.v1.state import State
 from verifiers.v1.utils.aio import run_shielded
 from verifiers.v1.utils.logging import get_logger
@@ -246,10 +247,8 @@ async def _install_in_sandbox(server: ServerBase, agent_runtime: Runtime) -> str
     # Dependency installation is trusted setup as the backend's default user.
     # The server itself keeps the agent's user and filesystem policy when launched.
     runtime = agent_runtime.backend.bind(env=agent_runtime.env).with_user(None)
-    # Prime VMs mount /tmp as a small tmpfs, while the runtime workdir lives on
-    # the VM's root disk. Keep source, build scratch space, and uv's cache on the
-    # durable runtime filesystem so ordinary dependency installs cannot exhaust
-    # the tmpfs.
+    # Prime VMs mount /tmp as a small tmpfs. Keep dependency installation on the
+    # durable runtime filesystem so ordinary installs cannot exhaust the tmpfs.
     # Every runtime runs commands in its working directory; not every config names it.
     located = await runtime.run(["pwd"], {})
     workdir = located.stdout.strip()
@@ -258,9 +257,16 @@ async def _install_in_sandbox(server: ServerBase, agent_runtime: Runtime) -> str
             f"server {server.server_name!r}: cannot locate the runtime's working "
             f"directory: {located.stderr.strip()}"
         )
-    root = str(PurePosixPath(workdir) / ".vf-src")
-    temp = str(PurePosixPath(workdir) / ".vf-tmp")
-    cache = str(PurePosixPath(workdir) / ".vf-uv-cache")
+    # Confine source archives and install caches even when tools are installed
+    # after the agent view is prepared. Keep executable environments visible.
+    setup_dir = (
+        await prepare_private_directory(runtime)
+        if runtime.backend.SUPPORTS_FILESYSTEM_POLICY
+        else workdir
+    )
+    root = str(PurePosixPath(setup_dir) / ".vf-src")
+    temp = str(PurePosixPath(setup_dir) / ".vf-tmp")
+    cache = str(PurePosixPath(setup_dir) / ".vf-uv-cache")
     venv = str(PurePosixPath(workdir) / ".vf-venv")
     python_dir = str(PurePosixPath(workdir) / ".vf-python")
     root_q, temp_q, cache_q, venv_q = map(shlex.quote, (root, temp, cache, venv))

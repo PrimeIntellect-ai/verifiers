@@ -9,7 +9,11 @@ from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING
 
-from verifiers.v1.configs.runtime import FilesystemPolicyConfig
+from verifiers.v1.configs.runtime import (
+    FILESYSTEM_DEFAULT_HIDDEN,
+    FRAMEWORK_PRIVATE_DIR,
+    FilesystemPolicyConfig,
+)
 from verifiers.v1.errors import SandboxError
 from verifiers.v1.utils.aio import run_shielded
 
@@ -34,6 +38,18 @@ _BOOTSTRAP_EMPTY = (
     "ENV",
 )
 _BOOTSTRAP_PATH = "/usr/sbin:/usr/bin:/sbin:/bin"
+_PREPARE_DIRECTORIES = r"""
+set -eu
+mode=$1
+shift
+for path do
+    [ "$(readlink -m -- "$path")" = "$path" ] || {
+        printf 'default hidden path must not contain symlinks: %s\n' "$path" >&2
+        exit 1
+    }
+    mkdir -p -m "$mode" -- "$path"
+done
+"""
 _PROBE = r"""
 set -eu
 binary=$(command -v bwrap) || { echo 'bubblewrap is not installed' >&2; exit 1; }
@@ -232,12 +248,52 @@ class FilesystemSandbox:
         ]
 
 
+async def prepare_private_directory(runtime: Runtime) -> str:
+    """Keep trusted setup scratch on disk, outside every agent-writable tree."""
+    trusted = runtime.backend.bind(env=bootstrap_env({})).with_user("root")
+    result = await trusted.run(
+        [
+            "/bin/sh",
+            "-c",
+            _PREPARE_DIRECTORIES,
+            "filesystem-policy",
+            "1777",
+            FRAMEWORK_PRIVATE_DIR,
+        ],
+        {},
+    )
+    if result.exit_code:
+        raise SandboxError(
+            "cannot prepare framework private directory - "
+            + result.stderr.strip()[-1000:]
+        )
+    return FRAMEWORK_PRIVATE_DIR
+
+
 async def prepare_filesystem(
     runtime: Runtime, policy: FilesystemPolicyConfig
 ) -> FilesystemSandbox:
     if not runtime.backend.SUPPORTS_FILESYSTEM_POLICY:
         raise SandboxError(
             f"the {runtime.type} runtime does not enforce filesystem policies"
+        )
+    await prepare_private_directory(runtime)
+    trusted = runtime.backend.bind(env=bootstrap_env({})).with_user("root")
+    defaults = await trusted.run(
+        [
+            "/bin/sh",
+            "-c",
+            _PREPARE_DIRECTORIES,
+            "filesystem-policy",
+            "755",
+            *FILESYSTEM_DEFAULT_HIDDEN[1:],
+        ],
+        {},
+    )
+    if defaults.exit_code:
+        raise SandboxError(
+            "cannot prepare default hidden directories - "
+            + defaults.stderr.strip()[-1000:]
         )
     paths = list(dict.fromkeys((*policy.readable, *policy.writable, *policy.hidden)))
     probe = await runtime.run(
@@ -250,7 +306,6 @@ async def prepare_filesystem(
             f"cannot prepare filesystem policy (exit code {probe.exit_code}) - "
             + probe.stderr.strip()[-1000:]
         )
-    trusted = runtime.with_user("root")
     for label, roots in (("writable", policy.writable), ("hidden", policy.hidden)):
         if not roots:
             continue
@@ -325,6 +380,11 @@ async def prepare_filesystem(
         command.extend((flag, path, path))
     command.extend(("--proc", "/proc", "--dev", "/dev"))
     for path in sorted(policy.hidden, key=lambda path: len(PurePosixPath(path).parts)):
+        if any(
+            path != other and PurePosixPath(path).is_relative_to(other)
+            for other in policy.hidden
+        ):
+            continue
         if types[path] == "directory":
             command.extend(("--tmpfs", path, "--remount-ro", path))
         else:
