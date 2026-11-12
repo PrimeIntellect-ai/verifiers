@@ -26,6 +26,86 @@ class BindMount(BaseConfig):
 Mount = TypeVar("Mount", bound=BaseConfig)
 
 
+class FilesystemPolicyConfig(BaseConfig):
+    """Agent filesystem view, enforced by bubblewrap in a Linux sandbox.
+
+    Paths must exist, be absolute, and contain no symlink components. The image
+    must provide bubblewrap with user namespaces and --disable-userns support.
+    Unsupported runtimes or kernels fail closed. Setup and grading retain the
+    original filesystem; this policy applies to agent processes and file tools.
+    """
+
+    readable: list[str] = Field(default_factory=lambda: ["/"])
+    """Trees exposed read-only. The default exposes the sandbox's filesystem."""
+    writable: list[str] = Field(default_factory=list)
+    """Trees exposed read-write, including reads. No home, workdir or temporary
+    directory is implicitly writable. System/bootstrap directories cannot be
+    writable. A writable tree cannot contain a readable or hidden rule: its
+    writable parent could otherwise relocate the protected source between
+    commands. Writes persist in the underlying runtime."""
+    hidden: list[str] = Field(default_factory=list)
+    """Existing paths masked after all other mounts. Directories become empty,
+    read-only mounts and files become `/dev/null`. `/proc` and `/dev`
+    are always private to the process sandbox."""
+
+    @field_validator("readable", "writable", "hidden")
+    @classmethod
+    def validate_paths(cls, paths: list[str]) -> list[str]:
+        normalized = []
+        for value in paths:
+            path = PurePosixPath(value)
+            if (
+                not value.startswith("/")
+                or ".." in path.parts
+                or any(char in value for char in ("\x00", "\n", "\r"))
+            ):
+                raise ValueError(
+                    "filesystem paths must be absolute with no '..', NUL or newline"
+                )
+            normalized.append("/" + str(path).lstrip("/"))
+        return list(dict.fromkeys(normalized))
+
+    @model_validator(mode="after")
+    def validate_roots(self) -> Self:
+        # New shells and bubblewrap must load trusted code before entering the
+        # restricted mount namespace, including the dynamic loader's config.
+        bootstrap = tuple(
+            PurePosixPath(path)
+            for path in ("/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc")
+        )
+        writable = [PurePosixPath(value) for value in self.writable]
+        for index, path in enumerate(writable):
+            if any(
+                path.is_relative_to(other) or other.is_relative_to(path)
+                for other in writable[:index]
+            ):
+                raise ValueError("filesystem writable paths must not overlap")
+        for value in self.writable:
+            path = PurePosixPath(value)
+            if any(
+                path.is_relative_to(root) or root.is_relative_to(path)
+                for root in bootstrap
+            ):
+                raise ValueError(
+                    f"filesystem writable path {value!r} overlaps bootstrap files"
+                )
+            if any(
+                PurePosixPath(protected).is_relative_to(path)
+                for protected in (*self.readable, *self.hidden)
+            ):
+                raise ValueError(
+                    f"filesystem writable path {value!r} contains a protected rule"
+                )
+        for value in (*self.writable, *self.hidden):
+            path = PurePosixPath(value)
+            if any(
+                path.is_relative_to(root) or root.is_relative_to(path)
+                for root in (PurePosixPath("/proc"), PurePosixPath("/dev"))
+            ):
+                raise ValueError("filesystem policies cannot override /proc or /dev")
+        return self
+
+
 def validate_mounts(mounts: dict[str, Mount]) -> dict[str, Mount]:
     """Normalize disjoint guest mount targets without covering runtime staging."""
     paths: dict[PurePosixPath, Mount] = {}

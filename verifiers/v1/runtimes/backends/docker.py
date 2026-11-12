@@ -209,6 +209,7 @@ class DockerBackend(RuntimeBackend):
 
     SUPPORTS_TASK_IMAGES: ClassVar[bool] = True
     SUPPORTS_USER_SWITCHING: ClassVar[bool] = True
+    SUPPORTS_FILESYSTEM_POLICY: ClassVar[bool] = True
     SUPPORTS_PORT_EXPOSURE: ClassVar[bool] = True
     SUPPORTS_COMPOSE: ClassVar[bool] = True
     is_local = True

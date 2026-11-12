@@ -9,6 +9,7 @@ from pathlib import PurePosixPath
 from verifiers.v1.configs.scoring import ScoringConfig
 from verifiers.v1.errors import TaskError, boundary
 from verifiers.v1.runtimes import (
+    DockerConfig,
     NetworkPolicyConfig,
     PrimeConfig,
     Runtime,
@@ -63,6 +64,24 @@ def verifier_runtime(
     if policy.network is not None:
         task = task.with_data(network=policy.network)
     config = resolve_runtime_config(source, task)
+    if isinstance(solver_runtime.config, DockerConfig) and isinstance(
+        config, DockerConfig
+    ):
+        writable = [
+            PurePosixPath(mount.source)
+            for mount in solver_runtime.config.mounts.values()
+            if not mount.read_only
+        ]
+        for target, mount in config.mounts.items():
+            path = PurePosixPath(mount.source)
+            if any(
+                path.is_relative_to(root) or root.is_relative_to(path)
+                for root in writable
+            ):
+                raise TaskError(
+                    f"isolated verification mount {target!r} shares storage writable by "
+                    "the solver; configure scoring.runtime with independent storage"
+                )
     if policy.runtime is not None and "image" in policy.runtime.model_fields_set:
         config = config.model_copy(update={"image": policy.runtime.image})
     if not backend_cls(config).SUPPORTS_TASK_IMAGES:

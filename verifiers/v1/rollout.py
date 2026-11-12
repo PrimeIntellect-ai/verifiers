@@ -373,6 +373,10 @@ class Rollout:
                         runtime, self.task.data.agent_user, self.task.data.agent_home
                     )
                     await self.harness.setup(self._agent_runtime)
+                    if self.task.data.filesystem is not None:
+                        self._agent_runtime = await self._agent_runtime.with_filesystem(
+                            self.task.data.filesystem
+                        )
                 logger.debug(
                     "Set up %s harness in %s",
                     self.harness.config.name,

@@ -50,6 +50,14 @@ def resolve_runtime_config(
             f"the {config.type} runtime cannot run as another user; use a supported "
             "runtime"
         )
+    if (
+        task.data.filesystem is not None
+        and not backend_cls(config).SUPPORTS_FILESYSTEM_POLICY
+    ):
+        raise ValueError(
+            f"task {task.data.idx!r} requires a filesystem policy, but the "
+            f"{config.type} runtime does not enforce one"
+        )
     if task.data.network.network_restricted:
         if not isinstance(config, NetworkPolicyConfig):
             raise ValueError(

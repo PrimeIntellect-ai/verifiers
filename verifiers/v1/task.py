@@ -20,7 +20,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from typing_extensions import TypeVar
 
 from verifiers.v1.configs.harness import SkillSource
-from verifiers.v1.configs.runtime import NetworkPolicyConfig
+from verifiers.v1.configs.runtime import FilesystemPolicyConfig, NetworkPolicyConfig
 from verifiers.v1.configs.scoring import ScoringConfig
 from verifiers.v1.configs.task import TaskConfig
 from verifiers.v1.errors import TaskError, boundary
@@ -113,6 +113,11 @@ class TaskData(BaseModel):
     agent_home: str | None = None
     """Home directory for `agent_user`; None uses the account's passwd home.
     Must already exist and be writable by that user."""
+
+    filesystem: FilesystemPolicyConfig | None = None
+    """Optional OS-enforced filesystem access for the agent and its child processes.
+    Trusted setup and grading retain their original runtime view. Requires a runtime
+    that can enforce the policy; unsupported runtimes fail before agent execution."""
 
     skills: list[SkillSource] = Field(default_factory=list)
     """Skill sources installed before the harness's configured skills for this task."""
