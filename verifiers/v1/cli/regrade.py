@@ -25,7 +25,7 @@ from verifiers.v1.cli.resolve import (
 from verifiers.v1.configs.cli.regrade import RegradeConfig
 from verifiers.v1.configs.scoring import resolve_scoring
 from verifiers.v1.grading import grade_task, verifier_runtime
-from verifiers.v1.runtimes import backend_cls, make_backend
+from verifiers.v1.runtimes import RuntimeConfig, backend_cls, make_backend
 from verifiers.v1.runtimes.deployment import Deployment
 from verifiers.v1.state import state_cls
 from verifiers.v1.task import Task, TaskData, task_key
@@ -99,9 +99,48 @@ def rerun_reason(saved: Trace, task: Task) -> str | None:
         return "Current task requires shared runtime state"
     if resolve_scoring(old.scoring, saved.agent.config.scoring).mode != "isolated":
         return "Original task was scored with shared runtime state"
-    if not saved.is_completed or saved.is_timeout:
+    if (
+        not saved.is_completed
+        or not saved.ok
+        or saved.errors
+        or saved.is_format_violation
+        or saved.is_truncated
+        or saved.stop_condition not in {None, "agent_completed", "scoring_timeout"}
+        or (saved.is_timeout and saved.stop_condition != "scoring_timeout")
+    ):
         return "Original solver did not complete"
     return None
+
+
+def solver_runtime_config(
+    saved: Trace, task: Task, base: RuntimeConfig
+) -> RuntimeConfig:
+    """Reconstruct the workspace's image and cwd without starting its runtime."""
+    original = saved.agent.runtime
+    if original is None:
+        # An explicit task image can be resolved without runtime metadata. An
+        # implicit image may have come from Compose or another workspace instead.
+        if saved.task.data.image is None:
+            raise ValueError("Saved submission has no resolved workspace image")
+        original = resolve_runtime_config(
+            saved.agent.config.runtime, Task(saved.task.data)
+        )
+    if original.type != base.type or getattr(original, "import_path", None) != getattr(
+        base, "import_path", None
+    ):
+        raise ValueError(
+            "Selected runtime is incompatible with the saved workspace runtime"
+        )
+    image = getattr(original, "image", None)
+    if not image:
+        raise ValueError("Saved submission has no resolved workspace image")
+    workdir = getattr(original, "workdir", None) or saved.task.data.workdir or "/app"
+    # Resolve current task policy with the native precedence, then supply the
+    # recorded execution workspace to grading_task/verifier_runtime. A dedicated
+    # current verifier image still takes precedence there.
+    return resolve_runtime_config(base, task).model_copy(
+        update={"image": image, "workdir": workdir}
+    )
 
 
 def _scores(trace: Trace) -> dict[str, Any]:
@@ -153,11 +192,11 @@ async def regrade_trace(
                 "status": "requires_rerun",
                 "reason": f"Cannot reconstruct saved submission - {type(exc).__name__}: {exc}",
             }
-        workdir = (
-            getattr(saved.agent.runtime, "workdir", None)
-            or saved.task.data.workdir
-            or "/app"
-        )
+        try:
+            solver_config = solver_runtime_config(saved, task, config.runtime)
+        except ValueError as exc:
+            return {**row, "status": "requires_rerun", "reason": str(exc)}
+        workdir = solver_config.workdir
         expected_roots = {
             posixpath.normpath(posixpath.join(workdir, entry.source))
             for entry in task.data.artifacts
@@ -169,12 +208,23 @@ async def regrade_trace(
                 "status": "requires_rerun",
                 "reason": f"Saved submission is missing declared artifact roots: {sorted(missing)}",
             }
+        absent = {
+            posixpath.normpath(posixpath.join(workdir, entry.source))
+            for entry in task.data.artifacts
+            if entry.required
+            and artifacts[posixpath.normpath(posixpath.join(workdir, entry.source))]
+            is None
+        }
+        if absent:
+            return {
+                **row,
+                "status": "requires_rerun",
+                "reason": f"Required artifact roots were absent from the saved submission: {sorted(absent)}",
+            }
         task.validate_artifacts(artifacts)
 
         # A borrowed config-only view lets the native grading lifecycle provision
         # just its fresh verifier. No solver runtime is started or reconstructed.
-        solver_config = resolve_runtime_config(config.runtime, task)
-        solver_config = solver_config.model_copy(update={"workdir": workdir})
         backend = make_backend(solver_config)
         solver = backend.bind()
         policy = task.scoring
@@ -187,6 +237,9 @@ async def regrade_trace(
         trace.state = state_cls(type(task))(artifacts=artifacts)
         trace.rewards, trace.metrics, trace.extra_usage = {}, {}, []
         trace.errors, trace.dropped = [], None
+        trace.is_timeout = False
+        if trace.stop_condition == "scoring_timeout":
+            trace.stop_condition = "agent_completed"
         trace.info.pop("judge_calls", None)
         trace.info.pop("scoring_diagnostics", None)
         timeouts = task.data.timeout
