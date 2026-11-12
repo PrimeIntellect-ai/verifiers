@@ -4,6 +4,21 @@ import shlex
 
 from verifiers.v1.runtimes import Runtime
 
+_COPY_LINKED_FILES = r"""
+find "$1" -type f -links +1 -exec sh -c '
+    set -eu
+    for file do
+        temporary=$(mktemp "${file}.vf-XXXXXX")
+        if cp -p -- "$file" "$temporary" && mv -f -- "$temporary" "$file"; then
+            :
+        else
+            rm -f -- "$temporary"
+            exit 1
+        fi
+    done
+' sh {} +
+"""
+
 
 async def ensure_installed(
     runtime: Runtime,
@@ -29,6 +44,12 @@ async def ensure_installed(
     env = {"UV_LINK_MODE": "copy", **env}
     lock = shlex.quote(lock or f"{directory}/install.lock")
     script = f"{ready} || ({install})" if ready else install
+    # npm post-install scripts can hard-link their binaries. Detach only this
+    # framework-owned installation, under its lock, before the agent can use it.
+    script = (
+        f"({script}) && sh -c {shlex.quote(_COPY_LINKED_FILES)} "
+        f"harness-install {shlex.quote(directory)}"
+    )
     run = f"{shlex.join(shell)} {shlex.quote(script)}"
     # The owner token is pid:starttime (starttime from /proc where readable), so a reused pid
     # does not pass as the live holder. A lock that is not a symlink (left behind by

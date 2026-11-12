@@ -280,8 +280,8 @@ class DockerConfig(NetworkPolicyConfig):
     workdir: str | None = None
     """Working directory override; None uses the task's workdir, or /app."""
     user_namespaces: bool = False
-    """Allow bubblewrap's nested namespaces by disabling Docker's seccomp profile
-    and system-path masks. Enabled when resolving a task with a filesystem policy.
+    """Allow bubblewrap's nested namespaces by disabling Docker's seccomp and
+    AppArmor profiles and system-path masks. Enabled for a task filesystem policy.
     Directly provisioned runtimes must opt in before calling with_filesystem().
     Host namespace limits and AppArmor/SELinux restrictions still apply."""
     # TaskData.resources uses these units; non-default runtime config values take precedence.
