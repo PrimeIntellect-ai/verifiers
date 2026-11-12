@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import ast
 import hashlib
+import json
 import os
 import re
 import stat
+import tomllib
 from pathlib import Path
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+from urllib.parse import parse_qsl, unquote, urlencode, urlsplit, urlunsplit
 
 from verifiers.v1.trace import RECORD_DUMP_EXCLUDE, Trace
 
@@ -16,10 +19,59 @@ SOURCE_TOTAL_BYTES = 2 * 1024 * 1024
 SOURCE_ENTRIES = 512
 SECRET_KEY = re.compile(
     r"(?:^|[_-])(?:api[_-]?key|access[_-]?token|refresh[_-]?token|secret|password|"
-    r"authorization|credential|token)(?:$|[_-])",
+    r"passwd|passphrase|private[_-]?key|authorization|credentials?|cookies?|token)(?:$|[_-])",
     re.IGNORECASE,
 )
-PRIVATE_MAPS = {"env", "verifier_env", "environment", "headers", "extra_headers"}
+ASSIGNMENT = re.compile(
+    r"""(?<![\w.-])(?P<prefix>["']?(?P<key>[A-Za-z_][\w.-]*)["']?\s*[:=]\s*)"""
+    r'''(?P<value>(?:[rRuU])?(?:"""(?:\\.|(?!""")[^\\])*"""|'''
+    r"'''(?:\\.|(?!''')[^\\])*'''|"
+    r""""(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')|[^\s,;#}\]"']+)""",
+    re.DOTALL,
+)
+URL = re.compile(r"https?://[^\s<>\"']+")
+AUTHORIZATION = re.compile(r"\b(?:Bearer|Basic)\s+([^\s\"']+)", re.IGNORECASE)
+
+
+def _source_configs(item):
+    """Parse configuration evidence before discovering secrets; never emit failed parses."""
+    if isinstance(item, list):
+        return [_source_configs(child) for child in item]
+    if not isinstance(item, dict):
+        return item
+    result = {key: _source_configs(child) for key, child in item.items()}
+    path, content = result.get("path"), result.get("content")
+    if not isinstance(path, str) or not isinstance(content, str):
+        return result
+    suffix = Path(path).suffix.lower()
+    if suffix not in {".toml", ".json", ".yaml", ".yml"}:
+        return result
+    try:
+        if suffix == ".toml":
+            parsed = tomllib.loads(content)
+        elif suffix == ".json":
+            parsed = json.loads(content)
+        else:
+            import yaml
+
+            # Alias graphs can be cyclic or expand exponentially when represented
+            # as JSON evidence. Omit these configs instead of unbounding review.
+            if any(
+                isinstance(token, yaml.tokens.AliasToken)
+                for token in yaml.scan(content)
+            ):
+                raise ValueError("YAML aliases are not supported in review evidence")
+            parsed = yaml.safe_load(content)
+        if not isinstance(parsed, (dict, list)):
+            raise TypeError("configuration must be a mapping or list")
+        # Normalize TOML/YAML scalar types while refusing recursive structures.
+        result["content"] = json.loads(json.dumps(parsed, default=str))
+        result["content_format"] = "parsed configuration (comments omitted)"
+    except Exception:  # noqa: BLE001 - config parsing must fail closed without leaking source
+        # Parser diagnostics can quote the credential-bearing source. Neither
+        # those diagnostics nor unparsed config may reach the external judge.
+        result["content"] = "[omitted: configuration could not be parsed safely]"
+    return result
 
 
 def read_regular(path: Path, limit: int) -> bytes:
@@ -43,38 +95,48 @@ def source_evidence(directory: Path) -> dict:
     if not root.is_dir():
         raise ValueError(f"source is not a directory: {directory}")
     files, skipped = [], []
-    used = visited = 0
+    used, visited, limited = 0, 1, False  # The root is an entry too.
     ignored = {".git", ".venv", "venv", "node_modules", "__pycache__", "audit"}
     suffixes = {".py", ".sh", ".toml", ".json", ".yaml", ".yml", ".md", ".txt"}
-    for parent, dirs, names, descriptor in os.fwalk(root, follow_symlinks=False):
-        visited += 1
-        if visited > SOURCE_ENTRIES:
-            skipped.append({"path": "*", "reason": "source entry limit reached"})
-            break
-        kept = []
-        for name in sorted(dirs):
-            relative = str((Path(parent) / name).relative_to(root))
-            if name in ignored:
-                skipped.append({"path": relative, "reason": "excluded directory"})
-            elif stat.S_ISDIR(
-                os.stat(name, dir_fd=descriptor, follow_symlinks=False).st_mode
-            ):
-                kept.append(name)
-            else:
-                skipped.append({"path": relative, "reason": "symlink directory"})
-        dirs[:] = kept
+
+    def visit(descriptor: int, prefix: Path) -> None:
+        nonlocal used, visited, limited
+        # Bound enumeration itself before sorting. fwalk/walk materialize a
+        # whole directory, including ignored entries, before callers can limit it.
+        names = []
+        with os.scandir(descriptor) as entries:
+            for entry in entries:
+                if visited >= SOURCE_ENTRIES:
+                    limited = True
+                    break
+                visited += 1
+                names.append(entry.name)
         for name in sorted(names):
-            visited += 1
-            if visited > SOURCE_ENTRIES:
-                skipped.append({"path": "*", "reason": "source entry limit reached"})
-                return {"files": files, "skipped": skipped}
-            relative = str((Path(parent) / name).relative_to(root))
-            if name.startswith(".env") or (
-                Path(name).suffix not in suffixes and name != "Dockerfile"
-            ):
-                skipped.append({"path": relative, "reason": "not task source"})
-                continue
+            relative = str(prefix / name)
             try:
+                mode = os.stat(name, dir_fd=descriptor, follow_symlinks=False).st_mode
+                if stat.S_ISLNK(mode):
+                    raise ValueError("symlink")
+                if stat.S_ISDIR(mode):
+                    if name in ignored:
+                        raise ValueError("excluded directory")
+                    if visited >= SOURCE_ENTRIES:
+                        limited = True
+                        continue
+                    child = os.open(
+                        name,
+                        os.O_RDONLY | os.O_NOFOLLOW | os.O_DIRECTORY,
+                        dir_fd=descriptor,
+                    )
+                    try:
+                        visit(child, prefix / name)
+                    finally:
+                        os.close(child)
+                    continue
+                if name.startswith(".env") or (
+                    Path(name).suffix not in suffixes and name != "Dockerfile"
+                ):
+                    raise ValueError("not task source")
                 fd = os.open(
                     name,
                     os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
@@ -104,19 +166,30 @@ def source_evidence(directory: Path) -> dict:
                 )
             except (OSError, ValueError) as error:
                 skipped.append({"path": relative, "reason": str(error)})
+
+    descriptor = os.open(root, os.O_RDONLY | os.O_NOFOLLOW | os.O_DIRECTORY)
+    try:
+        visit(descriptor, Path())
+    finally:
+        os.close(descriptor)
+    if limited:
+        skipped.append({"path": "*", "reason": "source entry limit reached"})
     return {"files": files, "skipped": skipped}
 
 
 def redact(value):
     """Omit configuration credentials and remove their echoes elsewhere in a report."""
+    value = _source_configs(value)
     secrets: set[str] = set()
 
     def sensitive(key: str) -> bool:
+        key = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", str(key)).lower()
         return bool(SECRET_KEY.search(key)) and not key.endswith("_var")
 
     def strings(item):
         if isinstance(item, str) and len(item) >= 4:
             secrets.add(item)
+            secrets.add(json.dumps(item, ensure_ascii=False)[1:-1])
         elif isinstance(item, dict):
             for child in item.values():
                 strings(child)
@@ -127,13 +200,36 @@ def redact(value):
     def discover(item):
         if isinstance(item, dict):
             for key, child in item.items():
-                if key in PRIVATE_MAPS or sensitive(key):
+                if sensitive(key):
                     strings(child)
-                else:
-                    discover(child)
+                discover(child)
         elif isinstance(item, list):
             for child in item:
                 discover(child)
+        elif isinstance(item, str):
+            for match in ASSIGNMENT.finditer(item):
+                if sensitive(match["key"]):
+                    raw = match["value"]
+                    try:
+                        strings(ast.literal_eval(raw))
+                    except (ValueError, SyntaxError):
+                        strings(raw)
+                        # Shell quotes permit literal newlines that Python's
+                        # single-quoted literals reject. Their echoes omit quotes.
+                        if raw[:1] in {"'", '"'} and raw[-1:] == raw[:1]:
+                            strings(raw[1:-1])
+            for match in AUTHORIZATION.finditer(item):
+                strings(match[1])
+            for match in URL.finditer(item):
+                try:
+                    parts = urlsplit(match[0])
+                    if parts.password:
+                        strings(unquote(parts.password))
+                    for key, child in parse_qsl(parts.query, keep_blank_values=True):
+                        if sensitive(key):
+                            strings(child)
+                except ValueError:
+                    continue
 
     discover(value)
     replacements = sorted(secrets, key=len, reverse=True)
@@ -160,24 +256,27 @@ def redact(value):
     def scrub(item):
         if isinstance(item, dict):
             return {
-                key: (
-                    {name: "[redacted]" for name in child}
-                    if key in PRIVATE_MAPS and isinstance(child, dict)
-                    else "[redacted]"
-                    if sensitive(key)
-                    else scrub(child)
-                )
+                key: ("[redacted]" if sensitive(key) else scrub(child))
                 for key, child in item.items()
             }
         if isinstance(item, list):
             return [scrub(child) for child in item]
         if isinstance(item, str):
+            item = ASSIGNMENT.sub(
+                lambda match: (
+                    match["prefix"] + '"[redacted]"'
+                    if sensitive(match["key"])
+                    else match[0]
+                ),
+                item,
+            )
+            item = URL.sub(url, item)
+            item = AUTHORIZATION.sub(
+                lambda match: match[0].split()[0] + " [redacted]", item
+            )
             for secret in replacements:
                 item = item.replace(secret, "[redacted]")
-            item = re.sub(r"https?://[^\s<>\"']+", url, item)
-            return re.sub(
-                r"\bBearer\s+[^\s\"']+", "Bearer [redacted]", item, flags=re.IGNORECASE
-            )
+            return item
         return item
 
     return scrub(value)
