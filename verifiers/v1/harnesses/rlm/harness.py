@@ -101,6 +101,9 @@ class RLMHarnessConfig(HarnessConfig):
     exec_timeout: PositiveInt | None = None
     """IPython/native tool execution timeout in seconds; `None` uses nano-rlm's
     default (300). Separate from `tool_timeout`, which controls MCP calls."""
+    provider_max_retries: NonNegativeInt | None = None
+    """SDK retries per model call (429, 5xx, connection errors); `None` uses nano-rlm's
+    default (5). Raise it so long rollouts ride out extended rate-limit bursts."""
     allow_git: bool | None = None
     """Allow unrestricted Git history queries (e.g. `git log --all`); `None` uses
     nano-rlm's default (false). Ordinary Git commands remain allowed either way;
@@ -225,6 +228,11 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
             "provider": {
                 "base_url": endpoint,
                 "api_key": secret,
+                **(
+                    {"max_retries": self.config.provider_max_retries}
+                    if self.config.provider_max_retries is not None
+                    else {}
+                ),
             },
             # None = passthrough: the key stays off the wire and nano-rlm's own
             # default applies.
