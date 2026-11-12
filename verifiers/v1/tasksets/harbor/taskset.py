@@ -38,6 +38,7 @@ from verifiers.v1.configs.taskset import TasksetConfig
 from verifiers.v1.errors import SandboxError, TaskError
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.runtimes.deployment import Deployment
+from verifiers.v1.runtimes.untrusted import STARTUP_HOOKS, kill_user
 from verifiers.v1.state import State
 from verifiers.v1.task import Task, TaskData, TaskResources, TaskTimeout
 from verifiers.v1.taskset import Taskset
@@ -57,6 +58,7 @@ logger = get_logger(__name__)
 CACHE = Path.home() / ".cache" / "harbor"
 HARBOR_INSTALL_HINT = "uv sync --python 3.12 --extra harbor"
 REWARD_JSON = "/logs/verifier/reward.json"
+REWARD_TXT = "/logs/verifier/reward.txt"
 MAX_REWARD_BYTES = 1024 * 1024
 MAX_VERIFIER_OUTPUT_CHARS = 16 * 1024
 REWARD_JSON_ADAPTER = TypeAdapter(
@@ -469,9 +471,19 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
         # By absolute path, in the runtime's configured workdir: Harbor execs the
         # script the same way, and scripts do grade the agent's work at `$PWD`.
         # The reward file is authoritative even when the script exits nonzero.
+        agent = await self.untrusted_agent(runtime)
+        # Startup hooks would run code from the environment before the grader's own.
+        unset = [arg for hook in STARTUP_HOOKS for arg in ("-u", hook)]
         result = await runtime.run(
-            ["bash", "/tests/test.sh"], resolve_env(self.scoring.env or {})
+            [*(["env", *unset] if agent else []), "bash", "/tests/test.sh"],
+            resolve_env(self.scoring.env or {}),
         )
+        if agent is not None:
+            # The agent's services stay up while test.sh grades them; after it, none
+            # may write the reward, and a reward file the agent's user put in place
+            # (written, renamed or linked) is not the verifier's.
+            await kill_user(runtime, agent)
+            await self.check_reward_files(runtime, agent)
         trace.info.setdefault("scoring_diagnostics", {})["harbor"] = {
             "exit_code": result.exit_code,
             "stdout": result.stdout[-MAX_VERIFIER_OUTPUT_CHARS:],
@@ -483,11 +495,7 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
         if scores is None:
             try:
                 value = (
-                    (
-                        await runtime.read(
-                            "/logs/verifier/reward.txt", max_bytes=MAX_REWARD_BYTES
-                        )
-                    )
+                    (await runtime.read(REWARD_TXT, max_bytes=MAX_REWARD_BYTES))
                     .decode()
                     .strip()
                 )
@@ -509,6 +517,48 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
             {name: value for name, value in scores.items() if name != key}
         )
         return {key: scores[key]}
+
+    async def untrusted_agent(self, runtime: Runtime) -> str | None:
+        """The agent's user when grading shares its box and runs as another user."""
+        agent = self.data.agent_user
+        if (
+            agent is None
+            or self.data.verifier is not None
+            or self.scoring.mode == "isolated"
+        ):
+            return None
+        grader = runtime.user
+        if grader is None:
+            grader = (await runtime.run(["id", "-un"], {})).stdout.strip()
+        return None if agent == grader else agent
+
+    async def check_reward_files(self, runtime: Runtime, agent: str) -> None:
+        """Refuse a reward file that is a link or that `agent` owns."""
+        for path in (REWARD_JSON, REWARD_TXT):
+            result = await runtime.with_user("root").run(
+                [
+                    "sh",
+                    "-c",
+                    (
+                        'if [ -L "$1" ]; then echo link; '
+                        'elif [ -e "$1" ]; then stat -c %u "$1"; id -u "$2"; fi'
+                    ),
+                    "vf-reward",
+                    path,
+                    agent,
+                ],
+                {},
+            )
+            facts = result.stdout.split()
+            if (
+                result.exit_code
+                or facts == ["link"]
+                or (len(facts) == 2 and facts[0] == facts[1])
+            ):
+                raise TaskError(
+                    f"Harbor reward file {path} was put in place by the agent's user "
+                    f"{agent!r}, not by the verifier; refusing it"
+                )
 
     async def read_reward_json(self, runtime: Runtime) -> dict[str, float] | None:
         """JSON takes precedence whenever present; invalid or unreadable JSON fails.
