@@ -366,7 +366,28 @@ async def serve_in_runtime(
     if runtime.type == "subprocess":
         # Keep provider temp files in the runtime workdir so cleanup removes them.
         assert runtime.info.id is not None
-        env["TMPDIR"] = runtime.info.id
+        env["TMPDIR"] = runtime.env.get("TMPDIR") or runtime.info.id
+    # Discover the image/task TMPDIR through the same confined view as the
+    # server. Port discovery and logging must not require extra writable roots.
+    temporary = await runtime.run(
+        [
+            "/bin/sh",
+            "-c",
+            (
+                'directory=${TMPDIR:-/var/tmp}; case "$directory" in /*) ;; *) exit 1;; esac; '
+                '[ -d "$directory" ] && [ -w "$directory" ] && '
+                '[ -x "$directory" ] && printf %s "$directory"'
+            ),
+        ],
+        {key: value for key, value in env.items() if key == "TMPDIR"},
+    )
+    if temporary.exit_code or not temporary.stdout:
+        raise ToolsetError(
+            "tool server needs a writable temporary directory; set TMPDIR to an "
+            "existing directory permitted by the task's filesystem policy"
+        )
+    temp_dir = temporary.stdout.rstrip("/") or "/"
+    env["TMPDIR"] = temp_dir
     if listen_all or (exposed and runtime.published_port is not None):
         env["MCP_HOST"] = "0.0.0.0"
     fixed = runtime.published_port if exposed else None
