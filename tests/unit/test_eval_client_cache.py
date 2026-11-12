@@ -108,6 +108,22 @@ async def test_relay_sends_configured_retention() -> None:
 
 
 @pytest.mark.asyncio
+async def test_default_retention_sends_short_markers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("PI_CACHE_RETENTION", raising=False)
+    client = EvalClient(EvalClientConfig(base_url=BASE_URL))
+    client._request = AsyncMock(return_value=_response())  # type: ignore[method-assign]
+    body = _body()
+
+    await client.get_response(ChatDialect(), body, SamplingConfig())
+
+    sent = client._request.await_args.args[1]
+    assert sent["tools"][-1]["cache_control"] == {"type": "ephemeral"}
+    assert "ttl" not in json.dumps(sent)
+
+
+@pytest.mark.asyncio
 async def test_none_retention_passes_through() -> None:
     client = EvalClient(EvalClientConfig(base_url=BASE_URL, cache_retention="none"))
     client._request = AsyncMock(return_value=_response())  # type: ignore[method-assign]
