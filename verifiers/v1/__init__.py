@@ -106,6 +106,7 @@ if TYPE_CHECKING:
         SemanticEdgeSet,
     )
     from verifiers.v1.state import State, StateT
+    from verifiers.v1.submission import run_submission
     from verifiers.v1.task import (
         Task,
         TaskData,
@@ -191,6 +192,7 @@ if TYPE_CHECKING:
     )
 
 _NAME_TO_MODULE = {
+    "run_submission": "verifiers.v1.submission",
     "ACPConfig": "verifiers.v1.acp",
     "ACPHarness": "verifiers.v1.acp",
     "ACPInfo": "verifiers.v1.semantic",
@@ -542,6 +544,7 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "capture_patch",
     "resolve_head",
     "grade_submission",
+    "run_submission",
     # grading artifacts
     "ARTIFACTS_DIR",
     "Artifact",
