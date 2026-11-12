@@ -289,7 +289,10 @@ async def _install_in_sandbox(server: ServerBase, agent_runtime: Runtime) -> str
                 name, data = await _cached_package(Path(source))
                 remote = f"{root}/{name}"
                 await run_shielded(runtime.write(remote, data))
-                setup += f"uv pip install --python {venv_q} {shlex.quote(remote)}; "
+                setup += (
+                    f"uv pip install --link-mode copy --python {venv_q} "
+                    f"{shlex.quote(remote)}; "
+                )
             result = await run_shielded(runtime.run(["sh", "-c", setup], {}))
             if result.exit_code != 0:
                 raise ToolsetError(
@@ -374,7 +377,7 @@ async def serve_in_runtime(
             "/bin/sh",
             "-c",
             (
-                'directory=${TMPDIR:-/var/tmp}; case "$directory" in /*) ;; *) exit 1;; esac; '
+                'directory=${TMPDIR:-/tmp}; case "$directory" in /*) ;; *) exit 1;; esac; '
                 '[ -d "$directory" ] && [ -w "$directory" ] && '
                 '[ -x "$directory" ] && printf %s "$directory"'
             ),
