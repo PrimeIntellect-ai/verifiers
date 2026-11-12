@@ -54,7 +54,8 @@ class ComposeSpec:
     """
 
     directory: str
-    file: str = "environment/docker-compose.yaml"
+    file: str | None = "environment/docker-compose.yaml"
+    """None builds directory/Dockerfile as a single workspace service."""
     workspace: str = "main"
     image_override: bool = False
     build_dockerfile: bool = False
@@ -139,11 +140,16 @@ async def compose_project(
             )
         )
         task_dir = (directory / "task").resolve()
+        compose_file = spec.file or "Dockerfile"
         if isinstance(config, PrimeConfig) and not (
-            task_dir / spec.file
+            task_dir / compose_file
         ).resolve().is_relative_to(task_dir):
             raise SandboxError("Native Compose files must be inside the task")
-        authored = yaml.safe_load((directory / "task" / spec.file).read_text())
+        authored = (
+            yaml.safe_load((task_dir / spec.file).read_text())
+            if spec.file is not None
+            else {"services": {spec.workspace: {}}}
+        )
         if isinstance(config, PrimeConfig) and (
             authored.get("include")
             or any(service.get("extends") for service in authored["services"].values())
@@ -179,15 +185,17 @@ async def compose_project(
             # A template default must not replace an authored image or skip its build.
             del base["services"][spec.workspace]["image"]
         elif (
-            spec.build_dockerfile
+            (spec.build_dockerfile or spec.file is None)
             and not spec.image_override
-            and (directory / "task" / Path(spec.file).parent / "Dockerfile").is_file()
+            and (task_dir / Path(compose_file).parent / "Dockerfile").is_file()
         ):
             del base["services"][spec.workspace]["image"]
             base["services"][spec.workspace]["build"] = {
                 "context": ".",
                 "dockerfile": "Dockerfile",
             }
+        elif spec.file is None and not spec.image_override:
+            raise SandboxError(f"No Dockerfile in {spec.directory}")
         (directory / "base.json").write_text(json.dumps(base))
         # env.json is a Compose file: escape `$` so values reach the service verbatim.
         escaped = {key: value.replace("$", "$$") for key, value in environment.items()}
@@ -203,7 +211,7 @@ async def compose_project(
                 "host; install the Compose v2 plugin. "
                 "Standalone `docker-compose` v1 is unsupported."
             )
-        project_dir = f"{root}/task/{Path(spec.file).parent}"
+        project_dir = f"{root}/task/{Path(compose_file).parent}"
         compose_argv += ["--project-directory", project_dir]
         if isinstance(config, PrimeConfig):
             env_file = Path(project_dir) / ".env"
@@ -213,11 +221,11 @@ async def compose_project(
                 "--env-file",
                 str(env_file) if env_file.exists() else os.devnull,
             ]
-        for file in (
+        for file in [
             "base.json",
-            f"task/{spec.file}",
+            *([f"task/{spec.file}"] if spec.file else []),
             "env.json",
-        ):
+        ]:
             compose_argv += ["-f", f"{root}/{file}"]
         compose_env.update(
             (key, value)
