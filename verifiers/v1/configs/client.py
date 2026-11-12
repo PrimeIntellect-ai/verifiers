@@ -67,7 +67,8 @@ class BaseClientConfig(BaseConfig):
             "base_url" not in self.model_fields_set
             and self.base_url == DEFAULT_PRIME_INFERENCE_URL
         ):
-            self.base_url = prime_base_url
+            # A discovered default must not become an explicit endpoint override.
+            object.__setattr__(self, "base_url", prime_base_url)
         return self
 
 

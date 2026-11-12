@@ -117,6 +117,28 @@ When both the task and the runtime specify allowlists, only destinations permitt
 
 Because provider-hosted web tools execute outside the sandbox, verifiers translates supported host allowlists into provider domain rules for OpenAI Responses web search and Anthropic web search/fetch, disabling those tools whenever a policy cannot be translated without widening access; all other hosted tools and provider-held resources remain disabled under network restrictions. This prevents [certain reward hacks](https://www.primeintellect.ai/blog/universal-offline-sandbox-escape).
 
+## Packaged LLM graders
+
+Set `scoring.judge = vf.ScoringJudgeConfig(...)` on a task, or configure the agent's scoring defaults, to route a packaged grader's model calls through host inference:
+
+```toml
+[env.agent.scoring.network]
+allow = []
+
+[env.agent.scoring.judge]
+base_url = "https://api.pinference.ai/api/v1"
+api_key_var = "PRIME_API_KEY"
+
+[env.agent.scoring.judge.sampling]
+reasoning_effort = "low"
+```
+
+During scoring, `OPENAI_BASE_URL`, `OPENAI_API_BASE`, and `OPENAI_API_KEY` point to a temporary inference endpoint and token. Provider credentials and configured `headers` / `headers_from_env` stay on the host. These variables are blank during verifier setup, and the token is revoked when scoring finishes or fails. The endpoint is a framework connection, so it works with `allow = []` without allowing public internet access. Shared scoring, separate verifier environments, and `vf-validate`'s noop check use the same lifecycle.
+
+The grader keeps its requested model unless `scoring.judge.model` is set. Only explicitly configured sampling fields override its requests; structured outputs, tool calls, and streaming responses retain the provider's format. Judge calls appear in `trace.info["judge_calls"]` and `trace.extra_usage`, separately from the solver's turns and token limits. Call failures and network-policy changes are recorded under `trace.info["scoring_diagnostics"]["judge"]`.
+
+For a grader with different variable names, map them to `base_url` or `api_key` under `scoring.judge.env`. Its SDK must honor those variables and use a supported API dialect (Chat Completions, Responses, or Anthropic Messages). Configure any grader-specific model or provider prefix through `scoring.env`; the proxy does not rewrite the grader's implementation.
+
 ## Task-declared MCP servers
 
 When a Harbor task declares `mcp_servers` in `task.toml`, verifiers exposes them through a tool server inside the task runtime and passes an HTTP MCP endpoint to the harness (which requires a harness that supports MCP).

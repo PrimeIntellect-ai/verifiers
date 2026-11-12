@@ -65,7 +65,13 @@ from verifiers.v1.interception.base import Interception, Slot
 from verifiers.v1.interception.tunnel import Tunnel, make_tunnel
 from verifiers.v1.interception.tunnel.base import HEALTH_PATH
 from verifiers.v1.semantic import ACPInfo, extract_acp_info, routing_session_id
-from verifiers.v1.session import IdempotentRequest, ReplayResponse, RolloutSession
+from verifiers.v1.session import (
+    IdempotentRequest,
+    InferenceSession,
+    JudgeSession,
+    ReplayResponse,
+    RolloutSession,
+)
 from verifiers.v1.trace import Error, ModelCall, PolicyEvent, TimeSpan
 from verifiers.v1.types import FinishReason, Response, Usage
 from verifiers.v1.utils.aio import run_shielded
@@ -179,7 +185,7 @@ def _replay_response(response: ReplayResponse) -> web.Response:
 
 @dataclass(frozen=True)
 class _IdempotentAttempt:
-    session: RolloutSession
+    session: InferenceSession
     key: str
     request: IdempotentRequest
     future: asyncio.Future[ReplayResponse | None]
@@ -208,7 +214,7 @@ def _finish_idempotent_attempt(
         _prune_idempotent_requests(attempt.session, time.monotonic())
 
 
-def _prune_idempotent_requests(session: RolloutSession, now: float) -> None:
+def _prune_idempotent_requests(session: InferenceSession, now: float) -> None:
     """Expire and cap completed replays; active attempts are never evicted."""
     completed = [
         (key, request)
@@ -359,7 +365,7 @@ class InterceptionServer(Interception):
         state_service_secrets: Collection[str] = (),
     ) -> None:
         super().__init__()
-        self.sessions: dict[str, RolloutSession] = {}
+        self.sessions: dict[str, InferenceSession] = {}
         self.clients: dict[str, Client] = {}
         self.state_sessions: dict[str, RolloutSession] = {}
         self.state_routes: dict[str, RolloutSession] = {}
@@ -402,7 +408,11 @@ class InterceptionServer(Interception):
             self.stack.push_async_callback(client.close)
         return client
 
-    def register(self, session: RolloutSession) -> tuple[str, str]:
+    @property
+    def is_local(self) -> bool:
+        return self.tunnel is None
+
+    def register(self, session: InferenceSession) -> tuple[str, str]:
         """Register separate capabilities for model inference and private task state, and
         assign the session its server-owned model client."""
         if not self.healthy:
@@ -411,27 +421,27 @@ class InterceptionServer(Interception):
         model_secret = secrets.token_urlsafe(16)
         state_secret = secrets.token_urlsafe(16)
         self.sessions[model_secret] = session
-        self.state_sessions[state_secret] = session
-        self.state_routes[session.trace.id] = session
-        session.proxy_mcp = partial(self.proxy_mcp, model_secret)
+        if isinstance(session, RolloutSession):
+            self.state_sessions[state_secret] = session
+            self.state_routes[session.trace.id] = session
+            session.proxy_mcp = partial(self.proxy_mcp, model_secret)
         return model_secret, state_secret
 
     def unregister(self, model_secret: str, state_secret: str) -> None:
         session = self.sessions.pop(model_secret, None)
         self.state_sessions.pop(state_secret, None)
-        if session is not None:
+        if isinstance(session, RolloutSession):
             session.proxy_mcp = None
             self.state_routes.pop(session.trace.id, None)
             for capability, route in list(self.mcp_routes.items()):
                 if route.session is session:
                     del self.mcp_routes[capability]
-            # The rollout concluded; its trace is sealed. Cancel straggler handlers
-            # (aiohttp keeps them alive past client death) so a slow upstream call
-            # can't commit a late turn onto the concluded trace.
+        if session is not None:
+            # Cancel stragglers so a slow upstream cannot mutate a concluded trace.
             session.release()
 
     @asynccontextmanager
-    async def acquire(self, session: RolloutSession) -> AsyncIterator[Slot]:
+    async def acquire(self, session: InferenceSession) -> AsyncIterator[Slot]:
         model_secret, state_secret = self.register(session)
         try:
             yield self.base_url, model_secret, state_secret
@@ -447,6 +457,7 @@ class InterceptionServer(Interception):
         Only the launcher can register destinations; request paths cannot select one.
         """
         session = self.sessions[model_secret]
+        assert isinstance(session, RolloutSession)
         capability = secrets.token_urlsafe(32)
         # Long-lived MCP streams use the consumer's timeout and rollout cancellation.
         # No redirects, environment proxies, cookies from other routes, or retries.
@@ -630,7 +641,7 @@ class InterceptionServer(Interception):
         )
 
     def mediate_capabilities(
-        self, session: RolloutSession, dialect: Dialect, body: dict
+        self, session: InferenceSession, dialect: Dialect, body: dict
     ) -> tuple[dict, list[str]]:
         if not session.network_policy.network_restricted:
             return body, []
@@ -653,7 +664,7 @@ class InterceptionServer(Interception):
         session = self.sessions.get(
             request.headers.get("Authorization", "").removeprefix("Bearer ")
         )
-        if session is None:
+        if not isinstance(session, RolloutSession):
             return web.json_response({"error": "unauthorized"}, status=401)
         session.adopt(asyncio.current_task())
         if session.released:
@@ -758,7 +769,10 @@ class InterceptionServer(Interception):
             body = from_json(raw)
         except ValueError:
             body = json.loads(raw)
-        body = dialect.apply_overrides(body, session.ctx.model, session.ctx.sampling)
+        model = session.ctx.model or body.get("model")
+        if not isinstance(model, str) or not model:
+            return _error_response(dialect, "model is required", status=400)
+        body = dialect.apply_overrides(body, model, session.ctx.sampling)
         streaming = dialect.streaming(body)
         # A streamed request is served whole once its turn commits: the eval client's
         # provider stream is read to the end, and the train client generates the response.
@@ -817,28 +831,31 @@ class InterceptionServer(Interception):
             idempotent.completed_at = now
             return _replay_response(idempotent.response)
 
-        try:
-            if isinstance(dialect, ChatDialect) and isinstance(
-                body.get("messages"), list
-            ):
-                model_request = dialect.parse_request(body, session.last_request)
-                session.last_request = (
-                    [
-                        dict(raw) if isinstance(raw, dict) else raw
-                        for raw in body["messages"]
-                    ],
-                    list(model_request.messages),
+        if isinstance(session, RolloutSession):
+            try:
+                if isinstance(dialect, ChatDialect) and isinstance(
+                    body.get("messages"), list
+                ):
+                    model_request = dialect.parse_request(body, session.last_request)
+                    session.last_request = (
+                        [
+                            dict(raw) if isinstance(raw, dict) else raw
+                            for raw in body["messages"]
+                        ],
+                        list(model_request.messages),
+                    )
+                else:
+                    model_request = dialect.parse_request(body)
+            except ValueError as error:
+                return _error_response(dialect, str(error), status=400)
+            if session.stopped:
+                return _error_response(
+                    dialect,
+                    f"rollout stopped: {session.trace.stop_condition}",
+                    status=400,
                 )
-            else:
-                model_request = dialect.parse_request(body)
-        except ValueError as error:
-            return _error_response(dialect, str(error), status=400)
         if session.released:
-            return _error_response(dialect, "rollout concluded", status=409)
-        if session.stopped:
-            return _error_response(
-                dialect, f"rollout stopped: {session.trace.stop_condition}", status=400
-            )
+            return _error_response(dialect, "session concluded", status=409)
         if idempotent is None:
             idempotent = IdempotentRequest(binding=binding)
             session.idempotent_requests[replay_key] = idempotent
@@ -869,6 +886,18 @@ class InterceptionServer(Interception):
             future=future,
         )
 
+        if isinstance(session, JudgeSession):
+            return await self.handle_judge(
+                request,
+                dialect,
+                session,
+                body,
+                upstream_headers,
+                upstream_session_id,
+                idempotent,
+            )
+
+        assert isinstance(session, RolloutSession)
         try:
             refused = await session.refused()
             if refused is not None:
@@ -1061,6 +1090,82 @@ class InterceptionServer(Interception):
             return await _buffered_stream(request, dialect, sample(), session.trace.id)
         return await sample()
 
+    async def handle_judge(
+        self,
+        request: web.Request,
+        dialect: Dialect,
+        session: JudgeSession,
+        body: dict,
+        headers: Mapping[str, str],
+        session_id: str,
+        idempotent: IdempotentRequest,
+    ) -> web.StreamResponse:
+        """Serve an external grader without touching the solver graph or stop state."""
+        body, policy_paths = self.mediate_capabilities(session, dialect, body)
+        streaming = dialect.streaming(body)
+
+        async def sample() -> web.Response:
+            session.error = None
+            response: Response | None = None
+            failure: BaseException | None = None
+            started = time.time()
+            try:
+                assert session.client is not None
+                if streaming:
+                    reply = await session.client.relay(
+                        dialect, body, headers=headers, session_id=session_id
+                    )
+                    response, events = await _collect_stream(dialect, reply)
+                    served = web.Response(body=events, content_type="text/event-stream")
+                else:
+                    response = await session.client.get_response(
+                        dialect,
+                        body,
+                        session.ctx.sampling,
+                        headers=headers,
+                        session_id=session_id,
+                    )
+                    served = _completion_response(response.raw)
+                if session.released:
+                    return _error_response(dialect, "scoring concluded", status=409)
+                idempotent.response = _capture_response(served)
+                idempotent.completed_at = time.monotonic()
+                return served
+            except RolloutError as error:
+                failure = error
+                session.error = error
+                logger.warning(
+                    "Judge call failed - %s: %s", type(error).__name__, clip(str(error))
+                )
+                return _error_response(
+                    dialect, str(error), status=getattr(error, "status_code", 502)
+                )
+            except BaseException as error:
+                failure = error
+                raise
+            finally:
+                if response is not None and not session.released:
+                    session.trace.record_judge_call(
+                        name="scoring_judge", request=body, response=response
+                    )
+                if not session.released:
+                    session.trace.info.setdefault("scoring_diagnostics", {}).setdefault(
+                        "judge", []
+                    ).append(
+                        {
+                            "model": body["model"],
+                            "endpoint": dialect.upstream_path,
+                            "duration": time.time() - started,
+                            "policy_paths": policy_paths,
+                            "error": str(failure) if failure is not None else None,
+                        }
+                    )
+                    session.trace.notify()
+
+        if streaming:
+            return await _buffered_stream(request, dialect, sample(), session.trace.id)
+        return await sample()
+
     async def handle_aux(
         self, request: web.Request, dialect: Dialect, route: str
     ) -> web.Response:
@@ -1073,7 +1178,8 @@ class InterceptionServer(Interception):
         logger.debug("Received %s request", route)
         try:
             body = await request.json()
-            body["model"] = session.ctx.model
+            if session.ctx.model:
+                body["model"] = session.ctx.model
             body = self.mediate_capabilities(session, dialect, body)[0]
             result = await session.client.relay_aux(
                 dialect, route, body, headers=request.headers

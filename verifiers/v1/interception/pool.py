@@ -26,7 +26,7 @@ from verifiers.v1.configs.interception import (
 from verifiers.v1.errors import TunnelError
 from verifiers.v1.interception.base import Interception, Slot
 from verifiers.v1.interception.server import InterceptionServer
-from verifiers.v1.session import RolloutSession
+from verifiers.v1.session import InferenceSession
 from verifiers.v1.utils.aio import run_shielded
 from verifiers.v1.utils.logging import get_logger, isolated
 
@@ -51,12 +51,16 @@ class StaticInterceptionPool(Interception):
             for server in config.servers
         ]
 
+    @property
+    def is_local(self) -> bool:
+        return any(server.is_local for server in self.servers)
+
     async def start(self) -> None:
         for server in self.servers:
             await self.stack.enter_async_context(server)
 
     @asynccontextmanager
-    async def acquire(self, session: RolloutSession) -> AsyncIterator[Slot]:
+    async def acquire(self, session: InferenceSession) -> AsyncIterator[Slot]:
         # server.acquire registers before its first yield, so concurrent acquires see the
         # updated load before choosing their own least-loaded server.
         healthy = [server for server in self.servers if server.healthy]
@@ -87,6 +91,10 @@ class ElasticInterceptionPool(Interception):
         self.servers: list[InterceptionServer] = []
         self._lock = asyncio.Lock()
         self._warm_task: asyncio.Task[InterceptionServer] | None = None
+
+    @property
+    def is_local(self) -> bool:
+        return not self.requires_tunnel
 
     async def start(self) -> None:
         self._warm_task = asyncio.create_task(self._server())
@@ -138,7 +146,7 @@ class ElasticInterceptionPool(Interception):
         return server
 
     @asynccontextmanager
-    async def acquire(self, session: RolloutSession) -> AsyncIterator[Slot]:
+    async def acquire(self, session: InferenceSession) -> AsyncIterator[Slot]:
         if self._warm_task is not None:
             with contextlib.suppress(Exception):
                 await asyncio.shield(self._warm_task)
