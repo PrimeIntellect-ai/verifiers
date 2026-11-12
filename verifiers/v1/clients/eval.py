@@ -9,6 +9,7 @@ from pydantic_core import from_json, to_json
 
 from verifiers.v1.clients.base import build_async_httpx, join_url
 from verifiers.v1.clients.client import SESSION_ID_HEADER, Client, RelayReply
+from verifiers.v1.clients.prompt_cache import maybe_add_prompt_cache_control
 from verifiers.v1.configs.client import (
     BaseClientConfig,
     resolve_api_key,
@@ -84,6 +85,7 @@ class EvalClient(Client):
         turn: PendingTurn | None = None,
         headers: Mapping[str, str] | None = None,
     ) -> Response:
+        body = maybe_add_prompt_cache_control(dialect, body, self.base_url)
         resp = await self._request(
             join_url(self.base_url, dialect.upstream_path),
             body,
@@ -177,6 +179,7 @@ class EvalClient(Client):
     ) -> RelayReply:
         # Relay complete SSE events so the interception server can safely insert keepalives
         # between them. Error responses are mapped before any event is handed back.
+        body = maybe_add_prompt_cache_control(dialect, body, self.base_url)
         resp = await self._request(
             join_url(self.base_url, dialect.upstream_path),
             body,
