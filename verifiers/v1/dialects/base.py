@@ -134,8 +134,10 @@ def provider_domains(
 ) -> list[str]:
     """Translate host rules to the provider's native domain filters.
 
-    Strip leading wildcards and let the provider define domain/subdomain scope.
-    Empty results mean unsupported rules; never send an empty filter.
+    Provider domains include every subdomain. An allow filter is safe only when
+    the policy permits both its apex and that entire subtree. Block filters may
+    deny a wider subtree. Empty results mean unsupported rules; never send an
+    empty filter.
     """
     rules = policy.block or policy.allow
     if requested is not None and not isinstance(requested, list):
@@ -169,7 +171,21 @@ def provider_domains(
                 output.append(host)
             else:
                 return []
-    domains = list(dict.fromkeys(host.removeprefix("*.") for host in hosts))
+    if policy.block:
+        domains = list(dict.fromkeys(host.removeprefix("*.") for host in hosts))
+    else:
+        subtrees = [host[2:] for host in hosts if host.startswith("*.")]
+        domains = list(
+            dict.fromkeys(
+                host
+                for host in hosts
+                if not host.startswith("*.")
+                and any(
+                    host == subtree or host.endswith(f".{subtree}")
+                    for subtree in subtrees
+                )
+            )
+        )
     if requested is None:
         return domains
     if policy.block:

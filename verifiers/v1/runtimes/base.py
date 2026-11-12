@@ -175,6 +175,10 @@ class RuntimeBackend(ABC):
     SUPPORTS_USER_SWITCHING: ClassVar[bool] = False
     """Whether handles can bind another existing user."""
 
+    SUPPORTS_FILESYSTEM_POLICY: ClassVar[bool] = False
+    """Whether Linux process views can enforce bubblewrap filesystem policies.
+    The image and kernel are checked before a restricted view is returned."""
+
     SUPPORTS_PORT_EXPOSURE: ClassVar[bool] = False
     """Whether `expose` can publish a port inside this runtime to the outside, so a
     server here is reachable from another runtime."""

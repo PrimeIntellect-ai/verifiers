@@ -12,7 +12,7 @@ from pathlib import PurePosixPath
 from types import MappingProxyType
 from typing import Self
 
-from verifiers.v1.configs.runtime import NetworkPolicyConfig
+from verifiers.v1.configs.runtime import FilesystemPolicyConfig, NetworkPolicyConfig
 from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes.base import (
     _ENSURE_UV,
@@ -20,6 +20,14 @@ from verifiers.v1.runtimes.base import (
     ProgramResult,
     RuntimeBackend,
     RuntimeProcess,
+)
+from verifiers.v1.runtimes.filesystem import (
+    FilesystemSandbox,
+    background_command,
+    bootstrap_env,
+    prepare_filesystem,
+    read_file,
+    write_file,
 )
 
 
@@ -36,6 +44,7 @@ class Runtime:
     env: Mapping[str, str] = field(default_factory=dict)
     user: str | None = None
     home: str | None = None
+    _filesystem: FilesystemSandbox | None = None
 
     def __post_init__(self) -> None:
         if self.user is not None and not self.backend.SUPPORTS_USER_SWITCHING:
@@ -52,9 +61,32 @@ class Runtime:
     def with_user(self, user: str | None, home: str | None = None) -> Self:
         return replace(self, user=user, home=home if user is not None else None)
 
-    def process_env(self, env: dict[str, str]) -> dict[str, str]:
+    async def with_filesystem(self, policy: FilesystemPolicyConfig) -> Self:
+        """Return a view whose processes and file operations share an OS-enforced
+        filesystem policy. Descendants inherit the mount namespace. The backend's
+        original view remains available for trusted setup and grading.
+
+        The policy cannot be replaced on a restricted view. Bind a new view from
+        the backend to establish a separate trusted execution phase.
+        """
+        if self._filesystem is not None:
+            raise ValueError("cannot replace an active filesystem policy")
+        return replace(self, _filesystem=await prepare_filesystem(self, policy))
+
+    def _process_env(self, env: dict[str, str]) -> dict[str, str]:
         home = {} if self.home is None else {"HOME": self.home}
         return {**self.env, **home, **env}
+
+    def process_env(self, env: dict[str, str]) -> dict[str, str]:
+        values = self._process_env(env)
+        return bootstrap_env(values) if self._filesystem is not None else values
+
+    def _command(self, argv: list[str], env: dict[str, str]) -> list[str]:
+        return (
+            self._filesystem.command(argv, self._process_env(env))
+            if self._filesystem is not None
+            else argv
+        )
 
     @property
     def config(self):
@@ -113,20 +145,28 @@ class Runtime:
 
     async def run(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
         """Run `argv` to completion and collect its output."""
-        return await self.backend.run(self, argv, env)
+        return await self.backend.run(self, self._command(argv, env), env)
 
     async def exec(self, argv: list[str], env: dict[str, str]) -> RuntimeProcess:
         """Start `argv` and return a handle that streams its stdio."""
-        return await self.backend.exec(self, argv, env)
+        return await self.backend.exec(self, self._command(argv, env), env)
 
     async def run_background(
         self, argv: list[str], env: dict[str, str], log: str
     ) -> None:
         """Start `argv` with its combined output in `log`, a path in the working
         directory, and return. The process runs until the runtime stops."""
+        if self._filesystem is not None:
+            # A backend may redirect before exec. Open the requested log only
+            # after confinement; its outer redirection is always /dev/null.
+            argv = self._command(background_command(argv, log), env)
+            log = "/dev/null"
         await self.backend.run_background(self, argv, env, log)
 
     async def write(self, path: str, data: bytes) -> None:
+        if self._filesystem is not None:
+            await write_file(self, path, data)
+            return
         await self.backend.write(self, path, data)
 
     async def alive(self) -> bool:
@@ -230,11 +270,17 @@ class Runtime:
         can't assume. The cap is enforced inside the box rather than after the
         transfer. Backends implement `RuntimeBackend.read`."""
         if max_bytes is None:
+            if self._filesystem is not None:
+                return await read_file(self, path, None)
             return await self.backend.read(self, path)
         if max_bytes < 0:
             raise ValueError("max_bytes must be non-negative")
         # One extra byte distinguishes an exact fit from a truncated file.
-        data = await self.backend.read(self, path, max_bytes=max_bytes + 1)
+        data = (
+            await read_file(self, path, max_bytes + 1)
+            if self._filesystem is not None
+            else await self.backend.read(self, path, max_bytes=max_bytes + 1)
+        )
         if len(data) > max_bytes:
             raise SandboxError(f"read {path!r}: over the {max_bytes} byte limit")
         return data
