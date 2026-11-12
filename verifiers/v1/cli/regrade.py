@@ -104,7 +104,6 @@ def rerun_reason(saved: Trace, task: Task) -> str | None:
         or not saved.ok
         or saved.errors
         or saved.is_format_violation
-        or saved.is_truncated
         or saved.stop_condition not in {None, "agent_completed", "scoring_timeout"}
         or (saved.is_timeout and saved.stop_condition != "scoring_timeout")
     ):
@@ -223,13 +222,7 @@ async def regrade_trace(
             }
         task.validate_artifacts(artifacts)
 
-        # A borrowed config-only view lets the native grading lifecycle provision
-        # just its fresh verifier. No solver runtime is started or reconstructed.
-        backend = make_backend(solver_config)
-        solver = backend.bind()
         policy = task.scoring
-        grader = task.grading_task(solver, scoring=policy)
-        grading_config = verifier_runtime(grader, solver, config.runtime, policy)
         trace = copy.deepcopy(saved)
         trace.task = TraceTask(
             type=type(task).__name__, data=task.data, key=task.key, hash=task.hash
@@ -242,6 +235,25 @@ async def regrade_trace(
             trace.stop_condition = "agent_completed"
         trace.info.pop("judge_calls", None)
         trace.info.pop("scoring_diagnostics", None)
+        trace.info.pop("scoring_skipped", None)
+        if policy.skip_on_truncated and trace.is_truncated:
+            # Like Rollout.close, policy-skipped scoring keeps no rewards. The
+            # completed submission has already passed provenance/artifact checks.
+            return {
+                **row,
+                "status": "regraded",
+                "new": _scores(trace),
+                "diagnostics": {"scoring_skipped": "truncated"},
+                "judge_calls": [],
+                "usage": [],
+            }
+
+        # A borrowed config-only view lets the native grading lifecycle provision
+        # just its fresh verifier. No solver runtime is started or reconstructed.
+        backend = make_backend(solver_config)
+        solver = backend.bind()
+        grader = task.grading_task(solver, scoring=policy)
+        grading_config = verifier_runtime(grader, solver, config.runtime, policy)
         timeouts = task.data.timeout
         if config.timeout.setup is not None:
             timeouts = timeouts.model_copy(update={"setup": config.timeout.setup})

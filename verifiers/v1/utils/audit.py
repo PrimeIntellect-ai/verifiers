@@ -23,7 +23,7 @@ SECRET_KEY = re.compile(
     re.IGNORECASE,
 )
 ASSIGNMENT = re.compile(
-    r"""(?<![\w.-])(?P<prefix>["']?(?P<key>[A-Za-z_][\w.-]*)["']?\s*[:=]\s*)"""
+    r"""(?<![\w.-])(?P<prefix>["']?(?P<key>[A-Za-z_][\w.-]*)["']?\s*\]?\s*[:=]\s*)"""
     r'''(?P<value>(?:[rRuU])?(?:"""(?:\\.|(?!""")[^\\])*"""|'''
     r"'''(?:\\.|(?!''')[^\\])*'''|"
     r""""(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')|[^\s,;#}\]"']+)""",
@@ -197,6 +197,16 @@ def redact(value):
             for child in item:
                 strings(child)
 
+    def assignment_value(raw):
+        try:
+            return ast.literal_eval(raw)
+        except (ValueError, SyntaxError):
+            # Shell quotes permit literal newlines that Python's single-quoted
+            # literals reject. Their echoes omit quotes.
+            if raw[:1] in {"'", '"'} and raw[-1:] == raw[:1]:
+                return raw[1:-1]
+            return raw
+
     def discover(item):
         if isinstance(item, dict):
             for key, child in item.items():
@@ -208,16 +218,14 @@ def redact(value):
                 discover(child)
         elif isinstance(item, str):
             for match in ASSIGNMENT.finditer(item):
+                raw = match["value"]
+                decoded = assignment_value(raw)
                 if sensitive(match["key"]):
-                    raw = match["value"]
-                    try:
-                        strings(ast.literal_eval(raw))
-                    except (ValueError, SyntaxError):
-                        strings(raw)
-                        # Shell quotes permit literal newlines that Python's
-                        # single-quoted literals reject. Their echoes omit quotes.
-                        if raw[:1] in {"'", '"'} and raw[-1:] == raw[:1]:
-                            strings(raw[1:-1])
+                    strings(decoded)
+                elif isinstance(decoded, str) and decoded != raw:
+                    # A harmless outer key can hold commands or config text with
+                    # its own credential assignments, including escaped quotes.
+                    discover(decoded)
             for match in AUTHORIZATION.finditer(item):
                 strings(match[1])
             for match in URL.finditer(item):
@@ -253,6 +261,17 @@ def redact(value):
         except ValueError:
             return "[redacted URL]"
 
+    def scrub_assignment(match):
+        if sensitive(match["key"]):
+            return match["prefix"] + '"[redacted]"'
+        raw = match["value"]
+        decoded = assignment_value(raw)
+        if isinstance(decoded, str) and decoded != raw:
+            cleaned = scrub(decoded)
+            if cleaned != decoded:
+                return match["prefix"] + json.dumps(cleaned, ensure_ascii=False)
+        return match[0]
+
     def scrub(item):
         if isinstance(item, dict):
             return {
@@ -262,14 +281,7 @@ def redact(value):
         if isinstance(item, list):
             return [scrub(child) for child in item]
         if isinstance(item, str):
-            item = ASSIGNMENT.sub(
-                lambda match: (
-                    match["prefix"] + '"[redacted]"'
-                    if sensitive(match["key"])
-                    else match[0]
-                ),
-                item,
-            )
+            item = ASSIGNMENT.sub(scrub_assignment, item)
             item = URL.sub(url, item)
             item = AUTHORIZATION.sub(
                 lambda match: match[0].split()[0] + " [redacted]", item
