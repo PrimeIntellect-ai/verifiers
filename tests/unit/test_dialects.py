@@ -1,6 +1,8 @@
 """Each dialect imposes the eval's sampling in its native request shape, replacing the
 harness's own values, and parses the same shape back for the trace."""
 
+import httpx
+import openai
 import pytest
 
 from verifiers.v1.configs.sampling import SamplingConfig
@@ -106,3 +108,42 @@ def test_message_hash_is_kept_with_the_message():
     keys = [id(message) for message in messages]
     del message, messages
     assert not any(key in graph._HASHES for key in keys)
+
+
+@pytest.mark.parametrize(
+    "status,kind",
+    [(502, "server_error"), (429, "rate_limit_error"), (400, "invalid_request_error")],
+)
+@pytest.mark.parametrize(
+    "dialect", [ChatDialect(), ResponsesDialect()], ids=["chat", "responses"]
+)
+async def test_committed_stream_error_keeps_its_status(dialect, status, kind):
+    """A turn that fails after its stream is committed (HTTP 200 sent, keepalives flowing)
+    reaches the harness's OpenAI SDK as an error carrying the status it would have had, so
+    the harness retries a 5xx or 429 and not a 4xx."""
+    error = dialect.error_body("upstream failed", status_code=status)
+    events = dialect.stream_keepalive(True) + dialect.stream_error(
+        error, status_code=status
+    )
+
+    def serve(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, headers={"Content-Type": "text/event-stream"}, content=events
+        )
+
+    http_client = httpx.AsyncClient(transport=httpx.MockTransport(serve))
+    async with openai.AsyncOpenAI(
+        api_key="k", base_url="http://interception/v1", http_client=http_client
+    ) as client:
+        with pytest.raises(openai.APIError) as raised:
+            if isinstance(dialect, ChatDialect):
+                stream = await client.chat.completions.create(
+                    model="m", messages=[{"role": "user", "content": "q"}], stream=True
+                )
+            else:
+                stream = await client.responses.create(
+                    model="m", input="q", stream=True
+                )
+            async for _ in stream:
+                pass
+    assert (raised.value.code, raised.value.type) == (status, kind)
