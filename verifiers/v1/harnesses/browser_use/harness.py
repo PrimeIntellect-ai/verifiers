@@ -88,7 +88,9 @@ class BrowserUseHarness(Harness[BrowserUseHarnessConfig]):
             )
         )
         env = {**self.config.resolved_env}
-        state = f".vf-browser-{trace.id}"
+        state = runtime.temp_path(
+            f"vf-browser-{trace.id}", env=self.config.resolved_env
+        )
         args = [
             f"--browser={self.config.browser}",
             # A resumed segment reuses this trace's browser and profile.

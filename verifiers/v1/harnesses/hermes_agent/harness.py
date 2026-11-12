@@ -86,7 +86,7 @@ class HermesAgentHarness(ACPHarness[HermesAgentHarnessConfig]):
         if self.config.disabled_tools:
             raise ValueError("Hermes Agent ACP does not support disabling tools")
 
-        home = f"/tmp/vf-hermes/{trace.id}"
+        home = runtime.temp_path("vf-hermes", trace.id, env=self.config.resolved_env)
         # Keep interception routing separate from vendor names that Hermes may resolve
         # to built-in cloud providers instead of the configured endpoint.
         model = {
@@ -152,4 +152,8 @@ class HermesAgentHarness(ACPHarness[HermesAgentHarnessConfig]):
         )
 
     async def cleanup(self, trace: Trace, runtime: Runtime) -> None:
-        await remove_dir(runtime, f"/tmp/vf-hermes/{trace.id}", "Hermes home")
+        await remove_dir(
+            runtime,
+            runtime.temp_path("vf-hermes", trace.id, env=self.config.resolved_env),
+            "Hermes home",
+        )
