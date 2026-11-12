@@ -406,6 +406,8 @@ class DockerBackend(RuntimeBackend):
                 "seccomp=unconfined",
                 "--security-opt",
                 "systempaths=unconfined",
+                "--security-opt",
+                "apparmor=unconfined",
             ]
         if not _LINUX:
             options += ["--add-host", f"{_HOST_ALIAS}:host-gateway"]

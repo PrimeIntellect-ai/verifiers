@@ -150,6 +150,9 @@ class AgentUserTaskset(vf.Taskset[AgentUserTask, AgentUserConfig]):
                     prompt="Scripted: try root-only actions as a non-root user.",
                     agent_user=AGENT_USER,
                     preinstalled_tools=self.config.preinstalled_tools,
+                    # Exercise Unix user permissions against the outer PID 1;
+                    # confinement gives the agent a separate, same-user init.
+                    filesystem=None,
                 )
             )
         ]

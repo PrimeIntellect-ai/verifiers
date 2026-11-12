@@ -108,6 +108,7 @@ async def test_native_compose(tmp_path, mode):
             prompt="Combine the web answer and the vault secret",
             task_dir=str(tmp_path),
             image=IMAGE,
+            workdir="/app",
             # Compose interpolates `$`; task values must arrive verbatim.
             env={"LITERAL": "a$b"},
             artifacts=[
