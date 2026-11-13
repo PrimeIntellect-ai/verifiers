@@ -9,7 +9,6 @@ import uuid
 from collections.abc import Awaitable, Callable
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
-from types import EllipsisType
 from typing import Any, Literal
 from urllib.parse import urlsplit
 
@@ -213,11 +212,22 @@ class Rollout:
         self.rewound_snapshots: list[Snapshot] = []
         """The snapshots of the checkpoints the restored trace dropped (taken after the
         one restored)."""
+        self._captured_turn = 0
+        """The model turn the rollout took its newest interval snapshot at."""
         if restore is not None:
             self.trace, self._restore = restore
             self.trace.attempt = attempt
+            started = self.trace.timing.agent.start
+            if self._agent_time_remaining is not None and started:
+                # The agent's time budget is the rollout's, not the attempt's: what
+                # ran before the snapshot is spent.
+                self._agent_time_remaining = max(
+                    0.0,
+                    self._agent_time_remaining - (self._restore.captured - started),
+                )
             self.rewound_snapshots = self.trace.rewind(self._restore)
             self.restored_turns = self.trace.num_turns
+            self._captured_turn = self.restored_turns + 1
             self._restore.restored = True
         else:
             self.trace = Trace(
@@ -278,11 +288,17 @@ class Rollout:
         self._held = False
         """Whether an owner holds the box's replies past its save (`save(hold=True)`)."""
         self._release_timer: asyncio.TimerHandle | None = None
+        self._unheld = asyncio.Event()
+        """Cleared while an owner holds the rollout at its checkpoint."""
+        self._unheld.set()
         self._capturing = asyncio.Lock()
         if self._restore is not None:
             # Set before the box boots: its relay repeats the requests that waited as
             # soon as it reaches this session.
             self._session.pinned_tool_results.update(self._restore.pins)
+            self._session.tool_decisions.update(self._restore.decisions)
+            self._session.gated_tools.update(self._restore.gated)
+            self._session.prepared_users.update(self._restore.prepared)
             now = time.monotonic()
             for key, (binding, response) in self._restore.replays.items():
                 self._session.idempotent_requests[key] = IdempotentRequest(
@@ -892,6 +908,9 @@ class Rollout:
                 turn.exception()  # the abort decides the outcome, whatever the turn did
             return True
         turn.result()
+        # An owner that saved this rollout records it as running: it does not finish
+        # before the owner lets it go on.
+        await self._unheld.wait()
         return False
 
     async def restore(self) -> bool:
@@ -920,24 +939,14 @@ class Rollout:
         assert self._checkpointing is not None
         interval = self._checkpointing.interval
         turn_number = self.trace.num_turns + 1
-        if (
-            interval is None
-            or turn_number % interval
-            or (
-                self.restored_turns is not None
-                and turn_number == self.restored_turns + 1
-            )
-        ):
+        # Counted from the newest snapshot, not as a multiple: conversations that run
+        # side by side can step the turn count past one.
+        if interval is None or turn_number - self._captured_turn < interval:
             return None
-        newest = next(
-            (c for c in reversed(self.trace.checkpoints) if not c.deleted), None
-        )
-        if newest is not None and newest.node == self._last_node():
-            # No turn since the newest snapshot, so it holds this same open call. A
-            # snapshot resets the box's connections and its relay asks again: a call
-            # that keeps failing would otherwise take a snapshot per request.
-            return None
-        return await self._take_snapshot(at=self._last_node())
+        checkpoint = await self._take_snapshot(once_per_node=True)
+        if checkpoint is not None:
+            self._captured_turn = turn_number
+        return checkpoint
 
     def _last_node(self) -> int | None:
         return len(self.trace.nodes) - 1 if self.trace.nodes else None
@@ -968,12 +977,21 @@ class Rollout:
             self._captures.add(task)
         # A save without a hold does not end the hold of an earlier one.
         self._held = hold or self._held
+        if self._held:
+            self._unheld.clear()
         checkpoint = None
         try:
             checkpoint = await self._take_snapshot(pinned=True)
             if checkpoint is None:
                 self.release()
                 self.save_skipped = "its memory snapshot failed"
+                return None
+            if self._harness_session.memory_state() is None:
+                # The program left while the box was being stopped: the snapshot may
+                # hold a box with nothing to continue.
+                checkpoint.pinned = False
+                self.release()
+                self.save_skipped = "its harness program ended during the save"
                 return None
             saved = restorable(self.trace, checkpoint)
         except BaseException:
@@ -997,6 +1015,7 @@ class Rollout:
     def release(self) -> None:
         """Answer the box again after a `save(hold=True)`."""
         self._held = False
+        self._unheld.set()
         if self._release_timer is not None:
             self._release_timer.cancel()
             self._release_timer = None
@@ -1006,23 +1025,42 @@ class Rollout:
             self._session.resume()
 
     async def _take_snapshot(
-        self, *, pinned: bool = False, at: int | None | EllipsisType = ...
+        self, *, pinned: bool = False, once_per_node: bool = False
     ) -> Checkpoint | None:
         """Snapshot the box with its memory. Nothing the box asked for is answered
         while the snapshot is taken (`RolloutSession.hold`), so the box it stops has
-        seen exactly the trace as recorded here; a box restored from it asks again
-        for what was still open. With `at`, only while the trace still ends at that
-        node: a snapshot of a turn that waited for another one comes too late when
-        the turn's reply is on the trace and not yet in the box."""
+        seen no more than the trace as recorded here. A reply that is on the trace
+        and not yet in the box is recorded for replay; a box restored from the
+        snapshot asks again for what was still open. With `once_per_node`, not when
+        the rollout's newest own snapshot is of this same node."""
         assert self.runtime is not None and self._relay is not None
         session = self._session
         if self._harness_session is None:
             return None
-        async with self._capturing:
-            if self._closed or (at is not ... and at != self._last_node()):
+        # The pace is waited for before the box is held, not while.
+        async with self.runtime.backend.snapshot_pace(), self._capturing:
+            if self._closed:
                 return None
+            if once_per_node:
+                newest = next(
+                    (
+                        c
+                        for c in reversed(self.trace.checkpoints)
+                        if not c.deleted and not c.pinned
+                    ),
+                    None,
+                )
+                if newest is not None and newest.node == self._last_node():
+                    # No turn since the newest snapshot, so it holds this same open
+                    # call. A snapshot resets the box's connections and its relay
+                    # asks again: a call that keeps failing would otherwise take a
+                    # snapshot per request. An owner's snapshot does not count: the
+                    # owner may have deleted it.
+                    return None
             session.hold()
             try:
+                # A turn that is committing gets to store its reply for replay first.
+                await session.settled.wait()
                 program = self._harness_session.memory_state()
                 if program is None:
                     return None
@@ -1030,13 +1068,23 @@ class Rollout:
                 state = copy.deepcopy(self.trace.state)
                 info = copy.deepcopy(self.trace.info)
                 pins = dict(session.pinned_tool_results)
+                decisions = dict(session.tool_decisions)
+                gated = set(session.gated_tools)
+                prepared = {k: n for k, n in session.prepared_users.items() if n > 0}
+                rewrites = (
+                    len(self.trace.request_rewrites),
+                    len(self.trace.response_rewrites),
+                )
                 now = time.monotonic()
                 replays = {
                     key: (request.binding, request.response)
                     for key, request in session.idempotent_requests.items()
                     if request.response is not None
                     and request.completed_at is not None
-                    and now - request.completed_at <= REPLAY_SECONDS
+                    # One that still waits for the box, or that may be on its way.
+                    and (
+                        not request.sent or now - request.completed_at <= REPLAY_SECONDS
+                    )
                 }
                 started = time.time()
                 try:
@@ -1068,6 +1116,10 @@ class Rollout:
             state=state,
             info=info,
             pins=pins,
+            decisions=decisions,
+            gated=gated,
+            prepared=prepared,
+            rewrites=rewrites,
             replays=replays,
             live={
                 "program": program,

@@ -2,6 +2,7 @@
 what a restored attempt must not redo."""
 
 import asyncio
+import contextlib
 import pickle
 import time
 from types import SimpleNamespace
@@ -18,6 +19,7 @@ from verifiers.v1.rollout import Rollout, kept
 from verifiers.v1.session import IdempotentRequest, ReplayResponse, RolloutSession
 from verifiers.v1.trace import (
     Checkpoint,
+    InterceptRecord,
     ModelCall,
     TimeSpan,
     TraceTask,
@@ -70,6 +72,20 @@ def test_rewind_keeps_the_dropped_turns_calls():
     assert [call.node for call in trace.calls] == [None]
 
 
+def test_rewind_drops_the_rewrite_records_of_the_turns_it_cuts():
+    trace = make_trace()
+    trace.request_rewrites.append(InterceptRecord(handler="before"))
+    checkpoint = Checkpoint(
+        id="ck1", snapshot=vf.Snapshot(id="ck1"), node=1, rewrites=(1, 0)
+    )
+    trace.checkpoints.append(checkpoint)
+    trace.request_rewrites.append(InterceptRecord(handler="after"))
+    trace.response_rewrites.append(InterceptRecord(handler="after"))
+    trace.rewind(checkpoint)
+    assert [r.handler for r in trace.request_rewrites] == ["before"]
+    assert trace.response_rewrites == []
+
+
 def test_rewind_drops_the_later_checkpoints_at_the_same_node():
     trace = make_trace()
     older = Checkpoint(id="older", node=1, snapshot=vf.Snapshot(id="older"))
@@ -116,6 +132,9 @@ class SlowBackend:
         self.fail = False
         self.taken = 0
         self.deleted: list[str] = []
+
+    def snapshot_pace(self):
+        return contextlib.nullcontext()
 
     async def snapshot(self) -> vf.Snapshot:
         self.taken += 1
@@ -182,6 +201,9 @@ def make_rollout(
     run.save_skipped = None
     run._held = False
     run._release_timer = None
+    run._unheld = asyncio.Event()
+    run._unheld.set()
+    run._captured_turn = 0
     run._capturing = asyncio.Lock()
     run._pruning = asyncio.Lock()
     run.deleted_snapshots = set()
@@ -204,6 +226,7 @@ async def test_checkpoint_interval_skips_turns():
 async def test_the_restored_turn_is_not_snapshotted_again():
     run, backend, _ = make_rollout(interval=2)
     run.restored_turns = run.trace.num_turns
+    run._captured_turn = run.restored_turns + 1
     assert await run._checkpoint() is None
     assert backend.taken == 0
 
@@ -346,6 +369,7 @@ async def test_a_snapshot_holds_every_reply_until_the_box_runs_again():
             binding=("/v1/chat/completions", b"bb"),
             response=ReplayResponse(200, b"{}", "application/json"),
             completed_at=time.monotonic() - 3600,
+            sent=True,
         ),
         "open": IdempotentRequest(binding=("/v1/chat/completions", b"cc")),
     }
@@ -394,6 +418,10 @@ async def test_save_returns_a_trace_another_process_can_continue():
         ("prefix", "c1"): ToolMessage(tool_call_id="c1", content="pinned")
     }
     run.trace.info = {"nonce": "n"}
+    denied = ToolMessage(tool_call_id="c2", content="denied")
+    session.tool_decisions = {("prefix", "c1"): None, ("prefix", "c2"): denied}
+    session.gated_tools = {("prefix", "c1")}
+    session.prepared_users["user-key"] += 1
     backend.running.set()
     backend.durable.set()
     saved = await run.save()
@@ -414,6 +442,11 @@ async def test_save_returns_a_trace_another_process_can_continue():
     assert restored is trace.checkpoints[0] and restored.pinned
     assert restored.info == {"nonce": "n"}
     assert restored.pins == session.pinned_tool_results
+    assert restored.decisions == {("prefix", "c1"): None, ("prefix", "c2"): denied}
+    assert restored.gated == {("prefix", "c1")}
+    assert restored.prepared == {"user-key": 1}
+    # The owner offers it, so a later retry of the restored run can pick it again.
+    assert restored.time.end
     assert restored.live == checkpoint.live
     # The restored trace rewinds to the point like a retry's.
     assert trace.rewind(restored) == []
@@ -474,15 +507,70 @@ async def test_a_cancelled_held_save_does_not_hold_the_box():
     assert not run._held and run._release_timer is None
 
 
-async def test_a_snapshot_that_waited_past_its_turn_is_not_taken():
+async def test_a_snapshot_waits_for_a_turn_that_is_committing():
+    """A reply that is on the trace can always be sent again: the snapshot records
+    the trace only once the turn has stored its reply for replay."""
     run, backend, session = make_rollout()
-    async with run._capturing:
+    binding = ("/v1/chat/completions", b"digest")
+    with session.committing():
         capture = asyncio.create_task(run._checkpoint())
         await asyncio.sleep(0)
-        # The turn's reply lands on the trace while the snapshot waits its turn.
+        await asyncio.sleep(0)
+        assert backend.taken == 0 and not session.flowing.is_set()
         run.trace.nodes.append(MessageNode(parent=1, message=UserMessage(content="go")))
-    assert await capture is None
-    assert backend.taken == 0 and session.flowing.is_set()
+        session.idempotent_requests["k"] = IdempotentRequest(
+            binding=binding,
+            response=ReplayResponse(200, b"{}", "application/json"),
+            completed_at=0.0,
+        )
+    checkpoint = await capture
+    assert checkpoint is not None and checkpoint.node == 2
+    # The reply was committed long ago by the clock and never sent: it is kept.
+    assert checkpoint.replays == {
+        "k": (binding, ReplayResponse(200, b"{}", "application/json"))
+    }
+
+
+async def test_snapshots_count_turns_from_the_newest_one():
+    run, backend, _ = make_rollout(interval=2)
+    assert await run._checkpoint() is not None  # turn 2
+    # Two conversations step the count from 2 to 4 before the next request.
+    for parent in (1, 2, 3, 4):
+        run.trace.nodes.append(
+            MessageNode(
+                parent=parent, message=AssistantMessage(content="ok"), sampled=True
+            )
+        )
+    assert run.trace.num_turns + 1 == 6
+    assert await run._checkpoint() is not None
+    assert backend.taken == 2
+
+
+async def test_a_finished_segment_waits_for_the_owners_release():
+    """An owner records a saved rollout as running, so the rollout does not finish
+    while the owner still holds it."""
+    run, _, _ = make_rollout()
+    assert await run.save(hold=True) is not None
+
+    async def turn(messages):
+        return None
+
+    run._harness_session = SimpleNamespace(turn=turn)  # type: ignore[assignment]
+    segment = asyncio.create_task(run._turn(None))
+    await asyncio.sleep(0.01)
+    assert not segment.done()
+    run.release()
+    assert await segment is False
+
+
+async def test_a_save_whose_program_ended_is_skipped():
+    run, _, session = make_rollout()
+    states = iter([{"job": {"job_id": "j1"}}, {"job": {"job_id": "j1"}}, None])
+    run._harness_session = SimpleNamespace(memory_state=lambda: next(states))  # type: ignore[assignment]
+    assert await run.save(hold=True) is None
+    assert run.save_skipped == "its harness program ended during the save"
+    (checkpoint,) = run.trace.checkpoints
+    assert not checkpoint.pinned and session.flowing.is_set() and not run._held
 
 
 async def test_a_failed_held_save_does_not_hold_the_box():

@@ -12,6 +12,7 @@ import uuid
 import weakref
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Mapping
+from contextlib import AbstractAsyncContextManager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, ClassVar
@@ -267,6 +268,12 @@ class RuntimeBackend(ABC):
         taken and runs again when this returns; its connections to the outside may be
         dead by then. The snapshot becomes restorable only later (`wait_snapshot`)."""
         raise NotImplementedError(f"{type(self).__name__} does not support snapshots")
+
+    def snapshot_pace(self) -> AbstractAsyncContextManager[Any]:
+        """Entered around a snapshot and what holds the box for it: a backend that
+        paces snapshots (`snapshots_per_min`) waits for its turn here, before the box
+        is held."""
+        return contextlib.nullcontext()
 
     async def attach(self, runtime: Runtime, job: dict[str, Any]) -> ProgramResult:
         """Wait for a program that a box started before the memory snapshot this box

@@ -11,7 +11,7 @@ import tempfile
 import time
 import uuid
 from collections.abc import AsyncIterator, Mapping
-from contextlib import asynccontextmanager
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, ClassVar
@@ -412,17 +412,19 @@ class PrimeBackend(RuntimeBackend):
             return snapshot
 
         try:
-            async with (
-                creation_limiter(
-                    (self.config.snapshots_per_min or 0) / 60,
-                    "prime-snapshot",
-                    run_scope(),
-                )
-                or contextlib.nullcontext()
-            ):
-                return await run_shielded(create())
+            return await run_shielded(create())
         except Exception as e:
             raise SandboxError(f"prime checkpoint failed: {e}") from e
+
+    def snapshot_pace(self) -> AbstractAsyncContextManager[Any]:
+        return (
+            creation_limiter(
+                (self.config.snapshots_per_min or 0) / 60,
+                "prime-snapshot",
+                run_scope(),
+            )
+            or contextlib.nullcontext()
+        )
 
     async def _resume(self) -> None:
         """Resume the paused box. The pause freed its memory on its node, which another

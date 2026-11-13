@@ -66,6 +66,16 @@ def restorable(trace: Trace, checkpoint: Checkpoint) -> dict[str, Any]:
             key: (path, digest, reply.status, reply.body, reply.content_type)
             for key, ((path, digest), reply) in checkpoint.replays.items()
         },
+        "decisions": [
+            (
+                prefix,
+                call_id,
+                None if verdict is None else verdict.model_dump(mode="json"),
+            )
+            for (prefix, call_id), verdict in checkpoint.decisions.items()
+        ],
+        "gated": sorted(checkpoint.gated),
+        "prepared": dict(checkpoint.prepared),
         "live": checkpoint.live,
     }
     return data
@@ -97,7 +107,17 @@ def open_restore(data: dict[str, Any], task: Task) -> tuple[Trace, Checkpoint]:
         key: ((path, digest), ReplayResponse(status, body, content_type))
         for key, (path, digest, status, body, content_type) in held["replays"].items()
     }
+    checkpoint.decisions = {
+        (prefix, call_id): (
+            None if verdict is None else ToolMessage.model_validate(verdict)
+        )
+        for prefix, call_id, verdict in held.get("decisions", ())
+    }
+    checkpoint.gated = {(prefix, call_id) for prefix, call_id in held.get("gated", ())}
+    checkpoint.prepared = dict(held.get("prepared", {}))
     checkpoint.live = held["live"]
+    # The owner saved it and offers it: it is restorable, also for a later retry.
+    checkpoint.time.end = checkpoint.time.end or checkpoint.captured
     return trace, checkpoint
 
 

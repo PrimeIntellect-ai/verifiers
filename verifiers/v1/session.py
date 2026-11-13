@@ -15,11 +15,12 @@ or the graph.
 """
 
 import asyncio
+import contextlib
 import hashlib
 import inspect
 import json
 from collections import Counter
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterator
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass, field
 from functools import cached_property
@@ -146,6 +147,9 @@ class IdempotentRequest:
     binding: tuple[str, bytes]
     response: "ReplayResponse | None" = None
     completed_at: float | None = None
+    sent: bool = False
+    """Whether the reply went out to the box. One that waits (`RolloutSession.hold`)
+    is on the trace and not yet in the box."""
     inflight: "asyncio.Future[ReplayResponse | None] | None" = None
 
 
@@ -237,8 +241,27 @@ class RolloutSession:
     asked for is answered or written until it is set again, so the box the snapshot
     stops has seen exactly what the trace held when the hold began."""
 
+    settled: asyncio.Event = field(default_factory=asyncio.Event, repr=False)
+    """Cleared while a turn is between its commit and its reply being ready to send
+    again (`committing`). A snapshot records the trace only when it is set: every
+    reply on the trace can then be replayed to a box that did not get it."""
+    _committing: int = 0
+
     def __post_init__(self) -> None:
         self.flowing.set()
+        self.settled.set()
+
+    @contextlib.contextmanager
+    def committing(self) -> Iterator[None]:
+        """A turn commits its reply to the trace and then stores it for replay."""
+        self._committing += 1
+        self.settled.clear()
+        try:
+            yield
+        finally:
+            self._committing -= 1
+            if not self._committing:
+                self.settled.set()
 
     def hold(self) -> None:
         """Stop answering the box: replies, tool verdicts and state writes wait."""

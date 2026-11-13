@@ -396,6 +396,20 @@ class Checkpoint(BaseModel):
     """The rollout's pinned tool results as the snapshot was taken
     (`RolloutSession.pinned_tool_results`): the restored box re-sends its own copies,
     which must be pinned again to match the trace. Live-only."""
+    decisions: dict[tuple[str, str], ToolMessage | None] = Field(
+        default_factory=dict, exclude=True
+    )
+    """The verdicts on proposed tool calls as the snapshot was taken
+    (`RolloutSession.tool_decisions`): a call that was denied stays denied in the
+    restored box. Live-only."""
+    gated: set[tuple[str, str]] = Field(default_factory=set, exclude=True)
+    """The calls the harness had asked about (`RolloutSession.gated_tools`). Live-only."""
+    prepared: dict[str, int] = Field(default_factory=dict, exclude=True)
+    """The user messages that request hooks had prepared and no turn had used yet
+    (`RolloutSession.prepared_users`): the hooks do not run on them again. Live-only."""
+    rewrites: tuple[int, int] | None = Field(None, exclude=True)
+    """How many request and response rewrites the trace held, for `Trace.rewind`.
+    Live-only."""
     live: dict[str, Any] = Field(default_factory=dict, exclude=True)
     """What continues the restored box: the harness program's job
     (`HarnessSession.memory_state`), the box's relay and the secret the harness holds.
@@ -1086,6 +1100,9 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
             if call.node is not None and call.node >= keep:
                 call.node = None
         self.rewind_state(checkpoint)
+        if checkpoint.rewrites is not None:
+            del self.request_rewrites[checkpoint.rewrites[0] :]
+            del self.response_rewrites[checkpoint.rewrites[1] :]
         # The restored rollout re-stamps every stage span; the run's start stays.
         self.timing = Timing(start=self.timing.start)
         # Checkpoints are in the order they were taken: the ones after `checkpoint` hold

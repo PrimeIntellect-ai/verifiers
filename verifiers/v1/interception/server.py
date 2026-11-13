@@ -935,6 +935,7 @@ class InterceptionServer(Interception):
         if session.released:
             return _error_response(dialect, "rollout concluded", status=409)
         if session.stopped:
+            await session.flowing.wait()
             return _error_response(
                 dialect, f"rollout stopped: {session.trace.stop_condition}", status=400
             )
@@ -972,6 +973,7 @@ class InterceptionServer(Interception):
         try:
             refused = await session.refused()
             if refused is not None:
+                await session.flowing.wait()
                 return _error_response(
                     dialect, f"rollout stopped: {refused}", status=400
                 )
@@ -1042,6 +1044,7 @@ class InterceptionServer(Interception):
             session.error = None
             call_response: Response | None = None
             events: bytes | None = None
+            served: web.Response | None = None
             node: int | None = None
             error: Exception | None = None
             started = time.time()
@@ -1112,16 +1115,20 @@ class InterceptionServer(Interception):
                             f"rollout stopped: {session.trace.stop_condition}",
                             status=400,
                         )
-                    node = turn.commit(call_response)
-                    session.consume_prepared(turn.tail)
-                    session.trace.response_rewrites.extend(response_rewrites)
-                    if stopped is None:
-                        stopped = await session.gate_tool_calls(node)
-                    if stopped is not None:
-                        session.trace.stop(stopped)
-                        return _error_response(
-                            dialect, f"rollout stopped: {stopped}", status=400
-                        )
+                    # A snapshot records the trace only outside this block: a reply on
+                    # the trace is then always one a box can be sent again.
+                    with session.committing():
+                        node = turn.commit(call_response)
+                        session.consume_prepared(turn.tail)
+                        session.trace.response_rewrites.extend(response_rewrites)
+                        if stopped is None:
+                            stopped = await session.gate_tool_calls(node)
+                        if stopped is not None:
+                            session.trace.stop(stopped)
+                            return _error_response(
+                                dialect, f"rollout stopped: {stopped}", status=400
+                            )
+                        served = serve(call_response, events)
                 except RolloutError as e:
                     # Stash the real cause; the rollout re-raises it after the harness returns.
                     # Relay the provider's status so the harness SDK retries 5xx/429 and not 4xx.
@@ -1181,13 +1188,20 @@ class InterceptionServer(Interception):
                         policy_paths=policy_paths,
                         acp=acp,
                     )
-            # A memory snapshot under way must not see this reply reach the box.
+            assert served is not None
+            return served
+
+        async def answer() -> web.Response:
+            reply = await sample()
+            # A memory snapshot under way must not see this reply reach the box, be it
+            # the turn's reply or an error.
             await session.flowing.wait()
-            return serve(call_response, events)
+            idempotent.sent = True
+            return reply
 
         if streaming:
-            return await _buffered_stream(request, dialect, sample(), session.trace.id)
-        return await sample()
+            return await _buffered_stream(request, dialect, answer(), session.trace.id)
+        return await answer()
 
     async def handle_aux(
         self, request: web.Request, dialect: Dialect, route: str
