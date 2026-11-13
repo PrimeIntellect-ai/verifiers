@@ -45,16 +45,6 @@ logger = get_logger(__name__)
 EFFECTIVELY_UNBOUNDED_SECONDS = 30 * 24 * 60 * 60
 """Safety deadline for APIs that require a finite bound. Normal execution remains
 bounded by idle detection or rollout cancellation; 30 days is above any real run."""
-# The SDK reads finished jobs' output through a bounded pool whose deadline includes time
-# spent queued; its defaults (20 reads, 45s) expire most reads when thousands of rollouts
-# finish a job at once (e.g. every harness program of a cancelled step).
-_OUTPUT_READS = 100
-"""Concurrent output reads on the shared client."""
-_OUTPUT_DEADLINE_SECONDS = 300
-"""Deadline for one read of a finished job's output, queue time included."""
-_OUTPUT_RETRIES = 10
-"""Re-reads of a finished job's output that the SDK still failed to fetch, before the
-exec is reported as failed."""
 _CHECKPOINT_DURABLE_SECONDS = 300
 _PAUSE_SETTLE_SECONDS = 120
 """How long a pause or a resume gets to take effect; they take seconds."""
@@ -148,9 +138,7 @@ def _lease_client() -> Any:
     loop = asyncio.get_running_loop()
     shared = _shared_clients.get(loop)
     if shared is None:
-        shared = _shared_clients[loop] = _SharedClient(
-            AsyncSandboxClient(background_job_output_concurrency=_OUTPUT_READS)
-        )
+        shared = _shared_clients[loop] = _SharedClient(AsyncSandboxClient())
     shared.leases += 1
     return shared.client
 
@@ -240,6 +228,8 @@ class PrimeBackend(RuntimeBackend):
         """Cleared while a memory snapshot stops the box: the platform refuses every
         call into a stopped box, so calls wait for it."""
         self._awake.set()
+        self._snapshots = 0
+        """Memory snapshots taken of this box. Each one ended the open streams into it."""
 
     @property
     def published_port(self) -> int:
@@ -404,6 +394,7 @@ class PrimeBackend(RuntimeBackend):
         async def create() -> Snapshot:
             # Shielded as one: a box left paused never runs its rollout again.
             self._awake.clear()
+            self._snapshots += 1
             try:
                 paused = await self._client.pause(self.info.id)
                 snapshot = Snapshot(id=paused.checkpoint_id)
@@ -588,16 +579,6 @@ class PrimeBackend(RuntimeBackend):
         program: Program | None = None,
     ) -> ProgramResult:
         await self._awake.wait()
-        if program is not None:
-            return await self._run_job(runtime, argv, env, program)
-
-        async def collect(stream: AsyncIterator[bytes]) -> bytes:
-            tail = bytearray()
-            async for chunk in stream:
-                tail.extend(chunk[-_OUTPUT_TAIL_BYTES:])
-                del tail[:-_OUTPUT_TAIL_BYTES]
-            return bytes(tail)
-
         try:
             # Command sessions survive task cleanup of shared scratch directories.
             # Close stdin explicitly: the live-process API keeps it open by default.
@@ -609,95 +590,68 @@ class PrimeBackend(RuntimeBackend):
                 env=runtime.process_env(env),
                 user=runtime.user,
             )
-            try:
-                stdout, stderr, exit_code = await asyncio.gather(
-                    collect(process.stdout), collect(process.stderr), process.wait()
-                )
-            finally:
-                # Closing signals and reaps a running process, then releases its stream.
-                await run_shielded(process.aclose())
         except (
             Exception
         ) as e:  # a sandbox/API failure is one rollout's problem, not the eval's
             raise SandboxError(f"prime exec failed: {e}") from e
+        if program is not None:
+            program.job = {"session": process.session_uuid}
+        try:
+            return await self._collect(process)
+        finally:
+            if program is not None:
+                program.job = None
+
+    async def attach(self, runtime: Runtime, job: dict[str, Any]) -> ProgramResult:
+        try:
+            # The session and its process came with the snapshot; only the box is new.
+            process = await self._client.attach_process(self.info.id, job["session"])
+        except Exception as e:
+            raise SandboxError(f"prime attach failed: {e}") from e
+        return await self._collect(process)
+
+    async def _collect(self, process: Any) -> ProgramResult:
+        """Wait for `process` and keep the tail of each output stream. A memory
+        snapshot stops the box, which ends the stream but not the process: attach to
+        it again when the box runs. The output of that gap can be missing."""
+
+        async def collect(stream: AsyncIterator[bytes], tail: bytearray) -> None:
+            async for chunk in stream:
+                tail.extend(chunk[-_OUTPUT_TAIL_BYTES:])
+                del tail[:-_OUTPUT_TAIL_BYTES]
+
+        stdout, stderr = bytearray(), bytearray()
+        try:
+            while True:
+                snapshots = self._snapshots
+                try:
+                    *_, exit_code = await asyncio.gather(
+                        collect(process.stdout, stdout),
+                        collect(process.stderr, stderr),
+                        process.wait(),
+                    )
+                    break
+                except Exception as e:
+                    if snapshots == self._snapshots and not self._stopped_by_snapshot(
+                        e
+                    ):
+                        raise
+                    session = process.session_uuid
+                    # A close would signal the process; a detach only drops the stream.
+                    await run_shielded(process.detach())
+                    await self._awake.wait()
+                    process = await self._client.attach_process(self.info.id, session)
+        except (
+            Exception
+        ) as e:  # a sandbox/API failure is one rollout's problem, not the eval's
+            raise SandboxError(f"prime exec failed: {e}") from e
+        finally:
+            # Closing signals and reaps a running process, then releases its stream.
+            await run_shielded(process.aclose())
         return ProgramResult(
             exit_code=exit_code,
             stdout=stdout.decode(errors="replace"),
             stderr=stderr.decode(errors="replace"),
-        )
-
-    async def _run_job(
-        self, runtime: Runtime, argv: list[str], env: dict[str, str], program: Program
-    ) -> ProgramResult:
-        """Run the harness's main program as a server-owned job. A native session ends
-        with its box, and a box that boots from a memory snapshot is a new one; the job's
-        files and process come with the snapshot, so `attach` continues the wait."""
-        try:
-            # Poll directly so rollout cancellation owns the execution timeout.
-            job = await self._client.start_background_job(
-                self.info.id,
-                shlex.join(argv),
-                working_dir=self.config.workdir,
-                env=runtime.process_env(env),
-                user=runtime.user,
-            )
-        except (
-            Exception
-        ) as e:  # a sandbox/API failure is one rollout's problem, not the eval's
-            raise SandboxError(f"prime exec failed: {e}") from e
-        program.job = job.model_dump()
-        try:
-            return await self._wait_job(job)
-        finally:
-            program.job = None
-
-    async def attach(self, runtime: Runtime, job: dict[str, Any]) -> ProgramResult:
-        from prime_sandboxes import BackgroundJob
-
-        # The job's files and process came with the snapshot; only the box is new.
-        return await self._wait_job(
-            BackgroundJob(**{**job, "sandbox_id": self.info.id})
-        )
-
-    async def _wait_job(self, job: Any) -> ProgramResult:
-        try:
-            delay = 0.1
-            output_retries = 0
-            missing = None
-            while True:
-                await self._awake.wait()
-                try:
-                    result = await self._client.get_background_job(
-                        self.info.id, job, timeout=_OUTPUT_DEADLINE_SECONDS
-                    )
-                except Exception as e:
-                    if not self._stopped_by_snapshot(e):
-                        raise
-                    continue
-                # Under load the SDK can see a job finish yet miss its output (its bounded
-                # output reads expire while queued) and reports that as `*_error`. The job
-                # is done, so asking again re-reads the output.
-                missing = result.stdout_error or result.stderr_error
-                if result.completed and (
-                    missing is None or output_retries == _OUTPUT_RETRIES
-                ):
-                    break
-                if result.completed:
-                    output_retries += 1
-                await asyncio.sleep(delay)
-                delay = min(delay * 2, 3)
-        except (
-            Exception
-        ) as e:  # a sandbox/API failure is one rollout's problem, not the eval's
-            raise SandboxError(f"prime exec failed: {e}") from e
-        if missing is not None:
-            raise SandboxError(f"prime exec output unavailable: {missing}")
-        if result.exit_code is None:
-            raise SandboxError("prime exec completed without an exit code")
-        return ProgramResult(
-            exit_code=result.exit_code,
-            stdout=result.stdout or "",
-            stderr=result.stderr or "",
         )
 
     async def exec(

@@ -155,12 +155,12 @@ class Snapshot(BaseModel):
 
 @dataclass
 class Program:
-    """The background job of a harness's main program, as its runtime started it
+    """A harness's main program, as its runtime started it
     (`Runtime.run(..., program=)`). A box that boots from a memory snapshot still runs
-    the job, and `Runtime.attach` waits for it there."""
+    it, and `Runtime.attach` waits for it there."""
 
     job: dict[str, Any] | None = None
-    """The provider's handle of the job while it runs; None before and after."""
+    """The provider's handle of the program while it runs; None before and after."""
 
 
 current_program: ContextVar[Program | None] = ContextVar(
@@ -269,8 +269,8 @@ class RuntimeBackend(ABC):
         raise NotImplementedError(f"{type(self).__name__} does not support snapshots")
 
     async def attach(self, runtime: Runtime, job: dict[str, Any]) -> ProgramResult:
-        """Wait for a job that a box started before the memory snapshot this box booted
-        from (`Program.job`), and return its result like `run`."""
+        """Wait for a program that a box started before the memory snapshot this box
+        booted from (`Program.job`), and return its result like `run`."""
         raise NotImplementedError(
             f"{type(self).__name__} does not support memory snapshots"
         )
