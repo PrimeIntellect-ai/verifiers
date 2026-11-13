@@ -4,7 +4,10 @@ import argparse
 import asyncio
 import json
 import logging
+import os
+import signal
 import subprocess
+import tempfile
 import traceback
 from contextlib import AsyncExitStack
 from pathlib import Path
@@ -52,11 +55,26 @@ BASH_TOOL = {
     "type": "function",
     "function": {
         "name": "bash",
-        "description": "Run a bash command and return its combined stdout and stderr.",
+        "description": (
+            "Run a bash command and return its combined stdout and stderr. The call returns when "
+            "the command exits; processes it starts with `&` keep running."
+        ),
         "parameters": {
             "type": "object",
             "properties": {
-                "command": {"type": "string", "description": "The bash command to run."}
+                "command": {
+                    "type": "string",
+                    "description": "The bash command to run.",
+                },
+                "background": {
+                    "type": "boolean",
+                    "description": (
+                        "Start the command detached and return at once with its PID and log "
+                        "file. Use it for servers and other long-running processes; read the "
+                        "log with `cat` or `tail`, and stop it with `kill -- -<pid>`."
+                    ),
+                    "default": False,
+                },
             },
             "required": ["command"],
         },
@@ -183,16 +201,48 @@ def run_search(
         return f"search failed ({e}). Try again or rephrase the query."
 
 
-def run_bash(command: str) -> str:
+def run_bash(command: str, background: bool = False, timeout: float = 600) -> str:
+    # Output goes to a file, not a pipe: a child started with `&` inherits the
+    # output handle, and a pipe would block the call until that child exits.
+    # Each command gets its own session so a timeout kills its whole process group.
     try:
-        result = subprocess.run(
-            ["bash", "-c", command],
-            capture_output=True,
-            text=True,
-            timeout=3600,
-            check=False,
-        )
-        return result.stdout + result.stderr
+        if background:
+            fd, log_path = tempfile.mkstemp(prefix="bash-bg-", suffix=".log")
+            with os.fdopen(fd, "wb") as log:
+                proc = subprocess.Popen(
+                    ["bash", "-c", command],
+                    stdin=subprocess.DEVNULL,
+                    stdout=log,
+                    stderr=subprocess.STDOUT,
+                    start_new_session=True,
+                )
+            return (
+                f"started in background: pid {proc.pid}, output in {log_path}. "
+                f"Read it with `tail {log_path}`; stop it with `kill -- -{proc.pid}`."
+            )
+        with tempfile.TemporaryFile() as out:
+            proc = subprocess.Popen(
+                ["bash", "-c", command],
+                stdin=subprocess.DEVNULL,
+                stdout=out,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
+            try:
+                proc.wait(timeout=timeout)
+                timed_out = False
+            except subprocess.TimeoutExpired:
+                os.killpg(proc.pid, signal.SIGKILL)
+                proc.wait()
+                timed_out = True
+            out.seek(0)
+            output = out.read().decode(errors="replace")
+        if timed_out:
+            output += (
+                f"\n[killed after {timeout:g}s timeout; run long-running processes "
+                "with background=true]"
+            )
+        return output
     except Exception as e:  # noqa: BLE001 - tool failures are returned to the model
         return f"error: {e}"
 
@@ -438,7 +488,10 @@ async def run_chat_loop(
                     content = await call_mcp(servers, dispatch, name, tool_args)
                 elif name == "bash" and args.bash:
                     content = await asyncio.to_thread(
-                        run_bash, tool_args.get("command", "")
+                        run_bash,
+                        tool_args.get("command", ""),
+                        tool_args.get("background") in (True, "true"),
+                        args.bash_timeout,
                     )
                 elif name == "edit" and args.edit:
                     content = await asyncio.to_thread(
@@ -477,6 +530,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--mcp-config", default="")
     parser.add_argument("--tool-interception-url", default="")
     parser.add_argument("--bash", action="store_true")
+    parser.add_argument("--bash-timeout", type=float, default=600)
     parser.add_argument("--compaction", action="store_true")
     parser.add_argument("--summarize-at-tokens", type=int)
     parser.add_argument("--edit", action="store_true")

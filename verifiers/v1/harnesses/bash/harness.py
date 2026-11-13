@@ -2,6 +2,8 @@ import json
 import os
 from typing import Literal
 
+from pydantic import Field, FiniteFloat
+
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
@@ -42,6 +44,10 @@ class BashHarnessConfig(HarnessConfig):
     eval environment; the key is handed to the program over argv (like the interception secret) so
     the agent's `bash` subprocesses don't inherit it. Results matching the runtime's
     network blocklist are excluded."""
+
+    exec_timeout: FiniteFloat = Field(600.0, gt=0)
+    """Seconds a foreground `bash` call may run before its process group is killed.
+    Commands run with `background=true` are not limited."""
 
     compaction: CompactionConfig | None = CompactionConfig()
     """Context compaction. Auto-compaction by default; set `summarize_at_tokens`
@@ -90,7 +96,7 @@ class BashHarness(Harness[BashHarnessConfig]):
         ):
             system_prompt = None
         env = {**self.config.resolved_env}
-        args = ["--bash"]
+        args = ["--bash", f"--bash-timeout={self.config.exec_timeout}"]
         if tool_interception_url:
             args.append(f"--tool-interception-url={tool_interception_url}")
         args += compaction_args(self.config.compaction)
