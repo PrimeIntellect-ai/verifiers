@@ -92,6 +92,10 @@ HASH_INLINE_MAX = 1024**2  # 1 MiB
 # Attempt counter the stainless-generated SDKs (OpenAI, Anthropic) send on every request:
 # 0 on the first attempt, incremented on each retry of the same request.
 RETRY_COUNT_HEADER = "x-stainless-retry-count"
+SERVER_HEADER = "x-vf-interception"
+"""Marks every response as this server's own, so a box's relay can tell an answer of
+the server (a 404 for an unknown path) from the error page of a tunnel edge that could
+not reach it (`relay/server.py`)."""
 IDEMPOTENCY_KEY_HEADER = "Idempotency-Key"
 IDEMPOTENCY_CACHE_TTL_SECONDS = 600
 IDEMPOTENCY_CACHE_MAX_COMPLETED = 64
@@ -134,6 +138,10 @@ async def _request_digest(raw: bytes) -> bytes:
     if len(raw) <= HASH_INLINE_MAX:
         return _body_digest(raw)
     return await asyncio.to_thread(_body_digest, raw)
+
+
+async def _mark_response(request: web.Request, response: web.StreamResponse) -> None:
+    response.headers[SERVER_HEADER] = "1"
 
 
 def _error_response(dialect: Dialect, message: str, *, status: int) -> web.Response:
@@ -370,6 +378,9 @@ class InterceptionServer(Interception):
             make_tunnel(self.config.tunnel) if requires_tunnel else None
         )
         self.healthy = True
+        self._replacing: asyncio.Task | None = None
+        self._lost_again = False
+        """A tunnel was lost while a replacement was under way: replace it once more."""
         if self.tunnel is not None:
             self.tunnel.on_gone = self._handle_tunnel_gone
         self.host = "127.0.0.1"
@@ -383,12 +394,82 @@ class InterceptionServer(Interception):
         return len(self.sessions)
 
     def _handle_tunnel_gone(self) -> None:
-        """Fail this server's rollouts and take no more: their URL will never work again."""
+        """Take no more rollouts: the URL will never work again. Rollouts that can move
+        (`RolloutSession.reroute`) follow this server to a new tunnel; the others fail."""
         self.healthy = False
         logger.error("Lost the interception tunnel url=%s", self.base_url)
+        movable = False
         for session in list(self.sessions.values()):
-            session.error = TunnelError("interception tunnel lost")
-            session.release()
+            if session.reroute is None:
+                session.error = TunnelError("interception tunnel lost")
+                session.release()
+            else:
+                movable = True
+        if not movable:
+            return
+        if self._replacing is None or self._replacing.done():
+            self._replacing = asyncio.create_task(self._replace_tunnels())
+        else:
+            self._lost_again = True
+
+    async def _replace_tunnels(self) -> None:
+        """Replace the tunnel until no loss arrived while a replacement was under way."""
+        while True:
+            self._lost_again = False
+            await self._replace_tunnel()
+            if not self._lost_again:
+                return
+
+    async def _replace_tunnel(self) -> None:
+        """Open a new tunnel to this server and reroute its movable rollouts to it. A
+        rollout that does not move fails as on a lost tunnel."""
+        assert self.tunnel is not None
+        try:
+            base_url = await self.stack.enter_async_context(
+                self.tunnel.expose(self.port)
+            )
+        except TunnelError as error:
+            logger.error("interception tunnel replacement failed: %s", error)
+            base_url = None
+        else:
+            logger.warning(
+                "interception tunnel replaced: url=%s -> %s", self.base_url, base_url
+            )
+            self.base_url = base_url
+
+        async def move(session: RolloutSession) -> None:
+            try:
+                if base_url is None:
+                    raise TunnelError("interception tunnel lost")
+                assert session.reroute is not None
+                await session.reroute(base_url)
+            except Exception as error:  # noqa: BLE001 - one rollout's failure is its own
+                logger.warning(
+                    "rollout %s did not move to the new tunnel: %s",
+                    session.trace.id,
+                    error,
+                )
+                session.error = (
+                    error
+                    if isinstance(error, RolloutError)
+                    else TunnelError(f"interception tunnel lost: {error}")
+                )
+                session.release()
+
+        await asyncio.gather(
+            *(
+                move(session)
+                for session in list(self.sessions.values())
+                if session.reroute is not None and not session.released
+            )
+        )
+
+    async def stop(self) -> None:
+        if self._replacing is not None:
+            self._replacing.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await self._replacing
+        await super().stop()
 
     def _client(self, config: BaseClientConfig) -> Client:
         """The server-owned client for `config` — one per distinct endpoint config, shared
@@ -574,6 +655,7 @@ class InterceptionServer(Interception):
         app = web.Application(
             client_max_size=MAX_REQUEST_BODY, middlewares=[_isolate_log_scope]
         )
+        app.on_response_prepare.append(_mark_response)
         app.router.add_get(HEALTH_PATH, self.handle_health)
         for dialect in DIALECTS:
             for route in dialect.routes:

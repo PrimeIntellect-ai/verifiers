@@ -95,7 +95,10 @@ def assert_one_branch(
         f"no FORKS reason for {set(forks) - FORKS.keys()}"
     )
     if harness.id not in forks:
-        assert trace.num_branches == 1, f"{trace.num_branches} branches"
+        assert trace.num_branches == 1, (
+            f"{trace.num_branches} branches",
+            [f"{error.type}: {error.message[:500]}" for error in trace.errors],
+        )
 
 
 def agent_seats(taskset: str, env_id: str = "") -> list[str]:

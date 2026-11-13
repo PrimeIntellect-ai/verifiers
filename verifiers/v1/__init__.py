@@ -65,6 +65,7 @@ if TYPE_CHECKING:
         HarnessError,
         InterceptionError,
         ProviderError,
+        RelayError,
         RolloutError,
         SandboxError,
         TaskError,
@@ -324,6 +325,7 @@ _NAME_TO_MODULE = {
     "TrainRunInfo": "verifiers.v1.trace",
     "TrainWorkInfo": "verifiers.v1.trace",
     "TunnelError": "verifiers.v1.errors",
+    "RelayError": "verifiers.v1.errors",
     "TurnTokens": "verifiers.v1.types",
     "Usage": "verifiers.v1.types",
     "UserMessage": "verifiers.v1.types",
@@ -453,6 +455,7 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "TaskError",
     "InterceptionError",
     "TunnelError",
+    "RelayError",
     # clients
     "Client",
     "BaseClientConfig",

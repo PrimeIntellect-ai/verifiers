@@ -15,6 +15,7 @@ from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.configs.scoring import resolve_scoring
 from verifiers.v1.errors import (
     HarnessError,
+    RelayError,
     RolloutError,
     SandboxError,
     TaskError,
@@ -30,6 +31,7 @@ from verifiers.v1.grading import (
 )
 from verifiers.v1.harness import Harness, HarnessSession
 from verifiers.v1.interception import Interception, serve_interception
+from verifiers.v1.interception.relay import Relay
 from verifiers.v1.mcp import SharedToolServer, serve_tools
 from verifiers.v1.runtimes import (
     Runtime,
@@ -202,6 +204,8 @@ class Rollout:
         self._closed = False
         self._harness_cleaned = False
         self._endpoint: str | None = None
+        self._relay: Relay | None = None
+        """The relay a harness in a remote box reaches the interception server through."""
         self._urls: dict[str, str] = {}
         self._harness_session: HarnessSession | None = None
         self._agent_runtime: Runtime | None = None
@@ -372,6 +376,12 @@ class Rollout:
                     self._agent_runtime = await resolve_agent_runtime(
                         runtime, self.task.data.agent_user, self.task.data.agent_home
                     )
+                    # A harness in a remote box reaches the interception server through
+                    # a relay in its box, which starts alongside the harness setup.
+                    if not runtime.is_local:
+                        self._relay = Relay(runtime, self.trace.id)
+                        self._stack.push_async_callback(self._relay.stop)
+                        await self._relay.installed()
                     await self.harness.setup(self._agent_runtime)
                 logger.debug(
                     "Set up %s harness in %s",
@@ -383,6 +393,16 @@ class Rollout:
                 # The harness reaches the model at `{base_url}/v1`; tool servers reach this
                 # rollout's `/state` + `/task` at `base_url` — it's universally reachable
                 # (the interception is exposed whenever any consumer is remote).
+                # The relay follows the server to a replacement tunnel, unless tool
+                # servers or services reach the server too. Set before the server
+                # registers the session: a tunnel lost while the relay starts waits.
+                if (
+                    self._relay is not None
+                    and not toolsets
+                    and not self._shared_tools
+                    and self.deployment.spec is None
+                ):
+                    self._session.reroute = self._reroute
                 (
                     base_url,
                     model_secret,
@@ -396,7 +416,15 @@ class Rollout:
                         self._shared_tools,
                     )
                 )
-                self._endpoint = runtime.host_url(f"{base_url.rstrip('/')}/v1")
+                harness_base = runtime.host_url(base_url.rstrip("/")).rstrip("/")
+                if self._relay is not None:
+                    # The harness holds the model secret anyway; the relay gets
+                    # nothing more, so reading its config grants no capability.
+                    async with boundary(RelayError, "starting the relay"):
+                        harness_base = await self._relay.connect(
+                            base_url.rstrip("/"), {model_secret: model_secret}
+                        )
+                self._endpoint = f"{harness_base}/v1"
                 self._secret = model_secret
                 services = (
                     {
@@ -437,7 +465,11 @@ class Rollout:
                 await self.deployment.prepare_execution(
                     [
                         url
-                        for url in [self._endpoint, *self._urls.values()]
+                        for url in [
+                            self._endpoint,
+                            *self._urls.values(),
+                            *([self._relay.upstream] if self._relay else []),
+                        ]
                         if urlsplit(url).hostname not in internal
                     ],
                     state_route=f"{base_url.rstrip('/')}/state",
@@ -530,11 +562,7 @@ class Rollout:
                         )
                     if not self._session.stopped:
                         session_kwargs = (
-                            {
-                                "tool_interception_url": runtime.host_url(
-                                    f"{base_url.rstrip('/')}/tool"
-                                )
-                            }
+                            {"tool_interception_url": f"{harness_base}/tool"}
                             if self.harness.SUPPORTS_TOOL_INTERCEPTION
                             and (
                                 self._session.request_interceptors
@@ -579,6 +607,22 @@ class Rollout:
         self.trace.notify()
         logger.debug("Starting agent")
         return not self._session.stopped
+
+    async def _reroute(self, base_url: str) -> None:
+        """Move the harness's relay to the interception server's new URL
+        (`RolloutSession.reroute`)."""
+        assert self._relay is not None
+        if self._closed:
+            # Closing: the agent is done and the relay unused, and scoring keeps its
+            # own egress policy.
+            return
+        await self._relay.wait_connected()
+        upstream = base_url.rstrip("/")
+        # A restricted box must reach the new tunnel host before the relay uses it.
+        await self.deployment.prepare_execution(
+            [self._endpoint, upstream], state_route=f"{upstream}/state"
+        )
+        await self._relay.reroute(upstream)
 
     async def steer(self, message: str, *, message_id: str | None = None) -> dict:
         if self._closed or not self.ok:
@@ -648,6 +692,9 @@ class Rollout:
                 self.timeout("agent")
                 return False
             real = self._session.error
+            if real is None and self._relay is not None:
+                # A harness that dies on its relay's failure records the relay's.
+                real = await self._relay.failure()
             if real is not None and isinstance(e, RolloutError):
                 real.__cause__ = e
                 self.fail(real)

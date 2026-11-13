@@ -149,6 +149,11 @@ class RuntimeCache:
 
     uv_interpreters: dict[str, str] = field(default_factory=dict)
     uv_locks: dict[str, asyncio.Lock] = field(default_factory=dict)
+    uv_ready: set[str] = field(default_factory=set)
+    """Users (`""` for the runtime's own) whose uv bootstrap succeeded."""
+    uv_bootstrap_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    """Held by a script preparation that may bootstrap uv: two bootstraps at once race
+    (concurrent `pip install --user`, downloads to one path, apt's lock)."""
     curl_ready: bool = False
     mcp_sources: set[str] = field(default_factory=set)
     mcp_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
