@@ -254,7 +254,11 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
         for skill in self.config.skills:
             args += ["--skill", skill_destination(skill, skills_dir)]
         if system_prompt:
-            args += ["--append-system-prompt", system_prompt]
+            # prime-agent reads a path argument as the file's contents when it
+            # builds a session, so the file stays until cleanup.
+            path = f"{agent_dir}/system-prompt.md"
+            await runtime.write(path, system_prompt.encode())
+            args += ["--append-system-prompt", path]
         if mcp_urls:
             # ACP servers need discovery guidance; importing the SDK shadows the REPL helper.
             args += [

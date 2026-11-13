@@ -51,14 +51,26 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--base-url", required=True)
     parser.add_argument("--api-key", required=True)
     parser.add_argument("--model", required=True)
-    parser.add_argument("--system-prompt", default="")
-    parser.add_argument("--task", required=True)
+    parser.add_argument("--system-prompt-file", default="")
+    parser.add_argument("--task-file", required=True)
     return parser.parse_args()
+
+
+def read_staged(path: str) -> str:
+    """Read and delete a file the harness staged for this launch; empty without one."""
+    if not path:
+        return ""
+    file = Path(path)
+    text = file.read_text(encoding="utf-8")
+    file.unlink()
+    return text
 
 
 async def main() -> None:
     args = parse_args()
-    model, system_prompt, task = args.model, args.system_prompt, args.task
+    model = args.model
+    system_prompt = read_staged(args.system_prompt_file)
+    task = read_staged(args.task_file)
     logs_dir = Path(os.environ["TMUX_TMPDIR"])
     logs_dir.mkdir(mode=0o700, exist_ok=True)
     EnvironmentPaths.agent_dir = PurePosixPath(logs_dir)
