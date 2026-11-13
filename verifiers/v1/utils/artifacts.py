@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import io
 import json
-import logging
 import posixpath
 import re
 import shlex
 import shutil
 import tarfile
 import tempfile
+import time
 import uuid
 from collections.abc import Iterable
 from pathlib import Path, PurePosixPath
@@ -18,10 +18,13 @@ from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, Field, field_validator
 
+from verifiers.v1.utils.format import format_time
+from verifiers.v1.utils.logging import get_logger
+
 if TYPE_CHECKING:
     from verifiers.v1.runtimes import Runtime, RuntimeConfig
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 ARTIFACTS_DIR = "/logs/artifacts"
 """Implicit artifact directory; tasks that write here need no declaration."""
@@ -132,6 +135,7 @@ async def collect(
 
     Each source is archived separately so its exclude patterns stay local.
     """
+    started = time.perf_counter()
     # Resolve relative sources against the runtime workdir. Joining also normalises
     # `/work/` to `/work`, so one tree cannot key two entries (the source is both the
     # dict key and `restore`'s rm -rf target).
@@ -213,7 +217,11 @@ async def collect(
         budget -= len(archive)
         collected[source] = archive
 
-    logger.debug("collected artifact roots: %s", list(collected))
+    logger.debug(
+        "Collected artifacts in %s roots=%s",
+        format_time(time.perf_counter() - started),
+        list(collected),
+    )
     return collected
 
 
@@ -288,7 +296,9 @@ def save_artifacts(
                         entry["error"] = (
                             "destination overlaps a previously saved artifact"
                         )
-                        logger.warning("artifact %r: %s", source, entry["error"])
+                        logger.warning(
+                            "Skipped artifact %s - %s", source, entry["error"]
+                        )
                         continue
                     with tempfile.TemporaryDirectory(dir=temporary) as unpacked:
                         tar.extractall(unpacked, filter="data")
@@ -302,7 +312,7 @@ def save_artifacts(
                     entry["status"] = "ok"
             except (OSError, ValueError, RuntimeError, tarfile.TarError) as exc:
                 entry.update(status="failed", error=str(exc))
-                logger.warning("failed to save artifact %r: %s", source, exc)
+                logger.warning("Failed to save artifact %s - %s", source, exc)
         (saved / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
         if directory.is_symlink():
             raise ValueError(f"artifact directory must not be a symlink: {directory}")
@@ -331,6 +341,10 @@ async def restore(runtime: Runtime, collected: dict[str, bytes | None]) -> None:
         )
     for root, archive in collected.items():
         _validate_restore(root, archive)
+    collected = {
+        root: None if archive is None else _rebuild(archive)
+        for root, archive in collected.items()
+    }
     # Clear every root up front, not per entry: a later nested root would otherwise
     # delete content an earlier one just restored. Clearing also drops any file or
     # symlink the image left at the target.
@@ -373,9 +387,9 @@ async def _tar_out(runtime: Runtime, artifact: Artifact, budget: int) -> bytes:
         )
         if dropped:
             logger.warning(
-                "artifact %r: dropped %d FIFO or device node(s), e.g. %s",
-                artifact.source,
+                "Dropped %d FIFO or device node(s) from artifact %s, e.g. %s",
                 len(dropped),
+                artifact.source,
                 dropped[:3],
             )
         return archive
@@ -384,7 +398,7 @@ async def _tar_out(runtime: Runtime, artifact: Artifact, budget: int) -> bytes:
         try:
             await runtime.run(["rm", "-f", path], {})
         except Exception:
-            logger.debug("failed to remove %s", path, exc_info=True)
+            logger.debug("Failed to remove %s", path, exc_info=True)
 
 
 def _drop_special_files(archive: bytes) -> tuple[bytes, list[str]]:
@@ -413,6 +427,45 @@ def _drop_special_files(archive: bytes) -> tuple[bytes, list[str]]:
                 content = source.extractfile(member) if member.isfile() else None
                 target.addfile(member, content)
     return out.getvalue(), dropped
+
+
+def _rebuild(archive: bytes) -> bytes:
+    """Write a fresh archive holding exactly the members Python's tarfile reads.
+
+    Validation reads archives with Python's tarfile, but the grading box extracts
+    them with its own tar. An agent controls the archive bytes, and two tar parsers
+    can disagree about the same bytes, so the box only ever extracts an archive
+    written here from the members validation saw. Owners and permission bits are
+    kept (tasks rely on ownership, e.g. git's safe.directory check); setuid,
+    setgid and sticky bits are not.
+    """
+    out = io.BytesIO()
+    with (
+        tarfile.open(fileobj=io.BytesIO(archive), mode="r:") as source,
+        tarfile.open(fileobj=out, mode="w:", format=tarfile.PAX_FORMAT) as target,
+    ):
+        for member in source:
+            info = tarfile.TarInfo(member.name)
+            info.mode = member.mode & 0o777
+            info.uid, info.gid = member.uid, member.gid
+            info.uname, info.gname = member.uname, member.gname
+            info.mtime = member.mtime
+            content = None
+            if member.isfile():
+                info.type = tarfile.REGTYPE
+                info.size = member.size
+                content = source.extractfile(member)
+            elif member.isdir():
+                info.type = tarfile.DIRTYPE
+            elif member.issym() or member.islnk():
+                info.type = tarfile.SYMTYPE if member.issym() else tarfile.LNKTYPE
+                info.linkname = member.linkname
+            else:
+                raise RuntimeError(
+                    f"artifact member {member.name!r} is a link or special file"
+                )
+            target.addfile(info, content)
+    return out.getvalue()
 
 
 def _validate_restore(root: str, archive: bytes | None) -> None:
@@ -471,6 +524,15 @@ def _validate_restore(root: str, archive: bytes | None) -> None:
                 elif not (member.isfile() or member.isdir()):
                     raise RuntimeError(
                         f"artifact member {member.name!r} is a link or special file"
+                    )
+                if member.issparse():
+                    # A sparse member declares its full size in a few header bytes,
+                    # and rebuilding the archive on the host would write every hole
+                    # out as zeros. GNU tar only writes these with --sparse; bsdtar
+                    # writes them for any file with holes.
+                    raise RuntimeError(
+                        f"artifact member {member.name!r} is a sparse file, which "
+                        "cannot be restored"
                     )
                 if member.isfile():
                     regular_files.add(member_path)

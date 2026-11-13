@@ -1,7 +1,6 @@
 """Pi harness using the upstream pi-acp adapter."""
 
 import json
-import logging
 import shlex
 from pathlib import Path
 
@@ -20,12 +19,14 @@ from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
 from verifiers.v1.types import Message
+from verifiers.v1.utils.logging import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 KEY_VAR = "PI_INTERCEPT_KEY"
 
 PI_DIR = "/var/tmp/vf-pi"
+STATE_ROOT = "/tmp/vf-pi-runs"
 PACKAGES_DIR = f"{PI_DIR}/mcp"
 PI_BIN = f"{PACKAGES_DIR}/node_modules/.bin/pi"
 ACP_VERSION = "0.0.34"
@@ -76,8 +77,8 @@ class PiHarness(ACPHarness[PiHarnessConfig]):
 
     async def setup(self, runtime: Runtime) -> None:
         await ensure_node(runtime)
-        logger.info(
-            "pi: ensuring Pi %s and pi-acp %s are installed",
+        logger.debug(
+            "Ensuring Pi %s and pi-acp %s are installed",
             self.config.version,
             ACP_VERSION,
         )
@@ -104,7 +105,7 @@ class PiHarness(ACPHarness[PiHarnessConfig]):
         data: TaskData,
     ) -> ACPConfig:
         system_prompt, prompt = self.resolve_prompt(data)
-        agent_dir = f".vf-pi-agent-{trace.id}"
+        agent_dir = f"{STATE_ROOT}/{trace.id}"
         skills_dir = f"{agent_dir}/skills"
         await self.install_skills(runtime, skills_dir)
         reasoning = ctx.sampling.reasoning_effort not in (
@@ -203,7 +204,7 @@ class PiHarness(ACPHarness[PiHarnessConfig]):
         )
 
     async def cleanup(self, trace: Trace, runtime: Runtime) -> None:
-        await remove_dir(runtime, f".vf-pi-agent-{trace.id}", "Pi state")
+        await remove_dir(runtime, f"{STATE_ROOT}/{trace.id}", "Pi state")
 
     async def gate_tools(
         self, config: ACPConfig, runtime: Runtime, url: str, secret: str

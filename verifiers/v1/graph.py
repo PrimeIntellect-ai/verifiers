@@ -24,6 +24,7 @@ import binascii
 import hashlib
 import json
 import time
+import weakref
 from dataclasses import dataclass, fields
 from typing import TYPE_CHECKING, Any
 
@@ -33,7 +34,6 @@ from pydantic import (
     ConfigDict,
     Field,
     FieldSerializationInfo,
-    ValidationInfo,
     field_serializer,
     field_validator,
 )
@@ -49,11 +49,10 @@ from verifiers.v1.types import (
     IntStream,
     Message,
     Response,
-    SamplingMask,
+    SamplerSupport,
     TextContentPart,
     Tool,
     ToolMessage,
-    TopLogprobs,
     WeightVersionSpan,
     as_list,
     decode_ndarray,
@@ -204,19 +203,15 @@ class MessageNode(BaseModel):
     the turn's `generate` payload by `_attribute_routed_experts`; `Branch.routed_experts`
     concatenates these along the path into the trainer's router-replay input. Rides the wire as
     a raw-bytes `__nd__` dict; kept off disk by the dump-site `exclude` in prime-rl."""
-    sampling_mask: SkipJsonSchema[SamplingMask | None] = None
-    """Sampling masks for this node's sampled tokens.
-
-    `ids` stores the flat token ids and `counts` stores each token's row size. Assistant
+    sampler_support: SkipJsonSchema[SamplerSupport | None] = None
+    """The sampler's support for this node's sampled tokens, one row each: the replayed
+    sampling mask of truncated sampling or a head of the sampler's distribution. Assistant
     nodes only. The arrays serialize as raw-byte `__nd__` dictionaries.
     """
     weight_versions: list[WeightVersionSpan] | None = None
     """Engine weight-version spans over this node's sampled tokens (indexes into the
     completion, as vLLM returns them). Assistant nodes only; None when the engine labels
     none."""
-
-    top_logprobs: SkipJsonSchema[TopLogprobs | None] = None
-    """Sampler top-k probabilities for sampled tokens; unnormalized over the head."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
@@ -281,28 +276,26 @@ class MessageNode(BaseModel):
             return decode_ndarray(value)
         raise TypeError(f"cannot build ndarray field from {type(value).__name__}")
 
-    @field_serializer("sampling_mask", "top_logprobs")
-    def serialize_sampling_arrays(
-        self, payload: SamplingMask | TopLogprobs | None
-    ) -> dict | None:
-        if payload is None:
+    @field_serializer("sampler_support")
+    def serialize_sampler_support(self, support: SamplerSupport | None) -> dict | None:
+        if support is None:
             return None
         return {
-            field.name: encode_ndarray(getattr(payload, field.name))
-            for field in fields(payload)
+            field.name: encode_ndarray(array)
+            for field in fields(support)
+            if (array := getattr(support, field.name)) is not None
         }
 
-    @field_validator("sampling_mask", "top_logprobs", mode="before")
+    @field_validator("sampler_support", mode="before")
     @classmethod
-    def deserialize_sampling_arrays(
-        cls, value: Any, info: ValidationInfo
-    ) -> SamplingMask | TopLogprobs | None:
-        kind = SamplingMask if info.field_name == "sampling_mask" else TopLogprobs
-        if value is None or isinstance(value, kind):
+    def deserialize_sampler_support(cls, value: Any) -> SamplerSupport | None:
+        if value is None or isinstance(value, SamplerSupport):
             return value
         if isinstance(value, dict):
-            return kind(**{key: decode_ndarray(array) for key, array in value.items()})
-        raise TypeError(f"cannot build {kind.__name__} from {type(value).__name__}")
+            return SamplerSupport(
+                **{key: decode_ndarray(array) for key, array in value.items()}
+            )
+        raise TypeError(f"cannot build SamplerSupport from {type(value).__name__}")
 
 
 def _canonical_tool_arguments(arguments: str) -> str:
@@ -317,7 +310,28 @@ def _canonical_tool_arguments(arguments: str) -> str:
 _PROVIDER_STATE_FIELDS = frozenset({"encrypted_content", "signature", "data", "phase"})
 
 
+_HASHES: dict[int, tuple[weakref.ref, str]] = {}
+"""`message_hash` per live message, by id: a message is never changed in place (a change is a
+copy), and a harness re-sends its whole conversation every turn, which is hashed three times."""
+
+
 def message_hash(message: Message) -> str:
+    """`_message_hash`, kept with the message while it lives."""
+    kept = _HASHES.get(id(message))
+    if kept is not None and kept[0]() is message:
+        return kept[1]
+    digest = _message_hash(message)
+    key = id(message)
+
+    def forget(ref: weakref.ref) -> None:
+        if (entry := _HASHES.get(key)) is not None and entry[0] is ref:
+            del _HASHES[key]
+
+    _HASHES[key] = weakref.ref(message, forget), digest
+    return digest
+
+
+def _message_hash(message: Message) -> str:
     """Stable content hash on the fields that round-trip through a prompt — role, content
     (None and "" equal), assistant reasoning content when present, assistant tool calls,
     opaque continuation state, tool call id. Two messages hash equal iff they're the same
@@ -819,18 +833,16 @@ def _attribute_routed_experts(
         off = end
 
 
-def _attribute_sampling_mask(
-    trace: Trace, assistant_id: int, payload: SamplingMask | None
-) -> None:
-    """Attach a completion-aligned sampling mask to the assistant node."""
-    if payload is None:
-        return
-    node = trace.nodes[assistant_id]
-    if len(payload.counts) != np.count_nonzero(node.mask) or int(
-        payload.counts.sum()
-    ) != len(payload.ids):
-        return
-    node.sampling_mask = payload
+def _check_sampler_support(support: SamplerSupport, num_sampled: int) -> None:
+    """A sampler support must hold one row per sampled token."""
+    if (
+        len(support.counts) != num_sampled
+        or len(support.replayed) != num_sampled
+        or (support.counts < 0).any()
+        or int(support.counts.sum()) != len(support.ids)
+        or (support.logprobs is not None and len(support.logprobs) != len(support.ids))
+    ):
+        raise ValueError("Sampler support must align with every sampled token")
 
 
 def _project_prompt_attribution(
@@ -896,27 +908,13 @@ def _project_prompt_attribution(
     return projected_spans, projected_is_content
 
 
-def _attribute_top_logprobs(
-    trace: Trace, assistant_id: int, payload: TopLogprobs | None
-) -> None:
-    """Attach a completion-aligned top-k sampling head to the assistant node."""
-    if payload is None:
-        return
-    node = trace.nodes[assistant_id]
-    if (
-        len(payload.counts) != np.count_nonzero(node.mask)
-        or (payload.counts < 0).any()
-        or int(payload.counts.sum()) != len(payload.ids)
-        or len(payload.ids) != len(payload.logprobs)
-    ):
-        raise ValueError("Top logprobs must align with every sampled node token")
-    node.top_logprobs = payload
-
-
 def _commit_turn(turn: PendingTurn, response: Response) -> int:
     trace = turn.trace
     prompt = turn.prompt
     tokens = response.tokens
+    # Checked before the turn writes any node, so a rejected response leaves the graph as it was.
+    if tokens is not None and tokens.sampler_support is not None:
+        _check_sampler_support(tokens.sampler_support, len(tokens.completion_ids))
     # Constant per renderer, so re-stamping every turn is idempotent.
     if tokens is not None and tokens.mm_token_type_id_map:
         trace.mm_token_type_id_map = tokens.mm_token_type_id_map
@@ -1125,13 +1123,9 @@ def _commit_turn(turn: PendingTurn, response: Response) -> int:
         trace, prefix, new_node_ids, path_len, tokens.routed_experts if tokens else None
     )
 
-    # Sampling masks are completion-aligned, so only the sampled node carries them.
-    _attribute_sampling_mask(
-        trace, assistant_id, tokens.sampling_mask if tokens else None
-    )
-    _attribute_top_logprobs(
-        trace, assistant_id, tokens.top_logprobs if tokens else None
-    )
+    # The sampler support is completion-aligned, so only the sampled node carries it.
+    if tokens is not None:
+        trace.nodes[assistant_id].sampler_support = tokens.sampler_support
 
     return assistant_id
 

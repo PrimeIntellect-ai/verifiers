@@ -1400,15 +1400,6 @@ http = [
 ]
 
 [[package]]
-name = "gepa"
-version = "0.1.4"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/95/56/925779e5690971f1b022f7d107caf015c33ec09560261273ec137e23a8f2/gepa-0.1.4.tar.gz", hash = "sha256:6dd153a676ae5481764860d19286a9c0e8ddb5ef70d7f13044faf24978bdb6b8", size = 351343, upload-time = "2026-07-15T14:53:59.929Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/fd/77/5b3a281cfd9caaa9e68349b434cf27f1ca448003ee0067a1ae2184dc52d1/gepa-0.1.4-py3-none-any.whl", hash = "sha256:12b971039599625c156d2231f6d72a29c31a22e9c237689459b5f1a3c353f532", size = 290167, upload-time = "2026-07-15T14:53:58.422Z" },
-]
-
-[[package]]
 name = "glossary"
 version = "0.1.0"
 source = { editable = "environments/glossary" }
@@ -3272,7 +3263,7 @@ toml = [
 
 [[package]]
 name = "prime-sandboxes"
-version = "0.5.5"
+version = "0.5.9"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiofiles" },
@@ -3284,9 +3275,9 @@ dependencies = [
     { name = "pyqwest" },
     { name = "tenacity" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/e2/de/d46a1e0ccb7ba380c2149056a34a4d59f659c326a4b16f0f5905252aaed4/prime_sandboxes-0.5.5.tar.gz", hash = "sha256:06d882de77ce60862b085f81379a47a1650b6b9c9dc8675d26075c34d563e7b6", size = 163390, upload-time = "2026-11-03T01:00:10.124Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/8d/50/40e351b1fada75c8a166c3e482584912e660d7a143b5a1fa317c2038f2d0/prime_sandboxes-0.5.9.tar.gz", hash = "sha256:4aab8f2ca2dbd1f18cf356bb8c072baa29747cdee0305817d4d4eed7283c8cae", size = 173127, upload-time = "2026-11-10T01:03:33.691Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/5c/10/dd5b4b4be6127492c16da5b41a5009386aabfa30864529de19728a2323cd/prime_sandboxes-0.5.5-py3-none-any.whl", hash = "sha256:c0edefb060e1b0345c99cc8219d58e7567f7297ec1018dc0bbd80b35c1abb226", size = 88574, upload-time = "2026-11-03T01:00:08.28Z" },
+    { url = "https://files.pythonhosted.org/packages/60/77/888edf3076ef91d424f323aad4455e4a2c426cf1dde91728a46e19a029ac/prime_sandboxes-0.5.9-py3-none-any.whl", hash = "sha256:f66355ab2c8384d1ade329c82b9497165c490778031f927c00fefa6101f1536d", size = 93862, upload-time = "2026-11-10T01:03:31.814Z" },
 ]
 
 [[package]]
@@ -4245,7 +4236,7 @@ wheels = [
 
 [[package]]
 name = "renderers"
-version = "0.2.0"
+version = "0.2.1.dev9"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "jinja2" },
@@ -4256,9 +4247,9 @@ dependencies = [
     { name = "prime-pydantic-config" },
     { name = "tiktoken" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/84/31/3d6cd3cdf81796ad4e235ed3d3f75867b5b42a0f6c4e1c5786985387d5d3/renderers-0.2.0.tar.gz", hash = "sha256:ae9141ffd4f356506fcc3a8e9e34e84959ec59081ac5f14369bacc24555a373e", size = 465167, upload-time = "2026-10-29T00:16:47.072Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/4b/cf/eca4b03049d353cfeab59fd5fefbef3f489907f76254321d0d988fcb0ca7/renderers-0.2.1.dev9.tar.gz", hash = "sha256:9c8120703fb96146018a321270215e9f5cb2e45cb65576179696402d29628502", size = 470340, upload-time = "2026-11-10T00:07:09.634Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/02/0d/c1f43f31c60f0fb9e69f29513c86e0d11119b7279eca2261953e8e0b12cc/renderers-0.2.0-py3-none-any.whl", hash = "sha256:fbccdd8dca1dca5df758c239a13e582446b8ee47da6e0e7540c59175614f2417", size = 266449, upload-time = "2026-10-29T00:16:45.167Z" },
+    { url = "https://files.pythonhosted.org/packages/fb/43/0a0ed0f28cd71e0466ce41b29778a50aceb4d2f853062802a39e0e28ca74/renderers-0.2.1.dev9-py3-none-any.whl", hash = "sha256:21d53ee374df527b207d905fd7c3b1ca1d12f279e5237a07eff6237714de74e6", size = 267638, upload-time = "2026-11-10T00:07:08.125Z" },
 ]
 
 [package.optional-dependencies]
@@ -5071,7 +5062,6 @@ default-groups = ["dev", "examples"]
 dependencies = [
     { name = "aiohttp" },
     { name = "anthropic" },
-    { name = "gepa" },
     { name = "h11" },
     { name = "httpx" },
     { name = "httpx2" },

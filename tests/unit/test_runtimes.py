@@ -174,12 +174,31 @@ def test_built_in_runtime_declares_its_features(name) -> None:
 async def test_run(runtime) -> None:
     async with provisioned(runtime) as view:
         result = await view.run(
-            ["sh", "-c", 'echo "$GREETING"; exit 3'], {"GREETING": "hi"}
+            ["sh", "-c", 'echo "$GREETING"; echo diagnostic >&2; exit 3'],
+            {"GREETING": "hi"},
         )
         assert result.exit_code == 3, result
         assert result.stdout.strip() == "hi", result
+        assert result.stderr.strip() == "diagnostic", result
         stdin = await view.run(["cat"], {})
         assert stdin.exit_code == 0 and stdin.stdout == "", "run must close stdin"
+        if runtime.type == "prime":
+            cleanup = """
+import pathlib, shutil, sys
+for root in ('/tmp', '/var/tmp', '/dev/shm'):
+    for path in pathlib.Path(root).iterdir():
+        if path.is_dir() and not path.is_symlink():
+            shutil.rmtree(path)
+        else:
+            path.unlink()
+print('cleaned scratch')
+print('still attached', file=sys.stderr)
+sys.exit(7)
+"""
+            result = await view.run([*PYTHON, "-c", cleanup], {})
+            assert result.exit_code == 7, result
+            assert result.stdout.strip() == "cleaned scratch", result
+            assert result.stderr.strip() == "still attached", result
 
 
 async def test_exec(runtime) -> None:

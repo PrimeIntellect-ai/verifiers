@@ -13,8 +13,11 @@ EDGE_TYPE_PATTERN = r"^[A-Za-z][A-Za-z0-9._:-]{0,127}$"
 
 ACP_SEMANTIC_EDGES_METADATA_KEY = "ai.prime.acp/semantic-edges-v1"
 ACP_MODEL_REQUEST_ID_HEADER = "X-ACP-Model-Request-ID"
+ACP_AGENT_SESSION_ID_HEADER = "X-ACP-Agent-Session-ID"
 
-ACP_EXTENSION_HEADERS = frozenset({ACP_MODEL_REQUEST_ID_HEADER.lower()})
+ACP_EXTENSION_HEADERS = frozenset(
+    {ACP_MODEL_REQUEST_ID_HEADER.lower(), ACP_AGENT_SESSION_ID_HEADER.lower()}
+)
 """Private ACP extension headers consumed at interception and never sent upstream."""
 
 
@@ -24,6 +27,9 @@ class ACPInfo(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     request_id: str = Field(pattern=ACP_REQUEST_ID_PATTERN)
+    agent_session_id: str | None = Field(default=None, pattern=ACP_REQUEST_ID_PATTERN)
+    """The calling agent's session in a recursive harness tree; the root's is the
+    rollout's."""
 
 
 class SemanticEdge(BaseModel):
@@ -92,7 +98,7 @@ class SemanticEdgeSet(BaseModel):
 def extract_acp_info(
     headers: Mapping[str, str],
 ) -> tuple[ACPInfo | None, dict[str, str]]:
-    """Parse ACP request metadata and remove its private transport header.
+    """Parse ACP request metadata and remove its private transport headers.
 
     The semantic edge set arrives independently in ACP metadata. Ordinary requests
     without the private correlation header remain unchanged.
@@ -109,4 +115,19 @@ def extract_acp_info(
         return None, forwarded
     if re.fullmatch(ACP_REQUEST_ID_PATTERN, request_id) is None:
         raise ValueError(f"{ACP_MODEL_REQUEST_ID_HEADER} is not a valid ACP request ID")
-    return ACPInfo(request_id=request_id), forwarded
+    agent_session_id = normalized.get(ACP_AGENT_SESSION_ID_HEADER.lower())
+    if (
+        agent_session_id is not None
+        and re.fullmatch(ACP_REQUEST_ID_PATTERN, agent_session_id) is None
+    ):
+        raise ValueError(f"{ACP_AGENT_SESSION_ID_HEADER} is not a valid ACP session ID")
+    return ACPInfo(request_id=request_id, agent_session_id=agent_session_id), forwarded
+
+
+def routing_session_id(trace_id: str, agent_session_id: str | None) -> str:
+    """The inference session a rollout's model call is routed by. A sub-agent of a
+    recursive harness gets its own within the rollout, so a session-affinity router
+    keeps each agent's prefix on one engine without pinning the whole tree to it."""
+    if agent_session_id is None or agent_session_id == trace_id:
+        return trace_id
+    return f"{trace_id}:{agent_session_id}"

@@ -1,9 +1,10 @@
 import json
-import logging
 import os
 from pathlib import Path
 
-logger = logging.getLogger(__name__)
+from verifiers.v1.utils.logging import get_logger
+
+logger = get_logger(__name__)
 
 
 def load_prime_config() -> dict:

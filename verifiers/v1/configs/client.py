@@ -75,6 +75,9 @@ class EvalClientConfig(BaseClientConfig):
     """The default (eval): forward each request to a matching endpoint via `EvalClient`."""
 
     type: Literal["eval"] = "eval"
+    cache_retention: Literal["none", "short", "long"] | None = None
+    """Anthropic prompt-cache lifetime. ``None`` follows ``PI_CACHE_RETENTION``
+    (short by default); ``long`` emits ``ttl: "1h"``; ``none`` disables markers."""
 
 
 class TrainClientConfig(BaseClientConfig):

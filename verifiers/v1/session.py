@@ -18,7 +18,6 @@ import asyncio
 import hashlib
 import inspect
 import json
-import logging
 from collections import Counter
 from collections.abc import Awaitable, Callable
 from contextlib import AbstractAsyncContextManager
@@ -45,8 +44,14 @@ from verifiers.v1.types import (
     UserMessage,
 )
 from verifiers.v1.utils.decorators import invoke
+from verifiers.v1.utils.logging import (
+    LogScope,
+    current_scope,
+    enter_scope,
+    get_logger,
+)
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 MCPProxy = Callable[[str], AbstractAsyncContextManager[str]]
 
@@ -169,6 +174,8 @@ class RolloutSession:
     response_stops: list[Callable] = field(default_factory=list)
     on_turn_input: Callable[[], None] | None = None
     """One-shot acknowledgement when a resumed harness reaches model inference."""
+    log_scope: LogScope = field(default_factory=current_scope)
+    """The rollout's log scope, re-entered by the handler tasks that serve it."""
     gates_tools: bool = False
     """Whether the harness asks `/tool` before executing each call (see
     `Harness.SUPPORTS_TOOL_INTERCEPTION`). Without that gate a pre-execution rewrite
@@ -213,6 +220,9 @@ class RolloutSession:
     gated_tools: set[tuple[str, str]] = field(default_factory=set)
     """Calls the harness's gate asked about before executing."""
     prepared_users: Counter[str] = field(default_factory=Counter)
+    last_request: tuple[list, Messages] = ((), [])
+    """The last chat request's raw messages (copied: the server rewrites a body in place) and
+    their parse, which the next request's equal prefix reuses instead of parsing again."""
 
     @property
     def stopped(self) -> bool:
@@ -606,6 +616,8 @@ class RolloutSession:
         if self.released:  # sealed while this handler was scheduled — don't serve
             task.cancel()
             return
+        if task is asyncio.current_task():
+            enter_scope(self.log_scope)
         self.tasks.add(task)
         task.add_done_callback(self.tasks.discard)
 
@@ -623,7 +635,7 @@ class RolloutSession:
         so the interception server holds no opinion about the state's contents."""
         if (limit := self.limits.reached(self.trace)) is not None:
             self.trace.stop(limit)
-            logger.debug("limit %r reached: id=%s", limit, self.trace.id)
+            logger.debug("Reached the %s limit", limit)
             return limit
         for stop in self.trace_stops:
             result = await call_hook(stop, {Trace: self.trace})
@@ -631,6 +643,6 @@ class RolloutSession:
                 raise TaskError(f"@stop must return bool, got {type(result).__name__}")
             if result:
                 self.trace.stop(stop.__name__)
-                logger.debug("stop %r fired: id=%s", stop.__name__, self.trace.id)
+                logger.debug("Stopped by @stop %s", stop.__name__)
                 return stop.__name__
         return None

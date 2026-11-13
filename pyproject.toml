@@ -33,10 +33,9 @@ dependencies = [
     "math-verify>=0.8.0",
     "openai>=2.54.0,<3.0.0",
     "prime-tunnel>=0.1.17",
-    "prime-sandboxes>=0.5.5",
+    "prime-sandboxes>=0.5.9",
     "pydantic>=2.12.3",
     "tenacity>=8.5.0",
-    "gepa>=0.0.6",
     "orjson>=3.10.0",
     "httpx>=0.27.0",
     "httpx2>=2.12.0",
@@ -46,7 +45,7 @@ dependencies = [
     "prime-pydantic-config[toml]>=0.4.3",
     "loguru>=0.7.0",
     "tomli-w>=1.0.0",
-    "renderers[multimodal]>=0.2.0",
+    "renderers[multimodal]>=0.2.1.dev9",
     "typing_extensions>=4.12.2",
     "mcp==2.2.0",
 ]
@@ -150,7 +149,6 @@ renderers = false
 vf-run = "verifiers.v1.cli.run:main"
 vf-validate = "verifiers.v1.cli.validate:main"
 vf-debug = "verifiers.v1.cli.debug:main"
-vf-gepa = "verifiers.v1.cli.gepa:main"
 
 # hatchling configuration
 [tool.hatch.version]
@@ -226,6 +224,7 @@ markers = [
     "claude_code: integration cells on the claude-code harness",
     "openclaw: integration cells on the OpenClaw harness",
     "hermes_agent: integration cells on the hermes-agent harness",
+    "stirrup: integration cells on the Stirrup harness",
     "deepseek: integration cells on the DeepSeek minimal harness",
     "rlm: integration cells on the rlm harness",
     "kimi_code: integration cells on the kimi-code harness",

@@ -17,10 +17,13 @@ def _key(text: str) -> str:
 
 class EchoUserSimConfig(vf.TasksetConfig):
     phrases: list[str] = PHRASES
+    finish_tool: bool = False
+    """Request replies through finish for harnesses that require it."""
 
 
 class EchoUserSimData(vf.TaskData):
     phrases: list[str]
+    finish_tool: bool = False
 
 
 class EchoUserSimTask(vf.Task[EchoUserSimData, vf.State, vf.TaskConfig]):
@@ -28,7 +31,14 @@ class EchoUserSimTask(vf.Task[EchoUserSimData, vf.State, vf.TaskConfig]):
     async def echoed(self, trace: vf.Trace) -> float:
         # Match each phrase to a later reply, in order: a harness may spend turns on
         # tool calls, so replies and phrases need not pair up one to one.
-        replies = iter(_key(m.content or "") for m in trace.assistant_messages)
+        replies = iter(
+            _key(reply)
+            for reply in (
+                trace.info.get("user_echo_replies", [])
+                if self.data.finish_tool
+                else [m.content or "" for m in trace.assistant_messages]
+            )
+        )
         matched = sum(
             any(_key(phrase) in reply for reply in replies)
             for phrase in self.data.phrases
@@ -45,10 +55,17 @@ class EchoUserSimEnv(vf.SingleAgentEnv):
         async with agents.agent.interaction(task) as interaction:
             for phrase in task.data.phrases:
                 instruction = (
-                    "Answer directly without using tools or running code. Your "
+                    f"Call your finish tool with reason exactly {phrase!r} and paths=[]."
+                    if task.data.finish_tool
+                    else "Answer directly without using tools or running code. Your "
                     f"reply must contain this exact phrase: {phrase}"
                 )
-                if (await interaction.turn(instruction)).terminated:
+                segment = await interaction.turn(instruction)
+                if task.data.finish_tool:
+                    interaction.trace.info.setdefault("user_echo_replies", []).append(
+                        segment.last_reply
+                    )
+                if segment.terminated:
                     break
 
 
@@ -61,6 +78,7 @@ class EchoUserSimTaskset(vf.Taskset[EchoUserSimTask, EchoUserSimConfig]):
                     # No prompt: the scripted user opens the conversation.
                     prompt=None,
                     phrases=self.config.phrases,
+                    finish_tool=self.config.finish_tool,
                 )
             )
         ]

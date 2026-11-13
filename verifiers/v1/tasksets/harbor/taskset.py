@@ -19,7 +19,6 @@ or tests build definition, then fall back to the agent environment. Unsupported 
 import asyncio
 import hashlib
 import io
-import logging
 import shutil
 import subprocess
 import sys
@@ -51,8 +50,9 @@ from verifiers.v1.utils.artifacts import (
 )
 from verifiers.v1.utils.decorators import reward
 from verifiers.v1.utils.env import resolve_env
+from verifiers.v1.utils.logging import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 CACHE = Path.home() / ".cache" / "harbor"
 HARBOR_INSTALL_HINT = "uv sync --python 3.12 --extra harbor"
@@ -409,16 +409,39 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
                 f"{'rm -rf /tests && ' if wipe else ''}"
                 "mkdir -p /tests && tar -xzf /tmp/tests.tgz -C /tests"
             )
-        command = (
-            "rm -f /logs/verifier/reward.json /logs/verifier/reward.txt && "
-            f"mkdir -p /logs/verifier {ARTIFACTS_DIR} && {stage}"
+        # Verifier subprocesses can use different users; opening their log directory
+        # requires its owner or root, even when it is already writable. A grading box
+        # of its own starts with an empty log directory: anything already there came
+        # from the image or from the agent's restored artifacts, not from this grader.
+        isolated = wipe or self.scoring.mode == "isolated"
+        setup = (
+            runtime.with_user("root")
+            if runtime.backend.SUPPORTS_USER_SWITCHING
+            else runtime
         )
-        result = await runtime.run(["sh", "-c", command], {})
-        if result.exit_code:
-            raise TaskError(
-                f"staging tests failed (exit {result.exit_code}): "
-                f"{(result.stderr or result.stdout).strip()[-500:]}"
-            )
+        for view, command in (
+            (
+                setup,
+                (
+                    f"{'rm -rf /logs/verifier && ' if isolated else ''}"
+                    f"mkdir -p /logs/verifier {ARTIFACTS_DIR} && "
+                    f"chmod 777 /logs/verifier {ARTIFACTS_DIR}"
+                ),
+            ),
+            (
+                runtime,
+                (
+                    "rm -f /logs/verifier/reward.json /logs/verifier/reward.txt && "
+                    f"{stage}"
+                ),
+            ),
+        ):
+            result = await view.run(["sh", "-c", command], {})
+            if result.exit_code:
+                raise TaskError(
+                    f"staging tests failed (exit {result.exit_code}): "
+                    f"{(result.stderr or result.stdout).strip()[-500:]}"
+                )
 
     @reward(weight=1.0)
     async def solved(self, runtime: Runtime, trace: Trace) -> float | dict[str, float]:

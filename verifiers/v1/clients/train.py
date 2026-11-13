@@ -2,7 +2,6 @@
 
 import asyncio
 import json
-import logging
 import threading
 from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import asynccontextmanager
@@ -11,6 +10,7 @@ from typing import Any, ClassVar, TypeVar
 
 import numpy as np
 from openai import OpenAIError
+from openai.types import CompletionUsage
 from renderers import OverlongPromptError, RenderedTokens, Renderer, RendererConfig
 from renderers.base import ToolCallParseStatus, is_multimodal
 
@@ -26,16 +26,16 @@ from verifiers.v1.types import (
     AssistantMessage,
     FinishReason,
     Response,
-    SamplingMask,
+    SamplerSupport,
     Tool,
     ToolCall,
-    TopLogprobs,
     TurnTokens,
     Usage,
     WeightVersionSpan,
 )
+from verifiers.v1.utils.logging import get_logger, isolated
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 T = TypeVar("T")
 
@@ -166,11 +166,8 @@ def response_from_generate(
             tool_calls=tool_calls,
         ),
         finish_reason=finish,
-        # /inference/v1/generate returns exact token ids but no usage details, so the
-        # completion's reasoning-token subset is unknown.
-        usage=Usage(
-            prompt_tokens=len(prompt_ids), completion_tokens=len(completion_ids)
-        ),
+        # Require provider usage to preserve cache and reasoning accounting.
+        usage=Usage.from_openai(CompletionUsage.model_validate(result["usage"])),
         # The streams are already typed arrays, so skip revalidation.
         tokens=TurnTokens.model_construct(
             prompt_ids=prompt_ids,
@@ -190,19 +187,12 @@ def response_from_generate(
             mm_placeholders=mm_placeholders,
             mm_token_type_id_map=mm_token_type_id_map,
             routed_experts=result.get("routed_experts"),
-            sampling_mask=SamplingMask.from_sampling_mask(mask)
-            if (mask := result.get("sampling_mask"))
+            sampler_support=SamplerSupport.from_response(support)
+            if (support := result.get("sampler_support")) is not None
             else None,
             weight_versions=[WeightVersionSpan(**span) for span in spans]
             if (spans := result.get("weight_versions"))
             else None,
-            top_logprobs=(
-                TopLogprobs.from_top_logprobs(
-                    result["completion_top_ids"], result["completion_top_logprobs"]
-                )
-                if result.get("completion_top_ids") is not None
-                else None
-            ),
         ),
     )
 
@@ -315,11 +305,12 @@ class ElasticRendererPool:
 
             slot = RendererSlot(await asyncio.to_thread(build))
             self.renderers.append(slot)
-            logger.info(
-                "renderer pool: %d renderer(s), multiplex=%d",
-                len(self.renderers),
-                self.multiplex,
-            )
+            with isolated():
+                logger.info(
+                    "Grew renderer pool to %d renderer(s) multiplex=%d",
+                    len(self.renderers),
+                    self.multiplex,
+                )
             return slot
 
     @asynccontextmanager

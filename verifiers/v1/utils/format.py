@@ -10,19 +10,19 @@ if TYPE_CHECKING:
 
 
 def format_time(seconds: float) -> str:
-    """A compact human-readable duration (mirrors prime-rl): s / m s / h m / d h."""
+    """A compact human-readable duration (mirrors prime-rl): ms / s / m s / h m / d h."""
     if seconds < 1:
-        return f"{seconds:.1f}s"
+        return f"{seconds * 1000:.0f}ms"
     if seconds < 60:
-        return f"{seconds:.0f}s"
+        return f"{seconds:.1f}s"
     if seconds < 3600:
-        m, s = divmod(int(seconds), 60)
-        return f"{m}m {s}s"
+        m, s = divmod(seconds, 60)
+        return f"{int(m)}m {int(s)}s"
     if seconds < 86400:
-        h, rem = divmod(int(seconds), 3600)
-        return f"{h}h {rem // 60}m"
-    d, rem = divmod(int(seconds), 86400)
-    return f"{d}d {rem // 3600}h"
+        h, rem = divmod(seconds, 3600)
+        return f"{int(h)}h {int(rem // 60)}m"
+    d, rem = divmod(seconds, 86400)
+    return f"{int(d)}d {int(rem // 3600)}h"
 
 
 def format_count(n: int) -> str:

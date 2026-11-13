@@ -46,6 +46,7 @@ HARNESSES: list[str | dict] = [
     "codex",
     "claude-code",
     "hermes-agent",
+    "stirrup",
     "deepseek",
     "kimi-code",
     "pi",
