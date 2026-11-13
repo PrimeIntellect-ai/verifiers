@@ -5,6 +5,7 @@ import asyncio
 import os
 
 import pytest
+from conftest import CI_RETRIES
 
 import verifiers.v1 as vf
 from verifiers.v1.configs.agent import TimeoutConfig
@@ -139,6 +140,7 @@ async def test_service_scoring(tmp_path, mode, collect_fails, scoring_timeout):
     config = vf.AgentConfig(
         model="unused",
         runtime=vf.PrimeConfig(labels=["vf-ci"]),
+        retries=CI_RETRIES,
         scoring=vf.ScoringConfig(
             mode=mode,
             env={"EXPECT_SIDECAR": "1" if mode == "isolated" else "0"},

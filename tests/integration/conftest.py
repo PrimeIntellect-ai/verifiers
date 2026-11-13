@@ -19,6 +19,7 @@ from verifiers.v1.cli.run import run_episodes
 from verifiers.v1.clients import EvalClientConfig, ModelContext
 from verifiers.v1.configs.cli.run import RunnerConfig
 from verifiers.v1.configs.harness import HarnessConfig
+from verifiers.v1.configs.retries import RetryConfig, RetryRule
 from verifiers.v1.configs.sampling import SamplingConfig
 from verifiers.v1.episode import Episode
 from verifiers.v1.utils.loaders import harness_config_type
@@ -28,6 +29,17 @@ CI_REASONING_EFFORT = "low"
 # Judge config fields that keep config-plugged judges on the CI model and effort.
 CI_JUDGE = {"model": CI_MODEL, "sampling": {"reasoning_effort": CI_REASONING_EFFORT}}
 CI_DECISION_JUDGE = {"model": "cloudflare/clef"}
+# Retry transient faults only; any other error fails the test.
+CI_RETRIES = RetryConfig(
+    rules=[
+        *(
+            RetryRule(type=error_type, max_retries=2)
+            for error_type in ("ProviderError", "InterceptionError", "HarnessError")
+        ),
+        # The Prime API reports a transient outage as a Connect "unavailable" status.
+        RetryRule(type="SandboxError", message=r"\(unavailable\)", max_retries=2),
+    ]
+)
 
 # Fixture tasksets (echo, echo-agentic, ...) live in tests/integration/fixtures,
 # added to the path via `pythonpath` in pyproject so the loader resolves them by id.
@@ -139,14 +151,7 @@ def _eval_config(
         runtime_cfg = dict(runtime)
         _label_prime_runtimes(runtime_cfg)
         env_cfg.setdefault("agent", {})["runtime"] = runtime_cfg
-    retries = {
-        "max_retries": 0,
-        "rules": [
-            {"type": error_type, "max_retries": 2}
-            for error_type in ("ProviderError", "InterceptionError", "HarnessError")
-        ],
-    }
-    env_cfg.setdefault("retries", retries)
+    env_cfg.setdefault("retries", CI_RETRIES)
     # Per-run caps live on the seats: cap each role the env declares (a test's own
     # seat dict wins over the shared defaults).
     for seat in agent_seats(taskset, env_cfg.get("id", "")):
@@ -155,7 +160,7 @@ def _eval_config(
         seat_cfg.setdefault("max_output_tokens", max_tokens)
         seat_cfg.setdefault("timeout", {"rollout": rollout_timeout, "scoring": 60})
         # Agent runs retry locally; interactions retry with their whole episode.
-        seat_cfg.setdefault("retries", retries)
+        seat_cfg.setdefault("retries", CI_RETRIES)
     return RunnerConfig(
         env={
             "taskset": taskset_cfg,
