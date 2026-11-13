@@ -47,7 +47,7 @@ EFFECTIVELY_UNBOUNDED_SECONDS = 30 * 24 * 60 * 60
 bounded by idle detection or rollout cancellation; 30 days is above any real run."""
 # The SDK reads finished jobs' output through a bounded pool whose deadline includes time
 # spent queued; its defaults (20 reads, 45s) expire most reads when thousands of rollouts
-# finish a job at once (e.g. every harness's setup at a 3k-rollout start).
+# finish a job at once (e.g. every harness program of a cancelled step).
 _OUTPUT_READS = 100
 """Concurrent output reads on the shared client."""
 _OUTPUT_DEADLINE_SECONDS = 300
@@ -65,6 +65,8 @@ _FORK_ATTEMPTS = 3
 _RESUME_RETRY_SECONDS = 600
 """How long a checkpoint gets to become restorable (`DURABLE`): the platform uploads it
 after the request returns, and only a durable one restores."""
+_OUTPUT_TAIL_BYTES = 10 * 1024 * 1024
+"""Maximum retained bytes per command output stream."""
 _PUBLIC_DOMAIN = "sandbox-v2-prod.pinfra.io"
 """Domain of the public URLs `https://<port>-<sandbox-id>.<domain>` that a LAN network's
 `internet` rule publishes ports at."""
@@ -133,8 +135,8 @@ class _SharedClient:
 
 
 # One `AsyncSandboxClient` per event loop, leased by every live runtime on it. The SDK
-# coalesces concurrent status polls per client into batched requests (up to 100 ids
-# each), so sharing a client turns N runtimes' creation/job polls into a few batch
+# coalesces concurrent creation polls per client into batched requests (up to 100 ids
+# each), so sharing a client turns N runtimes' creation polls into a few batch
 # calls. Keyed by loop (not plain process-global) so a client's tasks stay on the loop
 # that created it.
 _shared_clients: dict[asyncio.AbstractEventLoop, _SharedClient] = {}
@@ -586,6 +588,50 @@ class PrimeBackend(RuntimeBackend):
         program: Program | None = None,
     ) -> ProgramResult:
         await self._awake.wait()
+        if program is not None:
+            return await self._run_job(runtime, argv, env, program)
+
+        async def collect(stream: AsyncIterator[bytes]) -> bytes:
+            tail = bytearray()
+            async for chunk in stream:
+                tail.extend(chunk[-_OUTPUT_TAIL_BYTES:])
+                del tail[:-_OUTPUT_TAIL_BYTES]
+            return bytes(tail)
+
+        try:
+            # Command sessions survive task cleanup of shared scratch directories.
+            # Close stdin explicitly: the live-process API keeps it open by default.
+            process = await self._client.open_process(
+                self.info.id,
+                "exec "
+                + shlex.join(["sh", "-c", 'exec "$@" < /dev/null', "sh", *argv]),
+                working_dir=self.config.workdir,
+                env=runtime.process_env(env),
+                user=runtime.user,
+            )
+            try:
+                stdout, stderr, exit_code = await asyncio.gather(
+                    collect(process.stdout), collect(process.stderr), process.wait()
+                )
+            finally:
+                # Closing signals and reaps a running process, then releases its stream.
+                await run_shielded(process.aclose())
+        except (
+            Exception
+        ) as e:  # a sandbox/API failure is one rollout's problem, not the eval's
+            raise SandboxError(f"prime exec failed: {e}") from e
+        return ProgramResult(
+            exit_code=exit_code,
+            stdout=stdout.decode(errors="replace"),
+            stderr=stderr.decode(errors="replace"),
+        )
+
+    async def _run_job(
+        self, runtime: Runtime, argv: list[str], env: dict[str, str], program: Program
+    ) -> ProgramResult:
+        """Run the harness's main program as a server-owned job. A native session ends
+        with its box, and a box that boots from a memory snapshot is a new one; the job's
+        files and process come with the snapshot, so `attach` continues the wait."""
         try:
             # Poll directly so rollout cancellation owns the execution timeout.
             job = await self._client.start_background_job(
@@ -599,13 +645,11 @@ class PrimeBackend(RuntimeBackend):
             Exception
         ) as e:  # a sandbox/API failure is one rollout's problem, not the eval's
             raise SandboxError(f"prime exec failed: {e}") from e
-        if program is not None:
-            program.job = job.model_dump()
+        program.job = job.model_dump()
         try:
             return await self._wait_job(job)
         finally:
-            if program is not None:
-                program.job = None
+            program.job = None
 
     async def attach(self, runtime: Runtime, job: dict[str, Any]) -> ProgramResult:
         from prime_sandboxes import BackgroundJob
