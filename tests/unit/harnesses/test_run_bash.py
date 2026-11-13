@@ -5,6 +5,7 @@ call returns its output so far, its PID and its log file."""
 import os
 import re
 import time
+from pathlib import Path
 
 from verifiers.v1.harnesses.utils.core import run_bash
 
@@ -39,6 +40,6 @@ def test_yield_keeps_command_running():
     assert match is not None
     pid, log = int(match.group(1)), match.group(2)
     assert alive(pid)
-    assert open(log).read() == "ready\n"
+    assert Path(log).read_text() == "ready\n"
     os.killpg(pid, 9)
     os.unlink(log)
