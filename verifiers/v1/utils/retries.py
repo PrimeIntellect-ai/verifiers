@@ -95,44 +95,26 @@ class RetryState:
         Return the triggering error so logs identify the actual retry cause.
         """
         for error in errors:
-            index = self._rule(error)
-            if index is not None and self.used[index] < self.rules[index].max_retries:
-                self.used[index] += 1
-                return error
-        return None
-
-    def allows(self, error: Exception) -> bool:
-        """Whether `next_error` would grant a retry for `error` now. Consumes nothing."""
-        from verifiers.v1.trace import Error
-
-        index = self._rule(
-            Error(
-                type=type(error).__name__,
-                message=str(error),
-                status_code=getattr(error, "status_code", None),
-            )
-        )
-        return index is not None and self.used[index] < self.rules[index].max_retries
-
-    def _rule(self, error: Error) -> int | None:
-        """The first rule that matches `error`: it alone sets the error's budget."""
-        for index, rule in enumerate(self.rules):
-            if rule.type is not None and error.type != rule.type:
-                continue
-            if rule.status_code is not None and (
-                error.status_code is None
-                or not any(
-                    error.status_code == status
-                    if isinstance(status, int)
-                    else error.status_code // 100 == int(status[0])
-                    for status in rule.status_code
-                )
-            ):
-                continue
-            pattern = self.patterns[index]
-            if pattern is not None and pattern.search(error.message) is None:
-                continue
-            return index
+            for index, rule in enumerate(self.rules):
+                if rule.type is not None and error.type != rule.type:
+                    continue
+                if rule.status_code is not None and (
+                    error.status_code is None
+                    or not any(
+                        error.status_code == status
+                        if isinstance(status, int)
+                        else error.status_code // 100 == int(status[0])
+                        for status in rule.status_code
+                    )
+                ):
+                    continue
+                pattern = self.patterns[index]
+                if pattern is not None and pattern.search(error.message) is None:
+                    continue
+                if self.used[index] < rule.max_retries:
+                    self.used[index] += 1
+                    return error
+                break
         return None
 
 

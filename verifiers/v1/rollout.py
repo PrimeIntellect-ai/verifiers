@@ -167,7 +167,6 @@ class Rollout:
         attempt: int = 1,
         restore: tuple[Trace, Checkpoint] | None = None,
         checkpoint: RolloutCheckpointConfig | None = None,
-        retryable: Callable[[Exception], bool] | None = None,
     ) -> None:
         """`attempt` numbers this run among the trace's retries, from 1 (stamped on
         the trace and the errors it captures). `restore` continues a failed attempt's trace from one of
@@ -197,11 +196,6 @@ class Rollout:
         self._borrowed_runtime = runtime
         self._collect_artifacts = collect_artifacts
         self._checkpointing = checkpoint
-        self._retryable = retryable
-        """Whether the run's owner would retry it after this error (`Agent.run`)."""
-        self.rescued = False
-        """Whether the newest snapshot holds the box as it waited for a model call that
-        then failed (`_rescue`): a retry restores it and asks for the call again."""
         self._durable: dict[str, asyncio.Task[None]] = {}
         self._captures: set[asyncio.Task] = set()
         """Snapshots being taken (`_checkpoint`), for `_settle_checkpoints` to wait for."""
@@ -529,8 +523,6 @@ class Rollout:
                     and self._memory
                 ):
                     self._session.checkpointer = self._checkpoint
-                    if self._checkpointing.on_error:
-                        self._session.rescuer = self._rescue
                 logger.debug(
                     "Set up %s harness in %s",
                     self.harness.config.name,
@@ -936,28 +928,15 @@ class Rollout:
             )
         ):
             return None
-        return await self._take_snapshot()
-
-    async def _rescue(self, error: Exception) -> None:
-        """Snapshot the box whose model call just failed with `error`, if a retry of
-        the run would follow. The box still waits for the call's reply, so the box a
-        retry restores asks for it again."""
-        if self._closed or self._retryable is None or not self._retryable(error):
-            return
         newest = next(
             (c for c in reversed(self.trace.checkpoints) if not c.deleted), None
         )
         if newest is not None and newest.node == self._last_node():
-            # No turn since the newest snapshot: it holds this same open call.
-            self.rescued = True
-            return
-        task = asyncio.current_task()
-        if task is not None:
-            self._captures.add(task)
-        try:
-            self.rescued = await self._take_snapshot() is not None
-        finally:
-            self._captures.discard(task)
+            # No turn since the newest snapshot, so it holds this same open call. A
+            # snapshot resets the box's connections and its relay asks again: a call
+            # that keeps failing would otherwise take a snapshot per request.
+            return None
+        return await self._take_snapshot()
 
     def _last_node(self) -> int | None:
         return len(self.trace.nodes) - 1 if self.trace.nodes else None

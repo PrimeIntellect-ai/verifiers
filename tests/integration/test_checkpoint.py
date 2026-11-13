@@ -76,7 +76,7 @@ async def restored_trace(
         env={
             "agent": {
                 "retries": RETRIES,
-                "checkpoint": {"on_error": True, **checkpoint},
+                "checkpoint": checkpoint,
             }
         },
         max_turns=12,
@@ -130,31 +130,20 @@ async def saved_rollout(config, ctx, ready=lambda trace: trace.num_turns >= 1):
 
 @pytest.mark.parametrize("harness,harness_runtime", grid(needs=NEEDS), indirect=True)
 async def test_retry_restores_checkpoint(run, taken, harness, harness_runtime):
-    """The one snapshot of the run is taken when the model call fails. A harness with
-    a shell fails at its second turn, so the restored box holds the first turn's
-    command and its harness goes on to the second; a harness without one has a single
-    turn, which fails."""
+    """The box is snapshotted at every model turn, and the retry restores the snapshot
+    of the turn whose call failed. A harness with a shell fails at its second turn, so
+    the restored box holds the first turn's command and its harness goes on to the
+    second; a harness without one has a single turn, which fails. The calls that fail
+    again at that turn take no further snapshot."""
     shell = harness_class(harness.id).EXECUTES_CODE
+    fail_turn = 2 if shell else 1
     trace = await restored_trace(
-        run, harness, harness_runtime, fail_turn=2 if shell else 1
+        run, harness, harness_runtime, fail_turn=fail_turn, interval=1
     )
     if shell:
         assert trace.num_turns >= 2
         assert trace.metrics["copied"] == 1.0
-    assert len(taken) == 1
-    await assert_no_leaks(taken)
-
-
-@pytest.mark.parametrize(
-    "harness,harness_runtime", grid(["bash"], needs=NEEDS), indirect=True
-)
-async def test_snapshots_at_turns_are_restored_too(
-    run, taken, harness, harness_runtime
-):
-    """With `interval`, the box is also snapshotted at model turns. The failed call
-    takes no second snapshot of the same turn: the retry restores the one of turn 2."""
-    trace = await restored_trace(run, harness, harness_runtime, fail_turn=2, interval=1)
-    assert [c.id for c in trace.checkpoints if c.restored] == [taken[1]]
+    assert [c.id for c in trace.checkpoints if c.restored] == [taken[fail_turn - 1]]
     await assert_no_leaks(taken)
 
 

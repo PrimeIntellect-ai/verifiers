@@ -12,7 +12,6 @@ import verifiers.v1.agent as agent_module
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.agent import RolloutCheckpointConfig
 from verifiers.v1.configs.client import EvalClientConfig
-from verifiers.v1.configs.retries import RetryConfig
 from verifiers.v1.graph import MessageNode
 from verifiers.v1.restore import open_restore, restore_entry, unsaveable
 from verifiers.v1.rollout import Rollout, kept
@@ -29,7 +28,6 @@ from verifiers.v1.types import (
     ToolMessage,
     UserMessage,
 )
-from verifiers.v1.utils.retries import RetryState
 
 
 def make_trace() -> vf.Trace:
@@ -175,8 +173,6 @@ def make_rollout(
     run._relay = FakeRelay()  # type: ignore[assignment]
     run._secret = "box-secret"
     run._checkpointing = RolloutCheckpointConfig(interval=interval, keep=keep)
-    run._retryable = lambda error: isinstance(error, vf.ProviderError)
-    run.rescued = False
     run._durable = {}
     run._captures = set()
     run._closed = False
@@ -305,50 +301,18 @@ async def test_no_snapshot_at_turns_by_default():
     assert backend.taken == 0
 
 
-async def test_a_failed_model_call_that_the_run_retries_takes_a_snapshot():
-    run, backend, session = make_rollout()
-    run._checkpointing = RolloutCheckpointConfig()
-    # The run would not retry this error: the box is not stopped for it.
-    await run._rescue(vf.HarnessError("exit 1"))
-    assert backend.taken == 0
-    await run._rescue(vf.ProviderError("overloaded", status_code=529))
-    (checkpoint,) = run.trace.checkpoints
-    assert backend.taken == 1 and checkpoint.node == len(run.trace.nodes) - 1
-    assert run.rescued
-    assert session.flowing.is_set()
-    # The same call fails again: the snapshot already holds the box that waits for it.
-    await run._rescue(vf.ProviderError("overloaded", status_code=529))
+async def test_a_call_asked_again_takes_no_second_snapshot():
+    run, backend, _ = make_rollout(interval=1)
+    first = await run._checkpoint()
+    assert first is not None and backend.taken == 1
+    # The same call comes again (the snapshot reset the box's connections).
+    assert await run._checkpoint() is None
     assert backend.taken == 1
-    # A turn later, a new failure needs a new snapshot.
-    run.trace.nodes.append(MessageNode(parent=1, message=UserMessage(content="go")))
-    await run._rescue(vf.ProviderError("overloaded", status_code=529))
-    assert backend.taken == 2
-
-
-async def test_a_run_without_a_retry_left_takes_no_snapshot():
-    run, backend, _ = make_rollout()
-    run._retryable = None
-    await run._rescue(vf.ProviderError("overloaded", status_code=529))
-    assert backend.taken == 0
-
-
-def test_retry_state_tells_whether_an_error_gets_a_retry_without_spending_it():
-    state = RetryState(
-        RetryConfig(max_retries=0, rules=[{"type": "ProviderError", "max_retries": 1}])
-    )
-    error = vf.ProviderError("overloaded", status_code=529)
-    assert state.allows(error) and state.allows(error)
-    assert not state.allows(vf.HarnessError("exit 1"))
-    trace = make_trace()
-    trace.record_error(error)
-    assert state.next_error(trace.errors) is not None
-    assert not state.allows(error)
 
 
 def test_checkpointing_is_on_by_default():
     assert vf.AgentConfig().checkpoint == RolloutCheckpointConfig()
     assert RolloutCheckpointConfig().interval is None
-    assert not RolloutCheckpointConfig().on_error
     assert gated("bash", vf.PrimeConfig())._checkpointing() is not None
 
 
@@ -541,7 +505,8 @@ async def test_an_owners_snapshot_outlives_the_rollout():
     await settling
     assert await saving is not None
     (pinned,) = run.trace.checkpoints
-    # A newer snapshot of the run's own does not prune the owner's.
+    # A newer snapshot of the run's own, a turn later, does not prune the owner's.
+    run.trace.nodes.append(MessageNode(parent=1, message=UserMessage(content="go")))
     newest = await run._checkpoint()
     await run._settle_checkpoints(wait=True)
     assert backend.deleted == []

@@ -39,7 +39,6 @@ async def test_agent_retries_keep_the_trace_id(monkeypatch):
         def __init__(self, *, on_trace, trace_id, attempt, **_):
             self.rewound_snapshots: list[str] = []
             self.deleted_snapshots: set[str] = set()
-            self.rescued = False
             self.trace = make_trace(id=trace_id, attempt=attempt)
             on_trace(self.trace)
 
@@ -81,7 +80,6 @@ async def test_a_restore_that_leads_nowhere_is_not_picked_again(monkeypatch):
             restores.append(None if restore is None else restore[1].id)
             self.rewound_snapshots: list[vf.Snapshot] = []
             self.deleted_snapshots: set[str] = set()
-            self.rescued = False
             self.restored_turns = None
             if restore is None:
                 self.trace = make_trace(id=trace_id, attempt=attempt)
