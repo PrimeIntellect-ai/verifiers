@@ -3263,8 +3263,8 @@ toml = [
 
 [[package]]
 name = "prime-sandboxes"
-version = "0.5.9"
-source = { registry = "https://pypi.org/simple" }
+version = "0.5.11"
+source = { git = "https://github.com/PrimeIntellect-ai/prime?subdirectory=packages%2Fprime-sandboxes&rev=fae6d0bc91717b95ff1b109d93d58a22e3408df2#fae6d0bc91717b95ff1b109d93d58a22e3408df2" }
 dependencies = [
     { name = "aiofiles" },
     { name = "certifi" },
@@ -3275,10 +3275,23 @@ dependencies = [
     { name = "pyqwest" },
     { name = "tenacity" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/8d/50/40e351b1fada75c8a166c3e482584912e660d7a143b5a1fa317c2038f2d0/prime_sandboxes-0.5.9.tar.gz", hash = "sha256:4aab8f2ca2dbd1f18cf356bb8c072baa29747cdee0305817d4d4eed7283c8cae", size = 173127, upload-time = "2026-11-10T01:03:33.691Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/60/77/888edf3076ef91d424f323aad4455e4a2c426cf1dde91728a46e19a029ac/prime_sandboxes-0.5.9-py3-none-any.whl", hash = "sha256:f66355ab2c8384d1ade329c82b9497165c490778031f927c00fefa6101f1536d", size = 93862, upload-time = "2026-11-10T01:03:31.814Z" },
+
+[package.metadata]
+requires-dist = [
+    { name = "aiofiles", specifier = ">=23" },
+    { name = "certifi" },
+    { name = "connectrpc", specifier = ">=0.11.1,<0.12" },
+    { name = "httpx", specifier = ">=0.25" },
+    { name = "protobuf", specifier = ">=6.31.1" },
+    { name = "pydantic", specifier = ">=2" },
+    { name = "pyqwest", specifier = ">=0.6" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=7" },
+    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23" },
+    { name = "pytest-xdist", marker = "extra == 'dev'", specifier = ">=3" },
+    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.13.1" },
+    { name = "tenacity", specifier = ">=8" },
 ]
+provides-extras = ["dev"]
 
 [[package]]
 name = "prime-tunnel"
