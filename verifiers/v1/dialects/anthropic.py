@@ -6,13 +6,13 @@ the content blocks of a `Message`. Relay-only: the eval client forwards the prog
 trace. `count_tokens` is relayed as native JSON (an `aux_route`), never recorded.
 """
 
+from __future__ import annotations
+
 import json
 import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-
-from anthropic.types import Message as AnthropicMessage
-from anthropic.types import Usage as AnthropicUsage
+from typing import TYPE_CHECKING
 
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.configs.sampling import Sampling, SamplingConfig
@@ -43,6 +43,9 @@ from verifiers.v1.types import (
     Usage,
     UserMessage,
 )
+
+if TYPE_CHECKING:
+    from anthropic.types import Message as AnthropicMessage
 
 # Anthropic stop_reason -> vf finish_reason.
 STOP_REASONS: dict[str, FinishReason] = {
@@ -430,19 +433,7 @@ class AnthropicStreamParser(StreamParser):
         return response
 
 
-class ModdedUsage(AnthropicUsage):
-    """The SDK closes `service_tier` to a fixed Literal, but Anthropic-compatible gateways
-    report their own tiers (e.g. Prime's `provisioned`). Widen to a plain string — we don't
-    consume it — so parsing stays lenient about the label instead of dropping it."""
-
-    service_tier: str | None = None  # type: ignore[assignment]
-
-
-class ModdedAnthropicMessage(AnthropicMessage):
-    usage: ModdedUsage  # type: ignore[assignment]
-
-
-class AnthropicDialect(Dialect[AnthropicMessage]):
+class AnthropicDialect(Dialect["AnthropicMessage"]):
     name = "anthropic_messages"
     sampling_fields = frozenset(
         {
@@ -460,7 +451,12 @@ class AnthropicDialect(Dialect[AnthropicMessage]):
     routes = ("/v1/messages",)
     aux_routes = ("/v1/messages/count_tokens",)
     upstream_path = "/v1/messages"
-    response_type = ModdedAnthropicMessage
+
+    @property
+    def response_type(self) -> type[AnthropicMessage]:  # type: ignore[override]
+        from verifiers.v1.dialects.anthropic_message import ModdedAnthropicMessage
+
+        return ModdedAnthropicMessage
 
     def mediate_external_capabilities(
         self, body: RawRequest, policy: NetworkPolicyConfig
