@@ -299,6 +299,21 @@ class ACPHarnessSession(HarnessSession):
             raise TypeError("invalid ACP steering receipt")
         return result
 
+    async def notify(self, message: str, *, message_id: str | None = None) -> dict:
+        if self._closed:
+            raise RuntimeError("ACP session is closed")
+        if not isinstance(message, str) or not message.strip():
+            raise ValueError("a notice requires nonempty text")
+        if self._process is None:
+            return {"outcome": "promptRequired", "reason": "noRunningTurn"}
+        response = await self._request("notify", message=message, message_id=message_id)
+        if not response.get("ok"):
+            raise RuntimeError(response.get("error") or "ACP notify failed")
+        result = response.get("result")
+        if not isinstance(result, dict):
+            raise TypeError("invalid ACP notify receipt")
+        return result
+
     async def _drain_stderr(self, stream: AsyncIterator[bytes]) -> None:
         async for chunk in stream:
             self._stderr_tail.extend(chunk)
