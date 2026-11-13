@@ -1028,6 +1028,7 @@ class _EpisodeAgent(Agent):
                 collect_artifacts=collect_artifacts,
                 on_score=self._scoring_callback(on_score),
             )
+        trace.discard_invalid_rewards()
         self._completed.append(trace)
         return trace
 
@@ -1068,6 +1069,7 @@ class _EpisodeAgent(Agent):
             # `Agent.interaction()` may fail before yielding (e.g. task/harness setup).
             # Its trace is minted first, so retain that failed rollout in the episode.
             if trace is not None and trace.is_completed:
+                trace.discard_invalid_rewards()
                 self._completed.append(trace)
 
 

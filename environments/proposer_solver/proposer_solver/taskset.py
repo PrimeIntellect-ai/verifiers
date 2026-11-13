@@ -166,8 +166,7 @@ class ProposerSolverEnv(vf.Env[ProposerSolverEnvConfig]):
         for trace in episode.traces:
             if trace.agent.name == "proposer":
                 trace.record_metric("solve_rate", rate)
-                if not trace.is_format_violation:
-                    trace.record_reward("learnability", 4.0 * rate * (1.0 - rate))
+                trace.record_reward("learnability", 4.0 * rate * (1.0 - rate))
 
 
 class ProposerSolverTaskset(vf.Taskset[ProposeTask, vf.TasksetConfig]):

@@ -3,6 +3,8 @@ taskset, and turn-coupled self-play (kuhn-poker)."""
 
 import json
 
+import pytest
+
 
 async def test_multi_agent_env(run):
     """An `Env` subclass shipped with its taskset (duet): two roles run the
@@ -80,3 +82,36 @@ async def test_kuhn_poker_self_play(run):
         assert all(t.num_turns >= 1 for t in traces)
     else:
         assert any(t.num_turns >= 1 for t in traces)
+
+
+@pytest.mark.parametrize(
+    "invalid", [[], [1], [0, 1, 2]], ids=["valid", "mixed", "invalid"]
+)
+async def test_format_violations_keep_zero_reward(run, scripted_model, invalid):
+    """A format-violating attempt stays a zero-reward training sample whatever writes
+    rewards to it — task scoring, a scoring callback, `run()` writing `rewards`
+    directly, `finalize()` — while its valid siblings keep every reward (#3072)."""
+    (episode,) = await run(
+        "format-guard",
+        harness=None,  # the env pins its seat's harness
+        env={"invalid": invalid},
+        client=scripted_model,  # the reward paths, not the model, are under test
+        max_turns=2,
+    )
+    traces = episode.traces
+    assert len(traces) == 3
+    assert sum(t.is_format_violation for t in traces) == len(invalid)
+    for trace in traces:
+        assert trace.ok and trace.dropped is None
+        assert trace.metrics["group"] == 1.0  # metrics survive either way
+        if trace.is_format_violation:
+            assert trace.metrics["seen_reward"] == 0.0  # finalize() saw no reward
+            assert trace.rewards == {}
+            assert trace.reward == 0.0
+        else:
+            assert set(trace.rewards) == {"echoed", "callback", "direct", "group"}
+    # The stored mapping is the contract, and it survives the wire form.
+    row = json.loads(episode.model_dump_json(exclude_none=True))
+    assert [t["rewards"] == {} for t in row["traces"]] == [
+        t.is_format_violation for t in traces
+    ]

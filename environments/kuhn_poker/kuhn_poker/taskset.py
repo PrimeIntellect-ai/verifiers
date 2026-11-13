@@ -145,8 +145,7 @@ class KuhnPokerEnv(vf.Env[KuhnPokerEnvConfig]):
             else (1 if forfeited == 1 else -1)
         )
         for i, trace in enumerate(traces):
-            if not trace.is_format_violation:
-                trace.record_reward("payoff", float(net0 if i == 0 else -net0))
+            trace.record_reward("payoff", float(net0 if i == 0 else -net0))
             trace.record_metric("forfeit", float(forfeited == i))
             trace.info["kuhn"] = {
                 "seat": i,
