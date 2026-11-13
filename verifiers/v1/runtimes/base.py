@@ -12,9 +12,12 @@ import uuid
 import weakref
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Mapping
+from contextlib import AbstractAsyncContextManager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 
+from pydantic import BaseModel
 from pydantic_config import BaseConfig
 
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
@@ -142,6 +145,32 @@ class BaseRuntimeInfo(BaseConfig):
     (`Agent.run(runtime=...)`) rather than provisioning its own."""
 
 
+class Snapshot(BaseModel):
+    """A snapshot of a box's files and memory (`RuntimeBackend.snapshot`). A new box
+    made from it (`restore_config`) continues every process where the snapshot stopped
+    it; any number of boxes can."""
+
+    id: str
+    """The provider's id for the snapshot."""
+
+
+@dataclass
+class Program:
+    """A harness's main program, as its runtime started it
+    (`Runtime.run(..., program=)`). A box that boots from a memory snapshot still runs
+    it, and `Runtime.attach` waits for it there."""
+
+    job: dict[str, Any] | None = None
+    """The provider's handle of the program while it runs; None before and after."""
+
+
+current_program: ContextVar[Program | None] = ContextVar(
+    "vf_current_program", default=None
+)
+"""The `Program` of the harness segment this task runs (`HarnessSession.turn`), for the
+launch that runs the segment's main program."""
+
+
 @dataclass
 class RuntimeCache:
     """Framework state for one provisioned resource, kept off the backend contract:
@@ -149,6 +178,11 @@ class RuntimeCache:
 
     uv_interpreters: dict[str, str] = field(default_factory=dict)
     uv_locks: dict[str, asyncio.Lock] = field(default_factory=dict)
+    uv_ready: set[str] = field(default_factory=set)
+    """Users (`""` for the runtime's own) whose uv bootstrap succeeded."""
+    uv_bootstrap_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    """Held by a script preparation that may bootstrap uv: two bootstraps at once race
+    (concurrent `pip install --user`, downloads to one path, apt's lock)."""
     curl_ready: bool = False
     mcp_sources: set[str] = field(default_factory=set)
     mcp_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
@@ -186,6 +220,12 @@ class RuntimeBackend(ABC):
     """Digest-keyed PEP 723 scripts inside the runtime. Sandboxes own their `/tmp`;
     the host subprocess runtime overrides this with its per-user cache."""
 
+    SUPPORTS_MEMORY_SNAPSHOTS: ClassVar[bool] = False
+    """Whether `snapshot` captures the box's memory with its files, so a new box
+    continues the processes of the old one (`restore_config`, `attach`). Rollout
+    checkpointing (`AgentConfig.checkpoint`) takes one at model turns, so a retry
+    continues from there instead of starting over."""
+
     info: BaseRuntimeInfo
 
     def __init__(self, name: str | None = None) -> None:
@@ -194,6 +234,9 @@ class RuntimeBackend(ABC):
         # Explicit process values (model credentials, proxy settings, etc.) override these.
         self.env: dict[str, str] = {}
         self.cache = RuntimeCache()
+        self.stray_snapshots: list[Snapshot] = []
+        """Snapshots this box took that never became restorable (a failed or cancelled
+        durability wait), so no trace records them; freed after the box is gone."""
         self._setup_claimed = False
         self._background: list[RuntimeProcess] = []
         self.stopped = False
@@ -219,6 +262,49 @@ class RuntimeBackend(ABC):
     @abstractmethod
     async def start(self) -> None:
         pass
+
+    async def snapshot(self) -> Snapshot:
+        """Snapshot the box's files and memory. The box stops while the snapshot is
+        taken and runs again when this returns; its connections to the outside may be
+        dead by then. The snapshot becomes restorable only later (`wait_snapshot`)."""
+        raise NotImplementedError(f"{type(self).__name__} does not support snapshots")
+
+    def snapshot_pace(self) -> AbstractAsyncContextManager[Any]:
+        """Entered around a snapshot and what holds the box for it: a backend that
+        paces snapshots (`snapshots_per_min`) waits for its turn here, before the box
+        is held."""
+        return contextlib.nullcontext()
+
+    async def attach(self, runtime: Runtime, job: dict[str, Any]) -> ProgramResult:
+        """Wait for a program that a box started before the memory snapshot this box
+        booted from (`Program.job`), and return its result like `run`."""
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support memory snapshots"
+        )
+
+    async def wait_snapshot(self, snapshot: Snapshot) -> int | None:
+        """Wait until `snapshot` is restorable and return its stored size in bytes,
+        when the provider reports it. Raises if it never becomes restorable. The box
+        must stay alive until then: its teardown fails a pending snapshot."""
+        raise NotImplementedError(f"{type(self).__name__} does not support snapshots")
+
+    async def discard_snapshots(self, snapshots: list[Snapshot]) -> list[str]:
+        """Free snapshots nothing will restore from and return the ids it freed.
+        Best-effort: a provider may refuse one a live box still needs (prime: the
+        newest one of a running box)."""
+        return await self.discard(snapshots)
+
+    @classmethod
+    async def discard(cls, snapshots: list[Snapshot]) -> list[str]:
+        """`discard_snapshots` without a box: for an owner that holds snapshots past
+        the boxes that took them (`Checkpoint.pinned`)."""
+        return []
+
+    @classmethod
+    def restore_config(cls, config: Any, snapshot: Snapshot) -> Any:
+        """The runtime config for a new box that continues `snapshot` instead of
+        booting the task's image."""
+        raise NotImplementedError(f"{cls.__name__} does not support snapshots")
 
     async def stop(self) -> None:
         """Free the provisioned resource on the normal path (the owner's `finally`),

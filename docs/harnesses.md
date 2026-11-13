@@ -75,6 +75,7 @@ Class-level capability flags declare which optional features your harness implem
 - `APPENDS_SYSTEM_PROMPT`: passes `TaskData.system_prompt` as a separate system message; when `False`, `resolve_prompt` prepends it to the first user message instead.
 - `SUPPORTS_MCP`: indicates that `launch` wires `mcp_urls` into the program.
 - `SUPPORTS_RESUME`: indicates that a multi-turn exchange can restart from the conversation so far (programs with native session state should override `resume` or `session` instead). Note that live mid-turn steering requires a `HarnessSession` that implements `steer`; conversation resume support alone is not enough (see [message delivery](agent.md#messages-during-an-active-turn)).
+- `SUPPORTS_MEMORY_RESTORE`: indicates that a box restored from a memory snapshot continues the harness (`agent.checkpoint`). The program must run as a job of the box that the host only waits for (`runtime.run(..., program=current_program.get())`), keep no connection to the host open, and reach the host only through the endpoint it was given: the box's relay follows a restored box to its new interception server.
 - `SUPPORTS_SKILLS`: indicates that the harness calls `install_skills` to copy configured skills into the directory where the program discovers them.
 - `SUPPORTS_TOOL_INTERCEPTION`: indicates that the harness checks tool calls against the rollout's tool gate (`tool_interception_url`) before executing them.
 

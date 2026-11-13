@@ -15,11 +15,12 @@ or the graph.
 """
 
 import asyncio
+import contextlib
 import hashlib
 import inspect
 import json
 from collections import Counter
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterator
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass, field
 from functools import cached_property
@@ -33,7 +34,7 @@ from verifiers.v1.configs.harness import DialectName
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.errors import HarnessError, RolloutError, TaskError
 from verifiers.v1.harnesses.utils.compaction import bound_tool_message
-from verifiers.v1.trace import InterceptRecord, Trace
+from verifiers.v1.trace import Checkpoint, InterceptRecord, Trace
 from verifiers.v1.types import (
     AssistantMessage,
     Messages,
@@ -146,6 +147,9 @@ class IdempotentRequest:
     binding: tuple[str, bytes]
     response: "ReplayResponse | None" = None
     completed_at: float | None = None
+    sent: bool = False
+    """Whether the reply went out to the box. One that waits (`RolloutSession.hold`)
+    is on the trace and not yet in the box."""
     inflight: "asyncio.Future[ReplayResponse | None] | None" = None
 
 
@@ -186,11 +190,19 @@ class RolloutSession:
     multiplexes shares one keepalive connection pool instead of opening its own."""
     proxy_mcp: MCPProxy | None = field(default=None, repr=False)
     """Register a host MCP backend on this session's interception server while serving."""
+    reroute: Callable[[str], Awaitable[None]] | None = field(default=None, repr=False)
+    """Point everything this rollout reaches the interception server through at a new
+    base URL (the server replaced its tunnel). None when the rollout cannot move: its
+    tunnel loss then fails it."""
     error: "RolloutError | None" = None
     """The latest unresolved model-call failure. The harness only sees it as an HTTP error, so
     when its program dies on it the rollout records this original error instead of a secondary
     `HarnessError`. A harness that completes cleanly after the failure handled it. Reset before
     each model turn, so a successful retry clears it."""
+    aborted: "RolloutError | None" = None
+    """A request hook's failure: the task, not the provider, refused a turn. The rollout
+    ends the running segment with it (`Rollout.step`); the harness never sees it."""
+    abort_event: asyncio.Event = field(default_factory=asyncio.Event)
     idempotent_requests: dict[str, IdempotentRequest] = field(default_factory=dict)
     """Explicit keys or marked SDK retries mapped to their replay state."""
     released: bool = False
@@ -219,6 +231,44 @@ class RolloutSession:
     last_request: tuple[list, Messages] = ((), [])
     """The last chat request's raw messages (copied: the server rewrites a body in place) and
     their parse, which the next request's equal prefix reuses instead of parsing again."""
+    checkpointer: Callable[[], Awaitable[Checkpoint | None]] | None = None
+    """Snapshots the rollout's box as a turn goes upstream, alongside the model call;
+    the reply waits for the capture (`Rollout` sets it when the rollout takes
+    snapshots). Returns the checkpoint it took, if any."""
+
+    flowing: asyncio.Event = field(default_factory=asyncio.Event, repr=False)
+    """Cleared while a memory snapshot of the box is taken (`hold`): nothing the box
+    asked for is answered or written until it is set again, so the box the snapshot
+    stops has seen exactly what the trace held when the hold began."""
+
+    settled: asyncio.Event = field(default_factory=asyncio.Event, repr=False)
+    """Cleared while a turn is between its commit and its reply being ready to send
+    again (`committing`). A snapshot records the trace only when it is set: every
+    reply on the trace can then be replayed to a box that did not get it."""
+    _committing: int = 0
+
+    def __post_init__(self) -> None:
+        self.flowing.set()
+        self.settled.set()
+
+    @contextlib.contextmanager
+    def committing(self) -> Iterator[None]:
+        """A turn commits its reply to the trace and then stores it for replay."""
+        self._committing += 1
+        self.settled.clear()
+        try:
+            yield
+        finally:
+            self._committing -= 1
+            if not self._committing:
+                self.settled.set()
+
+    def hold(self) -> None:
+        """Stop answering the box: replies, tool verdicts and state writes wait."""
+        self.flowing.clear()
+
+    def resume(self) -> None:
+        self.flowing.set()
 
     @property
     def stopped(self) -> bool:
@@ -616,6 +666,12 @@ class RolloutSession:
             enter_scope(self.log_scope)
         self.tasks.add(task)
         task.add_done_callback(self.tasks.discard)
+
+    def abort(self, error: "RolloutError") -> None:
+        """End the running segment with `error`. The first abort wins."""
+        if self.aborted is None:
+            self.aborted = error
+            self.abort_event.set()
 
     def release(self) -> None:
         """Seal the session: no further trace mutation, and in-flight handlers cancel."""

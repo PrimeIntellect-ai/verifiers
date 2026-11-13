@@ -8,12 +8,13 @@ what spans agents, never to one agent); an entered agent (`async with`) owns one
 server; un-entered, each run brings its own."""
 
 import asyncio
+import logging
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager, nullcontext
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from typing import Generic, Literal, Self, cast
+from typing import Any, Generic, Literal, Self, cast
 from weakref import WeakValueDictionary
 
 from typing_extensions import TypeVar
@@ -24,6 +25,7 @@ from verifiers.v1.clients import (
 )
 from verifiers.v1.configs.agent import (
     AgentConfig,
+    RolloutCheckpointConfig,
     TimeoutConfig,
     agent_config_fields,
     resolve_agent,
@@ -33,17 +35,19 @@ from verifiers.v1.dialects import parse_message
 from verifiers.v1.harness import Harness
 from verifiers.v1.interception import Interception, InterceptionServer
 from verifiers.v1.mcp import SharedToolServer
+from verifiers.v1.restore import open_restore, restoring, unsaveable
 from verifiers.v1.rollout import Rollout, RolloutTimeouts
 from verifiers.v1.runtimes import (
     Runtime,
     RuntimeConfig,
+    Snapshot,
     backend_cls,
     provision_backend,
     runtime_is_local,
 )
 from verifiers.v1.session import RolloutLimits
 from verifiers.v1.task import Task
-from verifiers.v1.trace import Trace
+from verifiers.v1.trace import Checkpoint, Error, Trace
 from verifiers.v1.types import (
     AssistantMessage,
     Messages,
@@ -68,6 +72,9 @@ from verifiers.v1.utils.retries import RetryState, backoff
 __all__ = ["Agent", "AgentConfig", "Agents", "TimeoutConfig", "make_agent"]
 
 logger = get_logger(__name__)
+
+# (harness id, runtime type) pairs already warned that they take no checkpoints.
+_checkpointing_warned: set[tuple[str, str]] = set()
 
 # Only nested runs in this scoring attempt participate in its rollback.
 _scoring_runs: ContextVar[list[tuple["_EpisodeAgent", Trace]] | None] = ContextVar(
@@ -659,6 +666,25 @@ class Agent:
             return self._server
         return None
 
+    def _checkpointing(self) -> RolloutCheckpointConfig | None:
+        """The checkpoint config when this harness on this runtime can take and restore
+        checkpoints; otherwise None, with a warning once per harness and runtime."""
+        config = self.config.checkpoint
+        if config is None:
+            return None
+        reason = unsaveable(self.config, self.harness)
+        if reason is None:
+            return config
+        key = (self.harness.config.id, self.config.runtime.type)
+        if key not in _checkpointing_warned:
+            _checkpointing_warned.add(key)
+            logger.warning(
+                "rollout checkpointing is off: %s; a failed rollout retries from the "
+                "start",
+                reason,
+            )
+        return None
+
     def _check_resume_support(self) -> None:
         # Multi-turn capability is derived: a harness needs transcript replay, a
         # native resume implementation, or a rollout-scoped session implementation.
@@ -685,6 +711,7 @@ class Agent:
         on_trace: Callable[[Trace], None] | None = None,
         collect_artifacts: bool = False,
         on_score: Callable[[Trace, Runtime], Awaitable[None]] | None = None,
+        restore: dict[str, Any] | None = None,
     ) -> Trace:
         """Run this agent on `task` once and return the trace: one segment — the
         program runs on the task's prompt until it exits (a multi-turn exchange
@@ -693,51 +720,187 @@ class Agent:
         owner, counted in the pairing check; `on_trace` observes the trace the
         moment it's minted, before any I/O. `collect_artifacts` captures the task's
         declared artifacts after its finalizer while its container runtime is still
-        alive. Retries whole while the trace ends with a retryable error
-        (`config.retries`) — never into a borrowed box; every attempt's trace keeps
-        the run's id with its own `attempt`, and the final trace keeps earlier
-        attempts' errors. `on_score(trace, runtime)` runs after task scoring in
-        the selected verifier workspace, inside its timeout and retry boundary."""
+        alive. Retries while the trace ends with a retryable error (`config.retries`)
+        — never into a borrowed box. A retry restores the failed attempt's newest
+        restorable checkpoint when it has one (`config.checkpoint`, on a runtime and a
+        harness that support it), keeping that trace and its turns up to there; a
+        checkpoint whose restore failed is skipped, and without one the retry starts
+        over. Every attempt's trace keeps the run's id with its own `attempt`, and the
+        final trace keeps every attempt's errors. `on_score(trace, runtime)` runs after task scoring in
+        the selected verifier workspace, inside its timeout and retry boundary.
+        `restore` continues a rollout another process saved (`save_all`) instead of
+        starting one: its trace, in a new box from its memory checkpoint; the episode's
+        saved trace (`RunSlot.restore`) is taken the same way."""
         if self._closed:
             raise RuntimeError("Agent is closed; create a new agent")
         retry = self.config.retries
         retry_state = RetryState(retry)
-        history: list = []
-        trace_id = uuid.uuid4().hex
-        with scope(trace=short_id(trace_id), agent=self._log_name):
-            for attempt in range(retry_state.max_retries + 1):
-                trace = await self._run_once(
-                    task,
-                    runtime,
-                    tools,
-                    on_trace,
-                    collect_artifacts,
-                    on_score,
-                    trace_id=trace_id,
-                    attempt=attempt + 1,
-                )
-                if attempt == retry_state.max_retries or trace.ok:
-                    break
-                if runtime is not None:
-                    logger.warning(
-                        "Not retrying rollout on a borrowed box - its state is no "
-                        "longer the task's start state"
-                    )
-                    break
-                cause = retry_state.next_error(trace.errors)
-                if cause is None:
-                    break
-                history.extend(trace.errors)
-                delay = backoff(attempt)
+        checkpointing = self._checkpointing() if runtime is None else None
+        trace_id = uuid.uuid4().hex  # one id for the run across its attempts
+        history: list[Error] = []  # errors of the attempts started over from
+        trace: Trace | None = None
+        target: Checkpoint | None = None  # the checkpoint the next attempt restores
+        first_attempt = 0  # the attempts the trace made before this run
+        offered: str | None = None  # the checkpoint of the owner's saved trace
+        pending = restoring.get()
+        if restore is None and pending:
+            restore = pending.pop()
+        if restore is not None:
+            if checkpointing is None:
                 logger.warning(
-                    "Retrying rollout in %s (attempt %d/%d) - %s: %s",
-                    format_time(delay),
-                    attempt + 2,
-                    retry_state.max_retries + 1,
-                    cause.type,
-                    clip(cause.message),
+                    "Starting rollout %s over: this agent takes no checkpoints, so it "
+                    "cannot continue from its saved trace",
+                    restore.get("id"),
                 )
-                await asyncio.sleep(delay)
+            else:
+                trace, target = open_restore(restore, task)
+                offered = target.id
+                trace_id = trace.id
+                first_attempt = trace.attempt
+                if on_trace is not None:
+                    on_trace(trace)
+        snapshots: dict[str, Snapshot] = {}  # every box snapshot any attempt took
+        deleted: set[str] = set()
+        failed_restores: set[str] = set()
+        run: Rollout | None = None
+        # The `finally` also covers a cancellation between attempts, when no rollout is
+        # open to delete them on abort.
+        budget = retry_state.max_retries
+        # Built once: every attempt runs the same harness instance, so per-run harness
+        # state (RLM's skill home) is the one a restored box holds.
+        params = self._rollout_params(task, runtime, dict(tools or {}))
+        attempt = 0
+        with scope(trace=short_id(trace_id), agent=self._log_name):
+            try:
+                while True:
+                    restoring_from = (
+                        (trace, target)
+                        if trace is not None and target is not None
+                        else None
+                    )
+                    # This attempt's own errors decide — a restored trace still carries
+                    # the earlier attempts'.
+                    seen = (
+                        len(restoring_from[0].errors)
+                        if restoring_from is not None
+                        else 0
+                    )
+                    run = await self._run_once(
+                        task,
+                        runtime,
+                        params,
+                        on_trace,
+                        collect_artifacts,
+                        on_score,
+                        trace_id=trace_id,
+                        attempt=first_attempt + attempt + 1,
+                        restore=restoring_from,
+                        checkpoint=checkpointing,
+                    )
+                    trace = run.trace
+                    snapshots.update((s.id, s) for s in run.rewound_snapshots)
+                    # An owner's snapshots (`save_all`) are the owner's to delete.
+                    snapshots.update(
+                        (c.snapshot.id, c.snapshot)
+                        for c in trace.checkpoints
+                        if not c.pinned
+                    )
+                    deleted.update(run.deleted_snapshots)
+                    if target is not None and (
+                        any(error.stage == "setup" for error in trace.errors[seen:])
+                        or (
+                            not trace.ok
+                            and run.restored_turns is not None
+                            and trace.num_turns <= run.restored_turns
+                        )
+                    ):
+                        # The restore led nowhere: the box never ran from it, or the
+                        # attempt failed before its first new turn. The next retry
+                        # steps back to an older snapshot, or starts over.
+                        failed_restores.add(target.id)
+                    if trace.ok:
+                        break
+                    if (
+                        target is not None
+                        and target.id == offered
+                        and target.id in failed_restores
+                    ):
+                        # The owner's saved trace is an offer, not an attempt of
+                        # this run: without it the rollout would have started over,
+                        # so it does that now and keeps its retries.
+                        logger.warning(
+                            "Starting rollout over: saved trace %s led nowhere - %s",
+                            target.id,
+                            clip(trace.errors[-1].message) if trace.errors else "",
+                        )
+                        history.extend(trace.errors)
+                        target = None
+                        attempt += 1
+                        budget += 1
+                        continue
+                    if attempt >= budget:
+                        break
+                    if runtime is not None:
+                        logger.warning(
+                            "Not retrying rollout on a borrowed box - its state is no "
+                            "longer the task's start state"
+                        )
+                        break
+                    cause = retry_state.next_error(trace.errors[seen:])
+                    if cause is None:
+                        break
+                    target = next(
+                        (
+                            c
+                            for c in reversed(trace.checkpoints)
+                            if c.time.end
+                            and not c.deleted
+                            # An owner's snapshot is the owner's to delete at any
+                            # time, except the one it offered this run.
+                            and (not c.pinned or c.restored)
+                            and c.id not in failed_restores
+                        ),
+                        None,
+                    )
+                    if target is None:
+                        history.extend(trace.errors)
+                    delay = backoff(attempt)
+                    logger.warning(
+                        "Retrying rollout in %s (attempt %d/%d) from %s - %s: %s",
+                        format_time(delay),
+                        attempt + 2,
+                        budget + 1,
+                        f"checkpoint {target.id}"
+                        if target is not None
+                        else "the start",
+                        cause.type,
+                        clip(cause.message),
+                    )
+                    await asyncio.sleep(delay)
+                    attempt += 1
+            finally:
+                # The run is final (or cancelled): delete every snapshot left. Every box
+                # is gone by now, so the platform refuses none of them.
+                drop = [
+                    snapshot
+                    for snapshot_id, snapshot in sorted(snapshots.items())
+                    if snapshot_id not in deleted
+                ]
+                if drop and run is not None and run.runtime is not None:
+                    try:
+                        run.record_deleted(
+                            await run_shielded(
+                                run.runtime.backend.discard_snapshots(drop)
+                            )
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            "Failed to discard snapshots - %s: %s",
+                            type(e).__name__,
+                            e,
+                            exc_info=logger.isEnabledFor(logging.DEBUG),
+                        )
+        assert trace is not None and run is not None
         if history:
             # The full history rides the final trace either way; success is the
             # `ok` stamp, never errors-emptiness.
@@ -748,15 +911,16 @@ class Agent:
         self,
         task: Task,
         runtime: Runtime | None,
-        shared_tools: Mapping[str, SharedToolServer] | None,
+        params: dict[str, Any],
         on_trace: Callable[[Trace], None] | None,
         collect_artifacts: bool,
         on_score: Callable[[Trace, Runtime], Awaitable[None]] | None,
         *,
         trace_id: str,
         attempt: int,
-    ) -> Trace:
-        params = self._rollout_params(task, runtime, dict(shared_tools or {}))
+        restore: tuple[Trace, Checkpoint] | None = None,
+        checkpoint: RolloutCheckpointConfig | None = None,
+    ) -> Rollout:
         if collect_artifacts:
             _check_artifact_runtime(params["runtime_config"])
         run = Rollout(
@@ -765,12 +929,17 @@ class Agent:
             collect_artifacts=collect_artifacts,
             on_score=on_score,
             trace_id=trace_id,
+            restore=restore,
+            checkpoint=checkpoint,
             attempt=attempt,
             **params,
         )
         try:
             if await run.open():
-                await run.step()
+                if restore is not None:
+                    await run.restore()
+                else:
+                    await run.step()
                 if run.ok:
                     run.trace.stop("agent_completed")
             trace = await run.close()
@@ -780,7 +949,7 @@ class Agent:
             raise
         if trace.agent.runtime is not None:
             trace.agent.runtime.borrowed = runtime is not None
-        return trace
+        return run
 
     @asynccontextmanager
     async def interaction(

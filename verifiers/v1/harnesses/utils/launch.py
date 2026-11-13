@@ -11,6 +11,7 @@ from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.dialects.chat import message_to_wire
 from verifiers.v1.harnesses.utils import compaction, core, mcp
 from verifiers.v1.runtimes import ProgramResult, Runtime
+from verifiers.v1.runtimes.base import current_program
 from verifiers.v1.trace import Trace
 from verifiers.v1.types import Messages
 from verifiers.v1.utils import network
@@ -104,5 +105,7 @@ async def launch_chat_program(
         source, config.resolved_env, activate=activate
     )
     return await runtime.run(
-        [*program, *args], env if env is not None else {**config.resolved_env}
+        [*program, *args],
+        env if env is not None else {**config.resolved_env},
+        program=current_program.get(),
     )

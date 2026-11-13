@@ -9,6 +9,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import (
+    Any,
     Generic,
     TypeVar,
 )
@@ -30,6 +31,7 @@ from verifiers.v1.interception import (
     requires_tunnel,
 )
 from verifiers.v1.mcp import SharedToolServer, serve_shared
+from verifiers.v1.restore import restoring
 from verifiers.v1.runtimes import SubprocessConfig, runtime_is_local
 from verifiers.v1.task import Task
 from verifiers.v1.trace import Error, Trace, TraceTask
@@ -67,6 +69,9 @@ class RunSlot:
     episode: Episode | None = None
     done: bool = False
     started: float | None = None
+    restore: dict[str, Any] | None = None
+    """A rollout another process saved (`save_all`): the episode's first attempt
+    continues it instead of starting one."""
 
     @classmethod
     def finished(cls, episode: Episode) -> "RunSlot":
@@ -246,6 +251,7 @@ class Env(ABC, Generic[ConfigT]):
         on_discard: Callable[[Trace], None] | None = None,
         episode_id: str | None = None,
         attempt: int = 1,
+        restore: dict[str, Any] | None = None,
     ) -> Episode:
         """One episode of `task`, minted as the wire atom: `setup()` then `run()`
         over fresh agents, then `finalize()`. Its agents run one at a time
@@ -273,7 +279,11 @@ class Env(ABC, Generic[ConfigT]):
                 async with boundary(EnvError, f"{type(self).__name__}.setup()"):
                     await self.setup(agents)
                 async with boundary(EnvError, f"{type(self).__name__}.run()"):
-                    await self.run(task, agents)
+                    token = restoring.set([restore] if restore is not None else None)
+                    try:
+                        await self.run(task, agents)
+                    finally:
+                        restoring.reset(token)
                     if not episode.traces:
                         raise ValueError(
                             f"{type(self).__name__}.run() ran no agent — every "
@@ -370,6 +380,8 @@ class Env(ABC, Generic[ConfigT]):
                     on_discard=discard,
                     episode_id=slot.id,
                     attempt=attempts,
+                    # A retry of the episode starts over.
+                    restore=slot.restore if attempts == 1 else None,
                 )
 
         started: float | None = None

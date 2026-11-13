@@ -3,11 +3,14 @@
 import asyncio
 import contextlib
 import json
+import shlex
+import time
+import uuid
 from abc import abstractmethod
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, TypeAlias, TypeVar, cast
+from typing import Any, ClassVar, TypeAlias, TypeVar, cast
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -16,6 +19,7 @@ from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.errors import HarnessError, InterceptionError
 from verifiers.v1.harness import Harness, HarnessSession
 from verifiers.v1.runtimes import ProgramResult, Runtime, RuntimeProcess
+from verifiers.v1.runtimes.base import current_program
 from verifiers.v1.semantic import (
     ACP_SEMANTIC_EDGES_METADATA_KEY,
     SemanticEdgeSet,
@@ -27,6 +31,9 @@ from verifiers.v1.utils.aio import run_shielded
 
 ACP_SOURCE = (Path(__file__).resolve().parent / "runner.py").read_text()
 MAX_PACKET_BYTES = 128 * 1024 * 1024
+ACP_ROOT = "/tmp/vf-acp"
+"""Where a detached runner keeps its socket, log and request files, per rollout."""
+RUNNER_START_SECONDS = 120
 _STOP_CONDITIONS = {
     "max_tokens": "max_output_tokens",
     "max_turn_requests": "max_turns",
@@ -69,6 +76,8 @@ class ACPConfig:
 
 class ACPHarness(Harness[ConfigT]):
     """Harness backed by one live ACP process and native session per rollout."""
+
+    SUPPORTS_MEMORY_RESTORE: ClassVar[bool] = True
 
     async def setup(self, runtime: Runtime) -> None:
         await runtime.prepare_uv_script(
@@ -237,6 +246,19 @@ class ACPHarnessSession(HarnessSession):
         self._responses: dict[int, asyncio.Future] = {}
         self._request_id = 0
         self._response_task: asyncio.Task | None = None
+        self._detached: list[str] | None = None
+        """The runner's argv once it runs as a job of the box (`memory`): each request
+        is then a job too, since no connection from the host survives a stopped box."""
+        self._prompt: dict[str, Any] | None = None
+        """The reply file and the trace's call count of the prompt request under way."""
+
+    @property
+    def _dir(self) -> str:
+        return f"{ACP_ROOT}/{self.trace.id}"
+
+    @property
+    def _running(self) -> bool:
+        return self._process is not None or self._detached is not None
 
     async def _start(self) -> None:
         self._stderr_tail.clear()
@@ -245,6 +267,23 @@ class ACPHarnessSession(HarnessSession):
             {**self.config.env, "UV_FROZEN": "false"},
             activate=False,
         )
+        if self.memory:
+            socket = f"{self._dir}/socket"
+            await self.runtime.run(["mkdir", "-p", self._dir], {})
+            await self.runtime.run_background(
+                [*program, "--socket", socket],
+                self.config.env,
+                log=f"{self._dir}/runner.log",
+            )
+            deadline = time.monotonic() + RUNNER_START_SECONDS
+            while (await self.runtime.run(["test", "-S", socket], {})).exit_code:
+                if time.monotonic() > deadline:
+                    raise RuntimeError(
+                        f"ACP runner did not start: {await self._runner_log()}"
+                    )
+                await asyncio.sleep(0.2)
+            self._detached = program
+            return
         process = await self.runtime.exec(program, self.config.env)
         self._process = process
         self._reader = _PacketReader(process.stdout)
@@ -265,7 +304,71 @@ class ACPHarnessSession(HarnessSession):
                         RuntimeError(f"ACP connection closed: {error}")
                     )
 
+    async def _runner_log(self) -> str:
+        with contextlib.suppress(Exception):
+            log = await self.runtime.run(
+                ["tail", "-c", "4000", f"{self._dir}/runner.log"], {}
+            )
+            return log.stdout.strip()
+        return ""
+
+    async def _call(self, operation: str, payload: dict[str, Any]) -> JsonObject:
+        """One request to the detached runner, as a job of the box."""
+        assert self._detached is not None
+        name = uuid.uuid4().hex
+        request, reply = f"{self._dir}/{name}.request", f"{self._dir}/{name}.reply"
+        await self.runtime.write(
+            request,
+            json.dumps({"id": name, "operation": operation, **payload}).encode(),
+        )
+        program = None
+        if operation == "prompt":
+            program = current_program.get()
+            self._prompt = {"reply": reply, "calls_before": len(self.trace.calls)}
+        try:
+            result = await self.runtime.run(
+                [*self._detached, "--call", f"{self._dir}/socket", request, reply],
+                self.config.env,
+                program=program,
+            )
+        finally:
+            if operation == "prompt":
+                self._prompt = None
+        return await self._reply(result, reply)
+
+    async def _reply(self, result: ProgramResult, reply: str) -> JsonObject:
+        if result.exit_code:
+            detail = (result.stderr or result.stdout).strip()[-1000:]
+            raise RuntimeError(
+                f"ACP runner request failed (exit {result.exit_code}): {detail}"
+            )
+        response = json.loads(await self.runtime.read(reply))
+        if not response.get("ok"):
+            self._stderr_tail[:] = (await self._runner_log()).encode()
+        return response
+
+    def memory_state(self) -> dict[str, Any] | None:
+        state = super().memory_state()
+        if state is None or self._prompt is None or self._detached is None:
+            return None
+        return {**state, **self._prompt, "runner": list(self._detached)}
+
+    async def _continue(self, state: dict[str, Any]) -> ProgramResult:
+        # The restored box runs the runner and the request's job; only their result
+        # is still to collect.
+        self._detached = list(state["runner"])
+        async with self._lock:
+            try:
+                result = await self.runtime.attach(state["job"])
+                response = await self._reply(result, state["reply"])
+            except BaseException:
+                await run_shielded(self._stop(graceful=False))
+                raise
+        return self._finish(response, state["calls_before"])
+
     async def _request(self, operation: str, **payload: Any) -> JsonObject:
+        if self._detached is not None:
+            return await self._call(operation, payload)
         process = self._process
         if process is None or self._response_task is None or self._response_task.done():
             raise RuntimeError("ACP process is not running")
@@ -289,7 +392,7 @@ class ACPHarnessSession(HarnessSession):
             raise RuntimeError("ACP session is closed")
         if not isinstance(message, str) or not message.strip():
             raise ValueError("steering requires a nonempty user message")
-        if self._process is None:
+        if not self._running:
             return {"outcome": "promptRequired", "reason": "noRunningTurn"}
         response = await self._request("steer", message=message, message_id=message_id)
         if not response.get("ok"):
@@ -344,16 +447,18 @@ class ACPHarnessSession(HarnessSession):
                 raise HarnessError(
                     f"harness {self.harness.config.id!r} session is already closed"
                 )
-            if self._process is None:
+            if not self._running:
                 await self._start()
-            assert self._process is not None
-            assert self._reader is not None
             calls_before = len(self.trace.calls)
             try:
                 response = await self._request("prompt", config=config)
             except BaseException:
                 await run_shielded(self._stop(graceful=False))
                 raise
+        return self._finish(response, calls_before)
+
+    def _finish(self, response: JsonObject, calls_before: int) -> ProgramResult:
+        """Consume a prompt request's response as the segment's result."""
         turn = _turn_result(response)
         self.trace.root_reply = turn.reply.strip()
         self.trace.info["acp_stop_reason"] = turn.stop_reason
@@ -377,7 +482,33 @@ class ACPHarnessSession(HarnessSession):
         _require_model_turn(self.trace, calls_before, result)
         return result
 
+    async def _stop_detached(self, *, graceful: bool) -> dict[str, Any]:
+        response_metadata: dict[str, Any] = {}
+        try:
+            if graceful:
+                with contextlib.suppress(BaseException):
+                    response = await asyncio.wait_for(self._call("shutdown", {}), 30)
+                    result = response.get("result")
+                    if response.get("ok") and isinstance(result, dict):
+                        metadata = result.get("response_metadata")
+                        if isinstance(metadata, dict):
+                            response_metadata = metadata
+            # Best effort: the box may be gone already.
+            pid = shlex.quote(f"{self._dir}/socket.pid")
+            with contextlib.suppress(BaseException):
+                await asyncio.wait_for(
+                    self.runtime.run(
+                        ["sh", "-c", f'kill "$(cat {pid})" 2>/dev/null; true'], {}
+                    ),
+                    30,
+                )
+        finally:
+            self._detached = None
+        return response_metadata
+
     async def _stop(self, *, graceful: bool) -> dict[str, Any]:
+        if self._detached is not None:
+            return await self._stop_detached(graceful=graceful)
         process = self._process
         response_task = self._response_task
         stderr_task, self._stderr_task = self._stderr_task, None

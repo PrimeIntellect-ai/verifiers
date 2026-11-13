@@ -32,6 +32,7 @@ from collections.abc import AsyncIterator, Awaitable, Collection, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from functools import partial
+from typing import NoReturn
 
 import httpx
 from aiohttp import web
@@ -92,6 +93,10 @@ HASH_INLINE_MAX = 1024**2  # 1 MiB
 # Attempt counter the stainless-generated SDKs (OpenAI, Anthropic) send on every request:
 # 0 on the first attempt, incremented on each retry of the same request.
 RETRY_COUNT_HEADER = "x-stainless-retry-count"
+SERVER_HEADER = "x-vf-interception"
+"""Marks every response as this server's own, so a box's relay can tell an answer of
+the server (a 404 for an unknown path) from the error page of a tunnel edge that could
+not reach it (`relay/server.py`)."""
 IDEMPOTENCY_KEY_HEADER = "Idempotency-Key"
 IDEMPOTENCY_CACHE_TTL_SECONDS = 600
 IDEMPOTENCY_CACHE_MAX_COMPLETED = 64
@@ -134,6 +139,10 @@ async def _request_digest(raw: bytes) -> bytes:
     if len(raw) <= HASH_INLINE_MAX:
         return _body_digest(raw)
     return await asyncio.to_thread(_body_digest, raw)
+
+
+async def _mark_response(request: web.Request, response: web.StreamResponse) -> None:
+    response.headers[SERVER_HEADER] = "1"
 
 
 def _error_response(dialect: Dialect, message: str, *, status: int) -> web.Response:
@@ -370,6 +379,9 @@ class InterceptionServer(Interception):
             make_tunnel(self.config.tunnel) if requires_tunnel else None
         )
         self.healthy = True
+        self._replacing: asyncio.Task | None = None
+        self._lost_again = False
+        """A tunnel was lost while a replacement was under way: replace it once more."""
         if self.tunnel is not None:
             self.tunnel.on_gone = self._handle_tunnel_gone
         self.host = "127.0.0.1"
@@ -383,12 +395,82 @@ class InterceptionServer(Interception):
         return len(self.sessions)
 
     def _handle_tunnel_gone(self) -> None:
-        """Fail this server's rollouts and take no more: their URL will never work again."""
+        """Take no more rollouts: the URL will never work again. Rollouts that can move
+        (`RolloutSession.reroute`) follow this server to a new tunnel; the others fail."""
         self.healthy = False
         logger.error("Lost the interception tunnel url=%s", self.base_url)
+        movable = False
         for session in list(self.sessions.values()):
-            session.error = TunnelError("interception tunnel lost")
-            session.release()
+            if session.reroute is None:
+                session.error = TunnelError("interception tunnel lost")
+                session.release()
+            else:
+                movable = True
+        if not movable:
+            return
+        if self._replacing is None or self._replacing.done():
+            self._replacing = asyncio.create_task(self._replace_tunnels())
+        else:
+            self._lost_again = True
+
+    async def _replace_tunnels(self) -> None:
+        """Replace the tunnel until no loss arrived while a replacement was under way."""
+        while True:
+            self._lost_again = False
+            await self._replace_tunnel()
+            if not self._lost_again:
+                return
+
+    async def _replace_tunnel(self) -> None:
+        """Open a new tunnel to this server and reroute its movable rollouts to it. A
+        rollout that does not move fails as on a lost tunnel."""
+        assert self.tunnel is not None
+        try:
+            base_url = await self.stack.enter_async_context(
+                self.tunnel.expose(self.port)
+            )
+        except TunnelError as error:
+            logger.error("interception tunnel replacement failed: %s", error)
+            base_url = None
+        else:
+            logger.warning(
+                "interception tunnel replaced: url=%s -> %s", self.base_url, base_url
+            )
+            self.base_url = base_url
+
+        async def move(session: RolloutSession) -> None:
+            try:
+                if base_url is None:
+                    raise TunnelError("interception tunnel lost")
+                assert session.reroute is not None
+                await session.reroute(base_url)
+            except Exception as error:  # noqa: BLE001 - one rollout's failure is its own
+                logger.warning(
+                    "rollout %s did not move to the new tunnel: %s",
+                    session.trace.id,
+                    error,
+                )
+                session.error = (
+                    error
+                    if isinstance(error, RolloutError)
+                    else TunnelError(f"interception tunnel lost: {error}")
+                )
+                session.release()
+
+        await asyncio.gather(
+            *(
+                move(session)
+                for session in list(self.sessions.values())
+                if session.reroute is not None and not session.released
+            )
+        )
+
+    async def stop(self) -> None:
+        if self._replacing is not None:
+            self._replacing.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await self._replacing
+        await super().stop()
 
     def _client(self, config: BaseClientConfig) -> Client:
         """The server-owned client for `config` — one per distinct endpoint config, shared
@@ -574,6 +656,7 @@ class InterceptionServer(Interception):
         app = web.Application(
             client_max_size=MAX_REQUEST_BODY, middlewares=[_isolate_log_scope]
         )
+        app.on_response_prepare.append(_mark_response)
         app.router.add_get(HEALTH_PATH, self.handle_health)
         for dialect in DIALECTS:
             for route in dialect.routes:
@@ -619,15 +702,29 @@ class InterceptionServer(Interception):
             )
 
     def _fail(
-        self, session: RolloutSession, dialect: Dialect, error: RolloutError
+        self,
+        session: RolloutSession,
+        dialect: Dialect,
+        error: RolloutError,
     ) -> web.Response:
-        """Stash a model-turn-adjacent failure (such as a hook raising) so the rollout
-        re-raises it as the real cause, and report it to the harness as an HTTP error."""
+        """Stash a model-turn-adjacent failure so the rollout re-raises it as the real
+        cause, and report it to the harness as an HTTP error."""
         session.error = error
         logger.warning("Failed turn - %s: %s", type(error).__name__, clip(str(error)))
         return _error_response(
             dialect, str(error), status=getattr(error, "status_code", 502)
         )
+
+    async def _abort(self, session: RolloutSession, error: RolloutError) -> NoReturn:
+        """End the rollout's segment with a request hook's failure. The harness gets no
+        reply: the rollout cancels its turn, and releasing the session cancels this
+        handler."""
+        logger.warning(
+            "rollout %s failed: %s: %s", session.trace.id, type(error).__name__, error
+        )
+        session.abort(error)
+        await asyncio.get_running_loop().create_future()
+        raise AssertionError("unreachable")
 
     def mediate_capabilities(
         self, session: RolloutSession, dialect: Dialect, body: dict
@@ -659,6 +756,7 @@ class InterceptionServer(Interception):
         if session.released:
             return web.json_response({"error": "rollout concluded"}, status=409)
         body = from_json(await request.read())
+        await session.flowing.wait()
         try:
             return web.json_response(
                 await session.decide_tool(
@@ -815,6 +913,7 @@ class InterceptionServer(Interception):
         if idempotent is not None and idempotent.response is not None:
             logger.debug("Replayed an idempotent request")
             idempotent.completed_at = now
+            await session.flowing.wait()
             return _replay_response(idempotent.response)
 
         try:
@@ -836,6 +935,7 @@ class InterceptionServer(Interception):
         if session.released:
             return _error_response(dialect, "rollout concluded", status=409)
         if session.stopped:
+            await session.flowing.wait()
             return _error_response(
                 dialect, f"rollout stopped: {session.trace.stop_condition}", status=400
             )
@@ -850,6 +950,7 @@ class InterceptionServer(Interception):
             response = await asyncio.shield(inflight)
             if response is None:
                 return _error_response(dialect, "upstream attempt failed", status=503)
+            await session.flowing.wait()
             return _replay_response(response)
 
         if idempotent.inflight is not None:
@@ -872,6 +973,7 @@ class InterceptionServer(Interception):
         try:
             refused = await session.refused()
             if refused is not None:
+                await session.flowing.wait()
                 return _error_response(
                     dialect, f"rollout stopped: {refused}", status=400
                 )
@@ -884,11 +986,10 @@ class InterceptionServer(Interception):
             if stopped is None and model_request != original_request:
                 dialect.rewrite_request(body, original_request, model_request)
         except RolloutError as error:
-            return self._fail(session, dialect, error)
+            return await self._abort(session, error)
         except Exception as error:  # noqa: BLE001 - surface task hook failures
-            return self._fail(
+            return await self._abort(
                 session,
-                dialect,
                 TaskError(
                     f"model boundary hook failed: {type(error).__name__}: {error}"
                 ),
@@ -943,9 +1044,19 @@ class InterceptionServer(Interception):
             session.error = None
             call_response: Response | None = None
             events: bytes | None = None
+            served: web.Response | None = None
             node: int | None = None
             error: Exception | None = None
             started = time.time()
+            # The box is idle while the harness awaits this turn, so a snapshot captured
+            # before the reply returns matches the prompt exactly (tool results in, this
+            # reply not yet). It runs alongside the model call; the reply waits for it.
+            capture = (
+                asyncio.create_task(session.checkpointer())
+                if session.checkpointer is not None
+                else None
+            )
+
             try:
                 try:
                     # What actually goes upstream: the native body with the rollout's model +
@@ -1004,16 +1115,20 @@ class InterceptionServer(Interception):
                             f"rollout stopped: {session.trace.stop_condition}",
                             status=400,
                         )
-                    node = turn.commit(call_response)
-                    session.consume_prepared(turn.tail)
-                    session.trace.response_rewrites.extend(response_rewrites)
-                    if stopped is None:
-                        stopped = await session.gate_tool_calls(node)
-                    if stopped is not None:
-                        session.trace.stop(stopped)
-                        return _error_response(
-                            dialect, f"rollout stopped: {stopped}", status=400
-                        )
+                    # A snapshot records the trace only outside this block: a reply on
+                    # the trace is then always one a box can be sent again.
+                    with session.committing():
+                        node = turn.commit(call_response)
+                        session.consume_prepared(turn.tail)
+                        session.trace.response_rewrites.extend(response_rewrites)
+                        if stopped is None:
+                            stopped = await session.gate_tool_calls(node)
+                        if stopped is not None:
+                            session.trace.stop(stopped)
+                            return _error_response(
+                                dialect, f"rollout stopped: {stopped}", status=400
+                            )
+                        served = serve(call_response, events)
                 except RolloutError as e:
                     # Stash the real cause; the rollout re-raises it after the harness returns.
                     # Relay the provider's status so the harness SDK retries 5xx/429 and not 4xx.
@@ -1037,29 +1152,56 @@ class InterceptionServer(Interception):
                     error = e
                     raise
             finally:
-                if node is None:
-                    turn.abandon()
-                # The turn's one per-exchange record: settings, timing, outcome, and
-                # the error that ended it (if any).
-                self.record_call(
-                    session,
-                    dialect,
-                    body,
-                    started,
-                    node=node,
-                    finish_reason=call_response.finish_reason
-                    if call_response
-                    else None,
-                    usage=call_response.usage if call_response else None,
-                    error=error,
-                    policy_paths=policy_paths,
-                    acp=acp,
-                )
-            return serve(call_response, events)
+                try:
+                    if capture is not None:
+                        held = time.monotonic()
+                        try:
+                            # Shielded: a cancelled exchange leaves the snapshot to
+                            # finish in the background, where the rollout awaits it.
+                            checkpoint = await asyncio.shield(capture)
+                        # A lost snapshot never fails the turn.
+                        except Exception:
+                            logger.warning(
+                                "checkpoint failed: id=%s",
+                                session.trace.id,
+                                exc_info=True,
+                            )
+                        else:
+                            if checkpoint is not None:
+                                checkpoint.held = time.monotonic() - held
+                finally:
+                    if node is None:
+                        turn.abandon()
+                    # The turn's one per-exchange record: settings, timing, outcome,
+                    # and the error that ended it (if any).
+                    self.record_call(
+                        session,
+                        dialect,
+                        body,
+                        started,
+                        node=node,
+                        finish_reason=call_response.finish_reason
+                        if call_response
+                        else None,
+                        usage=call_response.usage if call_response else None,
+                        error=error,
+                        policy_paths=policy_paths,
+                        acp=acp,
+                    )
+            assert served is not None
+            return served
+
+        async def answer() -> web.Response:
+            reply = await sample()
+            # A memory snapshot under way must not see this reply reach the box, be it
+            # the turn's reply or an error.
+            await session.flowing.wait()
+            idempotent.sent = True
+            return reply
 
         if streaming:
-            return await _buffered_stream(request, dialect, sample(), session.trace.id)
-        return await sample()
+            return await _buffered_stream(request, dialect, answer(), session.trace.id)
+        return await answer()
 
     async def handle_aux(
         self, request: web.Request, dialect: Dialect, route: str
@@ -1191,6 +1333,7 @@ class InterceptionServer(Interception):
                 {"error": f"invalid state PUT for {state_cls.__name__}: {e}"},
                 status=400,
             )
+        await session.flowing.wait()
         if session.released:  # the trace is sealed — a straggler write must not land
             return web.json_response({"error": "rollout concluded"}, status=409)
         session.trace.state = new_state

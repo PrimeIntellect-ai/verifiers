@@ -108,6 +108,8 @@ url = "https://pypi.org/simple"
 default = true
 
 [tool.uv.sources]
+# Temporary, until a release has `attach_process` (PrimeIntellect-ai/prime#1147).
+prime-sandboxes = { git = "https://github.com/PrimeIntellect-ai/prime", rev = "fae6d0bc91717b95ff1b109d93d58a22e3408df2", subdirectory = "packages/prime-sandboxes" }
 compact = { path = "environments/compact", editable = true }
 glossary = { path = "environments/glossary", editable = true }
 deepwiki = { path = "environments/deepwiki", editable = true }
