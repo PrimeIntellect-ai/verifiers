@@ -464,6 +464,7 @@ async def test_a_release_does_not_answer_a_box_that_another_snapshot_stops():
 
 async def test_a_cancelled_held_save_does_not_hold_the_box():
     run, backend, session = make_rollout()
+    backend.running.clear()
     saving = asyncio.create_task(run.save(hold=True))
     await backend.stopped.wait()
     saving.cancel()
