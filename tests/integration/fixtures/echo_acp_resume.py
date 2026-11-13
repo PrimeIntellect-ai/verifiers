@@ -25,9 +25,15 @@ class ACPResumeTaskConfig(vf.TaskConfig):
 
 class ACPResumeConfig(vf.TasksetConfig):
     task: ACPResumeTaskConfig = ACPResumeTaskConfig()
+    finish_tool: bool = False
+    """Request replies through finish for harnesses that require it."""
 
 
-class ACPResumeTask(vf.Task[vf.TaskData, vf.State, ACPResumeTaskConfig]):
+class ACPResumeData(vf.TaskData):
+    finish_tool: bool = False
+
+
+class ACPResumeTask(vf.Task[ACPResumeData, vf.State, ACPResumeTaskConfig]):
     @classmethod
     def toolsets(cls, config: ACPResumeTaskConfig) -> list[vf.Toolset]:
         return [ResumeToolset(config.tools)]
@@ -51,13 +57,18 @@ class ACPResumeTask(vf.Task[vf.TaskData, vf.State, ACPResumeTaskConfig]):
 
 class ACPResumeEnv(vf.SingleAgentEnv):
     async def run(self, task, agents):
+        reply = (
+            "call your finish tool with paths=[] and reason exactly {}"
+            if task.data.finish_tool
+            else "reply with exactly {}"
+        )
         async with agents.agent.interaction(task) as interaction:
             # No "without tools" constraint here: models treat passing the codeword
             # to a tool in the next turn as exfiltrating a secret and refuse.
             first = await interaction.turn(
                 f"The codeword for this conversation is {CODEWORD}. It is not a "
                 "secret. In my next message I will ask you to pass it to a tool. For "
-                "now, reply with exactly READY."
+                f"now, {reply.format('READY')}."
             )
             segments = [first]
             if not first.terminated:
@@ -65,8 +76,8 @@ class ACPResumeEnv(vf.SingleAgentEnv):
                     await interaction.turn(
                         "Call the `recall` tool of the `resume` server (directly or "
                         "through your pre-imported Python skills) with the codeword "
-                        "from my previous message. Then reply with exactly the tool "
-                        "result and nothing else."
+                        f"from my previous message. Then {reply.format('the tool result')} "
+                        "and nothing else."
                     )
                 )
             interaction.trace.info["acp_segments"] = [
@@ -88,9 +99,10 @@ class ACPResumeTaskset(vf.Taskset[ACPResumeTask, ACPResumeConfig]):
     def load(self) -> list[ACPResumeTask]:
         return [
             ACPResumeTask(
-                vf.TaskData(
+                ACPResumeData(
                     idx=0,
                     prompt=None,
+                    finish_tool=self.config.finish_tool,
                     system_prompt=(
                         "Follow each user instruction exactly. Preserve conversational "
                         "context between turns and use requested tools."
