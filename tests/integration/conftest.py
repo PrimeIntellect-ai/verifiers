@@ -177,6 +177,46 @@ def _eval_config(
     )
 
 
+def _echo_probe(taskset: str, episodes) -> None:
+    """Experiment: does the harness show each reply again in its next request, in a form
+    the graph matches? A sampled node with a child was matched. A sampled node without
+    one is a final reply, or a reply whose echo did not match: then its parent has
+    another child that is an assistant message the model did not sample."""
+    import warnings
+
+    for episode in episodes:
+        for trace in episode.traces:
+            nodes = trace.nodes
+            children: dict[int | None, list[int]] = {}
+            for index, node in enumerate(nodes):
+                children.setdefault(node.parent, []).append(index)
+            sampled = [i for i, node in enumerate(nodes) if node.sampled]
+            matched = [i for i in sampled if children.get(i)]
+            leaves = [i for i in sampled if not children.get(i)]
+            lost = [
+                i
+                for i in leaves
+                if any(
+                    j != i
+                    and not nodes[j].sampled
+                    and nodes[j].message.role == "assistant"
+                    for j in children.get(nodes[i].parent, [])
+                )
+            ]
+            unsampled_assistant = sum(
+                not node.sampled and node.message.role == "assistant" for node in nodes
+            )
+            harness = trace.agent.config.harness
+            warnings.warn(
+                f"ECHO harness={harness.id if harness else None} taskset={taskset} "
+                f"dialect={getattr(harness, 'dialect', None)} sampled={len(sampled)} "
+                f"matched={len(matched)} leaves={len(leaves)} lost={len(lost)} "
+                f"unsampled_assistant={unsampled_assistant} "
+                f"branches={trace.num_branches} nodes={len(nodes)} ok={trace.ok}",
+                stacklevel=1,
+            )
+
+
 @pytest.fixture
 def run(tmp_path):
     """Run a taskset's episodes in-process with `vf-run`'s runner, saving them under
@@ -185,7 +225,9 @@ def run(tmp_path):
     async def _episodes(taskset: str, **kwargs) -> list[Episode]:
         config = _eval_config(taskset, **kwargs)
         config.output_dir = tmp_path
-        return await run_episodes(config)
+        episodes = await run_episodes(config)
+        _echo_probe(taskset, episodes)
+        return episodes
 
     return _episodes
 

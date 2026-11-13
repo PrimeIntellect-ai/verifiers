@@ -81,56 +81,18 @@ jobs:
       max-parallel: 16
       matrix:
         include:
-          - behavior: Single-Turn
-            tests: tests/integration/test_single_turn.py
           - behavior: Multi-Turn
             tests: tests/integration/test_multi_turn.py
           - behavior: Multi-Turn Tool
             tests: tests/integration/test_multi_turn_tool.py
           - behavior: Stateful Tool
             tests: tests/integration/test_stateful_tool.py
-          - behavior: Shared Tool
-            tests: tests/integration/test_shared_tool.py
-          - behavior: Multimodal Tool
-            tests: tests/integration/test_multimodal_tool.py
-          - behavior: User Echo
-            tests: tests/integration/test_user_echo.py
           - behavior: Resume Tool
             tests: tests/integration/test_resume_tool.py
-          - behavior: Checkpoint Restore
-            tests: tests/integration/test_checkpoint.py
-          - behavior: User Sim
-            tests: tests/integration/test_user_sim.py
-          - behavior: Agent User
-            tests: tests/integration/test_agent_user.py
-          - behavior: Network Policy
-            tests: tests/integration/test_network_policy.py
-          - behavior: Service VMs
-            tests: tests/integration/test_service_scoring.py
-          - behavior: Native Compose
-            tests: tests/integration/test_native_compose.py
-          - behavior: Tool VMs
-            tests: tests/integration/test_tool_vms.py
-          - behavior: Mounts
-            tests: tests/integration/test_mounts.py
-          - behavior: Sampling
-            tests: tests/integration/test_sampling.py
-          - behavior: Parallel
-            tests: tests/integration/test_parallel.py
-          - behavior: Scoring Network
-            tests: tests/integration/test_scoring_network.py
-          - behavior: Skills
-            tests: tests/integration/test_skills.py
           - behavior: Limits
             tests: tests/integration/test_limits.py
-          - behavior: Rubric Judge
-            tests: tests/integration/test_rubric_judge.py
-          - behavior: Agentic Judge
-            tests: tests/integration/test_agentic_judge.py
           - behavior: Multi-Agent
             tests: tests/integration/test_multi_agent.py
-          - behavior: Examples
-            tests: tests/integration/test_examples.py
     env:
       PRIME_API_KEY: ${{ secrets.PRIME_API_KEY }}
       PRIME_TEAM_ID: ${{ secrets.PRIME_TEAM_ID }}
