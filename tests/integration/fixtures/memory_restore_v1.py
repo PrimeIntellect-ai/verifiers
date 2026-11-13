@@ -7,10 +7,12 @@ the process from a memory snapshot can answer.
 The reward reads the nonce from the process. The task asks a harness with a shell for
 two commands that build on each other, and a metric checks the file they leave.
 
-A response `@intercept` raises a `ProviderError` once, at the model turn `fail_turn`:
-the harness gets the error as its reply and dies, after the snapshot of that turn
-exists. The restored box still waits for that turn's reply, gets it from the retry, and
-finishes: no new harness process, no notice to the model.
+A response `@intercept` raises a `ProviderError` at the model turn `fail_turn`, for
+every call of the first attempt: the harness gets the error as its reply and dies,
+after the snapshot of that turn exists. The restored box still waits for that turn's
+reply, gets it from the retry, and finishes: no new harness process, no notice to the
+model. One failed call is not enough: the snapshot resets the box's connections, its
+relay asks again, and a call that then succeeds would let the harness continue.
 """
 
 import uuid
@@ -40,10 +42,6 @@ class MemoryRestoreConfig(vf.TasksetConfig):
 
 
 class MemoryRestoreTask(vf.Task[vf.TaskData, vf.State, MemoryRestoreTaskConfig]):
-    failed = False
-    """Whether the injected failure fired: once per task, so a retry from the start
-    (checkpoints off) also gets through."""
-
     async def setup(self, trace: vf.Trace, runtime: Runtime) -> None:
         nonce = uuid.uuid4().hex
         trace.info["nonce"] = nonce
@@ -53,8 +51,7 @@ class MemoryRestoreTask(vf.Task[vf.TaskData, vf.State, MemoryRestoreTaskConfig])
 
     @vf.intercept
     def fail_once(self, response: vf.Response, trace: vf.Trace) -> None:
-        if trace.num_turns + 1 >= self.config.fail_turn and not self.failed:
-            self.failed = True
+        if trace.attempt == 1 and trace.num_turns + 1 >= self.config.fail_turn:
             # A 4xx: harness SDKs end the turn at once instead of retrying it until the
             # rollout's deadline.
             raise vf.ProviderError("injected mid-rollout failure", status_code=400)

@@ -79,10 +79,7 @@ skip_on_timeout = true
 
 Rollout checkpointing is on by default: a rollout can be snapshotted, and a retry restores the newest snapshot of the box and continues the trace from there, instead of starting over.
 
-By default a rollout takes a snapshot only when its owner saves it (`save_all`, below). Two settings add snapshots that the rollout takes by itself:
-
-- `on_error`: when a model call fails with an error that the run retries (`[env.agent.retries]`). The snapshot is taken before the harness gets the error, so the box that the retry restores still waits for the reply and asks for the call again. This helps only when the harness would end on the error. A harness that handles a failed call itself never uses the snapshot.
-- `interval`: at every n-th model turn. This covers failures that leave no box to snapshot: the box died, or the harness program crashed.
+By default a rollout takes a snapshot only when its owner saves it (`save_all`, below). `interval` adds snapshots that the rollout takes by itself, at every n-th model turn. This covers failures that leave no box to snapshot: the box died, or the harness program crashed.
 
 Without a snapshot, a retry starts over.
 
@@ -95,11 +92,10 @@ A rollout takes snapshots only when all of these hold. Otherwise a retry starts 
 - The rollout runs in a box of its own, not in a borrowed one.
 - The rollout has no tool servers, no shared tools and no services of its own. They reach the host at an address that does not follow the box to its restore.
 
-A retry also starts over when a restore fails before the restored attempt's first new turn, unless a model call failed again. Every snapshot is deleted once the run is final. Set `--no-env.agent.checkpoint` to turn it off.
+A retry also starts over when a restore fails before the restored attempt's first new turn. Every snapshot is deleted once the run is final. Set `--no-env.agent.checkpoint` to turn it off.
 
 ```toml
 [env.agent.checkpoint]
-# on_error = true  # snapshot when a model call fails with an error the run retries (off by default)
 # interval = 10    # snapshot at the 10th, 20th, ... model turn (off by default)
 keep = "last"  # snapshots kept while the rollout runs: "last", or every k-th plus the newest
 ```

@@ -1045,20 +1045,6 @@ class InterceptionServer(Interception):
                 else None
             )
 
-            async def rescue(failure: Exception) -> None:
-                """Snapshot the box before the harness learns of `failure`: a retry
-                then continues a box that still waits for this turn's reply."""
-                if session.rescuer is None:
-                    return
-                if capture is not None:
-                    await asyncio.wait({capture})
-                try:
-                    await session.rescuer(failure)
-                except Exception:
-                    logger.warning(
-                        "checkpoint failed: id=%s", session.trace.id, exc_info=True
-                    )
-
             try:
                 try:
                     # What actually goes upstream: the native body with the rollout's model +
@@ -1135,7 +1121,6 @@ class InterceptionServer(Interception):
                     logger.warning(
                         "Model call failed - %s: %s", type(e).__name__, clip(str(e))
                     )
-                    await rescue(e)
                     return _error_response(
                         dialect, str(e), status=getattr(e, "status_code", 502)
                     )
@@ -1144,7 +1129,6 @@ class InterceptionServer(Interception):
                     logger.warning(
                         "Model call failed - %s: %s", type(e).__name__, clip(str(e))
                     )
-                    await rescue(e)
                     return _error_response(dialect, str(e), status=502)
                 except BaseException as e:
                     # A cancelled exchange (harness disconnect, shutdown) is still
