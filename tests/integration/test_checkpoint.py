@@ -10,6 +10,7 @@ a box that booted from files alone would fail. Every case checks that the run le
 snapshot."""
 
 import asyncio
+import json
 import pickle
 
 import pytest
@@ -17,8 +18,10 @@ from conftest import _eval_config
 from grid import grid
 from prime_sandboxes import AsyncSandboxClient
 from subagent_restore import sub_agent_turns
+from tick_restore import COMMAND, TURNS
 
 from verifiers.v1.clients import ModelContext
+from verifiers.v1.dialects.chat import ChatDialect
 from verifiers.v1.env import RunSlot
 from verifiers.v1.restore import restore_entry, save_all
 from verifiers.v1.runtimes import PrimeBackend, Snapshot
@@ -44,6 +47,66 @@ def taken(monkeypatch) -> list[str]:
 
     monkeypatch.setattr(PrimeBackend, "snapshot", recording)
     return snapshots
+
+
+@pytest.fixture
+async def command_model():
+    """A scripted model for the bash harness: its k-th reply asks for the tick task's
+    command, and the reply after the last command says done. A box that asks again for
+    a turn gets the same reply. Yields a client config that points at it."""
+    from aiohttp import web
+
+    dialect = ChatDialect()
+
+    async def answer(request: web.Request) -> web.StreamResponse:
+        body = await request.json()
+        turn = sum(m.get("role") == "assistant" for m in body["messages"]) + 1
+        if turn <= TURNS:
+            call = {
+                "id": f"call_{turn}",
+                "type": "function",
+                "function": {
+                    "name": "bash",
+                    "arguments": json.dumps({"command": COMMAND}),
+                },
+            }
+            message = {"role": "assistant", "content": None, "tool_calls": [call]}
+        else:
+            message = {"role": "assistant", "content": "done"}
+        raw = {
+            "id": f"chatcmpl-{turn}",
+            "object": "chat.completion",
+            "created": 0,
+            "model": str(body.get("model", "scripted")),
+            "choices": [
+                {
+                    "index": 0,
+                    "message": message,
+                    "finish_reason": "tool_calls" if turn <= TURNS else "stop",
+                }
+            ],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+        }
+        if not dialect.streaming(body):
+            return web.json_response(raw)
+        response = web.StreamResponse(headers={"Content-Type": "text/event-stream"})
+        await response.prepare(request)
+        for event in dialect.stream_events(raw):
+            await response.write(event)
+        await response.write_eof()
+        return response
+
+    app = web.Application()
+    app.router.add_post("/{tail:.*}", answer)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "127.0.0.1", 0)
+    await site.start()
+    port = site._server.sockets[0].getsockname()[1]
+    try:
+        yield {"base_url": f"http://127.0.0.1:{port}/v1"}
+    finally:
+        await runner.cleanup()
 
 
 async def platform_state(client: AsyncSandboxClient, snapshot_id: str) -> str | None:
@@ -280,4 +343,77 @@ async def test_another_owner_continues_running_sub_agents(
     assert sum(node.parent is None for node in trace.nodes) == 3
     (snapshot_id,) = [c.id for c in trace.checkpoints if c.pinned]
     assert await PrimeBackend.discard([Snapshot(id=snapshot_id)]) == [snapshot_id]
+    await assert_no_leaks(taken)
+
+
+@pytest.mark.parametrize(
+    "harness,harness_runtime", grid(["bash"], needs=NEEDS), indirect=True
+)
+async def test_every_saved_turn_continues_to_the_same_result(
+    taken, harness, harness_runtime, command_model
+):
+    """One rollout is saved at its first, second and third turn and then finishes. A
+    second owner continues each saved trace, and every continuation ends with the
+    messages of the first run: a restore from any turn loses no command and repeats
+    none. The model is scripted, so the turns after a restore are the same ones."""
+    config = _eval_config(
+        "tick-restore",
+        harness=harness,
+        runtime=harness_runtime,
+        max_turns=12,
+        max_tokens=4096,
+        rollout_timeout=300,
+        client=command_model,
+    )
+    ctx = ModelContext(
+        client=config.client, model=config.model, sampling=config.sampling
+    )
+    env = load_environment(config.env)
+    (task,) = list(env.taskset)
+    points = []
+    async with env.serving():
+        (slot,) = env.slots(task)
+        running = asyncio.ensure_future(env.run_slot(slot, ctx))
+        try:
+            for turn in range(1, TURNS):
+                async with asyncio.timeout(300):
+                    while not (slot.traces and slot.traces[0].num_turns >= turn):
+                        assert not running.done(), "the rollout ended before the save"
+                        await asyncio.sleep(0.1)
+                (point,) = await save_all()
+                points.append(pickle.loads(pickle.dumps(point)))
+            episode = await running
+        finally:
+            running.cancel()
+            await asyncio.gather(running, return_exceptions=True)
+    (reference,) = episode.traces
+    assert reference.ok, [error.message for error in reference.errors]
+    assert reference.reward == 1.0
+
+    def messages(trace):
+        return [node.message.model_dump(exclude_none=True) for node in trace.nodes]
+
+    async def continued(point):
+        second = load_environment(config.env)
+        (task,) = list(second.taskset)
+        async with second.serving():
+            episode = await second.run_slot(
+                RunSlot(task, id=slot.id, restore=point), ctx
+            )
+        (trace,) = episode.traces
+        return trace
+
+    # The saves are at three different turns.
+    saved_turns = [sum(node["sampled"] for node in p["nodes"]) for p in points]
+    assert saved_turns == sorted(set(saved_turns)), saved_turns
+    for point, trace in zip(points, await asyncio.gather(*map(continued, points))):
+        assert trace.ok, [error.message for error in trace.errors]
+        assert trace.has_restored
+        assert trace.reward == 1.0
+        assert sum(node.parent is None for node in trace.nodes) == 1
+        assert messages(trace) == messages(reference)
+    snapshots = [Snapshot(id=restore_entry(point)["id"]) for point in points]
+    assert sorted(await PrimeBackend.discard(snapshots)) == sorted(
+        snapshot.id for snapshot in snapshots
+    )
     await assert_no_leaks(taken)
