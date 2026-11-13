@@ -400,8 +400,14 @@ async def serve_stream() -> None:
     try:
         while request := await read_packet(reader):
             if request.get("operation") == "shutdown":
+                if (
+                    session.client.prompt_task is not None
+                    and not session.client.prompt_task.done()
+                ):
+                    session.client.stop_reason = "cancelled"
+                    session.client.prompt_task.cancel()
                 if tasks:
-                    await asyncio.gather(*tasks)
+                    await asyncio.gather(*tasks, return_exceptions=True)
                 await handle(request)
                 break
             task = asyncio.create_task(handle(request))
