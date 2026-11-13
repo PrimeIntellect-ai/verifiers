@@ -398,13 +398,15 @@ class PrimeBackend(RuntimeBackend):
             try:
                 paused = await self._client.pause(self.info.id)
                 snapshot = Snapshot(id=paused.checkpoint_id)
+                # Kept whatever comes next: a pause that was not seen to finish can
+                # still have made the snapshot.
                 self.stray_snapshots.append(snapshot)
                 try:
                     await self._settle("PAUSED", "PAUSE_FAILED")
-                except BaseException:
-                    self.stray_snapshots.remove(snapshot)
-                    raise
-                await self._resume()
+                finally:
+                    # The pause was accepted, so the box stops or has stopped. It must
+                    # run again also when the wait for it failed.
+                    await self._resume()
             finally:
                 self._awake.set()
             return snapshot
@@ -464,7 +466,16 @@ class PrimeBackend(RuntimeBackend):
         if shared.poller is None:
             shared.poller = _StatusPoller(shared.client)
         while True:
-            box = await shared.poller.next(self.info.id)
+            try:
+                box = await shared.poller.next(self.info.id)
+            except Exception as e:
+                # One failed batch fails every box that waits in it: ask again.
+                if time.monotonic() > deadline:
+                    raise SandboxError(
+                        f"prime sandbox {self.info.id} did not reach {status}: {e}"
+                    ) from e
+                await asyncio.sleep(_STATUS_POLL_SECONDS)
+                continue
             if box.status == status:
                 return
             if box.error_type == failure or box.status in _DEAD_STATUSES:
