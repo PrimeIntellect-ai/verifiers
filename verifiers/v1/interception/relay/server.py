@@ -53,8 +53,10 @@ RETRY_SECONDS = 5 * 60
 the host to notice a lost tunnel, open a new one and reroute the relay."""
 EDGE_STATUSES = frozenset({404, 502, 503, 504})
 """Statuses a tunnel edge answers with its own page when it cannot reach the upstream
-("404 Tunnel Not Found", a bad gateway). The interception server answers with JSON or
-SSE, so only a response of another type with one of these statuses is the edge's."""
+("404 Tunnel Not Found", a bad gateway)."""
+SERVER_HEADER = "x-vf-interception"
+"""Header on every response of the interception server, its own 404 for an unknown path
+included. A response with an edge status and without it never reached the server."""
 BACKOFF_SECONDS = 0.5
 BACKOFF_CAP_SECONDS = 10.0
 CONNECT_TIMEOUT_SECONDS = 10.0
@@ -239,9 +241,8 @@ class UpstreamError(Exception):
 
 def is_edge_error(response: http.client.HTTPResponse) -> bool:
     """Whether `response` is the tunnel edge's own error page, not the upstream's answer."""
-    content_type = (response.getheader("Content-Type") or "").lower()
-    return response.status in EDGE_STATUSES and not content_type.startswith(
-        ("application/json", "text/event-stream")
+    return (
+        response.status in EDGE_STATUSES and response.getheader(SERVER_HEADER) is None
     )
 
 

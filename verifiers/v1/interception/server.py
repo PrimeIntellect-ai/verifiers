@@ -92,6 +92,10 @@ HASH_INLINE_MAX = 1024**2  # 1 MiB
 # Attempt counter the stainless-generated SDKs (OpenAI, Anthropic) send on every request:
 # 0 on the first attempt, incremented on each retry of the same request.
 RETRY_COUNT_HEADER = "x-stainless-retry-count"
+SERVER_HEADER = "x-vf-interception"
+"""Marks every response as this server's own, so a box's relay can tell an answer of
+the server (a 404 for an unknown path) from the error page of a tunnel edge that could
+not reach it (`relay/server.py`)."""
 IDEMPOTENCY_KEY_HEADER = "Idempotency-Key"
 IDEMPOTENCY_CACHE_TTL_SECONDS = 600
 IDEMPOTENCY_CACHE_MAX_COMPLETED = 64
@@ -134,6 +138,10 @@ async def _request_digest(raw: bytes) -> bytes:
     if len(raw) <= HASH_INLINE_MAX:
         return _body_digest(raw)
     return await asyncio.to_thread(_body_digest, raw)
+
+
+async def _mark_response(request: web.Request, response: web.StreamResponse) -> None:
+    response.headers[SERVER_HEADER] = "1"
 
 
 def _error_response(dialect: Dialect, message: str, *, status: int) -> web.Response:
@@ -647,6 +655,7 @@ class InterceptionServer(Interception):
         app = web.Application(
             client_max_size=MAX_REQUEST_BODY, middlewares=[_isolate_log_scope]
         )
+        app.on_response_prepare.append(_mark_response)
         app.router.add_get(HEALTH_PATH, self.handle_health)
         for dialect in DIALECTS:
             for route in dialect.routes:

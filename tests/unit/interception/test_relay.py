@@ -21,6 +21,7 @@ from types import SimpleNamespace
 import pytest
 
 from verifiers.v1.interception.relay import RELAY_SOURCE, relay_config
+from verifiers.v1.interception.server import SERVER_HEADER
 
 TIMEOUT = 5
 
@@ -75,6 +76,7 @@ class FakeUpstream:
 def reply(handler, status: int, body: dict) -> None:
     data = json.dumps(body).encode()
     handler.send_response(status)
+    handler.send_header(SERVER_HEADER, "1")
     handler.send_header("Content-Type", "application/json")
     handler.send_header("Content-Length", str(len(data)))
     handler.end_headers()
@@ -433,6 +435,30 @@ def test_interception_errors_reach_the_harness(upstreams, make_relay):
     response = connection.getresponse()
     assert response.status == 503
     assert json.loads(response.read()) == {"error": "provider down"}
+    assert a.requests.qsize() == 1
+
+
+def test_the_servers_own_404_reaches_the_harness(upstreams, make_relay):
+    """An unknown path is the server's answer, not a tunnel edge's page: the same
+    status and body type, told apart by the server's header."""
+    a, _ = upstreams
+
+    def respond(handler) -> None:
+        body = b"404: Not Found"
+        handler.send_response(404)
+        handler.send_header(SERVER_HEADER, "1")
+        handler.send_header("Content-Type", "text/plain")
+        handler.send_header("Content-Length", str(len(body)))
+        handler.end_headers()
+        handler.wfile.write(body)
+
+    a.respond = respond
+    relay = make_relay(a.url)
+    connection = relay.connect()
+    connection.request("POST", "/v1/unknown", b"{}", {})
+    response = connection.getresponse()
+    assert response.status == 404
+    assert response.read() == b"404: Not Found"
     assert a.requests.qsize() == 1
 
 
