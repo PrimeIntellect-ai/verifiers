@@ -8,6 +8,7 @@ import pytest
 
 import verifiers.v1 as vf
 from verifiers.v1.agent import Interaction
+from verifiers.v1.errors import ProviderError
 from verifiers.v1.graph import MessageNode
 from verifiers.v1.rollout import Rollout, RolloutTimeouts
 from verifiers.v1.types import AssistantMessage
@@ -99,3 +100,22 @@ async def test_expired_deadline_is_a_timeout_when_the_runtime_reports_an_error()
 
     assert trace.is_timeout and not trace.errors
     assert trace.stop_condition == "agent_timeout"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("status", "failed"), [(503, True), (429, True), (400, False)])
+async def test_clean_exit_after_failed_model_call(status, failed):
+    """A harness that ends cleanly after its last model call failed: a provider outage
+    still fails the rollout, a 4xx (context overflow) is the harness handling it."""
+    trace = make_trace()
+
+    class GiveUpSession:
+        async def turn(self, messages):
+            run._session.error = ProviderError("upstream", status_code=status)
+
+    run = make_rollout(trace, GiveUpSession())
+
+    await Interaction(run).turn("next")
+
+    assert bool(trace.errors) is failed
+    assert run._session.error is None
