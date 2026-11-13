@@ -9,6 +9,7 @@ import uuid
 from collections.abc import Awaitable, Callable
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
+from types import EllipsisType
 from typing import Any, Literal
 from urllib.parse import urlsplit
 
@@ -936,7 +937,7 @@ class Rollout:
             # snapshot resets the box's connections and its relay asks again: a call
             # that keeps failing would otherwise take a snapshot per request.
             return None
-        return await self._take_snapshot()
+        return await self._take_snapshot(at=self._last_node())
 
     def _last_node(self) -> int | None:
         return len(self.trace.nodes) - 1 if self.trace.nodes else None
@@ -965,21 +966,33 @@ class Rollout:
         task = asyncio.current_task()
         if task is not None:
             self._captures.add(task)
-        self._held = hold
+        # A save without a hold does not end the hold of an earlier one.
+        self._held = hold or self._held
+        checkpoint = None
         try:
             checkpoint = await self._take_snapshot(pinned=True)
+            if checkpoint is None:
+                self.release()
+                self.save_skipped = "its memory snapshot failed"
+                return None
+            saved = restorable(self.trace, checkpoint)
+        except BaseException:
+            # The owner never gets this save: nobody would release the hold or delete
+            # the snapshot, so both go back to the rollout.
+            if checkpoint is not None:
+                checkpoint.pinned = False
+            self.release()
+            raise
         finally:
             self._captures.discard(task)
-        if checkpoint is None:
-            self.release()
-            self.save_skipped = "its memory snapshot failed"
-            return None
         if hold:
+            if self._release_timer is not None:
+                self._release_timer.cancel()
             # An owner that never releases must not stall the rollout for good.
             self._release_timer = asyncio.get_running_loop().call_later(
                 HOLD_SECONDS, self.release
             )
-        return restorable(self.trace, checkpoint)
+        return saved
 
     def release(self) -> None:
         """Answer the box again after a `save(hold=True)`."""
@@ -987,19 +1000,26 @@ class Rollout:
         if self._release_timer is not None:
             self._release_timer.cancel()
             self._release_timer = None
-        self._session.resume()
+        # A snapshot that is being taken holds the box for itself, and lets the
+        # replies flow when it is done.
+        if not self._capturing.locked():
+            self._session.resume()
 
-    async def _take_snapshot(self, *, pinned: bool = False) -> Checkpoint | None:
+    async def _take_snapshot(
+        self, *, pinned: bool = False, at: int | None | EllipsisType = ...
+    ) -> Checkpoint | None:
         """Snapshot the box with its memory. Nothing the box asked for is answered
         while the snapshot is taken (`RolloutSession.hold`), so the box it stops has
         seen exactly the trace as recorded here; a box restored from it asks again
-        for what was still open."""
+        for what was still open. With `at`, only while the trace still ends at that
+        node: a snapshot of a turn that waited for another one comes too late when
+        the turn's reply is on the trace and not yet in the box."""
         assert self.runtime is not None and self._relay is not None
         session = self._session
         if self._harness_session is None:
             return None
         async with self._capturing:
-            if self._closed:
+            if self._closed or (at is not ... and at != self._last_node()):
                 return None
             session.hold()
             try:

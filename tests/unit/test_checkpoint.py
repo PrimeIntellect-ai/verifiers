@@ -444,6 +444,46 @@ async def test_a_held_save_answers_the_box_only_after_release():
     assert session.flowing.is_set() and run._release_timer is None
 
 
+async def test_a_release_does_not_answer_a_box_that_another_snapshot_stops():
+    run, backend, session = make_rollout()
+    backend.running.set()
+    assert await run.save(hold=True) is not None
+    # A turn later the rollout takes a snapshot of its own, and the owner releases
+    # while the box is stopped for it.
+    run.trace.nodes.append(MessageNode(parent=1, message=UserMessage(content="go")))
+    backend.running.clear()
+    backend.stopped.clear()
+    capture = asyncio.create_task(run._checkpoint())
+    await backend.stopped.wait()
+    run.release()
+    assert not session.flowing.is_set()
+    backend.running.set()
+    assert await capture is not None
+    assert session.flowing.is_set()
+
+
+async def test_a_cancelled_held_save_does_not_hold_the_box():
+    run, backend, session = make_rollout()
+    saving = asyncio.create_task(run.save(hold=True))
+    await backend.stopped.wait()
+    saving.cancel()
+    assert (await asyncio.gather(saving, return_exceptions=True))[0] is not None
+    assert saving.cancelled()
+    assert session.flowing.is_set()
+    assert not run._held and run._release_timer is None
+
+
+async def test_a_snapshot_that_waited_past_its_turn_is_not_taken():
+    run, backend, session = make_rollout()
+    async with run._capturing:
+        capture = asyncio.create_task(run._checkpoint())
+        await asyncio.sleep(0)
+        # The turn's reply lands on the trace while the snapshot waits its turn.
+        run.trace.nodes.append(MessageNode(parent=1, message=UserMessage(content="go")))
+    assert await capture is None
+    assert backend.taken == 0 and session.flowing.is_set()
+
+
 async def test_a_failed_held_save_does_not_hold_the_box():
     run, backend, session = make_rollout()
 
