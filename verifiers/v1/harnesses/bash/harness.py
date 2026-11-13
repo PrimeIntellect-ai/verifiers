@@ -45,9 +45,10 @@ class BashHarnessConfig(HarnessConfig):
     the agent's `bash` subprocesses don't inherit it. Results matching the runtime's
     network blocklist are excluded."""
 
-    exec_timeout: FiniteFloat = Field(600.0, gt=0)
-    """Seconds a foreground `bash` call may run before its process group is killed.
-    Commands run with `background=true` are not limited."""
+    yield_after: FiniteFloat = Field(30.0, ge=0, le=600)
+    """Seconds a `bash` call waits for its command by default. A command still running
+    then keeps running and the call returns its output so far; the model can pass a
+    larger `yield_after` per call, up to 600."""
 
     compaction: CompactionConfig | None = CompactionConfig()
     """Context compaction. Auto-compaction by default; set `summarize_at_tokens`
@@ -96,7 +97,7 @@ class BashHarness(Harness[BashHarnessConfig]):
         ):
             system_prompt = None
         env = {**self.config.resolved_env}
-        args = ["--bash", f"--bash-timeout={self.config.exec_timeout}"]
+        args = ["--bash", f"--bash-yield-after={self.config.yield_after}"]
         if tool_interception_url:
             args.append(f"--tool-interception-url={tool_interception_url}")
         args += compaction_args(self.config.compaction)

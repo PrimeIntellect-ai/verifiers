@@ -5,7 +5,6 @@ import asyncio
 import json
 import logging
 import os
-import signal
 import subprocess
 import tempfile
 import traceback
@@ -56,8 +55,10 @@ BASH_TOOL = {
     "function": {
         "name": "bash",
         "description": (
-            "Run a bash command and return its combined stdout and stderr. The call returns when "
-            "the command exits; processes it starts with `&` keep running."
+            "Run a bash command and return its combined stdout and stderr. If the command is "
+            "still running after `yield_after` seconds, the call returns its output so far, its "
+            "PID and its log file, and the command keeps running: check on it with `tail` on "
+            "the log, stop it with `kill -- -<pid>`."
         ),
         "parameters": {
             "type": "object",
@@ -66,14 +67,12 @@ BASH_TOOL = {
                     "type": "string",
                     "description": "The bash command to run.",
                 },
-                "background": {
-                    "type": "boolean",
+                "yield_after": {
+                    "type": "number",
                     "description": (
-                        "Start the command detached and return at once with its PID and log "
-                        "file. Use it for servers and other long-running processes; read the "
-                        "log with `cat` or `tail`, and stop it with `kill -- -<pid>`."
+                        "Seconds to wait for the command before returning (at most "
+                        "600). Raise it for slow builds and test runs."
                     ),
-                    "default": False,
                 },
             },
             "required": ["command"],
@@ -201,50 +200,47 @@ def run_search(
         return f"search failed ({e}). Try again or rephrase the query."
 
 
-def run_bash(command: str, background: bool = False, timeout: float = 600) -> str:
+MAX_YIELD_AFTER = 600
+
+
+def run_bash(command: str, yield_after: float) -> str:
     # Output goes to a file, not a pipe: a child started with `&` inherits the
     # output handle, and a pipe would block the call until that child exits.
-    # Each command gets its own session so a timeout kills its whole process group.
+    # A command still running at `yield_after` keeps running in its own session.
+    yield_after = max(0.0, min(yield_after, MAX_YIELD_AFTER))
     try:
-        if background:
-            fd, log_path = tempfile.mkstemp(prefix="bash-bg-", suffix=".log")
-            with os.fdopen(fd, "wb") as log:
-                proc = subprocess.Popen(
-                    ["bash", "-c", command],
-                    stdin=subprocess.DEVNULL,
-                    stdout=log,
-                    stderr=subprocess.STDOUT,
-                    start_new_session=True,
-                )
-            return (
-                f"started in background: pid {proc.pid}, output in {log_path}. "
-                f"Read it with `tail {log_path}`; stop it with `kill -- -{proc.pid}`."
-            )
-        with tempfile.TemporaryFile() as out:
+        fd, log_path = tempfile.mkstemp(prefix="bash-", suffix=".log")
+        with os.fdopen(fd, "wb") as log:
             proc = subprocess.Popen(
                 ["bash", "-c", command],
                 stdin=subprocess.DEVNULL,
-                stdout=out,
+                stdout=log,
                 stderr=subprocess.STDOUT,
                 start_new_session=True,
             )
-            try:
-                proc.wait(timeout=timeout)
-                timed_out = False
-            except subprocess.TimeoutExpired:
-                os.killpg(proc.pid, signal.SIGKILL)
-                proc.wait()
-                timed_out = True
-            out.seek(0)
-            output = out.read().decode(errors="replace")
-        if timed_out:
-            output += (
-                f"\n[killed after {timeout:g}s timeout; run long-running processes "
-                "with background=true]"
+        try:
+            proc.wait(timeout=yield_after)
+        except subprocess.TimeoutExpired:
+            with open(log_path, "rb") as log:
+                output = log.read().decode(errors="replace")
+            return output + (
+                f"\n[still running after {yield_after:g}s: pid {proc.pid}, output continues in "
+                f"{log_path}. Check it with `tail {log_path}`; stop it with "
+                f"`kill -- -{proc.pid}`.]"
             )
+        with open(log_path, "rb") as log:
+            output = log.read().decode(errors="replace")
+        os.unlink(log_path)
         return output
     except Exception as e:  # noqa: BLE001 - tool failures are returned to the model
         return f"error: {e}"
+
+
+def bash_yield_after(value: object, default: float) -> float:
+    try:
+        return float(value) if value is not None else default
+    except (TypeError, ValueError):
+        return default
 
 
 def run_edit(path: str, old_str: str, new_str: str) -> str:
@@ -490,8 +486,9 @@ async def run_chat_loop(
                     content = await asyncio.to_thread(
                         run_bash,
                         tool_args.get("command", ""),
-                        tool_args.get("background") in (True, "true"),
-                        args.bash_timeout,
+                        bash_yield_after(
+                            tool_args.get("yield_after"), args.bash_yield_after
+                        ),
                     )
                 elif name == "edit" and args.edit:
                     content = await asyncio.to_thread(
@@ -530,7 +527,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--mcp-config", default="")
     parser.add_argument("--tool-interception-url", default="")
     parser.add_argument("--bash", action="store_true")
-    parser.add_argument("--bash-timeout", type=float, default=600)
+    parser.add_argument("--bash-yield-after", type=float, default=30)
     parser.add_argument("--compaction", action="store_true")
     parser.add_argument("--summarize-at-tokens", type=int)
     parser.add_argument("--edit", action="store_true")
