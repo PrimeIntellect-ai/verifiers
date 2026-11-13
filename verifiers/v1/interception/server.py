@@ -1094,8 +1094,8 @@ class InterceptionServer(Interception):
         """`GET /v1/models`: relay the upstream model listing so agent loops can read a
         provider context-window extension (e.g. vLLM's `max_model_len`). The path is shared
         by every dialect; only the auth carrier differs, so the bearer is tried per dialect.
-        A pure relay from the session's endpoint config — never recorded on the trace, and a
-        failure never fails the rollout."""
+        Train clients advertise their exact total-context cap. This request is never
+        recorded on the trace, and a failure never fails the rollout."""
         for dialect in DIALECTS:
             session = self.sessions.get(dialect.secret(request.headers))
             if session is not None:
@@ -1121,8 +1121,14 @@ class InterceptionServer(Interception):
                 "Models call failed - %s: %s", type(e).__name__, clip(str(e))
             )
             return _error_response(dialect, str(e), status=502)
+        content = upstream.content
+        if upstream.is_success and isinstance(config, TrainClientConfig):
+            listing = upstream.json()
+            for card in listing.get("data", []):
+                card["supports_max_context_tokens"] = True
+            content = json.dumps(listing).encode()
         return web.Response(
-            body=upstream.content,
+            body=content,
             status=upstream.status_code,
             content_type="application/json",
         )

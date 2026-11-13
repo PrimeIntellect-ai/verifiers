@@ -415,6 +415,7 @@ class ChatDialect(Dialect[ChatCompletion]):
             "min_p",
             "max_tokens",
             "max_completion_tokens",
+            "max_context_tokens",
             "reasoning_effort",
             "seed",
             "stop",
