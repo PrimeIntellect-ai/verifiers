@@ -47,6 +47,10 @@ class _SplitDeployment(_DeploymentStrategy):
             raise ValueError("split deployment requires a dedicated single workspace")
         if d.backend.type not in ("docker", "prime") or d.harness_config is None:
             raise ValueError("split deployment requires Docker or Prime")
+        if d.backend.type == "docker" and d.backend.config.mounts:
+            raise ValueError(
+                "split deployment cannot use Docker bind mounts in the task workspace"
+            )
         d.backend.env = d.env
         await d.own(d.backend)
         config = d.harness_config.model_copy(update={"mounts": {}})
