@@ -68,7 +68,7 @@ class NeMoGymTask(Task[NeMoGymData, NeMoGymState, NeMoGymTaskConfig]):
             state.mcp_headers = state.headers | metadata["headers"]
 
     @reward(weight=1.0)
-    async def nemo_gym(self, trace: Trace) -> float:
+    async def nemo_gym(self, trace: Trace) -> float | None:
         state = trace.state
         params = self.data.row["responses_create_params"]
         response = await state.post(
@@ -84,6 +84,15 @@ class NeMoGymTask(Task[NeMoGymData, NeMoGymState, NeMoGymTaskConfig]):
         for key, value in result.items():
             if isinstance(value, (bool, int, float)):
                 trace.record_metric(key, float(value))
+        # Gym's mask_sample: the environment failed, so the reward measures nothing.
+        if result.get("mask_sample"):
+            kind = result.get("failure_kind")
+            trace.drop(
+                f"nemo_gym: mask_sample, failure_kind={kind}"
+                if kind
+                else "nemo_gym: mask_sample"
+            )
+            return None
         return float(reward)
 
 
