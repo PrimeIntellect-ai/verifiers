@@ -15,7 +15,6 @@ from anthropic.types import Message as AnthropicMessage
 from anthropic.types import Usage as AnthropicUsage
 
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
-from verifiers.v1.configs.sampling import Sampling, SamplingConfig
 from verifiers.v1.dialects.base import (
     Dialect,
     RawRequest,
@@ -25,7 +24,6 @@ from verifiers.v1.dialects.base import (
     parse_sse_event,
     provider_domains,
 )
-from verifiers.v1.errors import ProviderError
 from verifiers.v1.types import (
     AssistantMessage,
     ContentPart,
@@ -35,6 +33,8 @@ from verifiers.v1.types import (
     Messages,
     Request,
     Response,
+    Sampling,
+    SamplingConfig,
     SystemMessage,
     TextContentPart,
     Tool,
@@ -51,19 +51,6 @@ STOP_REASONS: dict[str, FinishReason] = {
     "tool_use": "tool_calls",
     "stop_sequence": "stop",
 }
-ERROR_TYPES = {
-    400: "invalid_request_error",
-    401: "authentication_error",
-    403: "permission_error",
-    404: "not_found_error",
-    413: "request_too_large",
-    429: "rate_limit_error",
-    502: "api_error",
-    529: "overloaded_error",
-}
-ERROR_STATUSES = {kind: status for status, kind in ERROR_TYPES.items()}
-
-
 # Claude may reorder mixed thinking block types between a response and its replay.
 # Native tool events share the final rank, preserving their relative order.
 THINKING_ORDER = {"redacted_thinking": 0, "thinking": 1}
@@ -116,12 +103,6 @@ _SAFE_CONTENT_TYPES = (
     "advisor_redacted_result",
     "advisor_tool_result_error",
 )
-
-
-def _error_type(status_code: int) -> str:
-    return ERROR_TYPES.get(
-        status_code, "api_error" if status_code >= 500 else "invalid_request_error"
-    )
 
 
 def parse_content(content) -> str | list[ContentPart]:
@@ -360,6 +341,73 @@ def response_from_wire(message: AnthropicMessage) -> Response:
     )
 
 
+# vf finish reason -> Anthropic stop_reason (inverse of STOP_REASONS for generated turns).
+FINISH_TO_STOP = {"stop": "end_turn", "length": "max_tokens", "tool_calls": "tool_use"}
+# Generated thinking has no provider signature; harnesses replay it verbatim and only the
+# Anthropic API itself validates signatures, which a self-hosted training endpoint never sees.
+GENERATED_THINKING_SIGNATURE = "vf-renderer"
+
+
+def message_from_response(response: Response, model: str) -> dict:
+    """A vf `Response` generated locally (the training client renders and samples, so it has
+    no provider message to relay) -> the native Anthropic `Message` dict the harness's SDK
+    expects. Inverse of `response_from_wire`: reasoning -> a thinking block, content -> a text
+    block, tool calls -> tool_use blocks (arguments decoded to the JSON `input` object)."""
+    message = response.message
+    content: list[dict] = []
+    if message.reasoning_content:
+        content.append(
+            {
+                "type": "thinking",
+                "thinking": message.reasoning_content,
+                "signature": GENERATED_THINKING_SIGNATURE,
+            }
+        )
+    if message.content:
+        text = (
+            message.content
+            if isinstance(message.content, str)
+            else "".join(getattr(part, "text", "") or "" for part in message.content)
+        )
+        if text:
+            content.append({"type": "text", "text": text})
+    for call in message.tool_calls or []:
+        try:
+            arguments = json.loads(call.arguments) if call.arguments else {}
+        except json.JSONDecodeError:
+            # Keep malformed arguments visible: the harness rejects the call and the model sees why.
+            arguments = {"_raw_arguments": call.arguments}
+        if not isinstance(arguments, dict):
+            arguments = {"_raw_arguments": call.arguments}
+        content.append(
+            {"type": "tool_use", "id": call.id, "name": call.name, "input": arguments}
+        )
+    if not content:
+        # The Messages API never returns an empty content list; an empty text block is its idle form.
+        content.append({"type": "text", "text": ""})
+    stop_reason = (
+        "tool_use"
+        if message.tool_calls
+        else FINISH_TO_STOP.get(response.finish_reason or "", "end_turn")
+    )
+    usage = response.usage
+    return {
+        "id": f"msg_{response.id or 'vf-intercept'}",
+        "type": "message",
+        "role": "assistant",
+        "model": response.model or model,
+        "content": content,
+        "stop_reason": stop_reason,
+        "stop_sequence": None,
+        "usage": {
+            "input_tokens": usage.input_tokens if usage else 0,
+            "output_tokens": usage.completion_tokens if usage else 0,
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 0,
+        },
+    }
+
+
 @dataclass
 class AnthropicStreamParser(StreamParser):
     """Incrementally assemble Anthropic message events without retaining SSE bytes."""
@@ -375,11 +423,6 @@ class AnthropicStreamParser(StreamParser):
         if event is None:
             return
         kind = event.get("type")
-        if kind == "error":
-            # HTTP 200 streams can fail in-band; preserve the provider's cause and IDs.
-            detail = event.get("error") or {}
-            status = ERROR_STATUSES.get(detail.get("type"), 502)
-            raise ProviderError(json.dumps(event), status_code=status)
         if kind == "message_start":
             self.message = event.get("message") or {}
         elif kind == "content_block_start":
@@ -443,7 +486,6 @@ class ModdedAnthropicMessage(AnthropicMessage):
 
 
 class AnthropicDialect(Dialect[AnthropicMessage]):
-    name = "anthropic_messages"
     sampling_fields = frozenset(
         {
             "temperature",
@@ -531,21 +573,17 @@ class AnthropicDialect(Dialect[AnthropicMessage]):
         # The SDK sends the key as `x-api-key`; an ANTHROPIC_AUTH_TOKEN arrives as Bearer.
         return headers.get("x-api-key") or super().secret(headers)
 
-    def error_body(self, message: str, *, status_code: int = 400) -> dict:
+    def error_body(self, message: str) -> dict:
         return {
             "type": "error",
-            "error": {"type": _error_type(status_code), "message": message},
+            "error": {"type": "invalid_request_error", "message": message},
         }
 
     def stream_keepalive(self, first: bool) -> bytes:
         # Anthropic's own keepalive; its SDKs skip it anywhere in the stream.
         return b'event: ping\ndata: {"type": "ping"}\n\n'
 
-    def stream_error(self, error: dict, *, status_code: int | None = None) -> bytes:
-        # Once HTTP 200 is committed, clients classify retries from the SSE error type.
-        if status_code is not None:
-            kind = _error_type(status_code)
-            error = {**error, "error": {**error.get("error", {}), "type": kind}}
+    def stream_error(self, error: dict) -> bytes:
         # The Anthropic SDKs raise only on a named `error` event.
         return b"event: error\ndata: " + json.dumps(error).encode() + b"\n\n"
 
@@ -629,42 +667,84 @@ class AnthropicDialect(Dialect[AnthropicMessage]):
         raw["stop_sequence"] = None
 
     def stream_events(self, raw: dict) -> list[bytes]:
+        """A whole native message -> the SSE event sequence an Anthropic SDK consumes. Handles
+        every block a generated turn carries (thinking, text, tool_use), one start/delta/stop
+        triple per block, so a message built by `message_from_response` streams faithfully."""
+
         def event(kind: str, payload: dict) -> bytes:
             return f"event: {kind}\ndata: {json.dumps(payload)}\n\n".encode()
 
-        text = raw["content"][0]["text"]
         head = {**raw, "content": [], "stop_reason": None, "stop_sequence": None}
         if isinstance(usage := head.get("usage"), dict):
             head["usage"] = {**usage, "output_tokens": 0}
-        return [
-            event("message_start", {"type": "message_start", "message": head}),
-            event(
-                "content_block_start",
-                {
-                    "type": "content_block_start",
-                    "index": 0,
-                    "content_block": {"type": "text", "text": ""},
-                },
-            ),
-            event(
-                "content_block_delta",
-                {
-                    "type": "content_block_delta",
-                    "index": 0,
-                    "delta": {"type": "text_delta", "text": text},
-                },
-            ),
-            event("content_block_stop", {"type": "content_block_stop", "index": 0}),
+        events = [event("message_start", {"type": "message_start", "message": head})]
+        for index, block in enumerate(raw.get("content") or []):
+            kind = block.get("type")
+            if kind == "thinking":
+                start = {"type": "thinking", "thinking": "", "signature": ""}
+                deltas = [
+                    {"type": "thinking_delta", "thinking": block.get("thinking", "")}
+                ]
+                if block.get("signature"):
+                    deltas.append(
+                        {"type": "signature_delta", "signature": block["signature"]}
+                    )
+            elif kind == "tool_use":
+                start = {
+                    "type": "tool_use",
+                    "id": block.get("id", ""),
+                    "name": block.get("name", ""),
+                    "input": {},
+                }
+                deltas = [
+                    {
+                        "type": "input_json_delta",
+                        "partial_json": json.dumps(block.get("input") or {}),
+                    }
+                ]
+            elif kind == "text":
+                start = {"type": "text", "text": ""}
+                deltas = [{"type": "text_delta", "text": block.get("text", "")}]
+            else:
+                # Opaque blocks (e.g. redacted_thinking) carry no deltas; start them whole.
+                start, deltas = block, []
+            events.append(
+                event(
+                    "content_block_start",
+                    {
+                        "type": "content_block_start",
+                        "index": index,
+                        "content_block": start,
+                    },
+                )
+            )
+            for delta in deltas:
+                events.append(
+                    event(
+                        "content_block_delta",
+                        {"type": "content_block_delta", "index": index, "delta": delta},
+                    )
+                )
+            events.append(
+                event(
+                    "content_block_stop", {"type": "content_block_stop", "index": index}
+                )
+            )
+        events.append(
             event(
                 "message_delta",
                 {
                     "type": "message_delta",
-                    "delta": {"stop_reason": "end_turn", "stop_sequence": None},
+                    "delta": {
+                        "stop_reason": raw.get("stop_reason") or "end_turn",
+                        "stop_sequence": None,
+                    },
                     "usage": raw.get("usage") or {},
                 },
-            ),
-            event("message_stop", {"type": "message_stop"}),
-        ]
+            )
+        )
+        events.append(event("message_stop", {"type": "message_stop"}))
+        return events
 
     def stream_parser(self) -> StreamParser:
         return AnthropicStreamParser(self.validate_response)
@@ -689,7 +769,7 @@ class AnthropicDialect(Dialect[AnthropicMessage]):
         # Preserve native fields except the eval's model + sampling. `temperature`/`top_p` are
         # authoritative (always dropped, the eval's applied if set); `max_tokens` is required by
         # the API, so the program's is kept unless the eval sets one.
-        s = sampling.model_dump(exclude_none=True)
+        s = sampling.wire_args()
         reasoning_effort = s.pop("reasoning_effort", None)
         sampling_output_config = s.pop("output_config", None)
         overrides: dict = {**s, "model": model}
