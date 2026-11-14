@@ -48,7 +48,9 @@ class MiniSWEAgentHarness(Harness[MiniSWEAgentHarnessConfig]):
             "--model-class",
             "litellm",
             "--task-file",
-            await stage_text(runtime, trace, "task.txt", prompt),
+            await stage_text(
+                runtime, trace, "task.txt", prompt, env=self.config.resolved_env
+            ),
             "--exit-immediately",
             "--yolo",
             "-c",

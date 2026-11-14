@@ -89,7 +89,11 @@ class BrowserUseHarness(Harness[BrowserUseHarnessConfig]):
         )
         env = {**self.config.resolved_env}
         state = runtime.temp_path(
-            f"vf-browser-{trace.id}", env=self.config.resolved_env
+            f"vf-browser-{trace.id}",
+            env=self.config.resolved_env,
+            default=f".vf-browser-{trace.id}"
+            if data.filesystem is None or data.filesystem.writable is None
+            else None,
         )
         args = [
             f"--browser={self.config.browser}",
