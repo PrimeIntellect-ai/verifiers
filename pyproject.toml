@@ -149,6 +149,8 @@ renderers = false
 vf-run = "verifiers.v1.cli.run:main"
 vf-validate = "verifiers.v1.cli.validate:main"
 vf-debug = "verifiers.v1.cli.debug:main"
+vf-audit = "verifiers.v1.cli.audit:main"
+vf-regrade = "verifiers.v1.cli.regrade:main"
 
 # hatchling configuration
 [tool.hatch.version]
