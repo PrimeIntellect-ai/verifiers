@@ -4,6 +4,7 @@ from typing import Literal
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig, PinnedVersion
 from verifiers.v1.harness import Harness
+from verifiers.v1.harnesses.utils.launch import stage_text
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
@@ -49,13 +50,16 @@ class Terminus2Harness(Harness[Terminus2HarnessConfig]):
             **self.config.resolved_env,
             "TMUX_TMPDIR": tmux_dir,
         }
+        task_file = await stage_text(runtime, trace, "task.txt", prompt)
         args = [
             f"--base-url={endpoint}",
             f"--api-key={secret}",
             f"--model={ctx.model}",
-            f"--system-prompt={system_prompt or ''}",
-            f"--task={prompt}",
+            f"--task-file={task_file}",
         ]
+        if system_prompt:
+            path = await stage_text(runtime, trace, "system-prompt.txt", system_prompt)
+            args.append(f"--system-prompt-file={path}")
         try:
             source = PROGRAM_SOURCE.replace("{version}", self.config.version)
             program = await runtime.prepare_uv_script(source, self.config.resolved_env)

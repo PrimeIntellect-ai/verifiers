@@ -1,5 +1,6 @@
 import inspect
 import json
+import uuid
 from collections.abc import Sequence
 from types import ModuleType
 
@@ -54,6 +55,19 @@ def compaction_args(compaction: CompactionConfig | None) -> list[str]:
     return args
 
 
+async def stage_text(runtime: Runtime, trace: Trace, name: str, text: str) -> str:
+    """Write `text` to a new file in `runtime` and return its path.
+
+    Prompt text reaches programs by file, never on argv: an agent's `pkill -f <word>`
+    kills every process whose command line contains the word, and Linux caps one
+    argument at 128 KiB. Each call gets its own path, so concurrent launches on one
+    trace do not collide. The program that reads the file deletes it."""
+    stem, dot, suffix = name.partition(".")
+    path = f"/tmp/{stem}-{trace.id}-{uuid.uuid4().hex[:8]}{dot}{suffix}"
+    await runtime.write(path, text.encode())
+    return path
+
+
 async def launch_chat_program(
     source: str,
     config: HarnessConfig,
@@ -78,7 +92,8 @@ async def launch_chat_program(
         *extra_args,
     ]
     if system_prompt:
-        args.append(f"--system-prompt={system_prompt}")
+        path = await stage_text(runtime, trace, "system-prompt.txt", system_prompt)
+        args.append(f"--system-prompt-file={path}")
     if mcp_urls:
         args.append(
             "--mcp-config="
@@ -92,12 +107,12 @@ async def launch_chat_program(
             )
         )
     if isinstance(prompt, str):
-        args.append(f"--prompt={prompt}")
-    elif prompt is not None:
-        path = f".vf-initial-messages-{trace.id}.json"
-        await runtime.write(
-            path,
-            json.dumps([message_to_wire(message) for message in prompt]).encode(),
+        initial = [{"role": "user", "content": prompt}] if prompt else []
+    else:
+        initial = [message_to_wire(message) for message in prompt or []]
+    if initial:
+        path = await stage_text(
+            runtime, trace, "initial-messages.json", json.dumps(initial)
         )
         args.append(f"--initial-messages-file={path}")
     program = await runtime.prepare_uv_script(

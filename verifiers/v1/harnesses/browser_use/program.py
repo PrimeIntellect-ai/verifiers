@@ -187,6 +187,16 @@ async def chat(
     return completion.choices[0].message
 
 
+def read_staged(path: str) -> bytes:
+    """Read and delete a file the harness staged for this launch; empty without one."""
+    if not path:
+        return b""
+    file = Path(path)
+    data = file.read_bytes()
+    file.unlink()
+    return data
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--base-url", required=True)
@@ -195,8 +205,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--state-dir", required=True)
     parser.add_argument("--browser", default="chromium")
     parser.add_argument("--cdp-url", default="")
-    parser.add_argument("--system-prompt", default="")
-    parser.add_argument("--prompt", default="")
+    parser.add_argument("--system-prompt-file", default="")
     parser.add_argument("--initial-messages-file", default="")
     parser.add_argument("--mcp-config", default="")
     return parser.parse_args()
@@ -204,12 +213,8 @@ def parse_args() -> argparse.Namespace:
 
 async def main() -> None:
     args = parse_args()
-    initial = []
-    if args.initial_messages_file:
-        path = Path(args.initial_messages_file)
-        payload = path.read_bytes()
-        path.unlink()
-        initial = json.loads(payload)
+    system_prompt = read_staged(args.system_prompt_file).decode()
+    initial = json.loads(read_staged(args.initial_messages_file) or b"[]")
     state_dir = Path(args.state_dir)
     state_dir.mkdir(parents=True, exist_ok=True)
     endpoint = (
@@ -232,14 +237,9 @@ async def main() -> None:
         mcp_tools, dispatch, servers = await connect_mcp(config, mcp_stack, reserved)
         tools += mcp_tools
         messages = (
-            [{"role": "system", "content": args.system_prompt}]
-            if args.system_prompt
-            else []
+            [{"role": "system", "content": system_prompt}] if system_prompt else []
         )
-        if initial:
-            messages.extend(initial)
-        elif args.prompt:
-            messages.append({"role": "user", "content": args.prompt})
+        messages.extend(initial)
         while True:
             message = await chat(client, args.model, messages, tools)
             messages.append(message.model_dump(exclude_none=True))

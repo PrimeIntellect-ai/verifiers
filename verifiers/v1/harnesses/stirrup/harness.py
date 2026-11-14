@@ -52,8 +52,15 @@ class StirrupHarness(ACPHarness[StirrupHarnessConfig]):
         data: TaskData,
     ) -> ACPConfig:
         system_prompt, prompt = self.resolve_text_prompt(data)
-        skills_dir = f"/tmp/vf-stirrup-{trace.id}/skills"
+        state_dir = f"/tmp/vf-stirrup-{trace.id}"
+        skills_dir = f"{state_dir}/skills"
         await self.install_skills(runtime, skills_dir)
+        system_prompt_args = []
+        if system_prompt:
+            # Kept until cleanup, not deleted on read, so a restarted bridge finds it.
+            path = f"{state_dir}/system-prompt.txt"
+            await runtime.write(path, system_prompt.encode())
+            system_prompt_args.append(f"--system-prompt-file={path}")
         program = await runtime.prepare_uv_script(
             self._source(), self.config.resolved_env, activate=False
         )
@@ -69,7 +76,7 @@ class StirrupHarness(ACPHarness[StirrupHarnessConfig]):
                 f"--skills-dir={skills_dir}",
                 f"--tool-timeout={self.config.tool_timeout}",
                 "--disabled-tools=" + json.dumps(self.config.disabled_tools or []),
-                *([f"--system-prompt={system_prompt}"] if system_prompt else []),
+                *system_prompt_args,
             ],
             prompt=prompt,
             # The bridge owns system-prompt placement; the ACP runner must not
