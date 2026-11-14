@@ -50,7 +50,9 @@ class Terminus2Harness(Harness[Terminus2HarnessConfig]):
             **self.config.resolved_env,
             "TMUX_TMPDIR": tmux_dir,
         }
-        task_file = await stage_text(runtime, trace, "task.txt", prompt)
+        task_file = await stage_text(
+            runtime, trace, "task.txt", prompt, env=self.config.resolved_env
+        )
         args = [
             f"--base-url={endpoint}",
             f"--api-key={secret}",
@@ -58,7 +60,13 @@ class Terminus2Harness(Harness[Terminus2HarnessConfig]):
             f"--task-file={task_file}",
         ]
         if system_prompt:
-            path = await stage_text(runtime, trace, "system-prompt.txt", system_prompt)
+            path = await stage_text(
+                runtime,
+                trace,
+                "system-prompt.txt",
+                system_prompt,
+                env=self.config.resolved_env,
+            )
             args.append(f"--system-prompt-file={path}")
         try:
             source = PROGRAM_SOURCE.replace("{version}", self.config.version)
