@@ -61,17 +61,23 @@ async def test_prime_volume_publish_and_reuse(monkeypatch):
     async with AsyncSandboxClient() as client:
         try:
             async with asyncio.timeout(600):
-                # Starting the writer creates the previously nonexistent volume.
-                async with provision_runtime(writer_config) as writer:
-                    await writer.write("/data/published.txt", b"published content")
-                    await client.volumes.publish(writer.info.id, name)
-                    await writer.write("/data/unpublished.txt", b"private content")
+                # Starting the writers creates the volume; both attach the same initial head.
+                async with (
+                    provision_runtime(writer_config) as writer_a,
+                    provision_runtime(writer_config) as writer_b,
+                ):
+                    await writer_a.write("/data/published.txt", b"published content")
+                    await writer_b.write("/data/second.txt", b"second writer")
+                    await client.volumes.publish(writer_a.info.id, name)
+                    await client.volumes.publish(writer_b.info.id, name)
+                    await writer_a.write("/data/unpublished.txt", b"private content")
 
-                # A fresh VM reuses the volume after writer teardown, at its published head.
+                # A fresh VM reuses the volume after writer teardown, at its merged head.
                 async with provision_runtime(reader_config) as reader:
                     assert (
                         await reader.read("/data/published.txt") == b"published content"
                     )
+                    assert await reader.read("/data/second.txt") == b"second writer"
                     missing = await reader.run(
                         ["test", "!", "-e", "/data/unpublished.txt"], {}
                     )
