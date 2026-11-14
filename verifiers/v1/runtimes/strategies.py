@@ -51,6 +51,10 @@ class _SplitDeployment(_DeploymentStrategy):
             raise ValueError(
                 "split deployment cannot use Docker bind mounts in the task workspace"
             )
+        if not d.backend.network_restricted:
+            d.backend.config = d.backend.config.model_copy(
+                update={"allow": [], "block": ["*"]}
+            )
         d.backend.env = d.env
         await d.own(d.backend)
         config = d.harness_config.model_copy(update={"mounts": {}})
