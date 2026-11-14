@@ -389,6 +389,17 @@ class TrainClient(Client):
             "min_p": 0.0,
             **sampling.model_dump(exclude_none=True),
         }
+        # The effective body includes rollout overrides and the harness's per-request
+        # limit, which can differ between work and summary calls.
+        context_limit = sampling_params.pop(
+            "max_context_tokens", body.get("max_context_tokens")
+        )
+        if context_limit is not None and (
+            type(context_limit) is not int or context_limit <= 0
+        ):
+            raise ProviderError(
+                "max_context_tokens must be a positive integer", status_code=400
+            )
         chat_template_kwargs = sampling_params.pop("chat_template_kwargs", None)
         cache_salt = sampling_params.pop("cache_salt", None)
         pool = ElasticRendererPool(
@@ -451,6 +462,31 @@ class TrainClient(Client):
                 )
                 prompt_ids = rendered.token_ids
                 prompt_attribution = rendered
+
+            if context_limit is not None:
+                if not process_multimodal:
+                    raise ProviderError(
+                        "max_context_tokens requires an exactly tokenized prompt; "
+                        "engine-side image expansion is not supported",
+                        status_code=400,
+                    )
+                remaining = context_limit - len(prompt_ids)
+                if remaining <= 0:
+                    raise ProviderError(
+                        f"Prompt length ({len(prompt_ids)}) reaches maximum context "
+                        f"length ({context_limit})",
+                        status_code=400,
+                    )
+                completion_limit = body.get(
+                    "max_tokens",
+                    body.get(
+                        "max_completion_tokens", sampling_params.get("max_tokens")
+                    ),
+                )
+                sampling_params["max_tokens"] = min(
+                    completion_limit if completion_limit is not None else remaining,
+                    remaining,
+                )
 
             try:
                 result = await generate(
