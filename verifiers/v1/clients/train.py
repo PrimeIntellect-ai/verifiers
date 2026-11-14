@@ -1,8 +1,6 @@
 """Train client: renders prompts to token ids and calls a vLLM generate endpoint."""
 
 import asyncio
-import functools
-import inspect
 import json
 import threading
 from collections.abc import AsyncIterator, Callable, Mapping
@@ -204,16 +202,6 @@ def _is_valid_incremental_tail(messages: list[dict[str, Any]]) -> bool:
     return bool(messages) and all(
         message.get("role") in ("tool", "user") for message in messages
     )
-
-
-@functools.cache
-def _bridge_takes_tool_call_ids(renderer_type: type) -> bool:
-    """Renderers that sort parallel tool results by the issuing calls accept those ids."""
-    try:
-        parameters = inspect.signature(renderer_type.bridge_to_next_turn).parameters
-    except (TypeError, ValueError):
-        return False
-    return "previous_tool_call_ids" in parameters
 
 
 def _tool_call_ids(message: dict[str, Any]) -> list[str]:
@@ -436,13 +424,9 @@ class TrainClient(Client):
             previous_ids = turn.previous_renderer_token_ids() if can_bridge else None
             if previous_ids is not None:
                 previous_prompt_ids, previous_completion_ids = previous_ids
-                bridge_kwargs = dict(render_kwargs)
-                if sum(
-                    message.get("role") == "tool" for message in wire_tail
-                ) > 1 and _bridge_takes_tool_call_ids(type(renderer)):
-                    bridge_kwargs["previous_tool_call_ids"] = _tool_call_ids(
-                        wire_messages[turn.tail_start - 1]
-                    )
+                previous_tool_call_ids = _tool_call_ids(
+                    wire_messages[turn.tail_start - 1]
+                )
 
                 def bridge():
                     return renderer.bridge_to_next_turn(
@@ -450,7 +434,8 @@ class TrainClient(Client):
                         previous_completion_ids,
                         wire_tail,
                         tools=wire_tools,
-                        **bridge_kwargs,
+                        previous_tool_call_ids=previous_tool_call_ids,
+                        **render_kwargs,
                     )
 
                 bridged = await slot.run(bridge)
