@@ -9,6 +9,8 @@ from pathlib import PurePosixPath
 from verifiers.v1.configs.scoring import ScoringConfig
 from verifiers.v1.errors import TaskError, boundary
 from verifiers.v1.runtimes import (
+    DockerBackend,
+    DockerConfig,
     NetworkPolicyConfig,
     PrimeConfig,
     Runtime,
@@ -27,6 +29,28 @@ from verifiers.v1.utils.retries import RetryState, backoff
 logger = get_logger(__name__)
 _SCORING_INFO_KEYS = ("judge_calls", "scoring_diagnostics")
 """Accounting and diagnostics survive failed scoring attempts, unlike partial scores."""
+
+
+def validate_verifier_mounts(solver: Runtime, verifier: Runtime) -> None:
+    """Reject Docker storage shared with a solver-writable mount after the engine
+    has resolved bind aliases and mount roots."""
+    if not isinstance(solver.backend, DockerBackend) or not isinstance(
+        verifier.backend, DockerBackend
+    ):
+        return
+    writable = [mount for mount in solver.backend.mounts if not mount.read_only]
+    for mount in verifier.backend.mounts:
+        for source in writable:
+            if source.device != mount.device or not (
+                source.root.is_relative_to(mount.root)
+                or mount.root.is_relative_to(source.root)
+            ):
+                continue
+            raise TaskError(
+                f"isolated verification mount {mount.target!r} shares storage writable "
+                f"by the solver at {source.target!r}; configure scoring.runtime with "
+                "independent storage"
+            )
 
 
 @contextmanager
@@ -59,10 +83,32 @@ def verifier_runtime(
     task = task.with_data(
         image=task.data.image or getattr(solver_runtime.config, "image", None),
         workdir=task.data.workdir or getattr(solver_runtime.config, "workdir", None),
+        # Scoring uses a trusted view, independent of the agent's execution identity
+        # and filesystem boundary. Keep image, artifact and network validation.
+        agent_user=None,
+        filesystem=None,
     )
     if policy.network is not None:
         task = task.with_data(network=policy.network)
     config = resolve_runtime_config(source, task)
+    if isinstance(solver_runtime.config, DockerConfig) and isinstance(
+        config, DockerConfig
+    ):
+        writable = [
+            PurePosixPath(mount.source)
+            for mount in solver_runtime.config.mounts.values()
+            if not mount.read_only
+        ]
+        for target, mount in config.mounts.items():
+            path = PurePosixPath(mount.source)
+            if any(
+                path.is_relative_to(root) or root.is_relative_to(path)
+                for root in writable
+            ):
+                raise TaskError(
+                    f"isolated verification mount {target!r} shares storage writable by "
+                    "the solver; configure scoring.runtime with independent storage"
+                )
     if policy.runtime is not None and "image" in policy.runtime.model_fields_set:
         config = config.model_copy(update={"image": policy.runtime.image})
     if not backend_cls(config).SUPPORTS_TASK_IMAGES:
@@ -154,6 +200,7 @@ async def grade_task(
                         )
                     )
                     runtime = bind_scoring_env(runtime, policy)
+                    validate_verifier_mounts(deployment.workspace, runtime)
                     await runtime.backend.prepare_setup()
                     await stage_verifier(grader, result, runtime)
                     await runtime.backend.prepare_execution([])

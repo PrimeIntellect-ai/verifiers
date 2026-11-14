@@ -83,7 +83,7 @@ class ClaudeCodeHarness(ACPHarness[ClaudeCodeHarnessConfig]):
         data: TaskData,
     ) -> ACPConfig:
         system_prompt, prompt = self.resolve_prompt(data)
-        config_dir = self.config_dir(trace)
+        config_dir = self.config_dir(trace, runtime)
         await self.install_skills(runtime, f"{config_dir}/skills")
         versions = {"version": self.config.version, "acp_version": ACP_VERSION}
         session_meta = {
@@ -131,8 +131,17 @@ class ClaudeCodeHarness(ACPHarness[ClaudeCodeHarnessConfig]):
         )
 
     async def cleanup(self, trace: Trace, runtime: Runtime) -> None:
-        await remove_dir(runtime, self.config_dir(trace), "Claude config")
+        await remove_dir(runtime, self.config_dir(trace, runtime), "Claude config")
 
-    @staticmethod
-    def config_dir(trace: Trace) -> str:
-        return f"{CLAUDE_CONFIG_ROOT}/{trace.id}"
+    def config_dir(self, trace: Trace, runtime: Runtime) -> str:
+        return runtime.temp_path(
+            "vf-claude",
+            trace.id,
+            env=self.config.resolved_env,
+            default=(
+                f"{CLAUDE_CONFIG_ROOT}/{trace.id}"
+                if trace.task.data.filesystem is None
+                or trace.task.data.filesystem.writable is None
+                else None
+            ),
+        )

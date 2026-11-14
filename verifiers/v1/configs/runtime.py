@@ -18,12 +18,156 @@ from verifiers.v1.utils.network import (
 class BindMount(BaseConfig):
     """An existing file or directory on the container engine's host."""
 
-    source: str = Field(pattern=r"^/[^\x00]*$")
-    """Absolute host path. The runtime never creates or removes the source."""
+    source: str
+    """Normalized absolute host path with no parent segments. The runtime never
+    creates or removes the source."""
     read_only: bool = True
+
+    @field_validator("source")
+    @classmethod
+    def validate_source(cls, value: str) -> str:
+        path = PurePosixPath(value)
+        if (
+            not value.startswith("/")
+            or ".." in path.parts
+            or any(char in value for char in ("\x00", "\n", "\r"))
+        ):
+            raise ValueError(
+                "bind mount sources must be absolute with no '..', NUL or newline"
+            )
+        return "/" + str(path).lstrip("/")
 
 
 Mount = TypeVar("Mount", bound=BaseConfig)
+
+FRAMEWORK_PRIVATE_DIR = "/.vf-private"
+FILESYSTEM_DEFAULT_HIDDEN = (FRAMEWORK_PRIVATE_DIR, "/tests", "/logs/verifier")
+# Protect the code and configuration loaded before entering the mount namespace,
+# while allowing application trees such as /usr/src/app and /usr/local/src/app.
+FILESYSTEM_BOOTSTRAP_DIRS = (
+    "/bin",
+    "/sbin",
+    "/lib",
+    "/lib32",
+    "/lib64",
+    "/libx32",
+    "/libexec",
+    "/etc",
+    *(
+        f"{prefix}/{name}"
+        for prefix in ("/usr", "/usr/local")
+        for name in (
+            "bin",
+            "sbin",
+            "lib",
+            "lib32",
+            "lib64",
+            "libx32",
+            "libexec",
+            "etc",
+            "share",
+        )
+    ),
+)
+
+
+class FilesystemPolicyConfig(BaseConfig):
+    """Agent filesystem view, enforced by bubblewrap in a Linux sandbox.
+
+    Paths must be absolute and contain no symlink components. Default hidden
+    directories are prepared automatically; other paths must exist. The image
+    must provide bubblewrap with user namespaces and --disable-userns support.
+    Writable and hidden trees must not contain hard-linked files; mount aliases
+    that expose a hidden tree or protected bootstrap files are rejected. Unsupported
+    runtimes or kernels fail closed. Setup and grading retain the original filesystem;
+    this policy applies to agent processes and file tools.
+    """
+
+    readable: list[str] = Field(default_factory=lambda: ["/"])
+    """Trees exposed read-only. The default exposes the sandbox's filesystem."""
+    writable: list[str] | None = Field(default_factory=list)
+    """Trees exposed read-write, including reads. An empty list grants no writes.
+    None selects existing directories among the agent's workdir, home, TMPDIR, /tmp,
+    /var/tmp and /logs/artifacts at runtime, as used by TaskData's default policy.
+    System executable, library, configuration and shared-data trees cannot be writable.
+    Application directories such as /usr/src/app can be writable. A writable tree
+    cannot contain a readable or hidden rule: its writable parent could otherwise
+    relocate the protected source between commands. Writes persist in the
+    underlying runtime."""
+    hidden: list[str] = Field(default_factory=lambda: list(FILESYSTEM_DEFAULT_HIDDEN))
+    """Paths masked after all other mounts. Always includes `/.vf-private` for
+    framework setup files, `/tests`, and `/logs/verifier`; missing default directories
+    are created during trusted setup. Additional paths must already exist.
+    Directories become empty, read-only mounts and files become `/dev/null`.
+    `/proc` and `/dev` are always private to the process sandbox."""
+
+    @field_validator("readable", "writable", "hidden")
+    @classmethod
+    def validate_paths(cls, paths: list[str] | None) -> list[str] | None:
+        if paths is None:
+            return None
+        normalized = []
+        for value in paths:
+            path = PurePosixPath(value)
+            if (
+                not value.startswith("/")
+                or ".." in path.parts
+                or any(char in value for char in ("\x00", "\n", "\r"))
+            ):
+                raise ValueError(
+                    "filesystem paths must be absolute with no '..', NUL or newline"
+                )
+            normalized.append("/" + str(path).lstrip("/"))
+        return list(dict.fromkeys(normalized))
+
+    @field_validator("hidden")
+    @classmethod
+    def include_default_hidden(cls, paths: list[str]) -> list[str]:
+        return list(dict.fromkeys((*FILESYSTEM_DEFAULT_HIDDEN, *paths)))
+
+    @model_validator(mode="after")
+    def validate_roots(self) -> Self:
+        # New shells and bubblewrap must load trusted code before entering the
+        # restricted mount namespace, including the dynamic loader's config.
+        bootstrap = tuple(PurePosixPath(path) for path in FILESYSTEM_BOOTSTRAP_DIRS)
+        writable = [PurePosixPath(value) for value in self.writable or ()]
+        for index, path in enumerate(writable):
+            if any(
+                path.is_relative_to(other) or other.is_relative_to(path)
+                for other in writable[:index]
+            ):
+                raise ValueError("filesystem writable paths must not overlap")
+        for value in self.writable or ():
+            path = PurePosixPath(value)
+            if any(
+                path.is_relative_to(root) or PurePosixPath(root).is_relative_to(path)
+                for root in FILESYSTEM_DEFAULT_HIDDEN
+            ):
+                raise ValueError(
+                    f"filesystem writable path {value!r} overlaps a default hidden tree"
+                )
+            if any(
+                path.is_relative_to(root) or root.is_relative_to(path)
+                for root in bootstrap
+            ):
+                raise ValueError(
+                    f"filesystem writable path {value!r} overlaps bootstrap files"
+                )
+            if any(
+                PurePosixPath(protected).is_relative_to(path)
+                for protected in (*self.readable, *self.hidden)
+            ):
+                raise ValueError(
+                    f"filesystem writable path {value!r} contains a protected rule"
+                )
+        for value in (*(self.writable or ()), *self.hidden):
+            path = PurePosixPath(value)
+            if any(
+                path.is_relative_to(root) or root.is_relative_to(path)
+                for root in (PurePosixPath("/proc"), PurePosixPath("/dev"))
+            ):
+                raise ValueError("filesystem policies cannot override /proc or /dev")
+        return self
 
 
 def validate_mounts(mounts: dict[str, Mount]) -> dict[str, Mount]:
@@ -161,6 +305,11 @@ class DockerConfig(NetworkPolicyConfig):
     image: str = "python:3.11-slim"
     workdir: str | None = None
     """Working directory override; None uses the task's workdir, or /app."""
+    user_namespaces: bool = False
+    """Allow bubblewrap's nested namespaces by disabling Docker's seccomp and
+    AppArmor profiles and system-path masks. Enabled for a task filesystem policy.
+    Directly provisioned runtimes must opt in before calling with_filesystem().
+    Host namespace limits and AppArmor/SELinux restrictions still apply."""
     # TaskData.resources uses these units; non-default runtime config values take precedence.
     cpu: float | None = None
     """Pin the container to this many CPU cores. None = unlimited."""

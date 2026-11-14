@@ -19,6 +19,7 @@ or tests build definition, then fall back to the agent environment. Unsupported 
 import asyncio
 import hashlib
 import io
+import shlex
 import shutil
 import subprocess
 import sys
@@ -38,6 +39,7 @@ from verifiers.v1.configs.taskset import TasksetConfig
 from verifiers.v1.errors import SandboxError, TaskError
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.runtimes.deployment import Deployment
+from verifiers.v1.runtimes.filesystem import prepare_private_directory
 from verifiers.v1.state import State
 from verifiers.v1.task import Task, TaskData, TaskResources, TaskTimeout
 from verifiers.v1.taskset import Taskset
@@ -402,12 +404,17 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
         # dependencies. Mixing it with packaged tests can retain obsolete helpers.
         stage = "test -f /tests/test.sh"
         if self.data.verifier is None or self.data.verifier_image is None:
-            await runtime.write(
-                "/tmp/tests.tgz", make_tar(Path(self.data.task_dir) / "tests")
+            directory = (
+                await prepare_private_directory(runtime)
+                if runtime.backend.SUPPORTS_FILESYSTEM_POLICY
+                else "/tmp"
             )
+            archive = f"{directory}/tests.tgz"
+            await runtime.write(archive, make_tar(Path(self.data.task_dir) / "tests"))
+            archive_q = shlex.quote(archive)
             stage = (
                 f"{'rm -rf /tests && ' if wipe else ''}"
-                "mkdir -p /tests && tar -xzf /tmp/tests.tgz -C /tests"
+                f"mkdir -p /tests && tar -xzf {archive_q} -C /tests && rm {archive_q}"
             )
         # Verifier subprocesses can use different users; opening their log directory
         # requires its owner or root, even when it is already writable. A grading box

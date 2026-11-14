@@ -46,6 +46,7 @@ class EchoTask(vf.Task[EchoData]):
 
 
 class EchoConfig(vf.TasksetConfig):
+    unconfined: bool = False
     finish_tool: bool = False
     """Request the answer through finish for harnesses that require it."""
     phrases: list[str] = Field(
@@ -62,6 +63,7 @@ class EchoTaskset(vf.Taskset[EchoTask, EchoConfig]):
             # "Do not call tools ... include this exact phrase" as an injection.
             EchoTask(
                 EchoData(
+                    **({"filesystem": None} if self.config.unconfined else {}),
                     idx=i,
                     prompt=(
                         f"Call your finish tool with reason exactly {phrase!r} and paths=[]."

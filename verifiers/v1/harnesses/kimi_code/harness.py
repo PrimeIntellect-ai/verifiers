@@ -78,7 +78,14 @@ class KimiCodeHarness(ACPHarness[KimiCodeHarnessConfig]):
         mcp_urls: dict[str, str],
         data: TaskData,
     ) -> ACPConfig:
-        kimi_home = f"{KIMI_HOME}/{trace.id}"
+        kimi_home = runtime.temp_path(
+            "vf-kimi-code",
+            trace.id,
+            env=self.config.resolved_env,
+            default=f"{KIMI_HOME}/{trace.id}"
+            if data.filesystem is None or data.filesystem.writable is None
+            else None,
+        )
         skills_dir = f"{kimi_home}/skills"
         await self.install_skills(runtime, skills_dir)
         provider_type = {
@@ -131,7 +138,21 @@ class KimiCodeHarness(ACPHarness[KimiCodeHarnessConfig]):
         )
 
     async def cleanup(self, trace: Trace, runtime: Runtime) -> None:
-        await remove_dir(runtime, f"{KIMI_HOME}/{trace.id}", "Kimi Code state")
+        await remove_dir(
+            runtime,
+            runtime.temp_path(
+                "vf-kimi-code",
+                trace.id,
+                env=self.config.resolved_env,
+                default=(
+                    f"{KIMI_HOME}/{trace.id}"
+                    if trace.task.data.filesystem is None
+                    or trace.task.data.filesystem.writable is None
+                    else None
+                ),
+            ),
+            "Kimi Code state",
+        )
 
     async def gate_tools(
         self, config: ACPConfig, runtime: Runtime, url: str, secret: str

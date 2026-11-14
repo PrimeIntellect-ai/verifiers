@@ -36,6 +36,7 @@ from verifiers.v1.runtimes import (
     RuntimeConfig,
     make_backend,
 )
+from verifiers.v1.runtimes.filesystem import prepare_filesystem_tools
 from verifiers.v1.runtimes.private_network import tool_vms
 from verifiers.v1.session import RolloutLimits, RolloutSession, hook_boundary
 from verifiers.v1.state import state_cls
@@ -346,6 +347,8 @@ class Rollout:
                             "verifier runtime overrides require isolated verification"
                         )
                 await runtime.backend.prepare_setup()
+                if self.task.data.filesystem is not None:
+                    await prepare_filesystem_tools(runtime)
                 now = time.time()
                 self.trace.timing.boot.end = now
                 self.trace.timing.setup.start = now
@@ -373,6 +376,10 @@ class Rollout:
                         runtime, self.task.data.agent_user, self.task.data.agent_home
                     )
                     await self.harness.setup(self._agent_runtime)
+                    if self.task.data.filesystem is not None:
+                        self._agent_runtime = await self._agent_runtime.with_filesystem(
+                            self.task.data.filesystem
+                        )
                 logger.debug(
                     "Set up %s harness in %s",
                     self.harness.config.name,

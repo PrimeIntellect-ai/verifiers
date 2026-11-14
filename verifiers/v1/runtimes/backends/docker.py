@@ -28,6 +28,7 @@ import tempfile
 import time
 import uuid
 from collections.abc import AsyncIterator
+from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import ClassVar
 from urllib.parse import urlsplit
@@ -69,6 +70,19 @@ control.sendmsg([b"listener"], [(socket.SOL_SOCKET, socket.SCM_RIGHTS, array.arr
 
 class DockerRuntimeInfo(DockerConfig, BaseRuntimeInfo):
     pass
+
+
+@dataclass(frozen=True)
+class DockerMount:
+    target: str
+    source: str
+    read_only: bool
+    device: str
+    root: PurePosixPath
+
+
+def _mountinfo_path(value: str) -> str:
+    return re.sub(r"\\([0-7]{3})", lambda match: chr(int(match[1], 8)), value)
 
 
 async def _communicate(
@@ -209,6 +223,7 @@ class DockerBackend(RuntimeBackend):
 
     SUPPORTS_TASK_IMAGES: ClassVar[bool] = True
     SUPPORTS_USER_SWITCHING: ClassVar[bool] = True
+    SUPPORTS_FILESYSTEM_POLICY: ClassVar[bool] = True
     SUPPORTS_PORT_EXPOSURE: ClassVar[bool] = True
     SUPPORTS_COMPOSE: ClassVar[bool] = True
     is_local = True
@@ -227,6 +242,77 @@ class DockerBackend(RuntimeBackend):
         self._stopped = False
         self._proxy: EgressProxy | None = None
         self._cut = False
+        self.mounts: tuple[DockerMount, ...] = ()
+
+    async def _inspect_mounts(self) -> None:
+        assert self._container is not None
+        inspected = await cli(
+            "docker", "inspect", "--format", "{{json .Mounts}}", self._container
+        )
+        if inspected.exit_code != 0:
+            raise SandboxError(
+                f"docker mount inspection failed: {inspected.stderr.strip()}"
+            )
+        mounts = json.loads(inspected.stdout)
+        if not mounts:
+            self.mounts = ()
+            return
+        mountinfo = await cli(
+            "docker", "exec", self._container, "cat", "/proc/self/mountinfo"
+        )
+        if mountinfo.exit_code != 0:
+            raise SandboxError(
+                f"docker mount inspection failed: {mountinfo.stderr.strip()}"
+            )
+        declared = {PurePosixPath(mount["Destination"]): mount for mount in mounts}
+        if len(declared) != len(mounts):
+            raise SandboxError("docker returned duplicate mount destinations")
+        resolved: dict[PurePosixPath, DockerMount] = {}
+        for line in mountinfo.stdout.splitlines():
+            fields = line.split()
+            if len(fields) < 6:
+                raise SandboxError("docker returned malformed mount information")
+            target = PurePosixPath(_mountinfo_path(fields[4]))
+            parents = [path for path in declared if target.is_relative_to(path)]
+            if not parents:
+                continue
+            if target in resolved:
+                raise SandboxError(
+                    f"docker mount {str(target)!r} is ambiguous: stacked mounts"
+                )
+            try:
+                separator = fields.index("-", 6)
+                options = set(fields[5].split(","))
+                super_options = set(fields[separator + 3].split(","))
+            except (ValueError, IndexError) as exc:
+                raise SandboxError(
+                    "docker returned malformed mount information"
+                ) from exc
+            if any(
+                len(flags & {"rw", "ro"}) != 1 for flags in (options, super_options)
+            ):
+                raise SandboxError("docker returned ambiguous mount permissions")
+            parent = max(parents, key=lambda path: len(path.parts))
+            mount = declared[parent]
+            source = mount.get("Source") or mount.get("Name") or mount.get("Type", "")
+            if source.startswith("/"):
+                source = str(PurePosixPath(source) / target.relative_to(parent))
+            # Recursive binds can expose a writable submount even when Docker
+            # reports the declared parent as read-only. Use each actual mount's
+            # device, root and effective mount/superblock permissions.
+            resolved[target] = DockerMount(
+                target=str(target),
+                source=source,
+                read_only="ro" in options or "ro" in super_options,
+                device=fields[2],
+                root=PurePosixPath(_mountinfo_path(fields[3])),
+            )
+        for target in declared:
+            if target not in resolved:
+                raise SandboxError(
+                    f"docker mount {str(target)!r} is missing from the container mount table"
+                )
+        self.mounts = tuple(resolved.values())
 
     @classmethod
     @contextlib.asynccontextmanager
@@ -262,6 +348,7 @@ class DockerBackend(RuntimeBackend):
             backend.info.id = container
             backend.info.image = backend.config.image
             backend.info.workdir = backend.config.workdir
+            await backend._inspect_mounts()
             backend._service_url = service_url
             if service_url is not None:
                 await backend._start_proxy(
@@ -313,6 +400,15 @@ class DockerBackend(RuntimeBackend):
         # Engine names are global; cleanup must never target a caller's existing container.
         self._container = f"vf-{uuid.uuid4().hex}"
         options = ["--network", "bridge", "--publish", f"127.0.0.1::{SERVICE_PORT}"]
+        if self.config.user_namespaces:
+            options += [
+                "--security-opt",
+                "seccomp=unconfined",
+                "--security-opt",
+                "systempaths=unconfined",
+                "--security-opt",
+                "apparmor=unconfined",
+            ]
         if not _LINUX:
             options += ["--add-host", f"{_HOST_ALIAS}:host-gateway"]
         if self._restricted:
@@ -418,6 +514,7 @@ class DockerBackend(RuntimeBackend):
         if made.exit_code != 0:
             raise SandboxError(f"docker workdir setup failed: {made.stderr.strip()}")
         await validate_runtime_mounts(self.bind(), [])
+        await self._inspect_mounts()
         published = await cli("docker", "port", self._container, f"{SERVICE_PORT}/tcp")
         host_port = (published.stdout.split() or [""])[0].rpartition(":")[2]
         if published.exit_code != 0 or not host_port.isdigit():

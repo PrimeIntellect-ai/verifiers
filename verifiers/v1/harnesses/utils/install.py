@@ -4,6 +4,21 @@ import shlex
 
 from verifiers.v1.runtimes import Runtime
 
+_COPY_LINKED_FILES = r"""
+find "$1" -type f -links +1 -exec sh -c '
+    set -eu
+    for file do
+        temporary=$(mktemp "${file}.vf-XXXXXX")
+        if cp -p -- "$file" "$temporary" && mv -f -- "$temporary" "$file"; then
+            :
+        else
+            rm -f -- "$temporary"
+            exit 1
+        fi
+    done
+' sh {} +
+"""
+
 
 async def ensure_installed(
     runtime: Runtime,
@@ -25,9 +40,19 @@ async def ensure_installed(
     The lock is `flock` (Linux, busybox) or `lockf` (macOS/BSD), both released when the holder
     dies; an image with neither falls back to a symlink spinlock whose owner is recorded as
     `pid:starttime` so a dead holder is reaped even if its pid was reused."""
+    # Writable trees are checked for hard-link aliases before agent confinement.
+    env = {"UV_LINK_MODE": "copy", **env}
     lock = shlex.quote(lock or f"{directory}/install.lock")
     script = f"{ready} || ({install})" if ready else install
-    run = f"{shlex.join(shell)} {shlex.quote(script)}"
+    # npm post-install scripts can hard-link their binaries. Detach only this
+    # framework-owned installation, under its lock, before the agent can use it.
+    # Give the installer its own shell: putting its body on the left of &&
+    # suppresses `set -e`. Keep both steps inside the same installation lock.
+    script = (
+        f"{shlex.join(shell)} {shlex.quote(script)} && sh -c {shlex.quote(_COPY_LINKED_FILES)} "
+        f"harness-install {shlex.quote(directory)}"
+    )
+    run = f"sh -c {shlex.quote(script)}"
     # The owner token is pid:starttime (starttime from /proc where readable), so a reused pid
     # does not pass as the live holder. A lock that is not a symlink (left behind by
     # flock/lockf) or whose owner is gone is stale and reaped; `kill -0 ""` succeeds under

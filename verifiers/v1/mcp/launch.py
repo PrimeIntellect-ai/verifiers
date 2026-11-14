@@ -36,6 +36,7 @@ from verifiers.v1.runtimes import (
     provision_backend,
 )
 from verifiers.v1.runtimes.base import _ENSURE_UV
+from verifiers.v1.runtimes.filesystem import prepare_private_directory
 from verifiers.v1.state import State
 from verifiers.v1.utils.aio import run_shielded
 from verifiers.v1.utils.logging import get_logger
@@ -243,14 +244,11 @@ async def _cached_package(src: Path) -> tuple[str, bytes]:
 
 
 async def _install_in_sandbox(server: ServerBase, agent_runtime: Runtime) -> str:
-    # Install as root; the agent user only runs the server.
-    runtime = (
-        agent_runtime if agent_runtime.user is None else agent_runtime.with_user(None)
-    )
-    # Prime VMs mount /tmp as a small tmpfs, while the runtime workdir lives on
-    # the VM's root disk. Keep source, build scratch space, and uv's cache on the
-    # durable runtime filesystem so ordinary dependency installs cannot exhaust
-    # the tmpfs.
+    # Dependency installation is trusted setup as the backend's default user.
+    # The server itself keeps the agent's user and filesystem policy when launched.
+    runtime = agent_runtime.backend.bind(env=agent_runtime.env).with_user(None)
+    # Prime VMs mount /tmp as a small tmpfs. Keep dependency installation on the
+    # durable runtime filesystem so ordinary installs cannot exhaust the tmpfs.
     # Every runtime runs commands in its working directory; not every config names it.
     located = await runtime.run(["pwd"], {})
     workdir = located.stdout.strip()
@@ -259,9 +257,16 @@ async def _install_in_sandbox(server: ServerBase, agent_runtime: Runtime) -> str
             f"server {server.server_name!r}: cannot locate the runtime's working "
             f"directory: {located.stderr.strip()}"
         )
-    root = str(PurePosixPath(workdir) / ".vf-src")
-    temp = str(PurePosixPath(workdir) / ".vf-tmp")
-    cache = str(PurePosixPath(workdir) / ".vf-uv-cache")
+    # Confine source archives and install caches even when tools are installed
+    # after the agent view is prepared. Keep executable environments visible.
+    setup_dir = (
+        await prepare_private_directory(runtime)
+        if runtime.backend.SUPPORTS_FILESYSTEM_POLICY
+        else workdir
+    )
+    root = str(PurePosixPath(setup_dir) / ".vf-src")
+    temp = str(PurePosixPath(setup_dir) / ".vf-tmp")
+    cache = str(PurePosixPath(setup_dir) / ".vf-uv-cache")
     venv = str(PurePosixPath(workdir) / ".vf-venv")
     python_dir = str(PurePosixPath(workdir) / ".vf-python")
     root_q, temp_q, cache_q, venv_q = map(shlex.quote, (root, temp, cache, venv))
@@ -290,7 +295,10 @@ async def _install_in_sandbox(server: ServerBase, agent_runtime: Runtime) -> str
                 name, data = await _cached_package(Path(source))
                 remote = f"{root}/{name}"
                 await run_shielded(runtime.write(remote, data))
-                setup += f"uv pip install --python {venv_q} {shlex.quote(remote)}; "
+                setup += (
+                    f"uv pip install --link-mode copy --python {venv_q} "
+                    f"{shlex.quote(remote)}; "
+                )
             result = await run_shielded(runtime.run(["sh", "-c", setup], {}))
             if result.exit_code != 0:
                 raise ToolsetError(
@@ -367,7 +375,39 @@ async def serve_in_runtime(
     if runtime.type == "subprocess":
         # Keep provider temp files in the runtime workdir so cleanup removes them.
         assert runtime.info.id is not None
-        env["TMPDIR"] = runtime.info.id
+        env["TMPDIR"] = runtime.env.get("TMPDIR") or runtime.info.id
+    # Discover the image/task TMPDIR through the same confined view as the
+    # server. Port discovery and logging must not require extra writable roots.
+    # Prefer disk-backed /var/tmp to Prime's small /tmp, but accept the native
+    # scratch default when it is the only writable directory in the view.
+    temporary = await runtime.run(
+        [
+            "/bin/sh",
+            "-c",
+            """
+usable() {
+    case "$1" in /*) ;; *) return 1;; esac
+    [ -d "$1" ] && [ -w "$1" ] && [ -x "$1" ]
+}
+if [ -n "${TMPDIR:-}" ]; then set -- "$TMPDIR"; fi
+for directory do
+    if usable "$directory"; then printf %s "$directory"; exit 0; fi
+done
+exit 1
+""",
+            "mcp-temp",
+            "/var/tmp",
+            runtime.temp_path(env=env),
+        ],
+        {key: value for key, value in env.items() if key == "TMPDIR"},
+    )
+    if temporary.exit_code or not temporary.stdout:
+        raise ToolsetError(
+            "tool server needs a writable temporary directory; set TMPDIR to an "
+            "existing directory permitted by the task's filesystem policy"
+        )
+    temp_dir = temporary.stdout.rstrip("/") or "/"
+    env["TMPDIR"] = temp_dir
     if listen_all or (exposed and runtime.published_port is not None):
         env["MCP_HOST"] = "0.0.0.0"
     fixed = runtime.published_port if exposed else None
@@ -375,7 +415,7 @@ async def serve_in_runtime(
     if fixed is not None:
         env["MCP_PORT"] = str(fixed)
     else:
-        port_file = f"/tmp/vf-port-{uuid.uuid4().hex}"
+        port_file = runtime.temp_path(f"tool-port-{uuid.uuid4().hex}", env=env)
         env["MCP_PORT_FILE"] = port_file
     python = sys.executable
     if runtime.type != "subprocess":
@@ -391,10 +431,9 @@ async def serve_in_runtime(
             "-c",
             f'export PATH="{path}"; exec {shlex.join(command)}',
         ]
-    log = f"vf_tool_{server.server_name}.log"
-    if runtime.user is not None:
-        # The agent user may not be able to write the workdir.
-        log = f"/tmp/vf_tool_{server.server_name}-{uuid.uuid4().hex[:8]}.log"
+    log = runtime.temp_path(
+        f"vf_tool_{server.server_name}-{uuid.uuid4().hex[:8]}.log", env=env
+    )
     loop = asyncio.get_running_loop()
     # Servers without a toolset config, such as custom `ServerBase` subclasses, keep the default.
     timeouts = (

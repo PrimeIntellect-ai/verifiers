@@ -42,7 +42,7 @@ from verifiers.v1.runtimes import (
     runtime_is_local,
 )
 from verifiers.v1.session import RolloutLimits
-from verifiers.v1.task import Task
+from verifiers.v1.task import Task, TaskData
 from verifiers.v1.trace import Trace
 from verifiers.v1.types import (
     AssistantMessage,
@@ -899,11 +899,10 @@ class Agent:
     @asynccontextmanager
     async def provision(self, task: Task | None = None) -> AsyncIterator[Runtime]:
         """Provision (and on exit tear down) a box from this agent's runtime
-        policy, resolved for `task` when given; share it via `run(..., runtime=runtime)`."""
-        config = (
-            resolve_runtime_config(self.runtime_config, task, self._warned_resources)
-            if task is not None
-            else self.runtime_config
+        policy, resolved for `task` or the default task policy; share it via
+        `run(..., runtime=runtime)`. Pass an unconfined task to opt out."""
+        config = resolve_runtime_config(
+            self.runtime_config, task or Task(TaskData()), self._warned_resources
         )
         async with provision_backend(config) as backend:
             # Keep sandbox startup task-neutral: this box may later host another task.

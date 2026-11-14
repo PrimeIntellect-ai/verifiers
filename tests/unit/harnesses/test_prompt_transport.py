@@ -79,6 +79,8 @@ class RecordingRuntime:
         self.argvs: list[list[str]] = []
         self.files: dict[str, bytes] = {}
 
+    temp_path = vf.Runtime.temp_path
+
     def host_url(self, url: str) -> str:
         return url
 
