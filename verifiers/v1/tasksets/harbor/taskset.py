@@ -222,6 +222,7 @@ class HarborData(TaskData):
 class HarborTask(Task[HarborData, State, HarborTaskConfig]):
     """Stage and run Harbor's verifier inside the task's live runtime."""
 
+    AUTHORED_JUDGES = True
     verifier_staged: bool = False
 
     def __init__(self, data: HarborData, config: HarborTaskConfig | None = None):
@@ -270,7 +271,8 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
             task = task.with_data(
                 image=runtime.config.image, workdir=runtime.config.workdir
             )
-        return type(self)(verifier_box_data(task.data), self.config)
+        task.data = verifier_box_data(task.data)
+        return task
 
     async def finalize_services(
         self, trace: Trace, targets: dict[str, Runtime]
