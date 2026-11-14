@@ -45,8 +45,7 @@ class BashHarnessConfig(HarnessConfig):
     """Offer a `search` tool (web results from `search_provider`). Requires the provider's key
     (`SERPER_API_KEY` or `YOU_API_KEY`) in the eval environment; the key is handed to the program
     over argv (like the interception secret) so the agent's `bash` subprocesses don't inherit it.
-    Results matching the runtime's network blocklist are excluded, and with a blocklist so are
-    Google's encrypted `/goto` redirect links, whose destination is unknown."""
+    Results matching the runtime's network blocklist are excluded."""
 
     search_provider: SearchProvider = "serper"
     """Backend of the `search` tool: `serper` (Google results via serper.dev) or `eco`
