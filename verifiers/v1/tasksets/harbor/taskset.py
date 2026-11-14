@@ -46,7 +46,7 @@ from verifiers.v1.configs.task import TaskConfig
 from verifiers.v1.configs.taskset import TasksetConfig
 from verifiers.v1.errors import SandboxError, TaskError
 from verifiers.v1.mcp import ToolsetConfig
-from verifiers.v1.runtimes import Runtime
+from verifiers.v1.runtimes import Runtime, RuntimeInfo
 from verifiers.v1.runtimes.deployment import Deployment
 from verifiers.v1.state import State
 from verifiers.v1.task import Task, TaskData, TaskResources, TaskTimeout
@@ -268,7 +268,7 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
             update={"env": {**self.data.verifier_env, **(self.data.scoring.env or {})}}
         )
 
-    def grading_task(self, runtime: Runtime, *, scoring: ScoringConfig):
+    def grading_task(self, runtime: Runtime | RuntimeInfo, *, scoring: ScoringConfig):
         # Custom Harbor verifiers may still pass verifier_env explicitly to run().
         # Give them the merged raw values, without resolving or mutating solver data.
         task = self.with_data(verifier_env=dict(scoring.env or {}), scoring=scoring)
@@ -279,9 +279,8 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
                 verifier=VerifierConfig(fresh_copy=True, env=task.data.env)
             )
         if task.data.verifier_image is None:
-            task = task.with_data(
-                image=runtime.config.image, workdir=runtime.config.workdir
-            )
+            config = runtime.config if isinstance(runtime, Runtime) else runtime
+            task = task.with_data(image=config.image, workdir=config.workdir)
         task.data = verifier_box_data(task.data)
         return task
 
@@ -395,6 +394,9 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
                     f"{hook.command}\n{detail}"
                 )
         for service, source_runtime in runtimes.items():
+            trace.info.setdefault("harbor_artifact_workdirs", {})[service] = (
+                source_runtime.config.workdir or "/"
+            )
             used = sum(len(data or b"") for data in trace.state.artifacts.values())
             collected = await collect(
                 source_runtime,
