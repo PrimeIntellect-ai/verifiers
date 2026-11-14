@@ -412,15 +412,19 @@ class Branch(BaseModel):
         """A per-sampled-token node field widened to `token_ids` (float32): each node's values
         land on its sampled positions in order, 0.0 everywhere else. A node holding fewer values
         than sampled tokens reads 0.0 past them; extra values are dropped."""
-        out = np.zeros(sum(len(n.mask) for n in self.nodes), dtype=np.float32)
+        masks = [np.asarray(n.mask, dtype=np.bool_) for n in self.nodes]
+        counts = [int(np.count_nonzero(mask)) for mask in masks]
+        packed = np.zeros(sum(counts), dtype=np.float32)
         offset = 0
-        for node in self.nodes:
-            node_values = values(node)
-            if node_values is not None and len(node_values):
-                positions = np.flatnonzero(node.mask)
-                k = min(len(positions), len(node_values))
-                out[offset + positions[:k]] = node_values[:k]
-            offset += len(node.mask)
+        for node, count in zip(self.nodes, counts):
+            node_values = values(node) if count else None
+            if node_values is not None:
+                k = min(count, len(node_values))
+                packed[offset : offset + k] = node_values[:k]
+            offset += count
+        sampled = np.concatenate(masks) if masks else np.zeros(0, dtype=np.bool_)
+        out = np.zeros(len(sampled), dtype=np.float32)
+        out[sampled] = packed
         return out
 
     @property
