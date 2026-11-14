@@ -375,7 +375,7 @@ async def serve_in_runtime(
     if fixed is not None:
         env["MCP_PORT"] = str(fixed)
     else:
-        port_file = f"/tmp/vf-port-{uuid.uuid4().hex}"
+        port_file = runtime.temp_path(f"tool-port-{uuid.uuid4().hex}", env=env)
         env["MCP_PORT_FILE"] = port_file
     python = sys.executable
     if runtime.type != "subprocess":

@@ -26,8 +26,8 @@ export PATH="/var/tmp/vf-node/bin:$PATH"
 rm -f {ready}
 npm install --prefix {packages} --no-audit --no-fund \
     --omit=dev \
-    "@anthropic-ai/claude-code@$VF_CLAUDE_CODE_VERSION" \
-    "@agentclientprotocol/claude-agent-acp@$VF_CLAUDE_ACP_VERSION" >/dev/null
+    "@anthropic-ai/claude-code@$AGENT_CLAUDE_CODE_VERSION" \
+    "@agentclientprotocol/claude-agent-acp@$AGENT_CLAUDE_ACP_VERSION" >/dev/null
 touch {ready}
 """
 
@@ -65,8 +65,8 @@ class ClaudeCodeHarness(ACPHarness[ClaudeCodeHarnessConfig]):
             install=script,
             env={
                 **self.config.resolved_env,
-                "VF_CLAUDE_CODE_VERSION": self.config.version,
-                "VF_CLAUDE_ACP_VERSION": ACP_VERSION,
+                "AGENT_CLAUDE_CODE_VERSION": self.config.version,
+                "AGENT_CLAUDE_ACP_VERSION": ACP_VERSION,
             },
             label="Claude Agent ACP",
         )

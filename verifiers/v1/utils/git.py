@@ -144,7 +144,7 @@ async def capture_patch(
     cmd = _DIFF.format(full=full, capped=capped, cap=PATCH_CAP_BYTES + 1)
     try:
         result = await runtime.run(
-            ["sh", "-c", cmd, "vf-capture-patch", *(ignore or [])],
+            ["sh", "-c", cmd, "capture-patch", *(ignore or [])],
             {**(env or {}), "VF_DIFF_BASE": base_commit or "HEAD"},
         )
         if result.exit_code != 0:
