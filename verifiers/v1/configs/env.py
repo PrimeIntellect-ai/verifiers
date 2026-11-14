@@ -70,7 +70,7 @@ class EnvConfig(SharedEnvConfig):
     id: ID = ""
     """Which `Env` runs. Empty = the taskset's own, else `SingleAgentEnv`; set
     to pair a reusable env with any taskset (an explicit id wins over the bundled)."""
-    # SerializeAsAny: the env-server wire needs the resolved subclass's fields.
+    # SerializeAsAny: a dump must carry the resolved subclass's fields.
     taskset: SerializeAsAny[TasksetConfig] = TasksetConfig()
     """The seed taskset — the rows every rollout starts from (`--env.taskset.id`)."""
 

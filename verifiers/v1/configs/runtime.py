@@ -218,7 +218,7 @@ class PrimeConfig(NetworkPolicyConfig):
     """Seconds of inactivity before the sandbox self-deletes (None disables)."""
     creates_per_min: int | None = None
     """Pace sandbox creation to this many per minute, enforced run-wide across every
-    env-server worker process (None/<= 0 disables it). (Tunnel creation is limited separately
+    process of the run (None/<= 0 disables it). (Tunnel creation is limited separately
     — see interception.tunnel.prime.tunnel_limiter.)"""
 
     mounts: dict[str, PrimeVolume] = Field(default_factory=dict)

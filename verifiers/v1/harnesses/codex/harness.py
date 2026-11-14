@@ -2,7 +2,6 @@
 
 import hashlib
 import json
-import logging
 import tomllib
 from pathlib import Path
 from typing import Literal
@@ -17,12 +16,13 @@ from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
+from verifiers.v1.utils.logging import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 CODEX_DIR = "/var/tmp/vf-codex-{version}-{acp_version}"
 PACKAGES_DIR = f"{CODEX_DIR}/acp"
-ACP_VERSION = "2.2.2"
+ACP_VERSION = "2.5.0"
 CODEX_BIN = f"{PACKAGES_DIR}/node_modules/.bin/codex"
 ACP_BIN = f"{PACKAGES_DIR}/node_modules/.bin/codex-acp"
 INSTALL = r"""
@@ -48,9 +48,9 @@ GATE_HANDLER = {
 
 class CodexHarnessConfig(HarnessConfig):
     # Codex accepts no other wire API:
-    # https://github.com/openai/codex/blob/rust-v0.164.0/codex-rs/model-provider-info/src/lib.rs#L109
+    # https://github.com/openai/codex/blob/rust-v0.166.0/codex-rs/model-provider-info/src/lib.rs#L115
     dialect: Literal["responses"] = "responses"
-    version: PinnedVersion = "0.164.0"
+    version: PinnedVersion = "0.166.0"
     """Codex release to install, pinned for reproducibility."""
     code_mode: bool = False
     """Enable Code Mode when the model's metadata does not select its tool mode."""
@@ -77,8 +77,8 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
 
     async def setup(self, runtime: Runtime) -> None:
         await ensure_node(runtime)
-        logger.info(
-            "codex: ensuring Codex %s and codex-acp %s are installed",
+        logger.debug(
+            "Ensuring Codex %s and codex-acp %s are installed",
             self.config.version,
             ACP_VERSION,
         )

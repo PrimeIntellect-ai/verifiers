@@ -8,11 +8,18 @@ host-side counterpart to `Runtime.expose`, which publishes a port inside a sandb
 
 import contextlib
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from typing import ClassVar, Generic, TypeVar
 
 from verifiers.v1.configs.interception import BaseTunnelConfig
 
 ConfigT = TypeVar("ConfigT", bound=BaseTunnelConfig)
+
+HEALTH_PATH = "/vf/health"
+"""What a tunneled service answers 2xx on, so a tunnel can tell whether requests reach it.
+Not `/healthz`: Prime tunnels answer that themselves, without reaching the service. The
+answer closes its connection, so each probe needs a new one through the tunnel: a probe
+riding a kept-alive connection passes while new connections hang."""
 
 
 class Tunnel(ABC, Generic[ConfigT]):
@@ -27,6 +34,8 @@ class Tunnel(ABC, Generic[ConfigT]):
 
     def __init__(self, config: ConfigT | None = None) -> None:
         self.config = config
+        self.on_gone: Callable[[], None] | None = None
+        """Called if the URL has stopped working and can never work again."""
 
     @property
     def bind_port(self) -> int:

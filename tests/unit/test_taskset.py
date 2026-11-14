@@ -57,7 +57,24 @@ def shuffled(xs, seed: int = 0) -> list[int]:
 
 
 def test_iteration_sets_idx_to_the_load_position() -> None:
-    assert idxs(finite()) == list(range(10))
+    original = list(finite())
+    assert idxs(original) == list(range(10))
+
+    class ChangedTaskset(FiniteTaskset):
+        def load(self):
+            return [count_task(i) for i in (10, 3, 1, 9)]
+
+    reloaded = list(ChangedTaskset(vf.TasksetConfig()))
+    assert idxs(reloaded) == list(range(4))
+    for task, old_index in zip(reloaded[1:], (3, 1, 9)):
+        assert task.key == original[old_index].key
+        assert task.hash != original[old_index].hash
+
+    task = vf.Task(vf.TaskData(idx=0, prompt="same row"))
+    assert task.with_data(idx=1).key == task.key
+    assert task.with_data(idx=1).hash != task.hash
+    assert task.with_data(prompt="changed row").key != task.key
+    assert task.with_data(id="first").key != task.with_data(id="second").key
 
 
 def test_include_keeps_tasks_that_any_list_names() -> None:
@@ -83,6 +100,16 @@ def test_keys_match_the_keys_traces_record(tmp_path) -> None:
 
 def test_exclude_drops_tasks_that_any_list_names() -> None:
     assert idxs(finite().exclude(idx=":7", names=["t8"])) == [7, 9]
+
+
+def test_match_lists_extend_from_files(tmp_path) -> None:
+    (tmp_path / "idx.txt").write_text("0:2\n\n5\n")
+    (tmp_path / "names.txt").write_text(" t8 \nt9\n")
+    files = {"idx": tmp_path / "idx.txt", "names": tmp_path / "names.txt"}
+    assert idxs(finite().include(idx=[3], files=files)) == [0, 1, 3, 5, 8, 9]
+    config = vf.SelectConfig(exclude={"files": {"names": tmp_path / "names.txt"}})
+    assert config.exclude.names == ["t8", "t9"] and config.exclude.files.names is None
+    assert idxs(finite().select(config)) == list(range(8))
 
 
 def test_unmatched_entries_warn(caplog) -> None:

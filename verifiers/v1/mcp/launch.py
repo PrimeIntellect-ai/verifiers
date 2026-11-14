@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import logging
+import math
 import secrets
 import shlex
 import shutil
@@ -29,6 +29,7 @@ from verifiers.v1.mcp.server import (
     ServerBase,
     state_signature,
 )
+from verifiers.v1.mcp.toolset import BaseToolsetConfig, ToolsetTimeoutConfig
 from verifiers.v1.runtimes import (
     Runtime,
     backend_cls,
@@ -37,11 +38,13 @@ from verifiers.v1.runtimes import (
 from verifiers.v1.runtimes.base import _ENSURE_UV
 from verifiers.v1.state import State
 from verifiers.v1.utils.aio import run_shielded
+from verifiers.v1.utils.logging import get_logger
 
 if TYPE_CHECKING:
     from verifiers.v1.mcp.toolset import Toolset
+    from verifiers.v1.session import MCPProxy
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 _PACKAGE_BUILD_TIMEOUT_SECONDS = 300
 
@@ -53,7 +56,7 @@ class _PackageBuildState:
     users: int = 0
 
 
-# Coordination and caching are process-local. Spawned env-server workers each
+# Coordination and caching are process-local. Separate worker processes each
 # build once; within an event loop, concurrent rollouts share the completed artifact.
 _PACKAGE_BUILD_STATES: dict[
     tuple[Path, asyncio.AbstractEventLoop], _PackageBuildState
@@ -62,14 +65,18 @@ _PACKAGE_BUILD_STATES: dict[
 # Any HTTP response, including MCP's 406 to a bare GET, proves the server is listening.
 _PROBE = """
 import sys, time, urllib.error, urllib.request
-for _ in range(180):
+deadline = time.monotonic() + float(sys.argv[2])
+while True:
     try:
         urllib.request.urlopen(sys.argv[1], timeout=2); sys.exit(0)
     except urllib.error.HTTPError:
         sys.exit(0)
     except Exception:
-        time.sleep(1)
-sys.exit(1)
+        pass
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        sys.exit(1)
+    time.sleep(min(1, remaining))
 """
 
 
@@ -319,15 +326,20 @@ async def log_tail(runtime: Runtime, log: str, limit: int = 2000) -> str:
     return ""
 
 
-async def _read_back_port(runtime: Runtime, path: str) -> int:
+async def _read_back_port(runtime: Runtime, path: str, deadline: float) -> int:
     """Poll the server's port file until the server writes it."""
-    for _ in range(180):
+    loop = asyncio.get_running_loop()
+    while True:
         with contextlib.suppress(Exception):
             data = (await runtime.read(path)).decode().strip()
             if data.isdigit():
                 return int(data)
-        await asyncio.sleep(1)
-    raise ToolsetError(f"server did not report its port at {path} in its runtime")
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            raise ToolsetError(
+                f"server did not report its port at {path} in its runtime"
+            )
+        await asyncio.sleep(min(1, remaining))
 
 
 async def serve_in_runtime(
@@ -383,20 +395,37 @@ async def serve_in_runtime(
     if runtime.user is not None:
         # The agent user may not be able to write the workdir.
         log = f"/tmp/vf_tool_{server.server_name}-{uuid.uuid4().hex[:8]}.log"
+    loop = asyncio.get_running_loop()
+    # Servers without a toolset config, such as custom `ServerBase` subclasses, keep the default.
+    timeouts = (
+        server.config.timeout
+        if isinstance(server.config, BaseToolsetConfig)
+        else ToolsetTimeoutConfig()
+    )
+    timeout = timeouts.startup
+    deadline = loop.time() + (math.inf if timeout is None else timeout)
     await runtime.run_background(command, env, log)
     if fixed is not None:
         port = fixed
     else:
         try:
-            port = await _read_back_port(runtime, port_file)
+            port = await _read_back_port(runtime, port_file, deadline)
         except ToolsetError as e:
             raise ToolsetError(f"{e}: {await log_tail(runtime, log)}") from e
     probe = await runtime.run(
-        [python, "-c", _PROBE, f"http://127.0.0.1:{port}/mcp"], {}
+        [
+            python,
+            "-c",
+            _PROBE,
+            f"http://127.0.0.1:{port}/mcp",
+            str(max(deadline - loop.time(), 1)),
+        ],
+        {},
     )
     if probe.exit_code != 0:
         raise ToolsetError(
-            f"tool server {server.server_name!r} not serving in runtime: {await log_tail(runtime, log)}"
+            f"tool server {server.server_name!r} not serving in runtime after "
+            f"{timeout}s (raise its timeout.startup): {await log_tail(runtime, log)}"
         )
     return port
 
@@ -443,6 +472,7 @@ async def _serve(
     *,
     state_secret: str = "",
     state_base: str | None = None,
+    proxy_mcp: MCPProxy | None = None,
     services: Mapping[str, Runtime] | None = None,
     hosts: Mapping[str, str] | None = None,
     placements: Mapping[str, Runtime] | None = None,
@@ -460,7 +490,7 @@ async def _serve(
         elif services is None or service not in services:
             raise ToolsetError(
                 f"server {server.server_name!r} runs in service {service!r}, "
-                "which needs a task whose Compose services define it"
+                "which needs a task whose services define it"
             )
         else:
             runtime = services[service]
@@ -468,8 +498,8 @@ async def _serve(
         if runtime.is_local:
             # A local service cannot reach the host-loopback state channel.
             raise ToolsetError(
-                f"server {server.server_name!r} runs in Compose service {service!r}, "
-                "which needs Compose on a remote runtime such as Prime"
+                f"server {server.server_name!r} runs in service {service!r}, "
+                "which needs a native Prime service VM"
             )
         port = await serve_in_runtime(
             server,
@@ -497,7 +527,7 @@ async def _serve(
             raise ToolsetError(
                 f"server {server.server_name!r} restricts its runtime's network, which "
                 "needs the server colocated with the harness, or on a Prime runtime "
-                "of its own beside a Prime workspace without Compose services (it then "
+                "of its own beside a Prime workspace without a task service spec (it then "
                 "joins the rollout's private network)"
             )
         if colocated and harness_runtime is not None:
@@ -538,6 +568,19 @@ async def _serve(
             if harness_runtime is not None
             else harness_is_local
         )
+        if (
+            proxy_mcp is not None
+            and runtime.is_local
+            and not colocated
+            and not consumer_is_local
+        ):
+            backend = await runtime.expose(port)
+            # Register after startup, and revoke/drain before releasing the runtime.
+            url = await stack.enter_async_context(
+                proxy_mcp(f"{backend.rstrip('/')}/mcp")
+            )
+            yield _ServedServer(url, runtime)
+            return
         base = await stack.enter_async_context(
             reachable_url(
                 runtime, port, colocated=colocated, consumer_is_local=consumer_is_local
@@ -558,6 +601,7 @@ async def serve(
     *,
     state_secret: str = "",
     state_base: str | None = None,
+    proxy_mcp: MCPProxy | None = None,
     services: Mapping[str, Runtime] | None = None,
     hosts: Mapping[str, str] | None = None,
     placements: Mapping[str, Runtime] | None = None,
@@ -569,6 +613,7 @@ async def serve(
         harness_is_local,
         state_secret=state_secret,
         state_base=state_base,
+        proxy_mcp=proxy_mcp,
         services=services,
         hosts=hosts,
         placements=placements,
@@ -644,7 +689,7 @@ async def serve_shared(toolsets: list[Toolset], harness_is_local: bool = True):
                     runtime=served.runtime,
                     state_secret=state_secret,
                 )
-            logger.info("shared tool server '%s': %s", name, servers[name].url)
+            logger.info("Started shared tool server %s url=%s", name, servers[name].url)
         yield servers
 
 
@@ -679,6 +724,7 @@ async def serve_tools(
     state_secret: str = "",
     state_route: str = "",
     state_base: str | None = None,
+    proxy_mcp: MCPProxy | None = None,
     services: Mapping[str, Runtime] | None = None,
     hosts: Mapping[str, str] | None = None,
     placements: Mapping[str, Runtime] | None = None,
@@ -699,11 +745,11 @@ async def serve_tools(
                 # through bare — a state tag would be useless, and the per-rollout secret
                 # must not ride the query string to a third-party host.
                 urls[name] = harness_runtime.host_url(server.url)
-                logger.info("tool server '%s' (shared, external): %s", name, server.url)
+                logger.debug("Using external tool server %s url=%s", name, server.url)
                 continue
             url = harness_runtime.host_url(server.url) if server.local else server.url
             urls[name] = _shared_url_for_rollout(server, url, state_base, state_route)
-            logger.info("tool server '%s' (shared): %s", name, server.url)
+            logger.debug("Using shared tool server %s url=%s", name, server.url)
         for toolset in toolsets:
             name = toolset.server_name
             if name in urls:
@@ -714,7 +760,7 @@ async def serve_tools(
             cfg = toolset.config
             if cfg.url:
                 urls[name] = harness_runtime.host_url(cfg.url)
-                logger.info("tool server '%s' (remote): %s", name, cfg.url)
+                logger.debug("Using remote tool server %s url=%s", name, cfg.url)
             else:
                 urls[name] = await stack.enter_async_context(
                     serve(
@@ -722,10 +768,11 @@ async def serve_tools(
                         harness_runtime,
                         state_secret=state_secret,
                         state_base=state_base,
+                        proxy_mcp=proxy_mcp,
                         services=services,
                         hosts=hosts,
                         placements=placements,
                     )
                 )
-                logger.info("tool server '%s': %s", name, urls[name])
+                logger.debug("Started tool server %s", name)
         yield urls

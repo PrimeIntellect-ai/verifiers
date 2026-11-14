@@ -2,7 +2,6 @@
 
 import hashlib
 import json
-import logging
 from typing import Literal
 
 from verifiers.v1.acp import ACPConfig, ACPHarness, ACPTurn
@@ -15,19 +14,19 @@ from verifiers.v1.runtimes.base import _ENSURE_UV
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
 from verifiers.v1.types import Message
+from verifiers.v1.utils.logging import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 GITHUB_RELEASE_URL = (
     "https://github.com/PrimeIntellect-ai/prime-agent/releases/download"
 )
-PRIME_AGENT_COMMIT: Literal["8aac8692456c00c01d4e53e60e6d3347a3506559"] = (
-    "8aac8692456c00c01d4e53e60e6d3347a3506559"
+PRIME_AGENT_COMMIT: Literal["ea9d9602ec0938d9e454e8963107cd85af1565c6"] = (
+    "ea9d9602ec0938d9e454e8963107cd85af1565c6"
 )
-PRIME_AGENT_VERSION = "0.10.1"
+PRIME_AGENT_VERSION = "0.10.2"
 PRIME_AGENT_DIR = "/var/tmp/vf-prime-agent"
 STATE_ROOT = "/tmp/vf-prime-agent-runs"
-PROVIDER = "intercept"
 LIFECYCLE_META_NAMESPACE = "ai.primeintellect.prime-agent"
 KEY_VAR = "PRIME_AGENT_INTERCEPT_KEY"
 ENV_AGENT_DIR = "PRIME_AGENT_CODING_AGENT_DIR"
@@ -40,10 +39,10 @@ INSTALL = (
 prefix="$VF_PRIME_AGENT_DIR/$PRIME_AGENT_COMMIT"
 if [ ! -x "$prefix/bin/prime-agent" ]; then
     case "$(uname -s)-$(uname -m)" in
-        Linux-x86_64) platform=linux-x64; sha=21ec219183f4134dd23dce9572102e69456066fe374846525561c776d4d1945c ;;
-        Linux-aarch64|Linux-arm64) platform=linux-arm64; sha=5af68c10a088538fd4990fd18778d8c7fe28c0491083dc069c5177f733770e91 ;;
-        Darwin-x86_64) platform=darwin-x64; sha=9e2812084acead5a2c44209ffac350f762da67a27f4abcc5b417b7a6ef436632 ;;
-        Darwin-arm64) platform=darwin-arm64; sha=2b47bd9cefa0b531151aaeb7295073ba0a16cf694177c18b4f9f74a54b24e279 ;;
+        Linux-x86_64) platform=linux-x64; sha=09659961dfde201cc39f1e69b607385d708da3e591f267a4fea04970afb8b005 ;;
+        Linux-aarch64|Linux-arm64) platform=linux-arm64; sha=cd31de3a52dac3bdee44b723f10341cc5255f135acbcde8894575e324fa852b7 ;;
+        Darwin-x86_64) platform=darwin-x64; sha=32683ec045940093f6fea66ad234894f0361fd7c466932365c09097edf97499a ;;
+        Darwin-arm64) platform=darwin-arm64; sha=2f0894811f8ba047eb1874cc1d7392f45c0d6135be6090e7601983de17a6d1d7 ;;
         *) echo "unsupported prime-agent platform: $(uname -s)-$(uname -m)" >&2; exit 1 ;;
     esac
     command -v curl >/dev/null || { apt-get update -qq && apt-get install -y -qq curl ca-certificates; } || apk add --no-cache curl ca-certificates
@@ -77,13 +76,12 @@ uv pip install --python "$PRIME_AGENT_KERNEL_VENV/bin/python" "$@"
 
 
 class PrimeAgentHarnessConfig(HarnessConfig):
-    commit: Literal["8aac8692456c00c01d4e53e60e6d3347a3506559"] = PRIME_AGENT_COMMIT
+    commit: Literal["ea9d9602ec0938d9e454e8963107cd85af1565c6"] = PRIME_AGENT_COMMIT
     """Prime Agent release commit to install."""
 
     autonomous: bool = False
     """Enable Prime Agent's autonomous continuation loop."""
-    # Over Responses it replays an earlier turn without its reasoning.
-    dialect: Literal["chat_completions", "anthropic_messages"] = "chat_completions"
+    dialect: Literal["auto"] = "auto"
 
 
 class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
@@ -92,7 +90,7 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
     SUPPORTS_SKILLS = True
 
     # Its chat-completions provider drops whitespace-only assistant text on replay. Recheck on bumps:
-    # https://github.com/PrimeIntellect-ai/prime-agent/blob/v0.10.1/crates/pa-ai/src/providers/openai_completions/convert.rs#L106
+    # https://github.com/PrimeIntellect-ai/prime-agent/blob/v0.10.2/crates/pa-ai/src/providers/openai_completions/convert.rs#L106
     def replay_view(self, message: Message, dialect: DialectName | None) -> Message:
         return drop_blank_text(message)
 
@@ -151,7 +149,7 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
         statuses.append(status)
 
     async def setup(self, runtime: Runtime) -> None:
-        logger.info("prime-agent: ensuring commit %s is installed", self.config.commit)
+        logger.debug("Ensuring prime-agent %s is installed", self.config.commit)
         await ensure_installed(
             runtime,
             directory=PRIME_AGENT_DIR,
@@ -208,22 +206,20 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
             None,
             "none",
         ) or ctx.model.rsplit("/", 1)[-1].startswith(("gpt-5", "o1", "o3", "o4"))
+        provider, separator, model = ctx.model.partition("/")
+        if not separator:
+            provider, model = "openai", ctx.model
+        elif provider in ("internal", "dev"):
+            provider, model = "prime-inference", ctx.model
         models = {
             "providers": {
-                PROVIDER: {
-                    # Its Anthropic provider appends `/v1/messages` to the base URL.
-                    "baseUrl": endpoint.removesuffix("/v1")
-                    if self.config.dialect == "anthropic_messages"
-                    else endpoint,
-                    "api": {
-                        "chat_completions": "openai-completions",
-                        "responses": "openai-responses",
-                        "anthropic_messages": "anthropic-messages",
-                    }[self.config.dialect],
+                provider: {
+                    # The native provider owns its API path, including any version prefix.
+                    "baseUrl": endpoint.removesuffix("/v1"),
                     "apiKey": KEY_VAR,
                     "models": [
                         {
-                            "id": ctx.model,
+                            "id": model,
                             "reasoning": reasoning,
                             "input": ["text", "image"],
                         }
@@ -246,9 +242,9 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
             "acp",
             "--no-session",  # The ACP connection owns the session's lifetime.
             "--provider",
-            PROVIDER,
+            provider,
             "--model",
-            ctx.model,
+            model,
             "--daemon-socket",
             f"{root}/daemon.sock",
             "--offline",

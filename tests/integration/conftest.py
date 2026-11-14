@@ -4,26 +4,26 @@ resulting `Trace`(s). They need a model API key (`PRIME_API_KEY`); without one t
 model-driven tests skip.
 
 Each behavior module fixes one task and fans it across the harness x runtime grid in
-`grid.py`, which also says why a cell is skipped. `run` drives the `Env` API in-process,
-the calls the eval CLI makes. The placement fixtures below are indirect-only: they
-translate a parametrized value, and using one without `indirect=True` fails loudly.
+`grid.py`, which also says why a cell is skipped. `run` drives `vf-run`'s in-process
+runner. The placement fixtures below are indirect-only: they translate a parametrized
+value, and using one without `indirect=True` fails loudly.
 """
 
-import asyncio
 import os
 from pathlib import Path
 
 import pytest
 from grid import agent_seats, runtime_config
 
+from verifiers.v1.cli.run import run_episodes
 from verifiers.v1.clients import EvalClientConfig, ModelContext
-from verifiers.v1.configs.cli.eval import EvalConfig
+from verifiers.v1.configs.cli.run import RunnerConfig
 from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.configs.sampling import SamplingConfig
 from verifiers.v1.episode import Episode
-from verifiers.v1.utils.loaders import harness_config_type, load_environment
+from verifiers.v1.utils.loaders import harness_config_type
 
-CI_MODEL = "internal/deepseek-v4.1-flash"
+CI_MODEL = "internal/deepseek-v4.1-flash-1017-ci"
 CI_REASONING_EFFORT = "low"
 # Judge config fields that keep config-plugged judges on the CI model and effort.
 CI_JUDGE = {"model": CI_MODEL, "sampling": {"reasoning_effort": CI_REASONING_EFFORT}}
@@ -46,14 +46,12 @@ def harness_runtime(request) -> dict:
 @pytest.fixture
 def tool_runtime(request) -> dict:
     """A `taskset.task.tools` override placing the tool server: `colocated` (inside the harness's
-    runtime), `service` (in the task's `tools` Compose service), `service-vm` (in the task's
-    `tools-vm` service VM) or its own runtime, by type."""
+    runtime), `service` (in the task's native `tools` service VM), or its own runtime,
+    by type."""
     if request.param == "colocated":
         return {"colocated": True}
     if request.param == "service":
         return {"service": "tools"}
-    if request.param == "service-vm":
-        return {"service": "tools-vm"}
     return {"runtime": runtime_config(request.param)}
 
 
@@ -119,8 +117,8 @@ def _eval_config(
     reasoning_effort: str | None = CI_REASONING_EFFORT,
     model: str = CI_MODEL,
     client: dict | None = None,
-) -> EvalConfig:
-    """Build the smallest `EvalConfig` that still exercises the path, used by the `run`
+) -> RunnerConfig:
+    """Build the smallest `RunnerConfig` that still exercises the path, used by the `run`
     fixture. `taskset_overrides` merges onto the
     `{id: ...}` config; `runtime` places the `agent` seat's harness (an agent field, not a
     harness one).
@@ -158,7 +156,7 @@ def _eval_config(
         seat_cfg.setdefault("timeout", {"rollout": rollout_timeout, "scoring": 60})
         # Agent runs retry locally; interactions retry with their whole episode.
         seat_cfg.setdefault("retries", retries)
-    return EvalConfig(
+    return RunnerConfig(
         env={
             "taskset": taskset_cfg,
             **env_cfg,
@@ -175,28 +173,14 @@ def _eval_config(
 
 
 @pytest.fixture
-def run():
-    """Run a taskset's episodes in-process through the `Env` API: the calls `vf-eval`
-    makes (`serving`, `slots`, `run_slot`, retries included), without its run
-    directory, platform push, or dashboard. The Examples job covers that CLI layer."""
+def run(tmp_path):
+    """Run a taskset's episodes in-process with `vf-run`'s runner, saving them under
+    `tmp_path`."""
 
     async def _episodes(taskset: str, **kwargs) -> list[Episode]:
         config = _eval_config(taskset, **kwargs)
-        env = load_environment(config.env)
-        tasks = list(env.taskset.select(config.select))
-        ctx = ModelContext(
-            client=config.client, model=config.model, sampling=config.sampling
-        )
-        async with env.serving():
-            return list(
-                await asyncio.gather(
-                    *(
-                        env.run_slot(slot, ctx)
-                        for task in tasks
-                        for slot in env.slots(task, config.num_rollouts)
-                    )
-                )
-            )
+        config.output_dir = tmp_path
+        return await run_episodes(config)
 
     return _episodes
 

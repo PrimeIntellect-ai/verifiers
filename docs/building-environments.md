@@ -6,10 +6,10 @@ An environment package defines the tasks an agent receives, the files and tools 
 
 A verifiers evaluation spans up to four execution boundaries:
 
-- **The evaluator** (the machine running `vf-eval` or an environment worker) loads datasets, runs Python task hooks (`setup`, `finalize`, `@vf.reward`), coordinates agents, and records traces.
+- **The evaluator** (the machine running the environment server) loads datasets, runs Python task hooks (`setup`, `finalize`, `@vf.reward`), coordinates agents, and records traces.
 - **The agent sandbox** (the agent's configured [runtime](runtimes.md#capability-matrix)) runs the harness, holds the task workspace, and executes any commands the agent invokes.
 - **The grading sandbox** is a fresh container started after the agent finishes when you use isolated scoring (`ScoringConfig(mode="isolated")`), giving graders a clean filesystem containing only declared agent outputs and private test assets.
-- **Task tools** run in their own configured runtime by default, inside the agent sandbox when configured with `colocated = true`, inside a named Compose service when configured with `service = "<name>"`, or on a Prime VM of their own, under its own egress policy, when their `runtime` is a Prime runtime beside a Prime workspace.
+- **Task tools** run in their own configured runtime by default, inside the agent sandbox when configured with `colocated = true`, inside a named task service when configured with `service = "<name>"`, or on a Prime VM of their own, under its own egress policy, when their `runtime` is a Prime runtime beside a Prime workspace.
 
 Because Python task hooks always execute on the evaluator, calling `Path.read_text()` reads from the evaluator's own filesystem, whereas `await runtime.read()` or `await runtime.run()` operates inside whichever sandbox was passed to the hook (the agent sandbox during `setup` and `finalize`, or the grading sandbox during isolated scoring). For answer-only benchmarks, scoring the final message in `@vf.reward` with the default `SingleAgentEnv` is all you need. When tasks modify files or execute untrusted code, you can either score directly inside the agent's sandbox or transfer the outputs into a separate grading sandbox.
 
@@ -179,7 +179,7 @@ When your benchmark needs more than a single solver and deterministic grading, y
 - **Task-specific MCP tools**: define a [`vf.Toolset`](tasksets.md#adding-tools) on the task, running either in its own runtime or inside the agent sandbox with `colocated = true`.
 - **Multi-attempt sampling or model judges**: run the built-in `best-of-n`, `agentic-judge`, or `best-of-n-judge` environments, or `user-sim` when a model needs to role-play the user across turns.
 - **Games and multi-turn scripted interactions**: write a custom [`Env.run()`](env.md#custom-control-flow) that drives `agents.<role>.interaction(task)` across turns or agents. Note that a custom environment's `finalize(task, episode)` hook runs after agent runtimes have been torn down, so read from saved trace data (`trace.info`) rather than live sandboxes.
-- **Multi-container service stacks** (such as an application server paired with a database): package the task as a [Harbor benchmark](harbor.md) using Docker Compose, or return a `ComposeSpec` from `Task.deployment_spec()` (see [deployment and services](runtimes.md#deployment-and-services)).
+- **Multiple services** (such as an application server paired with a database): return a `ServicesSpec` from `Task.deployment_spec()` for prepared native Prime VMs, or a `ComposeSpec` for local Docker or Prime's supported Compose subset. [Harbor benchmarks](harbor.md) can supply a Compose file (see [deployment and services](runtimes.md#deployment-and-services)).
 - **Custom agent loops or CLI harnesses**: pick another built-in [harness](harnesses.md) or subclass `vf.Harness` to install and launch a different agent binary.
 
 ## Check the environment
@@ -188,9 +188,7 @@ Install your new package into the CLI environment and run a quick smoke test bef
 
 ```bash
 uv pip install -e environments/file_sum
-uv run vf-eval @ file-sum.toml --dry-run
 uv run vf-validate file-sum --runtime.type docker -n 1
-uv run vf-eval @ file-sum.toml -n 1 -r 1 -c 1 --no-push
 ```
 
-`--dry-run` validates the TOML config and taskset resolution without starting containers. Next, `vf-validate` runs your task's `validate` hook and a no-op check inside a single sandbox to confirm that the gold answer scores `1.0` while an untouched workspace scores `0.0`. Because `vf-validate` exercises `Task` directly in one sandbox, it does not transfer artifacts or call `stage_verifier` automatically; if your gold check needs to exercise the full isolated-grading flow without a model, request `trace` by name in `validate`, finalize the submission, and call `await vf.grade_submission(self, trace, runtime)` (or call `await self.stage_verifier(runtime)` directly). Finally, running a single rollout with `vf-eval -n 1 -r 1 -c 1 --no-push` exercises the full solver-to-verifier transfer lifecycle; see [debugging](debugging.md) for inspecting saved traces and diagnosing setup or grading errors.
+`vf-validate` runs your task's `validate` hook and a no-op check inside a single sandbox to confirm that the gold answer scores `1.0` while an untouched workspace scores `0.0`. Because `vf-validate` exercises `Task` directly in one sandbox, it does not transfer artifacts or call `stage_verifier` automatically; if your gold check needs to exercise the full isolated-grading flow without a model, request `trace` by name in `validate`, finalize the submission, and call `await vf.grade_submission(self, trace, runtime)` (or call `await self.stage_verifier(runtime)` directly). Finally, running a single rollout with `uv run vf-run file-sum -n 1 -r 1` exercises the full solver-to-verifier transfer lifecycle; see [debugging](debugging.md) for inspecting saved traces and diagnosing setup or grading errors.

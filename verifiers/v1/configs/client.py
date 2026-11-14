@@ -4,9 +4,8 @@ A `BaseClientConfig` is an OpenAI-compatible endpoint (base_url + API-key env va
 + extra headers); `clients.resolve_client` turns one into a live `Client` — the
 interception server builds one per distinct config and shares it across the rollouts
 it multiplexes. The default Prime endpoint, API key, and team fall back to
-the active Prime CLI config, so direct `uv run vf-eval` calls behave like `prime eval`.
-Both the eval entrypoint (its model client) and in-env LLM calls (e.g. a judge reward)
-build clients from these. `ClientConfig` is the CLI-selectable discriminated union
+the active Prime CLI config. Both an eval's model client and in-env LLM calls (e.g. a
+judge reward) build clients from these. `ClientConfig` is the CLI-selectable discriminated union
 (eval | train).
 """
 
@@ -76,6 +75,9 @@ class EvalClientConfig(BaseClientConfig):
     """The default (eval): forward each request to a matching endpoint via `EvalClient`."""
 
     type: Literal["eval"] = "eval"
+    cache_retention: Literal["none", "short", "long"] | None = None
+    """Anthropic prompt-cache lifetime. ``None`` follows ``PI_CACHE_RETENTION``
+    (short by default); ``long`` emits ``ttl: "1h"``; ``none`` disables markers."""
 
 
 class TrainClientConfig(BaseClientConfig):

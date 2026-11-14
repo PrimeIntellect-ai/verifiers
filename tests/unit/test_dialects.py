@@ -49,3 +49,60 @@ def test_apply_overrides_keeps_other_reasoning_fields():
     body = {"reasoning": {"effort": "high", "summary": "detailed"}}
     sent = ResponsesDialect().apply_overrides(body, "m", SAMPLING)
     assert sent["reasoning"] == {"effort": "low", "summary": "detailed"}
+
+
+def conversation(turns: int) -> list[dict]:
+    messages: list[dict] = [{"role": "system", "content": "s"}]
+    for turn in range(turns):
+        messages.append({"role": "user", "content": f"q{turn}"})
+        messages.append(
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": f"call_{turn}",
+                        "type": "function",
+                        "function": {"name": "lookup", "arguments": '{"a": 1}'},
+                    }
+                ],
+            }
+        )
+        # Tool results arrive unnamed: the parse names them from their call.
+        messages.append(
+            {"role": "tool", "tool_call_id": f"call_{turn}", "content": f"r{turn}"}
+        )
+    return messages
+
+
+def test_chat_parse_request_reuses_the_last_requests_equal_prefix():
+    """A harness re-sends its whole conversation every turn: the messages it begins with,
+    equal as sent to the last request's, are that request's parse; the rest parse as before,
+    tool results named from calls anywhere in the conversation."""
+    dialect = ChatDialect()
+    first = conversation(2)
+    last = (first, dialect.parse_request({"messages": first}).messages)
+    grown = conversation(3)
+    request = dialect.parse_request({"messages": grown}, last)
+    assert request == dialect.parse_request({"messages": grown})
+    assert all(a is b for a, b in zip(request.messages, last[1]))
+    assert request.messages[-1].name == "lookup"
+    # An edited earlier message parses from there on, whatever follows it.
+    edited = [*grown[:2], {"role": "user", "content": "q0, edited"}, *grown[3:]]
+    request = dialect.parse_request({"messages": edited}, last)
+    assert request == dialect.parse_request({"messages": edited})
+    assert request.messages[0] is last[1][0]
+    assert all(a is not b for a, b in zip(request.messages[2:], last[1][2:]))
+
+
+def test_message_hash_is_kept_with_the_message():
+    from verifiers.v1 import graph
+
+    messages = ChatDialect().parse_request({"messages": conversation(2)}).messages
+    for message in messages:
+        assert graph.message_hash(message) == graph._message_hash(message)
+        assert graph.message_hash(message) == graph._message_hash(message)
+    assert all(id(message) in graph._HASHES for message in messages)
+    keys = [id(message) for message in messages]
+    del message, messages
+    assert not any(key in graph._HASHES for key in keys)

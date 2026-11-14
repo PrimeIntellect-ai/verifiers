@@ -3,7 +3,6 @@
 import asyncio
 import contextlib
 import json
-import logging
 import os
 import shutil
 import sys
@@ -19,7 +18,6 @@ from pydantic_config import cli
 from pydantic_core import from_json
 
 import verifiers.v1 as vf
-from verifiers.v1.cli.dashboard import TaskProgress, validate_dashboard
 from verifiers.v1.cli.output import write_config
 from verifiers.v1.cli.resolve import (
     extract_id,
@@ -46,10 +44,11 @@ from verifiers.v1.utils.aio import run_shielded
 from verifiers.v1.utils.artifacts import collect
 from verifiers.v1.utils.compile import resolve_runtime_config
 from verifiers.v1.utils.decorators import invoke
+from verifiers.v1.utils.format import format_time
 from verifiers.v1.utils.interrupt import install_interrupt
-from verifiers.v1.utils.logging import setup_logging
+from verifiers.v1.utils.logging import get_logger, setup_logging
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 RESULTS_FILE = "results.jsonl"
 SUMMARY_FILE = "summary.json"
@@ -484,18 +483,10 @@ async def run_validate(config: ValidateConfig) -> list[dict]:
     logger.info("results: %s", out)
 
     sem = asyncio.Semaphore(config.max_concurrent) if config.max_concurrent else None
-    states = [TaskProgress(idx=t.data.idx, name=t.data.name) for t in tasks]
-    for row in rows:
-        state = states[row["task_position"]]
-        state.state = row["reason"]
-
     write_lock = asyncio.Lock()
 
     async def _one(position: int, task: Task, key: str) -> ResultRow:
-        st = states[position]
         async with sem or contextlib.nullcontext():
-            st.start = time.time()
-            st.state = "running"
             row = await _validate_task(task, config)
         row["task_position"] = position
         row["task_key"] = key
@@ -511,31 +502,21 @@ async def run_validate(config: ValidateConfig) -> list[dict]:
                 )
 
         await run_shielded(persist())
-        st.end, st.state = time.time(), row["reason"]
-        if not config.rich:  # the dashboard shows this live; otherwise log each task
-            detail = f" - {note}" if (note := _describe(row)) else ""
-            logger.info(
-                "idx=%s valid=%s reason=%s (%.1fs)%s",
-                row["index"],
-                row["valid"],
-                row["reason"],
-                row["elapsed"],
-                detail,
-            )
+        detail = f" - {note}" if (note := _describe(row)) else ""
+        logger.info(
+            "idx=%s valid=%s reason=%s (%s)%s",
+            row["index"],
+            row["valid"],
+            row["reason"],
+            format_time(row["elapsed"]),
+            detail,
+        )
         return row
 
-    display = (
-        validate_dashboard(states, config, time.time())
-        if config.rich
-        else contextlib.nullcontext()
-    )
-    async with display:
-        if not plan:
-            logger.info("nothing to resume: all %d task(s) are terminal", len(tasks))
-            return rows
-        await asyncio.gather(
-            *(_one(position, task, key) for position, task, key in plan)
-        )
+    if not plan:
+        logger.info("nothing to resume: all %d task(s) are terminal", len(tasks))
+        return rows
+    await asyncio.gather(*(_one(position, task, key) for position, task, key in plan))
     rows.sort(key=lambda row: row["task_position"])
     write_summary(out, summarize(rows, len(tasks), mode))
     return rows
@@ -581,11 +562,7 @@ def main(argv: list[str] | None = None) -> None:
             f"run directory {out} already contains results - append --resume to re-run "
             "its missing/errored tasks, overwrite it with --clean, or pick another --run.name"
         )
-    setup_logging(
-        "DEBUG" if config.verbose else "INFO",
-        log_file=str(out / LOG_FILE),
-        console=not config.rich,
-    )
+    setup_logging("DEBUG" if config.verbose else "INFO", log_file=str(out / LOG_FILE))
     # Graceful shutdown: first Ctrl-C/SIGTERM unwinds each task's teardown `finally`
     # (containers/sandboxes); a second is swallowed so it can't orphan them mid-cleanup.
     install_interrupt()

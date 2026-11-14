@@ -23,6 +23,8 @@ async def test_user(run, harness, harness_runtime):
         runtime=harness_runtime,
         max_turns=6,
         max_tokens=8192,
+        # Stirrup completes through finish; the default fixture forbids tools.
+        taskset_overrides={"finish_tool": harness.id == "stirrup"},
     )
     (trace,) = episode.traces
     assert_one_branch(trace, harness, forks=("openclaw",))
