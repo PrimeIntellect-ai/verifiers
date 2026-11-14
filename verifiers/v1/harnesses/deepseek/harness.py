@@ -19,9 +19,9 @@ GATE = (Path(__file__).parent / "gate.mjs").read_bytes()
 INSTALL = r"""
 set -e
 export PATH="/var/tmp/vf-node/bin:$PATH"
-npm install --prefix "$VF_DEEPSEEK_DIR" --no-audit --no-fund \
-    "@deepseek-ai/dsh@$VF_DEEPSEEK_VERSION" >/dev/null
-touch "$VF_DEEPSEEK_DIR/.ready"
+npm install --prefix "$AGENT_DEEPSEEK_DIR" --no-audit --no-fund \
+    "@deepseek-ai/dsh@$AGENT_DEEPSEEK_VERSION" >/dev/null
+touch "$AGENT_DEEPSEEK_DIR/.ready"
 """
 
 
@@ -47,8 +47,8 @@ class DeepSeekHarness(ACPHarness[DeepSeekHarnessConfig]):
             ready=f"test -f {directory}/.ready",
             install=INSTALL,
             env={
-                "VF_DEEPSEEK_DIR": directory,
-                "VF_DEEPSEEK_VERSION": self.config.version,
+                "AGENT_DEEPSEEK_DIR": directory,
+                "AGENT_DEEPSEEK_VERSION": self.config.version,
             },
             label="DeepSeek Harness",
         )

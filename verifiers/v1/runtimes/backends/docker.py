@@ -163,7 +163,7 @@ class ContainerProcess(RuntimeProcess):
                 "sh",
                 "-c",
                 'kill -"$1" "-$2" 2>/dev/null || kill -"$1" "$2" 2>/dev/null',
-                "vf-signal",
+                "process-signal",
                 signal,
                 str(self._pid),
             ],
@@ -198,7 +198,7 @@ async def _abort_process_startup(
                         "sh",
                         "-c",
                         cleanup,
-                        "vf-process-cleanup",
+                        "process-cleanup",
                         pidfile,
                     ],
                     {},
@@ -507,7 +507,7 @@ class DockerBackend(RuntimeBackend):
             "sh",
             "-c",
             'if [ ! -d "$1" ]; then mkdir -p "$1" && chown "$2" "$1"; fi',
-            "vf-workdir",
+            "workspace-directory",
             self.config.workdir,
             container["User"] or "0",
         )
@@ -797,7 +797,7 @@ class DockerBackend(RuntimeBackend):
     async def exec(
         self, runtime: Runtime, argv: list[str], env: dict[str, str]
     ) -> RuntimeProcess:
-        pidfile = f"/tmp/vf-process-{uuid.uuid4().hex}.pid"
+        pidfile = f"/tmp/runtime-process-{uuid.uuid4().hex}.pid"
         # Give the target its own process group when `setsid -w` is available so
         # terminate()/kill() reap its descendants while the CLI client remains
         # attached if setsid needs to fork. The inner shell records the
@@ -805,7 +805,7 @@ class DockerBackend(RuntimeBackend):
         wrapper = (
             "if setsid -w true >/dev/null 2>&1; then "
             'exec setsid -w sh -c \'echo $$ > "$1"; shift; exec "$@"\' '
-            'vf-process "$@"; '
+            'runtime-process "$@"; '
             'fi; echo $$ > "$1"; shift; exec "$@"'
         )
         command = [
@@ -813,7 +813,7 @@ class DockerBackend(RuntimeBackend):
             "sh",
             "-c",
             wrapper,
-            "vf-process",
+            "runtime-process",
             pidfile,
             *argv,
         ]

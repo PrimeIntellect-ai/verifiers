@@ -21,8 +21,8 @@ MCP_READY = (Path(__file__).resolve().parent / "mcp-ready.js").read_bytes()
 INSTALL = r"""
 set -e
 export PATH="/var/tmp/vf-node/bin:$PATH"
-npm install --prefix "$VF_OPENCODE_DIR" --no-audit --no-fund --omit=dev \
-    "@opencode/cli@$VF_OPENCODE_VERSION" >/dev/null
+npm install --prefix "$AGENT_OPENCODE_DIR" --no-audit --no-fund --omit=dev \
+    "@opencode/cli@$AGENT_OPENCODE_VERSION" >/dev/null
 """
 
 
@@ -57,8 +57,8 @@ class OpenCodeHarness(ACPHarness[OpenCodeHarnessConfig]):
             install=INSTALL,
             env={
                 **self.config.resolved_env,
-                "VF_OPENCODE_DIR": directory,
-                "VF_OPENCODE_VERSION": self.config.version,
+                "AGENT_OPENCODE_DIR": directory,
+                "AGENT_OPENCODE_VERSION": self.config.version,
             },
             label="OpenCode",
         )

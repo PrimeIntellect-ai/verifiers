@@ -35,7 +35,7 @@ INSTALL = (
     "set -e\n"
     + _ENSURE_UV
     + r"""
-prefix="$VF_PRIME_AGENT_DIR/$PRIME_AGENT_COMMIT"
+prefix="$AGENT_PRIME_AGENT_DIR/$PRIME_AGENT_COMMIT"
 if [ ! -x "$prefix/bin/prime-agent" ]; then
     case "$(uname -s)-$(uname -m)" in
         Linux-x86_64) platform=linux-x64; sha=09659961dfde201cc39f1e69b607385d708da3e591f267a4fea04970afb8b005 ;;
@@ -45,9 +45,9 @@ if [ ! -x "$prefix/bin/prime-agent" ]; then
         *) echo "unsupported prime-agent platform: $(uname -s)-$(uname -m)" >&2; exit 1 ;;
     esac
     command -v curl >/dev/null || { apt-get update -qq && apt-get install -y -qq curl ca-certificates; } || apk add --no-cache curl ca-certificates
-    release_url="$VF_PRIME_AGENT_GITHUB_RELEASE_URL/v$PRIME_AGENT_RELEASE_VERSION"
+    release_url="$AGENT_PRIME_AGENT_GITHUB_RELEASE_URL/v$PRIME_AGENT_RELEASE_VERSION"
     tarball="prime-agent-$PRIME_AGENT_RELEASE_VERSION-$platform.tar.gz"
-    download_dir="$(mktemp -d "$VF_PRIME_AGENT_DIR/install.XXXXXX")"
+    download_dir="$(mktemp -d "$AGENT_PRIME_AGENT_DIR/install.XXXXXX")"
     trap 'rm -rf "$download_dir"' EXIT
     curl -fsSL --retry 5 --retry-all-errors "$release_url/$tarball" -o "$download_dir/$tarball"
     printf '%s  %s\n' "$sha" "$tarball" > "$download_dir/SHA256SUMS"
@@ -155,8 +155,8 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
             install=INSTALL,
             env={
                 **self.config.resolved_env,
-                "VF_PRIME_AGENT_DIR": PRIME_AGENT_DIR,
-                "VF_PRIME_AGENT_GITHUB_RELEASE_URL": GITHUB_RELEASE_URL,
+                "AGENT_PRIME_AGENT_DIR": PRIME_AGENT_DIR,
+                "AGENT_PRIME_AGENT_GITHUB_RELEASE_URL": GITHUB_RELEASE_URL,
                 "PRIME_AGENT_COMMIT": self.config.commit,
                 "PRIME_AGENT_RELEASE_VERSION": PRIME_AGENT_VERSION,
                 "PRIME_AGENT_KERNEL_VENV": self._kernel_venv(),

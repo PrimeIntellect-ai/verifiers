@@ -13,13 +13,13 @@ node_ok() { "$1" -e 'const [a,b,c]=process.versions.node.split(".").map(Number);
 
 install_node() {
     if [ -x "$node/bin/node" ] && [ -x "$node/bin/npm" ] \
-        && [ "$("$node/bin/node" --version 2>/dev/null)" = "v$VF_NODE_VERSION" ]; then
+        && [ "$("$node/bin/node" --version 2>/dev/null)" = "v$AGENT_NODE_VERSION" ]; then
         return
     fi
     # Finish downloading, extracting and validating before replacing the shared installation.
     download_dir=$(mktemp -d "$node.XXXXXX")
     trap 'rm -rf "$download_dir"' EXIT
-    curl -fsSL --retry 5 --retry-all-errors "https://nodejs.org/dist/v$VF_NODE_VERSION/node-v$VF_NODE_VERSION-$1.tar.gz" \
+    curl -fsSL --retry 5 --retry-all-errors "https://nodejs.org/dist/v$AGENT_NODE_VERSION/node-v$AGENT_NODE_VERSION-$1.tar.gz" \
         -o "$download_dir/node.tar.gz"
     mkdir "$download_dir/node"
     tar -xzf "$download_dir/node.tar.gz" -C "$download_dir/node" --strip-components=1
@@ -103,6 +103,6 @@ async def ensure_node(runtime: Runtime) -> None:
         directory=NODE_DIR,
         lock=f"{NODE_DIR}.install.lock",
         install=INSTALL,
-        env={"VF_NODE_VERSION": NODE_VERSION},
+        env={"AGENT_NODE_VERSION": NODE_VERSION},
         label="Node.js",
     )

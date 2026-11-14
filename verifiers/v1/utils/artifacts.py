@@ -360,7 +360,7 @@ async def restore(runtime: Runtime, collected: dict[str, bytes | None]) -> None:
     for root, archive in collected.items():
         if archive is None:
             continue
-        path = f"/tmp/vf-artifact-{uuid.uuid4().hex}.tar"
+        path = f"/tmp/artifact-{uuid.uuid4().hex}.tar"
         await runtime.write(path, archive)
         await _run(
             runtime,
@@ -370,7 +370,7 @@ async def restore(runtime: Runtime, collected: dict[str, bytes | None]) -> None:
 
 
 async def _tar_out(runtime: Runtime, artifact: Artifact, budget: int) -> bytes:
-    path = f"/tmp/vf-artifact-{uuid.uuid4().hex}.tar"
+    path = f"/tmp/artifact-{uuid.uuid4().hex}.tar"
     excludes = " ".join(f"--exclude={shlex.quote(p)}" for p in artifact.exclude)
     try:
         # macOS tar otherwise adds AppleDouble sidecars next to a directory root.

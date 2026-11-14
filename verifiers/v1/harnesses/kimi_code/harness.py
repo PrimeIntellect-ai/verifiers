@@ -29,10 +29,10 @@ INSTALL = r"""
 set -e
 packages=/var/tmp/vf-kimi-code
 export PATH="/var/tmp/vf-node/bin:$PATH"
-if [ "$(cat "$packages/.version" 2>/dev/null)" != "$VF_KIMI_VERSION" ]; then
+if [ "$(cat "$packages/.version" 2>/dev/null)" != "$AGENT_KIMI_VERSION" ]; then
     npm install --prefix "$packages" --ignore-scripts --no-audit --no-fund --omit=dev \
-        "@moonshot-ai/kimi-code@$VF_KIMI_VERSION" >/dev/null
-    printf %s "$VF_KIMI_VERSION" > "$packages/.version"
+        "@moonshot-ai/kimi-code@$AGENT_KIMI_VERSION" >/dev/null
+    printf %s "$AGENT_KIMI_VERSION" > "$packages/.version"
 fi
 """
 
@@ -63,7 +63,7 @@ class KimiCodeHarness(ACPHarness[KimiCodeHarnessConfig]):
             runtime,
             directory=KIMI_DIR,
             install=INSTALL,
-            env={"VF_KIMI_VERSION": self.config.version},
+            env={"AGENT_KIMI_VERSION": self.config.version},
             label="Kimi Code",
         )
         await super().setup(runtime)
@@ -108,7 +108,7 @@ class KimiCodeHarness(ACPHarness[KimiCodeHarnessConfig]):
                                 "decision": "deny",
                                 "scope": "user",
                                 "pattern": tool,
-                                "reason": "Disabled by Verifiers harness configuration.",
+                                "reason": "Disabled by the current configuration.",
                             }
                             for tool in self.config.disabled_tools
                         ]
