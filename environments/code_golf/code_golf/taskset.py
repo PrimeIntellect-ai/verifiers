@@ -43,7 +43,7 @@ def extract_program(trace: vf.Trace) -> str:
 
 class CodeGolfData(vf.TaskData):
     expected: str
-    """The exact stdout the program must produce."""
+    """The exact output, with one optional final newline in stdout."""
 
 
 class CodeGolfTask(vf.Task[CodeGolfData]):
@@ -57,8 +57,9 @@ class CodeGolfTask(vf.Task[CodeGolfData]):
         start = time.perf_counter()
         result = await runtime.run(["python3", "solution.py"], {})
         latency = time.perf_counter() - start
+        expected = self.data.expected
         passed = float(
-            result.exit_code == 0 and result.stdout.strip() == self.data.expected
+            result.exit_code == 0 and result.stdout in (expected, expected + "\n")
         )
         return {"passed": passed, "latency": latency}
 
