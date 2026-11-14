@@ -204,6 +204,12 @@ def _is_valid_incremental_tail(messages: list[dict[str, Any]]) -> bool:
     )
 
 
+def _tool_call_ids(message: dict[str, Any]) -> list[str]:
+    return [
+        str(call["id"]) for call in message.get("tool_calls") or [] if call.get("id")
+    ]
+
+
 def _has_multimodal_content(messages) -> bool:
     for message in messages:
         content = getattr(message, "content", None)
@@ -418,6 +424,9 @@ class TrainClient(Client):
             previous_ids = turn.previous_renderer_token_ids() if can_bridge else None
             if previous_ids is not None:
                 previous_prompt_ids, previous_completion_ids = previous_ids
+                previous_tool_call_ids = _tool_call_ids(
+                    wire_messages[turn.tail_start - 1]
+                )
 
                 def bridge():
                     return renderer.bridge_to_next_turn(
@@ -425,6 +434,7 @@ class TrainClient(Client):
                         previous_completion_ids,
                         wire_tail,
                         tools=wire_tools,
+                        previous_tool_call_ids=previous_tool_call_ids,
                         **render_kwargs,
                     )
 
