@@ -20,6 +20,7 @@ logger = get_logger(__name__)
 
 KIMI_DIR = "/var/tmp/vf-kimi-code"
 KIMI_BIN = f"{KIMI_DIR}/node_modules/.bin/kimi"
+KIMI_HOME = ".vf-kimi-code"
 ACP_COMMAND = [f"{NODE_BIN_DIR}/node", KIMI_BIN, "acp"]
 
 # From npm rather than Kimi's installer: code.kimi.com sits behind a WAF that drops
@@ -78,7 +79,12 @@ class KimiCodeHarness(ACPHarness[KimiCodeHarnessConfig]):
         data: TaskData,
     ) -> ACPConfig:
         kimi_home = runtime.temp_path(
-            "vf-kimi-code", trace.id, env=self.config.resolved_env
+            "vf-kimi-code",
+            trace.id,
+            env=self.config.resolved_env,
+            default=f"{KIMI_HOME}/{trace.id}"
+            if data.filesystem is None or data.filesystem.writable is None
+            else None,
         )
         skills_dir = f"{kimi_home}/skills"
         await self.install_skills(runtime, skills_dir)
@@ -134,7 +140,17 @@ class KimiCodeHarness(ACPHarness[KimiCodeHarnessConfig]):
     async def cleanup(self, trace: Trace, runtime: Runtime) -> None:
         await remove_dir(
             runtime,
-            runtime.temp_path("vf-kimi-code", trace.id, env=self.config.resolved_env),
+            runtime.temp_path(
+                "vf-kimi-code",
+                trace.id,
+                env=self.config.resolved_env,
+                default=(
+                    f"{KIMI_HOME}/{trace.id}"
+                    if trace.task.data.filesystem is None
+                    or trace.task.data.filesystem.writable is None
+                    else None
+                ),
+            ),
             "Kimi Code state",
         )
 

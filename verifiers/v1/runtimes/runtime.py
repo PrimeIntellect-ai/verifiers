@@ -209,14 +209,23 @@ class Runtime:
         except Exception:  # noqa: BLE001 - failing to exec at all means the box is gone
             return False
 
-    def temp_path(self, *parts: str, env: Mapping[str, str] | None = None) -> str:
+    def temp_path(
+        self,
+        *parts: str,
+        env: Mapping[str, str] | None = None,
+        default: str | None = None,
+    ) -> str:
         """Framework scratch path under the process's explicit TMPDIR, or /tmp.
 
+        Without TMPDIR, an established ``default`` path is retained. Callers choose
+        it from task configuration so setup, execution and cleanup agree across views.
         The selected directory still needs to exist and be writable in the view;
         this never adds a filesystem-policy exception.
         """
-        directory = (env or {}).get("TMPDIR") or self.env.get("TMPDIR") or "/tmp"
-        return str(PurePosixPath(directory).joinpath(*parts))
+        directory = (env or {}).get("TMPDIR") or self.env.get("TMPDIR")
+        if not directory and default is not None:
+            return default
+        return str(PurePosixPath(directory or "/tmp").joinpath(*parts))
 
     async def prepare_uv_script(
         self,

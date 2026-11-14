@@ -19,6 +19,7 @@ PACKAGES_DIR = f"{CLAUDE_ACP_DIR}/packages"
 ACP_VERSION = "0.99.1"
 CLAUDE_BIN = f"{PACKAGES_DIR}/node_modules/.bin/claude"
 ACP_BIN = f"{PACKAGES_DIR}/node_modules/.bin/claude-agent-acp"
+CLAUDE_CONFIG_ROOT = ".vf-claude"
 ACP_INSTALL = r"""
 set -e
 export PATH="/var/tmp/vf-node/bin:$PATH"
@@ -133,4 +134,14 @@ class ClaudeCodeHarness(ACPHarness[ClaudeCodeHarnessConfig]):
         await remove_dir(runtime, self.config_dir(trace, runtime), "Claude config")
 
     def config_dir(self, trace: Trace, runtime: Runtime) -> str:
-        return runtime.temp_path("vf-claude", trace.id, env=self.config.resolved_env)
+        return runtime.temp_path(
+            "vf-claude",
+            trace.id,
+            env=self.config.resolved_env,
+            default=(
+                f"{CLAUDE_CONFIG_ROOT}/{trace.id}"
+                if trace.task.data.filesystem is None
+                or trace.task.data.filesystem.writable is None
+                else None
+            ),
+        )

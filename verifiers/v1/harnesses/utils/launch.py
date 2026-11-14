@@ -11,6 +11,7 @@ from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.dialects.chat import message_to_wire
 from verifiers.v1.harnesses.utils import compaction, core, mcp
+from verifiers.v1.harnesses.utils.install import remove_dir
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.trace import Trace
 from verifiers.v1.types import Messages
@@ -55,7 +56,14 @@ def compaction_args(compaction: CompactionConfig | None) -> list[str]:
     return args
 
 
-async def stage_text(runtime: Runtime, trace: Trace, name: str, text: str) -> str:
+async def stage_text(
+    runtime: Runtime,
+    trace: Trace,
+    name: str,
+    text: str,
+    *,
+    env: dict[str, str] | None = None,
+) -> str:
     """Write `text` to a new file in `runtime` and return its path.
 
     Prompt text reaches programs by file, never on argv: an agent's `pkill -f <word>`
@@ -63,7 +71,9 @@ async def stage_text(runtime: Runtime, trace: Trace, name: str, text: str) -> st
     argument at 128 KiB. Each call gets its own path, so concurrent launches on one
     trace do not collide. The program that reads the file deletes it."""
     stem, dot, suffix = name.partition(".")
-    path = f"/tmp/{stem}-{trace.id}-{uuid.uuid4().hex[:8]}{dot}{suffix}"
+    path = runtime.temp_path(
+        f"{stem}-{trace.id}-{uuid.uuid4().hex[:8]}{dot}{suffix}", env=env
+    )
     await runtime.write(path, text.encode())
     return path
 
@@ -91,33 +101,45 @@ async def launch_chat_program(
         f"--model={ctx.model}",
         *extra_args,
     ]
-    if system_prompt:
-        path = await stage_text(runtime, trace, "system-prompt.txt", system_prompt)
-        args.append(f"--system-prompt-file={path}")
-    if mcp_urls:
-        args.append(
-            "--mcp-config="
-            + json.dumps(
-                {
-                    "mcpServers": {
-                        name: {"url": url, "timeout": config.tool_timeout}
-                        for name, url in mcp_urls.items()
-                    }
-                }
+    process_env = env if env is not None else {**config.resolved_env}
+    prompt_files = []
+    try:
+        if system_prompt:
+            path = await stage_text(
+                runtime, trace, "system-prompt.txt", system_prompt, env=process_env
             )
+            prompt_files.append(path)
+            args.append(f"--system-prompt-file={path}")
+        if mcp_urls:
+            args.append(
+                "--mcp-config="
+                + json.dumps(
+                    {
+                        "mcpServers": {
+                            name: {"url": url, "timeout": config.tool_timeout}
+                            for name, url in mcp_urls.items()
+                        }
+                    }
+                )
+            )
+        if isinstance(prompt, str):
+            initial = [{"role": "user", "content": prompt}] if prompt else []
+        else:
+            initial = [message_to_wire(message) for message in prompt or []]
+        if initial:
+            path = await stage_text(
+                runtime,
+                trace,
+                "initial-messages.json",
+                json.dumps(initial),
+                env=process_env,
+            )
+            prompt_files.append(path)
+            args.append(f"--initial-messages-file={path}")
+        program = await runtime.prepare_uv_script(
+            source, config.resolved_env, activate=activate
         )
-    if isinstance(prompt, str):
-        initial = [{"role": "user", "content": prompt}] if prompt else []
-    else:
-        initial = [message_to_wire(message) for message in prompt or []]
-    if initial:
-        path = await stage_text(
-            runtime, trace, "initial-messages.json", json.dumps(initial)
-        )
-        args.append(f"--initial-messages-file={path}")
-    program = await runtime.prepare_uv_script(
-        source, config.resolved_env, activate=activate
-    )
-    return await runtime.run(
-        [*program, *args], env if env is not None else {**config.resolved_env}
-    )
+        return await runtime.run([*program, *args], process_env)
+    finally:
+        for path in prompt_files:
+            await remove_dir(runtime, path, "prompt file")
