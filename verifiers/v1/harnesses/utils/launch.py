@@ -62,7 +62,8 @@ async def stage_text(runtime: Runtime, trace: Trace, name: str, text: str) -> st
     kills every process whose command line contains the word, and Linux caps one
     argument at 128 KiB. Each call gets its own path, so concurrent launches on one
     trace do not collide. The program that reads the file deletes it."""
-    path = f"/tmp/vf-{trace.id}-{uuid.uuid4().hex[:8]}-{name}"
+    stem, dot, suffix = name.partition(".")
+    path = f"/tmp/{stem}-{trace.id}-{uuid.uuid4().hex[:8]}{dot}{suffix}"
     await runtime.write(path, text.encode())
     return path
 
