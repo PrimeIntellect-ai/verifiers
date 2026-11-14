@@ -179,6 +179,8 @@ class RuntimeBackend(ABC):
     """Whether Linux process views can enforce bubblewrap filesystem policies.
     The image and kernel are checked before a restricted view is returned."""
 
+    SUPPORTS_STOP_CONFIRMATION: ClassVar[bool] = False
+
     SUPPORTS_PORT_EXPOSURE: ClassVar[bool] = False
     """Whether `expose` can publish a port inside this runtime to the outside, so a
     server here is reachable from another runtime."""
@@ -264,6 +266,12 @@ class RuntimeBackend(ABC):
         """Synchronously free the provisioned resource — best-effort and idempotent. The
         source of truth for teardown: usable from the atexit backstop where async machinery
         is dead, and run off the event loop by `stop` on the normal path. Default no-op."""
+
+    async def verify_stopped(self) -> None:
+        """Confirm provider termination after `stop`, or raise without returning a
+        result whose safety depends on cleanup. Ordinary rollout cleanup remains
+        best-effort; callers that execute untrusted submissions use this check."""
+        raise SandboxError(f"the {self.type} runtime cannot confirm termination")
 
     @abstractmethod
     async def exec(

@@ -14,6 +14,7 @@ from verifiers.v1.configs.harness import (
 )
 from verifiers.v1.harnesses.node import NODE_BIN_DIR, ensure_node
 from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
+from verifiers.v1.harnesses.utils.remote import NativeRemoteTools
 from verifiers.v1.harnesses.utils.replay import drop_blank_text
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import TaskData
@@ -61,6 +62,7 @@ class PiHarness(ACPHarness[PiHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
     SUPPORTS_TOOL_INTERCEPTION = True
+    SUPPORTS_SPLIT_EXECUTION = True
     # Pi's project skill discovery is trust-gated (a prompt print mode can't answer),
     # so the installed skills are passed explicitly via `--skill` at launch.
     SUPPORTS_SKILLS = True
@@ -73,6 +75,9 @@ class PiHarness(ACPHarness[PiHarnessConfig]):
         if dialect in ("chat_completions", "anthropic_messages"):
             return drop_blank_text(message)
         return message
+
+    async def remote_tools(self, runtime: Runtime, data: TaskData) -> NativeRemoteTools:
+        return NativeRemoteTools(runtime, "pi", tuple(self.config.disabled_tools or ()))
 
     async def setup(self, runtime: Runtime) -> None:
         await ensure_node(runtime)
@@ -156,9 +161,14 @@ class PiHarness(ACPHarness[PiHarnessConfig]):
         await runtime.write(f"{agent_dir}/models.json", json.dumps(models).encode())
 
         if mcp_urls:
+            mcp_headers = self.config.resolve_mcp_headers(mcp_urls)
             mcp = {
                 "mcpServers": {
-                    name: {"url": url, "exposure": "direct"}
+                    name: {
+                        "url": url,
+                        "headers": mcp_headers.get(name, {}),
+                        "exposure": "direct",
+                    }
                     for name, url in mcp_urls.items()
                 }
             }

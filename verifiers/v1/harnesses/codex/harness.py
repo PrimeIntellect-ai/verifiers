@@ -11,11 +11,14 @@ import tomli_w
 from verifiers.v1.acp import ACPConfig, ACPHarness, ACPTurn
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig, PinnedVersion
+from verifiers.v1.errors import HarnessError
 from verifiers.v1.harnesses.node import NODE_BIN_DIR, ensure_node
 from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
+from verifiers.v1.harnesses.utils.remote_runtime import prepare_remote_bridge
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
+from verifiers.v1.types import ToolCall
 from verifiers.v1.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -25,6 +28,8 @@ PACKAGES_DIR = f"{CODEX_DIR}/acp"
 ACP_VERSION = "2.5.0"
 CODEX_BIN = f"{PACKAGES_DIR}/node_modules/.bin/codex"
 ACP_BIN = f"{PACKAGES_DIR}/node_modules/.bin/codex-acp"
+EXECUTOR_DIR = "/var/tmp/agent-tools/codex-executor-{version}"
+EXECUTOR_BIN = f"{EXECUTOR_DIR}/node_modules/.bin/codex"
 INSTALL = r"""
 set -e
 export PATH="/var/tmp/vf-node/bin:$PATH"
@@ -34,6 +39,12 @@ npm install --prefix {packages} --ignore-scripts --no-audit --no-fund \
     "@agentclientprotocol/codex-acp@$VF_CODEX_ACP_VERSION" \
     "@openai/codex@$VF_CODEX_VERSION" >/dev/null
 touch {ready}
+"""
+EXECUTOR_INSTALL = r"""
+set -e
+export PATH="{node_bin}:$PATH"
+npm install --prefix {directory} --ignore-scripts --no-audit --no-fund \
+    --omit=dev "@openai/codex@$AGENT_CODEX_VERSION" >/dev/null
 """
 
 
@@ -63,6 +74,24 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
     SUPPORTS_MCP = True
     SUPPORTS_SKILLS = True
     SUPPORTS_TOOL_INTERCEPTION = True
+    SUPPORTS_SPLIT_EXECUTION = True
+
+    async def remote_tools(self, runtime: Runtime, data: TaskData) -> None:
+        # Codex's native execution environment transports files and persistent
+        # processes, including nested Code Mode calls, without emulating tools.
+        return None
+
+    def can_gate_tool(self, call: ToolCall) -> bool:
+        # 0.166.0 deliberately omits PreToolUse for write_stdin. Only these
+        # native tools have a synchronous veto hook that can carry a replacement.
+        return call.name in {"exec_command", "shell", "shell_command", "apply_patch"}
+
+    def check_tool_call(self, call: ToolCall, *, intercepted: bool) -> None:
+        if intercepted and call.name in {"exec", "wait"}:
+            raise HarnessError(
+                "Codex Code Mode cannot enforce request interception on nested "
+                "write_stdin calls; use a model with direct tools for this task"
+            )
 
     def acp_turn_result(self, trace: Trace, result: ACPTurn) -> None:
         # codex-acp returns terminal failures in metadata with stop_reason=end_turn; a
@@ -101,7 +130,36 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
             },
             label="codex",
         )
+        if bridge := runtime._execution_bridge:
+            await self.setup_executor(bridge.setup_runtime)
+            bridge.register(
+                "codex",
+                [
+                    f"{NODE_BIN_DIR}/node",
+                    EXECUTOR_BIN.format(version=self.config.version),
+                    "exec-server",
+                    "--listen",
+                    "stdio",
+                ],
+                {},
+            )
         await super().setup(runtime)
+
+    async def setup_executor(self, runtime: Runtime) -> None:
+        """Install only the credential-free executor in B during trusted setup."""
+        await ensure_node(runtime)
+        directory = EXECUTOR_DIR.format(version=self.config.version)
+        await ensure_installed(
+            runtime,
+            directory=directory,
+            ready=f"[ -x {EXECUTOR_BIN.format(version=self.config.version)} ]",
+            install=EXECUTOR_INSTALL.replace("{directory}", directory).replace(
+                "{node_bin}", NODE_BIN_DIR
+            ),
+            # Harness environment overrides belong to A, never the task worker.
+            env={"AGENT_CODEX_VERSION": self.config.version},
+            label="Codex executor",
+        )
 
     async def prepare_acp(
         self,
@@ -120,6 +178,11 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
         env = await self.build_env(ctx, trace, runtime, endpoint, secret, mcp_urls)
         return ACPConfig(
             env=env,
+            cwd=(
+                runtime._execution_bridge.runtime.info.workdir
+                if runtime._execution_bridge is not None
+                else None
+            ),
             command=[
                 f"{NODE_BIN_DIR}/node",
                 ACP_BIN.format(version=self.config.version, acp_version=ACP_VERSION),
@@ -188,13 +251,41 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
     ) -> dict[str, str]:
         home = self.trace_home(trace, runtime)
         await self.install_skills(runtime, f"{home}/skills")
+        if runtime._execution_bridge is not None:
+            command = await prepare_remote_bridge(
+                runtime,
+                f"{endpoint.removesuffix('/v1')}/execution",
+                secret,
+                "codex",
+                protocol="codex",
+            )
+            # The pinned native environment provider routes every filesystem and
+            # process operation through this stdio worker. Removing the local
+            # environment also prevents explicit environment_id="local" fallback.
+            environments = {
+                "default": "task",
+                "include_local": False,
+                "environments": [
+                    {"id": "task", "program": command[0], "args": command[1:]}
+                ],
+            }
+            await runtime.write(
+                f"{home}/environments.toml", tomli_w.dumps(environments).encode()
+            )
+        mcp_headers = self.config.resolve_mcp_headers(mcp_urls)
         mcp_config = "features={mcp_2026_07_28=true}\n" + (
             "mcp_servers={"
             + ",".join(
                 f"{json.dumps(name, ensure_ascii=False)}="
                 f"{{url={json.dumps(url, ensure_ascii=False)},required=true,"
-                'omit_tools_from=["deferred","code_mode"],'
-                f"startup_timeout_sec=60.0,tool_timeout_sec={self.config.tool_timeout}}}"
+                + "http_headers={"
+                + ",".join(
+                    f"{json.dumps(key)}={json.dumps(value)}"
+                    for key, value in mcp_headers.get(name, {}).items()
+                )
+                + "},"
+                + 'omit_tools_from=["deferred","code_mode"],'
+                + f"startup_timeout_sec=60.0,tool_timeout_sec={self.config.tool_timeout}}}"
                 for name, url in mcp_urls.items()
             )
             + "}"

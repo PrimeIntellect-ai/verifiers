@@ -53,7 +53,10 @@ class ToolGate:
         self.url = url
         self.client = httpx.AsyncClient(
             headers={"Authorization": f"Bearer {secret}"},
-            timeout=httpx.Timeout(120, connect=5),
+            # The host may execute a remote tool before answering. Its tool and
+            # rollout deadlines own that work; timing out here could let A
+            # continue while the denied-looking command still runs in B.
+            timeout=httpx.Timeout(None, connect=5),
         )
 
     async def decision(self, tool_call_id: str, arguments: Any) -> str:
@@ -87,6 +90,7 @@ class VerifiersACPClient(Client):
         self.stop_reason: str | None = None
         self.response_metadata: dict[str, Any] = {}
         self.update_metadata: list[dict[str, Any]] = []
+        self.tool_inputs: dict[tuple[str, str], Any] = {}
 
     def reset(self) -> None:
         self.visible_reply = ""
@@ -94,6 +98,7 @@ class VerifiersACPClient(Client):
         self.stop_reason = None
         self.response_metadata = {}
         self.update_metadata = []
+        self.tool_inputs = {}
 
     def turn_result(self) -> ACPTurn:
         return ACPTurn(
@@ -104,6 +109,26 @@ class VerifiersACPClient(Client):
         )
 
     async def session_update(self, session_id: str, update: Any, **kwargs: Any) -> None:
+        tool_call_id = getattr(update, "tool_call_id", None)
+        raw_input = getattr(update, "raw_input", None)
+        if tool_call_id is not None and raw_input is not None:
+            self.tool_inputs[session_id, tool_call_id] = raw_input
+        elif tool_call_id is not None and getattr(update, "status", None) in {
+            "pending",
+            "in_progress",
+        }:
+            # Kimi requests permission before its final rawInput update. Its
+            # streaming updates replace one text block with cumulative JSON.
+            content = getattr(update, "content", None) or []
+            if len(content) == 1 and isinstance(
+                block := getattr(content[0], "content", None), TextContentBlock
+            ):
+                with suppress(json.JSONDecodeError):
+                    arguments = json.loads(block.text)
+                    if isinstance(arguments, dict):
+                        self.tool_inputs.setdefault(
+                            (session_id, tool_call_id), arguments
+                        )
         metadata = dict(kwargs)
         if isinstance(field_meta := getattr(update, "field_meta", None), dict):
             metadata.update(field_meta)
@@ -128,9 +153,13 @@ class VerifiersACPClient(Client):
         """Ask the rollout before execution: deny rejects one call; stop cancels the turn."""
         kinds = ("allow_once", "allow_always")
         if self.gate is not None:
-            decision = await self.gate.decision(
-                tool_call.tool_call_id, tool_call.raw_input
-            )
+            # Kimi and DeepSeek send argument-bearing tool updates first, then
+            # an ID-only permission request. Preserve an explicitly supplied
+            # request input; only fill the omitted field from this session.
+            arguments = tool_call.raw_input
+            if arguments is None:
+                arguments = self.tool_inputs.get((session_id, tool_call.tool_call_id))
+            decision = await self.gate.decision(tool_call.tool_call_id, arguments)
             if decision == "stop":
                 self.stop_reason = "cancelled"
                 if self.prompt_task is not None:
@@ -263,15 +292,26 @@ class ACPSession:
                     config["client_capabilities"]
                 ),
             )
+            required = config.get("required_agent_metadata")
+            if required and required not in (initialized.field_meta or {}):
+                raise ValueError(f"ACP agent does not advertise {required}")
             self.capabilities = initialized.agent_capabilities
             self.supports_steering = (initialized.field_meta or {}).get(
                 "steering", {}
             ).get("supported") is True
             session = await self.connection.new_session(
-                cwd=os.getcwd(),
+                cwd=config.get("cwd") or os.getcwd(),
                 mcp_servers=mcp_servers(config),
                 **config["session_meta"],
             )
+            if ready_file := config.get("ready_file"):
+                deadline = asyncio.get_running_loop().time() + 30
+                while not os.path.isfile(ready_file):
+                    if asyncio.get_running_loop().time() >= deadline:
+                        raise RuntimeError(
+                            "Native tool gate did not activate before the first prompt"
+                        )
+                    await asyncio.sleep(0.05)
         except BaseException:
             with suppress(BaseException):
                 await self.stack.aclose()

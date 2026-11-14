@@ -53,7 +53,15 @@ class BashHarness(Harness[BashHarnessConfig]):
     SUPPORTS_MCP = True
     SUPPORTS_RESUME = True
     SUPPORTS_TOOL_INTERCEPTION = True
+    SUPPORTS_SPLIT_EXECUTION = True
     NEEDS_CONTAINER = False
+
+    async def remote_tools(self, runtime: Runtime, data: TaskData):
+        from verifiers.v1.harnesses.bash.remote import BashRemoteTools
+
+        if self.config.search:
+            raise ValueError("split Bash does not support search")
+        return BashRemoteTools(runtime, self.config.edit)
 
     async def setup(self, runtime: Runtime) -> None:
         await runtime.prepare_uv_script(CHAT_PROGRAM_SOURCE, self.config.resolved_env)
@@ -91,6 +99,12 @@ class BashHarness(Harness[BashHarnessConfig]):
             system_prompt = None
         env = {**self.config.resolved_env}
         args = ["--bash"]
+        if runtime._remote_tools_only:
+            if not tool_interception_url or self.config.search or mcp_urls:
+                raise ValueError(
+                    "split bash requires a tool gate and only bash/edit tools"
+                )
+            args.append("--remote-tools-only")
         if tool_interception_url:
             args.append(f"--tool-interception-url={tool_interception_url}")
         args += compaction_args(self.config.compaction)

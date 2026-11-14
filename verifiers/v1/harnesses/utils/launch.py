@@ -80,12 +80,17 @@ async def launch_chat_program(
     if system_prompt:
         args.append(f"--system-prompt={system_prompt}")
     if mcp_urls:
+        mcp_headers = config.resolve_mcp_headers(mcp_urls)
         args.append(
             "--mcp-config="
             + json.dumps(
                 {
                     "mcpServers": {
-                        name: {"url": url, "timeout": config.tool_timeout}
+                        name: {
+                            "url": url,
+                            "headers": mcp_headers.get(name, {}),
+                            "timeout": config.tool_timeout,
+                        }
                         for name, url in mcp_urls.items()
                     }
                 }

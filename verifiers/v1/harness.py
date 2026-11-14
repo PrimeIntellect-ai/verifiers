@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 from abc import ABC, abstractmethod
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from typing import TYPE_CHECKING, ClassVar, Generic, TypeVar
 
 from verifiers.v1.clients import ModelContext
@@ -17,7 +17,7 @@ from verifiers.v1.errors import (
 )
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.task import TaskData
-from verifiers.v1.types import Message, Messages
+from verifiers.v1.types import Message, Messages, ToolCall, ToolMessage
 from verifiers.v1.utils.decorators import (
     discover_decorated,
     invoke_all,
@@ -45,11 +45,20 @@ class Harness(ABC, Generic[ConfigT]):
     APPENDS_SYSTEM_PROMPT: ClassVar[bool] = False
     """Emit `TaskData.system_prompt` separately instead of folding it into the user prompt."""
     SUPPORTS_MCP: ClassVar[bool] = False
+    ISOLATES_TOOL_EXECUTION: ClassVar[bool] = False
+    """Whether model-controlled code runs outside the MCP client's process and
+    credential boundary. An agent user or network policy alone is insufficient.
+    """
     SUPPORTS_TOOL_INTERCEPTION: ClassVar[bool] = False
     """Whether the program asks the rollout's `/tool` gate (handed over as
     `tool_interception_url`) before executing each tool call, so a request hook can
     deny a call and the model sees the policy's result in its place. Without the gate
     a pre-execution rewrite can only end the rollout."""
+    SUPPORTS_SPLIT_EXECUTION: ClassVar[bool] = False
+    """Whether model-controlled tools run in B through remote tool results or a
+    native worker transport, with no local execution fallback in A."""
+    SUPPORTS_SPLIT_TOOL_INTERCEPTION: ClassVar[bool] = False
+    """Whether split mode supplies a tool gate absent from colocated execution."""
     SUPPORTS_RESUME: ClassVar[bool] = False
     """Whether the default `resume()` can relaunch this harness from the
     accumulated Messages transcript."""
@@ -119,6 +128,28 @@ class Harness(ABC, Generic[ConfigT]):
 
     async def setup(self, runtime: Runtime) -> None:
         """Provision this harness through `runtime` before its execution timeout starts."""
+
+    async def remote_tools(
+        self, runtime: Runtime, data: TaskData
+    ) -> Callable[[ToolCall], Awaitable[ToolMessage]] | None:
+        """Bind tool execution to B. Native worker transports return None and
+        register their workers through A's execution bridge during setup."""
+        raise HarnessError(
+            f"harness {self.config.id!r} does not support split execution"
+        )
+
+    def can_gate_tool(self, call: ToolCall) -> bool:
+        """Whether this native call can consume a policy replacement at its gate."""
+        return self.SUPPORTS_TOOL_INTERCEPTION or self.SUPPORTS_SPLIT_TOOL_INTERCEPTION
+
+    def check_tool_call(self, call: ToolCall, *, intercepted: bool) -> None:
+        """Refuse native modes whose execution cannot satisfy the active policy."""
+
+    async def agent_runtime(self, runtime: Runtime, data: TaskData) -> Runtime:
+        """Select the execution view after trusted harness setup."""
+        if data.filesystem is not None:
+            return await runtime.with_filesystem(data.filesystem)
+        return runtime
 
     async def install_skills(self, runtime: Runtime, dest: str) -> None:
         """Install `config.skills` in the program's discovery directory.
@@ -292,6 +323,7 @@ copy_failed=$(
         kwargs = (
             {"tool_interception_url": tool_interception_url}
             if self.SUPPORTS_TOOL_INTERCEPTION
+            or (runtime._remote_tools_only and self.SUPPORTS_SPLIT_TOOL_INTERCEPTION)
             else {}
         )
         return await self.launch(
@@ -386,6 +418,10 @@ class HarnessSession:
             kwargs = (
                 {"tool_interception_url": self.tool_interception_url}
                 if self.harness.SUPPORTS_TOOL_INTERCEPTION
+                or (
+                    self.runtime._remote_tools_only
+                    and self.harness.SUPPORTS_SPLIT_TOOL_INTERCEPTION
+                )
                 else {}
             )
             return await self.harness.launch(

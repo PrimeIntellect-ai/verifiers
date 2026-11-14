@@ -1,3 +1,5 @@
+import json
+import secrets
 from pathlib import Path
 from typing import Literal
 from urllib.parse import urlsplit
@@ -7,12 +9,14 @@ from pydantic import model_validator
 
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
+from verifiers.v1.errors import HarnessError
 from verifiers.v1.harness import Harness
 from verifiers.v1.harnesses.utils import mcp
 from verifiers.v1.harnesses.utils.launch import bundle_program, launch_chat_program
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
+from verifiers.v1.types import ToolCall, ToolMessage
 
 PROGRAM_SOURCE = bundle_program(
     (Path(__file__).resolve().parent / "program.py").read_text(), mcp
@@ -56,11 +60,57 @@ class BrowserUseHarness(Harness[BrowserUseHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
     SUPPORTS_RESUME = True
+    SUPPORTS_TOOL_INTERCEPTION = True
+    SUPPORTS_SPLIT_EXECUTION = True
     # The browser tool executes model-authored Python through a third-party daemon.
     NEEDS_CONTAINER = True
 
     async def setup(self, runtime: Runtime) -> None:
         await runtime.prepare_uv_script(PROGRAM_SOURCE, self.config.resolved_env)
+
+    async def remote_tools(self, runtime: Runtime, data: TaskData):
+        assert runtime._execution_bridge is not None
+        program = await runtime._execution_bridge.setup_runtime.prepare_uv_script(
+            PROGRAM_SOURCE, {}
+        )
+        state = f"/tmp/browser-session-{secrets.token_hex(16)}"
+        args = await self._browser_args(runtime, state)
+
+        async def execute(call: ToolCall) -> ToolMessage:
+            if call.name != "browser":
+                raise HarnessError(f"browser-use has no built-in tool {call.name!r}")
+            try:
+                arguments = json.loads(call.arguments)
+                if not isinstance(arguments, dict) or not isinstance(
+                    arguments.get("code"), str
+                ):
+                    raise TypeError("browser code must be a string")
+            except (json.JSONDecodeError, TypeError) as error:
+                content = f"error: {error}"
+            else:
+                result = await runtime.run(
+                    [*program, *args, f"--execute-code={arguments['code']}"], {}
+                )
+                content = result.stdout + result.stderr
+            return ToolMessage(tool_call_id=call.id, name=call.name, content=content)
+
+        return execute
+
+    async def _browser_args(self, runtime: Runtime, state: str) -> list[str]:
+        args = [f"--browser={self.config.browser}", f"--state-dir={state}"]
+        if self.config.cdp_url:
+            cdp_url = runtime.host_url(self.config.cdp_url)
+            if cdp_url != self.config.cdp_url and urlsplit(
+                self.config.cdp_url
+            ).scheme in ("http", "https"):
+                async with httpx.AsyncClient() as client:
+                    response = await client.get(
+                        f"{self.config.cdp_url.rstrip('/')}/json/version"
+                    )
+                    response.raise_for_status()
+                cdp_url = runtime.host_url(response.json()["webSocketDebuggerUrl"])
+            args.append(f"--cdp-url={cdp_url}")
+        return args
 
     async def launch(
         self,
@@ -71,6 +121,7 @@ class BrowserUseHarness(Harness[BrowserUseHarnessConfig]):
         secret: str,
         mcp_urls: dict[str, str],
         data: TaskData,
+        tool_interception_url: str | None = None,
     ) -> ProgramResult:
         system_prompt, prompt = self.resolve_prompt(data)
         system_prompt = "\n\n".join(
@@ -91,24 +142,14 @@ class BrowserUseHarness(Harness[BrowserUseHarnessConfig]):
         state = runtime.temp_path(
             f"vf-browser-{trace.id}", env=self.config.resolved_env
         )
-        args = [
-            f"--browser={self.config.browser}",
-            # A resumed segment reuses this trace's browser and profile.
-            f"--state-dir={state}",
-        ]
-        if self.config.cdp_url:
-            cdp_url = runtime.host_url(self.config.cdp_url)
-            if cdp_url != self.config.cdp_url and urlsplit(
-                self.config.cdp_url
-            ).scheme in ("http", "https"):
-                # CDP discovery returns a host-side WebSocket URL; translate that too.
-                async with httpx.AsyncClient() as client:
-                    response = await client.get(
-                        f"{self.config.cdp_url.rstrip('/')}/json/version"
-                    )
-                    response.raise_for_status()
-                cdp_url = runtime.host_url(response.json()["webSocketDebuggerUrl"])
-            args.append(f"--cdp-url={cdp_url}")
+        if runtime._remote_tools_only:
+            if not tool_interception_url:
+                raise HarnessError("split browser-use requires a tool gate")
+            args = ["--remote-tools-only", f"--state-dir={state}"]
+        else:
+            args = await self._browser_args(runtime, state)
+        if tool_interception_url:
+            args.append(f"--tool-interception-url={tool_interception_url}")
         return await launch_chat_program(
             PROGRAM_SOURCE,
             self.config,

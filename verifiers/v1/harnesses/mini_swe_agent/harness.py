@@ -4,6 +4,10 @@ from typing import Literal
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig, PinnedVersion
 from verifiers.v1.harness import Harness
+from verifiers.v1.harnesses.utils.remote_runtime import (
+    REMOTE_TOOL_CLIENT_SOURCE,
+    remote_shell_tools,
+)
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
@@ -20,9 +24,19 @@ class MiniSWEAgentHarnessConfig(HarnessConfig):
 class MiniSWEAgentHarness(Harness[MiniSWEAgentHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = False
     SUPPORTS_MCP = False
+    SUPPORTS_SPLIT_EXECUTION = True
+    SUPPORTS_SPLIT_TOOL_INTERCEPTION = True
+
+    def _source(self) -> str:
+        return PROGRAM_SOURCE.replace("{version}", self.config.version).replace(
+            "# REMOTE_TOOL_CLIENT", REMOTE_TOOL_CLIENT_SOURCE
+        )
+
+    async def remote_tools(self, runtime: Runtime, data: TaskData):
+        return remote_shell_tools(runtime)
 
     async def setup(self, runtime: Runtime) -> None:
-        source = PROGRAM_SOURCE.replace("{version}", self.config.version)
+        source = self._source()
         await runtime.prepare_uv_script(source, self.config.resolved_env)
 
     async def launch(
@@ -34,11 +48,12 @@ class MiniSWEAgentHarness(Harness[MiniSWEAgentHarnessConfig]):
         secret: str,
         mcp_urls: dict[str, str],
         data: TaskData,
+        tool_interception_url: str | None = None,
     ) -> ProgramResult:
         if self.config.disabled_tools:
             raise ValueError("mini-swe-agent does not support disabling tools")
         _, prompt = self.resolve_text_prompt(data)
-        source = PROGRAM_SOURCE.replace("{version}", self.config.version)
+        source = self._source()
         args = [
             "--model",
             ctx.model,
@@ -71,5 +86,13 @@ class MiniSWEAgentHarness(Harness[MiniSWEAgentHarnessConfig]):
             "MSWEA_CONFIGURED": "true",
             "MSWEA_SILENT_STARTUP": "true",
         }
+        if runtime._remote_tools_only:
+            if not tool_interception_url or runtime._execution_bridge is None:
+                raise ValueError("split mini-swe-agent requires a remote tool gate")
+            env.update(
+                VF_REMOTE_TOOL_URL=tool_interception_url,
+                VF_REMOTE_TOOL_SECRET=secret,
+                VF_EXECUTION_CWD=runtime._execution_bridge.runtime.info.workdir,
+            )
         program = await runtime.prepare_uv_script(source, self.config.resolved_env)
         return await runtime.run([*program, *args], env)

@@ -2,12 +2,14 @@
 
 import hashlib
 import json
+import shlex
 from typing import Literal
 
 from verifiers.v1.acp import ACPConfig, ACPHarness, ACPTurn
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import DialectName, HarnessConfig, skill_destination
 from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
+from verifiers.v1.harnesses.utils.remote_runtime import prepare_remote_bridge
 from verifiers.v1.harnesses.utils.replay import drop_blank_text
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.runtimes.base import _ENSURE_UV
@@ -87,6 +89,10 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
     SUPPORTS_SKILLS = True
+    SUPPORTS_SPLIT_EXECUTION = True
+
+    async def remote_tools(self, runtime: Runtime, data: TaskData) -> None:
+        return None
 
     # Its chat-completions provider drops whitespace-only assistant text on replay. Recheck on bumps:
     # https://github.com/PrimeIntellect-ai/prime-agent/blob/v0.10.2/crates/pa-ai/src/providers/openai_completions/convert.rs#L106
@@ -148,13 +154,24 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
         statuses.append(status)
 
     async def setup(self, runtime: Runtime) -> None:
+        await self._install(runtime, self.config.resolved_env)
+        if bridge := runtime._execution_bridge:
+            await self._install(bridge.setup_runtime, {})
+            bridge.register(
+                "prime_agent",
+                [f"{self._kernel_venv()}/bin/python", "-m", "rlm.repl"],
+                {},
+            )
+        await super().setup(runtime)
+
+    async def _install(self, runtime: Runtime, env: dict[str, str]) -> None:
         logger.debug("Ensuring prime-agent %s is installed", self.config.commit)
         await ensure_installed(
             runtime,
             directory=PRIME_AGENT_DIR,
             install=INSTALL,
             env={
-                **self.config.resolved_env,
+                **env,
                 "VF_PRIME_AGENT_DIR": PRIME_AGENT_DIR,
                 "VF_PRIME_AGENT_GITHUB_RELEASE_URL": GITHUB_RELEASE_URL,
                 "PRIME_AGENT_COMMIT": self.config.commit,
@@ -163,7 +180,6 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
             },
             label="prime-agent",
         )
-        await super().setup(runtime)
 
     async def prepare_acp(
         self,
@@ -267,8 +283,44 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
                 ),
             ]
 
+        env = self._env(trace, runtime, secret)
+        cwd = None
+        if runtime._execution_bridge is not None:
+            cwd = runtime._execution_bridge.runtime.info.workdir
+            # The supervisor launches its interpreter with the session cwd.
+            # Keep only the directory in A; all task content lives in B.
+            created = await runtime.run(["mkdir", "-p", cwd], {})
+            if created.exit_code:
+                raise RuntimeError("could not prepare Prime Agent supervisor cwd")
+            command = await prepare_remote_bridge(
+                runtime,
+                f"{endpoint.removesuffix('/v1')}/execution",
+                secret,
+                "prime_agent",
+                protocol="prime",
+            )
+            # The pinned supervisor uses this interpreter for trusted import
+            # probes and starts every user cell with exactly `-m rlm.repl`.
+            # Only probes use A's installed Python; the persistent kernel is B.
+            wrapper = f"{root}/kernel-python"
+            source = (
+                "#!/bin/sh\nset -eu\n"
+                'if [ "$#" -eq 2 ] && [ "$1" = "-m" ] && [ "$2" = "rlm.repl" ]; then\n'
+                f"  exec {shlex.join(command)}\n"
+                "fi\n"
+                'if [ "$#" -eq 2 ] && [ "$1" = "-c" ]; then\n'
+                f'  exec {shlex.quote(self._kernel_venv() + "/bin/python")} "$@"\n'
+                "fi\n"
+                'echo "unsupported Prime Agent interpreter invocation" >&2\nexit 1\n'
+            )
+            await runtime.write(wrapper, source.encode())
+            result = await runtime.run(["chmod", "700", wrapper], {})
+            if result.exit_code:
+                raise RuntimeError("could not install Prime Agent execution bridge")
+            env["PRIME_AGENT_KERNEL_PYTHON"] = wrapper
         return ACPConfig(
-            env=self._env(trace, runtime, secret),
+            env=env,
+            cwd=cwd,
             # Expand the sandbox's PATH while keeping every agent argument literal.
             command=[
                 "/bin/sh",

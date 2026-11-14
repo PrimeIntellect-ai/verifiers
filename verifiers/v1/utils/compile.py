@@ -109,6 +109,13 @@ def validate_pairing(
             f"it with a harness that supports MCP (e.g. --env.agent.harness.id bash), "
             f"or use tasks without tools."
         )
+    if tools and harness.EXECUTES_CODE and not harness.ISOLATES_TOOL_EXECUTION:
+        raise ValueError(
+            f"Harness {harness.config.id!r} runs model-controlled code beside its "
+            "MCP client, exposing the tool connection and its credentials. Use a "
+            "harness that isolates tool execution (e.g. rlm), or use tasks "
+            "without MCP tools."
+        )
     if not harness.SUPPORTS_SKILLS and harness.config.skills:
         raise ValueError(
             f"Harness {harness.config.id!r} has no native skill support, but "

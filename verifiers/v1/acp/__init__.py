@@ -65,6 +65,10 @@ class ACPConfig:
     system_prompt: str | None = None
     session_meta: JsonObject | None = None
     client_capabilities: JsonObject | None = None
+    required_agent_metadata: str | None = None
+    cwd: str | None = None
+    ready_file: str | None = None
+    """A trusted native plugin must create this file before the first prompt."""
 
 
 class ACPHarness(Harness[ConfigT]):
@@ -326,12 +330,15 @@ class ACPHarnessSession(HarnessSession):
         )
         config = {
             "command": self.config.command,
+            "cwd": self.config.cwd,
+            "ready_file": self.config.ready_file,
             "user_contents": user_contents,
             "mcp_urls": self.mcp_urls,
             "mcp_headers": self.harness.config.resolve_mcp_headers(self.mcp_urls),
             "system_prompt": self.config.system_prompt or "",
             "session_meta": self.config.session_meta or {},
             "client_capabilities": self.config.client_capabilities or {},
+            "required_agent_metadata": self.config.required_agent_metadata,
             "tool_interception": {
                 "url": self.tool_interception_url,
                 "secret": self.secret,

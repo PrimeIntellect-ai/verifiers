@@ -1,11 +1,13 @@
 """Run OpenClaw's Gateway-backed ACP agent against interception."""
 
 import json
+from pathlib import Path
 from typing import Literal
 
 from verifiers.v1.acp import ACPConfig, ACPHarness
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig, PinnedVersion
+from verifiers.v1.harnesses.openclaw.remote import OpenClawRemoteTools
 from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import TaskData
@@ -13,6 +15,7 @@ from verifiers.v1.trace import Trace
 from verifiers.v1.utils.logging import get_logger
 
 logger = get_logger(__name__)
+GATE_SOURCE = (Path(__file__).parent / "gate.mjs").read_text()
 
 # OpenClaw and its bundled Node runtime exceed the small /tmp tmpfs in some VMs.
 OPENCLAW_DIR = "/var/tmp/vf-openclaw-{version}"
@@ -92,6 +95,7 @@ trap 'exit 143' HUP INT TERM
 root=${VF_OPENCLAW_BIN%/bin/openclaw}
 gateway_attempt=0
 while [ "$gateway_attempt" -lt 5 ]; do
+    [ -z "${AGENT_OPENCLAW_GATE_READY:-}" ] || rm -f "$AGENT_OPENCLAW_GATE_READY"
     port=$("$root/tools/node/bin/node" -e 'const net=require("node:net");const server=net.createServer();server.listen(0,"127.0.0.1",()=>{process.stdout.write(String(server.address().port));server.close();});')
     export OPENCLAW_GATEWAY_PORT="$port"
     # OpenClaw respawns Node; separate groups let the trap reap both process trees.
@@ -117,6 +121,11 @@ if [ -z "$gateway_pid" ]; then
     tail -100 "$OPENCLAW_STATE_DIR/gateway.log" >&2
     exit 1
 fi
+if [ -n "${AGENT_OPENCLAW_GATE_READY:-}" ] && [ ! -f "$AGENT_OPENCLAW_GATE_READY" ]; then
+    echo "OpenClaw execution gate did not register" >&2
+    tail -100 "$OPENCLAW_STATE_DIR/gateway.log" >&2
+    exit 1
+fi
 setsid "$VF_OPENCLAW_BIN" acp --verbose --session "agent:main:acp-bridge:$OPENCLAW_GATEWAY_TOKEN" --no-prefix-cwd <&3 >&1 &
 acp_pid=$!
 wait "$acp_pid"
@@ -137,6 +146,13 @@ class OpenClawHarness(ACPHarness[OpenClawHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
     SUPPORTS_SKILLS = True
+    SUPPORTS_TOOL_INTERCEPTION = True
+    SUPPORTS_SPLIT_EXECUTION = True
+
+    async def remote_tools(
+        self, runtime: Runtime, data: TaskData
+    ) -> OpenClawRemoteTools:
+        return OpenClawRemoteTools(runtime)
 
     def __init__(self, config: OpenClawHarnessConfig) -> None:
         super().__init__(config)
@@ -162,6 +178,47 @@ class OpenClawHarness(ACPHarness[OpenClawHarnessConfig]):
             shell=("bash", "-o", "pipefail", "-c"),
         )
         await super().setup(runtime)
+
+    async def gate_tools(
+        self, config: ACPConfig, runtime: Runtime, url: str, secret: str
+    ) -> None:
+        directory = f"{config.env['OPENCLAW_STATE_DIR']}/execution-gate"
+        ready = f"{directory}/ready"
+        await runtime.write(
+            f"{directory}/index.mjs",
+            GATE_SOURCE.replace("__URL__", json.dumps(url))
+            .replace("__SECRET__", json.dumps(secret))
+            .replace("__REMOTE_ONLY__", json.dumps(runtime._remote_tools_only))
+            .replace("__READY__", json.dumps(ready))
+            .encode(),
+        )
+        await runtime.write(
+            f"{directory}/package.json",
+            json.dumps(
+                {
+                    "name": "execution-gate",
+                    "type": "module",
+                    "openclaw": {"extensions": ["./index.mjs"]},
+                }
+            ).encode(),
+        )
+        await runtime.write(
+            f"{directory}/openclaw.plugin.json",
+            json.dumps(
+                {
+                    "id": "execution-gate",
+                    "activation": {"onStartup": True},
+                    "configSchema": {"type": "object", "additionalProperties": False},
+                }
+            ).encode(),
+        )
+        path = config.env["OPENCLAW_CONFIG_PATH"]
+        settings = json.loads(await runtime.read(path))
+        plugins = settings.setdefault("plugins", {})
+        plugins.setdefault("load", {}).setdefault("paths", []).append(directory)
+        plugins.setdefault("entries", {})["execution-gate"] = {"enabled": True}
+        await runtime.write(path, json.dumps(settings).encode())
+        config.env["AGENT_OPENCLAW_GATE_READY"] = ready
 
     async def _in_catalog(self, runtime: Runtime, model: str, state_dir: str) -> bool:
         """Whether OpenClaw's model catalog knows `model`, checked once per model."""
@@ -207,6 +264,7 @@ class OpenClawHarness(ACPHarness[OpenClawHarnessConfig]):
             # OpenClaw's chat completions default for them rewrites replayed turns.
             provider_config["api"] = "openai-responses"
             provider_config["models"] = [{"id": model_id, "name": model_id}]
+        mcp_headers = self.config.resolve_mcp_headers(mcp_urls)
         config = {
             "gateway": {
                 "mode": "local",
@@ -240,6 +298,7 @@ class OpenClawHarness(ACPHarness[OpenClawHarnessConfig]):
                 "servers": {
                     name: {
                         "url": url,
+                        "headers": mcp_headers.get(name, {}),
                         "transport": "streamable-http",
                         "connectionTimeoutMs": 60_000,
                         "requestTimeoutMs": int(self.config.tool_timeout * 1000),
@@ -248,6 +307,18 @@ class OpenClawHarness(ACPHarness[OpenClawHarnessConfig]):
                 }
             },
         }
+        if runtime._remote_tools_only:
+            # This adapter preserves the native coding surface. Code Mode uses
+            # the same "exec" name for JavaScript, and requires a different
+            # nested-result transport; keep the shell surface explicit here.
+            config["tools"].update(
+                {
+                    "allow": ["read", "write", "edit", "exec", "process"],
+                    "codeMode": False,
+                    "toolSearch": False,
+                }
+            )
+            config["agents"]["defaults"]["models"] = {ctx.model: {"codeMode": False}}
         if self.config.skills:
             config["skills"] = {"load": {"extraDirs": [skills_dir]}}
         if not self.config.use_bundled_skill:

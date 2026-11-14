@@ -16,6 +16,7 @@ import signal
 import sys
 from contextlib import redirect_stdout, suppress
 from pathlib import Path
+from types import SimpleNamespace
 from uuid import uuid4
 
 from acp import (
@@ -40,12 +41,67 @@ from stirrup import Agent
 from stirrup.clients.chat_completions_client import ChatCompletionsClient
 from stirrup.core.agent import SessionAgent
 from stirrup.core.exceptions import OutputTokenLimitError
-from stirrup.core.models import UserMessage
+from stirrup.core.models import ToolCall, ToolMessage, UserMessage
 from stirrup.tools import LocalCodeExecToolProvider, WebToolProvider
 from stirrup.tools.code_backends.base import CommandResult
 from stirrup.tools.mcp import MCPConfig, MCPToolProvider
+from stirrup.utils.logging import AgentLogger
 
 COMMAND_CLEANUP_TIMEOUT = 5.0
+
+# REMOTE_TOOL_CLIENT
+
+
+class RemoteToolWorker:
+    """The supervisor holds credentials; its worker only sees native tool calls."""
+
+    def __init__(self, process):
+        self.process = process
+        self.lock = asyncio.Lock()
+
+    @classmethod
+    async def start(cls, command):
+        return cls(
+            await asyncio.create_subprocess_exec(
+                *command,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=sys.stderr,
+                limit=64 * 1024 * 1024,
+            )
+        )
+
+    async def call(self, call):
+        async with self.lock:
+            self.process.stdin.write(call.model_dump_json().encode() + b"\n")
+            await self.process.stdin.drain()
+            response = await self.process.stdout.readline()
+            if not response:
+                raise RuntimeError("Stirrup execution worker stopped")
+            result = ToolMessage.model_validate_json(response)
+            if result.tool_call_id != call.tool_call_id or result.name != call.name:
+                raise RuntimeError(
+                    "Stirrup execution worker returned another tool's result"
+                )
+            return result
+
+    async def close(self):
+        self.process.stdin.close()
+        try:
+            await asyncio.wait_for(self.process.wait(), COMMAND_CLEANUP_TIMEOUT)
+        except TimeoutError:
+            self.process.kill()
+            await self.process.wait()
+
+
+class WorkerLogger(AgentLogger):
+    """Only the supervisor reports the agent run's lifecycle."""
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        return None
 
 
 class RuntimeCodeExecToolProvider(LocalCodeExecToolProvider):
@@ -130,6 +186,32 @@ class RuntimeCodeExecToolProvider(LocalCodeExecToolProvider):
 class RuntimeSessionAgent(SessionAgent):
     """Retain accepted history when a model or summarizer hits its output limit."""
 
+    async def run_tool(self, tool_call, run_metadata):
+        if getattr(self, "remote_worker", None) is None:
+            return await super().run_tool(tool_call, run_metadata)
+        try:
+            arguments = json.loads(tool_call.arguments)
+        except json.JSONDecodeError:
+            arguments = tool_call.arguments
+        decision = await asyncio.to_thread(
+            remote_tool_decision,  # noqa: F821 - injected shared client
+            self.gate_url,
+            self.gate_secret,
+            tool_call.name,
+            arguments,
+            tool_call.tool_call_id,
+        )
+        if decision["action"] != "allow":
+            content = decision["message"]["content"]
+            return ToolMessage(
+                content=content if isinstance(content, str) else json.dumps(content),
+                tool_call_id=tool_call.tool_call_id,
+                name=tool_call.name,
+                success=False,
+            )
+        run_metadata.setdefault(tool_call.name, [])
+        return await self.remote_worker.call(tool_call)
+
     async def step(self, messages, *args, **kwargs):
         self.accepted_history = list(messages[1:])
         result = await super().step(messages, *args, **kwargs)
@@ -164,6 +246,7 @@ class Session:
     async def run(self):
         current = None
         client = None
+        remote_worker = None
         try:
             args = self.args
             client = ChatCompletionsClient(
@@ -175,6 +258,10 @@ class Session:
                 max_retries=0,  # Verifiers owns request recovery.
             )
             tools = [RuntimeCodeExecToolProvider(self.cwd), WebToolProvider()]
+            if args.execution_command:
+                remote_worker = await RemoteToolWorker.start(
+                    json.loads(args.execution_command)
+                )
             if self.servers:
                 tools.append(
                     MCPToolProvider(
@@ -200,6 +287,9 @@ class Session:
                 session = RuntimeSessionAgent.from_agent(
                     active_session, active_session._output_state
                 )
+                session.remote_worker = remote_worker
+                session.gate_url = args.tool_interception_url
+                session.gate_secret = args.api_key
                 for name in json.loads(args.disabled_tools):
                     session.tools.pop(name, None)
                 self.ready.set_result(None)
@@ -244,6 +334,8 @@ class Session:
                     item[1].set_exception(RuntimeError("Stirrup session is closed"))
             if client is not None:
                 await client._client.close()
+            if remote_worker is not None:
+                await remote_worker.close()
 
     async def prompt(self, text):
         if self.worker.done():
@@ -353,18 +445,49 @@ class StirrupACPAgent:
         self.sessions.clear()
 
 
+async def execution_worker(args):
+    # Construct the native tool session without any model client or callback
+    # endpoint. No code path in this worker can delegate to the supervisor.
+    agent = Agent(
+        name="stirrup-execution",
+        client=SimpleNamespace(context_window_tokens=128_000, model_slug="execution"),
+        tools=[RuntimeCodeExecToolProvider(os.getcwd()), WebToolProvider()],
+        logger=WorkerLogger(),
+    )
+    output = sys.stdout
+    with redirect_stdout(sys.stderr):
+        async with agent.session(
+            skills_dir=args.skills_dir if Path(args.skills_dir).is_dir() else None,
+            cache_on_interrupt=False,
+        ) as session:
+            for name in json.loads(args.disabled_tools):
+                session.tools.pop(name, None)
+            while line := await asyncio.to_thread(sys.stdin.readline):
+                call = ToolCall.model_validate_json(line)
+                result = await session.run_tool(call, {})
+                output.write(result.model_dump_json() + "\n")
+                output.flush()
+
+
 async def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--base-url", required=True)
-    parser.add_argument("--api-key", required=True)
-    parser.add_argument("--model", required=True)
+    parser.add_argument("--base-url", default="")
+    parser.add_argument("--api-key", default="")
+    parser.add_argument("--model", default="")
     parser.add_argument("--system-prompt")
-    parser.add_argument("--context-window-tokens", type=int, required=True)
-    parser.add_argument("--max-tokens", type=int, required=True)
-    parser.add_argument("--skills-dir", required=True)
-    parser.add_argument("--tool-timeout", type=float, required=True)
+    parser.add_argument("--context-window-tokens", type=int, default=128_000)
+    parser.add_argument("--max-tokens", type=int, default=8192)
+    parser.add_argument("--skills-dir", default="")
+    parser.add_argument("--tool-timeout", type=float, default=300)
     parser.add_argument("--disabled-tools", default="[]")
-    agent = StirrupACPAgent(parser.parse_args())
+    parser.add_argument("--execution-command", default="")
+    parser.add_argument("--execution-worker", action="store_true")
+    parser.add_argument("--tool-interception-url", default="")
+    args = parser.parse_args()
+    if args.execution_worker:
+        await execution_worker(args)
+        return
+    agent = StirrupACPAgent(args)
     reader, writer = await stdio_streams()
     # Reserve stdout for ACP packets; Stirrup's logger prints rich console output.
     with redirect_stdout(sys.stderr):

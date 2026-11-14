@@ -1,10 +1,14 @@
 """Colocated execution, local Compose, and native Prime service VMs."""
 
 import asyncio
+import logging
 from contextlib import AsyncExitStack, asynccontextmanager
 from functools import partial
+from urllib.parse import urlsplit
 
-from verifiers.v1.runtimes import PrimeBackend, PrimeConfig
+from verifiers.v1.configs.runtime import NetworkPolicyConfig
+from verifiers.v1.errors import SandboxError
+from verifiers.v1.runtimes import PrimeBackend, PrimeConfig, make_backend
 from verifiers.v1.runtimes.compose import compose_services
 from verifiers.v1.runtimes.deployment import ServicesSpec, _DeploymentStrategy
 from verifiers.v1.runtimes.private_network import lan_host, private_network
@@ -33,6 +37,85 @@ class _ColocatedDeployment(_DeploymentStrategy):
                 logger.warning(
                     "Failed to tear down the solver before grading", exc_info=True
                 )
+
+
+class _SplitDeployment(_DeploymentStrategy):
+    """Keep the harness process and task workspace in different provider sandboxes."""
+
+    async def start(self, d):
+        if d.borrowed_runtime is not None or d.spec is not None or d.tool_vms:
+            raise ValueError("split deployment requires a dedicated single workspace")
+        if d.backend.type not in ("docker", "prime") or d.harness_config is None:
+            raise ValueError("split deployment requires Docker or Prime")
+        if d.backend.type == "docker" and d.backend.config.mounts:
+            raise ValueError(
+                "split deployment cannot use Docker bind mounts in the task workspace"
+            )
+        if not d.backend.network_restricted:
+            d.backend.config = d.backend.config.model_copy(
+                update={"allow": [], "block": ["*"]}
+            )
+        d.backend.env = d.env
+        await d.own(d.backend)
+        config = d.harness_config.model_copy(update={"mounts": {}})
+        harness = make_backend(config, name=f"{d.backend.name}-harness")
+        harness.env = {}
+        await d.own(harness)
+        d.execution_backend = d.backend
+        d.harness_backend = harness
+        d.target_backends = {"main": d.backend}
+
+    async def prepare_execution(self, d, routes, state_route=None):
+        await d.harness_backend.prepare_execution(routes)
+        if not isinstance(d.execution_network, NetworkPolicyConfig):
+            raise SandboxError("split workspace has no enforceable network policy")
+        if not d.control_routes or any(
+            urlsplit(route).scheme not in ("http", "https")
+            or not urlsplit(route).hostname
+            for route in d.control_routes
+        ):
+            raise SandboxError("split workspace has no valid control-plane routes")
+        policy = d.execution_network
+        hosts = {
+            urlsplit(route).hostname
+            for route in d.control_routes
+            if urlsplit(route).hostname
+        }
+        for route in d.control_routes:
+            parsed = urlsplit(route)
+            if policy.allow != ["*"] and policy.permits(
+                parsed.scheme,
+                parsed.hostname or "",
+                parsed.port or (443 if parsed.scheme == "https" else 80),
+            ):
+                raise SandboxError(
+                    "task network allowlist includes a framework endpoint"
+                )
+        if policy.allow == ["*"]:
+            policy = type(policy).model_validate(
+                {
+                    **policy.model_dump(),
+                    "block": list(dict.fromkeys([*policy.block, *sorted(hosts)])),
+                }
+            )
+        await d.execution_backend.prepare_execution([], policy)
+        d.execution_backend.config = d.execution_backend.config.model_copy(
+            update={"allow": policy.allow, "block": policy.block}
+        )
+        d.execution_backend.info.allow = policy.allow
+        d.execution_backend.info.block = policy.block
+
+    async def stop_execution(self, d):
+        await d.execution_backend.stop()
+
+    async def prepare_verifier(self, d):
+        try:
+            await d.execution_backend.stop()
+        except Exception:
+            logger.warning(
+                "Failed to tear down the solver before grading",
+                exc_info=logger.isEnabledFor(logging.DEBUG),
+            )
 
 
 class _ContainerDeployment(_DeploymentStrategy):
@@ -197,6 +280,8 @@ class _NativeComposeDeployment(_PrivateNetworkDeployment):
 
 
 def _deployment_strategy(config, backend, spec, tool_vms=None):
+    if config is not None and config.mode == "split":
+        return _SplitDeployment()
     if isinstance(spec, ServicesSpec):
         if not isinstance(backend, PrimeBackend):
             raise TypeError("Native service VMs require a Prime workspace")
