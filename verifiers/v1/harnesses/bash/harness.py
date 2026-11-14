@@ -41,7 +41,8 @@ class BashHarnessConfig(HarnessConfig):
     """Offer a `search` tool (Google web results via serper.dev). Requires `SERPER_API_KEY` in the
     eval environment; the key is handed to the program over argv (like the interception secret) so
     the agent's `bash` subprocesses don't inherit it. Results matching the runtime's
-    network blocklist are excluded."""
+    network blocklist are excluded, and with a blocklist so are Google's encrypted `/goto`
+    redirect links, whose destination is unknown."""
 
     compaction: CompactionConfig | None = CompactionConfig()
     """Context compaction. Auto-compaction by default; set `summarize_at_tokens`

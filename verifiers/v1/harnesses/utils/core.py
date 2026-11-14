@@ -166,6 +166,9 @@ def run_search(
                     url = AnyHttpUrl(result.get("link", ""))
                 except ValidationError:
                     continue
+                # Google's encrypted redirect links hide their destination.
+                if url.host == "www.google.com" and url.path == "/goto":
+                    continue
                 if not any(
                     network_rule_matches(
                         rule,
