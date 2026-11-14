@@ -164,3 +164,94 @@ def test_failed_scoring_rolls_back_its_drop() -> None:
         trace.drop("judge: outcome=task_defect")
         raise RuntimeError("the judge failed")
     assert not trace.is_dropped
+
+
+async def test_rollout_close_marks_trace_ok_before_finalize_and_reward_hooks() -> None:
+    from types import SimpleNamespace
+
+    from verifiers.v1.configs.scoring import ScoringConfig
+    from verifiers.v1.rollout import Rollout, RolloutTimeouts
+
+    observed: list[tuple[str, bool, bool]] = []
+
+    class ErrorCheckingTask(vf.Task[HookData]):
+        async def finalize(self, trace: vf.Trace) -> None:
+            observed.append(("finalize", trace.ok, trace.has_error))
+
+        @vf.reward
+        async def correct(self, trace: vf.Trace) -> float:
+            observed.append(("reward", trace.ok, trace.has_error))
+            return 0.0 if trace.has_error else 1.0
+
+    def build_rollout(task: vf.Task[HookData]) -> Rollout:
+        run = object.__new__(Rollout)
+        run.task = task
+        run._scoring_task = task
+        run._grader = None
+        run._grading_config = vf.SubprocessConfig()
+        run._scoring_policy = ScoringConfig()
+        run._timeouts = RolloutTimeouts()
+        run._on_score = None
+        run._collect_artifacts = False
+        run._skip_scoring_stops = set()
+        run._opened = True
+        run._closed = False
+        run._failed = False
+        run._failure = None
+        run._borrowed_runtime = None
+        run._harness_cleaned = True
+        run._harness_session = None
+        run._agent_runtime = None
+        run._stack = SimpleNamespace(aclose=lambda: _noop())
+        run.harness = SimpleNamespace(score=lambda trace, rt: _noop())
+        run.runtime = SimpleNamespace(
+            name="local",
+            env={},
+            with_env=lambda env: run.runtime,
+            backend=SimpleNamespace(stopped=True),
+        )
+        run.deployment = SimpleNamespace(close=lambda: _noop())
+        run.trace = vf.Trace(
+            agent=vf.AgentInfo(config=vf.AgentConfig()),
+            task=vf.TraceTask(type=type(task).__name__, data=task.data),
+            nodes=[
+                MessageNode(
+                    parent=None, message=UserMessage(content="q"), sampled=False
+                ),
+                MessageNode(
+                    parent=0,
+                    message=AssistantMessage(content="answer"),
+                    sampled=True,
+                ),
+            ],
+        )
+        return run
+
+    async def _noop() -> None:
+        return None
+
+    healthy = build_rollout(ErrorCheckingTask(HookData(idx=0, prompt="q")))
+    trace = await healthy.close()
+    assert observed == [("finalize", True, False), ("reward", True, False)]
+    assert trace.ok and not trace.has_error and trace.is_completed
+    assert trace.reward == 1.0
+
+    class RaisingRewardTask(vf.Task[HookData]):
+        @vf.reward
+        async def broken(self, trace: vf.Trace) -> float:
+            assert not trace.has_error
+            raise RuntimeError("reward boom")
+
+    failing_in_score = build_rollout(RaisingRewardTask(HookData(idx=1, prompt="q")))
+    failed_trace = await failing_in_score.close()
+    assert not failed_trace.ok and failed_trace.has_error and failed_trace.is_completed
+    assert [e.type for e in failed_trace.errors] == ["TaskError"]
+
+    pre_failed = build_rollout(ErrorCheckingTask(HookData(idx=2, prompt="q")))
+    pre_failed.fail(RuntimeError("agent boom"))
+    observed.clear()
+    errored_trace = await pre_failed.close()
+    assert observed == []
+    assert (
+        not errored_trace.ok and errored_trace.has_error and errored_trace.is_completed
+    )
