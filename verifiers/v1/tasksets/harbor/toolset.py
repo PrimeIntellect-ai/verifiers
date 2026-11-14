@@ -72,6 +72,13 @@ class HarborMCPToolset(Toolset[HarborMCPConfig]):
             tools.extend(page.tools)
             cursor = page.next_cursor
             if cursor is None:
+                if allowed := self.config.server.get("allowed_tools"):
+                    missing = set(allowed) - {tool.name for tool in tools}
+                    if missing:
+                        raise ValueError(
+                            f"Unknown allowed MCP tools: {sorted(missing)}"
+                        )
+                    tools = [tool for tool in tools if tool.name in allowed]
                 return tools
             if cursor in seen_cursors:
                 raise ValueError("MCP tools pagination returned a repeated cursor")
