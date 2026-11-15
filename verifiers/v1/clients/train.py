@@ -204,6 +204,18 @@ def _is_valid_incremental_tail(messages: list[dict[str, Any]]) -> bool:
     )
 
 
+def _previous_tool_call_ids(
+    messages: list[dict[str, Any]], tail_length: int
+) -> list[str] | None:
+    """IDs of the tool calls of the assistant message the tail extends, if it is one."""
+    index = len(messages) - tail_length - 1
+    if index < 0 or messages[index].get("role") != "assistant":
+        return None
+    return [
+        str(call.get("id") or "") for call in messages[index].get("tool_calls") or []
+    ]
+
+
 def _has_multimodal_content(messages) -> bool:
     for message in messages:
         content = getattr(message, "content", None)
@@ -413,6 +425,13 @@ class TrainClient(Client):
                     f"{type(renderer).__name__} does not support process_multimodal=False"
                 )
             render_kwargs = {} if process_multimodal else {"process_multimodal": False}
+            bridge_kwargs = dict(render_kwargs)
+            if getattr(renderer, "supports_previous_tool_call_ids", False):
+                # Templates that order tool results by the assistant's calls need the call
+                # IDs, which the sampled tokens do not carry.
+                bridge_kwargs["previous_tool_call_ids"] = _previous_tool_call_ids(
+                    wire_messages, len(wire_tail)
+                )
             # Only build the O(context) previous token stream for a bridgeable tail.
             can_bridge = turn is not None and _is_valid_incremental_tail(wire_tail)
             previous_ids = turn.previous_renderer_token_ids() if can_bridge else None
@@ -425,7 +444,7 @@ class TrainClient(Client):
                         previous_completion_ids,
                         wire_tail,
                         tools=wire_tools,
-                        **render_kwargs,
+                        **bridge_kwargs,
                     )
 
                 bridged = await slot.run(bridge)
