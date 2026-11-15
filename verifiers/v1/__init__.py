@@ -14,7 +14,7 @@ if TYPE_CHECKING:
 
     from verifiers.v1.acp import ACPConfig, ACPHarness, ACPTurn
     from verifiers.v1.agent import Agent, Agents, Interaction, Segment, make_agent
-    from verifiers.v1.clients import Client, ModelContext, resolve_client
+    from verifiers.v1.clients import Client, ModelContext, ModelRoute, resolve_client
     from verifiers.v1.configs.agent import AgentConfig
     from verifiers.v1.configs.cli.env import narrowed_env_annotation, resolve_env_field
     from verifiers.v1.configs.client import (
@@ -251,6 +251,7 @@ _NAME_TO_MODULE = {
     "Messages": "verifiers.v1.types",
     "ModelCall": "verifiers.v1.trace",
     "ModelContext": "verifiers.v1.clients",
+    "ModelRoute": "verifiers.v1.clients",
     "NetworkPolicyConfig": "verifiers.v1.configs.runtime",
     "PATCH_CAP_BYTES": "verifiers.v1.utils.git",
     "ParentLink": "verifiers.v1.semantic",
@@ -479,6 +480,7 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "ACPHarness",
     "ACPTurn",
     "ModelContext",
+    "ModelRoute",
     "Runtime",
     "RuntimeProcess",
     "RuntimeConfig",

@@ -402,12 +402,18 @@ class InterceptionServer(Interception):
             self.stack.push_async_callback(client.close)
         return client
 
+    def _client_of(self, session: RolloutSession) -> Client:
+        """The server's shared client for the session's current endpoint config, which its
+        route may have changed since the last request."""
+        session.client = self._client(session.ctx.client)
+        return session.client
+
     def register(self, session: RolloutSession) -> tuple[str, str]:
         """Register separate capabilities for model inference and private task state, and
         assign the session its server-owned model client."""
         if not self.healthy:
             raise TunnelError("interception tunnel lost")
-        session.client = self._client(session.ctx.client)
+        self._client_of(session)
         model_secret = secrets.token_urlsafe(16)
         state_secret = secrets.token_urlsafe(16)
         self.sessions[model_secret] = session
@@ -951,7 +957,7 @@ class InterceptionServer(Interception):
                     # What actually goes upstream: the native body with the rollout's model +
                     # sampling imposed — recorded raw on the trace, per call.
                     if relay:
-                        reply = await session.client.relay(
+                        reply = await self._client_of(session).relay(
                             dialect,
                             body,
                             headers=upstream_headers,
@@ -959,7 +965,7 @@ class InterceptionServer(Interception):
                         )
                         call_response, events = await _collect_stream(dialect, reply)
                     else:
-                        call_response = await session.client.get_response(
+                        call_response = await self._client_of(session).get_response(
                             dialect,
                             body,
                             session.ctx.sampling,
@@ -1075,7 +1081,7 @@ class InterceptionServer(Interception):
             body = await request.json()
             body["model"] = session.ctx.model
             body = self.mediate_capabilities(session, dialect, body)[0]
-            result = await session.client.relay_aux(
+            result = await self._client_of(session).relay_aux(
                 dialect, route, body, headers=request.headers
             )
         except RolloutError as e:

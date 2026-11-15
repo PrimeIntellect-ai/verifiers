@@ -2,7 +2,7 @@
 
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from verifiers.v1.configs.client import (
     BaseClientConfig,
@@ -88,3 +88,29 @@ class ModelContext:
     model: str
     client: ClientConfig
     sampling: Sampling = field(default_factory=Sampling)
+
+
+class ModelRoute:
+    """Where one rollout's model turns go while it runs: its `ModelContext`, which the
+    caller may change mid-rollout with `update`. The interception server reads the
+    current context on every model request, so a change applies from the rollout's
+    next turn (and to any retry of it); a new client config gets the server's shared
+    client for it. A scheduler moving a running rollout to another endpoint, or a live
+    sampling change, is one `update`."""
+
+    def __init__(self, ctx: ModelContext) -> None:
+        self.ctx = ctx
+
+    def update(
+        self,
+        *,
+        model: str | None = None,
+        client: ClientConfig | None = None,
+        sampling: Sampling | None = None,
+    ) -> None:
+        """Change the model, client or sampling of the rollout's next turns; a value
+        left out stays as it is."""
+        changes = {"model": model, "client": client, "sampling": sampling}
+        self.ctx = replace(
+            self.ctx, **{k: v for k, v in changes.items() if v is not None}
+        )
