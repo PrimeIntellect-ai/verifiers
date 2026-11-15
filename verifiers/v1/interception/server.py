@@ -402,18 +402,12 @@ class InterceptionServer(Interception):
             self.stack.push_async_callback(client.close)
         return client
 
-    def _client_of(self, session: RolloutSession) -> Client:
-        """The server's shared client for the session's current endpoint config, which its
-        route may have changed since the last request."""
-        session.client = self._client(session.ctx.client)
-        return session.client
-
     def register(self, session: RolloutSession) -> tuple[str, str]:
         """Register separate capabilities for model inference and private task state, and
         assign the session its server-owned model client."""
         if not self.healthy:
             raise TunnelError("interception tunnel lost")
-        self._client_of(session)
+        session.client = self._client(session.ctx.client)
         model_secret = secrets.token_urlsafe(16)
         state_secret = secrets.token_urlsafe(16)
         self.sessions[model_secret] = session
@@ -764,11 +758,15 @@ class InterceptionServer(Interception):
             body = from_json(raw)
         except ValueError:
             body = json.loads(raw)
-        body = dialect.apply_overrides(body, session.ctx.model, session.ctx.sampling)
+        # One context for the whole request: a route updated while it is in flight applies
+        # from the next request, never to half of this one.
+        ctx = session.ctx
+        session.client = client = self._client(ctx.client)
+        body = dialect.apply_overrides(body, ctx.model, ctx.sampling)
         streaming = dialect.streaming(body)
         # A streamed request is served whole once its turn commits: the eval client's
         # provider stream is read to the end, and the train client generates the response.
-        relay = streaming and not isinstance(session.ctx.client, TrainClientConfig)
+        relay = streaming and not isinstance(ctx.client, TrainClientConfig)
         req_hash = await _request_digest(raw)
         # Keep `read()` for aiohttp's size guard, then release its cache and our local
         # alias after parsing so the wire body does not survive model inference.
@@ -957,7 +955,7 @@ class InterceptionServer(Interception):
                     # What actually goes upstream: the native body with the rollout's model +
                     # sampling imposed — recorded raw on the trace, per call.
                     if relay:
-                        reply = await self._client_of(session).relay(
+                        reply = await client.relay(
                             dialect,
                             body,
                             headers=upstream_headers,
@@ -965,10 +963,10 @@ class InterceptionServer(Interception):
                         )
                         call_response, events = await _collect_stream(dialect, reply)
                     else:
-                        call_response = await self._client_of(session).get_response(
+                        call_response = await client.get_response(
                             dialect,
                             body,
-                            session.ctx.sampling,
+                            ctx.sampling,
                             headers=upstream_headers,
                             session_id=upstream_session_id,
                             turn=turn,
@@ -1079,9 +1077,10 @@ class InterceptionServer(Interception):
         logger.debug("Received %s request", route)
         try:
             body = await request.json()
-            body["model"] = session.ctx.model
+            ctx = session.ctx
+            body["model"] = ctx.model
             body = self.mediate_capabilities(session, dialect, body)[0]
-            result = await self._client_of(session).relay_aux(
+            result = await self._client(ctx.client).relay_aux(
                 dialect, route, body, headers=request.headers
             )
         except RolloutError as e:
