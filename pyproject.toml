@@ -97,6 +97,8 @@ openenv = [
 ]
 [tool.uv]
 constraint-dependencies = ["brotli>=1.2.1", "brotlicffi>=1.2.1.0"]
+# gradio (via the openenv extra) caps pillow<13, which has unfixed advisories.
+override-dependencies = ["pillow>=13.0.0"]
 preview = true
 required-version = ">=0.11.1"
 exclude-newer = "7 days"

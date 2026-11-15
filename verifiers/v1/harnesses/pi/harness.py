@@ -187,7 +187,11 @@ class PiHarness(ACPHarness[PiHarnessConfig]):
         if self.config.disabled_tools:
             pi_args += ["--exclude-tools", ",".join(self.config.disabled_tools)]
         if system_prompt:
-            pi_args += ["--append-system-prompt", system_prompt]
+            # Pi reads a path argument as the file's contents, and rereads it on
+            # resource reloads, so the file stays until cleanup.
+            path = f"{agent_dir}/system-prompt.md"
+            await runtime.write(path, system_prompt.encode())
+            pi_args += ["--append-system-prompt", path]
         pi_wrapper = f"{agent_dir}/pi"
         await runtime.write(
             pi_wrapper,

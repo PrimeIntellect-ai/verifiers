@@ -4,6 +4,7 @@ from typing import Literal
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig, PinnedVersion
 from verifiers.v1.harness import Harness
+from verifiers.v1.harnesses.utils.launch import stage_text
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
@@ -38,14 +39,16 @@ class MiniSWEAgentHarness(Harness[MiniSWEAgentHarnessConfig]):
         if self.config.disabled_tools:
             raise ValueError("mini-swe-agent does not support disabling tools")
         _, prompt = self.resolve_text_prompt(data)
+        if prompt is None:
+            raise ValueError("mini-swe-agent requires a task prompt")
         source = PROGRAM_SOURCE.replace("{version}", self.config.version)
         args = [
             "--model",
             ctx.model,
             "--model-class",
             "litellm",
-            "--task",
-            prompt,
+            "--task-file",
+            await stage_text(runtime, trace, "task.txt", prompt),
             "--exit-immediately",
             "--yolo",
             "-c",
