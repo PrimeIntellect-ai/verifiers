@@ -382,11 +382,11 @@ class Rollout:
                 # `base_url` is the interception server's reachable URL for this rollout.
                 # The harness reaches the model at `{base_url}/v1`; tool servers reach this
                 # rollout's `/state` + `/task` at `base_url` — it's universally reachable
-                # (the interception is exposed whenever any consumer is remote).
+                # (the interception is exposed whenever any consumer is remote). A local
+                # harness reaches the server at `harness_base`, host loopback, instead.
                 (
-                    base_url,
-                    model_secret,
-                    state_secret,
+                    (base_url, model_secret, state_secret),
+                    harness_base,
                 ) = await self._stack.enter_async_context(
                     serve_interception(
                         self._interception,
@@ -396,7 +396,7 @@ class Rollout:
                         self._shared_tools,
                     )
                 )
-                self._endpoint = runtime.host_url(f"{base_url.rstrip('/')}/v1")
+                self._endpoint = runtime.host_url(f"{harness_base.rstrip('/')}/v1")
                 self._secret = model_secret
                 services = (
                     {
@@ -532,7 +532,7 @@ class Rollout:
                         session_kwargs = (
                             {
                                 "tool_interception_url": runtime.host_url(
-                                    f"{base_url.rstrip('/')}/tool"
+                                    f"{harness_base.rstrip('/')}/tool"
                                 )
                             }
                             if self.harness.SUPPORTS_TOOL_INTERCEPTION

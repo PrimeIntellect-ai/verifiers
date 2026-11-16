@@ -71,13 +71,22 @@ async def serve_interception(
     session: RolloutSession,
     servers: list,
     shared_tools: "dict[str, SharedToolServer]",
-) -> AsyncIterator[Slot]:
+) -> AsyncIterator[tuple[Slot, str]]:
     """A slot on the shared interception when one was injected (its owner keeps the
     lifecycle), else on a per-rollout `InterceptionServer` owned — brought up and torn
-    down — by the caller's context."""
+    down — by the caller's context. Also yields the base URL for `runtime`'s harness:
+    host loopback when `runtime` is local, since a tunnel's public URL may be
+    unreachable from the host, else the slot's `base_url`."""
+
+    def harness_base(owner: Interception, slot: Slot) -> str:
+        base_url = slot[0]
+        if not runtime.is_local:
+            return base_url
+        return owner.local_url(base_url) or base_url
+
     if interception is not None:
         async with interception.acquire(session) as slot:
-            yield slot
+            yield slot, harness_base(interception, slot)
         return
     tunneled = requires_tunnel(
         runtime.is_local,
@@ -91,7 +100,7 @@ async def serve_interception(
         ),
     )
     async with server, server.acquire(session) as slot:
-        yield slot
+        yield slot, harness_base(server, slot)
 
 
 __all__ = [

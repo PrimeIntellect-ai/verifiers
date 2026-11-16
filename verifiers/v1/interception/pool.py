@@ -33,6 +33,12 @@ from verifiers.v1.utils.logging import get_logger, isolated
 logger = get_logger(__name__)
 
 
+def _local_url(servers: list[InterceptionServer], base_url: str) -> str | None:
+    return next(
+        (url for server in servers if (url := server.local_url(base_url))), None
+    )
+
+
 class StaticInterceptionPool(Interception):
     """A fixed set of interception servers, all started up front; `acquire` hands a rollout
     a slot on the least-loaded one. No capacity cap — sizing the set to the load is the
@@ -54,6 +60,9 @@ class StaticInterceptionPool(Interception):
     async def start(self) -> None:
         for server in self.servers:
             await self.stack.enter_async_context(server)
+
+    def local_url(self, base_url: str) -> str | None:
+        return _local_url(self.servers, base_url)
 
     @asynccontextmanager
     async def acquire(self, session: RolloutSession) -> AsyncIterator[Slot]:
@@ -110,6 +119,9 @@ class ElasticInterceptionPool(Interception):
                 logger.warning(
                     "Failed to stop a retired interception server", exc_info=True
                 )
+
+    def local_url(self, base_url: str) -> str | None:
+        return _local_url(self.servers, base_url)
 
     async def _server(self) -> InterceptionServer:
         """A server with spare capacity — reuse one under `multiplex`, else bring up a new

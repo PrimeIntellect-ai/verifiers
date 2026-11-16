@@ -52,6 +52,12 @@ class Interception(ABC):
     async def __aexit__(self, *exc) -> None:
         await self.stop()
 
+    def local_url(self, base_url: str) -> str | None:
+        """The host-loopback URL of the server a slot's `base_url` names, or `None` if
+        unknown. A consumer on the host network uses it in place of a tunnel's public URL,
+        which the host may not be able to reach."""
+        return None
+
     @abstractmethod
     def acquire(self, session: RolloutSession) -> AbstractAsyncContextManager[Slot]:
         """Register `session` on a server (bringing one up if needed) and yield its `Slot`;

@@ -15,6 +15,7 @@ from verifiers.v1.configs.interception import (
     StaticInterceptionPoolConfig,
 )
 from verifiers.v1.errors import TunnelError
+from verifiers.v1.interception import serve_interception
 from verifiers.v1.interception.pool import (
     ElasticInterceptionPool,
     StaticInterceptionPool,
@@ -170,3 +171,28 @@ async def test_static_pool_with_only_retired_servers_fails_the_rollout():
     with pytest.raises(TunnelError):
         async with pool.acquire(SimpleNamespace()):
             pass
+
+
+@pytest.mark.parametrize("is_local", [True, False])
+async def test_a_local_harness_reaches_a_tunneled_server_on_host_loopback(
+    tunnel, monkeypatch, is_local
+):
+    monkeypatch.setattr(InterceptionServer, "register", lambda self, s: ("m", "s"))
+    monkeypatch.setattr(InterceptionServer, "unregister", lambda self, m, s: None)
+    runtime = SimpleNamespace(is_local=is_local)
+    async with (
+        ElasticInterceptionPool(requires_tunnel=True) as pool,
+        serve_interception(pool, runtime, SimpleNamespace(), [], {}) as (
+            (base_url, _, _),
+            harness_base,
+        ),
+    ):
+        # Tool servers may be remote, so the slot keeps the tunnel's URL.
+        assert base_url == "https://t.example"
+        if not is_local:
+            assert harness_base == base_url
+            return
+        assert harness_base.startswith("http://127.0.0.1:")
+        async with httpx.AsyncClient() as client:
+            response = await client.get(f"{harness_base}{HEALTH_PATH}")
+        assert response.status_code == 200
