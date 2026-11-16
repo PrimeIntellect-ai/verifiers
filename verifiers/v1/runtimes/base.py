@@ -175,6 +175,15 @@ class RuntimeBackend(ABC):
     SUPPORTS_USER_SWITCHING: ClassVar[bool] = False
     """Whether handles can bind another existing user."""
 
+    SUPPORTS_STOP_CONFIRMATION: ClassVar[bool] = False
+    """Whether `verify_stopped` can confirm the provider resource was terminated."""
+
+    SUPPORTS_MEMORY_LIMIT: ClassVar[bool] = False
+    """Whether a positive `config.memory` enforces a runtime-wide memory ceiling."""
+
+    SUPPORTS_DISK_LIMIT: ClassVar[bool] = False
+    """Whether a positive `config.disk` enforces a runtime-wide storage ceiling."""
+
     SUPPORTS_PORT_EXPOSURE: ClassVar[bool] = False
     """Whether `expose` can publish a port inside this runtime to the outside, so a
     server here is reachable from another runtime."""
@@ -260,6 +269,12 @@ class RuntimeBackend(ABC):
         """Synchronously free the provisioned resource — best-effort and idempotent. The
         source of truth for teardown: usable from the atexit backstop where async machinery
         is dead, and run off the event loop by `stop` on the normal path. Default no-op."""
+
+    async def verify_stopped(self) -> None:
+        """Confirm provider termination after `stop`, or raise without returning a
+        result whose safety depends on cleanup. Ordinary rollout cleanup remains
+        best-effort; callers that execute untrusted submissions use this check."""
+        raise SandboxError(f"the {self.type} runtime cannot confirm termination")
 
     @abstractmethod
     async def exec(

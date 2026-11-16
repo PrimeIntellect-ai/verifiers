@@ -209,6 +209,8 @@ class DockerBackend(RuntimeBackend):
 
     SUPPORTS_TASK_IMAGES: ClassVar[bool] = True
     SUPPORTS_USER_SWITCHING: ClassVar[bool] = True
+    SUPPORTS_STOP_CONFIRMATION: ClassVar[bool] = True
+    SUPPORTS_MEMORY_LIMIT: ClassVar[bool] = True
     SUPPORTS_PORT_EXPOSURE: ClassVar[bool] = True
     SUPPORTS_COMPOSE: ClassVar[bool] = True
     is_local = True
@@ -623,6 +625,22 @@ class DockerBackend(RuntimeBackend):
         if self._proxy is not None:
             await self._proxy.stop()
         await super().teardown()
+
+    async def verify_stopped(self) -> None:
+        if not self.stopped or self.info.borrowed:
+            raise SandboxError(
+                "cannot confirm termination of a live or borrowed container"
+            )
+        if self._container is None:
+            return
+        async with asyncio.timeout(60):
+            result = await cli("docker", "container", "inspect", self._container)
+        if result.exit_code and any(
+            message in result.stderr
+            for message in ("No such container:", "No such object:")
+        ):
+            return
+        raise SandboxError("could not confirm Docker container removal")
 
     def _exec_argv(
         self, env: dict[str, str], *, stdin: bool = False, user: str | None = None
