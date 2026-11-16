@@ -13,6 +13,7 @@ from pathlib import Path
 from urllib.parse import parse_qsl, unquote, urlencode, urlsplit, urlunsplit
 
 from verifiers.v1.trace import RECORD_DUMP_EXCLUDE, Trace
+from verifiers.v1.utils.files import read_regular
 
 SOURCE_FILE_BYTES = 256 * 1024
 SOURCE_TOTAL_BYTES = 2 * 1024 * 1024
@@ -74,19 +75,6 @@ def _source_configs(item):
     return result
 
 
-def read_regular(path: Path, limit: int) -> bytes:
-    """Read a bounded regular file, never following its final symlink."""
-    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-    with os.fdopen(descriptor, "rb") as stream:
-        info = os.fstat(stream.fileno())
-        if not stat.S_ISREG(info.st_mode):
-            raise ValueError(f"not a regular file: {path}")
-        data = stream.read(limit + 1)
-    if len(data) > limit:
-        raise ValueError(f"file exceeds {limit} bytes: {path}")
-    return data
-
-
 def source_evidence(directory: Path) -> dict:
     """Read task source without importing it or following links in the tree."""
     if directory.is_symlink():
@@ -137,22 +125,11 @@ def source_evidence(directory: Path) -> dict:
                     Path(name).suffix not in suffixes and name != "Dockerfile"
                 ):
                     raise ValueError("not task source")
-                fd = os.open(
+                data = read_regular(
                     name,
-                    os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                    min(SOURCE_FILE_BYTES, SOURCE_TOTAL_BYTES - used),
                     dir_fd=descriptor,
                 )
-                with os.fdopen(fd, "rb") as stream:
-                    if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
-                        raise ValueError("not a regular file")
-                    data = stream.read(
-                        min(SOURCE_FILE_BYTES, SOURCE_TOTAL_BYTES - used) + 1
-                    )
-                if (
-                    len(data) > SOURCE_FILE_BYTES
-                    or used + len(data) > SOURCE_TOTAL_BYTES
-                ):
-                    raise ValueError("source byte limit reached")
                 content = data.decode("utf-8")
                 if "\x00" in content:
                     raise ValueError("binary content")
