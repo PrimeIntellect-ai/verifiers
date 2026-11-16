@@ -497,7 +497,7 @@ class PrimeBackend(RuntimeBackend):
             return
         # Uploads act as the default user: stage the bytes, then copy them in as the user.
         root = runtime.with_user(None)
-        staged = f"/tmp/vf-write-{uuid.uuid4().hex}"
+        staged = f"/tmp/runtime-write-{uuid.uuid4().hex}"
         try:
             await root.write(staged, data)
             await root.run(["chmod", "644", staged], {})

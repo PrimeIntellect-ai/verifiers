@@ -22,11 +22,11 @@ set -e
 if [ ! -x "$VF_OPENCLAW_BIN" ]; then
     command -v curl >/dev/null || (apt-get update -qq && apt-get install -y -qq curl ca-certificates >/dev/null)
     curl -fsSL --proto '=https' --tlsv1.2 https://openclaw.ai/install-cli.sh \
-        | bash -s -- --prefix "$VF_OPENCLAW_DIR" --version "$VF_OPENCLAW_VERSION" --no-onboard
+        | bash -s -- --prefix "$AGENT_OPENCLAW_DIR" --version "$AGENT_OPENCLAW_VERSION" --no-onboard
 fi
-set -- $(find "$VF_OPENCLAW_DIR/tools" -type f -path '*/openclaw/dist/session-accessor.sqlite-transcript-store-*.mjs')
+set -- $(find "$AGENT_OPENCLAW_DIR/tools" -type f -path '*/openclaw/dist/session-accessor.sqlite-transcript-store-*.mjs')
 [ "$#" -eq 1 ] || { echo "could not locate OpenClaw's transcript sanitizer for replay patch" >&2; exit 1; }
-"$VF_OPENCLAW_DIR/tools/node/bin/node" - "$1" <<'NODE'
+"$AGENT_OPENCLAW_DIR/tools/node/bin/node" - "$1" <<'NODE'
 const fs = require("node:fs");
 const file = process.argv[2];
 const stat = fs.statSync(file);
@@ -155,8 +155,8 @@ class OpenClawHarness(ACPHarness[OpenClawHarnessConfig]):
             env={
                 **self.config.resolved_env,
                 "VF_OPENCLAW_BIN": binary,
-                "VF_OPENCLAW_DIR": directory,
-                "VF_OPENCLAW_VERSION": self.config.version,
+                "AGENT_OPENCLAW_DIR": directory,
+                "AGENT_OPENCLAW_VERSION": self.config.version,
             },
             label="OpenClaw",
             shell=("bash", "-o", "pipefail", "-c"),
