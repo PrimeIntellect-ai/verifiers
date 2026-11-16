@@ -28,12 +28,14 @@ def test_parse_pytest_outcomes_strips_xfail_xpass_reasons() -> None:
 
 
 def test_parse_judge_choice_prefers_final_marker_then_boxed() -> None:
-    assert (
-        vf.parse_judge_choice(
-            "Draft: \\boxed{A}\nFinal Judgment: B", choices=("A", "B")
+    for final_choice in ("B", "**B**", "`B`"):
+        assert (
+            vf.parse_judge_choice(
+                f"Draft: \\boxed{{A}}\nFinal Judgment: {final_choice}",
+                choices=("A", "B"),
+            )
+            == "B"
         )
-        == "B"
-    )
     assert (
         vf.parse_judge_choice(
             "Draft: \\boxed{A}\nFinal Judgment:\nReasoning mentions B",
