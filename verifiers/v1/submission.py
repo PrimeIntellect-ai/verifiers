@@ -103,7 +103,9 @@ async def run_submission(
 
     try:
         await resource.start()
-        runtime = resource.bind(env={})
+        # Images may select a non-root default USER; trusted directory ownership
+        # setup needs root, while every submitted file and command uses `user`.
+        runtime = resource.bind(env={}).with_user("0")
         # The execution image is trusted; submitted bytes are inert until all
         # provisioning and privilege checks have completed.
         child = runtime.with_user(user)
