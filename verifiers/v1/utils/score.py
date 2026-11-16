@@ -63,12 +63,14 @@ def parse_judge_choice(
     final_choices = re.findall(
         rf"^{horizontal_space}*FINAL{horizontal_space}+"
         rf"(?:JUDGMENT|ANSWER|VERDICT){horizontal_space}*"
-        rf"(?:IS{horizontal_space}*)?[:\-]?{horizontal_space}*{choice_re}",
+        rf"(?:IS{horizontal_space}*)?[:\-]?{horizontal_space}*"
+        rf"(?P<markup>\*\*|`)?{choice_re}(?(markup)(?P=markup))",
         text_upper,
         re.MULTILINE,
     )
     if final_choices:
-        return choices_by_upper.get(final_choices[-1])
+        _, choice = final_choices[-1]
+        return choices_by_upper.get(choice)
 
     text = extract_boxed_answer(text, strict=True).strip() or text
     text_upper = text.upper()
