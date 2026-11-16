@@ -22,11 +22,9 @@ class TaskFiles:
     def __init__(self, task_dir: Path):
         self.directory = Path(os.path.abspath(task_dir))
         self.root = task_dir.resolve()
-        self.rules: dict[Path, GitIgnoreSpec] = {}
+        self.rules: dict[Path, GitIgnoreSpec | None] = {}
 
     def _excluded(self, path: Path) -> bool:
-        from pathspec import GitIgnoreSpec
-
         relative = path.relative_to(self.root)
         if path.name == ".harborignore":
             return True
@@ -41,10 +39,16 @@ class TaskFiles:
                     raise ValueError(f"Ignore file escapes task directory: {ignore}")
                 if ignore.exists() and not ignore.is_file():
                     raise ValueError(f"Ignore rules must be a regular file: {ignore}")
-                self.rules[candidate] = GitIgnoreSpec.from_lines(
-                    ignore.read_text().splitlines() if ignore.exists() else []
-                )
-            scopes.append((candidate, self.rules[candidate]))
+                rules = None
+                if ignore.is_file():
+                    # Plain Harbor tasks work without the optional Harbor extra.
+                    # Only parsing authored ignore rules needs its dependency.
+                    from pathspec import GitIgnoreSpec
+
+                    rules = GitIgnoreSpec.from_lines(ignore.read_text().splitlines())
+                self.rules[candidate] = rules
+            if (rules := self.rules[candidate]) is not None:
+                scopes.append((candidate, rules))
             candidate /= part
             suffix = "/" if candidate != path or path.is_dir() else ""
             excluded = False
