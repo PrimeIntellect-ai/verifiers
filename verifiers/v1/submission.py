@@ -29,8 +29,10 @@ async def run_submission(
     relative to `/submission`. Files belong to `user` and have mode 0644; invoke
     scripts through their interpreter or explicitly chmod them in the command.
     The caller's runtime, mounts, environment, and scoring files never enter this
-    box. Both output streams share a byte ceiling. Teardown is confirmed on every
-    exit, including failures and cancellation, before returning or raising.
+    box. Both output streams share a byte ceiling. `timeout` bounds command
+    execution after trusted setup, uploads, and network-policy preparation.
+    Teardown is confirmed on every exit, including failures and cancellation,
+    before returning or raising.
     """
     backend = backend_cls(config)
     if (
@@ -102,40 +104,40 @@ async def run_submission(
     try:
         await resource.start()
         runtime = resource.bind(env={})
+        # The execution image is trusted; submitted bytes are inert until all
+        # provisioning and privilege checks have completed.
+        child = runtime.with_user(user)
+        identity = await child.run(["sh", "-c", "id -u; id -g"], {})
+        ids = identity.stdout.split()
+        if (
+            identity.exit_code
+            or len(ids) != 2
+            or not all(value.isdigit() for value in ids)
+            or int(ids[0]) == 0
+        ):
+            raise SandboxError("submission user must resolve to a non-root account")
+        prepared = await runtime.run(
+            [
+                "sh",
+                "-c",
+                'mkdir -p /submission && chown "$1:$2" /submission && chmod 700 /submission',
+                "submission",
+                *ids,
+            ],
+            {},
+        )
+        if prepared.exit_code:
+            raise SandboxError("could not prepare the submission directory")
+        for name, data in files.items():
+            path = str(PurePosixPath("/submission") / name)
+            await child.write(path, data)
+            permissions = await child.run(["chmod", "0644", "--", path], {})
+            if permissions.exit_code:
+                raise SandboxError(
+                    f"could not set submission input permissions: {name!r}"
+                )
+        await runtime.backend.prepare_execution([])
         async with asyncio.timeout(timeout):
-            # The execution image is trusted; submitted bytes are inert until all
-            # provisioning and privilege checks have completed.
-            child = runtime.with_user(user)
-            identity = await child.run(["sh", "-c", "id -u; id -g"], {})
-            ids = identity.stdout.split()
-            if (
-                identity.exit_code
-                or len(ids) != 2
-                or not all(value.isdigit() for value in ids)
-                or int(ids[0]) == 0
-            ):
-                raise SandboxError("submission user must resolve to a non-root account")
-            prepared = await runtime.run(
-                [
-                    "sh",
-                    "-c",
-                    'mkdir -p /submission && chown "$1:$2" /submission && chmod 700 /submission',
-                    "submission",
-                    *ids,
-                ],
-                {},
-            )
-            if prepared.exit_code:
-                raise SandboxError("could not prepare the submission directory")
-            for name, data in files.items():
-                path = str(PurePosixPath("/submission") / name)
-                await child.write(path, data)
-                permissions = await child.run(["chmod", "0644", "--", path], {})
-                if permissions.exit_code:
-                    raise SandboxError(
-                        f"could not set submission input permissions: {name!r}"
-                    )
-            await runtime.backend.prepare_execution([])
             process = await child.exec(
                 [
                     "env",
