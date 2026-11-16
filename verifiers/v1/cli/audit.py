@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import io
 import json
 import logging
 import sys
-import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
+from uuid import uuid4
 
 from openai import APIError
 from pydantic_config import cli
@@ -20,14 +21,10 @@ from verifiers.v1.judges.rubric import RubricJudge, RubricJudgeConfig
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import AgentInfo, Trace, TraceTask, WireTrace
 from verifiers.v1.types import SystemMessage, UserMessage
-from verifiers.v1.utils.audit import (
-    read_regular,
-    redact,
-    source_evidence,
-    trace_record,
-)
+from verifiers.v1.utils.audit import redact, source_evidence, trace_record
+from verifiers.v1.utils.files import read_regular
 from verifiers.v1.utils.logging import clip, get_logger, setup_logging
-from verifiers.v1.utils.trace_store import TRACES_FILE, read_episodes
+from verifiers.v1.utils.trace_store import TRACES_FILE, parse_episodes
 
 logger = get_logger(__name__)
 MAX_RUN_BYTES = 256 * 1024 * 1024
@@ -56,31 +53,49 @@ class AuditJudge(RubricJudge):
         )
 
 
-def load_run(directory: Path) -> tuple[list[tuple[str, Trace]], dict]:
-    """Use the standard wire loader on a bounded immutable snapshot of the saved run."""
-    raw = read_regular(directory / TRACES_FILE, MAX_RUN_BYTES)
-    with tempfile.TemporaryDirectory(prefix="trace-audit-") as temporary:
-        snapshot = Path(temporary)
-        (snapshot / TRACES_FILE).write_bytes(raw)
-        episodes = read_episodes(snapshot, WireTrace)
-    traces = [(episode.id, trace) for episode in episodes for trace in episode.traces]
-    report = {
-        "schema": 1,
-        "created_at": datetime.now(UTC).isoformat(),
-        "source_sha256": hashlib.sha256(raw).hexdigest(),
-        "traces": [trace_record(trace, episode_id) for episode_id, trace in traces],
-    }
-    return traces, redact(report)
+def load_evidence(config: AuditConfig) -> tuple[str, list[dict]]:
+    """Snapshot evidence once; review records need no live or synthetic solver traces."""
+    if config.action == "check":
+        source = source_evidence(config.path)
+        if not source["files"]:
+            raise ValueError("task source contains no readable source files")
+        raw = json.dumps(source, sort_keys=True).encode()
+        records = [
+            {
+                "episode_id": "task-source",
+                "trace_id": uuid4().hex,
+                "task_key": None,
+                "evidence": {"source": source},
+            }
+        ]
+    else:
+        raw = read_regular(config.path / TRACES_FILE, MAX_RUN_BYTES)
+        with io.TextIOWrapper(io.BytesIO(raw), encoding="utf-8") as stream:
+            records = [
+                {
+                    "episode_id": episode.id,
+                    "trace_id": trace.id,
+                    "task_key": trace.task.key,
+                    "evidence": trace_record(trace, episode.id),
+                }
+                for episode in parse_episodes(stream, WireTrace)
+                for trace in episode.traces
+            ]
+    return hashlib.sha256(raw).hexdigest(), redact(records)
 
 
-async def review(
-    config: AuditConfig, traces: list[tuple[str, Trace]], report: dict
-) -> dict:
+async def run_audit(config: AuditConfig) -> tuple[Path, int]:
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
+    output = config.output or config.path / "audit" / f"{config.action}-{stamp}.json"
+    if output.exists() or output.is_symlink():
+        raise FileExistsError(f"output already exists: {output}")
+    source_sha256, records = load_evidence(config)
     # Validate the rubric before any model call and preserve the exact criteria used.
     read_regular(config.rubric, MAX_REVIEW_BYTES)
     judge = AuditJudge(
         RubricJudgeConfig(
-            **{**config.judge.model_dump(), "name": "audit"},
+            **config.judge.model_dump(exclude={"name"}),
+            name="audit",
             path=config.rubric,
             view="last_reply",
         )
@@ -88,36 +103,29 @@ async def review(
     criteria = [criterion.model_dump(mode="json") for criterion in judge.criteria]
     source = source_evidence(config.source) if config.source is not None else None
     semaphore = asyncio.Semaphore(config.max_concurrent)
+    question = TaskData(
+        prompt=(
+            "Review the supplied task source against the rubric. Identify weak "
+            "verification, ambiguity, leakage, and alternative correct solutions."
+            if config.action == "check"
+            else "Review the complete saved trajectory against the rubric. Determine "
+            "whether the recorded outcome reflects the intended task completion."
+        )
+    )
 
-    async def one(episode_id: str, trace: Trace, evidence: dict) -> dict:
+    async def one(record: dict) -> dict:
         # Judge accounting and verdicts belong to a new sidecar, never to saved scores.
-        scratch = trace.model_copy(deep=True)
-        scratch.info, scratch.metrics, scratch.rewards, scratch.extra_usage = (
-            {},
-            {},
-            {},
-            [],
+        result = dict(record)
+        content = redact({"trajectory": result.pop("evidence"), "source": source})
+        scratch = Trace(
+            task=TraceTask(type="Audit", data=question),
+            agent=AgentInfo(config=AgentConfig()),
+            root_reply=json.dumps(content, ensure_ascii=False),
         )
-        scratch.dropped = None
-        content = redact({"trajectory": evidence, "source": source})
-        scratch.root_reply = json.dumps(content, ensure_ascii=False)
-        question = TaskData(
-            prompt=(
-                "Review the supplied task source against the rubric. Identify weak "
-                "verification, ambiguity, leakage, and alternative correct solutions."
-                if config.action == "check"
-                else "Review the complete saved trajectory against the rubric. Determine "
-                "whether the recorded outcome reflects the intended task completion."
-            )
-        )
-        result = {
-            "episode_id": episode_id,
-            "trace_id": trace.id,
-            "task_key": trace.task.key,
-            "evidence_sha256": hashlib.sha256(scratch.root_reply.encode()).hexdigest(),
-        }
+        encoded = scratch.last_reply.encode()
+        result["evidence_sha256"] = hashlib.sha256(encoded).hexdigest()
         try:
-            if len(scratch.root_reply.encode()) > MAX_REVIEW_BYTES:
+            if len(encoded) > MAX_REVIEW_BYTES:
                 raise ValueError(f"review evidence exceeds {MAX_REVIEW_BYTES} bytes")
             async with semaphore:
                 result["analysis_score"] = await judge.score(question, scratch)
@@ -141,64 +149,23 @@ async def review(
         )
         return result
 
-    results = await asyncio.gather(
-        *(
-            one(episode_id, trace, evidence)
-            for (episode_id, trace), evidence in zip(
-                traces, report["traces"], strict=True
-            )
-        )
-    )
-    return redact(
+    results = await asyncio.gather(*(one(record) for record in records))
+    report = redact(
         {
             "schema": 1,
             "action": config.action,
             "created_at": datetime.now(UTC).isoformat(),
-            "source_sha256": report["source_sha256"],
+            "source_sha256": source_sha256,
             "judge": config.judge.model_dump(mode="json"),
             "criteria": criteria,
             "results": results,
         }
     )
-
-
-def task_review(directory: Path) -> tuple[list[tuple[str, Trace]], dict]:
-    evidence = source_evidence(directory)
-    if not evidence["files"]:
-        raise ValueError("task source contains no readable source files")
-    data = TaskData(name=directory.name, prompt="Review the supplied task source")
-    trace = Trace(
-        task=TraceTask(type="TaskSource", data=data),
-        agent=AgentInfo(config=AgentConfig()),
-    )
-    record = {"source": evidence}
-    return [("task-source", trace)], {
-        "source_sha256": hashlib.sha256(
-            json.dumps(evidence, sort_keys=True).encode()
-        ).hexdigest(),
-        "traces": [record],
-    }
-
-
-def write_output(path: Path, content: str) -> None:
-    """New reports never replace a run, previous review, or a symlink target."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("x", encoding="utf-8") as stream:
-        stream.write(content)
-
-
-async def run_audit(config: AuditConfig) -> tuple[Path, int]:
-    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
-    output = config.output or config.path / "audit" / f"{config.action}-{stamp}.json"
-    if output.exists() or output.is_symlink():
-        raise FileExistsError(f"output already exists: {output}")
-    traces, report = (
-        task_review(config.path) if config.action == "check" else load_run(config.path)
-    )
-    report = await review(config, traces, report)
-    content = json.dumps(report, ensure_ascii=False, indent=2)
-    write_output(output, content + "\n")
-    return output, sum(item["status"] == "error" for item in report.get("results", []))
+    # Never replace a run, previous review, or a symlink target.
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with output.open("x", encoding="utf-8") as stream:
+        stream.write(json.dumps(report, ensure_ascii=False, indent=2) + "\n")
+    return output, sum(item["status"] == "error" for item in results)
 
 
 def main(argv: list[str] | None = None) -> None:
