@@ -10,7 +10,6 @@ import posixpath
 import re
 import shlex
 import shutil
-import stat
 import tarfile
 import tempfile
 import time
@@ -21,6 +20,7 @@ from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, Field, field_validator
 
+from verifiers.v1.utils.files import read_regular
 from verifiers.v1.utils.format import format_time
 from verifiers.v1.utils.logging import get_logger
 
@@ -336,8 +336,6 @@ def save_artifacts(
 
 def _read_saved_file(directory: Path, relative: str, limit: int) -> bytes:
     """Open a saved file through directory descriptors, rejecting links and FIFOs."""
-    if limit < 0:
-        raise ValueError("artifact byte budget must be non-negative")
     flags = os.O_RDONLY | os.O_NOFOLLOW
     parent = os.open(directory, flags | os.O_DIRECTORY)
     try:
@@ -346,19 +344,7 @@ def _read_saved_file(directory: Path, relative: str, limit: int) -> bytes:
             child = os.open(name, flags | os.O_DIRECTORY, dir_fd=parent)
             os.close(parent)
             parent = child
-        descriptor = os.open(parts[-1], flags | os.O_NONBLOCK, dir_fd=parent)
-        with os.fdopen(descriptor, "rb") as stream:
-            info = os.fstat(stream.fileno())
-            if not stat.S_ISREG(info.st_mode) or info.st_size > limit:
-                raise ValueError(
-                    f"invalid or oversized saved artifact file: {relative}"
-                )
-            content = stream.read(limit + 1)
-            if len(content) > limit:
-                raise ValueError(
-                    f"saved artifact file exceeds its byte budget: {relative}"
-                )
-            return content
+        return read_regular(parts[-1], limit, dir_fd=parent)
     finally:
         os.close(parent)
 
