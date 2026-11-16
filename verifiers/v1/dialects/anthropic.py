@@ -415,7 +415,11 @@ class AnthropicStreamParser(StreamParser):
             )
             self.message["usage"] = {
                 **(self.message.get("usage") or {}),
-                **(event.get("usage") or {}),
+                **{
+                    key: value
+                    for key, value in (event.get("usage") or {}).items()
+                    if value is not None
+                },
             }
 
     def finish(self) -> Response:

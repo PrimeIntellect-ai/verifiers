@@ -177,3 +177,50 @@ def test_chat_stream_failure_fails_the_turn(failure):
     with pytest.raises(ProviderError, match="provider disconnected") as raised:
         parser.feed(sse(failure))
     assert raised.value.status_code == 502
+
+
+def test_anthropic_stream_keeps_usage_a_message_delta_leaves_null():
+    """A `message_delta` reports usage as cumulative totals and may leave the input
+    counts null; the assembled usage keeps the `message_start` counts for those."""
+    parser = AnthropicDialect().stream_parser()
+    usage = {"input_tokens": 10, "cache_read_input_tokens": 90, "output_tokens": 1}
+    parser.feed(
+        sse(
+            {
+                "type": "message_start",
+                "message": {
+                    "id": "msg",
+                    "type": "message",
+                    "role": "assistant",
+                    "model": "m",
+                    "content": [],
+                    "usage": usage,
+                },
+            }
+        )
+    )
+    parser.feed(
+        sse(
+            {
+                "type": "content_block_start",
+                "index": 0,
+                "content_block": {"type": "text", "text": "hi"},
+            }
+        )
+    )
+    parser.feed(
+        sse(
+            {
+                "type": "message_delta",
+                "delta": {"stop_reason": "end_turn"},
+                "usage": {
+                    "input_tokens": None,
+                    "cache_read_input_tokens": None,
+                    "output_tokens": 5,
+                },
+            }
+        )
+    )
+    response = parser.finish()
+    assert response.usage.input_tokens == 100
+    assert response.usage.completion_tokens == 5
