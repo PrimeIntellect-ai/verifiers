@@ -160,21 +160,22 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
         ready = f"{directory}/.ready"
         # install.sh installs the Python skill packages under $RLM_HOME/skills.
         home = self._skills_home()
-        home_env = f"RLM_HOME={home} " if home else ""
+        home_env = f"RLM_HOME={shlex.quote(home)} " if home else ""
         # install.sh fetches curl/uv itself; add git only when the image lacks it.
         install = (
-            f"rm -f {ready} && "
+            f"rm -f {shlex.quote(ready)} && "
             "(command -v git >/dev/null 2>&1 || "
             "{ apt-get update -qq && apt-get install -y -qq git; } || dnf install -y -q git || apk add --no-cache git && "
-            f"rm -rf {checkout} && git clone https://{RLM_REPO} {checkout} && "
-            f"git -C {checkout} checkout {shlex.quote(self.config.version)} && "
+            f"rm -rf {shlex.quote(checkout)} && git clone https://{RLM_REPO} {shlex.quote(checkout)} && "
+            f"git -C {shlex.quote(checkout)} checkout {shlex.quote(self.config.version)} && "
             # The editable install needs the files, not the history; agents searching
             # their workspace for a repository must not find the harness's own.
-            f"rm -rf {checkout}/.git && "
-            f"{home_env}UV_INSTALL_DIR={directory}/bin UV_TOOL_BIN_DIR={directory}/bin "
-            f"UV_TOOL_DIR={directory}/tools "
-            f"RLM_CHECKOUT_PATH={checkout} bash {checkout}/install.sh && "
-            f"touch {ready})"
+            f"rm -rf {shlex.quote(checkout + '/.git')} && "
+            f"{home_env}UV_INSTALL_DIR={shlex.quote(directory + '/bin')} "
+            f"UV_TOOL_BIN_DIR={shlex.quote(directory + '/bin')} "
+            f"UV_TOOL_DIR={shlex.quote(directory + '/tools')} "
+            f"RLM_CHECKOUT_PATH={shlex.quote(checkout)} bash {shlex.quote(checkout + '/install.sh')} && "
+            f"touch {shlex.quote(ready)})"
         )
         logger.debug("Ensuring rlm %s is installed", self.config.version)
         env = self.config.resolved_env.copy()
@@ -183,7 +184,7 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
         await ensure_installed(
             runtime,
             directory=directory,
-            ready=f"[ -f {ready} ] && [ -x {binary} ]",
+            ready=f"[ -f {shlex.quote(ready)} ] && [ -x {shlex.quote(binary)} ]",
             install=install,
             env=env,
             label="rlm",

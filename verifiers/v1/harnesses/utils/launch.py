@@ -1,5 +1,6 @@
 import inspect
 import json
+import logging
 import uuid
 from collections.abc import Sequence
 from types import ModuleType
@@ -16,6 +17,9 @@ from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.trace import Trace
 from verifiers.v1.types import Messages
 from verifiers.v1.utils import network
+from verifiers.v1.utils.logging import clip, get_logger
+
+logger = get_logger(__name__)
 
 PEP_723_END = "# ///\n"
 
@@ -142,4 +146,14 @@ async def launch_chat_program(
         return await runtime.run([*program, *args], process_env)
     finally:
         for path in prompt_files:
-            await remove_dir(runtime, path, "prompt file")
+            try:
+                await remove_dir(runtime, path, "prompt file")
+            except Exception as error:
+                # Teardown is the backstop if the runtime is gone or the agent
+                # changed permissions. Preserve the result or original failure.
+                logger.warning(
+                    "Failed to clean up prompt file - %s: %s",
+                    type(error).__name__,
+                    clip(str(error)),
+                    exc_info=logger.isEnabledFor(logging.DEBUG),
+                )
