@@ -27,6 +27,8 @@ CacheRetention = Literal["none", "short", "long"]
 _CACHE_MARKERS = frozenset({"cache_control", "prompt_cache_breakpoint"})
 _SCHEMA_KEYS = frozenset({"input_schema", "parameters", "json_schema"})
 _ANTHROPIC_BLOCK_TYPES = frozenset({"text", "image", "tool_result", "document"})
+# Roles whose `content` must stay a string in the Chat Completions schema.
+_TOOL_CONTENT_ROLES = frozenset({"tool", "function"})
 
 
 def _has_marker(value: Any) -> bool:
@@ -139,6 +141,14 @@ def _mark_last_tool(
 def _mark_last_text_block(
     message: dict[str, Any], marker: dict[str, str]
 ) -> dict | None:
+    if message.get("role") in _TOOL_CONTENT_ROLES:
+        # Tool/function content is a string in the Chat Completions schema.
+        # Rewriting it into a text-part array can be rejected upstream; a
+        # message-level marker keeps the shape and still sets the boundary.
+        content = message.get("content")
+        if not content:
+            return None
+        return {**message, "cache_control": dict(marker)}
     content = message.get("content")
     if isinstance(content, str):
         if not content:
@@ -227,7 +237,7 @@ def _has_chat_history(messages: list[Any]) -> bool:
             continue
         if role == "user":
             user_turns += 1
-        elif role in {"assistant", "tool"}:
+        elif role in {"assistant", "tool", "function"}:
             return True
     return user_turns > 1
 
@@ -260,7 +270,7 @@ def _mark_chat(body: dict[str, Any], marker: dict[str, str]) -> bool:
         _has_chat_history(messages)
         and isinstance(last_message, dict)
         and isinstance(last_role, str)
-        and last_role in {"user", "tool"}
+        and last_role in {"user", "tool", "function"}
     ):
         marked = _mark_last_text_block(last_message, marker)
         if marked is not None:
