@@ -1,5 +1,6 @@
 """Client interfaces for model inference and relay."""
 
+import asyncio
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from dataclasses import dataclass, field, replace
@@ -11,6 +12,7 @@ from verifiers.v1.configs.client import (
 )
 from verifiers.v1.configs.sampling import Sampling, SamplingConfig
 from verifiers.v1.dialects import Dialect
+from verifiers.v1.errors import ProviderError
 from verifiers.v1.graph import PendingTurn
 from verifiers.v1.types import Response
 
@@ -96,6 +98,10 @@ class RouteRejected(Exception):
 
 PROBE_TOKENS = 16
 """Output tokens a route change's probe asks for (16 is the least Responses accepts)."""
+PROBE_TIMEOUT = 60.0
+"""Seconds a route change's probe may take, retries included, before the change is refused."""
+PROBE_RETRY_DELAYS = (1.0, 4.0)
+"""Waits before retrying a probe the endpoint failed transiently (429, 5xx, timeout)."""
 
 
 class ModelRoute:
@@ -109,6 +115,7 @@ class ModelRoute:
 
     def __init__(self, ctx: ModelContext) -> None:
         self.ctx = ctx
+        self._updating = asyncio.Lock()
         self.dialect: Dialect | None = None
         """The wire format the rollout's harness speaks, set by the interception server
         from its first model request; None until then."""
@@ -127,34 +134,48 @@ class ModelRoute:
         dialect the harness speaks. That probe is one short request, sent when the model or
         client changes once the harness has made its first request."""
         changes = {"model": model, "client": client, "sampling": sampling}
-        new = replace(self.ctx, **{k: v for k, v in changes.items() if v is not None})
-        if type(new.client) is not type(self.ctx.client):
-            raise RouteRejected(
-                f"a rollout's client stays {self.ctx.client.type}: it can't move to a "
-                f"{new.client.type} client"
-            )
-        moved = (new.model, new.client) != (self.ctx.model, self.ctx.client)
-        if moved and self.dialect is not None:
-            await _probe(new, self.dialect)
-        self.ctx = new
+        changes = {k: v for k, v in changes.items() if v is not None}
+        # One update at a time, each from the context as the last one left it, so a change
+        # made while another one's probe was in flight is never undone.
+        async with self._updating:
+            new = replace(self.ctx, **changes)
+            if type(new.client) is not type(self.ctx.client):
+                raise RouteRejected(
+                    f"a rollout's client stays {self.ctx.client.type}: it can't move to a "
+                    f"{new.client.type} client"
+                )
+            moved = (new.model, new.client) != (self.ctx.model, self.ctx.client)
+            if moved and self.dialect is not None:
+                await _probe(new, self.dialect)
+            self.ctx = new
 
 
 async def _probe(ctx: ModelContext, dialect: Dialect) -> None:
-    """Send `ctx`'s model one short request in `dialect`; RouteRejected if it fails. A train
-    client serves the chat dialect only, and its own rollouts already speak it."""
+    """Send `ctx`'s model one short request in `dialect`; RouteRejected if the endpoint refuses
+    it, or still fails transiently (429, 5xx) after a retry or two, or PROBE_TIMEOUT passes. A
+    train client serves the chat dialect only, which its own rollouts already speak."""
     if isinstance(ctx.client, TrainClientConfig):
         return
     message = [{"role": "user", "content": "Reply with OK."}]
     body = {"input": message} if dialect.name == "responses" else {"messages": message}
     sampling = SamplingConfig(max_tokens=PROBE_TOKENS)
+    request = dialect.apply_overrides(body, ctx.model, sampling)
     client = resolve_client(ctx.client)
     try:
-        await client.get_response(
-            dialect, dialect.apply_overrides(body, ctx.model, sampling), sampling
-        )
+        async with asyncio.timeout(PROBE_TIMEOUT):
+            for delay in (*PROBE_RETRY_DELAYS, None):
+                try:
+                    await client.get_response(dialect, request, sampling)
+                    return
+                except ProviderError as e:
+                    transient = e.status_code == 429 or e.status_code >= 500
+                    if not transient or delay is None:
+                        raise
+                await asyncio.sleep(delay)
     except Exception as e:
+        reason = "no answer in time" if isinstance(e, TimeoutError) else str(e)
         raise RouteRejected(
-            f"{ctx.model} at {ctx.client.base_url} refused a {dialect.name} request: {e}"
+            f"{ctx.model} at {ctx.client.base_url} failed a {dialect.name} request: {reason}"
         ) from e
     finally:
         await client.close()
