@@ -1,4 +1,10 @@
-from verifiers.v1.clients.client import Client, ModelContext, ModelRoute, resolve_client
+from verifiers.v1.clients.client import (
+    Client,
+    ModelContext,
+    ModelRoute,
+    RouteRejected,
+    resolve_client,
+)
 from verifiers.v1.clients.eval import EvalClient
 from verifiers.v1.clients.train import TrainClient
 from verifiers.v1.configs.client import (
@@ -16,6 +22,7 @@ __all__ = [
     "EvalClientConfig",
     "ModelContext",
     "ModelRoute",
+    "RouteRejected",
     "TrainClient",
     "TrainClientConfig",
     "resolve_client",

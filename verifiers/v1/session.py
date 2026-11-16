@@ -21,7 +21,7 @@ import json
 from collections import Counter
 from collections.abc import Awaitable, Callable
 from contextlib import AbstractAsyncContextManager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from functools import cached_property
 from typing import get_origin, get_type_hints
 
@@ -224,8 +224,16 @@ class RolloutSession:
 
     @property
     def ctx(self) -> ModelContext:
-        """The model, client config and sampling of its next model turn."""
-        return self.route.ctx
+        """The model, client config and sampling of its next model turn: the route's, with
+        `max_turn_tokens` capping its `max_tokens` whatever sampling the route was given."""
+        ctx = self.route.ctx
+        cap = self.limits.max_turn_tokens
+        max_tokens = ctx.sampling.max_tokens
+        if cap is None or (max_tokens is not None and max_tokens <= cap):
+            return ctx
+        return replace(
+            ctx, sampling=ctx.sampling.model_copy(update={"max_tokens": cap})
+        )
 
     @property
     def stopped(self) -> bool:

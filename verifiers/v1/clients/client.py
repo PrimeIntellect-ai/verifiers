@@ -90,27 +90,71 @@ class ModelContext:
     sampling: Sampling = field(default_factory=Sampling)
 
 
+class RouteRejected(Exception):
+    """A route change the rollout can't take; its route is left as it was."""
+
+
+PROBE_TOKENS = 16
+"""Output tokens a route change's probe asks for (16 is the least Responses accepts)."""
+
+
 class ModelRoute:
     """Where one rollout's model turns go while it runs: its `ModelContext`, which the
     caller may change mid-rollout with `update`. The interception server reads the
     current context on every model request, so a change applies from the rollout's
     next turn (and to any retry of it); a new client config gets the server's shared
     client for it. A scheduler moving a running rollout to another endpoint, or a live
-    sampling change, is one `update`."""
+    sampling change, is one `update`. The new endpoint starts without the rollout's
+    prompt cache, so the first turn after a move pays for its whole prompt."""
 
     def __init__(self, ctx: ModelContext) -> None:
         self.ctx = ctx
+        self.dialect: Dialect | None = None
+        """The wire format the rollout's harness speaks, set by the interception server
+        from its first model request; None until then."""
 
-    def update(
+    async def update(
         self,
         *,
         model: str | None = None,
         client: ClientConfig | None = None,
         sampling: Sampling | None = None,
     ) -> None:
-        """Change the model, client or sampling of the rollout's next turns; a value
-        left out stays as it is."""
+        """Change the model, client or sampling of the rollout's next turns; a value left
+        out stays as it is. Raises `RouteRejected`, leaving the route unchanged, when the
+        rollout can't take the change: a client of another type (eval and train clients
+        don't mix within a rollout), or a model and endpoint that refuse a request in the
+        dialect the harness speaks. That probe is one short request, sent when the model or
+        client changes once the harness has made its first request."""
         changes = {"model": model, "client": client, "sampling": sampling}
-        self.ctx = replace(
-            self.ctx, **{k: v for k, v in changes.items() if v is not None}
+        new = replace(self.ctx, **{k: v for k, v in changes.items() if v is not None})
+        if type(new.client) is not type(self.ctx.client):
+            raise RouteRejected(
+                f"a rollout's client stays {self.ctx.client.type}: it can't move to a "
+                f"{new.client.type} client"
+            )
+        moved = (new.model, new.client) != (self.ctx.model, self.ctx.client)
+        if moved and self.dialect is not None:
+            await _probe(new, self.dialect)
+        self.ctx = new
+
+
+async def _probe(ctx: ModelContext, dialect: Dialect) -> None:
+    """Send `ctx`'s model one short request in `dialect`; RouteRejected if it fails. A train
+    client serves the chat dialect only, and its own rollouts already speak it."""
+    if isinstance(ctx.client, TrainClientConfig):
+        return
+    message = [{"role": "user", "content": "Reply with OK."}]
+    body = {"input": message} if dialect.name == "responses" else {"messages": message}
+    sampling = SamplingConfig(max_tokens=PROBE_TOKENS)
+    client = resolve_client(ctx.client)
+    try:
+        await client.get_response(
+            dialect, dialect.apply_overrides(body, ctx.model, sampling), sampling
         )
+    except Exception as e:
+        raise RouteRejected(
+            f"{ctx.model} at {ctx.client.base_url} refused a {dialect.name} request: {e}"
+        ) from e
+    finally:
+        await client.close()

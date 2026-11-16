@@ -761,6 +761,7 @@ class InterceptionServer(Interception):
         # One context for the whole request: a route updated while it is in flight applies
         # from the next request, never to half of this one.
         ctx = session.ctx
+        session.route.dialect = dialect
         session.client = client = self._client(ctx.client)
         body = dialect.apply_overrides(body, ctx.model, ctx.sampling)
         streaming = dialect.streaming(body)
