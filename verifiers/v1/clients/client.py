@@ -111,7 +111,8 @@ class ModelRoute:
     next turn (and to any retry of it); a new client config gets the server's shared
     client for it. A scheduler moving a running rollout to another endpoint, or a live
     sampling change, is one `update`. The new endpoint starts without the rollout's
-    prompt cache, so the first turn after a move pays for its whole prompt."""
+    prompt cache, so the first turn after a move pays for its whole prompt. Model and
+    client changes are supported for eval clients only; training routes may update sampling."""
 
     def __init__(self, ctx: ModelContext) -> None:
         self.ctx = ctx
@@ -130,9 +131,10 @@ class ModelRoute:
         """Change the model, client or sampling of the rollout's next turns; a value left
         out stays as it is. Raises `RouteRejected`, leaving the route unchanged, when the
         rollout can't take the change: a client of another type (eval and train clients
-        don't mix within a rollout), or a model and endpoint that refuse a request in the
-        dialect the harness speaks. That probe is one short request, sent when the model or
-        client changes once the harness has made its first request."""
+        don't mix within a rollout), a model or client change on a training route, or an
+        eval endpoint that refuses a request in the dialect the harness speaks. That probe
+        is one short request, sent when the model or client changes once the harness has
+        made its first request."""
         changes = {"model": model, "client": client, "sampling": sampling}
         changes = {k: v for k, v in changes.items() if v is not None}
         # One update at a time, each from the context as the last one left it, so a change
@@ -145,6 +147,10 @@ class ModelRoute:
                     f"{new.client.type} client"
                 )
             moved = (new.model, new.client) != (self.ctx.model, self.ctx.client)
+            if moved and isinstance(self.ctx.client, TrainClientConfig):
+                raise RouteRejected(
+                    "training routes can't change model or client; only sampling may change"
+                )
             if moved and self.dialect is not None:
                 await _probe(new, self.dialect)
             self.ctx = new
@@ -152,10 +158,7 @@ class ModelRoute:
 
 async def _probe(ctx: ModelContext, dialect: Dialect) -> None:
     """Send `ctx`'s model one short request in `dialect`; RouteRejected if the endpoint refuses
-    it, or still fails transiently (429, 5xx) after a retry or two, or PROBE_TIMEOUT passes. A
-    train client serves the chat dialect only, which its own rollouts already speak."""
-    if isinstance(ctx.client, TrainClientConfig):
-        return
+    it, or still fails transiently (429, 5xx) after a retry or two, or PROBE_TIMEOUT passes."""
     message = [{"role": "user", "content": "Reply with OK."}]
     body = {"input": message} if dialect.name == "responses" else {"messages": message}
     sampling = SamplingConfig(max_tokens=PROBE_TOKENS)
