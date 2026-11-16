@@ -242,7 +242,9 @@ class ACPHarnessSession(HarnessSession):
         self._stderr_tail.clear()
         program = await self.runtime.prepare_uv_script(
             ACP_SOURCE,
-            {**self.config.env, "UV_FROZEN": "false"},
+            # Match setup's cache location; per-session TMPDIR belongs to the
+            # agent process, not dependency preparation after the network cut.
+            {**self.harness.config.resolved_env, "UV_FROZEN": "false"},
             activate=False,
         )
         process = await self.runtime.exec(program, self.config.env)

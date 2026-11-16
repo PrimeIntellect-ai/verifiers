@@ -57,6 +57,12 @@ logger = get_logger(__name__)
 _LINUX = sys.platform == "linux"
 _HOST_ALIAS = "host.docker.internal"
 _NETWORK_IMAGE = "localhost/verifiers-network:1"
+# Both standalone and Compose workspace containers need these for bubblewrap.
+USER_NAMESPACE_SECURITY_OPTIONS = (
+    "seccomp=unconfined",
+    "systempaths=unconfined",
+    "apparmor=unconfined",
+)
 _PASS_LISTENER = r"""
 import array, socket
 control = socket.socket(socket.AF_UNIX)
@@ -401,14 +407,8 @@ class DockerBackend(RuntimeBackend):
         self._container = f"vf-{uuid.uuid4().hex}"
         options = ["--network", "bridge", "--publish", f"127.0.0.1::{SERVICE_PORT}"]
         if self.config.user_namespaces:
-            options += [
-                "--security-opt",
-                "seccomp=unconfined",
-                "--security-opt",
-                "systempaths=unconfined",
-                "--security-opt",
-                "apparmor=unconfined",
-            ]
+            for option in USER_NAMESPACE_SECURITY_OPTIONS:
+                options += ["--security-opt", option]
         if not _LINUX:
             options += ["--add-host", f"{_HOST_ALIAS}:host-gateway"]
         if self._restricted:

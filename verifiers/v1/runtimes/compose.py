@@ -17,7 +17,7 @@ from pathlib import Path
 
 from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes import DockerBackend, DockerConfig, PrimeConfig
-from verifiers.v1.runtimes.backends.docker import cli
+from verifiers.v1.runtimes.backends.docker import USER_NAMESPACE_SECURITY_OPTIONS, cli
 from verifiers.v1.runtimes.base import SERVICE_PORT
 from verifiers.v1.utils.aio import run_shielded
 from verifiers.v1.utils.logging import get_logger
@@ -346,6 +346,24 @@ async def compose_services(
                 main.pop("image", None)
             if "workdir" in main:
                 main["working_dir"] = main.pop("workdir")
+            if config.user_namespaces:
+                # Compose creates the container before attach(), bypassing start().
+                # Preserve unrelated authored options and reject incompatible
+                # profiles instead of passing conflicting options to Docker.
+                for option in services[spec.workspace].get("security_opt", []):
+                    normalized = option.replace(":", "=", 1)
+                    if (
+                        normalized.split("=", 1)[0]
+                        in {
+                            value.split("=", 1)[0]
+                            for value in USER_NAMESPACE_SECURITY_OPTIONS
+                        }
+                        and normalized not in USER_NAMESPACE_SECURITY_OPTIONS
+                    ):
+                        raise SandboxError(
+                            f"Compose workspace security option conflicts with user namespaces: {option}"
+                        )
+                main["security_opt"] = list(USER_NAMESPACE_SECURITY_OPTIONS)
             overlay = {"services": {spec.workspace: main}}
             # Port publication belongs to the service that owns main's network.
             publish = overlay["services"].setdefault(owner, {})
