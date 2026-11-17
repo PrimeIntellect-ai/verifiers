@@ -41,8 +41,11 @@ async def ensure_installed(
     `pid:starttime` so a dead holder is reaped even if its pid was reused."""
     lock = shlex.quote(lock or f"{directory}/install.lock")
     ran = f"echo {INSTALLED_MARKER}"
+    # Its own shell process: in a `( ... )` subshell left of `&&`, the shell ignores the
+    # installer's `set -e`, so a failed step could still print the marker
+    installer = f"{shlex.join(shell)} {shlex.quote(install)}"
     script = (
-        f"{ready} || {{ ({install}) && {ran}; }}" if ready else f"({install}) && {ran}"
+        f"{ready} || {{ {installer} && {ran}; }}" if ready else f"{installer} && {ran}"
     )
     run = f"{shlex.join(shell)} {shlex.quote(script)}"
     # The owner token is pid:starttime (starttime from /proc where readable), so a reused pid
