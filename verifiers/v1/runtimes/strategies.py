@@ -57,7 +57,9 @@ class _SplitDeployment(_DeploymentStrategy):
             )
         d.backend.env = d.env
         await d.own(d.backend)
-        config = d.harness_config.model_copy(update={"mounts": {}})
+        config = d.harness_config.model_copy(
+            update={"mounts": {}, "workdir": d.backend.config.workdir}
+        )
         harness = make_backend(config, name=f"{d.backend.name}-harness")
         harness.env = {}
         await d.own(harness)
@@ -166,7 +168,7 @@ class _PrivateNetworkDeployment(_DeploymentStrategy):
             harness = self._harness = make_backend(
                 _harness_config(
                     d.config.harness, d.execution_network or d.backend.config
-                ),
+                ).model_copy(update={"workdir": d.backend.config.workdir}),
                 f"{d.backend.name}-harness",
             )
         self._services = await d.enter(AsyncExitStack())
