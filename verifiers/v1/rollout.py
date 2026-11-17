@@ -816,6 +816,7 @@ class Rollout:
                 )
             if not self._agent_finished():
                 await self._close_harness()
+            trace.ok = not self._failed
             trace.notify()
             if not self._failed and self._opened:
                 assert runtime is not None

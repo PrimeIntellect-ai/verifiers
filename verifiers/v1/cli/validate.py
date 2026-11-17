@@ -338,6 +338,7 @@ async def _run_check(task: Task, config: ValidateConfig, mode: str) -> ResultRow
                 name="validate",
                 trainable=False,
             ),
+            ok=True,
         )
         await deployment.start()
         runtime = deployment.workspace
