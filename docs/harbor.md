@@ -119,7 +119,7 @@ Because provider-hosted web tools execute outside the sandbox, verifiers transla
 
 ## Task-declared MCP servers
 
-When a Harbor task declares `mcp_servers` in `task.toml`, verifiers exposes them through a tool server inside the task runtime and passes an HTTP MCP endpoint to the harness (which requires a harness that supports MCP).
+When a Harbor task declares `mcp_servers` in `task.toml`, a Harbor-specific adapter exposes them inside the task runtime and passes an HTTP MCP endpoint to the harness (which requires a harness that supports MCP).
 
 The bridge supports `stdio`, `sse`, and `streamable-http` servers, forwarding their tools and schemas automatically without any task-specific wrapper code. For `stdio` servers, make sure the server command and its dependencies are installed in the image or during task `setup`; URL-based entries connect to an existing service rather than launching one.
 

@@ -1,6 +1,6 @@
 """An eval-wide shared writable tool (scratchpad) isolates state across concurrent
 rollouts, across the runtime x runtime grid. Shared servers
-always run in their own runtime (colocation is per-rollout, shared is eval-level)."""
+run once per eval in their own runtime."""
 
 import pytest
 from grid import placements
