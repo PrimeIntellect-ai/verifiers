@@ -243,6 +243,14 @@ async def grade_submission(
     policy = scoring if scoring is not None else task.scoring
     if policy.mode != "isolated":
         raise ValueError("grade_submission requires isolated scoring")
+    if runtime is None and not trace.state.artifacts:
+        # A captured empty submission still has the implicit /logs/artifacts key
+        # with a None value. An empty mapping means collection/loading never
+        # happened, or its saved directory is missing.
+        raise ValueError(
+            "No captured submission artifacts are available; load with "
+            "with_artifacts=True and ensure the saved artifact directory exists"
+        )
     solver = runtime if runtime is not None else trace.agent.runtime
     if solver is None:
         raise ValueError("saved submission has no solver runtime metadata")
