@@ -58,13 +58,12 @@ async def test_verifier_build(tmp_path, runtime):
         "PY\n"
         "echo 1 > /logs/verifier/reward.txt\n"
     )
-    (tests / "Dockerfile").write_text(
+    dockerfile = (
         f"FROM {IMAGE}\n"
         "RUN useradd -m grader && mkdir /app /tests && chown grader /app /tests\n"
         "COPY baked.sh /tests/test.sh\n"
         "COPY marker /tests/marker\n"
         "ENV BUILD_TOKEN=a\\$b\n"
-        "WORKDIR /app\n"
         "USER grader\n"
         'ENTRYPOINT ["sh", "-c", "exit 42"]\n'
     )
@@ -80,6 +79,11 @@ async def test_verifier_build(tmp_path, runtime):
     )
     for marker in ("first", "changed"):
         (tests / "marker").write_text(marker)
+        # Missing WORKDIR uses the standalone /app default; an image declaration
+        # retains it on the rebuilt grader, with the same relative artifact.
+        (tests / "Dockerfile").write_text(
+            dockerfile + ("WORKDIR /app\n" if marker == "changed" else "")
+        )
         task = HarborTask(
             HarborData(
                 prompt="Submit the answer",

@@ -56,7 +56,7 @@ async def prepare_verifier_image(
         config.model_copy(
             update={
                 "image": image,
-                "workdir": config.workdir or metadata.get("WorkingDir") or "/",
+                "workdir": config.workdir or metadata.get("WorkingDir") or "/app",
             }
         ),
         env,
