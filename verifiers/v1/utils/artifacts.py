@@ -332,13 +332,6 @@ async def restore(runtime: Runtime, collected: dict[str, bytes | None]) -> None:
     if not collected:
         return
     await validate_runtime_mounts(runtime, collected)
-    # Restoring into the subprocess runtime would extract absolute paths onto the
-    # developer's filesystem, so refuse it before any archive reaches the host.
-    if getattr(runtime.config, "type", None) == "subprocess":
-        raise RuntimeError(
-            "refusing to restore artifacts into the subprocess runtime: extraction "
-            "writes to absolute paths on the host. Grade in a container."
-        )
     for root, archive in collected.items():
         _validate_restore(root, archive)
     collected = {
