@@ -4,7 +4,7 @@ before any runtime is provisioned. The integration grid refuses the same cells."
 import pytest
 
 import verifiers.v1 as vf
-from verifiers.v1.runtimes import CustomRuntimeConfig, DockerConfig
+from verifiers.v1.runtimes import DockerConfig, SubprocessConfig
 from verifiers.v1.utils.compile import validate_pairing
 from verifiers.v1.utils.loaders import harness_class, harness_config_type
 
@@ -18,38 +18,20 @@ class BoxedTask(vf.Task):
     NEEDS_CONTAINER = True
 
 
-def test_in_house_loops_accept_a_runtime_without_images() -> None:
+def test_in_house_loops_run_on_the_host() -> None:
     for harness_id in ("null", "bash"):
-        validate_pairing(
-            harness(harness_id),
-            vf.Task,
-            CustomRuntimeConfig.model_validate(
-                {"import_path": "test_runtimes.HostBackend"}
-            ),
-        )
+        validate_pairing(harness(harness_id), vf.Task, SubprocessConfig())
 
 
 def test_agent_programs_need_a_container() -> None:
     with pytest.raises(ValueError, match="needs a container runtime"):
-        validate_pairing(
-            harness("codex"),
-            vf.Task,
-            CustomRuntimeConfig.model_validate(
-                {"import_path": "test_runtimes.HostBackend"}
-            ),
-        )
+        validate_pairing(harness("codex"), vf.Task, SubprocessConfig())
     validate_pairing(harness("codex"), vf.Task, DockerConfig())
 
 
 def test_a_boxed_task_needs_a_container() -> None:
     with pytest.raises(ValueError, match="BoxedTask needs a container runtime"):
-        validate_pairing(
-            harness("bash"),
-            BoxedTask,
-            CustomRuntimeConfig.model_validate(
-                {"import_path": "test_runtimes.HostBackend"}
-            ),
-        )
+        validate_pairing(harness("bash"), BoxedTask, SubprocessConfig())
     validate_pairing(harness("bash"), BoxedTask, DockerConfig())
 
 
