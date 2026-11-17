@@ -99,3 +99,37 @@ async def test_expired_deadline_is_a_timeout_when_the_runtime_reports_an_error()
 
     assert trace.is_timeout and not trace.errors
     assert trace.stop_condition == "agent_timeout"
+
+
+class NotifyRollout(FailingSegmentRollout):
+    notify = Rollout.notify
+
+
+@pytest.mark.asyncio
+async def test_a_notice_reaches_the_harness_session_and_never_starts_a_turn():
+    """`notify` passes a notice to the running turn's harness as a runtime notice; with
+    no harness session it says no turn runs, rather than waking one as steer(wake=) can."""
+    trace = make_trace()
+    told = []
+
+    class NoticedSession:
+        async def notify(self, message, *, message_id=None):
+            told.append((message, message_id))
+            return {"outcome": "delivered"}
+
+    run = make_rollout(trace, NoticedSession())
+    run.__class__ = NotifyRollout
+    interaction = Interaction(run)
+    assert await interaction.notify("DM from b1", message_id="d1") == {
+        "outcome": "delivered"
+    }
+    assert told == [("DM from b1", "d1")]
+    with pytest.raises(ValueError):
+        await interaction.notify(" ")
+
+    idle = make_rollout(make_trace(), None)
+    idle.__class__ = NotifyRollout
+    assert await Interaction(idle).notify("DM") == {
+        "outcome": "promptRequired",
+        "reason": "noRunningTurn",
+    }
