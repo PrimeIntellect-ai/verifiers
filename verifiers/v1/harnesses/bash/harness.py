@@ -55,7 +55,6 @@ class BashHarness(Harness[BashHarnessConfig]):
     SUPPORTS_RESUME = True
     SUPPORTS_TOOL_INTERCEPTION = True
     SUPPORTS_SPLIT_EXECUTION = True
-    NEEDS_CONTAINER = False
 
     async def remote_tools(self, runtime: Runtime, data: TaskData):
         from verifiers.v1.harnesses.bash.remote import BashRemoteTools

@@ -8,7 +8,7 @@ from urllib.parse import urlsplit
 
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.errors import SandboxError
-from verifiers.v1.runtimes import PrimeBackend, PrimeConfig, make_backend
+from verifiers.v1.runtimes import DockerBackend, PrimeBackend, PrimeConfig, make_backend
 from verifiers.v1.runtimes.compose import compose_services
 from verifiers.v1.runtimes.deployment import ServicesSpec, _DeploymentStrategy
 from verifiers.v1.runtimes.private_network import lan_host, private_network
@@ -343,7 +343,7 @@ def _deployment_strategy(config, backend, spec, tool_vms=None):
     if spec is not None:
         if isinstance(backend, PrimeBackend):
             return _NativeComposeDeployment()
-        if not backend.SUPPORTS_COMPOSE:
+        if not isinstance(backend, DockerBackend):
             raise ValueError(
                 f"the task deploys Compose services, but the {backend.type} runtime "
                 "cannot run Compose services; use ServicesSpec on Prime or local Docker"

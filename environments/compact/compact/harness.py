@@ -26,7 +26,6 @@ class CompactingHarnessConfig(HarnessConfig):
 class CompactingHarness(Harness[CompactingHarnessConfig]):
     SUPPORTS_MCP = True
     EXECUTES_CODE = False
-    NEEDS_CONTAINER = False
     SUPPORTS_SPLIT_EXECUTION = True
 
     async def remote_tools(self, runtime: Runtime, data: TaskData):

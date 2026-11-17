@@ -10,6 +10,7 @@ from verifiers.v1.configs.runtime import (
     NetworkPolicyConfig,
     PrimeConfig,
     RuntimeConfig,
+    SandboxConfig,
 )
 from verifiers.v1.runtimes.backends.custom import CustomRuntimeInfo, import_backend
 from verifiers.v1.runtimes.backends.docker import DockerBackend, DockerRuntimeInfo
@@ -104,6 +105,7 @@ __all__ = [
     "RuntimeInfo",
     "RuntimeLoss",
     "RuntimeProcess",
+    "SandboxConfig",
     "backend_cls",
     "make_backend",
     "provision_backend",

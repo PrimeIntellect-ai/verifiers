@@ -32,19 +32,21 @@ def requires_tunnel(
     """Whether the interception must be exposed via a tunnel — some consumer is off the
     host network: the harness itself, a live `shared` server in a remote runtime, or a
     tool server config placing one there (each reaches the `/state` channel from
-    its own runtime). Task-format adapters share the harness's locality. Skipped as
-    non-consumers: a config-`url` server (external —
-    it connects out), and an `external` shared server (outside the state machinery
-    entirely). False means every consumer reaches the server at localhost."""
+    its own runtime). A server without a runtime of its own shares the harness's
+    locality, as do task-format adapters. Skipped as non-consumers: a config-`url`
+    server (external — it connects out), and an `external` shared server (outside the
+    state machinery entirely). False means every consumer reaches the server at
+    localhost."""
     from verifiers.v1.mcp.toolset import BaseToolsetConfig
 
     if not harness_is_local:
         return True
-    if any(not s.external and not s.local for s in shared):
+    if any(s.runtime is not None and not s.runtime.is_local for s in shared):
         return True
     return any(
         isinstance(config, BaseToolsetConfig)
         and not config.url
+        and config.runtime is not None
         and not runtime_is_local(config.runtime)
         for config in server_configs
     )

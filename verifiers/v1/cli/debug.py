@@ -25,7 +25,7 @@ from verifiers.v1.cli.resolve import (
     with_positional_taskset,
 )
 from verifiers.v1.configs.cli.debug import DebugConfig
-from verifiers.v1.runtimes import ProgramResult, Runtime, backend_cls, make_backend
+from verifiers.v1.runtimes import ProgramResult, Runtime, make_backend
 from verifiers.v1.state import state_cls
 from verifiers.v1.task import Task
 from verifiers.v1.trace import AgentInfo, Error, Trace, TraceTask
@@ -274,12 +274,6 @@ async def run_debug(config: DebugConfig) -> list[Trace]:
             f"{type(taskset).__name__} is infinite - bound the run with -n"
         )
     tasks = list(taskset)
-    if not backend_cls(config.runtime).SUPPORTS_TASK_IMAGES and any(
-        type(t).NEEDS_CONTAINER or t.data.image for t in tasks
-    ):
-        raise SystemExit(
-            "taskset needs a container runtime to debug - pass --runtime.type docker (or prime)"
-        )
 
     out = output_path(config)
     save_config(config, out, "debug.json")

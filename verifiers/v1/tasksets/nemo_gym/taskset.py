@@ -8,15 +8,18 @@ from collections.abc import Iterator
 from contextlib import AsyncExitStack
 from pathlib import Path
 from typing import Any, ClassVar, cast
+from urllib.parse import urlsplit
 
 import httpx
 from pydantic import Field
 
 from verifiers.v1.dialects.responses import ResponsesDialect
 from verifiers.v1.envs.single_agent import SingleAgentEnv
+from verifiers.v1.interception.tunnel import PrimeTunnel
 from verifiers.v1.mcp import SharedToolsetConfig, Toolset
-from verifiers.v1.mcp.launch import _read_back_port, log_tail, reachable_url
+from verifiers.v1.mcp.launch import _read_back_port, log_tail, tool_runtime
 from verifiers.v1.runtimes import Runtime, provision_backend
+from verifiers.v1.runtimes.base import SERVICE_PORT
 from verifiers.v1.task import Task, TaskConfig, TaskData
 from verifiers.v1.taskset import Taskset, TasksetConfig
 from verifiers.v1.trace import Trace
@@ -42,7 +45,8 @@ class NeMoGymConfig(TasksetConfig):
     """JSONL rows containing ``responses_create_params`` and verifier metadata."""
 
     tools: SharedToolsetConfig = SharedToolsetConfig()
-    """Placement of the shared tool and managed resource servers; Prime by default."""
+    """Placement of the shared tool and managed resource servers; the harness's
+    provider by default."""
     task: NeMoGymTaskConfig = NeMoGymTaskConfig()
 
 
@@ -137,7 +141,7 @@ class NeMoGymEnv(SingleAgentEnv):
         entrypoint = taskset.resource_server
         if entrypoint is None:
             raise ValueError("set --env.taskset.task.resources-url")
-        runtime_config = taskset.config.tools.runtime
+        runtime_config = tool_runtime(taskset.config.tools, self.tool_provider())
         if getattr(runtime_config, "network_restricted", False):
             raise ValueError(
                 "managed NeMo Gym resource servers need an unrestricted runtime"
@@ -154,7 +158,7 @@ class NeMoGymEnv(SingleAgentEnv):
                 program,
                 {
                     "NEMO_GYM_RESOURCE_SERVER": entrypoint,
-                    "NEMO_GYM_PORT": str(runtime.published_port or 0),
+                    "NEMO_GYM_PORT": str(SERVICE_PORT),
                     "NEMO_GYM_TOKEN": token,
                 },
                 log_file,
@@ -163,9 +167,13 @@ class NeMoGymEnv(SingleAgentEnv):
             loop = asyncio.get_running_loop()
             deadline = loop.time() + (math.inf if timeout is None else timeout)
             port = await _read_back_port(runtime, port_file, deadline)
-            resources_url = await stack.enter_async_context(
-                reachable_url(runtime, port, consumer_is_local=False)
-            )
+            resources_url = await runtime.expose(port)
+            if runtime.is_local:
+                # The shared NeMo tool server reaches this from a container of its own,
+                # where host loopback is not this machine: publish it.
+                resources_url = await stack.enter_async_context(
+                    PrimeTunnel().expose(urlsplit(resources_url).port or 80)
+                )
             async with httpx.AsyncClient(
                 timeout=1, headers={"X-Verifiers-Nemo-Token": token}
             ) as client:

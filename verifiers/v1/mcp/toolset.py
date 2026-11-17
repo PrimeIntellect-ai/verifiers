@@ -8,7 +8,7 @@ from pydantic import Field, model_validator
 from pydantic_config import BaseConfig
 
 from verifiers.v1.mcp.server import ConfigT, ServerBase
-from verifiers.v1.runtimes import PrimeConfig, RuntimeConfig
+from verifiers.v1.runtimes import RuntimeConfig
 from verifiers.v1.state import StateT
 from verifiers.v1.utils.decorators import discover_decorated
 
@@ -28,16 +28,18 @@ class ToolsetTimeoutConfig(BaseConfig):
 class BaseToolsetConfig(BaseConfig):
     """Runtime and connection settings for per-task and shared tool servers."""
 
-    runtime: RuntimeConfig = PrimeConfig()
-    """Where the server runs: a Prime sandbox by default."""
+    runtime: RuntimeConfig | None = None
+    """Where the server runs. None runs it in a sandbox of its own from the harness's
+    provider: a Docker container beside a Docker harness, a Prime VM beside a Prime
+    one. A server on a local runtime cannot serve a remote harness."""
     url: str | None = None
     timeout: ToolsetTimeoutConfig = ToolsetTimeoutConfig()
 
 
 class ToolsetConfig(BaseToolsetConfig):
-    """A per-task tool server. A Prime `runtime` beside a Prime workspace without a task
-    service spec is a VM of the server's own that joins the workspace over the rollout's
-    private network, under its own egress policy."""
+    """A per-task tool server. On Prime beside a Prime workspace without a task service
+    spec, its VM joins the workspace over the rollout's private network, under its own
+    egress policy."""
 
     service: str | None = None
     """Run the server in a named native Prime service VM. The harness reaches it
@@ -52,7 +54,7 @@ class ToolsetConfig(BaseToolsetConfig):
                 "a tool server placed in a service cannot use a remote URL"
             )
         # The service is the server's runtime; another one, or its policy, would go unused.
-        if self.runtime != PrimeConfig():
+        if self.runtime is not None:
             raise ValueError(
                 "a tool server placed in a service runs in that service and "
                 f"takes no runtime of its own (got {self.runtime.type})"

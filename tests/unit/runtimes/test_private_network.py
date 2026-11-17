@@ -33,7 +33,7 @@ def toolset(name, **config):
 def test_tool_servers_on_prime_runtimes_beside_a_prime_workspace_get_vms():
     toolsets = [
         toolset("atlas", runtime=ATLAS),
-        toolset("search"),  # its own Prime VM by default
+        toolset("search"),  # the workspace's provider by default
         toolset("remote", url="https://tools.example/mcp"),
         toolset("gym", service="tools"),  # a named task service
         toolset("local", runtime=DockerConfig()),  # a published port
@@ -69,7 +69,8 @@ def test_the_deployment_joins_tool_vms_over_a_private_network():
     )
     spec = vf.ComposeSpec("task")
     assert isinstance(
-        _deployment_strategy(None, DockerBackend, spec), _ContainerDeployment
+        _deployment_strategy(None, object.__new__(DockerBackend), spec),
+        _ContainerDeployment,
     )
 
 
@@ -211,7 +212,8 @@ def served_url(monkeypatch, server, **kwargs):
     monkeypatch.setattr(launch, "serve_in_runtime", serve_in_runtime)
 
     async def url():
-        async with launch._serve(server, **kwargs) as served:
+        provider = kwargs.pop("provider", PrimeConfig())
+        async with launch._serve(server, provider, **kwargs) as served:
             return served.url
 
     return asyncio.run(url())
@@ -254,3 +256,20 @@ def test_an_explicit_service_needs_a_task_service_spec(monkeypatch, service):
 def test_a_restricted_runtime_without_a_private_network_is_refused(monkeypatch):
     with pytest.raises(ToolsetError, match="joins the rollout's private network"):
         served_url(monkeypatch, toolset("forth", runtime=FORTH))
+
+
+def test_a_tool_server_defaults_to_a_sandbox_from_the_harness_provider():
+    default = vf.ToolsetConfig()
+    assert launch.tool_runtime(default, DockerConfig(image="task:1")) == DockerConfig()
+    assert launch.tool_runtime(default, PrimeConfig(cpu=8)) == PrimeConfig()
+    assert launch.tool_runtime(vf.ToolsetConfig(runtime=ATLAS), DockerConfig()) == ATLAS
+
+
+def test_a_local_tool_server_is_refused_for_a_remote_harness(monkeypatch):
+    harness = SimpleNamespace(is_local=False, config=PrimeConfig())
+    with pytest.raises(ToolsetError, match="remote harness cannot reach"):
+        served_url(
+            monkeypatch,
+            toolset("local", runtime=DockerConfig()),
+            harness_runtime=harness,
+        )

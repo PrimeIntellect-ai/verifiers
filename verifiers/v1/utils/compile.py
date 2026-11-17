@@ -6,50 +6,22 @@ from collections.abc import Collection
 
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.harness import Harness
-from verifiers.v1.runtimes import (
-    RuntimeConfig,
-    backend_cls,
-)
+from verifiers.v1.runtimes import RuntimeConfig
 from verifiers.v1.task import Task
 from verifiers.v1.utils.artifacts import validate_artifact_mounts
-from verifiers.v1.utils.logging import get_logger
-
-logger = get_logger(__name__)
 
 
-def resolve_runtime_config(
-    base: RuntimeConfig, task: Task, warned: set[tuple[str, str]] | None = None
-) -> RuntimeConfig:
-    """Resolve a task's runtime config from `base`: inject the task's `image` (an
-    image needs a runtime supporting task images), apply its network policy, `workdir`,
-    and requested `resources` where the runtime supports them. Precedence: cli/toml >
-    task > default except that restrictions compose; an unsupported resource warns once
-    (deduped via `warned`)."""
+def resolve_runtime_config(base: RuntimeConfig, task: Task) -> RuntimeConfig:
+    """Resolve a task's runtime config from `base`: inject the task's `image`, apply its
+    network policy, `workdir`, and requested `resources`. Precedence: cli/toml > task >
+    default except that restrictions compose."""
     config = base
+    fields = type(config).model_fields
     updates: dict = {}
     if task.data.image is not None:
-        if not backend_cls(config).SUPPORTS_TASK_IMAGES:
-            raise ValueError(
-                f"task {task.data.idx!r} requires image {task.data.image!r}, but the "
-                f"{config.type} runtime cannot run images; use a supported runtime"
-            )
         updates["image"] = task.data.image
-    workdir_spec = type(config).model_fields.get("workdir")
-    if (
-        task.data.workdir is not None
-        and workdir_spec is not None
-        and config.workdir == workdir_spec.default
-    ):
+    if task.data.workdir is not None and config.workdir == fields["workdir"].default:
         updates["workdir"] = task.data.workdir
-    if (
-        task.data.agent_user is not None
-        and not backend_cls(config).SUPPORTS_USER_SWITCHING
-    ):
-        raise ValueError(
-            f"task {task.data.idx!r} runs its agent as {task.data.agent_user!r}, but "
-            f"the {config.type} runtime cannot run as another user; use a supported "
-            "runtime"
-        )
     if task.data.network.network_restricted:
         if not isinstance(config, NetworkPolicyConfig):
             raise ValueError(
@@ -59,21 +31,9 @@ def resolve_runtime_config(
             )
         config = config.with_task_network_policy(task.data.network)
     for resource, value in task.data.resources.model_dump(exclude_none=True).items():
-        spec = type(config).model_fields.get(resource)
-        if spec is None:
-            key = (config.type, resource)
-            if warned is not None and key not in warned:
-                warned.add(key)
-                logger.warning(
-                    "Ignoring resource %s - the %s runtime does not support it",
-                    resource,
-                    config.type,
-                )
-        elif (
-            getattr(config, resource) == spec.default
-        ):  # still the default → task may set it
+        # Still the default → the task may set it; a cli/toml value wins over the task.
+        if getattr(config, resource) == fields[resource].default:
             updates[resource] = value
-        # else: cli/toml changed it from the default → it wins over the task
     config = config.model_copy(update=updates) if updates else config
     validate_artifact_mounts(config, (a.source for a in task.data.artifacts))
     return config
@@ -108,17 +68,4 @@ def validate_pairing(
             f"Harness {harness.config.id!r} has no native skill support, but "
             "`skills` is set. Run them with a harness whose program discovers "
             "skills (e.g. --env.agent.harness.id claude-code)."
-        )
-    container = backend_cls(runtime_config).SUPPORTS_TASK_IMAGES
-    if harness.NEEDS_CONTAINER and not container:
-        raise ValueError(
-            f"Harness {harness.config.id!r} needs a container runtime "
-            f"(NEEDS_CONTAINER), but this run resolves to the {runtime_config.type} "
-            "runtime; use a supported runtime."
-        )
-    if task_cls.NEEDS_CONTAINER and not container:
-        raise ValueError(
-            f"{task_cls.__name__} needs a container runtime (NEEDS_CONTAINER), but "
-            f"this run resolves to the {runtime_config.type} runtime; use a "
-            "supported runtime."
         )
