@@ -27,18 +27,6 @@ PACKAGES_DIR = f"{CODEX_DIR}/acp"
 ACP_VERSION = "2.5.0"
 CODEX_BIN = f"{PACKAGES_DIR}/node_modules/.bin/codex"
 ACP_BIN = f"{PACKAGES_DIR}/node_modules/.bin/codex-acp"
-INSTALL = r"""
-set -e
-export PATH="/var/tmp/vf-node/bin:$PATH"
-rm -f {ready}
-npm install --prefix {packages} --ignore-scripts --no-audit --no-fund \
-    --omit=dev \
-    "@agentclientprotocol/codex-acp@$AGENT_CODEX_ACP_VERSION" \
-    "@openai/codex@$AGENT_CODEX_VERSION" >/dev/null
-touch {ready}
-"""
-
-
 EXECUTOR_DIR = "/var/tmp/agent-tools/codex-executor-{version}"
 EXECUTOR_BIN = f"{EXECUTOR_DIR}/node_modules/.bin/codex"
 INSTALL = r"""
