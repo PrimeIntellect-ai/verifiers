@@ -102,6 +102,11 @@ def _source_files(src: Path) -> tuple[Path, list[Path]]:
             files = []
             for current, dirs, names in os.walk(directory):
                 dirs[:] = [name for name in dirs if name not in _EXCLUDED]
+                files.extend(
+                    Path(current) / name
+                    for name in dirs
+                    if (Path(current) / name).is_symlink()
+                )
                 files.extend(Path(current) / name for name in names)
             return files
         files = []
@@ -203,34 +208,39 @@ async def _build(
     runtime: Runtime, command: str, env: dict[str, str], *, python: str = "python3"
 ) -> None:
     process = None
+    completion = None
     try:
         async with asyncio.timeout(_BUILD_TIMEOUT):
             process = await runtime.exec(
                 [python, "-c", _BUILD_SUPERVISOR, command], env
             )
-            stdout, stderr, code = await asyncio.gather(
+            completion = asyncio.gather(
                 _drain(process.stdout), _drain(process.stderr), process.wait()
             )
+            stdout, stderr, code = await asyncio.shield(completion)
         if code:
             detail = (stdout + b"\n" + stderr).decode(errors="replace").strip()
             raise ToolsetError(f"package install failed in runtime: {detail[-2000:]}")
     finally:
-        if process is not None and await process.poll() is None:
+        if process is not None:
 
             async def stop():
-                try:
-                    async with asyncio.timeout(10):
-                        await process.terminate()
+                if await process.poll() is None:
+                    try:
+                        async with asyncio.timeout(10):
+                            await process.terminate()
+                            await process.wait()
+                    except Exception as exc:
+                        logger.warning(
+                            "Failed to terminate package install, sending SIGKILL - %s: %s",
+                            type(exc).__name__,
+                            clip(str(exc)),
+                            exc_info=logger.isEnabledFor(logging.DEBUG),
+                        )
+                        await process.kill()
                         await process.wait()
-                except Exception as exc:
-                    logger.warning(
-                        "Failed to terminate package install, sending SIGKILL - %s: %s",
-                        type(exc).__name__,
-                        clip(str(exc)),
-                        exc_info=logger.isEnabledFor(logging.DEBUG),
-                    )
-                    await process.kill()
-                    await process.wait()
+                if completion is not None:
+                    await completion
 
             await run_shielded(stop())
 
@@ -257,7 +267,7 @@ async def install_package(
             f"uv tool run --python {quote(python)} --from wheel==0.48.0 wheel pack --dest-dir {output} .; "
         )
         target = f"{quote(build + '/dist')}/*.whl"
-    command += f"uv pip install --python {quote(python)} {target}"
+    command += f"uv pip install --no-editable --python {quote(python)} {target}"
     try:
         await run_shielded(runtime.write(f"{build}/source.tar.gz", data))
         await _build(runtime, command, {**env, **version_env}, python=python)
