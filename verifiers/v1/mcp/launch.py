@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
-from verifiers.v1.errors import SandboxError, TaskError, ToolsetError
+from verifiers.v1.errors import SandboxError, ToolsetError
 from verifiers.v1.interception.tunnel import PrimeTunnel
 from verifiers.v1.mcp.server import (
     STATE_ROUTE_PARAM,
@@ -78,6 +78,47 @@ while True:
     if remaining <= 0:
         sys.exit(1)
     time.sleep(min(1, remaining))
+"""
+
+# A detached supervisor owns the server's process group. A shutdown marker stops
+# it without keeping a provider stream open or signalling a remotely recorded PID.
+# A launch that arrives after cancellation sees the marker and exits.
+_BACKGROUND = """
+import contextlib, os, pathlib, signal, subprocess, sys, time
+control = pathlib.Path(sys.argv[1])
+process = None
+try:
+    if not control.exists():
+        process = subprocess.Popen(sys.argv[2:], start_new_session=True)
+        while not control.exists() and process.poll() is None:
+            time.sleep(0.1)
+finally:
+    if process is not None:
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(process.pid, signal.SIGTERM)
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
+        finally:
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(process.pid, signal.SIGKILL)
+            process.wait()
+    control.with_suffix('.done').touch()
+"""
+
+_STOP_BACKGROUND = """
+import pathlib, sys, time
+control = pathlib.Path(sys.argv[1])
+control.touch()
+done = control.with_suffix('.done')
+deadline = time.monotonic() + 10
+while not done.exists():
+    if time.monotonic() >= deadline:
+        raise TimeoutError('tool server did not stop')
+    time.sleep(0.1)
+done.unlink()
+control.unlink(missing_ok=True)
 """
 
 
@@ -360,11 +401,9 @@ async def serve_in_runtime(
     fetches the current rollout task from the adjacent `/task` endpoint.
     """
     if isinstance(server.config, BaseToolsetConfig) and server.config.user is not None:
-        from verifiers.v1.rollout import resolve_agent_runtime
-
         try:
-            runtime = await resolve_agent_runtime(runtime, server.config.user)
-        except (TaskError, SandboxError, ValueError) as exc:
+            runtime = await runtime.resolve_user(server.config.user)
+        except (SandboxError, ValueError) as exc:
             raise ToolsetError(
                 f"tool server {server.server_name!r} cannot run as user {server.config.user!r}"
             ) from exc
@@ -415,17 +454,13 @@ async def serve_in_runtime(
     )
     timeout = timeouts.startup
     deadline = loop.time() + (math.inf if timeout is None else timeout)
-    process = await runtime.exec(
-        [
-            "sh",
-            "-c",
-            f'exec "$@" > {shlex.quote(log)} 2>&1 < /dev/null',
-            "sh",
-            *command,
-        ],
-        env,
-    )
+    control = runtime.temp_path(f"tool-process-{uuid.uuid4().hex}", env=env)
     try:
+        await run_shielded(
+            runtime.run_background(
+                [python, "-c", _BACKGROUND, control, *command], env, log
+            )
+        )
         if fixed is not None:
             port = fixed
         else:
@@ -451,28 +486,23 @@ async def serve_in_runtime(
         yield port
     finally:
         # A borrowed workspace survives this toolset, so stop its server explicitly.
-        cancelled = None
-        for stop in (process.terminate, process.kill):
-            try:
-                for action in (stop, process.wait):
-                    try:
-                        await run_shielded(asyncio.wait_for(action(), 5))
-                    except asyncio.CancelledError as error:
-                        cancelled = error
-                        if error.__cause__ is not None:
-                            raise error.__cause__
-                break
-            except Exception as error:
-                # Teardown must not replace an existing startup or grading failure.
-                logger.warning(
-                    "Failed to stop tool server %s - %s: %s",
-                    server.server_name,
-                    type(error).__name__,
-                    clip(str(error)),
-                    exc_info=logger.isEnabledFor(logging.DEBUG),
+        try:
+            result = await run_shielded(
+                asyncio.wait_for(
+                    runtime.run([python, "-c", _STOP_BACKGROUND, control], {}), 15
                 )
-        if cancelled is not None:
-            raise cancelled
+            )
+            if result.exit_code:
+                raise ToolsetError(result.stderr.strip())
+        except Exception as error:
+            # Teardown must not replace an existing startup or grading failure.
+            logger.warning(
+                "Failed to stop tool server %s - %s: %s",
+                server.server_name,
+                type(error).__name__,
+                clip(str(error)),
+                exc_info=logger.isEnabledFor(logging.DEBUG),
+            )
 
 
 @contextlib.asynccontextmanager
