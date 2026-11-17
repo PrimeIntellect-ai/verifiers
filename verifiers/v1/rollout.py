@@ -485,6 +485,9 @@ class Rollout:
                 )
                 self._secret = model_secret
                 if isinstance(self._session.remote_tool_handler, SandboxTools):
+                    self._stack.push_async_callback(
+                        self._session.remote_tool_handler.aclose
+                    )
                     await self._session.remote_tool_handler.connect(
                         self._agent_runtime.host_url(
                             f"{base_url.rstrip('/')}/execution"
@@ -700,7 +703,6 @@ class Rollout:
             handler = self._session.remote_tool_handler = SandboxTools(
                 self.deployment._harness_runtime, bridge, adapter
             )
-            self._stack.push_async_callback(handler.aclose)
             await handler.prepare()
         self._agent_runtime = replace(
             self.deployment._harness_runtime,

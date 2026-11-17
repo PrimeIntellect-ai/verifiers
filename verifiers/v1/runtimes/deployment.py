@@ -118,6 +118,11 @@ class ExecutionConnection(ExecutionBridge):
         )
 
     async def _exec(self, argv: list[str], env: dict[str, str]):
+        # Track descendants independently of worker process groups, so failed
+        # startup or forced worker termination still gets reaped before grading.
+        worker = uuid.uuid4().hex
+        self._listeners.append((self.runtime, f"{_MARK}={worker}", False))
+        env = {**env, _MARK: worker}
         if self.transport is not None:
             return await self.transport.exec(self.runtime, argv, env)
         return await super()._exec(argv, env)

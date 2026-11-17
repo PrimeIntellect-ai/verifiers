@@ -37,8 +37,12 @@ async def main():
             process.stdin.close()
             # Late reads and lifecycle calls still work without retaining pipes,
             # readers, or transports for every completed command.
-            completed[identifier] = (process.pid, process.returncode)
+            completed[identifier] = process.returncode
             del processes[identifier], locks[identifier]
+
+    async def drain(stream):
+        while await stream.read(65536):
+            pass
 
     async def reap():
         active = [
@@ -46,19 +50,16 @@ async def main():
             for identifier, process in processes.items()
         ]
 
-        async def drain(process, lock, stream):
+        async def drain_locked(process, lock, stream):
             async with lock:
-                while await getattr(process, stream).read(65536):
-                    pass
+                await drain(getattr(process, stream))
 
         for _, process, _ in active:
             stop(process.pid, signal.SIGKILL)
-        for pid, _ in completed.values():
-            stop(pid, signal.SIGKILL)
         # Waiting without draining can hang on a child's full output pipe.
         await asyncio.gather(
             *(
-                drain(process, stream_locks[stream], stream)
+                drain_locked(process, stream_locks[stream], stream)
                 for _, process, stream_locks in active
                 for stream in ("stdout", "stderr")
             ),
@@ -98,7 +99,10 @@ async def main():
             )
             if closed:
                 stop(process.pid, signal.SIGKILL)
-                await process.wait()
+                process.stdin.close()
+                await asyncio.gather(
+                    drain(process.stdout), drain(process.stderr), process.wait()
+                )
                 raise RuntimeError("workspace worker closed during exec")
             identifier = uuid.uuid4().hex
             processes[identifier] = process
@@ -108,13 +112,12 @@ async def main():
             return identifier
         identifier = message["process_id"]
         if identifier in completed:
-            pid, status = completed[identifier]
+            status = completed[identifier]
             if operation in ("poll", "wait"):
                 return status
             if operation == "read" and message["stream"] in ("stdout", "stderr"):
                 return None
             if operation in ("kill", "terminate"):
-                stop(pid, signal.SIGKILL if operation == "kill" else signal.SIGTERM)
                 return None
             if operation == "write":
                 raise BrokenPipeError("workspace process has exited")
