@@ -37,16 +37,14 @@ def test_scoring_network_combines_with_the_runtimes_rules():
 
 
 def test_scoring_network_needs_a_runtime_with_policies():
-    runtime = vf.CustomRuntimeConfig.model_validate(
-        {"import_path": "test_runtimes.HostBackend"}
-    )
     with pytest.raises(TaskError):
-        scoring_network(runtime, PYPI)
+        scoring_network(vf.SubprocessConfig(), PYPI)
     open_network = vf.NetworkPolicyConfig()
-    assert scoring_network(runtime, open_network) is open_network
+    assert scoring_network(vf.SubprocessConfig(), open_network) is open_network
 
 
 class Backend:
+    SUPPORTS_USER_SWITCHING = False
     name = "fake"
 
     def __init__(self, config, restricted=True):

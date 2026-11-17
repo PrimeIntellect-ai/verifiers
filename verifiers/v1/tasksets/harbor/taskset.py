@@ -414,7 +414,11 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
         # of its own starts with an empty log directory: anything already there came
         # from the image or from the agent's restored artifacts, not from this grader.
         isolated = wipe or self.scoring.mode == "isolated"
-        setup = runtime.with_user("root")
+        setup = (
+            runtime.with_user("root")
+            if runtime.backend.SUPPORTS_USER_SWITCHING
+            else runtime
+        )
         for view, command in (
             (
                 setup,

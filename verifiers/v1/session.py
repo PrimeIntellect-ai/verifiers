@@ -20,6 +20,7 @@ import inspect
 import json
 from collections import Counter
 from collections.abc import Awaitable, Callable
+from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass, field, replace
 from functools import cached_property
 from typing import get_origin, get_type_hints
@@ -51,6 +52,8 @@ from verifiers.v1.utils.logging import (
 )
 
 logger = get_logger(__name__)
+
+MCPProxy = Callable[[str], AbstractAsyncContextManager[str]]
 
 
 def hook_boundary(handler: Callable, *, allow_trace: bool) -> type:
@@ -183,6 +186,8 @@ class RolloutSession:
     server-owned client for its route's endpoint config (one per distinct config) at
     `register` and again when the route changes, so every rollout it multiplexes shares one
     keepalive connection pool instead of opening its own."""
+    proxy_mcp: MCPProxy | None = field(default=None, repr=False)
+    """Register a host MCP backend on this session's interception server while serving."""
     error: "RolloutError | None" = None
     """The latest unresolved model-call failure. The harness only sees it as an HTTP error, so
     when its program dies on it the rollout records this original error instead of a secondary

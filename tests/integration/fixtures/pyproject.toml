@@ -18,7 +18,6 @@ include = [
     "echo_acp_resume.py",
     "echo_tool.py",
     "fetch_tool.py",
-    "tool_error.py",
     "tool_response_image.py",
     "pyproject.toml",
 ]
