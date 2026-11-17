@@ -468,7 +468,9 @@ async def prepare_native(config: PrimeConfig, spec: ComposeSpec, env: dict[str, 
                 exclude={"image", "workdir", "cpu", "memory", "disk"}
             )
             options.update(
-                image=item["Image"], workdir=metadata.get("WorkingDir") or "/"
+                image=item["Image"],
+                workdir=metadata.get("WorkingDir")
+                or ("/app" if spec.file is None else "/"),
             )
             authored = {
                 "cpu": definition.get("cpus", limits.get("cpus")),
