@@ -158,7 +158,9 @@ class OpenClawHarness(ACPHarness[OpenClawHarnessConfig]):
     SUPPORTS_SPLIT_EXECUTION = True
 
     async def remote_tools(self, runtime: Runtime, data: TaskData) -> RemoteToolsSpec:
-        return RemoteToolsSpec(OpenClawRemoteTools, {})
+        return RemoteToolsSpec(
+            OpenClawRemoteTools, {"disabled_tools": self.config.disabled_tools or []}
+        )
 
     def __init__(self, config: OpenClawHarnessConfig) -> None:
         super().__init__(config)

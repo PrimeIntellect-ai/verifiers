@@ -41,7 +41,10 @@ if gate_url := os.environ.get("VF_TOOL_GATE_URL"):
         if verdict["action"] == "deny":
             if kwargs.get("begin_execution") is not None:
                 kwargs["begin_execution"]()
-            state.blocked = True
+            # Split calls return workspace (or policy replacement) results while
+            # denying only the local callable. They have completed dispatch.
+            state.blocked = not remote_only
+            state.dispatched = remote_only
             content = verdict["message"]["content"]
             return content if isinstance(content, str) else json.dumps(content)
         if verdict["action"] != "allow" or remote_only:
