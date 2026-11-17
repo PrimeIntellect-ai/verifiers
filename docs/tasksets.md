@@ -191,7 +191,7 @@ taskset.include(idx=["0:100"]).exclude(names=["broken"]).shuffle(seed=0).take(5)
 
 `include` keeps and `exclude` drops tasks matching any of `idx` (integers or non-negative Python slice strings like `"0:100"`, `"100:"`, or `"::2"`), `ids`, `keys`, or `names`; a task matches when any provided list names it. Any filter entry that matches nothing logs a warning once the stream has been consumed.
 
-The debug, validate, and GEPA entrypoints all accept a `select` config and apply it via `taskset.select(config.select)`, which chains the views in a fixed order: `include`, `exclude`, `shuffle`, `skip`, `limit`:
+The run, debug, and validate entrypoints all accept a `select` config and apply it via `taskset.select(config.select)`, which chains the views in a fixed order: `include`, `exclude`, `shuffle`, `skip`, `limit`:
 
 ```bash
 uv run vf-validate gsm8k --select.include.idx 0:100                 # the first 100 tasks
@@ -205,6 +205,13 @@ include = { idx = ["0:500"] }
 exclude = { names = ["broken-task"] }
 shuffle = true
 limit = 100
+```
+
+To keep long selections out of the config, point `files` at newline-delimited text files, one entry per line. Their lines extend the matching inline lists, and blank lines are skipped:
+
+```toml
+[select]
+exclude = { files = { ids = "broken_ids.txt" } }
 ```
 
 Because `shuffle` (seeded by `select.seed`, which defaults to `0`) runs before `skip` and `limit`, increasing `limit` with the same seed extends the existing sample rather than drawing a different subset, and pairing `skip` with `limit` carves out disjoint splits.
@@ -270,7 +277,6 @@ Tools defined on `Taskset.toolsets(config)` run in a server shared across a work
 A toolset's config controls where the MCP server runs:
 
 - **Host subprocess (default)** — launches the server as a local subprocess with its own filesystem.
-- **`colocated = true`** (per-task toolsets only) — runs the tool server inside the agent's own runtime container so tools share the agent's filesystem directly.
 - **`service = "<name>"`** (per-task toolsets on Prime) — runs the tool server inside a named native VM from the task's `ServicesSpec`. The harness reaches it over the rollout's private network by its LAN hostname.
 - **`runtime = { type = "docker", ... }`** — runs the tool server in its own dedicated container.
 - **`url = "https://.../mcp"`** — connects to an already-running streamable-HTTP MCP server instead of launching one.

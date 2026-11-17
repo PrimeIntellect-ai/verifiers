@@ -26,6 +26,7 @@ logger = get_logger(__name__)
 KEY_VAR = "PI_INTERCEPT_KEY"
 
 PI_DIR = "/var/tmp/vf-pi"
+STATE_ROOT = "/tmp/vf-pi-runs"
 PACKAGES_DIR = f"{PI_DIR}/mcp"
 PI_BIN = f"{PACKAGES_DIR}/node_modules/.bin/pi"
 ACP_VERSION = "0.0.34"
@@ -39,11 +40,11 @@ set -e
 packages=/var/tmp/vf-pi/mcp
 export PATH="/var/tmp/vf-node/bin:$PATH"
 
-versions="$VF_PI_VERSION:$VF_PI_ACP_VERSION"
+versions="$AGENT_PI_VERSION:$AGENT_PI_ACP_VERSION"
 if [ "$(cat "$packages/.versions" 2>/dev/null)" != "$versions" ]; then
     npm install --prefix "$packages" --ignore-scripts --no-audit --no-fund --omit=dev \
-        "@earendil-works/pi-coding-agent@$VF_PI_VERSION" \
-        "pi-acp@$VF_PI_ACP_VERSION" >/dev/null
+        "@earendil-works/pi-coding-agent@$AGENT_PI_VERSION" \
+        "pi-acp@$AGENT_PI_ACP_VERSION" >/dev/null
     printf %s "$versions" > "$packages/.versions"
 fi
 """
@@ -86,8 +87,8 @@ class PiHarness(ACPHarness[PiHarnessConfig]):
             directory=PI_DIR,
             install=INSTALL,
             env={
-                "VF_PI_VERSION": self.config.version,
-                "VF_PI_ACP_VERSION": ACP_VERSION,
+                "AGENT_PI_VERSION": self.config.version,
+                "AGENT_PI_ACP_VERSION": ACP_VERSION,
             },
             label="pi",
         )
@@ -104,7 +105,7 @@ class PiHarness(ACPHarness[PiHarnessConfig]):
         data: TaskData,
     ) -> ACPConfig:
         system_prompt, prompt = self.resolve_prompt(data)
-        agent_dir = f".vf-pi-agent-{trace.id}"
+        agent_dir = f"{STATE_ROOT}/{trace.id}"
         skills_dir = f"{agent_dir}/skills"
         await self.install_skills(runtime, skills_dir)
         reasoning = ctx.sampling.reasoning_effort not in (
@@ -186,7 +187,11 @@ class PiHarness(ACPHarness[PiHarnessConfig]):
         if self.config.disabled_tools:
             pi_args += ["--exclude-tools", ",".join(self.config.disabled_tools)]
         if system_prompt:
-            pi_args += ["--append-system-prompt", system_prompt]
+            # Pi reads a path argument as the file's contents, and rereads it on
+            # resource reloads, so the file stays until cleanup.
+            path = f"{agent_dir}/system-prompt.md"
+            await runtime.write(path, system_prompt.encode())
+            pi_args += ["--append-system-prompt", path]
         pi_wrapper = f"{agent_dir}/pi"
         await runtime.write(
             pi_wrapper,
@@ -203,7 +208,7 @@ class PiHarness(ACPHarness[PiHarnessConfig]):
         )
 
     async def cleanup(self, trace: Trace, runtime: Runtime) -> None:
-        await remove_dir(runtime, f".vf-pi-agent-{trace.id}", "Pi state")
+        await remove_dir(runtime, f"{STATE_ROOT}/{trace.id}", "Pi state")
 
     async def gate_tools(
         self, config: ACPConfig, runtime: Runtime, url: str, secret: str

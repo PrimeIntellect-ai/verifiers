@@ -1,4 +1,4 @@
-"""Graceful-shutdown signal handling shared across the v1 CLI entrypoints (run, gepa,
+"""Graceful-shutdown signal handling shared across the v1 CLI entrypoints (run,
 validate, debug): the first Ctrl-C/SIGTERM warns and raises KeyboardInterrupt so
 asyncio unwinds each run's teardown `finally`; further signals are swallowed so a second
 Ctrl-C can't orphan containers/sandboxes/tool-server runtimes mid-cleanup."""
