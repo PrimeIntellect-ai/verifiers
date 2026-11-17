@@ -306,23 +306,32 @@ async def compose_project(
             # Includes own their resources: resolve them before merging workspace
             # defaults and overrides, or Compose rejects duplicate service names.
             compose_argv += ["-f", f"{root}/{authored_file}"]
-            authored = json.loads(
-                await compose(
-                    "config",
-                    "--no-consistency",
-                    *(
-                        ["--no-interpolate", "--no-env-resolution"]
-                        if native_composed
-                        else []
-                    ),
-                    "--format",
-                    "json",
+            try:
+                authored = json.loads(
+                    await compose(
+                        "config",
+                        "--no-consistency",
+                        *(
+                            ["--no-interpolate", "--no-env-resolution"]
+                            if native_composed
+                            else []
+                        ),
+                        "--format",
+                        "json",
+                    )
                 )
-            )
+            except SandboxError as error:
+                if native_composed:
+                    raise SandboxError(
+                        "Native Compose could not inspect include/extends files; "
+                        "interpolated include/extends paths require explicit VM mode "
+                        f"- {error}"
+                    ) from error
+                raise
             del compose_argv[-2:]
             if host_backend is None:
-                # Includes otherwise resolve env files even with --no-env-resolution.
-                # Inspect their declarations without reading evaluator file contents.
+                # Some Compose versions resolve env files despite --no-env-resolution.
+                # Keep service env_file entries visible for path validation.
                 _reject_external_resources(authored)
                 _validate_env_files(authored, task_dir)
                 raise NativeComposeUnsupported(
