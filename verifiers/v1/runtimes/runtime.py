@@ -185,7 +185,10 @@ class Runtime:
         directory = script_directory(self)
         path = f"{directory}/{digest}.py"
         if path not in self.backend.cache.uv_interpreters:
-            async with self.backend.cache.uv_locks.setdefault(path, asyncio.Lock()):
+            async with (
+                self.backend.cache.setup_lock,
+                self.backend.cache.uv_locks.setdefault(path, asyncio.Lock()),
+            ):
                 if self.user is not None and not self.backend.cache.curl_ready:
                     # Only root can install a downloader for the user's uv bootstrap.
                     curl = await self.with_user(None).run(

@@ -182,6 +182,7 @@ class RuntimeCache:
     prepared: dict[str, dict] = field(default_factory=dict)
     prepared_loaded: set[str] = field(default_factory=set)
     prepared_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    setup_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
 
 class RuntimeBackend(ABC):

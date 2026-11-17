@@ -420,7 +420,8 @@ async def install_in_runtime(
                     )
                     + "; "
                 )
-            result = await run_shielded(runtime.run(["sh", "-c", setup], {}))
+            async with runtime.backend.cache.setup_lock:
+                result = await run_shielded(runtime.run(["sh", "-c", setup], {}))
             if result.exit_code != 0:
                 raise ToolsetError(
                     f"{label} install failed in runtime: "
