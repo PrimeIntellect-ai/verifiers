@@ -76,7 +76,7 @@ class PiHarness(ACPHarness[PiHarnessConfig]):
         return message
 
     async def setup(self, runtime: Runtime) -> None:
-        await ensure_node(runtime)
+        await ensure_node(runtime, never=self.config.install == "never")
         logger.debug(
             "Ensuring Pi %s and pi-acp %s are installed",
             self.config.version,
@@ -91,6 +91,11 @@ class PiHarness(ACPHarness[PiHarnessConfig]):
                 "AGENT_PI_ACP_VERSION": ACP_VERSION,
             },
             label="pi",
+            never=self.config.install == "never",
+            check=(
+                f'[ "$(cat {PACKAGES_DIR}/.versions 2>/dev/null)" = '
+                '"$VF_PI_VERSION:$VF_PI_ACP_VERSION" ]'
+            ),
         )
         await super().setup(runtime)
 

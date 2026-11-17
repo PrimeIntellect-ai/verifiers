@@ -142,6 +142,11 @@ class RLMHarnessConfig(HarnessConfig):
                 "the rlm harness does not support `disabled_tools`; select the tool "
                 "set with `builtin_tools` and skills with `builtin_skills` instead."
             )
+        if self.skills and self.install == "never":
+            raise ValueError(
+                "the rlm harness installs per run when it has `skills`, so it cannot "
+                "use install='never'."
+            )
         return self
 
 
@@ -165,6 +170,18 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
         # install.sh installs the Python skill packages under $RLM_HOME/skills.
         home = self._skills_home()
         home_env = f"RLM_HOME={shlex.quote(home)} " if home else ""
+        env = self.config.resolved_env.copy()
+        extra_uv_args = env.get("RLM_EXTRA_UV_ARGS", "")
+        env["RLM_EXTRA_UV_ARGS"] = f"{extra_uv_args} --with mcp~=1.28".strip()
+        # `uv tool install` resolves nano-rlm's dependencies afresh and does not read its
+        # uv.lock, so cap them at the pinned commit's date: an install of the same
+        # version gets the same packages whenever it runs. Caller args may set their own.
+        pin = ""
+        if "--exclude-newer" not in extra_uv_args:
+            pin = (
+                f"pinned=$(git -C {shlex.quote(checkout)} log -1 --format=%cI) && "
+                'export RLM_EXTRA_UV_ARGS="$RLM_EXTRA_UV_ARGS --exclude-newer $pinned" && '
+            )
         # install.sh fetches curl/uv itself; add git only when the image lacks it.
         install = (
             f"rm -f {shlex.quote(ready)} && "
@@ -172,6 +189,7 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
             "{ apt-get update -qq && apt-get install -y -qq git; } || dnf install -y -q git || apk add --no-cache git && "
             f"rm -rf {shlex.quote(checkout)} && git clone https://{RLM_REPO} {shlex.quote(checkout)} && "
             f"git -C {shlex.quote(checkout)} checkout {shlex.quote(self.config.version)} && "
+            f"{pin}"
             # The editable install needs the files, not the history; agents searching
             # their workspace for a repository must not find the harness's own.
             f"rm -rf {shlex.quote(checkout + '/.git')} && "
@@ -193,14 +211,12 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
             check = (
                 f"{check} || {{ [ -f {shlex.quote(legacy + '/.ready')} ] && "
                 f"[ -x {shlex.quote(legacy + '/bin/rlm')} ] && "
-                f"rm -rf {bin_dir} && ln -s {legacy_bin} {bin_dir} && "
+                f"mkdir -p {shlex.quote(directory)} && rm -rf {bin_dir} && "
+                f"ln -s {legacy_bin} {bin_dir} && "
                 f"touch {shlex.quote(ready)}; }}"
             )
             # A link left dangling by a later /tmp cleanup is replaced by the install.
             install = f"rm -rf {bin_dir} && {install}"
-        env = self.config.resolved_env.copy()
-        extra_uv_args = env.get("RLM_EXTRA_UV_ARGS", "")
-        env["RLM_EXTRA_UV_ARGS"] = f"{extra_uv_args} --with mcp~=1.28".strip()
         await ensure_installed(
             runtime,
             directory=directory,
@@ -208,6 +224,7 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
             install=install,
             env=env,
             label="rlm",
+            never=self.config.install == "never",
         )
         await super().setup(runtime)
 

@@ -65,6 +65,12 @@ class HarnessConfig(BaseConfig):
     Sources are installed in order; later files override matching earlier files.
     Only harnesses with native skill support (`SUPPORTS_SKILLS`) accept them."""
 
+    install: Literal["auto", "never"] = "auto"
+    """`auto` installs the harness's program into the runtime when its check fails.
+    `never` raises instead, naming the install directory and the check: for images that
+    carry the harness, so a broken or stripped image fails setup rather than installing
+    from the network."""
+
     @property
     def name(self) -> str:
         return self.id

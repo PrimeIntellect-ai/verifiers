@@ -1,15 +1,24 @@
+import shlex
+
 from verifiers.v1.harnesses.utils.install import ensure_installed
 from verifiers.v1.runtimes import Runtime
 
 NODE_DIR = "/var/tmp/vf-node"
 NODE_BIN_DIR = f"{NODE_DIR}/bin"
 NODE_VERSION = "22.23.4"
+NODE_OK = (
+    'const [a,b,c]=process.versions.node.split(".").map(Number); '
+    "const f={22:[23,4],24:[22,1],26:[12,1]}[a]; "
+    "process.exit(f && (b>f[0] || b===f[0] && c>=f[1]) ? 0 : 1)"
+)
+"""Exits 0 for a Node release with the Brotli fix: the install and the read-only check both
+require it."""
 
 INSTALL = r"""
 set -e
 node=/var/tmp/vf-node
 # Node bundles Brotli; a newer major alone does not prove CVE-2026-111497 is fixed.
-node_ok() { "$1" -e 'const [a,b,c]=process.versions.node.split(".").map(Number); const f={22:[23,4],24:[22,1],26:[12,1]}[a]; process.exit(f && (b>f[0] || b===f[0] && c>=f[1]) ? 0 : 1)'; }
+node_ok() { "$1" -e '__NODE_OK__'; }
 
 install_node() {
     if [ -x "$node/bin/node" ] && [ -x "$node/bin/npm" ] \
@@ -92,11 +101,12 @@ else
     install_node "$node_os-$node_arch"
 fi
 node_ok "$node/bin/node" || { echo "ACP adapters require patched Node.js (22.23.4, 24.22.1 or 26.12.1 minimum)" >&2; exit 1; }
-"""
+""".replace("__NODE_OK__", NODE_OK)
 
 
-async def ensure_node(runtime: Runtime) -> None:
-    """Install the shared Node runtime used by ACP adapter harnesses."""
+async def ensure_node(runtime: Runtime, *, never: bool = False) -> None:
+    """Install the shared Node runtime used by ACP adapter harnesses; `never` only
+    checks that it is there (`install="never"`)."""
     # The install replaces NODE_DIR wholesale, so the lock lives beside it.
     await ensure_installed(
         runtime,
@@ -105,4 +115,6 @@ async def ensure_node(runtime: Runtime) -> None:
         install=INSTALL,
         env={"AGENT_NODE_VERSION": NODE_VERSION},
         label="Node.js",
+        never=never,
+        check=f'"{NODE_BIN_DIR}/node" -e {shlex.quote(NODE_OK)} >/dev/null 2>&1',
     )

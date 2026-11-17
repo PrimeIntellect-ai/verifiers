@@ -16,6 +16,8 @@ compaction = { summarize_at_tokens = 100000 }
 
 Web search is disabled by default; setting `search = true` enables it and requires `SERPER_API_KEY` on the evaluator host.
 
+Harnesses that run an external program install it into the runtime during setup when it is missing. For images that already carry it, set `install = "never"` in the harness config: setup then fails with `HarnessNotInstalled`, naming the install directory and its check, instead of installing from the network.
+
 ## A minimal harness implementation
 
 If you want to integrate a custom agent loop or another third-party CLI harness, subclass `Harness` and `HarnessConfig`:
