@@ -9,8 +9,8 @@ server; un-entered, each run brings its own."""
 
 import asyncio
 import uuid
-from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Mapping
-from contextlib import asynccontextmanager, contextmanager, nullcontext
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+from contextlib import asynccontextmanager, nullcontext
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Generic, Literal, Self, cast
@@ -204,13 +204,12 @@ class _PendingMessage:
 class Steering:
     """User messages for an `Agent.run` rollout while it runs, from its caller:
     pass one as `steering=` and `steer` it from anywhere, as a `ModelRoute` is
-    updated. It serves one `run` at a time (passing one in use raises
-    `RuntimeError`), each attempt while its turn runs. An interaction is steered
-    through `Interaction.steer` / `send`."""
+    updated. Each attempt takes messages while its turn runs; give each `run` its
+    own. An interaction is steered through `Interaction.steer` / `send`."""
 
     def __init__(self) -> None:
-        self._claimed = False
         self._run: Rollout | None = None
+        self._taken: dict[str, dict] = {}
 
     async def steer(self, message: str, *, message_id: str | None = None) -> dict:
         """Inject a user message into the running turn and return the harness's
@@ -218,38 +217,24 @@ class Steering:
         necessarily followed). With no turn running (before the rollout starts,
         between attempts, after it ends or stops) the receipt is
         `{"outcome": "promptRequired", "reason": "noRunningTurn"}` and nothing is
-        delivered; a message is never queued or replayed into a later attempt.
-        `message_id` goes to the harness with the message. Raises
-        `NotImplementedError` when the harness can't be steered."""
+        delivered; a message is never queued or replayed into a later attempt. A
+        `message_id` the run took answers with its first receipt and delivers
+        nothing again, as `Interaction.steer` does. Raises `NotImplementedError`
+        when the harness can't be steered."""
+        if message_id in self._taken:
+            return dict(self._taken[message_id])
         run = self._run
         if run is None:
             return {"outcome": "promptRequired", "reason": "noRunningTurn"}
         try:
-            return await run.steer(message, message_id=message_id)
+            receipt = await run.steer(message, message_id=message_id)
         except RuntimeError:
             if run.closed or not run.ok:
                 return {"outcome": "promptRequired", "reason": "noRunningTurn"}
             raise
-
-    @contextmanager
-    def _claim(self) -> Iterator[None]:
-        """Hold the handle for one `run`, before it provisions anything."""
-        if self._claimed:
-            raise RuntimeError("a Steering serves one run at a time")
-        self._claimed = True
-        try:
-            yield
-        finally:
-            self._claimed = False
-
-    @contextmanager
-    def _turn(self, run: Rollout) -> Iterator[None]:
-        """Deliver to `run` while the block runs its turn."""
-        self._run = run
-        try:
-            yield
-        finally:
-            self._run = None
+        if message_id is not None and receipt.get("outcome") == "injected":
+            self._taken[message_id] = dict(receipt)
+        return receipt
 
 
 class Interaction:
@@ -764,7 +749,7 @@ class Agent:
         retry_state = RetryState(retry)
         history: list = []
         trace_id = uuid.uuid4().hex
-        with scope(trace=short_id(trace_id), agent=self._log_name), steering._claim():
+        with scope(trace=short_id(trace_id), agent=self._log_name):
             for attempt in range(retry_state.max_retries + 1):
                 trace = await self._run_once(
                     task,
@@ -834,8 +819,11 @@ class Agent:
         )
         try:
             if await run.open():
-                with steering._turn(run):
+                steering._run = run
+                try:
                     await run.step()
+                finally:
+                    steering._run = None
                 if run.ok:
                     run.trace.stop("agent_completed")
             trace = await run.close()
