@@ -58,6 +58,7 @@ class HermesRemoteTools:
                 await self._worker.terminate()
         finally:
             self._worker = None
+            self._buffer = b""
             if self._stderr is not None:
                 self._stderr.cancel()
                 await asyncio.gather(self._stderr, return_exceptions=True)
