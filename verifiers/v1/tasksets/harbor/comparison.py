@@ -83,7 +83,11 @@ async def compare_verifiers(
     if solver is None:
         raise ValueError("saved submission has no solver runtime metadata")
     if ARTIFACTS_DIR not in trace.state.artifacts:
-        raise ValueError("Load captured submission artifacts with with_artifacts=True")
+        raise ValueError(
+            "The captured /logs/artifacts entry is unavailable; load with "
+            "with_artifacts=True and ensure the saved artifact directory exists "
+            "and its manifest includes the implicit artifact collection"
+        )
     comparison = VerifierComparison(original=copy.deepcopy(trace), episodes={})
     workdir = PurePosixPath(getattr(solver, "workdir", None) or "/")
     prepared = {}
