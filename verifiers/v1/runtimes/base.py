@@ -179,6 +179,9 @@ class RuntimeCache:
     curl_ready: bool = False
     mcp_sources: set[str] = field(default_factory=set)
     mcp_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    prepared: dict[str, dict] = field(default_factory=dict)
+    prepared_loaded: set[str] = field(default_factory=set)
+    prepared_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
 
 class RuntimeBackend(ABC):
@@ -218,7 +221,8 @@ class RuntimeBackend(ABC):
     SUPPORTS_COMPOSE: ClassVar[bool] = False
     """Whether the runtime can run a task's Docker Compose services."""
 
-    scripts_dir: ClassVar[str] = "/tmp/vf-scripts"
+    # Prime mounts /tmp separately, so image-baked scripts must live on the rootfs.
+    scripts_dir: ClassVar[str] = "/var/tmp/vf-scripts"
     """Digest-keyed PEP 723 scripts inside the runtime. Sandboxes own their `/tmp`;
     the host subprocess runtime overrides this with its per-user cache."""
 

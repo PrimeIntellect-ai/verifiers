@@ -2,17 +2,23 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
+import io
 import math
+import re
 import secrets
 import shlex
 import shutil
 import subprocess
 import sys
 import sysconfig
+import tarfile
 import tempfile
 import uuid
+import zipfile
 from collections.abc import AsyncIterator, Callable, Mapping
 from dataclasses import dataclass, field
+from email.parser import BytesParser
 from functools import cache
 from importlib.metadata import PathDistribution, distribution, packages_distributions
 from pathlib import Path, PurePosixPath
@@ -37,6 +43,7 @@ from verifiers.v1.runtimes import (
     provision_backend,
 )
 from verifiers.v1.runtimes.base import _ENSURE_UV
+from verifiers.v1.runtimes.prepared import load_prepared, record_arguments
 from verifiers.v1.state import State
 from verifiers.v1.utils.aio import run_shielded
 from verifiers.v1.utils.logging import get_logger
@@ -249,6 +256,66 @@ async def _install_in_sandbox(server: ServerBase, agent_runtime: Runtime) -> str
     )
 
 
+@cache
+def _package_identity(name: str, data: bytes) -> tuple[str, str]:
+    """Hash package inputs independently of archive timestamps and checkout paths.
+
+    Source distributions remain source distributions: platform-specific projects
+    still build inside the target runtime. An installed wheel and a source build
+    are different inputs and deliberately do not share a readiness record.
+    """
+    files = {}
+    if name.endswith(".whl"):
+        with zipfile.ZipFile(io.BytesIO(data)) as archive:
+            for entry in archive.infolist():
+                path = PurePosixPath(entry.filename)
+                if entry.is_dir() or (
+                    path.parent.suffix == ".dist-info"
+                    and path.name
+                    in {
+                        "RECORD",
+                        "RECORD.jws",
+                        "RECORD.p7s",
+                        "INSTALLER",
+                        "REQUESTED",
+                        "direct_url.json",
+                        "uv_cache.json",
+                    }
+                ):
+                    continue
+                files[str(path)] = (
+                    archive.read(entry),
+                    0x100 | (entry.external_attr >> 16 & 0o111),
+                )
+        metadata = next(
+            value[0]
+            for path, value in files.items()
+            if path.endswith(".dist-info/METADATA")
+        )
+    else:
+        with tarfile.open(fileobj=io.BytesIO(data), mode="r:*") as archive:
+            for entry in archive.getmembers():
+                path = str(PurePosixPath(*PurePosixPath(entry.name).parts[1:]))
+                if entry.isfile():
+                    file = archive.extractfile(entry)
+                    assert file is not None
+                    files[path] = (file.read(), 0x100 | (entry.mode & 0o111))
+                elif entry.issym() or entry.islnk():
+                    files[path] = (
+                        entry.linkname.encode(),
+                        0x200 if entry.issym() else 0x300,
+                    )
+        metadata = files["PKG-INFO"][0]
+    package = str(BytesParser().parsebytes(metadata)["Name"])
+    package = re.sub(r"[-_.]+", "-", package).lower()
+    digest = hashlib.sha256()
+    for path, (content, mode) in sorted(files.items()):
+        digest.update(
+            path.encode() + b"\0" + mode.to_bytes(2) + hashlib.sha256(content).digest()
+        )
+    return package, digest.hexdigest()
+
+
 async def install_in_runtime(
     cls: Callable, agent_runtime: Runtime, *, label: str
 ) -> str:
@@ -256,6 +323,7 @@ async def install_in_runtime(
     # Dependency installation is trusted setup as the backend's default user.
     # The server itself keeps the agent's user when launched.
     runtime = agent_runtime.backend.bind(env=agent_runtime.env).with_user(None)
+    await load_prepared(runtime)
     # Prime VMs mount /tmp as a small tmpfs. Keep dependency installation on the
     # durable runtime filesystem so ordinary installs cannot exhaust the tmpfs.
     # Every runtime runs commands in its working directory; not every config names it.
@@ -281,7 +349,17 @@ async def install_in_runtime(
             for source in sources
             if source not in runtime.backend.cache.mcp_sources
         ]
-        if pending:
+        packages = []
+        for source in pending:
+            name, data = await _cached_package(Path(source))
+            package, digest = await asyncio.to_thread(_package_identity, name, data)
+            key = f"package:{venv}:{package}"
+            prepared = runtime.backend.cache.prepared.get(key)
+            if prepared and prepared["value"]["digest"] == digest:
+                runtime.backend.cache.mcp_sources.add(source)
+            else:
+                packages.append((source, name, data, package, digest, key))
+        if packages:
             setup = (
                 f"set -e; mkdir -p {root_q} {temp_q} {cache_q}; "
                 f"export TMPDIR={temp_q} UV_CACHE_DIR={cache_q}; "
@@ -293,18 +371,37 @@ async def install_in_runtime(
                 # Failed installs can leave the venv behind; retain it when retrying.
                 setup += f"{_ENSURE_UV}; uv venv --allow-existing {venv_q}; "
             # Drain remote writes and installs before cancellation releases the lock.
-            for source in pending:
-                name, data = await _cached_package(Path(source))
+            for source, name, data, package, digest, key in packages:
                 remote = f"{root}/{name}"
                 await run_shielded(runtime.write(remote, data))
                 setup += f"uv pip install --python {venv_q} {shlex.quote(remote)}; "
+            # Record only completed installs. The loader also checks each installed
+            # distribution's RECORD, so replacing a venv/package invalidates readiness.
+            for source, name, data, package, digest, key in packages:
+                setup += (
+                    shlex.join(
+                        [
+                            f"{venv}/bin/python",
+                            *record_arguments(
+                                runtime,
+                                key,
+                                {
+                                    "distribution": package,
+                                    "digest": digest,
+                                    "marker": f"{venv}/.vf-sources/{package}",
+                                },
+                            ),
+                        ]
+                    )
+                    + "; "
+                )
             result = await run_shielded(runtime.run(["sh", "-c", setup], {}))
             if result.exit_code != 0:
                 raise ToolsetError(
                     f"{label} install failed in runtime: "
                     f"{(result.stderr or result.stdout).strip()[-2000:]}"
                 )
-            runtime.backend.cache.mcp_sources.update(pending)
+            runtime.backend.cache.mcp_sources.update(source for source, *_ in packages)
         if agent_runtime.user is not None:
             # Root's uv lives in its home; copy it into the venv, open to the agent.
             python_q = shlex.quote(python_dir)

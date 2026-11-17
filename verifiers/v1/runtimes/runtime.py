@@ -21,6 +21,11 @@ from verifiers.v1.runtimes.base import (
     RuntimeBackend,
     RuntimeProcess,
 )
+from verifiers.v1.runtimes.prepared import (
+    load_prepared,
+    record_arguments,
+    script_directory,
+)
 
 if TYPE_CHECKING:
     from verifiers.v1.runtimes.bridge import ExecutionBridge
@@ -173,14 +178,11 @@ class Runtime:
         ``activate=False`` invokes the resolved script interpreter directly, keeping
         its environment variables out of child processes spawned by the script.
         """
+        await load_prepared(self)
         data = script.encode() if isinstance(script, str) else script
         digest = hashlib.sha256(data).hexdigest()
         # Each user needs its own writable script dir and uv environment.
-        directory = (
-            self.backend.scripts_dir
-            if self.user is None
-            else f"{self.backend.scripts_dir}-{self.user}"
-        )
+        directory = script_directory(self)
         path = f"{directory}/{digest}.py"
         if path not in self.backend.cache.uv_interpreters:
             async with self.backend.cache.uv_locks.setdefault(path, asyncio.Lock()):
@@ -193,11 +195,14 @@ class Runtime:
                 if path not in self.backend.cache.uv_interpreters:
                     tmp = f"{path}.{uuid.uuid4().hex}.tmp"
                     await self.write(tmp, data)
+                    record = shlex.join(record_arguments(self, path, {"script": path}))
                     command = (
                         f"mv -f {shlex.quote(tmp)} {shlex.quote(path)} "
                         f"&& {{ {_ENSURE_UV}; }} "
                         f"&& uv sync --script {shlex.quote(path)} -q --no-config "
-                        f"&& uv python find --script {shlex.quote(path)} --no-config"
+                        f"&& python=$(uv python find --script {shlex.quote(path)} --no-config) "
+                        f'&& "$python" {record} '
+                        '&& printf "%s\\n" "$python"'
                     )
                     # Bootstrap dependencies before task networking is restricted;
                     # keep task offline settings on the returned program's processes.
