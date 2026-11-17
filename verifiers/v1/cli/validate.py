@@ -35,7 +35,7 @@ from verifiers.v1.grading import (
     scoring_network,
     verifier_runtime,
 )
-from verifiers.v1.runtimes import backend_cls, make_backend
+from verifiers.v1.runtimes import make_backend
 from verifiers.v1.runtimes.deployment import Deployment
 from verifiers.v1.state import state_cls
 from verifiers.v1.task import Task
@@ -448,12 +448,6 @@ async def run_validate(config: ValidateConfig) -> list[dict]:
             f"{type(taskset).__name__} is infinite - bound the run with -n"
         )
     tasks = list(taskset)
-    if not backend_cls(config.runtime).SUPPORTS_TASK_IMAGES and any(
-        type(t).NEEDS_CONTAINER or t.data.image for t in tasks
-    ):
-        raise SystemExit(
-            "taskset needs a container runtime to validate - pass --runtime.type docker (or prime)"
-        )
     mode = validation_mode(config)
     checks = "gold+noop" if mode == "all" else mode
     out = output_path(config)

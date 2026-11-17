@@ -135,8 +135,6 @@ class ContextData(vf.TaskData):
 
 
 class ContextTask(vf.Task[ContextData]):
-    NEEDS_CONTAINER = True
-
     async def setup(self, runtime: vf.Runtime) -> None:
         await runtime.write("/workspace/context.txt", self.data.context.encode())
 

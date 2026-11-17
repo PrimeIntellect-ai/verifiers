@@ -22,7 +22,6 @@ from prime_sandboxes.models import validate_egress_lists
 from verifiers.v1.configs.runtime import NetworkPolicyConfig, PrimeConfig
 from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes.base import (
-    SERVICE_PORT,
     BaseRuntimeInfo,
     ProgramResult,
     RuntimeBackend,
@@ -138,13 +137,7 @@ class PrimeProcess(RuntimeProcess):
 
 
 class PrimeBackend(RuntimeBackend):
-    SUPPORTS_TASK_IMAGES: ClassVar[bool] = True
-    SUPPORTS_USER_SWITCHING: ClassVar[bool] = True
-    SUPPORTS_STOP_CONFIRMATION: ClassVar[bool] = True
-    SUPPORTS_MEMORY_LIMIT: ClassVar[bool] = True
     SUPPORTS_DISK_LIMIT: ClassVar[bool] = True
-    SUPPORTS_COMPOSE: ClassVar[bool] = True
-    SUPPORTS_PORT_EXPOSURE: ClassVar[bool] = True
 
     def __init__(self, config: PrimeConfig, name: str | None = None) -> None:
         ensure_prime_auth()
@@ -162,12 +155,6 @@ class PrimeBackend(RuntimeBackend):
         self._expose_network_id: str | None = None
         self._exposed_ports: list[int] = []
         self._expose_lock = asyncio.Lock()
-
-    @property
-    def published_port(self) -> int:
-        # Any port can be exposed. The public URL reaches the sandbox's routed
-        # interface, so listeners bind that address or all interfaces.
-        return SERVICE_PORT
 
     def bind(self, *, env: Mapping[str, str] | None = None) -> Runtime:
         return super().bind(env=env).with_user(self.user)

@@ -69,7 +69,8 @@ def test_the_deployment_joins_tool_vms_over_a_private_network():
     )
     spec = vf.ComposeSpec("task")
     assert isinstance(
-        _deployment_strategy(None, DockerBackend, spec), _ContainerDeployment
+        _deployment_strategy(None, object.__new__(DockerBackend), spec),
+        _ContainerDeployment,
     )
 
 

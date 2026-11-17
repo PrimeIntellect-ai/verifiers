@@ -14,7 +14,7 @@ import hashlib
 import inspect
 import json
 from collections.abc import Callable, Mapping
-from typing import TYPE_CHECKING, Any, ClassVar, Generic, Self
+from typing import TYPE_CHECKING, Any, Generic, Self
 
 from pydantic import BaseModel, ConfigDict, Field
 from typing_extensions import TypeVar
@@ -154,9 +154,6 @@ ConfigT = TypeVar("ConfigT", bound=TaskConfig, default=TaskConfig)
 
 
 class Task(Generic[DataT, StateT, ConfigT]):
-    NEEDS_CONTAINER: ClassVar[bool] = False
-    """Whether the task needs a containerized environment (isolated filesystem, ...)."""
-
     def __init__(self, data: DataT, config: ConfigT | None = None) -> None:
         self.data = data
         self.config = config if config is not None else self.config_type()()

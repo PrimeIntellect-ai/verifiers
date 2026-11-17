@@ -11,10 +11,11 @@ A harness without a capability the behavior needs is collected as a skip with it
 reason (`Harness.EXECUTES_CODE`, `SUPPORTS_MCP`, `SUPPORTS_SKILLS`, resume support via
 `SUPPORTS_RESUME` or a native session).
 
-A runtime without a feature the behavior needs (`RuntimeBackend.SUPPORTS_*`, or a
-`NetworkPolicyConfig` for a network policy) skips the cell the same way. That a runtime
-refuses an undeclared feature, with a message naming it, is tested in
-`tests/unit/test_runtimes.py`.
+Every runtime provides the sandbox baseline (task images, other users, port exposure).
+A runtime without a feature beyond it that the behavior needs (a `NetworkPolicyConfig`
+for a network policy, a Prime workspace for native service VMs) skips the cell the same
+way. That a runtime refuses an undeclared network policy, with a message naming it, is
+tested in `tests/unit/test_runtimes.py`.
 
 Every cell carries its axes' marks, so `-m` selects subsets:
 
@@ -58,11 +59,7 @@ RUNTIMES = (*DEBUG_RUNTIMES, "prime")
 
 # The runtime features a behavior can need, as `needs` names them.
 RUNTIME_FEATURES = {
-    "container": "task images",
-    "user": "running as another user",
     "network": "network policies",
-    "expose": "port exposure",
-    "compose": "Compose services",
     "services": "native service VMs",
 }
 
@@ -115,11 +112,10 @@ def mark(name: str) -> pytest.MarkDecorator:
     return getattr(pytest.mark, name.replace("-", "_"))
 
 
-def runtime_config(runtime: str, harness: str | dict | None = None) -> dict:
+def runtime_config(runtime: str) -> dict:
     config: dict = {"type": runtime}
-    program = harness is not None and harness_class(harness_id(harness)).NEEDS_CONTAINER
     # Prime's default 1 CPU / 2 GB is too small to install and run an agent CLI.
-    if runtime == "prime" and program:
+    if runtime == "prime":
         config.update(cpu=2.0, memory=4.0)
     return config
 
@@ -131,20 +127,12 @@ def runtime_cls(runtime: str) -> type:
 
 
 def supports(runtime: str, feature: str) -> bool:
-    """Whether the runtime declares `feature`: a backend flag, or, for a network policy,
-    a config that inherits `NetworkPolicyConfig`."""
+    """Whether the runtime declares `feature`: a config that inherits
+    `NetworkPolicyConfig` for a network policy, a Prime workspace for service VMs."""
     if feature == "network":
         config = TypeAdapter(RuntimeConfig).validate_python(runtime_config(runtime))
         return isinstance(config, NetworkPolicyConfig)
-    if feature == "services":
-        return issubclass(runtime_cls(runtime), PrimeBackend)
-    flag = {
-        "container": "SUPPORTS_TASK_IMAGES",
-        "user": "SUPPORTS_USER_SWITCHING",
-        "expose": "SUPPORTS_PORT_EXPOSURE",
-        "compose": "SUPPORTS_COMPOSE",
-    }[feature]
-    return getattr(runtime_cls(runtime), flag)
+    return issubclass(runtime_cls(runtime), PrimeBackend)
 
 
 def resumes(cls: type[Harness]) -> bool:
@@ -172,8 +160,7 @@ def unsupported(
         return f"{name} has no native skill support"
     if "resume" in needs and not resumes(cls):
         return f"{name} cannot resume an exchange"
-    runtime_needs = (*(("container",) if cls.NEEDS_CONTAINER else ()), *needs)
-    for feature in runtime_needs:
+    for feature in needs:
         if feature in RUNTIME_FEATURES and not supports(runtime, feature):
             return f"{runtime} does not support {RUNTIME_FEATURES[feature]}"
     dialect = harness_config_type(name).model_fields["dialect"].default
@@ -220,7 +207,7 @@ def grid(
             cells.append(
                 pytest.param(
                     harness,
-                    runtime_config(runtime, harness),
+                    runtime_config(runtime),
                     marks=marks,
                     id=f"{harness_id(harness)}-in-{runtime}",
                 )
@@ -292,9 +279,6 @@ def placements(
             reason = None
             if tool_runtime == "service":
                 reason = unsupported("null", harness_runtime, ("services",))
-            # Beside a Prime harness, a rollout's Prime server joins its private network.
-            elif shared or tool_runtime != "prime" or harness_runtime != "prime":
-                reason = unsupported("null", tool_runtime, ("expose",))
             if reason:
                 marks.append(pytest.mark.skip(reason=reason))
             cells.append(

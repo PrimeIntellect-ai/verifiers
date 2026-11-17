@@ -29,10 +29,9 @@ from verifiers.v1.mcp.server import (
 from verifiers.v1.mcp.toolset import BaseToolsetConfig, ToolsetTimeoutConfig
 from verifiers.v1.runtimes import (
     Runtime,
-    backend_cls,
     provision_backend,
 )
-from verifiers.v1.runtimes.base import _ENSURE_UV
+from verifiers.v1.runtimes.base import _ENSURE_UV, SERVICE_PORT
 from verifiers.v1.state import State
 from verifiers.v1.utils.aio import run_shielded
 from verifiers.v1.utils.logging import get_logger
@@ -185,8 +184,8 @@ async def serve_in_runtime(
 ) -> int:
     """Start a server and return its bound port.
 
-    Exposed servers use the runtime's forwarded port when one is configured. Otherwise,
-    the OS chooses a port and reports it through a file. With a state channel, the server
+    Exposed servers bind the runtime's published `SERVICE_PORT`. Otherwise, the OS
+    chooses a port and reports it through a file. With a state channel, the server
     fetches the current rollout task from the adjacent `/task` endpoint.
     """
     # A shared server has a private service secret but no fixed state URL. Set
@@ -196,9 +195,9 @@ async def serve_in_runtime(
         "VF_STATE_URL": state_url or "",
         "VF_STATE_SECRET": state_secret,
     }
-    if listen_all or (exposed and runtime.published_port is not None):
+    if listen_all or exposed:
         env["MCP_HOST"] = "0.0.0.0"
-    fixed = runtime.published_port if exposed else None
+    fixed = SERVICE_PORT if exposed else None
     port_file = None
     if fixed is not None:
         env["MCP_PORT"] = str(fixed)
@@ -320,12 +319,6 @@ async def _serve(
                     "which needs a Prime runtime of its own beside a Prime workspace "
                     "without a task service spec (it then joins the rollout's "
                     "private network)"
-                )
-            if not backend_cls(cfg.runtime).SUPPORTS_PORT_EXPOSURE:
-                raise ToolsetError(
-                    f"server {server.server_name!r} runs in its own runtime, but the "
-                    f"{cfg.runtime.type} runtime cannot expose a port; "
-                    "use a runtime that supports port exposure"
                 )
             backend = await stack.enter_async_context(provision_backend(cfg.runtime))
             runtime = backend.bind()
