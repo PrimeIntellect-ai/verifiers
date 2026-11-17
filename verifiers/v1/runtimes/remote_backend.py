@@ -6,7 +6,7 @@ import contextlib
 
 from verifiers.v1.configs.runtime import CustomRuntimeConfig
 from verifiers.v1.errors import SandboxError
-from verifiers.v1.runtimes.backends.cli import CLIProcess
+from verifiers.v1.runtimes.backends.subprocess import SubprocessProcess
 from verifiers.v1.runtimes.base import (
     BaseRuntimeInfo,
     RuntimeBackend,
@@ -73,7 +73,7 @@ class RemoteBackend(RuntimeBackend):
             stderr=asyncio.subprocess.PIPE,
             start_new_session=True,
         )
-        self.rpc = ProcessRPC(CLIProcess(process))
+        self.rpc = ProcessRPC(SubprocessProcess(process))
 
     async def exec(
         self, runtime: Runtime, argv: list[str], env: dict[str, str]
