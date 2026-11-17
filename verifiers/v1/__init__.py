@@ -13,7 +13,14 @@ if TYPE_CHECKING:
     from pydantic_config import BaseConfig
 
     from verifiers.v1.acp import ACPConfig, ACPHarness, ACPTurn
-    from verifiers.v1.agent import Agent, Agents, Interaction, Segment, make_agent
+    from verifiers.v1.agent import (
+        Agent,
+        Agents,
+        Interaction,
+        Segment,
+        Steering,
+        make_agent,
+    )
     from verifiers.v1.clients import (
         Client,
         ModelContext,
@@ -293,6 +300,7 @@ _NAME_TO_MODULE = {
     "ScoringConfig": "verifiers.v1.configs.scoring",
     "ServicesSpec": "verifiers.v1.runtimes.deployment",
     "Segment": "verifiers.v1.agent",
+    "Steering": "verifiers.v1.agent",
     "SelectCLIConfig": "verifiers.v1.configs.select",
     "SelectConfig": "verifiers.v1.configs.select",
     "SemanticEdge": "verifiers.v1.semantic",
@@ -575,6 +583,7 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     # the user channel
     "Interaction",
     "Segment",
+    "Steering",
     # deployment and scoring
     "ComposeSpec",
     "Deployment",

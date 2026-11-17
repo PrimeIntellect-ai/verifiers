@@ -46,6 +46,17 @@ receipt = await interaction.send(
 
 For tasks that define an initial `prompt`, start the opening `turn()` before calling `send()`. Note that the returned receipt confirms whether the message was accepted for delivery, not that the agent has finished acting on it. Keep the `interaction` context open while the agent works, since exiting the block cancels outstanding deliveries and finishes the rollout.
 
+To steer a rollout from outside the code that runs it, such as a scheduler or an operator's command, pass a `Steering` to `run()` (or `interaction()`) and call it from anywhere while the rollout runs:
+
+```python
+steering = vf.Steering()
+run = asyncio.create_task(agent.run(task, steering=steering))
+...
+receipt = await steering.steer("Use the existing parser.", message_id="op-1")
+```
+
+It injects into the running turn the way `mode="steer"` does, on harnesses that support live steering, and never queues or wakes. With no turn running (before the rollout opens, between a run's retries, after it ends) the receipt is `{"outcome": "promptRequired", ...}` and nothing is delivered. A retry starts over without earlier messages. A `Steering` serves one rollout at a time; a stable `message_id` delivers once per attempt.
+
 ## Verification placement
 
 `agent.scoring.mode` selects whether task scoring runs in the agent's workspace (`shared`) or in a fresh container (`isolated`). Tasks can declare their own defaults on `TaskData.scoring` via `ScoringConfig`, and any fields explicitly set on `agent.scoring` override the task defaults (falling back to `shared` when neither sets a mode).
