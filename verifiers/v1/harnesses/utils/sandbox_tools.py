@@ -9,6 +9,7 @@ import asyncio
 import importlib
 import inspect
 from collections.abc import Callable
+from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 
 from verifiers.v1.errors import HarnessError
@@ -31,6 +32,7 @@ class SandboxTools:
     ):
         self.runtime, self.connection, self.spec = runtime, connection, spec
         self.defer_until_gate = spec.defer_until_gate
+        self._stack = AsyncExitStack()
         self._python = ""
         self._rpc: ProcessRPC | None = None
 
@@ -54,9 +56,23 @@ class SandboxTools:
         from verifiers.v1.harnesses.utils.remote_runtime import prepare_remote_bridge
 
         command = await prepare_remote_bridge(self.runtime, url, secret, "tool-adapter")
-        process = await self.runtime.exec(
-            [self._python, "-I", "-u", "-m", __name__], {}
-        )
+        from verifiers.v1.runtimes.controller import current_job
+
+        argv = [self._python, "-I", "-u", "-m", __name__]
+        if current_job.get() and self.runtime.type == "prime":
+            from verifiers.v1.runtimes import SubprocessConfig, provision_runtime
+            from verifiers.v1.runtimes.lan_execution import LanExecution
+            from verifiers.v1.runtimes.private_network import lan_host
+
+            local = await self._stack.enter_async_context(
+                provision_runtime(SubprocessConfig())
+            )
+            transport = LanExecution(local, lan_host(self.runtime.backend))
+            self._stack.push_async_callback(transport.close)
+            await transport.start(self.runtime)
+            process = await transport.exec(self.runtime, argv, {})
+        else:
+            process = await self.runtime.exec(argv, {})
         self._rpc = ProcessRPC(process)
         await self._rpc.call(
             "configure",
@@ -73,13 +89,16 @@ class SandboxTools:
         return ToolMessage.model_validate(result)
 
     async def aclose(self) -> None:
-        if self._rpc is not None:
-            try:
-                async with asyncio.timeout(10):
-                    await self._rpc.call("close")
-            finally:
-                await self._rpc.close()
-                self._rpc = None
+        try:
+            if self._rpc is not None:
+                try:
+                    async with asyncio.timeout(10):
+                        await self._rpc.call("close")
+                finally:
+                    await self._rpc.close()
+                    self._rpc = None
+        finally:
+            await self._stack.aclose()
 
 
 async def main() -> None:

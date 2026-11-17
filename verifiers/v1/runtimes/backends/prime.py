@@ -156,6 +156,7 @@ class PrimeBackend(RuntimeBackend):
         self.config = config.model_copy(update={"workdir": config.workdir or "/app"})
         self.info = PrimeRuntimeInfo(**self.config.model_dump())
         self._client = None
+        self._launcher = None
         # A LAN network (id, tags) to join as the sandbox boots: prime-sandboxes joins it
         # once it is running, within `wait_for_creation` on the creating client.
         self.lan: tuple[str, list[str]] | None = None
@@ -176,6 +177,21 @@ class PrimeBackend(RuntimeBackend):
 
     async def start(self) -> None:
         from prime_sandboxes import APIError, CreateSandboxRequest
+
+        from verifiers.v1.runtimes.controller import current_job
+
+        if job := current_job.get():
+            self._launcher = job.launcher
+            info = await self._launcher.call(
+                "create",
+                config=self.config.model_dump(mode="json"),
+                name=self.name,
+                env=self.env,
+                lan=self.lan,
+            )
+            self.info.id, self.info.image_cached = info["id"], info["image_cached"]
+            self._client = _lease_client()
+            return
 
         started = time.perf_counter()
         self._client = _lease_client()
@@ -424,6 +440,10 @@ class PrimeBackend(RuntimeBackend):
         return PrimeProcess(process)
 
     async def expose(self, port: int) -> str:
+        if self._launcher is not None:
+            return await self._launcher.call(
+                "expose", sandbox_id=self.info.id, port=port
+            )
         """Publish `port` through a LAN network whose `internet` rule exposes it on this
         sandbox. The URL has no Prime authentication."""
         from prime_sandboxes import LanRule
@@ -556,7 +576,7 @@ class PrimeBackend(RuntimeBackend):
         # Synchronous atexit backstop (the async client can't run once the loop is gone): delete
         # the sandbox via the sync client, so the costly resource isn't left to its max-lifetime.
         # Idempotent — the async `stop` deletes it on the normal path, a second delete 404s.
-        if self.info.id is not None:
+        if self._launcher is None and self.info.id is not None:
             from prime_sandboxes import SandboxClient
             from prime_sandboxes.core import APIClient
 
@@ -576,7 +596,10 @@ class PrimeBackend(RuntimeBackend):
         try:
             try:
                 if self.info.id is not None:  # keep info.id available after teardown
-                    await client.delete(self.info.id)
+                    if self._launcher is not None:
+                        await self._launcher.call("stop", sandbox_id=self.info.id)
+                    else:
+                        await client.delete(self.info.id)
             except Exception as e:  # noqa: BLE001 - provider teardown is best-effort
                 logger.warning(
                     "Failed to delete prime runtime %s - %s: %s",

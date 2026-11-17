@@ -2,50 +2,32 @@
 
 import asyncio
 import contextlib
-import json
 import uuid
 
 from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes.base import RuntimeProcess
-from verifiers.v1.runtimes.rpc_wire import MAX_FRAME, encode
+from verifiers.v1.runtimes.rpc_wire import encode, frames
 
 
-class ProcessRPC:
-    def __init__(self, process: RuntimeProcess):
-        self.process = process
+class StreamRPC:
+    def __init__(self, chunks, write):
+        self._chunks = chunks
+        self._write = write
         self._pending: dict[str, asyncio.Future] = {}
         self._write_lock = asyncio.Lock()
         self._error: BaseException | None = None
         self._stderr = bytearray()
-        self._tasks = [
-            asyncio.create_task(self._receive()),
-            asyncio.create_task(self._drain()),
-        ]
-
-    async def _drain(self) -> None:
-        async for chunk in self.process.stderr:
-            self._stderr.extend(chunk)
-            del self._stderr[:-4000]
+        self._tasks = [asyncio.create_task(self._receive())]
 
     async def _receive(self) -> None:
-        buffer = bytearray()
         try:
-            async for chunk in self.process.stdout:
-                buffer.extend(chunk)
-                while len(buffer) >= 4:
-                    size = int.from_bytes(buffer[:4], "big")
-                    if size > MAX_FRAME:
-                        raise SandboxError("runtime RPC frame exceeds 32 MiB")
-                    if len(buffer) < size + 4:
-                        break
-                    message = json.loads(buffer[4 : size + 4])
-                    del buffer[: size + 4]
-                    future = self._pending.get(message["id"])
-                    if future is not None and not future.done():
-                        if "error" in message:
-                            future.set_exception(SandboxError(message["error"]))
-                        else:
-                            future.set_result(message["result"])
+            async for message in frames(self._chunks):
+                future = self._pending.get(message["id"])
+                if future is not None and not future.done():
+                    if "error" in message:
+                        future.set_exception(SandboxError(message["error"]))
+                    else:
+                        future.set_result(message["result"])
             raise SandboxError(
                 f"runtime RPC closed - {self._stderr.decode(errors='replace')}"
             )
@@ -63,16 +45,33 @@ class ProcessRPC:
         self._pending[request_id] = future
         try:
             async with self._write_lock:
-                await self.process.write(
-                    encode({"id": request_id, "operation": operation, **values})
+                await self._write(
+                    encode({**values, "id": request_id, "operation": operation})
                 )
             return await future
         finally:
             self._pending.pop(request_id, None)
 
     async def close(self) -> None:
-        with contextlib.suppress(Exception):
-            await self.process.kill()
         for task in self._tasks:
             task.cancel()
         await asyncio.gather(*self._tasks, return_exceptions=True)
+
+
+class ProcessRPC(StreamRPC):
+    def __init__(self, process: RuntimeProcess):
+        self.process = process
+        super().__init__(process.stdout, process.write)
+        self._tasks.append(asyncio.create_task(self._drain()))
+
+    async def _drain(self) -> None:
+        async for chunk in self.process.stderr:
+            self._stderr.extend(chunk)
+            del self._stderr[:-4000]
+
+    async def close(self) -> None:
+        try:
+            with contextlib.suppress(Exception):
+                await self.process.kill()
+        finally:
+            await super().close()

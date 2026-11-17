@@ -591,6 +591,15 @@ class Agent:
         # The name in this agent's log prefix; an episode names it after its role.
         self._log_name: str | None = None
         self.runtime_config: RuntimeConfig = config.runtime
+        if (
+            interception is None
+            and config.deployment.mode == "split"
+            and self.runtime_config.type == "prime"
+        ):
+            from verifiers.v1.runtimes.controller import current_job
+
+            if job := current_job.get():
+                interception = job.server
         self.interception = interception
         self.limits = RolloutLimits(
             max_turns=config.max_turns,

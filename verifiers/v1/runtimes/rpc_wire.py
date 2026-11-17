@@ -22,7 +22,22 @@ async def serve(handler) -> None:
     await asyncio.get_running_loop().connect_read_pipe(
         lambda: protocol, sys.stdin.buffer
     )
+
+    async def chunks():
+        while chunk := await reader.read(65536):
+            yield chunk
+
+    async def write(packet):
+        sys.stdout.buffer.write(packet)
+        sys.stdout.buffer.flush()
+
+    await serve_stream(handler, chunks(), write)
+
+
+async def serve_stream(handler, chunks, write) -> None:
+    """Serve a framed, bidirectional byte stream. EOF cancels pending operations."""
     tasks: set[asyncio.Task] = set()
+    lock = asyncio.Lock()
 
     async def reply(message):
         try:
@@ -32,19 +47,11 @@ async def serve(handler) -> None:
             packet = encode(
                 {"id": message["id"], "error": f"{type(error).__name__}: {error}"}
             )
-        # One event-loop thread owns writes, so frames cannot interleave.
-        sys.stdout.buffer.write(packet)
-        sys.stdout.buffer.flush()
+        async with lock:
+            await write(packet)
 
     try:
-        while True:
-            try:
-                size = int.from_bytes(await reader.readexactly(4), "big")
-            except asyncio.IncompleteReadError:
-                break
-            if size > MAX_FRAME:
-                raise RuntimeError("runtime RPC frame exceeds 32 MiB")
-            message = json.loads(await reader.readexactly(size))
+        async for message in frames(chunks):
             task = asyncio.create_task(reply(message))
             tasks.add(task)
             task.add_done_callback(tasks.discard)
@@ -52,3 +59,21 @@ async def serve(handler) -> None:
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
+
+
+async def frames(chunks):
+    """Decode complete, bounded JSON frames across arbitrary chunk boundaries."""
+    buffer = bytearray()
+    async for chunk in chunks:
+        buffer.extend(chunk)
+        while len(buffer) >= 4:
+            size = int.from_bytes(buffer[:4], "big")
+            if size > MAX_FRAME:
+                raise RuntimeError("runtime RPC frame exceeds 32 MiB")
+            if len(buffer) < size + 4:
+                break
+            message = json.loads(buffer[4 : 4 + size])
+            del buffer[: 4 + size]
+            yield message
+    if buffer:
+        raise RuntimeError("incomplete runtime RPC frame")

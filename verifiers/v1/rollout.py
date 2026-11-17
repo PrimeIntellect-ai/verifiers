@@ -480,6 +480,7 @@ class Rollout:
                         self._shared_tools,
                     )
                 )
+                state_base = self._session.state_base_url or base_url
                 self._endpoint = self._agent_runtime.host_url(
                     f"{base_url.rstrip('/')}/v1"
                 )
@@ -510,7 +511,7 @@ class Rollout:
                         state_secret=state_secret,
                         proxy_mcp=self._session.proxy_mcp,
                         state_route=self.trace.id,
-                        state_base=base_url,
+                        state_base=state_base,
                         services=services,
                         hosts=self.deployment.hosts,
                         # Tool servers on VMs of their own, by server name; an explicit
@@ -533,6 +534,12 @@ class Rollout:
                 if self._split_execution:
                     self.deployment.control_routes = [
                         base_url,
+                        *(
+                            [state_base]
+                            if state_base != base_url
+                            and urlsplit(state_base).hostname != "127.0.0.1"
+                            else []
+                        ),
                         self._endpoint,
                         *self._urls.values(),
                     ]
@@ -542,7 +549,7 @@ class Rollout:
                         for url in [self._endpoint, *self._urls.values()]
                         if urlsplit(url).hostname not in internal
                     ],
-                    state_route=f"{base_url.rstrip('/')}/state",
+                    state_route=f"{state_base.rstrip('/')}/state",
                 )
                 if self._split_execution:
                     self.trace.agent.runtime = runtime.info.model_copy()
