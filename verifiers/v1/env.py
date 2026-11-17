@@ -30,7 +30,8 @@ from verifiers.v1.interception import (
     requires_tunnel,
 )
 from verifiers.v1.mcp import SharedToolServer, serve_shared
-from verifiers.v1.runtimes import runtime_is_local
+from verifiers.v1.mcp.launch import check_reachable, tool_runtime
+from verifiers.v1.runtimes import RuntimeConfig, runtime_is_local
 from verifiers.v1.task import Task
 from verifiers.v1.trace import Error, Trace, TraceTask
 from verifiers.v1.utils.format import format_time
@@ -435,11 +436,26 @@ class Env(ABC, Generic[ConfigT]):
         ]
         return requires_tunnel(self._runs_local(), configs, shared.values())
 
+    def tool_provider(self) -> RuntimeConfig:
+        """The runtime shared servers default to: the roles' provider, or a remote role's
+        when roles mix providers, since a local server cannot serve a remote harness."""
+        runtimes = [spec.runtime for spec in self._agent_specs.values()]
+        remote = [config for config in runtimes if not runtime_is_local(config)]
+        return (remote or runtimes)[0]
+
     @contextlib.asynccontextmanager
     async def shared_tools(self):
         servers = self.taskset.toolsets(self.taskset.config)
         if not servers:
             yield {}
             return
-        async with serve_shared(servers, harness_is_local=self._runs_local()) as shared:
+        provider = self.tool_provider()
+        for server in servers:
+            if not server.config.url:
+                check_reachable(
+                    server.server_name,
+                    tool_runtime(server.config, provider),
+                    self._runs_local(),
+                )
+        async with serve_shared(servers, provider) as shared:
             yield shared
