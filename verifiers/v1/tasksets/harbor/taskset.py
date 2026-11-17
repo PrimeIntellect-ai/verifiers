@@ -823,10 +823,12 @@ def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborD
     from harbor.models.task.task import Task as HarborModelTask
     from harbor.models.task.verifier_mode import resolve_verifier_environment_definition
 
+    tests_dir = task_dir / "tests"
     harbor_task = HarborModelTask(
         task_dir,
-        disable_verification=any(
-            p.suffix in {".toml", ".py"} for p in (task_dir / "tests").rglob("*")
+        disable_verification=not (tests_dir / "test.sh").is_file()
+        and any(
+            p.is_file() and p.suffix in {".toml", ".py"} for p in tests_dir.rglob("*")
         ),
     )
     parsed = harbor_task.config
