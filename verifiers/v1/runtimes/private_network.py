@@ -148,17 +148,8 @@ async def private_network(
                 ),
                 LanRule(from_="tag:vf-controller", to=f"tag:{HARNESS_TAG}"),
             ]
-        if job:
-            network_id = await job.launcher.call(
-                "network",
-                join_controller=harness is not None,
-                name=name,
-                rules=[rule.model_dump(by_alias=True) for rule in rules],
-            )
-        else:
-            network_id = (await client.create_lan_network(name, rules=rules)).id
 
-        async def delete_network() -> None:
+        async def delete_network(network_id: str) -> None:
             try:
                 if job:
                     await job.launcher.call("delete_network", network_id=network_id)
@@ -169,7 +160,20 @@ async def private_network(
                     "LAN network %s deletion failed", network_id, exc_info=True
                 )
 
-        stack.push_async_callback(lambda: run_shielded(delete_network()))
+        async def create_and_own() -> str:
+            if job:
+                network_id = await job.launcher.call(
+                    "network",
+                    join_controller=harness is not None,
+                    name=name,
+                    rules=[rule.model_dump(by_alias=True) for rule in rules],
+                )
+            else:
+                network_id = (await client.create_lan_network(name, rules=rules)).id
+            stack.push_async_callback(lambda: run_shielded(delete_network(network_id)))
+            return network_id
+
+        network_id = await run_shielded(create_and_own())
         # Failed startup unwinds this stack before the deployment's workspace owner.
         stack.push_async_callback(workspace.stop)
 

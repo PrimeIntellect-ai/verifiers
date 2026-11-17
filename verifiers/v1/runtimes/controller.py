@@ -98,10 +98,10 @@ class PrimeController:
 
     async def _run(self, payload: dict, credentials: dict[str, str]):
         from verifiers.v1.runtimes.backends.prime import PrimeBackend, leased_client
+        from verifiers.v1.runtimes.deployment import WorkerGroup
 
         result = None
         finished = False
-        from verifiers.v1.runtimes.deployment import WorkerGroup
 
         async with AsyncExitStack() as stack:
             workers = WorkerGroup()
@@ -144,7 +144,11 @@ class PrimeController:
                     backend.env = message["env"]
                     backend.lan = message["lan"]
                     stack.push_async_callback(backend.stop)
-                    await backend.start()
+                    try:
+                        await backend.start()
+                    except BaseException:
+                        await backend.stop()
+                        raise
                     vms[backend.info.id] = backend
                     return {
                         "id": backend.info.id,
@@ -170,24 +174,28 @@ class PrimeController:
                         return network
 
                     network = await run_shielded(create_network())
-                    if not message["join_controller"]:
+                    try:
+                        if not message["join_controller"]:
+                            return network.id
+                        await client.add_lan_member(
+                            network.id, self.runtime.info.id, ["vf-controller"]
+                        )
+                        # The provider can acknowledge enrollment before its VM layer
+                        # has installed the directed ACL. Admit solvers only after that.
+                        async with asyncio.timeout(60):
+                            while True:
+                                state = await client.get_lan_network(network.id)
+                                if state.synced and any(
+                                    member.sandbox_id == self.runtime.info.id
+                                    and member.synced
+                                    for member in state.members or ()
+                                ):
+                                    break
+                                await asyncio.sleep(0.2)
                         return network.id
-                    await client.add_lan_member(
-                        network.id, self.runtime.info.id, ["vf-controller"]
-                    )
-                    # The provider can acknowledge enrollment before its VM layer
-                    # has installed the directed ACL. Admit solvers only after that.
-                    async with asyncio.timeout(60):
-                        while True:
-                            state = await client.get_lan_network(network.id)
-                            if state.synced and any(
-                                member.sandbox_id == self.runtime.info.id
-                                and member.synced
-                                for member in state.members or ()
-                            ):
-                                break
-                            await asyncio.sleep(0.2)
-                    return network.id
+                    except BaseException:
+                        await run_shielded(release_network(network.id))
+                        raise
                 elif operation == "delete_network":
                     await release_network(message["network_id"])
                 elif operation == "result":
@@ -196,8 +204,9 @@ class PrimeController:
                     raise ValueError("unknown controller lifecycle operation")
                 return None
 
+            tail = bytearray()
+
             async def drain():
-                tail = bytearray()
                 async for chunk in process.stderr:
                     logger.debug(
                         "Controller output - %s",
@@ -205,7 +214,6 @@ class PrimeController:
                     )
                     tail.extend(chunk)
                     del tail[:-4000]
-                return tail.decode(errors="replace")
 
             stderr = asyncio.create_task(drain())
             try:
@@ -213,7 +221,7 @@ class PrimeController:
                 code = await process.wait()
                 if code or not finished:
                     raise SandboxError(
-                        f"trusted evaluator exited ({code}) - {await stderr}"
+                        f"trusted evaluator exited ({code}) - {tail.decode(errors='replace')}"
                     )
                 return result
             finally:
@@ -228,19 +236,25 @@ async def _main():
     from verifiers.v1.interception.server import InterceptionServer
 
     # Keep ordinary evaluator stdout, including subprocess output, off the framed pipe.
-    writer = os.fdopen(os.dup(sys.stdout.fileno()), "wb", buffering=0)
+    writer = os.fdopen(os.dup(sys.stdout.fileno()), "wb")
     os.dup2(sys.stderr.fileno(), sys.stdout.fileno())
     reader = asyncio.StreamReader()
-    transport, _ = await asyncio.get_running_loop().connect_read_pipe(
+    loop = asyncio.get_running_loop()
+    transport, _ = await loop.connect_read_pipe(
         lambda: asyncio.StreamReaderProtocol(reader), sys.stdin.buffer
     )
+    output, protocol = await loop.connect_write_pipe(
+        asyncio.streams.FlowControlMixin, writer
+    )
+    stream = asyncio.StreamWriter(output, protocol, None, loop)
 
     async def chunks():
         while chunk := await reader.read(65536):
             yield chunk
 
     async def write(packet):
-        writer.write(packet)
+        stream.write(packet)
+        await stream.drain()
 
     rpc = StreamRPC(chunks(), write)
     try:
@@ -264,4 +278,4 @@ async def _main():
     finally:
         await rpc.close()
         transport.close()
-        writer.close()
+        stream.close()

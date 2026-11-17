@@ -182,15 +182,19 @@ class PrimeBackend(RuntimeBackend):
 
         if job := current_job.get():
             self._launcher = job.launcher
-            info = await self._launcher.call(
-                "create",
-                config=self.config.model_dump(mode="json"),
-                name=self.name,
-                env=self.env,
-                lan=self.lan,
-            )
-            self.info.id, self.info.image_cached = info["id"], info["image_cached"]
-            self._client = _lease_client()
+
+            async def create_and_attach():
+                info = await self._launcher.call(
+                    "create",
+                    config=self.config.model_dump(mode="json"),
+                    name=self.name,
+                    env=self.env,
+                    lan=self.lan,
+                )
+                self.info.id, self.info.image_cached = info["id"], info["image_cached"]
+                self._client = _lease_client()
+
+            await run_shielded(create_and_attach())
             return
 
         started = time.perf_counter()

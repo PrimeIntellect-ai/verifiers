@@ -77,6 +77,9 @@ async def serve_interception(
     """A slot on the shared interception when one was injected (its owner keeps the
     lifecycle), else on a per-rollout `InterceptionServer` owned — brought up and torn
     down — by the caller's context."""
+    session.state_service_secrets = frozenset(
+        tool.state_secret for tool in shared_tools.values() if tool.state_secret
+    )
     if isinstance(interception, InterceptionServer) and interception.lan_host:
         # The split harness can reach the private listener. A remote state
         # consumer outside the attempt LAN needs a separately reachable URL.
@@ -87,11 +90,6 @@ async def serve_interception(
 
             async with AsyncExitStack() as stack:
                 session.state_base_url = f"http://127.0.0.1:{interception.port}"
-                session.state_service_secrets = frozenset(
-                    tool.state_secret
-                    for tool in shared_tools.values()
-                    if tool.state_secret
-                )
                 if requires_tunnel(
                     True, [s.config for s in servers], shared_tools.values()
                 ) or any(getattr(s.config, "service", None) for s in servers):
