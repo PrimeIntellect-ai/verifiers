@@ -66,8 +66,13 @@ def read_episodes(
                     if trace.id == ".." or Path(trace.id).parts != (trace.id,):
                         raise ValueError(f"invalid saved trace ID: {trace.id!r}")
                     directory = results_dir / "artifacts" / trace.id
-                    if not directory.exists() and any(
-                        artifact.required for artifact in trace.task.data.artifacts
+                    if (
+                        trace.ok
+                        and trace.is_completed
+                        and not directory.exists()
+                        and any(
+                            artifact.required for artifact in trace.task.data.artifacts
+                        )
                     ):
                         raise ValueError(
                             f"required submission artifacts were not saved for trace {trace.id!r}"

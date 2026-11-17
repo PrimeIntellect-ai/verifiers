@@ -243,6 +243,12 @@ async def grade_submission(
     policy = scoring if scoring is not None else task.scoring
     if policy.mode != "isolated":
         raise ValueError("grade_submission requires isolated scoring")
+    if policy.skip_on_truncated and trace.is_truncated:
+        trace.info["scoring_skipped"] = "truncated"
+        return
+    if policy.skip_on_timeout and trace.is_timeout:
+        trace.info["scoring_skipped"] = "timeout"
+        return
     if runtime is None and not trace.state.artifacts:
         # A captured empty submission still has the implicit /logs/artifacts key
         # with a None value. An empty mapping means collection/loading never
