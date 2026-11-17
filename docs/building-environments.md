@@ -72,8 +72,6 @@ import verifiers.v1 as vf
 
 
 class FileSumTask(vf.Task[vf.TaskData]):
-    NEEDS_CONTAINER = True
-
     async def setup(self, runtime: vf.Runtime) -> None:
         await runtime.write("/app/input.txt", b"1\n2\n3\n")
         await runtime.write("/app/output/answer.txt", b"")

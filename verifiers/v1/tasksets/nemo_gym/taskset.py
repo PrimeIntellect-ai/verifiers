@@ -17,6 +17,7 @@ from verifiers.v1.envs.single_agent import SingleAgentEnv
 from verifiers.v1.mcp import SharedToolsetConfig, Toolset
 from verifiers.v1.mcp.launch import _read_back_port, log_tail, reachable_url
 from verifiers.v1.runtimes import Runtime, provision_backend
+from verifiers.v1.runtimes.base import SERVICE_PORT
 from verifiers.v1.task import Task, TaskConfig, TaskData
 from verifiers.v1.taskset import Taskset, TasksetConfig
 from verifiers.v1.trace import Trace
@@ -154,7 +155,7 @@ class NeMoGymEnv(SingleAgentEnv):
                 program,
                 {
                     "NEMO_GYM_RESOURCE_SERVER": entrypoint,
-                    "NEMO_GYM_PORT": str(runtime.published_port or 0),
+                    "NEMO_GYM_PORT": str(SERVICE_PORT),
                     "NEMO_GYM_TOKEN": token,
                 },
                 log_file,

@@ -152,12 +152,27 @@ class NetworkPolicyConfig(BaseConfig):
         return type(self).model_validate({**values, "allow": allow, "block": block})
 
 
-class DockerConfig(NetworkPolicyConfig):
-    type: Literal["docker"] = "docker"
+class SandboxConfig(BaseConfig):
+    """What every runtime provisions: a task image with a working directory and the
+    resources `TaskData.resources` requests. Network policy support is declared by also
+    inheriting `NetworkPolicyConfig`."""
+
     image: str = "python:3.11-slim"
     workdir: str | None = None
     """Working directory override; None uses the task's workdir, or /app."""
     # TaskData.resources uses these units; non-default runtime config values take precedence.
+    cpu: float | None = None
+    """CPU cores. None = the provider's default."""
+    memory: float | None = None
+    """Memory limit in GB. None = the provider's default."""
+    gpu: str | None = None
+    """GPU spec, e.g. "A100" or "A100:2" (a bare count = provider-chosen type)."""
+    disk: float | None = None
+    """Disk in GB. None = the provider's default."""
+
+
+class DockerConfig(SandboxConfig, NetworkPolicyConfig):
+    type: Literal["docker"] = "docker"
     cpu: float | None = None
     """Pin the container to this many CPU cores. None = unlimited."""
     memory: float | None = None
@@ -185,15 +200,13 @@ class PrimeVolume(BaseConfig):
     read_only: bool = True
 
 
-class PrimeConfig(NetworkPolicyConfig):
+class PrimeConfig(SandboxConfig, NetworkPolicyConfig):
     type: Literal["prime"] = "prime"
     image: str = "python:3.11-slim"
     """Docker image to run. Any pullable ref works: on the first use of an image, the
     platform auto-builds the VM image that the sandbox needs from it (~10 minutes)
     and caches the result, so later sandboxes on the same ref start in
     seconds."""
-    workdir: str | None = None
-    """Working directory override; None uses the task's workdir, or /app."""
     region: str | None = None
     """Region to provision in (None = provider-chosen)."""
     labels: list[str] = Field(default_factory=list)
@@ -242,7 +255,7 @@ class PrimeConfig(NetworkPolicyConfig):
         return self
 
 
-class CustomRuntimeConfig(BaseConfig):
+class CustomRuntimeConfig(SandboxConfig):
     type: Literal["custom"] = "custom"
     import_path: str
     """Dotted path to a `RuntimeBackend` subclass, e.g. `my_package.runtime.MyBackend`."""

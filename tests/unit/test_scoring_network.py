@@ -47,7 +47,6 @@ def test_scoring_network_needs_a_runtime_with_policies():
 
 
 class Backend:
-    SUPPORTS_USER_SWITCHING = False
     name = "fake"
 
     def __init__(self, config, restricted=True):

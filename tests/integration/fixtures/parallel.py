@@ -28,7 +28,6 @@ class ParallelHarnessConfig(HarnessConfig):
 class ParallelHarness(Harness[ParallelHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
     EXECUTES_CODE = False
-    NEEDS_CONTAINER = False
 
     async def setup(self, runtime: Runtime) -> None:
         await runtime.prepare_uv_script(CHAT_PROGRAM_SOURCE, self.config.resolved_env)

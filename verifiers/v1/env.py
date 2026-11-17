@@ -135,7 +135,6 @@ class Env(ABC, Generic[ConfigT]):
         self._shared_tools: dict[str, SharedToolServer] = {}
         self._interception: Interception | None = None
         # Resource warnings dedupe env-wide (agents are per-episode).
-        self._warned_resources: set = set()
 
     # --- the multi-agent surface (override these) ------------------------------
 
@@ -215,7 +214,6 @@ class Env(ABC, Generic[ConfigT]):
                 completed=completed,
                 on_trace=on_trace,
                 on_discard=on_discard,
-                warned_resources=self._warned_resources,
             )
 
         agents = Agents(self.config, make)

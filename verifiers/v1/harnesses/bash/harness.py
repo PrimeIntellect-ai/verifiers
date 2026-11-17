@@ -53,7 +53,6 @@ class BashHarness(Harness[BashHarnessConfig]):
     SUPPORTS_MCP = True
     SUPPORTS_RESUME = True
     SUPPORTS_TOOL_INTERCEPTION = True
-    NEEDS_CONTAINER = False
 
     async def setup(self, runtime: Runtime) -> None:
         await runtime.prepare_uv_script(CHAT_PROGRAM_SOURCE, self.config.resolved_env)
