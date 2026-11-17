@@ -272,6 +272,9 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
                 image=runtime.config.image, workdir=runtime.config.workdir
             )
         task.data = verifier_box_data(task.data)
+        task.config = task.config.model_copy(
+            update={"mcp_servers": task.data.mcp_servers}
+        )
         return task
 
     async def finalize_services(
