@@ -85,19 +85,20 @@ class TaskFiles:
 
 
 def source_digest(directory: Path) -> str:
-    """Hash relative names, types, permissions and bytes without following links."""
+    """Hash names, types, permissions, bytes and in-tree hardlinks without following links."""
     digest = hashlib.sha256()
+    hardlinks: dict[tuple[int, int], str] = {}
     for path in sorted(directory.rglob("*")):
         metadata = path.lstat()
         mode = metadata.st_mode
+        relative = path.relative_to(directory).as_posix()
+        link = None
         if stat.S_ISLNK(mode):
             content = os.readlink(path).encode()
         elif stat.S_ISREG(mode):
-            file_hash = hashlib.sha256()
+            link = hardlinks.setdefault((metadata.st_dev, metadata.st_ino), relative)
             with path.open("rb") as stream:
-                for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-                    file_hash.update(chunk)
-            content = file_hash.digest()
+                content = hashlib.file_digest(stream, "sha256").digest()
         elif stat.S_ISDIR(mode):
             content = b""
         else:
@@ -105,9 +106,7 @@ def source_digest(directory: Path) -> str:
                 f"Task input is not a regular file, directory or link: {path}"
             )
         digest.update(
-            json.dumps(
-                [path.relative_to(directory).as_posix(), mode & 0o177777]
-            ).encode()
+            json.dumps([relative, mode & 0o177777, link]).encode()
             + b"\0"
             + content
             + b"\0"
