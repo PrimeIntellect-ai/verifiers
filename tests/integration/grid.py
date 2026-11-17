@@ -262,23 +262,28 @@ def skip_harness(cells: list, harness: str, reason: str) -> list:
 
 
 def placements(
-    harness_runtimes: tuple[str, ...] = ("prime",),
-    tool_runtimes: tuple[str, ...] = ("docker", "prime"),
+    harness_runtimes: tuple[str, ...] = ("docker", "prime"),
+    tool_runtimes: tuple[str, ...] = ("default", "prime"),
     *,
     shared: bool = False,
 ) -> list:
     """`(harness_runtime, tool_runtime)` cells for a tool server placed in a native
-    service VM beside the harness (`service`), or in its own runtime
-    (on Prime beside a Prime harness, a VM on the rollout's private network). A
-    Docker tool runtime is a local server reached from the sandbox through the tunnel.
-    A `shared` server runs once per eval, so it joins no rollout's network."""
+    service VM beside the harness (`service`), or in a runtime of its own: by
+    `default` one from the harness's provider (a Docker container beside a Docker
+    harness, on Prime beside a Prime harness a VM on the rollout's private network),
+    or an explicit one by type. A `shared` server runs once per eval, so it joins no
+    rollout's network. A local tool runtime cannot serve a remote harness."""
     cells = []
     for harness_runtime in harness_runtimes:
         for tool_runtime in tool_runtimes:
-            marks = [mark(harness_runtime), mark(tool_runtime)]
+            marks = [mark(harness_runtime)]
+            if tool_runtime != "default":
+                marks.append(mark(tool_runtime))
             reason = None
             if tool_runtime == "service":
                 reason = unsupported("null", harness_runtime, ("services",))
+            elif tool_runtime == "docker" and harness_runtime != "docker":
+                reason = "a remote harness cannot reach a local tool server"
             if reason:
                 marks.append(pytest.mark.skip(reason=reason))
             cells.append(
