@@ -29,11 +29,12 @@ import time
 import uuid
 from collections.abc import AsyncIterator
 from pathlib import PurePosixPath
+from typing import ClassVar
 from urllib.parse import urlsplit
 
 from verifiers.v1.configs.runtime import DockerConfig, NetworkPolicyConfig
 from verifiers.v1.errors import SandboxError
-from verifiers.v1.runtimes.backends.cli import CLIProcess
+from verifiers.v1.runtimes.backends.subprocess import SubprocessProcess
 from verifiers.v1.runtimes.base import (
     SERVICE_PORT,
     BaseRuntimeInfo,
@@ -206,6 +207,12 @@ async def _abort_process_startup(
 class DockerBackend(RuntimeBackend):
     """A container reached through the docker CLI: every operation is an `exec`."""
 
+    SUPPORTS_TASK_IMAGES: ClassVar[bool] = True
+    SUPPORTS_USER_SWITCHING: ClassVar[bool] = True
+    SUPPORTS_STOP_CONFIRMATION: ClassVar[bool] = True
+    SUPPORTS_MEMORY_LIMIT: ClassVar[bool] = True
+    SUPPORTS_PORT_EXPOSURE: ClassVar[bool] = True
+    SUPPORTS_COMPOSE: ClassVar[bool] = True
     is_local = True
 
     def __init__(
@@ -273,6 +280,10 @@ class DockerBackend(RuntimeBackend):
             and isinstance(self.config, NetworkPolicyConfig)
             and self.config.network_restricted
         )
+
+    @property
+    def published_port(self) -> int:
+        return SERVICE_PORT
 
     async def start(self) -> None:
         started = time.perf_counter()
@@ -727,7 +738,7 @@ class DockerBackend(RuntimeBackend):
             pidfile,
             *argv,
         ]
-        proc = CLIProcess(
+        proc = SubprocessProcess(
             await asyncio.create_subprocess_exec(
                 *command,
                 stdin=asyncio.subprocess.PIPE,

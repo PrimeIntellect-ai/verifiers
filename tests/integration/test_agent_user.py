@@ -6,7 +6,9 @@ import pytest
 from grid import assert_one_branch, grid, runtimes_grid
 
 
-@pytest.mark.parametrize("harness_runtime", runtimes_grid(), indirect=True)
+@pytest.mark.parametrize(
+    "harness_runtime", runtimes_grid(needs=("user",)), indirect=True
+)
 async def test_agent_user_cannot_act_as_root(run, harness_runtime):
     """A scripted, model-free agent runs as the task's non-root `agent_user`. Root-only
     actions are denied, while its uv script and runtime file I/O act as the user."""
@@ -30,7 +32,9 @@ async def test_agent_user_cannot_act_as_root(run, harness_runtime):
     assert trace.reward == 1.0
 
 
-@pytest.mark.parametrize("harness,harness_runtime", grid(), indirect=True)
+@pytest.mark.parametrize(
+    "harness,harness_runtime", grid(needs=("user",)), indirect=True
+)
 async def test_agent_user_harness(run, harness, harness_runtime, scripted_model):
     """Each harness installs and runs a turn as a non-root agent user against a scripted
     upstream, so the run fails only if the harness can't set up or run without root."""

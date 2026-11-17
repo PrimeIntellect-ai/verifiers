@@ -30,8 +30,7 @@ from verifiers.v1.interception import (
     requires_tunnel,
 )
 from verifiers.v1.mcp import SharedToolServer, serve_shared
-from verifiers.v1.mcp.launch import check_reachable, tool_runtime
-from verifiers.v1.runtimes import RuntimeConfig, runtime_is_local
+from verifiers.v1.runtimes import SubprocessConfig, runtime_is_local
 from verifiers.v1.task import Task
 from verifiers.v1.trace import Error, Trace, TraceTask
 from verifiers.v1.utils.format import format_time
@@ -132,10 +131,27 @@ class Env(ABC, Generic[ConfigT]):
             if key not in loaded:
                 loaded[key] = load_harness(cfg)
             self._harnesses[name] = loaded[key]
+        warned: set[str] = set()
+        for name, harness in self._harnesses.items():
+            # Warn once per distinct harness; tool-less chat loops are exempt.
+            if (
+                harness.EXECUTES_CODE
+                and isinstance(self._agent_specs[name].runtime, SubprocessConfig)
+                and harness.config.id not in warned
+            ):
+                warned.add(harness.config.id)
+                logger.warning(
+                    "Harness %r is running in the subprocess runtime on the local system. "
+                    "Local files and settings may affect the evaluation; use subprocess only "
+                    "for debugging. Use --env.<role>.runtime.type docker or prime "
+                    "for an isolated run.",
+                    harness.config.id,
+                )
         # Serving resources, live only inside `serving()`; the env's agents borrow them.
         self._shared_tools: dict[str, SharedToolServer] = {}
         self._interception: Interception | None = None
         # Resource warnings dedupe env-wide (agents are per-episode).
+        self._warned_resources: set = set()
 
     # --- the multi-agent surface (override these) ------------------------------
 
@@ -215,6 +231,7 @@ class Env(ABC, Generic[ConfigT]):
                 completed=completed,
                 on_trace=on_trace,
                 on_discard=on_discard,
+                warned_resources=self._warned_resources,
             )
 
         agents = Agents(self.config, make)
@@ -436,26 +453,11 @@ class Env(ABC, Generic[ConfigT]):
         ]
         return requires_tunnel(self._runs_local(), configs, shared.values())
 
-    def tool_provider(self) -> RuntimeConfig:
-        """The runtime shared servers default to: the roles' provider, or a remote role's
-        when roles mix providers, since a local server cannot serve a remote harness."""
-        runtimes = [spec.runtime for spec in self._agent_specs.values()]
-        remote = [config for config in runtimes if not runtime_is_local(config)]
-        return (remote or runtimes)[0]
-
     @contextlib.asynccontextmanager
     async def shared_tools(self):
         servers = self.taskset.toolsets(self.taskset.config)
         if not servers:
             yield {}
             return
-        provider = self.tool_provider()
-        for server in servers:
-            if not server.config.url:
-                check_reachable(
-                    server.server_name,
-                    tool_runtime(server.config, provider),
-                    self._runs_local(),
-                )
-        async with serve_shared(servers, provider) as shared:
+        async with serve_shared(servers, harness_is_local=self._runs_local()) as shared:
             yield shared

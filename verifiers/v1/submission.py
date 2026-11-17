@@ -34,15 +34,24 @@ async def run_submission(
     Teardown is confirmed on every exit, including failures and cancellation,
     before returning or raising.
     """
+    backend = backend_cls(config)
+    if (
+        not backend.SUPPORTS_TASK_IMAGES
+        or not backend.SUPPORTS_USER_SWITCHING
+        or not backend.SUPPORTS_STOP_CONFIRMATION
+    ):
+        raise ValueError(
+            "submission execution requires isolation, user switching, and confirmed teardown"
+        )
     if not isinstance(config, NetworkPolicyConfig):
         raise TypeError("submission execution requires enforced network restrictions")
-    if not backend_cls(config).SUPPORTS_DISK_LIMIT:
+    if not backend.SUPPORTS_MEMORY_LIMIT or not backend.SUPPORTS_DISK_LIMIT:
         raise ValueError(
-            "submission execution requires an enforced disk limit; "
-            f"the {config.type} runtime does not provide one"
+            "submission execution requires enforced memory and disk limits; "
+            f"the {config.type} runtime does not provide both"
         )
     for name in ("memory", "disk"):
-        value = getattr(config, name)
+        value = getattr(config, name, None)
         if (
             not isinstance(value, (int, float))
             or not math.isfinite(value)

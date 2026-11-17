@@ -29,7 +29,7 @@ PATCH_CAP_BYTES = 2_000_000
 """Truncate captured patches beyond this size; `info["patch_truncated"]` marks it."""
 
 # Temp paths are suffixed per invocation with a host-generated nonce: fixed names
-# would let concurrent commands sharing a runtime's filesystem read
+# would let concurrent rollouts on a shared-filesystem runtime (subprocess) read
 # each other's patches between the write and the read, and would let an agent
 # pre-create the predictable path as a FIFO so the shell's redirect blocks the
 # rollout forever.
