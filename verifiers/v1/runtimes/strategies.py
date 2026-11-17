@@ -117,17 +117,10 @@ class _PrivateNetworkDeployment(_DeploymentStrategy):
         # Evidence is collected; release the solver's VMs before the verifier clock
         # starts, the workspace's even if the service VMs' or the network's release
         # fails.
-        for release, what in (
-            (
-                deployment.execution_backend.stop
-                if deployment.borrowed_runtime is None
-                else None,
-                "workspace VM",
-            ),
-            (self._services.aclose, "service VMs"),
-        ):
-            if release is None:
-                continue
+        releases = [(self._services.aclose, "service VMs")]
+        if deployment.borrowed_runtime is None:
+            releases.insert(0, (deployment.execution_backend.stop, "workspace VM"))
+        for release, what in releases:
             try:
                 await release()
             except Exception:

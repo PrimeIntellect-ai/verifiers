@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import math
 import secrets
 from collections.abc import Iterator
 from contextlib import AsyncExitStack
@@ -13,14 +14,15 @@ from pydantic import Field
 
 from verifiers.v1.dialects.responses import ResponsesDialect
 from verifiers.v1.envs.single_agent import SingleAgentEnv
-from verifiers.v1.errors import SandboxError
 from verifiers.v1.interception.tunnel import PrimeTunnel
+from verifiers.v1.interception.tunnel.base import HEALTH_PATH
 from verifiers.v1.mcp import SharedToolsetConfig, Toolset
+from verifiers.v1.mcp.launch import log_tail, read_port
 from verifiers.v1.runtimes import (
     PrimeConfig,
     Runtime,
     SubprocessConfig,
-    provision_backend,
+    provision_runtime,
 )
 from verifiers.v1.task import Task, TaskConfig, TaskData
 from verifiers.v1.taskset import Taskset, TasksetConfig
@@ -134,7 +136,6 @@ class NeMoGymEnv(SingleAgentEnv):
     """Start a taskset's NeMo resource server once per environment worker."""
 
     _nemo_stack: AsyncExitStack | None = None
-    _nemo_headers: dict[str, str] | None = None
 
     async def start(self) -> None:
         taskset = cast(NeMoGymTaskset, self.taskset)
@@ -147,10 +148,9 @@ class NeMoGymEnv(SingleAgentEnv):
 
         token = secrets.token_urlsafe(32)
         async with AsyncExitStack() as stack:
-            backend = await stack.enter_async_context(
-                provision_backend(SubprocessConfig())
+            runtime = await stack.enter_async_context(
+                provision_runtime(SubprocessConfig())
             )
-            runtime = backend.bind()
             server = Path(__file__).with_name("server.py")
             program = await runtime.prepare_uv_script(server.read_bytes())
             await runtime.run_background(
@@ -159,48 +159,39 @@ class NeMoGymEnv(SingleAgentEnv):
                 "nemo_gym.log",
             )
             timeout = taskset.config.tools.timeout.startup
-            loop = asyncio.get_running_loop()
-            deadline = None if timeout is None else loop.time() + timeout
-            port = None
-            resources_url = None
-            async with httpx.AsyncClient(
-                timeout=1, headers={RESOURCE_TOKEN_HEADER: token}
-            ) as client:
-                while deadline is None or loop.time() < deadline:
-                    if port is None:
+            try:
+                async with (
+                    asyncio.timeout(timeout),
+                    httpx.AsyncClient(timeout=1) as client,
+                ):
+                    port = await read_port(runtime, "nemo_gym.port", math.inf)
+                    resources_url = await stack.enter_async_context(
+                        PrimeTunnel().expose(port)
+                    )
+                    while True:
                         try:
-                            port = int((await runtime.read("nemo_gym.port")).decode())
-                        except (FileNotFoundError, SandboxError, ValueError):
-                            await asyncio.sleep(0.5)
-                            continue
-                    if resources_url is None:
-                        resources_url = await stack.enter_async_context(
-                            PrimeTunnel().expose(port)
-                        )
-                    try:
-                        response = await client.get(f"{resources_url}/vf/health")
-                        if response.status_code == 200:
-                            self._nemo_headers = dict(config.headers)
-                            config.headers = {
-                                key: value
-                                for key, value in config.headers.items()
-                                if key.lower() != RESOURCE_TOKEN_HEADER.lower()
-                            } | {RESOURCE_TOKEN_HEADER: token}
-                            config.resources_url = resources_url
-                            self._nemo_stack = stack.pop_all()
-                            return
-                    except httpx.HTTPError:
-                        pass
-                    await asyncio.sleep(0.5)
-            log = (await runtime.read("nemo_gym.log")).decode(errors="replace")[-2000:]
-            raise RuntimeError(f"NeMo Gym server did not start:\n{log}")
+                            response = await client.get(f"{resources_url}{HEALTH_PATH}")
+                            if response.status_code == 200:
+                                break
+                        except httpx.HTTPError:
+                            pass
+                        await asyncio.sleep(0.5)
+            except TimeoutError as exc:
+                log = await log_tail(runtime, "nemo_gym.log")
+                raise RuntimeError(f"NeMo Gym server did not start:\n{log}") from exc
+
+            stack.callback(setattr, config, "headers", config.headers)
+            stack.callback(setattr, config, "resources_url", config.resources_url)
+            config.headers = {
+                key: value
+                for key, value in config.headers.items()
+                if key.lower() != RESOURCE_TOKEN_HEADER.lower()
+            } | {RESOURCE_TOKEN_HEADER: token}
+            config.resources_url = resources_url
+            self._nemo_stack = stack.pop_all()
 
     async def stop(self) -> None:
         if self._nemo_stack is None:
             return
         stack, self._nemo_stack = self._nemo_stack, None
-        config = cast(NeMoGymTaskset, self.taskset).config.task
-        config.resources_url = None
-        assert self._nemo_headers is not None
-        config.headers, self._nemo_headers = self._nemo_headers, None
         await stack.aclose()

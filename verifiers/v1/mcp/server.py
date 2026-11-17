@@ -337,22 +337,15 @@ class ServerBase(Generic[ConfigT, StateT]):
                     )
 
                     async def app(scope, receive, send):
-                        if scope["type"] == "http" and scope.get("path") != HEALTH_PATH:
-                            from starlette.datastructures import Headers
-
-                            credentials = [
-                                value
-                                for name, value in scope.get("headers", [])
-                                if name.lower() == b"authorization"
-                            ]
-                            if len(credentials) != 1 or not authorized(
-                                Headers(raw=[(b"authorization", credentials[0])]),
-                                mcp_secret,
-                            ):
-                                await PlainTextResponse(
-                                    "unauthorized", status_code=401
-                                )(scope, receive, send)
-                                return
+                        if (
+                            scope["type"] == "http"
+                            and scope.get("path") != HEALTH_PATH
+                            and not authorized(scope.get("headers", []), mcp_secret)
+                        ):
+                            await PlainTextResponse("unauthorized", status_code=401)(
+                                scope, receive, send
+                            )
+                            return
                         query = (
                             parse_qs(
                                 scope.get("query_string", b"").decode(),

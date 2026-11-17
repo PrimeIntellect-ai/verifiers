@@ -333,7 +333,7 @@ async def log_tail(runtime: Runtime, log: str, limit: int = 2000) -> str:
     return ""
 
 
-async def _read_back_port(runtime: Runtime, path: str, deadline: float) -> int:
+async def read_port(runtime: Runtime, path: str, deadline: float) -> int:
     """Poll the server's port file until the server writes it."""
     loop = asyncio.get_running_loop()
     while True:
@@ -418,7 +418,7 @@ async def serve_in_runtime(
         port = fixed
     else:
         try:
-            port = await _read_back_port(runtime, port_file, deadline)
+            port = await read_port(runtime, port_file, deadline)
         except ToolsetError as e:
             raise ToolsetError(f"{e}: {await log_tail(runtime, log)}") from e
     probe = await runtime.run(
@@ -682,6 +682,8 @@ async def serve_shared(toolsets: list[Toolset], harness_is_local: bool = True):
                     secrets.token_urlsafe(24) if toolset._state_cls is not State else ""
                 )
                 network_id = None
+                placements = {}
+                hosts = {}
                 if isinstance(cfg.runtime, PrimeConfig):
                     if harness_is_local:
                         raise ToolsetError(
@@ -695,22 +697,17 @@ async def serve_shared(toolsets: list[Toolset], harness_is_local: bool = True):
                     backend, network_id = await stack.enter_async_context(
                         shared_tool_network(cfg.runtime)
                     )
-                    served = await stack.enter_async_context(
-                        _serve(
-                            toolset,
-                            state_secret=state_secret,
-                            placements={name: backend.bind()},
-                            hosts={name: lan_host(backend)},
-                        )
+                    placements[name] = backend.bind()
+                    hosts[name] = lan_host(backend)
+                served = await stack.enter_async_context(
+                    _serve(
+                        toolset,
+                        harness_is_local=harness_is_local,
+                        state_secret=state_secret,
+                        placements=placements,
+                        hosts=hosts,
                     )
-                else:
-                    served = await stack.enter_async_context(
-                        _serve(
-                            toolset,
-                            harness_is_local=harness_is_local,
-                            state_secret=state_secret,
-                        )
-                    )
+                )
                 servers[name] = SharedToolServer(
                     url=served.url,
                     local=served.runtime.is_local,
