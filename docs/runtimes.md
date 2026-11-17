@@ -206,12 +206,17 @@ To place the evaluator on the same Prime LAN, pass a trusted, packaged async fun
 ```python
 # evaluate lives in an importable evaluator package.
 async def evaluate(payload, interception):
-    async with vf.Agent(vf.AgentConfig.model_validate(payload["agent"]), interception=interception) as agent:
+    async with vf.Agent(
+        vf.AgentConfig.model_validate(payload["agent"]), interception=interception
+    ) as agent:
         trace = await agent.run(make_task(payload["sample"]))
         return json.loads(trace.to_json())
 
+
 async with vf.prime_controller(evaluate, vf.PrimeConfig(cpu=2, memory=4)) as controller:
-    result = await controller.run(payload, credentials={"PRIME_API_KEY": os.environ["PRIME_API_KEY"]})
+    result = await controller.run(
+        payload, credentials={"PRIME_API_KEY": os.environ["PRIME_API_KEY"]}
+    )
 ```
 
 Use a Prime split deployment in the agent config. An environment can borrow the same server with `env.serving(interception=interception)`. The program and its dependencies run with evaluator privileges. Keep its package, image and checkpoints under the evaluator operator's control.
