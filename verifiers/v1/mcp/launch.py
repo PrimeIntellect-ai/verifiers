@@ -114,50 +114,68 @@ def _package_dir(cls: Callable) -> str:
 
 
 @cache
+def _wheel_files(src: Path) -> tuple[tuple[str, Path], ...]:
+    dist = PathDistribution(src)
+    if not dist.files:
+        raise ToolsetError(f"cannot package {src}: missing RECORD")
+    scripts = {
+        entry.name
+        for entry in dist.entry_points
+        if entry.group in {"console_scripts", "gui_scripts"}
+    }
+    files = []
+    for file in dist.files:
+        if ".." in file.parts or file.is_absolute():
+            if (
+                file.name in scripts
+                and Path(file.locate()).parent.resolve()
+                == Path(sysconfig.get_path("scripts")).resolve()
+            ):
+                continue
+            raise ToolsetError(
+                f"cannot package {src}: installed file outside site-packages: {file}"
+            )
+        if file.suffix == ".pyc" or (
+            file.parent.name == src.name and file.name in _WHEEL_INSTALLER_FILES
+        ):
+            continue
+        files.append((str(file), Path(file.locate())))
+    return tuple(files)
+
+
+_WHEEL_INSTALLER_FILES = {
+    "RECORD",
+    "RECORD.jws",
+    "RECORD.p7s",
+    "INSTALLER",
+    "REQUESTED",
+    "direct_url.json",
+    "uv_cache.json",
+}
+
+
+@cache
+def _installed_package_identity(src: Path) -> tuple[str, str]:
+    # Hash the same payload as wheel pack, without rebuilding an archive on a
+    # readiness hit. This also works in each fresh controller job process.
+    files = {
+        name: (path.read_bytes(), 0x100 | (path.stat().st_mode & 0o111))
+        for name, path in _wheel_files(src)
+    }
+    return _content_identity(files, (src / "METADATA").read_bytes())
+
+
+@cache
 def _build_package(src: Path) -> tuple[str, bytes]:
     """Transfer installed wheel files or build a source project's PEP 517 sdist."""
     with tempfile.TemporaryDirectory(prefix="vf-package-") as directory:
         out = Path(directory)
         if src.suffix == ".dist-info":
-            dist = PathDistribution(src)
-            files = dist.files
-            if not files:
-                raise ToolsetError(f"cannot package {src}: missing RECORD")
             package = out / "package"
-            scripts = {
-                entry.name
-                for entry in dist.entry_points
-                if entry.group in {"console_scripts", "gui_scripts"}
-            }
-            for file in files:
-                # Installers regenerate entry-point scripts for the target Python.
-                if ".." in file.parts or file.is_absolute():
-                    if (
-                        file.name in scripts
-                        and Path(file.locate()).parent.resolve()
-                        == Path(sysconfig.get_path("scripts")).resolve()
-                    ):
-                        continue
-                    raise ToolsetError(
-                        f"cannot package {src}: installed file outside site-packages: {file}"
-                    )
-                if file.suffix == ".pyc" or (
-                    file.parent.name == src.name
-                    and file.name
-                    in {
-                        "RECORD",
-                        "RECORD.jws",
-                        "RECORD.p7s",
-                        "INSTALLER",
-                        "REQUESTED",
-                        "direct_url.json",
-                        "uv_cache.json",
-                    }
-                ):
-                    continue
-                target = package / file
+            for name, path in _wheel_files(src):
+                target = package / name
                 target.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(file.locate(), target)
+                shutil.copy2(path, target)
             command = [
                 "uv",
                 "tool",
@@ -271,16 +289,7 @@ def _package_identity(name: str, data: bytes) -> tuple[str, str]:
                 path = PurePosixPath(entry.filename)
                 if entry.is_dir() or (
                     path.parent.suffix == ".dist-info"
-                    and path.name
-                    in {
-                        "RECORD",
-                        "RECORD.jws",
-                        "RECORD.p7s",
-                        "INSTALLER",
-                        "REQUESTED",
-                        "direct_url.json",
-                        "uv_cache.json",
-                    }
+                    and path.name in _WHEEL_INSTALLER_FILES
                 ):
                     continue
                 files[str(path)] = (
@@ -306,6 +315,12 @@ def _package_identity(name: str, data: bytes) -> tuple[str, str]:
                         0x200 if entry.issym() else 0x300,
                     )
         metadata = files["PKG-INFO"][0]
+    return _content_identity(files, metadata)
+
+
+def _content_identity(
+    files: dict[str, tuple[bytes, int]], metadata: bytes
+) -> tuple[str, str]:
     package = str(BytesParser().parsebytes(metadata)["Name"])
     package = re.sub(r"[-_.]+", "-", package).lower()
     digest = hashlib.sha256()
@@ -327,13 +342,15 @@ async def install_in_runtime(
     # Prime VMs mount /tmp as a small tmpfs. Keep dependency installation on the
     # durable runtime filesystem so ordinary installs cannot exhaust the tmpfs.
     # Every runtime runs commands in its working directory; not every config names it.
-    located = await runtime.run(["pwd"], {})
-    workdir = located.stdout.strip()
-    if located.exit_code or not workdir:
-        raise ToolsetError(
-            f"{label}: cannot locate the runtime's working "
-            f"directory: {located.stderr.strip()}"
-        )
+    workdir = getattr(runtime.info, "workdir", None)
+    if not workdir or not PurePosixPath(workdir).is_absolute():
+        located = await runtime.run(["pwd"], {})
+        workdir = located.stdout.strip()
+        if located.exit_code or not workdir:
+            raise ToolsetError(
+                f"{label}: cannot locate the runtime's working "
+                f"directory: {located.stderr.strip()}"
+            )
     root = str(PurePosixPath(workdir) / ".vf-src")
     temp = str(PurePosixPath(workdir) / ".vf-tmp")
     cache = str(PurePosixPath(workdir) / ".vf-uv-cache")
@@ -351,13 +368,21 @@ async def install_in_runtime(
         ]
         packages = []
         for source in pending:
-            name, data = await _cached_package(Path(source))
-            package, digest = await asyncio.to_thread(_package_identity, name, data)
+            src = Path(source)
+            artifact = None
+            if src.suffix == ".dist-info":
+                package, digest = await asyncio.to_thread(
+                    _installed_package_identity, src
+                )
+            else:
+                artifact = await _cached_package(src)
+                package, digest = await asyncio.to_thread(_package_identity, *artifact)
             key = f"package:{venv}:{package}"
             prepared = runtime.backend.cache.prepared.get(key)
             if prepared and prepared["value"]["digest"] == digest:
                 runtime.backend.cache.mcp_sources.add(source)
             else:
+                name, data = artifact or await _cached_package(src)
                 packages.append((source, name, data, package, digest, key))
         if packages:
             setup = (

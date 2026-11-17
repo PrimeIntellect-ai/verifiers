@@ -485,16 +485,6 @@ class Rollout:
                     f"{base_url.rstrip('/')}/v1"
                 )
                 self._secret = model_secret
-                if isinstance(self._session.remote_tool_handler, SandboxTools):
-                    self._stack.push_async_callback(
-                        self._session.remote_tool_handler.aclose
-                    )
-                    await self._session.remote_tool_handler.connect(
-                        self._agent_runtime.host_url(
-                            f"{base_url.rstrip('/')}/execution"
-                        ),
-                        model_secret,
-                    )
                 services = (
                     {
                         name: self.deployment.target(name)
@@ -543,14 +533,32 @@ class Rollout:
                         self._endpoint,
                         *self._urls.values(),
                     ]
-                await self.deployment.prepare_execution(
-                    [
-                        url
-                        for url in [self._endpoint, *self._urls.values()]
-                        if urlsplit(url).hostname not in internal
-                    ],
-                    state_route=f"{state_base.rstrip('/')}/state",
-                )
+                # Adapter configuration is trusted setup. It can connect while
+                # policy is applying, but no harness session starts until both
+                # have succeeded. A failure cancels and drains its sibling.
+                try:
+                    async with asyncio.TaskGroup() as group:
+                        group.create_task(
+                            self.deployment.prepare_execution(
+                                [
+                                    url
+                                    for url in [self._endpoint, *self._urls.values()]
+                                    if urlsplit(url).hostname not in internal
+                                ],
+                                state_route=f"{state_base.rstrip('/')}/state",
+                            )
+                        )
+                        if isinstance(self._session.remote_tool_handler, SandboxTools):
+                            group.create_task(
+                                self._session.remote_tool_handler.connect(
+                                    self._agent_runtime.host_url(
+                                        f"{base_url.rstrip('/')}/execution"
+                                    ),
+                                    model_secret,
+                                )
+                            )
+                except ExceptionGroup as failed:
+                    raise failed.exceptions[0]
                 if self._split_execution:
                     self.trace.agent.runtime = runtime.info.model_copy()
                 async with (
@@ -703,27 +711,31 @@ class Rollout:
         workspace = self._agent_runtime
         bridge = self._session.execution_bridge = self.deployment.connection(workspace)
         self._stack.push_async_callback(bridge.close)
-        await bridge.start()
         workspace = replace(bridge.runtime, _execution_bridge=bridge)
         adapter = await self.harness.remote_tools(workspace, self.task.data)
         if adapter is not None:
             handler = self._session.remote_tool_handler = SandboxTools(
                 self.deployment._harness_runtime, bridge, adapter
             )
-            await handler.prepare()
+            self._stack.push_async_callback(handler.aclose)
         self._agent_runtime = replace(
             self.deployment._harness_runtime,
             _remote_tools_only=True,
             _execution_bridge=bridge,
         )
+
+        async def setup_execution():
+            await bridge.start()
+            await self.harness.setup_execution(
+                self._agent_runtime, bridge.runtime, bridge
+            )
+
         try:
             async with asyncio.TaskGroup() as group:
                 group.create_task(self.harness.setup(self._agent_runtime))
-                group.create_task(
-                    self.harness.setup_execution(
-                        self._agent_runtime, bridge.runtime, bridge
-                    )
-                )
+                group.create_task(setup_execution())
+                if adapter is not None:
+                    group.create_task(handler.prepare())
         except ExceptionGroup as failed:
             raise failed.exceptions[0]
 

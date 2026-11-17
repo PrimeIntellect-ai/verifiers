@@ -42,15 +42,26 @@ class SandboxTools:
         from verifiers.v1.mcp.launch import install_in_runtime
         from verifiers.v1.runtimes import rpc_wire, workspace_worker
 
-        self._python = await install_in_runtime(
-            self.spec.factory, self.runtime, label="harness tool adapter"
-        )
         source = bundle_program(inspect.getsource(workspace_worker), rpc_wire)
-        command = await self.connection.runtime.prepare_uv_script(
-            source, {}, activate=False
-        )
-        self.connection.register("tool-adapter", command, {})
-        await self.runtime.prepare_uv_script(REMOTE_RUNTIME_SOURCE, {})
+        try:
+            async with asyncio.TaskGroup() as group:
+                package = group.create_task(
+                    install_in_runtime(
+                        self.spec.factory, self.runtime, label="harness tool adapter"
+                    )
+                )
+                worker = group.create_task(
+                    self.connection.runtime.prepare_uv_script(
+                        source, {}, activate=False
+                    )
+                )
+                group.create_task(
+                    self.runtime.prepare_uv_script(REMOTE_RUNTIME_SOURCE, {})
+                )
+        except ExceptionGroup as failed:
+            raise failed.exceptions[0]
+        self._python = package.result()
+        self.connection.register("tool-adapter", worker.result(), {})
 
     async def connect(self, url: str, secret: str) -> None:
         from verifiers.v1.harnesses.utils.remote_runtime import prepare_remote_bridge
