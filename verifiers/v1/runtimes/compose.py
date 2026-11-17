@@ -94,6 +94,25 @@ def _harbor_volume(name: str) -> str:
     return "harbor-" + name.lower().replace("_", "-")
 
 
+def _reject_external_resources(definition: dict) -> None:
+    for kind in ("volumes", "networks"):
+        if any(
+            value and value.get("external")
+            for value in definition.get(kind, {}).values()
+        ):
+            raise SandboxError(
+                f"External Compose {kind} require explicit VM mode and a host "
+                "that already provides them"
+            )
+
+
+def _validate_env_files(definition: dict, task_dir: Path) -> None:
+    for service in definition.get("services", {}).values():
+        for env_file in service.get("env_file", []):
+            if not Path(env_file["path"]).resolve().is_relative_to(task_dir):
+                raise SandboxError("Native Compose env_file must be inside the task")
+
+
 @asynccontextmanager
 async def compose_project(
     config: DockerConfig | PrimeConfig,
@@ -189,32 +208,29 @@ async def compose_project(
             if spec.file is not None
             else {"services": {spec.workspace: {}}}
         )
-        for kind in ("volumes", "networks"):
-            if host_backend is None:
-                resources = list(authored.get(kind, {}).values())
-                if any(value and value.get("external") for value in resources):
-                    raise SandboxError(
-                        f"External Compose {kind} require explicit VM mode and a host "
-                        "that already provides them"
-                    )
-                if any(value and value.get("name") for value in resources):
-                    raise NativeComposeUnsupported(
-                        f"Compose {kind} must use project-scoped names"
-                    )
-        if (
-            isinstance(config, PrimeConfig)
-            and host_backend is None
+        native_composed = (
+            host_backend is None
+            and isinstance(config, PrimeConfig)
             and (
-                authored.get("include")
+                bool(authored.get("include"))
                 or any(
                     service.get("extends")
                     for service in authored.get("services", {}).values()
                 )
             )
-        ):
-            raise NativeComposeUnsupported(
-                "Native Compose does not support include or extends"
-            )
+        )
+        if host_backend is None:
+            # Check both kinds before any capability can trigger automatic placement.
+            _reject_external_resources(authored)
+            if not native_composed:
+                for kind in ("volumes", "networks"):
+                    if any(
+                        value and value.get("name")
+                        for value in authored.get(kind, {}).values()
+                    ):
+                        raise NativeComposeUnsupported(
+                            f"Compose {kind} must use project-scoped names"
+                        )
         # Native Compose renames containers on the build host and keeps the name as an alias.
         if isinstance(config, DockerConfig) and any(
             service.get("container_name")
@@ -286,14 +302,32 @@ async def compose_project(
             compose_env["MEMORY"] = f"{round(config.memory * 1024)}M"
 
         authored_file = f"task/{spec.file}" if spec.file else None
-        if host_backend is not None and authored.get("include"):
+        if (host_backend is not None and authored.get("include")) or native_composed:
             # Includes own their resources: resolve them before merging workspace
             # defaults and overrides, or Compose rejects duplicate service names.
             compose_argv += ["-f", f"{root}/{authored_file}"]
             authored = json.loads(
-                await compose("config", "--no-consistency", "--format", "json")
+                await compose(
+                    "config",
+                    "--no-consistency",
+                    *(
+                        ["--no-interpolate", "--no-env-resolution"]
+                        if native_composed
+                        else []
+                    ),
+                    "--format",
+                    "json",
+                )
             )
             del compose_argv[-2:]
+            if host_backend is None:
+                # Includes otherwise resolve env files even with --no-env-resolution.
+                # Inspect their declarations without reading evaluator file contents.
+                _reject_external_resources(authored)
+                _validate_env_files(authored, task_dir)
+                raise NativeComposeUnsupported(
+                    "Native Compose does not support include or extends"
+                )
             # Config emits null for an absent command; retain our workspace default
             # unless the included service declares a concrete command.
             main = authored.get("services", {}).get(spec.workspace, {})
@@ -361,12 +395,7 @@ async def compose_project(
             unresolved = json.loads(
                 await compose("config", "--no-env-resolution", "--format", "json")
             )
-            for service in unresolved["services"].values():
-                for env_file in service.get("env_file", []):
-                    if not Path(env_file["path"]).resolve().is_relative_to(task_dir):
-                        raise SandboxError(
-                            "Native Compose env_file must be inside the task"
-                        )
+            _validate_env_files(unresolved, task_dir)
         resolved = json.loads(await compose("config", "--format", "json"))
         yield ComposeProject(
             directory,
