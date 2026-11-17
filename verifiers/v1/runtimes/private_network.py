@@ -33,13 +33,15 @@ WORKSPACE_TAG = "vf-workspace"
 
 def tool_vms(toolsets, workspace) -> dict[str, PrimeConfig]:
     """Prime tool VMs that join a Prime workspace over a rollout's private LAN."""
+    from verifiers.v1.mcp.toolset import ToolsetConfig
+
     if not isinstance(workspace, PrimeConfig):
         return {}
     vms = {
         toolset.server_name: toolset.config.runtime
         for toolset in toolsets
-        if isinstance(toolset.config.runtime, PrimeConfig)
-        and not toolset.config.colocated
+        if isinstance(toolset.config, ToolsetConfig)
+        and isinstance(toolset.config.runtime, PrimeConfig)
         and not toolset.config.url
         and toolset.config.service is None
     }

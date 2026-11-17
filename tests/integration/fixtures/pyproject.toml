@@ -14,7 +14,6 @@ build-backend = "hatchling.build"
 # never get installed.
 [tool.hatch.build]
 include = [
-    "agent_user.py",
     "counter_tool.py",
     "echo_acp_resume.py",
     "echo_tool.py",

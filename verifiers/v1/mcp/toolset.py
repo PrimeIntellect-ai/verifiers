@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING
 
 from pydantic import Field, model_validator
@@ -13,6 +15,8 @@ from verifiers.v1.utils.decorators import discover_decorated
 if TYPE_CHECKING:
     from mcp.server.mcpserver import MCPServer
 
+    from verifiers.v1.runtimes import Runtime
+
 
 class ToolsetTimeoutConfig(BaseConfig):
     """Timeouts (in seconds) for a launched tool server; `None` waits indefinitely."""
@@ -22,7 +26,7 @@ class ToolsetTimeoutConfig(BaseConfig):
 
 
 class BaseToolsetConfig(BaseConfig):
-    """Settings every tool server has, whether per-task or shared."""
+    """Runtime and connection settings for per-task and shared tool servers."""
 
     runtime: RuntimeConfig = SubprocessConfig()
     """Where the server runs: the evaluator by default."""
@@ -34,7 +38,6 @@ class ToolsetConfig(BaseToolsetConfig):
     """A per-task tool server. A Prime `runtime` beside a Prime workspace runs on
     its own VM on the rollout's private LAN, under its own egress policy."""
 
-    colocated: bool = False
     service: str | None = None
     """Run the server in a named native Prime service VM. The harness reaches it
     over the deployment's private network, using its LAN hostname."""
@@ -43,9 +46,9 @@ class ToolsetConfig(BaseToolsetConfig):
     def _one_placement(self):
         if self.service is None:
             return self
-        if self.colocated or self.url:
+        if self.url:
             raise ValueError(
-                "a tool server placed in a service is neither colocated nor remote"
+                "a tool server placed in a service cannot use a remote URL"
             )
         # The service is the server's runtime; another one, or its policy, would go unused.
         if not isinstance(self.runtime, SubprocessConfig):
@@ -61,6 +64,17 @@ class SharedToolsetConfig(BaseToolsetConfig):
 
 
 class Toolset(ServerBase[ConfigT, StateT]):
+    @asynccontextmanager
+    async def serve(self, runtime: Runtime, **kwargs) -> AsyncIterator[str]:
+        """Connect a rollout to this server; task-format adapters own their transport."""
+        from verifiers.v1.mcp.launch import serve
+
+        if self.config.url:
+            yield runtime.host_url(self.config.url)
+        else:
+            async with serve(self, runtime, **kwargs) as url:
+                yield url
+
     def register(self, mcp: MCPServer) -> None:
         for fn in discover_decorated(self, "tool"):
             mcp.add_tool(
