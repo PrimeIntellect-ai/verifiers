@@ -55,6 +55,7 @@ for proc in /proc/[0-9]*; do
         if [ "$entry" = "$1" ]; then kill -9 "${proc#/proc/}" 2>/dev/null; break; fi
     done 2>/dev/null < "$proc/environ"
 done
+exit 0
 """
 """Kill every process whose environment holds the marker `$1`, as the worker's user,
 so it reaches nothing that user could not signal itself."""
