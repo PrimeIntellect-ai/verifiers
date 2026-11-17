@@ -8,7 +8,7 @@ from pydantic import Field, model_validator
 from pydantic_config import BaseConfig
 
 from verifiers.v1.mcp.server import ConfigT, ServerBase
-from verifiers.v1.runtimes import PrimeConfig, RuntimeConfig
+from verifiers.v1.runtimes import RuntimeConfig, SubprocessConfig
 from verifiers.v1.state import StateT
 from verifiers.v1.utils.decorators import discover_decorated
 
@@ -28,8 +28,8 @@ class ToolsetTimeoutConfig(BaseConfig):
 class BaseToolsetConfig(BaseConfig):
     """Runtime and connection settings for per-task and shared tool servers."""
 
-    runtime: RuntimeConfig = PrimeConfig()
-    """Where the server runs: a Prime sandbox by default."""
+    runtime: RuntimeConfig = SubprocessConfig()
+    """Where the server runs: the evaluator by default."""
     url: str | None = None
     timeout: ToolsetTimeoutConfig = ToolsetTimeoutConfig()
 
@@ -52,8 +52,8 @@ class ToolsetConfig(BaseToolsetConfig):
                 "a tool server placed in a service cannot use a remote URL"
             )
         # The service is the server's runtime; another one, or its policy, would go unused.
-        if self.runtime != PrimeConfig():
-            raise ValueError(
+        if not isinstance(self.runtime, SubprocessConfig):
+            raise ValueError(  # noqa: TRY004 - Pydantic validators must raise ValueError
                 "a tool server placed in a service runs in that service and "
                 f"takes no runtime of its own (got {self.runtime.type})"
             )

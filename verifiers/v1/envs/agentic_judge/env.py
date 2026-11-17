@@ -23,7 +23,6 @@ from verifiers.v1.judges.rubric import (
     score_verdicts,
     weighted_score,
 )
-from verifiers.v1.runtimes import backend_cls
 from verifiers.v1.utils.compile import validate_pairing
 
 VERDICT_FILE = "/tmp/verdict.json"
@@ -323,7 +322,7 @@ class AgenticJudgeEnv(vf.Env[AgenticJudgeEnvConfig]):
         workspace = (
             policy.runtime if policy.mode == "isolated" else None
         ) or self.config.solver.runtime
-        if not backend_cls(workspace).SUPPORTS_TASK_IMAGES:
+        if isinstance(workspace, vf.SubprocessConfig):
             raise TypeError("agentic judging requires a container scoring workspace")
         validate_pairing(self._harnesses["judge"], JudgeTask, workspace)
 
