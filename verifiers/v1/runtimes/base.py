@@ -158,15 +158,14 @@ class RuntimeBackend(ABC):
     """Provider implementation for one container, VM, or local execution environment.
 
     A backend implements `start`, `exec`, `write`, and `cleanup` or `teardown`, and
-    may override `run`, `read`, `expose`, `prepare_execution`, and `host_url`. Its
+    may override `run`, `read`, `local_service_url`, `prepare_execution`, and `host_url`. Its
     `SUPPORTS_*` flags declare optional features. Tasks and harnesses use it through
     `Runtime` views (`bind`), which add user and environment bindings.
     """
 
     is_local: bool = False
     """Whether this runtime exchanges host-local URLs without a public tunnel, as
-    subprocess and docker do. Remote runtimes use a host `Tunnel` inward plus `expose`
-    outward."""
+    subprocess and docker do. Remote runtimes use a host `Tunnel` inward."""
 
     SUPPORTS_TASK_IMAGES: ClassVar[bool] = False
     """Whether the runtime boots a task image in its own filesystem. Tasks with an image,
@@ -183,10 +182,6 @@ class RuntimeBackend(ABC):
 
     SUPPORTS_DISK_LIMIT: ClassVar[bool] = False
     """Whether a positive `config.disk` enforces a runtime-wide storage ceiling."""
-
-    SUPPORTS_PORT_EXPOSURE: ClassVar[bool] = False
-    """Whether `expose` can publish a port inside this runtime to the outside, so a
-    server here is reachable from another runtime."""
 
     SUPPORTS_COMPOSE: ClassVar[bool] = False
     """Whether the runtime can run a task's Docker Compose services."""
@@ -384,19 +379,13 @@ class RuntimeBackend(ABC):
 
     @property
     def published_port(self) -> int | None:
-        """A fixed port this runtime exposes to the outside at startup, declared up front to the
-        provider (some forward only ports named at creation). When set, a server placed
-        here binds it instead of a host-chosen free port, and `expose` returns its public URL.
-        `None` for runtimes whose services already sit on host loopback (subprocess),
-        which pick a free port."""
+        """A fixed service port published to host loopback at startup, if any."""
         return None
 
-    async def expose(self, port: int) -> str:
-        """Publish a port running *inside this runtime* to a URL reachable from the host/outside.
-        A runtime on the host network is reached at host loopback as is; a sandbox overrides
-        this with its port exposure (e.g. a container engine's published port), torn
-        down with the sandbox in `stop()`. The reverse of a
-        host `Tunnel` (interception.tunnel, which reaches a host port from inside a runtime)."""
+    def local_service_url(self, port: int) -> str:
+        """Host-loopback URL for a service in a local runtime."""
+        if not self.is_local:
+            raise ValueError(f"{self.type} runtime has no host-local service URL")
         return f"http://127.0.0.1:{port}"
 
 

@@ -18,7 +18,6 @@ Each runtime declares its features through its backend's class attributes, and n
 | Task image, container-only harnesses, isolated scoring | `SUPPORTS_TASK_IMAGES` | `docker`, `prime` |
 | Task network policy | config inherits `NetworkPolicyConfig` | `docker`, `prime` |
 | Task `agent_user` | `SUPPORTS_USER_SWITCHING` | `docker`, `prime` |
-| Tool server in its own runtime | `SUPPORTS_PORT_EXPOSURE` | `subprocess`, `docker`, `prime` |
 | Compose services | `SUPPORTS_COMPOSE` | `docker`, `prime` (subset below) |
 
 Runtime capabilities are orthogonal to agent harness capabilities like MCP tool support, image inputs, or conversation resumption; see [harnesses](harnesses.md) for harness features and [building environments](building-environments.md#separate-agent-and-grading-sandboxes) for running separate solver and grading sandboxes.
@@ -162,7 +161,7 @@ bindings and the uv-script helpers on top of it:
 | `run(runtime, argv, env)` | no | Run to completion. The default drains an `exec`. |
 | `run_background(runtime, argv, env, log)` | no | Start a long-lived process with its output in `log`. The default keeps an `exec` open for the process's life; override it when the provider runs detached jobs. |
 | `read(runtime, path, max_bytes)` | no | Read a file. The default reads through `run`. |
-| `expose(port)` | with `SUPPORTS_PORT_EXPOSURE` | Publish a port to a URL outside the runtime. |
+| `local_service_url(port)` | with `is_local` | Return a host-loopback URL for a local runtime's service. |
 | `prepare_execution(routes, network)` | with `NetworkPolicyConfig` | Apply the network policy, or `network` in its place, before the agent starts; `None` routes reopen the network. |
 | `host_url(url)` | no | Rewrite a host URL for programs inside the runtime. |
 
@@ -255,7 +254,7 @@ The Prime subset requires a workspace named `main` and project-scoped networks, 
 
 Task and runtime disk settings apply only to `main`. Set a service's `storage_opt: {size: "20G"}` to request its own VM disk size; other storage driver options are rejected. Sizes use Docker's binary units (`G`, `GB`, and `GiB` all mean 1024³ bytes); a number without a suffix is bytes. A non-default disk setting on `main` takes precedence over its Compose size. Sidecars otherwise use the 5 GB default, and Compose sizes never reduce that default. Every disk is also large enough for its image plus room to write. These are total disk sizes per VM, not a shared allocation or extra writable space.
 
-A tool server can also run on a Prime VM of its own, under an egress policy of its own: set its `ToolsetConfig.runtime` to a Prime runtime, such as `vf.PrimeConfig(image="example/tools:1", allow=["*"])` for a server that calls public APIs beside an offline workspace, or `allow=[]` for one that runs agent-submitted code with no egress at all. Beside a Prime workspace without a task service spec, the server's VM boots with the workspace and joins it over a LAN network of the rollout's own, on which the workspace's VM may open connections to the server and nothing may open one to the workspace; the harness reaches the server at its VM's LAN name (`<sandbox-id>.sandbox.internal`), and `deployment.target(name)` gives task hooks the server's VM. The VM's policy applies when the workspace's does, after setup. Elsewhere such a server keeps its runtime's published port, which takes no network policy. On Prime, the published port is a public HTTPS URL (`https://<port>-<sandbox-id>.sandbox-v2-prod.pinfra.io`) without authentication.
+A tool server can also run on a Prime VM of its own, under an egress policy of its own: set its `ToolsetConfig.runtime` to a Prime runtime, such as `vf.PrimeConfig(image="example/tools:1", allow=["*"])` for a server that calls public APIs beside an offline workspace, or `allow=[]` for one that runs agent-submitted code with no egress at all. Beside a Prime workspace, the server's VM joins a private LAN. The workspace can connect to the server at its LAN name (`<sandbox-id>.sandbox.internal`); the server cannot initiate connections to the workspace. `deployment.target(name)` gives task hooks the server's VM. Shared Prime tool servers use an eval-wide private LAN that Prime workspaces join. Local tool servers use a host-loopback port and an authenticated host tunnel for remote consumers.
 
 To validate an isolated task without calling a model, finalize the submission, collect its artifacts, and call `vf.grade_submission(task, trace, runtime)`. This runs the task's normal grader, verifier image, timeouts, and retries in a fresh verification target without taking ownership of the supplied solver runtime. As in a rollout, the verifier derives from the agent's runtime config on the trace (`trace.agent.config.runtime`), not from the solver's resolved config, so the solver task's requirements, such as its network policy, don't carry over. Inside `Task.validate`, request `trace` by name for vf-validate's trace, which records its runtime config.
 

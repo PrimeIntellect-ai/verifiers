@@ -87,8 +87,8 @@ class Runtime:
     def host_url(self, url: str) -> str:
         return self.backend.host_url(url)
 
-    async def expose(self, port: int) -> str:
-        return await self.backend.expose(port)
+    def local_service_url(self, port: int) -> str:
+        return self.backend.local_service_url(port)
 
     async def set_network(self, network: NetworkPolicyConfig) -> None:
         """Enforce `network` as given, in place of the policy the runtime started with,

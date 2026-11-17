@@ -31,9 +31,8 @@ class BaseToolsetConfig(BaseConfig):
 
 
 class ToolsetConfig(BaseToolsetConfig):
-    """A per-task tool server. A Prime `runtime` beside a Prime workspace without a task
-    service spec is a VM of the server's own that joins the workspace over the rollout's
-    private network, under its own egress policy."""
+    """A per-task tool server. A Prime `runtime` beside a Prime workspace runs on
+    its own VM on the rollout's private LAN, under its own egress policy."""
 
     colocated: bool = False
     service: str | None = None

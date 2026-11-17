@@ -155,9 +155,14 @@ class PiHarness(ACPHarness[PiHarnessConfig]):
         await runtime.write(f"{agent_dir}/models.json", json.dumps(models).encode())
 
         if mcp_urls:
+            mcp_headers = self.config.resolve_mcp_headers(mcp_urls)
             mcp = {
                 "mcpServers": {
-                    name: {"url": url, "exposure": "direct"}
+                    name: {
+                        "url": url,
+                        "headers": mcp_headers.get(name, {}),
+                        "exposure": "direct",
+                    }
                     for name, url in mcp_urls.items()
                 }
             }

@@ -313,8 +313,6 @@ class Rollout:
                     tool_vms=tool_vms(
                         toolsets,
                         runtime.backend.config,
-                        composed=spec is not None,
-                        borrowed=self._borrowed_runtime is not None,
                     ),
                     env=runtime.env,
                     config=self._deployment_config,

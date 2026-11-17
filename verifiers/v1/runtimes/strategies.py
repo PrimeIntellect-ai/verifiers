@@ -67,22 +67,21 @@ class _PrivateNetworkDeployment(_DeploymentStrategy):
     _internal: frozenset[str] = frozenset()
 
     async def start(self, d):
-        if d.borrowed_runtime is not None:
-            raise ValueError(
-                "a deployment with services on VMs of their own cannot borrow a "
-                "single target"
-            )
-        d.backend.env = d.env
+        if d.borrowed_runtime is None:
+            d.backend.env = d.env
         native = isinstance(d.spec, ServicesSpec)
-        members = d.spec.services if native else d.tool_vms
+        if native and set(d.spec.services) & set(d.tool_vms):
+            raise ValueError("a task service and tool VM cannot share a name")
+        members = {**(d.spec.services if native else {}), **d.tool_vms}
         self._services = await d.enter(AsyncExitStack())
         vms = await self._services.enter_async_context(
             private_network(
                 d.backend,
                 members,
-                partial(d.own, d.backend),
+                partial(d.own, d.backend) if d.borrowed_runtime is None else None,
                 interconnect=native,
                 networks=self._networks,
+                tool_names=frozenset(d.tool_vms),
             )
         )
         d.target_backends = {"main": d.backend, **vms}
@@ -111,16 +110,24 @@ class _PrivateNetworkDeployment(_DeploymentStrategy):
     async def stop_execution(self, d):
         # Nothing the agent left running may reach services while their evidence is
         # collected.
-        await d.execution_backend.stop()
+        if d.borrowed_runtime is None:
+            await d.execution_backend.stop()
 
     async def prepare_verifier(self, deployment):
         # Evidence is collected; release the solver's VMs before the verifier clock
         # starts, the workspace's even if the service VMs' or the network's release
         # fails.
         for release, what in (
-            (deployment.execution_backend.stop, "workspace VM"),
+            (
+                deployment.execution_backend.stop
+                if deployment.borrowed_runtime is None
+                else None,
+                "workspace VM",
+            ),
             (self._services.aclose, "service VMs"),
         ):
+            if release is None:
+                continue
             try:
                 await release()
             except Exception:

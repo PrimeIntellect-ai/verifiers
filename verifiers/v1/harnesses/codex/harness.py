@@ -187,13 +187,20 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
     ) -> dict[str, str]:
         home = self.trace_home(trace)
         await self.install_skills(runtime, f"{home}/skills")
+        mcp_headers = self.config.resolve_mcp_headers(mcp_urls)
         mcp_config = "features={mcp_2026_07_28=true}\n" + (
             "mcp_servers={"
             + ",".join(
                 f"{json.dumps(name, ensure_ascii=False)}="
                 f"{{url={json.dumps(url, ensure_ascii=False)},required=true,"
                 'omit_tools_from=["deferred","code_mode"],'
-                f"startup_timeout_sec=60.0,tool_timeout_sec={self.config.tool_timeout}}}"
+                + "http_headers={"
+                + ",".join(
+                    f"{json.dumps(key)}={json.dumps(value)}"
+                    for key, value in mcp_headers.get(name, {}).items()
+                )
+                + "},"
+                + f"startup_timeout_sec=60.0,tool_timeout_sec={self.config.tool_timeout}}}"
                 for name, url in mcp_urls.items()
             )
             + "}"

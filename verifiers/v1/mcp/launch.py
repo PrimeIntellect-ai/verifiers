@@ -22,6 +22,7 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.errors import ToolsetError
 from verifiers.v1.interception.tunnel import PrimeTunnel
+from verifiers.v1.mcp.auth import MCPURL
 from verifiers.v1.mcp.server import (
     STATE_ROUTE_PARAM,
     STATE_SIGNATURE_PARAM,
@@ -31,11 +32,17 @@ from verifiers.v1.mcp.server import (
 )
 from verifiers.v1.mcp.toolset import BaseToolsetConfig, ToolsetTimeoutConfig
 from verifiers.v1.runtimes import (
+    PrimeConfig,
     Runtime,
     backend_cls,
     provision_backend,
 )
 from verifiers.v1.runtimes.base import _ENSURE_UV
+from verifiers.v1.runtimes.private_network import (
+    join_shared_tool_network,
+    lan_host,
+    shared_tool_network,
+)
 from verifiers.v1.state import State
 from verifiers.v1.utils.aio import run_shielded
 from verifiers.v1.utils.logging import get_logger
@@ -350,6 +357,7 @@ async def serve_in_runtime(
     listen_all: bool = False,
     state_url: str | None = None,
     state_secret: str = "",
+    mcp_secret: str,
 ) -> int:
     """Start a server and return its bound port.
 
@@ -363,6 +371,7 @@ async def serve_in_runtime(
         "VF_CONFIG": server.config.model_dump_json(),
         "VF_STATE_URL": state_url or "",
         "VF_STATE_SECRET": state_secret,
+        "TOOL_SERVICE_MCP_SECRET": mcp_secret,
     }
     if runtime.type == "subprocess":
         # Keep provider temp files in the runtime workdir so cleanup removes them.
@@ -438,20 +447,12 @@ async def reachable_url(
     colocated: bool,
     consumer_is_local: bool,
 ) -> AsyncIterator[str]:
-    """Yield the URL a consumer uses to reach the server at (`service`, `port`), over two
-    primitives: `Runtime.expose` (publish a port out of a sandbox) and a host `Tunnel` (reach
-    into the host from a remote runtime). `colocated` = the server shares the consumer's
-    runtime; `consumer_is_local` = the consumer can use a host-local URL without a tunnel.
-
-    - `colocated` -> localhost (same runtime, in-sandbox or host loopback);
-    - else the runtime publishes the port (`expose`): a remote sandbox's URL is reachable
-      anywhere, a host-local URL directly by a local consumer and through a host tunnel
-      by a remote one."""
+    """Yield a colocated or host-local service URL for its consumer."""
     if colocated:
         yield f"http://127.0.0.1:{port}"
         return
-    url = await service_runtime.expose(port)
-    if service_runtime.is_local and not consumer_is_local:
+    url = service_runtime.local_service_url(port)
+    if not consumer_is_local:
         async with PrimeTunnel().expose(urlsplit(url).port or 80) as public:
             yield public
     else:
@@ -462,6 +463,7 @@ async def reachable_url(
 class _ServedServer:
     url: str
     runtime: Runtime
+    mcp_secret: str
 
 
 @contextlib.asynccontextmanager
@@ -481,6 +483,7 @@ async def _serve(
     colocated = getattr(cfg, "colocated", False)
     service = getattr(cfg, "service", None)
     own_vm = (placements or {}).get(server.server_name)
+    mcp_secret = secrets.token_urlsafe(32)
     if service is not None or own_vm is not None:
         # The harness reaches the server over the deployment's network: a Compose
         # service by its name, a VM of its own by its LAN name.
@@ -512,12 +515,13 @@ async def _serve(
                 else None
             ),
             state_secret=state_secret,
+            mcp_secret=mcp_secret,
         )
-        yield _ServedServer(f"http://{host}:{port}/mcp", runtime)
+        yield _ServedServer(f"http://{host}:{port}/mcp", runtime, mcp_secret)
         return
     async with contextlib.AsyncExitStack() as stack:
         # Colocated servers inherit the harness cut. A separately provisioned filtered
-        # server has neither that lifecycle nor a published port after isolation;
+        # server has neither that lifecycle nor a private LAN after isolation;
         # reject it instead of silently leaving its requested policy unenforced.
         if (
             isinstance(cfg.runtime, NetworkPolicyConfig)
@@ -527,21 +531,21 @@ async def _serve(
             raise ToolsetError(
                 f"server {server.server_name!r} restricts its runtime's network, which "
                 "needs the server colocated with the harness, or on a Prime runtime "
-                "of its own beside a Prime workspace without a task service spec (it then "
+                "of its own beside a Prime workspace (it then "
                 "joins the rollout's private network)"
             )
         if colocated and harness_runtime is not None:
             runtime = harness_runtime
-        elif not backend_cls(cfg.runtime).SUPPORTS_PORT_EXPOSURE:
+        elif not backend_cls(cfg.runtime).is_local:
             raise ToolsetError(
-                f"server {server.server_name!r} runs in its own runtime, but the "
-                f"{cfg.runtime.type} runtime cannot expose a port; colocate it with the "
-                "harness or use a supported runtime"
+                f"server {server.server_name!r} runs in its own {cfg.runtime.type} "
+                "runtime without a private network; use a Prime workspace and "
+                "task-scoped Prime tool VM, or a local tool runtime"
             )
         else:
             backend = await stack.enter_async_context(provision_backend(cfg.runtime))
             runtime = backend.bind()
-        # Only consumers outside the server runtime need its fixed published port. Colocated tools
+        # Only consumers outside the server runtime need its host-forwarded port. Colocated tools
         # use independent OS-assigned ports, avoiding clashes on the runtime's service port.
         exposed = runtime is not harness_runtime
         # The shared-state channel: every server reaches the interception at the rollout's
@@ -557,6 +561,7 @@ async def _serve(
             exposed=exposed,
             state_url=state_url,
             state_secret=state_secret,
+            mcp_secret=mcp_secret,
         )
         # The harness consumes the server, and decides reachability: colocated when the
         # server shares the harness's runtime, reached with the harness's locality (read
@@ -574,12 +579,12 @@ async def _serve(
             and not colocated
             and not consumer_is_local
         ):
-            backend = await runtime.expose(port)
+            backend = runtime.local_service_url(port)
             # Register after startup, and revoke/drain before releasing the runtime.
             url = await stack.enter_async_context(
                 proxy_mcp(f"{backend.rstrip('/')}/mcp")
             )
-            yield _ServedServer(url, runtime)
+            yield _ServedServer(url, runtime, mcp_secret)
             return
         base = await stack.enter_async_context(
             reachable_url(
@@ -590,7 +595,7 @@ async def _serve(
             base = base.replace("127.0.0.1", "localhost", 1)
         elif not colocated and harness_runtime is not None:
             base = harness_runtime.host_url(base)
-        yield _ServedServer(f"{base.rstrip('/')}/mcp", runtime)
+        yield _ServedServer(f"{base.rstrip('/')}/mcp", runtime, mcp_secret)
 
 
 @contextlib.asynccontextmanager
@@ -618,7 +623,7 @@ async def serve(
         hosts=hosts,
         placements=placements,
     ) as served:
-        yield served.url
+        yield MCPURL(served.url, served.mcp_secret)
 
 
 @dataclass(frozen=True)
@@ -637,16 +642,16 @@ class SharedToolServer:
     external: bool = False
     runtime: Runtime | None = field(default=None, repr=False)
     state_secret: str = field(default="", repr=False)
+    mcp_secret: str = field(default="", repr=False)
+    network_id: str | None = field(default=None, repr=False)
 
 
 @contextlib.asynccontextmanager
 async def serve_shared(toolsets: list[Toolset], harness_is_local: bool = True):
     """Start the taskset-scoped (shared) tool servers ONCE for a whole eval, each in its OWN
     `runtime`, and yield `{name: SharedToolServer}` reachable by every rollout's harness.
-    Reachability mirrors a per-rollout tool, but there's no single harness runtime to read
-    locality off — the caller (`Env.shared_tools`) passes the harness runtime's
-    `harness_is_local`, so a host tool gets one host bridge (tunnel) when the harness runs
-    remotely, and a remote tool runtime publishes its own URL. Torn down when the eval ends.
+    A local tool is reachable by a local harness. A Prime tool runs on a private LAN
+    that Prime consumers join. Torn down when the eval ends.
     A shared server is task-agnostic — the taskset carries no per-row data — so its `setup`
     gets no task (its `setup_task` is never called; the per-rollout servers fetch
     theirs over the `/task` channel)."""
@@ -676,18 +681,43 @@ async def serve_shared(toolsets: list[Toolset], harness_is_local: bool = True):
                 state_secret = (
                     secrets.token_urlsafe(24) if toolset._state_cls is not State else ""
                 )
-                served = await stack.enter_async_context(
-                    _serve(
-                        toolset,
-                        harness_is_local=harness_is_local,
-                        state_secret=state_secret,
+                network_id = None
+                if isinstance(cfg.runtime, PrimeConfig):
+                    if harness_is_local:
+                        raise ToolsetError(
+                            f"shared Prime server {name!r} requires a Prime harness runtime"
+                        )
+                    if cfg.runtime.network_restricted:
+                        raise ToolsetError(
+                            f"shared Prime server {name!r} cannot enforce a per-rollout "
+                            "network policy; use a task-scoped tool server"
+                        )
+                    backend, network_id = await stack.enter_async_context(
+                        shared_tool_network(cfg.runtime)
                     )
-                )
+                    served = await stack.enter_async_context(
+                        _serve(
+                            toolset,
+                            state_secret=state_secret,
+                            placements={name: backend.bind()},
+                            hosts={name: lan_host(backend)},
+                        )
+                    )
+                else:
+                    served = await stack.enter_async_context(
+                        _serve(
+                            toolset,
+                            harness_is_local=harness_is_local,
+                            state_secret=state_secret,
+                        )
+                    )
                 servers[name] = SharedToolServer(
                     url=served.url,
                     local=served.runtime.is_local,
                     runtime=served.runtime,
                     state_secret=state_secret,
+                    mcp_secret=served.mcp_secret,
+                    network_id=network_id,
                 )
             logger.info("Started shared tool server %s url=%s", name, servers[name].url)
         yield servers
@@ -701,7 +731,7 @@ def _shared_url_for_rollout(
 ) -> str:
     """Attach signed state coordinates; the shared server keeps its bearer private."""
     if not state_base or not server.state_secret:
-        return visible_url
+        return MCPURL(visible_url, server.mcp_secret)
     state_url = f"{state_base.rstrip('/')}/state"
     if server.runtime is not None:
         state_url = server.runtime.host_url(state_url)
@@ -712,7 +742,7 @@ def _shared_url_for_rollout(
     query[STATE_SIGNATURE_PARAM] = state_signature(
         server.state_secret, state_url, state_route
     )
-    return urlunsplit(parts._replace(query=urlencode(query)))
+    return MCPURL(urlunsplit(parts._replace(query=urlencode(query))), server.mcp_secret)
 
 
 @contextlib.asynccontextmanager
@@ -747,6 +777,10 @@ async def serve_tools(
                 urls[name] = harness_runtime.host_url(server.url)
                 logger.debug("Using external tool server %s url=%s", name, server.url)
                 continue
+            if server.network_id is not None:
+                await join_shared_tool_network(
+                    server.network_id, harness_runtime.backend
+                )
             url = harness_runtime.host_url(server.url) if server.local else server.url
             urls[name] = _shared_url_for_rollout(server, url, state_base, state_route)
             logger.debug("Using shared tool server %s url=%s", name, server.url)

@@ -37,25 +37,15 @@ def test_tool_servers_on_prime_runtimes_beside_a_prime_workspace_get_vms():
         toolset("files", colocated=True, runtime=ATLAS),  # the workspace
         toolset("remote", url="https://tools.example/mcp"),
         toolset("gym", service="tools"),  # a named task service
-        toolset("local", runtime=DockerConfig()),  # a published port
+        toolset("local", runtime=DockerConfig()),  # a host-loopback port
     ]
     vms = private_network.tool_vms
-    assert vms(toolsets, PrimeConfig(), composed=False, borrowed=False) == {
-        "atlas": ATLAS
-    }
-    # Without a Prime workspace of the rollout's own, servers keep their published port.
-    for workspace, composed, borrowed in [
-        (DockerConfig(), False, False),
-        (PrimeConfig(), True, False),
-        (PrimeConfig(), False, True),
-    ]:
-        assert vms(toolsets, workspace, composed=composed, borrowed=borrowed) == {}
+    assert vms(toolsets, PrimeConfig()) == {"atlas": ATLAS}
+    assert vms(toolsets, DockerConfig()) == {}
     with pytest.raises(ValueError, match="cannot be named 'main'"):
         vms(
             [toolset("main", runtime=ATLAS)],
             PrimeConfig(),
-            composed=False,
-            borrowed=False,
         )
 
 
@@ -191,7 +181,9 @@ def test_the_workspace_stops_before_tool_evidence_and_is_released_regardless():
 
     strategy = _PrivateNetworkDeployment()
     strategy._services = SimpleNamespace(aclose=aclose)
-    deployment = SimpleNamespace(execution_backend=SimpleNamespace(stop=stop))
+    deployment = SimpleNamespace(
+        execution_backend=SimpleNamespace(stop=stop), borrowed_runtime=None
+    )
 
     # As Compose stops its workspace, before finalize_services reads the targets.
     asyncio.run(strategy.stop_execution(deployment))

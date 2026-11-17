@@ -52,6 +52,13 @@ class HarnessConfig(BaseConfig):
                         f"MCP header environment variable {variable!r} is missing"
                     )
                 resolved[name][header] = value
+        for name, url in servers.items():
+            if secret := getattr(url, "mcp_secret", ""):
+                headers = resolved.setdefault(name, {})
+                for key in list(headers):
+                    if key.lower() == "authorization":
+                        del headers[key]
+                headers["Authorization"] = f"Bearer {secret}"
         return resolved
 
     tool_timeout: FiniteFloat = Field(600.0, gt=0)
