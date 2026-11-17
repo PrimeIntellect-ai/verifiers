@@ -1,21 +1,22 @@
-import logging
 from pathlib import Path
 from typing import Literal
 
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig, PinnedVersion
 from verifiers.v1.harness import Harness
+from verifiers.v1.harnesses.utils.launch import stage_text
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
+from verifiers.v1.utils.logging import get_logger
 
 PROGRAM_SOURCE = (Path(__file__).resolve().parent / "program.py").read_text()
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class Terminus2HarnessConfig(HarnessConfig):
     dialect: Literal["chat_completions"] = "chat_completions"
-    version: PinnedVersion = "0.24.0"
+    version: PinnedVersion = "0.25.0"
     """Harbor release to install, pinned for reproducibility."""
 
 
@@ -49,13 +50,24 @@ class Terminus2Harness(Harness[Terminus2HarnessConfig]):
             **self.config.resolved_env,
             "TMUX_TMPDIR": tmux_dir,
         }
+        task_file = await stage_text(
+            runtime, trace, "task.txt", prompt, env=self.config.resolved_env
+        )
         args = [
             f"--base-url={endpoint}",
             f"--api-key={secret}",
             f"--model={ctx.model}",
-            f"--system-prompt={system_prompt or ''}",
-            f"--task={prompt}",
+            f"--task-file={task_file}",
         ]
+        if system_prompt:
+            path = await stage_text(
+                runtime,
+                trace,
+                "system-prompt.txt",
+                system_prompt,
+                env=self.config.resolved_env,
+            )
+            args.append(f"--system-prompt-file={path}")
         try:
             source = PROGRAM_SOURCE.replace("{version}", self.config.version)
             program = await runtime.prepare_uv_script(source, self.config.resolved_env)
@@ -76,5 +88,5 @@ class Terminus2Harness(Harness[Terminus2HarnessConfig]):
                 # Runtime teardown is the final backstop; preserve the rollout's
                 # result or original failure when this best-effort cleanup cannot run.
                 logger.warning(
-                    "failed to clean up Terminus 2 tmux server", exc_info=True
+                    "Failed to clean up the Terminus 2 tmux server", exc_info=True
                 )

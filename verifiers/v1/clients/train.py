@@ -2,7 +2,6 @@
 
 import asyncio
 import json
-import logging
 import threading
 from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import asynccontextmanager
@@ -11,6 +10,7 @@ from typing import Any, ClassVar, TypeVar
 
 import numpy as np
 from openai import OpenAIError
+from openai.types import CompletionUsage
 from renderers import OverlongPromptError, RenderedTokens, Renderer, RendererConfig
 from renderers.base import ToolCallParseStatus, is_multimodal
 
@@ -26,16 +26,16 @@ from verifiers.v1.types import (
     AssistantMessage,
     FinishReason,
     Response,
-    SamplingMask,
+    SamplerSupport,
     Tool,
     ToolCall,
-    TopLogprobs,
     TurnTokens,
     Usage,
     WeightVersionSpan,
 )
+from verifiers.v1.utils.logging import get_logger, isolated
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 T = TypeVar("T")
 
@@ -166,11 +166,8 @@ def response_from_generate(
             tool_calls=tool_calls,
         ),
         finish_reason=finish,
-        # /inference/v1/generate returns exact token ids but no usage details, so the
-        # completion's reasoning-token subset is unknown.
-        usage=Usage(
-            prompt_tokens=len(prompt_ids), completion_tokens=len(completion_ids)
-        ),
+        # Require provider usage to preserve cache and reasoning accounting.
+        usage=Usage.from_openai(CompletionUsage.model_validate(result["usage"])),
         # The streams are already typed arrays, so skip revalidation.
         tokens=TurnTokens.model_construct(
             prompt_ids=prompt_ids,
@@ -190,19 +187,12 @@ def response_from_generate(
             mm_placeholders=mm_placeholders,
             mm_token_type_id_map=mm_token_type_id_map,
             routed_experts=result.get("routed_experts"),
-            sampling_mask=SamplingMask.from_sampling_mask(mask)
-            if (mask := result.get("sampling_mask"))
+            sampler_support=SamplerSupport.from_response(support)
+            if (support := result.get("sampler_support")) is not None
             else None,
             weight_versions=[WeightVersionSpan(**span) for span in spans]
             if (spans := result.get("weight_versions"))
             else None,
-            top_logprobs=(
-                TopLogprobs.from_top_logprobs(
-                    result["completion_top_ids"], result["completion_top_logprobs"]
-                )
-                if result.get("completion_top_ids") is not None
-                else None
-            ),
         ),
     )
 
@@ -212,6 +202,18 @@ def _is_valid_incremental_tail(messages: list[dict[str, Any]]) -> bool:
     return bool(messages) and all(
         message.get("role") in ("tool", "user") for message in messages
     )
+
+
+def _previous_tool_call_ids(
+    messages: list[dict[str, Any]], tail_length: int
+) -> list[str] | None:
+    """IDs of the tool calls of the assistant message the tail extends, if it is one."""
+    index = len(messages) - tail_length - 1
+    if index < 0 or messages[index].get("role") != "assistant":
+        return None
+    return [
+        str(call.get("id") or "") for call in messages[index].get("tool_calls") or []
+    ]
 
 
 def _has_multimodal_content(messages) -> bool:
@@ -315,11 +317,12 @@ class ElasticRendererPool:
 
             slot = RendererSlot(await asyncio.to_thread(build))
             self.renderers.append(slot)
-            logger.info(
-                "renderer pool: %d renderer(s), multiplex=%d",
-                len(self.renderers),
-                self.multiplex,
-            )
+            with isolated():
+                logger.info(
+                    "Grew renderer pool to %d renderer(s) multiplex=%d",
+                    len(self.renderers),
+                    self.multiplex,
+                )
             return slot
 
     @asynccontextmanager
@@ -422,6 +425,13 @@ class TrainClient(Client):
                     f"{type(renderer).__name__} does not support process_multimodal=False"
                 )
             render_kwargs = {} if process_multimodal else {"process_multimodal": False}
+            bridge_kwargs = dict(render_kwargs)
+            if getattr(renderer, "supports_previous_tool_call_ids", False):
+                # Templates that order tool results by the assistant's calls need the call
+                # IDs, which the sampled tokens do not carry.
+                bridge_kwargs["previous_tool_call_ids"] = _previous_tool_call_ids(
+                    wire_messages, len(wire_tail)
+                )
             # Only build the O(context) previous token stream for a bridgeable tail.
             can_bridge = turn is not None and _is_valid_incremental_tail(wire_tail)
             previous_ids = turn.previous_renderer_token_ids() if can_bridge else None
@@ -434,7 +444,7 @@ class TrainClient(Client):
                         previous_completion_ids,
                         wire_tail,
                         tools=wire_tools,
-                        **render_kwargs,
+                        **bridge_kwargs,
                     )
 
                 bridged = await slot.run(bridge)

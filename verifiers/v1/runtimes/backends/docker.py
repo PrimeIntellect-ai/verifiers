@@ -7,8 +7,7 @@ For a container with a network policy, the same proxy also carries its egress an
 enforces the policy by host name. Before the agent starts, an iptables rule in the
 container's network namespace leaves the proxy as the only way out.
 
-The same backend also execs into a task's Compose services, on local Docker or on a
-provider VM through that VM's runtime."""
+The same backend also execs into a task's local Docker Compose services."""
 
 from __future__ import annotations
 
@@ -18,7 +17,6 @@ import contextlib
 import csv
 import io
 import json
-import logging
 import os
 import re
 import shlex
@@ -27,10 +25,11 @@ import socket
 import subprocess
 import sys
 import tempfile
+import time
 import uuid
 from collections.abc import AsyncIterator
 from pathlib import PurePosixPath
-from typing import TYPE_CHECKING, ClassVar
+from typing import ClassVar
 from urllib.parse import urlsplit
 
 from verifiers.v1.configs.runtime import DockerConfig, NetworkPolicyConfig
@@ -48,12 +47,11 @@ from verifiers.v1.runtimes.egress import EgressProxy, NetworkPolicy, is_loopback
 from verifiers.v1.runtimes.runtime import Runtime
 from verifiers.v1.utils.aio import run_shielded
 from verifiers.v1.utils.artifacts import validate_runtime_mounts
+from verifiers.v1.utils.format import format_time
+from verifiers.v1.utils.logging import get_logger
 from verifiers.v1.utils.scope import run_scope
 
-logger = logging.getLogger(__name__)
-
-if TYPE_CHECKING:
-    from verifiers.v1.runtimes.backends.prime import PrimeConfig
+logger = get_logger(__name__)
 
 _LINUX = sys.platform == "linux"
 _HOST_ALIAS = "host.docker.internal"
@@ -151,7 +149,7 @@ class ContainerProcess(RuntimeProcess):
                 "sh",
                 "-c",
                 'kill -"$1" "-$2" 2>/dev/null || kill -"$1" "$2" 2>/dev/null',
-                "vf-signal",
+                "process-signal",
                 signal,
                 str(self._pid),
             ],
@@ -186,7 +184,7 @@ async def _abort_process_startup(
                         "sh",
                         "-c",
                         cleanup,
-                        "vf-process-cleanup",
+                        "process-cleanup",
                         pidfile,
                     ],
                     {},
@@ -211,28 +209,20 @@ class DockerBackend(RuntimeBackend):
 
     SUPPORTS_TASK_IMAGES: ClassVar[bool] = True
     SUPPORTS_USER_SWITCHING: ClassVar[bool] = True
+    SUPPORTS_STOP_CONFIRMATION: ClassVar[bool] = True
+    SUPPORTS_MEMORY_LIMIT: ClassVar[bool] = True
     SUPPORTS_PORT_EXPOSURE: ClassVar[bool] = True
     SUPPORTS_COMPOSE: ClassVar[bool] = True
     is_local = True
 
     def __init__(
         self,
-        config: DockerConfig | PrimeConfig,
+        config: DockerConfig,
         name: str | None = None,
-        *,
-        host_backend: RuntimeBackend | None = None,
     ) -> None:
         super().__init__(name)
         self.config = config
-        self._host_backend = host_backend
-        self.is_local = host_backend is None or host_backend.is_local
-        self.info = (
-            host_backend.info.model_copy(
-                update={"image": self.config.image, "workdir": self.config.workdir}
-            )
-            if host_backend
-            else DockerRuntimeInfo(**self.config.model_dump())
-        )
+        self.info = DockerRuntimeInfo(**self.config.model_dump())
         self._container: str | None = None  # our `--name` (used for exec/rm)
         self._service_url: str | None = None
         self._image_env: dict[str, str] = {}
@@ -244,21 +234,20 @@ class DockerBackend(RuntimeBackend):
     @contextlib.asynccontextmanager
     async def attach(
         cls,
-        config: DockerConfig | PrimeConfig,
+        config: DockerConfig,
         container: str,
         *,
-        host_backend: RuntimeBackend | None = None,
         service_url: str | None = None,
     ) -> AsyncIterator[DockerBackend]:
         """Borrow a Compose service container; its caller owns creation and removal.
         `service_url` is the host URL of a local workspace's published service port."""
         if getattr(config, "mounts", {}):
             raise ValueError("Cannot attach runtime mounts to an existing container")
-        backend = cls(config, host_backend=host_backend)
+        backend = cls(config)
         backend._container = container
         backend.info.borrowed = True  # cleanup never removes a borrowed container
         try:
-            code, data, stderr = await backend._communicate_host(
+            code, data, stderr = await _communicate(
                 "docker", "inspect", "--format", "{{json .Config}}", container
             )
             if code:
@@ -272,12 +261,11 @@ class DockerBackend(RuntimeBackend):
             backend.config = config.model_copy(
                 update={"image": info["Image"], "workdir": info["WorkingDir"] or "/"}
             )
-            if host_backend is None:
-                backend.info.id = container
+            backend.info.id = container
             backend.info.image = backend.config.image
             backend.info.workdir = backend.config.workdir
             backend._service_url = service_url
-            if host_backend is None and service_url is not None:
+            if service_url is not None:
                 await backend._start_proxy(
                     NetworkPolicy(NetworkPolicyConfig(allow=[]), [])
                 )
@@ -288,8 +276,7 @@ class DockerBackend(RuntimeBackend):
     @property
     def _restricted(self) -> bool:
         return (
-            self._host_backend is None
-            and not self.info.borrowed
+            not self.info.borrowed
             and isinstance(self.config, NetworkPolicyConfig)
             and self.config.network_restricted
         )
@@ -299,6 +286,7 @@ class DockerBackend(RuntimeBackend):
         return SERVICE_PORT
 
     async def start(self) -> None:
+        started = time.perf_counter()
         # Compose keeps its authored workdir; only standalone containers default to /app.
         self.config = self.config.model_copy(
             update={"workdir": self.config.workdir or "/app"}
@@ -425,7 +413,7 @@ class DockerBackend(RuntimeBackend):
             "sh",
             "-c",
             'if [ ! -d "$1" ]; then mkdir -p "$1" && chown "$2" "$1"; fi',
-            "vf-workdir",
+            "workspace-directory",
             self.config.workdir,
             container["User"] or "0",
         )
@@ -446,22 +434,19 @@ class DockerBackend(RuntimeBackend):
             if self._restricted
             else NetworkPolicy(NetworkPolicyConfig(allow=[]), [])
         )
-        logger.info(
-            "docker: started container %s (image=%s)",
+        logger.debug(
+            "Started docker runtime %s in %s image=%s",
             self._container,
+            format_time(time.perf_counter() - started),
             self.config.image,
         )
 
     def host_url(self, url: str) -> str:
-        if self._host_backend is not None:
-            return self._host_backend.host_url(url)
         if self._proxy is None or not is_loopback_host(urlsplit(url).hostname or ""):
             return url
         return self._proxy.callback_url(url, self._proxy_host)
 
     async def expose(self, port: int) -> str:
-        if self._host_backend is not None:
-            return await self._host_backend.expose(port)
         if port != SERVICE_PORT or self._service_url is None:
             raise SandboxError(f"docker publishes only port {SERVICE_PORT}, not {port}")
         return self._service_url
@@ -549,9 +534,6 @@ class DockerBackend(RuntimeBackend):
         """Allow the declared framework routes, then leave the proxy, enforcing the
         configured policy or `network`, as the only way out. `None` routes reopen the
         network for a trusted phase, undoing the cut."""
-        if self._host_backend is not None:
-            await self._host_backend.prepare_execution(routes, network)
-            return
         if self._proxy is None or not self._restricted:
             return
         if routes is None:
@@ -644,6 +626,22 @@ class DockerBackend(RuntimeBackend):
             await self._proxy.stop()
         await super().teardown()
 
+    async def verify_stopped(self) -> None:
+        if not self.stopped or self.info.borrowed:
+            raise SandboxError(
+                "cannot confirm termination of a live or borrowed container"
+            )
+        if self._container is None:
+            return
+        async with asyncio.timeout(60):
+            result = await cli("docker", "container", "inspect", self._container)
+        if result.exit_code and any(
+            message in result.stderr
+            for message in ("No such container:", "No such object:")
+        ):
+            return
+        raise SandboxError("could not confirm Docker container removal")
+
     def _exec_argv(
         self, env: dict[str, str], *, stdin: bool = False, user: str | None = None
     ) -> list[str]:
@@ -701,7 +699,6 @@ class DockerBackend(RuntimeBackend):
         self._stopped = (
             True  # idempotency guard; keep `_container` so the name still shows
         )
-        logger.debug("docker: removing container %s", self._container)
         with contextlib.suppress(Exception):
             subprocess.run(
                 ["docker", "rm", "--force", self._container],
@@ -711,44 +708,17 @@ class DockerBackend(RuntimeBackend):
                 check=False,
             )
 
-    async def _run_host(self, *argv: str) -> ProgramResult:
-        if self._host_backend is None:
-            return await cli(*argv)
-        return await self._host_backend.bind().run(list(argv), {})
-
-    async def _communicate_host(
-        self, *argv: str, input: bytes | None = None
-    ) -> tuple[int, bytes, bytes]:
-        if self._host_backend is None:
-            return await _communicate(*argv, input=input)
-        # Stage bytes through the provider filesystem, never its text command logs.
-        temporary = f"/tmp/vf-io-{uuid.uuid4().hex}"
-        command = f"{shlex.join(argv)} > {temporary}.out"
-        try:
-            if input is not None:
-                await self._host_backend.bind().write(f"{temporary}.in", input)
-                command += f" < {temporary}.in"
-            result = await self._run_host("sh", "-c", command)
-            data = await self._host_backend.bind().read(f"{temporary}.out")
-            return result.exit_code, data, result.stderr.encode()
-        finally:
-            # Temporary-file cleanup is best-effort after command completion/failure.
-            with contextlib.suppress(Exception):
-                await run_shielded(
-                    self._run_host("rm", "-f", f"{temporary}.in", f"{temporary}.out")
-                )
-
     async def run(
         self, runtime: Runtime, argv: list[str], env: dict[str, str]
     ) -> ProgramResult:
-        return await self._run_host(
+        return await cli(
             *self._exec_argv(runtime.process_env(env), user=runtime.user), *argv
         )
 
     async def exec(
         self, runtime: Runtime, argv: list[str], env: dict[str, str]
     ) -> RuntimeProcess:
-        pidfile = f"/tmp/vf-process-{uuid.uuid4().hex}.pid"
+        pidfile = f"/tmp/runtime-process-{uuid.uuid4().hex}.pid"
         # Give the target its own process group when `setsid -w` is available so
         # terminate()/kill() reap its descendants while the CLI client remains
         # attached if setsid needs to fork. The inner shell records the
@@ -756,7 +726,7 @@ class DockerBackend(RuntimeBackend):
         wrapper = (
             "if setsid -w true >/dev/null 2>&1; then "
             'exec setsid -w sh -c \'echo $$ > "$1"; shift; exec "$@"\' '
-            'vf-process "$@"; '
+            'runtime-process "$@"; '
             'fi; echo $$ > "$1"; shift; exec "$@"'
         )
         command = [
@@ -764,31 +734,28 @@ class DockerBackend(RuntimeBackend):
             "sh",
             "-c",
             wrapper,
-            "vf-process",
+            "runtime-process",
             pidfile,
             *argv,
         ]
-        if self._host_backend is None:
-            proc = SubprocessProcess(
-                await asyncio.create_subprocess_exec(
-                    *command,
-                    stdin=asyncio.subprocess.PIPE,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                    start_new_session=True,
-                )
+        proc = SubprocessProcess(
+            await asyncio.create_subprocess_exec(
+                *command,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                start_new_session=True,
             )
-        else:
-            proc = await self._host_backend.bind().exec(command, {})
+        )
         loop = asyncio.get_running_loop()
-        deadline = loop.time() + (30 if self._host_backend is not None else 5)
+        deadline = loop.time() + 5
         try:
             async with asyncio.timeout_at(deadline):
                 while True:
                     # An exited client gets one final PID read: short commands may
                     # have written their PID and finished before the first poll.
                     returncode = await proc.poll()
-                    ready = await self._run_host(
+                    ready = await cli(
                         *self._exec_argv({}, user=runtime.user),
                         "cat",
                         pidfile,
@@ -821,7 +788,7 @@ class DockerBackend(RuntimeBackend):
         command = self._exec_argv(runtime.process_env(env), user=runtime.user)
         command.insert(2, "--detach")
         script = f"exec {shlex.join(argv)} > {shlex.quote(log)} 2>&1 < /dev/null"
-        result = await self._run_host(*command, "sh", "-c", script)
+        result = await cli(*command, "sh", "-c", script)
         if result.exit_code != 0:
             raise SandboxError(
                 f"docker background process failed: {result.stderr.strip()}"
@@ -831,7 +798,7 @@ class DockerBackend(RuntimeBackend):
         self, runtime: Runtime, path: str, max_bytes: int | None = None
     ) -> bytes:
         argv = ["cat"] if max_bytes is None else ["head", "-c", str(max_bytes)]
-        code, data, stderr = await self._communicate_host(
+        code, data, stderr = await _communicate(
             *self._exec_argv({}, user=runtime.user), *argv, "--", path
         )
         if code != 0:
@@ -842,7 +809,7 @@ class DockerBackend(RuntimeBackend):
 
     async def write(self, runtime: Runtime, path: str, data: bytes) -> None:
         parent = shlex.quote(str(PurePosixPath(path).parent))
-        code, _, stderr = await self._communicate_host(
+        code, _, stderr = await _communicate(
             *self._exec_argv({}, user=runtime.user, stdin=True),
             "sh",
             "-c",

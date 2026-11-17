@@ -22,13 +22,13 @@ MCP_READY = (Path(__file__).resolve().parent / "mcp-ready.js").read_bytes()
 INSTALL = r"""
 set -e
 export PATH="/var/tmp/vf-node/bin:$PATH"
-npm install --prefix "$VF_OPENCODE_DIR" --no-audit --no-fund --omit=dev \
-    "@opencode/cli@$VF_OPENCODE_VERSION" >/dev/null
+npm install --prefix "$AGENT_OPENCODE_DIR" --no-audit --no-fund --omit=dev \
+    "@opencode/cli@$AGENT_OPENCODE_VERSION" >/dev/null
 """
 
 
 class OpenCodeHarnessConfig(HarnessConfig):
-    version: PinnedVersion = "2.1.4"
+    version: PinnedVersion = "2.2.5"
     """OpenCode 2 release to install, pinned for reproducibility."""
     dialect: DialectName = "chat_completions"
     disabled_tools: list[str] | None = None
@@ -42,7 +42,7 @@ class OpenCodeHarness(ACPHarness[OpenCodeHarnessConfig]):
 
     # OpenCode drops whitespace-only assistant text on replay over Anthropic messages.
     # Recheck on version bumps:
-    # https://github.com/anomalyco/opencode/blob/v2.1.4/packages/ai/src/protocols/anthropic-messages.ts#L929
+    # https://github.com/anomalyco/opencode/blob/v2.2.5/packages/ai/src/protocols/anthropic-messages.ts#L961
     def replay_view(self, message: Message, dialect: DialectName | None) -> Message:
         if dialect == "anthropic_messages":
             return drop_blank_text(message)
@@ -58,8 +58,8 @@ class OpenCodeHarness(ACPHarness[OpenCodeHarnessConfig]):
             install=INSTALL,
             env={
                 **self.config.resolved_env,
-                "VF_OPENCODE_DIR": directory,
-                "VF_OPENCODE_VERSION": self.config.version,
+                "AGENT_OPENCODE_DIR": directory,
+                "AGENT_OPENCODE_VERSION": self.config.version,
             },
             label="OpenCode",
         )

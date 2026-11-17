@@ -70,7 +70,7 @@ Then install the package into the Python environment running the CLI and verify 
 
 ```bash
 uv pip install -e environments/addition
-uv run vf-eval addition --dry-run
+uv run vf-validate addition -n 1 --only-setup
 ```
 
 ## Data and configuration
@@ -191,12 +191,12 @@ taskset.include(idx=["0:100"]).exclude(names=["broken"]).shuffle(seed=0).take(5)
 
 `include` keeps and `exclude` drops tasks matching any of `idx` (integers or non-negative Python slice strings like `"0:100"`, `"100:"`, or `"::2"`), `ids`, `keys`, or `names`; a task matches when any provided list names it. Any filter entry that matches nothing logs a warning once the stream has been consumed.
 
-The eval, debug, validate, and GEPA entrypoints all accept a `select` config and apply it via `taskset.select(config.select)`, which chains the views in a fixed order: `include`, `exclude`, `shuffle`, `skip`, `limit`:
+The run, debug, and validate entrypoints all accept a `select` config and apply it via `taskset.select(config.select)`, which chains the views in a fixed order: `include`, `exclude`, `shuffle`, `skip`, `limit`:
 
 ```bash
-uv run vf-eval gsm8k --select.include.idx 0:100                 # the first 100 tasks
-uv run vf-eval gsm8k -s -n 50                                   # 50 random tasks (--select.shuffle --select.limit 50)
-uv run vf-eval gsm8k -s --select.skip 50 -n 50                  # the next 50 tasks from the same shuffled order
+uv run vf-validate gsm8k --select.include.idx 0:100                 # the first 100 tasks
+uv run vf-validate gsm8k -s -n 50                                   # 50 random tasks (--select.shuffle --select.limit 50)
+uv run vf-validate gsm8k -s --select.skip 50 -n 50                  # the next 50 tasks from the same shuffled order
 ```
 
 ```toml
@@ -207,11 +207,18 @@ shuffle = true
 limit = 100
 ```
 
+To keep long selections out of the config, point `files` at newline-delimited text files, one entry per line. Their lines extend the matching inline lists, and blank lines are skipped:
+
+```toml
+[select]
+exclude = { files = { ids = "broken_ids.txt" } }
+```
+
 Because `shuffle` (seeded by `select.seed`, which defaults to `0`) runs before `skip` and `limit`, increasing `limit` with the same seed extends the existing sample rather than drawing a different subset, and pairing `skip` with `limit` carves out disjoint splits.
 
 ## Lazy and infinite tasksets
 
-`load()` can be a generator that yields tasks one at a time instead of returning a list. Because consumers iterate the taskset lazily, `vf-eval -n 5` only builds five tasks (unless filtering skips items or `shuffle` needs to materialize the candidate pool), which pays off whenever constructing a task is expensive.
+`load()` can be a generator that yields tasks one at a time instead of returning a list. Because consumers iterate the taskset lazily, `-n 5` only builds five tasks (unless filtering skips items or `shuffle` needs to materialize the candidate pool), which pays off whenever constructing a task is expensive.
 
 A procedural taskset can also yield tasks forever. Declare `INFINITE = True` on the class so consumers know the stream has no end — infinity is a property of the taskset, while how many tasks a run takes (`-n`) is up to the caller:
 
@@ -236,7 +243,7 @@ Two rules follow from an infinite stream:
 1. Every run must bound the taskset with `take` (`-n` / `--select.limit` on the CLI) or an `include` consisting only of closed `idx` ranges; omitting both raises an error.
 2. `shuffle` needs a finite bound _before_ it runs, since you cannot shuffle an infinite stream. Because `select` applies `limit` after `shuffle`, shuffling an infinite taskset from the CLI requires a closed `include.idx` range first (for example, `--select.include.idx 0:1000 -s -n 50`); in Python, `taskset.take(1000).shuffle()` works as well.
 
-The generator runs once on the client (the eval entrypoint or prime-rl orchestrator pulls tasks from `load()` and sends each task's `TaskData` to the environment worker), so workers never need to reproduce the generator sequence. Keep `load()` deterministic if you want `--resume` to regenerate the same first `n` tasks across runs (see `alphabet_sort`, `color_codeword`, or the built-in `textarena` taskset).
+The generator runs once on the client (`vf-run` or the prime-rl orchestrator pulls tasks from `load()` and sends each task's `TaskData` to the environment worker), so workers never need to reproduce the generator sequence. Keep `load()` deterministic if you want `--resume` to regenerate the same first `n` tasks across runs (see `alphabet_sort`, `color_codeword`, or the built-in `textarena` taskset).
 
 ## Adding Tools
 
@@ -270,10 +277,11 @@ Tools defined on `Taskset.toolsets(config)` run in a server shared across a work
 A toolset's config controls where the MCP server runs:
 
 - **Host subprocess (default)** — launches the server as a local subprocess with its own filesystem.
-- **`colocated = true`** (per-task toolsets only) — runs the tool server inside the agent's own runtime container so tools share the agent's filesystem directly.
-- **`service = "<name>"`** (per-task toolsets on Prime VM Compose) — runs the tool server inside a named service from the task's Compose stack. The harness reaches it over the Compose network by service name, so the tool server can front internal services that the workspace cannot reach directly.
+- **`service = "<name>"`** (per-task toolsets on Prime) — runs the tool server inside a named native VM from the task's `ServicesSpec`. The harness reaches it over the rollout's private network by its LAN hostname.
 - **`runtime = { type = "docker", ... }`** — runs the tool server in its own dedicated container.
 - **`url = "https://.../mcp"`** — connects to an already-running streamable-HTTP MCP server instead of launching one.
+
+A launched server has `timeout.startup` seconds (600 by default) to start serving. Raise it for a server that builds a large index in `setup()`, or set it to `None` to wait indefinitely.
 
 For local or containerized servers, put the `Toolset` subclass in a server module that calls `SearchToolset.run()` under `if __name__ == "__main__":`. On startup, the server runs `await self.setup()`, then `await self.setup_task(task)` (for per-task servers, receiving the rollout's `TaskData`), and finally `self.register(mcp)`. Shared servers skip `setup_task`, so keep shared indexes or clients on `self` during `setup()` and store per-rollout state in `self.state`.
 

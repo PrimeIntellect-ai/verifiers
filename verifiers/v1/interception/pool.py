@@ -6,15 +6,14 @@ is rate-capped per API token — so one-tunnel-per-rollout caps how wide a remot
 server) can fan out. Each shared `InterceptionServer` multiplexes rollouts behind one
 tunnel; the harness is unchanged, authenticating with a per-rollout secret the server routes
 by. Two shapes: `ElasticInterceptionPool` warms one server, then grows on demand (`multiplex`
-rollouts each, always prime tunnels — the only kind the framework can mint) and fits both the
-bounded eval runner and the env server's unbounded request load; `StaticInterceptionPool` is a
+rollouts each, always prime tunnels — the only kind the framework can mint) and fits both a
+bounded eval runner and an unbounded request load; `StaticInterceptionPool` is a
 fixed set of servers (each with its own tunnel choice, e.g. bring-your-own endpoints), balanced
 least-loaded.
 """
 
 import asyncio
 import contextlib
-import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -24,11 +23,14 @@ from verifiers.v1.configs.interception import (
     PrimeTunnelConfig,
     StaticInterceptionPoolConfig,
 )
+from verifiers.v1.errors import TunnelError
 from verifiers.v1.interception.base import Interception, Slot
 from verifiers.v1.interception.server import InterceptionServer
 from verifiers.v1.session import RolloutSession
+from verifiers.v1.utils.aio import run_shielded
+from verifiers.v1.utils.logging import get_logger, isolated
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class StaticInterceptionPool(Interception):
@@ -57,7 +59,12 @@ class StaticInterceptionPool(Interception):
     async def acquire(self, session: RolloutSession) -> AsyncIterator[Slot]:
         # server.acquire registers before its first yield, so concurrent acquires see the
         # updated load before choosing their own least-loaded server.
-        server = min(self.servers, key=lambda s: s.load)
+        healthy = [server for server in self.servers if server.healthy]
+        if not healthy:
+            raise TunnelError(
+                "no interception servers left: all their tunnels are gone"
+            )
+        server = min(healthy, key=lambda s: s.load)
         async with server.acquire(session) as slot:
             yield slot
 
@@ -91,12 +98,26 @@ class ElasticInterceptionPool(Interception):
                 await self._warm_task
         await super().stop()
 
+    async def _free_retired(self) -> None:
+        """Stop retired servers whose rollouts have left. A rollout still on one is using
+        its client, so that server waits for a later call. Shielded: an acquire cancelled
+        mid-stop would leave the listener open, with nothing left to close it."""
+        for server in [s for s in self.servers if not s.healthy and s.load == 0]:
+            self.servers.remove(server)
+            try:
+                await run_shielded(server.stop())
+            except Exception:
+                logger.warning(
+                    "Failed to stop a retired interception server", exc_info=True
+                )
+
     async def _server(self) -> InterceptionServer:
         """A server with spare capacity — reuse one under `multiplex`, else bring up a new
         one (its own tunnel, on `stack`, torn down with the pool). Acquires hold `_lock`;
         the warm task runs before they reach this path."""
+        await self._free_retired()
         for server in self.servers:
-            if server.load < self.config.multiplex:
+            if server.healthy and server.load < self.config.multiplex:
                 return server
         # Pin prime explicitly — the only tunnel kind that can be minted on demand.
         server = InterceptionServer(
@@ -104,13 +125,16 @@ class ElasticInterceptionPool(Interception):
             self.requires_tunnel,
             self.state_service_secrets,
         )
-        await self.stack.enter_async_context(server)
-        self.servers.append(server)
-        logger.info(
-            "interception pool: %d server(s), multiplex=%d",
-            len(self.servers),
-            self.config.multiplex,
-        )
+        # The pool outlives the rollout that grows it: its server (and the tasks the
+        # server starts) log without that rollout's scope.
+        with isolated():
+            await self.stack.enter_async_context(server)
+            self.servers.append(server)
+            logger.info(
+                "Grew interception pool to %d server(s) multiplex=%d",
+                len(self.servers),
+                self.config.multiplex,
+            )
         return server
 
     @asynccontextmanager

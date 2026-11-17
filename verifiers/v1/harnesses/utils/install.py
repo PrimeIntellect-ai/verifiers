@@ -37,6 +37,7 @@ async def ensure_installed(
         '| cut -d" " -f20) && [ -n "$s" ]; then echo "$1:$s"; else echo "$1"; fi; }; '
         "me=$(ident $$); "
     )
+    unlock = f'[ "$(readlink {lock} 2>/dev/null)" != "$me" ] || rm -f {lock}'
     spinlock = (
         f"{ident}"
         f'until ln -s "$me" {lock} 2>/dev/null; do owner=$(readlink {lock} 2>/dev/null); '
@@ -44,10 +45,10 @@ async def ensure_installed(
         f'|| [ "$(ident "$pid")" != "$owner" ]; then '
         f'[ "$(readlink {lock} 2>/dev/null)" != "$owner" ] || rm -f {lock}; fi; '
         f"sleep 0.1; done; "
-        f'trap \'[ "$(readlink {lock} 2>/dev/null)" != "$me" ] || rm -f {lock}\' EXIT; {run}'
+        f"trap {shlex.quote(unlock)} EXIT; {run}"
     )
     guarded = (
-        f"mkdir -p {shlex.quote(directory)} && "
+        f'mkdir -p "$(dirname {lock})" && '
         f'if l=$(command -v flock || command -v lockf); then "$l" {lock} {run}; else {spinlock}; fi'
     )
     if runtime.user is None:
@@ -55,7 +56,10 @@ async def ensure_installed(
     else:
         # Install as root (system packages), keeping uv's Python in `directory`, then
         # open it to the agent user: some installers leave it private.
-        python_dir = {"UV_PYTHON_INSTALL_DIR": f"{directory}/python"}
+        python_dir = {
+            "UV_PYTHON_INSTALL_DIR": f"{directory}/python",
+            "UV_CACHE_DIR": f"{directory}/uv-cache",
+        }
         shareable = f"{guarded} && chmod -R a+rX {shlex.quote(directory)}"
         result = await runtime.with_user(None).run(
             ["sh", "-c", shareable], {**python_dir, **env}
