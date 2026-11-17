@@ -197,7 +197,7 @@ def environment_class(taskset_id: str, env_id: str = "") -> type[Env]:
 
 
 def load_environment(config: EnvConfig) -> Env:
-    """Construct the env for `config`. Every construction site (eval, serve, gepa)
+    """Construct the env for `config`. Every construction site (eval, serve)
     goes through here so subclass envs load everywhere."""
     return environment_class(config.taskset.id, config.id)(config)
 
@@ -321,7 +321,7 @@ def env_config_type(taskset_id: str, env_id: str = "") -> type[EnvConfig]:
 
 def resolve_env_config(data: dict | EnvConfig | None) -> EnvConfig:
     """Narrow raw env-config data to the concrete env class's config type and
-    validate. The one entry every consumer takes (CLI, TOML, the env-server wire),
+    validate. The one entry every consumer takes (CLI, TOML, a plain-data dump),
     so role fields always validate against the real config class."""
     if isinstance(data, EnvConfig):
         cls = env_config_type(data.taskset.id, data.id)

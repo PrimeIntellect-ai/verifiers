@@ -1,4 +1,4 @@
-"""Smoke-eval every example taskset in `environments/` through the `eval` CLI.
+"""Smoke-run every example taskset in `environments/` through the `vf-run` CLI.
 
 Each taskset runs with its required harness for capped rollouts, so a broken
 example taskset fails CI. Interception exercises all four of its behaviors. `compact` is excluded (it's a harness, not a taskset);
@@ -90,10 +90,10 @@ def test_eval(taskset: str, tmp_path: Path):
     ]
     num_tasks = "4" if taskset == "interception" else "1"
     cmd = [
-        "uv", "run", "--no-sync", "vf-eval", taskset,
+        "uv", "run", "--no-sync", "vf-run", taskset,
         *model,
         "-n", num_tasks, "-r", "1", *caps,
-        "--sampling.max-tokens", "4096", "--no-rich", "--no-push",
+        "--sampling.max-tokens", "4096",
         "--output-dir", str(tmp_path), "--run.dir", "run",
         # Recipe envs run their seats one at a time by default; in parallel, a
         # multi-seat episode (proposer + n solvers) fits the timeout.

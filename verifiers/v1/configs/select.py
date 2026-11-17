@@ -1,13 +1,24 @@
 """Which of a taskset's tasks a run uses: `Taskset.select(SelectConfig)`, under
-`--select.*` on the eval, debug, validate and GEPA CLIs (`SelectCLIConfig`)."""
+`--select.*` on the run, debug and validate CLIs (`SelectCLIConfig`)."""
 
 import re
 import sys
+from pathlib import Path
 
-from pydantic import AliasChoices, Field, field_validator
+from pydantic import AliasChoices, Field, field_validator, model_validator
 from pydantic_config import BaseConfig
 
 IDX_RANGE = re.compile(r"(\d*):(\d*)(?::(\d*))?")
+
+
+class TaskMatchFilesConfig(BaseConfig):
+    """Newline-delimited text files with more entries for each `TaskMatchConfig`
+    list, one entry per line. Blank lines are skipped."""
+
+    idx: Path | None = None
+    ids: Path | None = None
+    keys: Path | None = None
+    names: Path | None = None
 
 
 class TaskMatchConfig(BaseConfig):
@@ -24,6 +35,10 @@ class TaskMatchConfig(BaseConfig):
     """`Task.key` values, as recorded on each trace (`task.key`)."""
     names: list[str] = Field(default_factory=list)
     """`TaskData.name` values."""
+    files: TaskMatchFilesConfig = TaskMatchFilesConfig()
+    """Files whose lines extend the lists above, for selections too long to write
+    inline (`files.ids = "ids.txt"`). Validation reads them into the lists and
+    resets `files`."""
 
     @field_validator("idx", mode="before")
     @classmethod
@@ -35,6 +50,19 @@ class TaskMatchConfig(BaseConfig):
             parts = item.split(",") if isinstance(item, str) else [item]
             items.extend(_parse_idx_item(part) for part in parts)
         return items
+
+    @model_validator(mode="after")
+    def _read_files(self):
+        for field, path in self.files:
+            if path is None:
+                continue
+            lines = [line.strip() for line in path.read_text().splitlines()]
+            entries = [line for line in lines if line]
+            if field == "idx":
+                entries = [_parse_idx_item(entry) for entry in entries]
+            getattr(self, field).extend(entries)
+        self.files = TaskMatchFilesConfig()
+        return self
 
     @property
     def empty(self) -> bool:

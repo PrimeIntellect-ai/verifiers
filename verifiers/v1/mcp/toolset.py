@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING
 
-from pydantic import model_validator
+from pydantic import Field, model_validator
 from pydantic_config import BaseConfig
 
 from verifiers.v1.mcp.server import ConfigT, ServerBase
@@ -13,14 +15,30 @@ from verifiers.v1.utils.decorators import discover_decorated
 if TYPE_CHECKING:
     from mcp.server.mcpserver import MCPServer
 
+    from verifiers.v1.runtimes import Runtime
 
-class ToolsetConfig(BaseConfig):
-    colocated: bool = False
+
+class ToolsetTimeoutConfig(BaseConfig):
+    """Timeouts (in seconds) for a launched tool server; `None` waits indefinitely."""
+
+    startup: float | None = Field(600.0, gt=0)
+    """Time to start serving, including `setup()`, such as to build an index."""
+
+
+class BaseToolsetConfig(BaseConfig):
+    """Runtime and connection settings for per-task and shared tool servers."""
+
     runtime: RuntimeConfig = SubprocessConfig()
-    """Where the server runs: the evaluator by default. A Prime runtime beside a Prime
-    workspace without a task service spec is a VM of the server's own that joins the
-    workspace over the rollout's private network, under its own egress policy."""
+    """Where the server runs: the evaluator by default."""
     url: str | None = None
+    timeout: ToolsetTimeoutConfig = ToolsetTimeoutConfig()
+
+
+class ToolsetConfig(BaseToolsetConfig):
+    """A per-task tool server. A Prime `runtime` beside a Prime workspace without a task
+    service spec is a VM of the server's own that joins the workspace over the rollout's
+    private network, under its own egress policy."""
+
     service: str | None = None
     """Run the server in a named native Prime service VM. The harness reaches it
     over the deployment's private network, using its LAN hostname."""
@@ -29,9 +47,9 @@ class ToolsetConfig(BaseConfig):
     def _one_placement(self):
         if self.service is None:
             return self
-        if self.colocated or self.url:
+        if self.url:
             raise ValueError(
-                "a tool server placed in a service is neither colocated nor remote"
+                "a tool server placed in a service cannot use a remote URL"
             )
         # The service is the server's runtime; another one, or its policy, would go unused.
         if not isinstance(self.runtime, SubprocessConfig):
@@ -42,12 +60,29 @@ class ToolsetConfig(BaseConfig):
         return self
 
 
-class SharedToolsetConfig(BaseConfig):
-    runtime: RuntimeConfig = SubprocessConfig()
-    url: str | None = None
+class SharedToolsetConfig(BaseToolsetConfig):
+    pass
 
 
 class Toolset(ServerBase[ConfigT, StateT]):
+    def validate_split_execution(self) -> None:
+        """Check that this transport runs task commands outside the harness sandbox.
+
+        The default transport uses a separate runtime or service. Adapters owning
+        their transport must reject split placement if they require the task runtime.
+        """
+
+    @asynccontextmanager
+    async def serve(self, runtime: Runtime, **kwargs) -> AsyncIterator[str]:
+        """Connect a rollout to this server; task-format adapters own their transport."""
+        from verifiers.v1.mcp.launch import serve
+
+        if self.config.url:
+            yield runtime.host_url(self.config.url)
+        else:
+            async with serve(self, runtime, **kwargs) as url:
+                yield url
+
     def register(self, mcp: MCPServer) -> None:
         for fn in discover_decorated(self, "tool"):
             mcp.add_tool(

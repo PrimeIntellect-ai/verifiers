@@ -50,12 +50,6 @@ if TYPE_CHECKING:
         SelectConfig,
         TaskMatchConfig,
     )
-    from verifiers.v1.configs.serve import (
-        ElasticPoolConfig,
-        ServeConfig,
-        StaticPoolConfig,
-        pool_serve_kwargs,
-    )
     from verifiers.v1.configs.task import (
         DecoratedFunctionConfig,
         RewardFunctionConfig,
@@ -65,19 +59,7 @@ if TYPE_CHECKING:
     from verifiers.v1.configs.taskset import SharedTasksetConfig, TasksetConfig
     from verifiers.v1.env import Env
     from verifiers.v1.envs.single_agent import SingleAgentEnv
-    from verifiers.v1.episode import (
-        EnvInfo,
-        Episode,
-        EvalRunInfo,
-        EvalWorkInfo,
-        GroupInfo,
-        PolicySpan,
-        RunInfo,
-        TrainRunInfo,
-        TrainWorkInfo,
-        WireEpisode,
-        WorkInfo,
-    )
+    from verifiers.v1.episode import EnvInfo, Episode, GroupInfo, WireEpisode
     from verifiers.v1.errors import (
         EnvError,
         HarnessError,
@@ -102,7 +84,12 @@ if TYPE_CHECKING:
         RubricJudge,
         RubricJudgeConfig,
     )
-    from verifiers.v1.mcp import SharedToolsetConfig, Toolset, ToolsetConfig
+    from verifiers.v1.mcp import (
+        SharedToolsetConfig,
+        Toolset,
+        ToolsetConfig,
+        ToolsetTimeoutConfig,
+    )
     from verifiers.v1.runtimes import (
         ProgramResult,
         Runtime,
@@ -123,6 +110,7 @@ if TYPE_CHECKING:
         SemanticEdgeSet,
     )
     from verifiers.v1.state import State, StateT
+    from verifiers.v1.submission import run_submission
     from verifiers.v1.task import (
         Task,
         TaskData,
@@ -137,17 +125,24 @@ if TYPE_CHECKING:
         AgentSpan,
         Branch,
         Error,
+        EvalRunInfo,
+        EvalWorkInfo,
         InterceptRecord,
         ModelCall,
         PolicyEvent,
+        PolicySpan,
         Reward,
+        RunInfo,
         TimeSpan,
         TimeSplit,
         Timing,
         Trace,
         TraceTask,
+        TrainRunInfo,
+        TrainWorkInfo,
         VersionInfo,
         WireTrace,
+        WorkInfo,
     )
     from verifiers.v1.types import (
         AssistantMessage,
@@ -159,13 +154,12 @@ if TYPE_CHECKING:
         Messages,
         Request,
         Response,
-        SamplingMask,
+        SamplerSupport,
         SystemMessage,
         TextContentPart,
         Tool,
         ToolCall,
         ToolMessage,
-        TopLogprobs,
         TurnTokens,
         Usage,
         UserMessage,
@@ -202,6 +196,7 @@ if TYPE_CHECKING:
     )
 
 _NAME_TO_MODULE = {
+    "run_submission": "verifiers.v1.submission",
     "ACPConfig": "verifiers.v1.acp",
     "ACPHarness": "verifiers.v1.acp",
     "ACPInfo": "verifiers.v1.semantic",
@@ -231,7 +226,6 @@ _NAME_TO_MODULE = {
     "Deployment": "verifiers.v1.runtimes.deployment",
     "DeploymentConfig": "verifiers.v1.configs.deployment",
     "DockerConfig": "verifiers.v1.configs.runtime",
-    "ElasticPoolConfig": "verifiers.v1.configs.serve",
     "Env": "verifiers.v1.env",
     "EnvConfig": "verifiers.v1.configs.env",
     "EnvError": "verifiers.v1.errors",
@@ -239,8 +233,8 @@ _NAME_TO_MODULE = {
     "Episode": "verifiers.v1.episode",
     "Error": "verifiers.v1.trace",
     "EvalClientConfig": "verifiers.v1.configs.client",
-    "EvalRunInfo": "verifiers.v1.episode",
-    "EvalWorkInfo": "verifiers.v1.episode",
+    "EvalRunInfo": "verifiers.v1.trace",
+    "EvalWorkInfo": "verifiers.v1.trace",
     "ExecutionConnection": "verifiers.v1.runtimes.deployment",
     "GroupInfo": "verifiers.v1.episode",
     "Harness": "verifiers.v1.harness",
@@ -268,7 +262,7 @@ _NAME_TO_MODULE = {
     "PATCH_CAP_BYTES": "verifiers.v1.utils.git",
     "ParentLink": "verifiers.v1.semantic",
     "PolicyEvent": "verifiers.v1.trace",
-    "PolicySpan": "verifiers.v1.episode",
+    "PolicySpan": "verifiers.v1.trace",
     "PrimeConfig": "verifiers.v1.configs.runtime",
     "PrimeVolume": "verifiers.v1.configs.runtime",
     "ProgramResult": "verifiers.v1.runtimes",
@@ -284,14 +278,14 @@ _NAME_TO_MODULE = {
     "RolloutError": "verifiers.v1.errors",
     "RubricJudge": "verifiers.v1.judges",
     "RubricJudgeConfig": "verifiers.v1.judges",
-    "RunInfo": "verifiers.v1.episode",
+    "RunInfo": "verifiers.v1.trace",
     "Runtime": "verifiers.v1.runtimes",
     "RuntimeConfig": "verifiers.v1.configs.runtime",
     "RuntimeInfo": "verifiers.v1.runtimes",
     "RuntimeProcess": "verifiers.v1.runtimes",
     "Sampling": "verifiers.v1.configs.sampling",
     "SamplingConfig": "verifiers.v1.configs.sampling",
-    "SamplingMask": "verifiers.v1.types",
+    "SamplerSupport": "verifiers.v1.types",
     "SandboxError": "verifiers.v1.errors",
     "ScoringConfig": "verifiers.v1.configs.scoring",
     "ServicesSpec": "verifiers.v1.runtimes.deployment",
@@ -300,7 +294,6 @@ _NAME_TO_MODULE = {
     "SelectConfig": "verifiers.v1.configs.select",
     "SemanticEdge": "verifiers.v1.semantic",
     "SemanticEdgeSet": "verifiers.v1.semantic",
-    "ServeConfig": "verifiers.v1.configs.serve",
     "SharedEnvConfig": "verifiers.v1.configs.env",
     "SharedTasksetConfig": "verifiers.v1.configs.taskset",
     "SharedToolsetConfig": "verifiers.v1.mcp",
@@ -308,7 +301,6 @@ _NAME_TO_MODULE = {
     "SingleAgentEnvConfig": "verifiers.v1.configs.env",
     "State": "verifiers.v1.state",
     "StateT": "verifiers.v1.state",
-    "StaticPoolConfig": "verifiers.v1.configs.serve",
     "StopFunctionConfig": "verifiers.v1.configs.task",
     "SubprocessConfig": "verifiers.v1.configs.runtime",
     "SystemMessage": "verifiers.v1.types",
@@ -331,13 +323,13 @@ _NAME_TO_MODULE = {
     "ToolMessage": "verifiers.v1.types",
     "Toolset": "verifiers.v1.mcp",
     "ToolsetConfig": "verifiers.v1.mcp",
+    "ToolsetTimeoutConfig": "verifiers.v1.mcp",
     "ToolsetError": "verifiers.v1.errors",
-    "TopLogprobs": "verifiers.v1.types",
     "Trace": "verifiers.v1.trace",
     "TraceTask": "verifiers.v1.trace",
     "TrainClientConfig": "verifiers.v1.configs.client",
-    "TrainRunInfo": "verifiers.v1.episode",
-    "TrainWorkInfo": "verifiers.v1.episode",
+    "TrainRunInfo": "verifiers.v1.trace",
+    "TrainWorkInfo": "verifiers.v1.trace",
     "TunnelError": "verifiers.v1.errors",
     "TurnTokens": "verifiers.v1.types",
     "Usage": "verifiers.v1.types",
@@ -346,7 +338,7 @@ _NAME_TO_MODULE = {
     "WireEpisode": "verifiers.v1.episode",
     "WireTaskData": "verifiers.v1.task",
     "WireTrace": "verifiers.v1.trace",
-    "WorkInfo": "verifiers.v1.episode",
+    "WorkInfo": "verifiers.v1.trace",
     "capture_patch": "verifiers.v1.utils.git",
     "collect": "verifiers.v1.utils.artifacts",
     "compare_stdout_results": "verifiers.v1.utils.score",
@@ -373,7 +365,6 @@ _NAME_TO_MODULE = {
     "narrowed_env_annotation": "verifiers.v1.configs.cli.env",
     "parse_judge_choice": "verifiers.v1.utils.score",
     "parse_pytest_outcomes": "verifiers.v1.utils.score",
-    "pool_serve_kwargs": "verifiers.v1.configs.serve",
     "read_answer_file_or_last_reply": "verifiers.v1.utils.score",
     "resolve_client": "verifiers.v1.clients",
     "resolve_env_config": "verifiers.v1.utils.loaders",
@@ -445,8 +436,7 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "MessageNode",
     "Branch",
     "TurnTokens",
-    "SamplingMask",
-    "TopLogprobs",
+    "SamplerSupport",
     "Timing",
     "TimeSpan",
     "TimeSplit",
@@ -512,16 +502,12 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "SingleAgentEnv",
     "EnvConfig",
     "SharedEnvConfig",
-    "ServeConfig",
     "resolve_env_field",
     "merge_defaults",
     "narrowed_env_annotation",
     "SingleAgentEnvConfig",
     "AgentConfig",
-    "StaticPoolConfig",
-    "ElasticPoolConfig",
     "default_agent_harness",
-    "pool_serve_kwargs",
     "RetryConfig",
     "RetryRule",
     # agent
@@ -563,6 +549,7 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "capture_patch",
     "resolve_head",
     "grade_submission",
+    "run_submission",
     # grading artifacts
     "ARTIFACTS_DIR",
     "Artifact",
@@ -579,6 +566,7 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "Toolset",
     "SharedToolsetConfig",
     "ToolsetConfig",
+    "ToolsetTimeoutConfig",
     # the user channel
     "Interaction",
     "Segment",

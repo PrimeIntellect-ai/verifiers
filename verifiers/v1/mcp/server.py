@@ -6,7 +6,6 @@ import functools
 import hashlib
 import hmac
 import inspect
-import logging
 import os
 from collections.abc import Callable
 from typing import TYPE_CHECKING, ClassVar, Generic, TypeVar
@@ -17,13 +16,14 @@ from pydantic_config import BaseConfig
 
 from verifiers.v1.state import State, StateT, state_cls
 from verifiers.v1.utils.generic import concrete_type
+from verifiers.v1.utils.logging import get_logger
 
 if TYPE_CHECKING:
     from httpx import AsyncClient, Response
     from mcp.server.mcpserver import MCPServer
 
 ConfigT = TypeVar("ConfigT", bound=BaseConfig)
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 # State calls may cross a tunnel, so allow transient startup failures without hanging forever.
 STATE_TIMEOUT = 30.0  # seconds per request
@@ -176,9 +176,7 @@ class ServerBase(Generic[ConfigT, StateT]):
         try:
             return self._state_adapter.validate_json(response.content)
         except ValidationError as e:
-            logger.warning(
-                "state pull rejected for %s: %s", self._state_cls.__name__, e
-            )
+            logger.warning("Rejected pulled %s state - %s", self._state_cls.__name__, e)
             raise
 
     async def _push_state(self, before: bytes) -> None:
@@ -298,6 +296,9 @@ class ServerBase(Generic[ConfigT, StateT]):
         async def serve() -> None:
             import httpx
             from mcp.server.transport_security import TransportSecuritySettings
+            from starlette.responses import PlainTextResponse
+
+            from verifiers.v1.interception.tunnel.base import HEALTH_PATH
 
             try:
                 async with (
@@ -317,6 +318,12 @@ class ServerBase(Generic[ConfigT, StateT]):
                         version=__version__,
                     )
                     self.register(mcp)
+
+                    @mcp.custom_route(HEALTH_PATH, methods=["GET"])
+                    async def health(_request):
+                        # See HEALTH_PATH.
+                        return PlainTextResponse("ok", headers={"Connection": "close"})
+
                     # Modern HTTP is inherently sessionless. Keep the legacy leg stateless too so
                     # older agent clients can use the same reconnect-per-call endpoint.
                     mcp_app = mcp.streamable_http_app(
