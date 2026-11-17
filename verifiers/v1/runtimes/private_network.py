@@ -149,7 +149,7 @@ async def join_shared_tool_network(network_id: str, consumer: RuntimeBackend) ->
 async def private_network(
     workspace: RuntimeBackend,
     members: Mapping[str, PrimeConfig],
-    start_workspace: Callable[[], Awaitable[object]] | None,
+    start_workspace: Callable[[], Awaitable[object]],
     *,
     interconnect: bool = False,
     networks: Mapping[str, list[str]] | None = None,
@@ -191,12 +191,11 @@ async def private_network(
     )
     # Install connectivity before boot, and release the VMs before their LAN.
     async with (
-        _lan_network(rules) as (client, network_id),
+        _lan_network(rules) as (_, network_id),
         AsyncExitStack() as stack,
     ):
         # Failed startup unwinds this stack before the deployment's workspace owner.
-        if start_workspace is not None:
-            stack.push_async_callback(workspace.stop)
+        stack.push_async_callback(workspace.stop)
 
         backends: dict[str, RuntimeBackend] = {}
 
@@ -210,15 +209,10 @@ async def private_network(
                 )
             )
 
-        if start_workspace is None:
-            # Borrowed Prime workspaces already run; joining is idempotent.
-            await client._join_lan(network_id, workspace.info.id, memberships["main"])
-        else:
-            workspace.lan = (network_id, memberships["main"])
+        workspace.lan = (network_id, memberships["main"])
         try:
             async with asyncio.TaskGroup() as group:
-                if start_workspace is not None:
-                    group.create_task(start_workspace())
+                group.create_task(start_workspace())
                 for name, config in members.items():
                     group.create_task(provision(name, config))
         except ExceptionGroup as failed:

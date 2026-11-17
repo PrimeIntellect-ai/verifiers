@@ -62,11 +62,20 @@ def test_the_deployment_joins_tool_vms_over_a_private_network():
     )
 
 
+def test_private_network_deployment_rejects_borrowed_workspace():
+    deployment = SimpleNamespace(borrowed_runtime=object())
+    with pytest.raises(ValueError, match="cannot borrow a single target"):
+        asyncio.run(_PrivateNetworkDeployment().start(deployment))
+
+
 def test_the_private_network_needs_a_prime_workspace():
     workspace = SimpleNamespace(config=DockerConfig())
 
+    async def start():
+        pass
+
     async def enter():
-        async with private_network.private_network(workspace, {"atlas": ATLAS}, None):
+        async with private_network.private_network(workspace, {"atlas": ATLAS}, start):
             pass
 
     with pytest.raises(TypeError, match="needs the workspace on Prime, not docker"):
