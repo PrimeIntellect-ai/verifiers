@@ -51,7 +51,11 @@ async def test_split_harness_workspace(run, harness, harness_runtime, monkeypatc
         "echo" if harness.id == "null" else "echo-agentic",
         harness=harness,
         runtime=harness_runtime,
-        env={"agent": {"deployment": {"mode": "split"}}},
+        env={
+            "agent": {
+                "deployment": {"mode": "split", "harness": {"cpu": 2, "memory": 4}}
+            }
+        },
         max_turns=10,
         max_tokens=8192,
         rollout_timeout=300,

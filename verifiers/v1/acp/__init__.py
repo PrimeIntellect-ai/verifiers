@@ -63,10 +63,12 @@ class ACPConfig:
     prompt: str | Messages | None
     mcp_urls: dict[str, str] | None = None
     system_prompt: str | None = None
+    cwd: str | None = None
+    """The session's working directory, when it is not the process's own, such as a
+    split deployment's workspace."""
     session_meta: JsonObject | None = None
     client_capabilities: JsonObject | None = None
     required_agent_metadata: str | None = None
-    cwd: str | None = None
     ready_file: str | None = None
     """A trusted native plugin must create this file before the first prompt."""
 

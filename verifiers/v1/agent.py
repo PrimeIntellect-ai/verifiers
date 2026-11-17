@@ -863,11 +863,22 @@ class Agent:
         interception — shared by `run` and `interaction`."""
         harness = self.harness
         skills = [*task.data.skills, *harness.config.skills]
-        if skills:
-            # Skill installations can hold run-specific state, such as RLM's package environment.
+        split = self.config.deployment.mode == "split"
+        if skills or split:
+            # Skill installations and split execution workers hold run-specific state,
+            # such as RLM's package environment.
             harness = type(harness)(
                 harness.config.model_copy(update={"skills": skills})
             )
+        if split:
+            harness.validate_split_execution()
+            if runtime is not None:
+                raise ValueError(
+                    "split deployment provisions the harness's VM per rollout; it "
+                    "cannot run in a borrowed runtime"
+                )
+            for toolset in task.toolsets(task.config):
+                toolset.validate_split_execution()
         if runtime is not None:
             _check_borrowed_placement(task, runtime, self.runtime_config)
             runtime_config = runtime.config
@@ -882,6 +893,7 @@ class Agent:
             type(task),
             runtime_config,
             tools=[*task.toolsets(task.config), *shared_tools.values()],
+            split=split,
         )
         timeouts = resolve_rollout_timeouts(self.timeout, task)
         return {
@@ -900,6 +912,8 @@ class Agent:
     async def provision(self, task: Task | None = None) -> AsyncIterator[Runtime]:
         """Provision (and on exit tear down) a box from this agent's runtime
         policy, resolved for `task` when given; share it via `run(..., runtime=runtime)`."""
+        if self.config.deployment.mode == "split":
+            raise ValueError("split deployment cannot borrow a provisioned runtime")
         config = (
             resolve_runtime_config(self.runtime_config, task, self._warned_resources)
             if task is not None

@@ -62,6 +62,9 @@ class ExecutionBridge:
         request_id = body.get("request_id")
         if not isinstance(request_id, str) or not request_id:
             raise HarnessError("split execution requires a request_id")
+        # Lifecycle controls remain available after the data receipt cap.
+        if body.get("operation") in {"kill", "wait"}:
+            return await self._handle(body)
         fingerprint = json.dumps(body, sort_keys=True)
         receipt = self.receipts.get(request_id)
         if receipt is None:

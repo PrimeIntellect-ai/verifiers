@@ -254,11 +254,10 @@ def codex_output(buffer):
 def rlm_input(packet):
     message = json.loads(packet[4:])
     method = message.get("method", "")
-    if method == "start":
-        # A owns delegation and credentialed services. A compromised workspace
-        # must never receive a capability that can invoke its supervisor broker.
-        message["params"]["capability"] = None
-        return pack(message)
+    if method == "host.events":
+        # Status polling must survive a denied call so existing jobs can finish.
+        # It launches no work; jobs.start and services.start still cross the gate.
+        return packet
     if method != "tool" and method.split(".", 1)[0] not in ("host", "jobs", "services", "watch"):
         return packet
     params = message.get("params") or {}
@@ -352,9 +351,10 @@ def copy_output(stream, output):
                     pending.extend(data)
                     for packet in frames(pending):
                         message = json.loads(packet[4:])
-                        if "method" in message:
-                            # B may emit arbitrary frames; never let it initiate
-                            # supervisor RPCs, even if it forges a broker token.
+                        if "method" in message and message["method"] != "broker":
+                            # Only nano-rlm's scoped broker may call back into A.
+                            # RemoteREPL checks the session capability, and the
+                            # supervisor checks the active cell and operation.
                             reply = pack({"id": message["id"], "error":
                                           "Supervisor callbacks are unavailable in split execution"})
                             rpc("write", data=base64.b64encode(reply).decode())

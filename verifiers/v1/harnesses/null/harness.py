@@ -2,7 +2,6 @@ from typing import Literal
 
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
-from verifiers.v1.errors import HarnessError
 from verifiers.v1.harness import Harness
 from verifiers.v1.harnesses.utils.launch import (
     CHAT_PROGRAM_SOURCE,
@@ -29,17 +28,12 @@ class NullHarness(Harness[NullHarnessConfig]):
     SUPPORTS_RESUME = True
     SUPPORTS_TOOL_INTERCEPTION = True
     SUPPORTS_SPLIT_EXECUTION = True
+    SUPPORTS_SPLIT_MCP = True
     EXECUTES_CODE = False
     NEEDS_CONTAINER = False
 
     async def setup(self, runtime: Runtime) -> None:
         await runtime.prepare_uv_script(CHAT_PROGRAM_SOURCE, self.config.resolved_env)
-
-    async def remote_tools(self, runtime: Runtime, data: TaskData):
-        async def execute(call):
-            raise HarnessError(f"null has no built-in tool {call.name!r}")
-
-        return execute
 
     async def launch(
         self,
@@ -56,10 +50,8 @@ class NullHarness(Harness[NullHarnessConfig]):
         args = compaction_args(self.config.compaction)
         if tool_interception_url:
             args.append(f"--tool-interception-url={tool_interception_url}")
-        if runtime._remote_tools_only:
-            if not tool_interception_url:
-                raise HarnessError("split null requires a tool gate")
-            args.append("--remote-tools-only")
+        # Null has no local execution tools. Allowed MCP calls must reach their
+        # separate server after the gate; they cannot produce a workspace result.
         return await launch_chat_program(
             CHAT_PROGRAM_SOURCE,
             self.config,

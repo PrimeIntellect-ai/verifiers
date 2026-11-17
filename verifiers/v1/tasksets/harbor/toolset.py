@@ -27,6 +27,11 @@ class HarborMCPConfig(BaseConfig):
 
 
 class HarborMCPAdapter(Toolset[HarborMCPConfig]):
+    def validate_split_execution(self) -> None:
+        raise ValueError(
+            "Harbor task-local MCP adapters do not support split deployment"
+        )
+
     @property
     def server_name(self) -> str:
         return self.config.server["name"]
