@@ -8,6 +8,7 @@ import os
 import shutil
 import signal
 import stat
+import tempfile
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import ClassVar
@@ -99,8 +100,10 @@ class SubprocessBackend(RuntimeBackend):
         self._children: list[asyncio.subprocess.Process] = []
 
     async def start(self) -> None:
-        self.workdir = CACHE_DIR / "runtimes" / "subprocess" / self.name
-        self.workdir.mkdir(parents=True)
+        root = CACHE_DIR / "runtimes" / "subprocess"
+        root.mkdir(parents=True, exist_ok=True)
+        # Names repeat across retries, and a failed teardown can leave a workdir behind.
+        self.workdir = Path(tempfile.mkdtemp(prefix=f"{self.name}-", dir=root))
         self.info.id = str(self.workdir)
 
     async def run(

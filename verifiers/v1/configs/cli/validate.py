@@ -6,7 +6,7 @@ from uuid import uuid4
 from pydantic import AliasChoices, Field, SerializeAsAny, model_validator
 from pydantic_config import BaseConfig
 
-from verifiers.v1.configs.cli.eval import RunConfig
+from verifiers.v1.configs.cli.run import RunConfig
 from verifiers.v1.configs.deployment import DeploymentConfig
 from verifiers.v1.configs.runtime import PrimeConfig, RuntimeConfig
 from verifiers.v1.configs.select import SelectCLIConfig
@@ -48,8 +48,6 @@ class ValidateConfig(BaseConfig):
     """Max tasks validated in flight at once (and, for a container runtime, live sandboxes)."""
     verbose: bool = Field(False, validation_alias=AliasChoices("verbose", "v"))
     """Log at debug level instead of the default info."""
-    rich: bool = True
-    """Show a live dashboard (one row per task) instead of per-task log lines."""
     output_dir: Path = Field(
         Path("outputs"), validation_alias=AliasChoices("output_dir", "o")
     )

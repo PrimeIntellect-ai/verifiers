@@ -2,7 +2,6 @@
 these per run, on the task the agent actually receives; `SingleAgentEnv` applies
 them at construction where the pairing is statically decidable."""
 
-import logging
 from collections.abc import Collection
 
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
@@ -13,8 +12,9 @@ from verifiers.v1.runtimes import (
 )
 from verifiers.v1.task import Task
 from verifiers.v1.utils.artifacts import validate_artifact_mounts
+from verifiers.v1.utils.logging import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 def resolve_runtime_config(
@@ -65,9 +65,9 @@ def resolve_runtime_config(
             if warned is not None and key not in warned:
                 warned.add(key)
                 logger.warning(
-                    "runtime %r doesn't support resource %r; ignoring it",
-                    config.type,
+                    "Ignoring resource %s - the %s runtime does not support it",
                     resource,
+                    config.type,
                 )
         elif (
             getattr(config, resource) == spec.default

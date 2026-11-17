@@ -83,13 +83,13 @@ class AgentConfig(BaseConfig):
     def _scoring_overrides(
         self, scoring: ScoringConfig, info: SerializationInfo
     ) -> dict:
-        # Preserve unset fields across env-server and trace roundtrips so they
+        # Preserve unset fields across process and trace roundtrips so they
         # continue to inherit from the task instead of becoming explicit overrides.
         return scoring.model_dump(mode=info.mode, exclude_unset=True)
 
     @field_serializer("sampling")
     def _sampling_overrides(self, sampling: SamplingConfig | None) -> dict | None:
-        # An unresolved agent carries only overrides across env-server boundaries.
+        # An unresolved agent carries only overrides across process boundaries.
         # resolve_agent fills every field before the config is recorded on a trace.
         return sampling.model_dump(exclude_unset=True) if sampling is not None else None
 

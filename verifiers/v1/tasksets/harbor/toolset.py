@@ -1,6 +1,8 @@
-"""Task-declared Harbor MCP tools served through the standard VF toolset lifecycle."""
+"""Adapt Harbor's task-declared MCP servers to the harness's HTTP transport."""
 
 import os
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import Any, cast
 
 from mcp import Client
@@ -8,20 +10,36 @@ from mcp.client.sse import sse_client
 from mcp.client.stdio import StdioServerParameters, stdio_client
 from mcp.client.streamable_http import streamable_http_client
 from mcp.server.mcpserver import Context, MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import CallToolResult, Tool
+from pydantic_config import BaseConfig
 
-from verifiers.v1.mcp import Toolset, ToolsetConfig
+from verifiers.v1.mcp import Toolset
+from verifiers.v1.mcp.launch import serve_in_runtime
+from verifiers.v1.runtimes import Runtime
 
 
-class HarborMCPConfig(ToolsetConfig):
+class HarborMCPConfig(BaseConfig):
     server: dict[str, Any]
     """One declaration already validated by Harbor's task parser."""
 
 
-class HarborMCPToolset(Toolset[HarborMCPConfig]):
+class HarborMCPAdapter(Toolset[HarborMCPConfig]):
+    def validate_split_execution(self) -> None:
+        raise ValueError(
+            "Harbor task-local MCP adapters do not support split deployment"
+        )
+
     @property
     def server_name(self) -> str:
         return self.config.server["name"]
+
+    @asynccontextmanager
+    async def serve(self, runtime: Runtime, **kwargs) -> AsyncIterator[str]:
+        # Harbor commands and task-local URLs belong to the task environment.
+        port = await serve_in_runtime(self, runtime, exposed=False)
+        host = "localhost" if runtime.network_restricted else "127.0.0.1"
+        yield f"http://{host}:{port}/mcp"
 
     async def setup(self) -> None:
         spec = self.config.server
@@ -79,8 +97,12 @@ class HarborMCPToolset(Toolset[HarborMCPConfig]):
     async def call_tool(
         self, name: str, arguments: dict[str, Any], context: Context | None = None
     ) -> CallToolResult:
+        if name not in {tool.name for tool in await self.list_tools()}:
+            raise ToolError(
+                f"MCP tool {name!r} is not listed by server {self.server_name!r}"
+            )
         return await self.client.call_tool(name, arguments)
 
 
 if __name__ == "__main__":
-    HarborMCPToolset.run()
+    HarborMCPAdapter.run()

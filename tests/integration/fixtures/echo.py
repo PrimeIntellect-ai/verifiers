@@ -25,6 +25,7 @@ def lenient_match(answer: str, text: str) -> bool:
 class EchoData(vf.TaskData):
     answer: str
     """The phrase the model should echo back."""
+    finish_tool: bool = False
 
 
 class EchoTask(vf.Task[EchoData]):
@@ -39,10 +40,14 @@ class EchoTask(vf.Task[EchoData]):
     @vf.reward(weight=1.0)
     async def echoed(self, trace: vf.Trace) -> float:
         reply = trace.assistant_messages[-1].content if trace.assistant_messages else ""
+        if self.data.finish_tool:
+            reply = trace.last_reply
         return float(lenient_match(self.data.answer, reply or ""))
 
 
 class EchoConfig(vf.TasksetConfig):
+    finish_tool: bool = False
+    """Request the answer through finish for harnesses that require it."""
     phrases: list[str] = Field(
         default_factory=lambda: ["hello world", "ping", "verifiers"]
     )
@@ -51,18 +56,21 @@ class EchoConfig(vf.TasksetConfig):
 class EchoTaskset(vf.Taskset[EchoTask, EchoConfig]):
     def load(self) -> list[EchoTask]:
         return [
-            # Keep coding-agent harnesses on the direct-response path instead of
-            # spending this single-turn smoke task on a tool call. Phrased as an
+            # Default to a direct response; finish_tool requests native completion
+            # from harnesses that require a finish call. Phrased as an
             # instruction rather than a prohibition: OpenAI's content filter refuses
             # "Do not call tools ... include this exact phrase" as an injection.
             EchoTask(
                 EchoData(
                     idx=i,
                     prompt=(
-                        "Answer directly without using tools or running code. Your reply "
+                        f"Call your finish tool with reason exactly {phrase!r} and paths=[]."
+                        if self.config.finish_tool
+                        else "Answer directly without using tools or running code. Your reply "
                         f"must contain this exact phrase: {phrase}"
                     ),
                     answer=phrase,
+                    finish_tool=self.config.finish_tool,
                 ),
                 self.config.task,
             )

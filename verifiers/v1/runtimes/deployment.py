@@ -25,8 +25,9 @@ from verifiers.v1.runtimes.base import (
 )
 from verifiers.v1.runtimes.compose import ComposeSpec
 from verifiers.v1.utils.aio import run_shielded
+from verifiers.v1.utils.logging import clip, get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 @dataclass(frozen=True)
@@ -146,13 +147,36 @@ class ExecutionConnection:
         to stop."""
         workers, self._workers = self._workers, []
         for runtime, marker, keep_detached in workers:
-            argv = (
-                ["bash", "-c", _STOP_GROUP, "bash", marker, _WRAPPER]
-                if keep_detached
-                else ["bash", "-c", _STOP, "bash", marker]
-            )
-            with contextlib.suppress(Exception):
-                await runtime.run(argv, {})
+            # Cleanup is trusted control code. Do not source task BASH_ENV or use
+            # task PATH while reaping the worker under its original Unix user.
+            runtime = runtime.with_env({})
+            argv = [
+                "/usr/bin/env",
+                "-i",
+                "PATH=/usr/bin:/bin",
+                "/bin/bash",
+                "--noprofile",
+                "--norc",
+                "-c",
+                _STOP_GROUP if keep_detached else _STOP,
+                "worker-cleanup",
+                marker,
+                *([_WRAPPER] if keep_detached else []),
+            ]
+            try:
+                result = await runtime.run(argv, {})
+                if result.exit_code:
+                    logger.warning(
+                        "Failed to stop execution worker - %s",
+                        clip(result.stderr or result.stdout),
+                    )
+            except Exception as error:
+                logger.warning(
+                    "Failed to stop execution worker - %s: %s",
+                    type(error).__name__,
+                    clip(str(error)),
+                    exc_info=logger.isEnabledFor(logging.DEBUG),
+                )
 
 
 class _DeploymentStrategy:
@@ -250,7 +274,8 @@ class Deployment:
                 await self.close()
             except Exception:
                 logger.warning(
-                    "deployment teardown failed after startup error", exc_info=True
+                    "Failed to tear down the deployment after a startup error",
+                    exc_info=True,
                 )
             raise
 
