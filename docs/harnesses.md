@@ -4,7 +4,7 @@ verifiers ships with a range of harnesses out of the box, including Claude Code,
 
 ## Bash harness
 
-The built-in `bash` harness provides shell execution and file-editing tools, and supports task MCP servers, multi-turn conversation resume, and tool interception (though not harness skills).
+The built-in `bash` harness provides shell execution and file-editing tools, and supports task MCP servers, multi-turn conversation resume, and tool interception (though not harness skills). Because it runs an in-house loop rather than installing an external CLI, it can run either on `subprocess` for trusted local work or inside a container.
 
 Context compaction is enabled by default: when the model provider reports a context window size, `bash` automatically summarizes older context once roughly 16,000 tokens remain. You can set a fixed token threshold in your config, or set `compaction = "None"` to disable compaction altogether:
 

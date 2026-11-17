@@ -10,6 +10,7 @@ value, and using one without `indirect=True` fails loudly.
 """
 
 import os
+from pathlib import Path
 
 import pytest
 from grid import agent_seats, runtime_config
@@ -66,7 +67,7 @@ def tool_runtime(request) -> dict:
 # Built-in harnesses are bundled in the `harnesses` package; the agent CLIs (`rlm` /
 # `kimi-code` / `openclaw` / `codex` / `claude-code` / `hermes-agent`) install their
 # dependencies at rollout.
-# `compact` (an example harness) and `terminus-2` (requires tmux) are outside the grid.
+# `compact` (an example harness) and `terminus-2` (drives the host tmux) are outside the grid.
 @pytest.fixture
 def harness(request) -> HarnessConfig:
     config = {"id": request.param} if isinstance(request.param, str) else request.param
@@ -74,9 +75,19 @@ def harness(request) -> HarnessConfig:
 
 
 def pytest_configure(config) -> None:
+    """Self-launching tool servers run `python -m <module>` in a fresh subprocess, which
+    inherits `PYTHONPATH` but not pytest's in-process `pythonpath`. Put the fixture dir on
+    `PYTHONPATH` so a fixture server module (e.g. `tool_response_image`)
+    resolves there too — an installed example package (e.g. `glossary`) already would."""
     config.addinivalue_line(
         "markers", "opencode: integration cells on the OpenCode harness"
     )
+    fixtures = str(Path(__file__).parent / "fixtures")
+    existing = os.environ.get("PYTHONPATH", "")
+    if fixtures not in existing.split(os.pathsep):
+        os.environ["PYTHONPATH"] = (
+            f"{fixtures}{os.pathsep}{existing}" if existing else fixtures
+        )
 
 
 def pytest_collection_modifyitems(config, items) -> None:

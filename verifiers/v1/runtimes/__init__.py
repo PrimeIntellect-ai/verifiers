@@ -10,6 +10,7 @@ from verifiers.v1.configs.runtime import (
     NetworkPolicyConfig,
     PrimeConfig,
     RuntimeConfig,
+    SubprocessConfig,
 )
 from verifiers.v1.runtimes.backends.custom import CustomRuntimeInfo, import_backend
 from verifiers.v1.runtimes.backends.docker import DockerBackend, DockerRuntimeInfo
@@ -17,6 +18,10 @@ from verifiers.v1.runtimes.backends.prime import (
     PrimeBackend,
     PrimeRuntimeInfo,
     set_base_sandbox_labels,
+)
+from verifiers.v1.runtimes.backends.subprocess import (
+    SubprocessBackend,
+    SubprocessRuntimeInfo,
 )
 from verifiers.v1.runtimes.base import (
     BaseRuntimeInfo,
@@ -28,7 +33,7 @@ from verifiers.v1.runtimes.base import (
 from verifiers.v1.runtimes.runtime import Runtime
 
 RuntimeInfo = Annotated[
-    DockerRuntimeInfo | PrimeRuntimeInfo | CustomRuntimeInfo,
+    SubprocessRuntimeInfo | DockerRuntimeInfo | PrimeRuntimeInfo | CustomRuntimeInfo,
     Field(discriminator="type"),
 ]
 
@@ -38,6 +43,7 @@ def backend_cls(config: RuntimeConfig) -> type[RuntimeBackend]:
     if isinstance(config, CustomRuntimeConfig):
         return import_backend(config.import_path)
     return {
+        "subprocess": SubprocessBackend,
         "docker": DockerBackend,
         "prime": PrimeBackend,
     }[config.type]
@@ -102,6 +108,9 @@ __all__ = [
     "RuntimeConfig",
     "RuntimeInfo",
     "RuntimeProcess",
+    "SubprocessBackend",
+    "SubprocessConfig",
+    "SubprocessRuntimeInfo",
     "backend_cls",
     "make_backend",
     "provision_backend",

@@ -165,8 +165,8 @@ class PrimeBackend(RuntimeBackend):
 
     @property
     def published_port(self) -> int:
-        # Any port can be exposed. The public URL reaches the sandbox's routed
-        # interface, so listeners bind that address or all interfaces.
+        # Any port can be exposed, but the public URL reaches only servers bound to
+        # 0.0.0.0, which `launch` arranges for a fixed published port.
         return SERVICE_PORT
 
     def bind(self, *, env: Mapping[str, str] | None = None) -> Runtime:

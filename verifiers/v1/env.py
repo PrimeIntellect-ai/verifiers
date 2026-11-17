@@ -30,7 +30,7 @@ from verifiers.v1.interception import (
     requires_tunnel,
 )
 from verifiers.v1.mcp import SharedToolServer, serve_shared
-from verifiers.v1.runtimes import runtime_is_local
+from verifiers.v1.runtimes import SubprocessConfig, runtime_is_local
 from verifiers.v1.task import Task
 from verifiers.v1.trace import Error, Trace, TraceTask
 from verifiers.v1.utils.format import format_time
@@ -131,6 +131,22 @@ class Env(ABC, Generic[ConfigT]):
             if key not in loaded:
                 loaded[key] = load_harness(cfg)
             self._harnesses[name] = loaded[key]
+        warned: set[str] = set()
+        for name, harness in self._harnesses.items():
+            # Warn once per distinct harness; tool-less chat loops are exempt.
+            if (
+                harness.EXECUTES_CODE
+                and isinstance(self._agent_specs[name].runtime, SubprocessConfig)
+                and harness.config.id not in warned
+            ):
+                warned.add(harness.config.id)
+                logger.warning(
+                    "Harness %r is running in the subprocess runtime on the local system. "
+                    "Local files and settings may affect the evaluation; use subprocess only "
+                    "for debugging. Use --env.<role>.runtime.type docker or prime "
+                    "for an isolated run.",
+                    harness.config.id,
+                )
         # Serving resources, live only inside `serving()`; the env's agents borrow them.
         self._shared_tools: dict[str, SharedToolServer] = {}
         self._interception: Interception | None = None

@@ -165,7 +165,7 @@ class RuntimeBackend(ABC):
 
     is_local: bool = False
     """Whether this runtime exchanges host-local URLs without a public tunnel, as
-    Docker does. Remote runtimes use a host `Tunnel` inward plus `expose`
+    subprocess and docker do. Remote runtimes use a host `Tunnel` inward plus `expose`
     outward."""
 
     SUPPORTS_TASK_IMAGES: ClassVar[bool] = False
@@ -192,7 +192,8 @@ class RuntimeBackend(ABC):
     """Whether the runtime can run a task's Docker Compose services."""
 
     scripts_dir: ClassVar[str] = "/tmp/vf-scripts"
-    """Digest-keyed PEP 723 scripts inside the runtime's filesystem."""
+    """Digest-keyed PEP 723 scripts inside the runtime. Sandboxes own their `/tmp`;
+    the host subprocess runtime overrides this with its per-user cache."""
 
     info: BaseRuntimeInfo
 
@@ -386,7 +387,8 @@ class RuntimeBackend(ABC):
         """A fixed port this runtime exposes to the outside at startup, declared up front to the
         provider (some forward only ports named at creation). When set, a server placed
         here binds it instead of a host-chosen free port, and `expose` returns its public URL.
-        `None` when a runtime can dynamically select and publish a free port."""
+        `None` for runtimes whose services already sit on host loopback (subprocess),
+        which pick a free port."""
         return None
 
     async def expose(self, port: int) -> str:

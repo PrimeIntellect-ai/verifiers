@@ -6,6 +6,7 @@ A `Runtime` provides command and file access inside a sandbox with immutable use
 
 Every runtime runs commands, reads and writes files, and starts background services. The runtimes differ in where they run and which features they support:
 
+- **`subprocess`** runs commands directly on the evaluator host, with full access to local files, processes, and networking. Use it for fast local debugging with lightweight harnesses such as `bash` or `null`.
 - **`docker`** runs each rollout in a local container. Use it for local testing of tasks that need an image or a container-only harness. CPU, memory, and GPU limits depend on the host; GPU pass-through requires the NVIDIA Container Toolkit.
 - **`prime`** runs each rollout in a remote Prime sandbox, built for high-concurrency evaluation and RL training. It uses your Prime Intellect credentials, and it is the only runtime that enforces hard `disk` limits.
 - **`custom`** loads a runtime from your own package. See [runtime plugins](#runtime-plugins).
@@ -17,7 +18,7 @@ Each runtime declares its features through its backend's class attributes, and n
 | Task image, container-only harnesses, isolated scoring | `SUPPORTS_TASK_IMAGES` | `docker`, `prime` |
 | Task network policy | config inherits `NetworkPolicyConfig` | `docker`, `prime` |
 | Task `agent_user` | `SUPPORTS_USER_SWITCHING` | `docker`, `prime` |
-| Tool server in its own runtime | `SUPPORTS_PORT_EXPOSURE` | `docker`, `prime` |
+| Tool server in its own runtime | `SUPPORTS_PORT_EXPOSURE` | `subprocess`, `docker`, `prime` |
 | Compose services | `SUPPORTS_COMPOSE` | `docker`, `prime` (subset below) |
 
 Runtime capabilities are orthogonal to agent harness capabilities like MCP tool support, image inputs, or conversation resumption; see [harnesses](harnesses.md) for harness features and [building environments](building-environments.md#separate-agent-and-grading-sandboxes) for running separate solver and grading sandboxes.

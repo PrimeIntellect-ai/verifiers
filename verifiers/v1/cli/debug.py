@@ -25,7 +25,7 @@ from verifiers.v1.cli.resolve import (
     with_positional_taskset,
 )
 from verifiers.v1.configs.cli.debug import DebugConfig
-from verifiers.v1.runtimes import ProgramResult, Runtime, backend_cls, make_backend
+from verifiers.v1.runtimes import ProgramResult, Runtime, make_backend
 from verifiers.v1.state import state_cls
 from verifiers.v1.task import Task
 from verifiers.v1.trace import AgentInfo, Error, Trace, TraceTask
@@ -39,7 +39,7 @@ logger = get_logger(__name__)
 
 USAGE = (
     "usage: uv run vf-debug [<taskset-id>] (--command <cmd> | --script-path <path>) "
-    "[--runtime.type docker] [options] [@ file.toml]\n"
+    "[--runtime.type subprocess] [options] [@ file.toml]\n"
     "       runs setup, then one command or uploaded host script, and saves traces"
 )
 
@@ -173,8 +173,9 @@ async def run_action(runtime: Runtime, config: DebugConfig) -> dict[str, Any]:
             **(await run_timed(runtime.run(["sh", "-lc", config.command], {}), config)),
         }
     assert config.script_path is not None
-    # Keep the script outside the task workdir so it doesn't appear in the repo
-    # state being inspected; the runtime name separates concurrent runs.
+    # /tmp keyed by the (run-unique) runtime name: outside the task workdir so the script
+    # doesn't show up in the repo state being inspected, and never shared between runs on
+    # the subprocess runtime, where an absolute path is a host path.
     remote_path = f"/tmp/{runtime.name}-script.sh"
     quoted = shlex.quote(remote_path)
     command = f"chmod +x {quoted} && {quoted}"
@@ -274,7 +275,7 @@ async def run_debug(config: DebugConfig) -> list[Trace]:
             f"{type(taskset).__name__} is infinite - bound the run with -n"
         )
     tasks = list(taskset)
-    if not backend_cls(config.runtime).SUPPORTS_TASK_IMAGES and any(
+    if isinstance(config.runtime, vf.SubprocessConfig) and any(
         type(t).NEEDS_CONTAINER or t.data.image for t in tasks
     ):
         raise SystemExit(
