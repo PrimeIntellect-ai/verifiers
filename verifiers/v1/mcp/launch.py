@@ -18,7 +18,7 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.errors import ToolsetError
 from verifiers.v1.interception.tunnel import PrimeTunnel
-from verifiers.v1.mcp.packages import built_package
+from verifiers.v1.mcp.packages import install_package
 from verifiers.v1.mcp.server import (
     STATE_ROUTE_PARAM,
     STATE_SIGNATURE_PARAM,
@@ -126,19 +126,9 @@ async def _install_in_sandbox(server: ServerBase, agent_runtime: Runtime) -> str
                     f"{(result.stderr or result.stdout).strip()[-2000:]}"
                 )
             for source in pending:
-                async with built_package(
+                await install_package(
                     runtime, Path(source), root, env, python=f"{venv}/bin/python"
-                ) as wheel:
-                    command = (
-                        'export PATH="$HOME/.local/bin:$PATH"; '
-                        f"uv pip install --python {venv_q} {shlex.quote(wheel)}"
-                    )
-                    result = await run_shielded(runtime.run(["sh", "-c", command], env))
-                    if result.exit_code != 0:
-                        raise ToolsetError(
-                            f"server {server.server_name!r} install failed in runtime: "
-                            f"{(result.stderr or result.stdout).strip()[-2000:]}"
-                        )
+                )
                 runtime.backend.cache.mcp_sources.add(source)
         if agent_runtime.user is not None:
             # Root's uv lives in its home; copy it into the venv, open to the agent.
