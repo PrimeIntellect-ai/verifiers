@@ -3,9 +3,7 @@ cell is skipped.
 
 Each behavior module fixes one task and fans it over `grid(...)`: every bundled harness
 on Prime, the production runtime. The basic single- and multi-turn behaviors also run
-on the host (`DEBUG_RUNTIMES`), which needs no container. Docker cells run on the CI
-runner itself and make the jobs too slow, so the Docker runtime is covered by
-`tests/unit/test_runtimes.py` instead. Every reason a cell cannot run derives
+on Docker (`DEBUG_RUNTIMES`) for local coverage. Every reason a cell cannot run derives
 from a capability the code declares, never from a list of names, so the grid follows
 the code.
 
@@ -23,7 +21,7 @@ Every cell carries its axes' marks, so `-m` selects subsets:
     uv run pytest tests/integration -n 8 -m "prime and codex"
     uv run pytest tests/integration -n 8 -m prime
 
-`terminus-2` (drives the host tmux) and `browser-use` (needs its Playwright image, which
+`terminus-2` (requires tmux) and `browser-use` (needs its Playwright image, which
 prime cannot pull) stay outside the grid.
 """
 
@@ -55,7 +53,7 @@ HARNESSES: list[str | dict] = [
     "mini-swe-agent",
     "prime-agent",
 ]
-DEBUG_RUNTIMES = ("subprocess",)
+DEBUG_RUNTIMES = ("docker",)
 RUNTIMES = (*DEBUG_RUNTIMES, "prime")
 
 # The runtime features a behavior can need, as `needs` names them.
@@ -278,15 +276,15 @@ def skip_harness(cells: list, harness: str, reason: str) -> list:
 
 def placements(
     harness_runtimes: tuple[str, ...] = ("prime",),
-    tool_runtimes: tuple[str, ...] = ("subprocess", "prime"),
+    tool_runtimes: tuple[str, ...] = ("docker", "prime"),
     *,
     shared: bool = False,
 ) -> list:
     """`(harness_runtime, tool_runtime)` cells for a tool server placed in a native
     service VM beside the harness (`service`), or in its own runtime
     (on Prime beside a Prime harness, a VM on the rollout's private network). A
-    `subprocess` tool runtime is a server on the host, reached from the sandbox through
-    the tunnel. A `shared` server runs once per eval, so it joins no rollout's network."""
+    Docker tool runtime is a local server reached from the sandbox through the tunnel.
+    A `shared` server runs once per eval, so it joins no rollout's network."""
     cells = []
     for harness_runtime in harness_runtimes:
         for tool_runtime in tool_runtimes:

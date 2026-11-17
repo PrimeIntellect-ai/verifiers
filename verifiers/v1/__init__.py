@@ -47,7 +47,6 @@ if TYPE_CHECKING:
         PrimeConfig,
         PrimeVolume,
         RuntimeConfig,
-        SubprocessConfig,
     )
     from verifiers.v1.configs.sampling import Sampling, SamplingConfig
     from verifiers.v1.configs.scoring import ScoringConfig
@@ -305,7 +304,6 @@ _NAME_TO_MODULE = {
     "State": "verifiers.v1.state",
     "StateT": "verifiers.v1.state",
     "StopFunctionConfig": "verifiers.v1.configs.task",
-    "SubprocessConfig": "verifiers.v1.configs.runtime",
     "SystemMessage": "verifiers.v1.types",
     "TRACE_VERSION": "verifiers.v1.trace",
     "Task": "verifiers.v1.task",
@@ -496,7 +494,6 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "RuntimeConfig",
     "RuntimeInfo",
     "ProgramResult",
-    "SubprocessConfig",
     "DockerConfig",
     "BindMount",
     "CustomRuntimeConfig",
