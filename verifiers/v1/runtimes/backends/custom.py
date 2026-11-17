@@ -7,12 +7,10 @@ provider can be used without upstreaming it.
     region = "us-east-1"
 
 The backend sets `config_class` to its own `CustomRuntimeConfig` subclass, which
-validates every field next to `import_path` and inherits the `SandboxConfig` fields
-every runtime honors. The backend implements the full `RuntimeBackend` baseline, as
-the built-in runtimes do; `is_local` and `SUPPORTS_DISK_LIMIT` declare its locality and
-disk enforcement, and a config that inherits `NetworkPolicyConfig` enforces task network
-policies. The framework refuses an undeclared network policy or disk limit before
-provisioning."""
+validates every field next to `import_path`. The backend's `SUPPORTS_*` flags and
+`is_local` declare its features, as for the built-in runtimes; a config that inherits
+`NetworkPolicyConfig` enforces task network policies. The framework refuses features
+a runtime does not declare before provisioning."""
 
 import importlib
 from typing import Literal
@@ -50,7 +48,14 @@ def import_backend(import_path: str) -> type[RuntimeBackend]:
             f"custom runtime {import_path!r} must be a RuntimeBackend subclass, "
             f"not {backend!r}"
         )
-    plugin_config_class(backend)
+    config_class = plugin_config_class(backend)
+    if backend.SUPPORTS_TASK_IMAGES or backend.SUPPORTS_COMPOSE:
+        missing = {"image", "workdir"} - config_class.model_fields.keys()
+        if missing:
+            raise TypeError(
+                f"custom runtime {import_path!r} runs task images, so its config_class "
+                f"must declare {sorted(missing)}"
+            )
     return backend
 
 

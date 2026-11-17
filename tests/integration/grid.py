@@ -3,7 +3,9 @@ cell is skipped.
 
 Each behavior module fixes one task and fans it over `grid(...)`: every bundled harness
 on Prime, the production runtime. The basic single- and multi-turn behaviors also run
-on Docker (`DEBUG_RUNTIMES`) for local coverage. Every reason a cell cannot run derives
+on the host (`DEBUG_RUNTIMES`), which needs no container. Docker cells run on the CI
+runner itself and make the jobs too slow, so the Docker runtime is covered by
+`tests/unit/test_runtimes.py` instead. Every reason a cell cannot run derives
 from a capability the code declares, never from a list of names, so the grid follows
 the code.
 
@@ -11,18 +13,17 @@ A harness without a capability the behavior needs is collected as a skip with it
 reason (`Harness.EXECUTES_CODE`, `SUPPORTS_MCP`, `SUPPORTS_SKILLS`,
 `SUPPORTS_SPLIT_EXECUTION`, resume support via `SUPPORTS_RESUME` or a native session).
 
-Every runtime provides the sandbox baseline (task images, other users, port exposure).
-A runtime without a feature beyond it that the behavior needs (a `NetworkPolicyConfig`
-for a network policy, a Prime workspace for native service VMs) skips the cell the same
-way. That a runtime refuses an undeclared network policy, with a message naming it, is
-tested in `tests/unit/test_runtimes.py`.
+A runtime without a feature the behavior needs (`RuntimeBackend.SUPPORTS_*`, or a
+`NetworkPolicyConfig` for a network policy) skips the cell the same way. That a runtime
+refuses an undeclared feature, with a message naming it, is tested in
+`tests/unit/test_runtimes.py`.
 
 Every cell carries its axes' marks, so `-m` selects subsets:
 
     uv run pytest tests/integration -n 8 -m "prime and codex"
     uv run pytest tests/integration -n 8 -m prime
 
-`terminus-2` (requires tmux) and `browser-use` (needs its Playwright image, which
+`terminus-2` (drives the host tmux) and `browser-use` (needs its Playwright image, which
 prime cannot pull) stay outside the grid.
 """
 
@@ -54,12 +55,16 @@ HARNESSES: list[str | dict] = [
     "mini-swe-agent",
     "prime-agent",
 ]
-DEBUG_RUNTIMES = ("docker",)
+DEBUG_RUNTIMES = ("subprocess",)
 RUNTIMES = (*DEBUG_RUNTIMES, "prime")
 
 # The runtime features a behavior can need, as `needs` names them.
 RUNTIME_FEATURES = {
+    "container": "task images",
+    "user": "running as another user",
     "network": "network policies",
+    "expose": "port exposure",
+    "compose": "Compose services",
     "services": "native service VMs",
     "split": "split deployment",
 }
@@ -113,10 +118,11 @@ def mark(name: str) -> pytest.MarkDecorator:
     return getattr(pytest.mark, name.replace("-", "_"))
 
 
-def runtime_config(runtime: str) -> dict:
+def runtime_config(runtime: str, harness: str | dict | None = None) -> dict:
     config: dict = {"type": runtime}
+    program = harness is not None and harness_class(harness_id(harness)).NEEDS_CONTAINER
     # Prime's default 1 CPU / 2 GB is too small to install and run an agent CLI.
-    if runtime == "prime":
+    if runtime == "prime" and program:
         config.update(cpu=2.0, memory=4.0)
     return config
 
@@ -128,14 +134,22 @@ def runtime_cls(runtime: str) -> type:
 
 
 def supports(runtime: str, feature: str) -> bool:
-    """Whether the runtime declares `feature`: a config that inherits
-    `NetworkPolicyConfig` for a network policy, a Prime workspace for service VMs."""
+    """Whether the runtime declares `feature`: a backend flag, or, for a network policy,
+    a config that inherits `NetworkPolicyConfig`."""
     if feature == "network":
         config = TypeAdapter(RuntimeConfig).validate_python(runtime_config(runtime))
         return isinstance(config, NetworkPolicyConfig)
     if feature == "split":
         return runtime in ("docker", "prime")
-    return issubclass(runtime_cls(runtime), PrimeBackend)
+    if feature == "services":
+        return issubclass(runtime_cls(runtime), PrimeBackend)
+    flag = {
+        "container": "SUPPORTS_TASK_IMAGES",
+        "user": "SUPPORTS_USER_SWITCHING",
+        "expose": "SUPPORTS_PORT_EXPOSURE",
+        "compose": "SUPPORTS_COMPOSE",
+    }[feature]
+    return getattr(runtime_cls(runtime), flag)
 
 
 def resumes(cls: type[Harness]) -> bool:
@@ -167,7 +181,8 @@ def unsupported(
         return f"{name} cannot resume an exchange"
     if "split" in needs and not cls.SUPPORTS_SPLIT_EXECUTION:
         return f"{name} does not support split deployment"
-    for feature in needs:
+    runtime_needs = (*(("container",) if cls.NEEDS_CONTAINER else ()), *needs)
+    for feature in runtime_needs:
         if feature in RUNTIME_FEATURES and not supports(runtime, feature):
             return f"{runtime} does not support {RUNTIME_FEATURES[feature]}"
     dialect = harness_config_type(name).model_fields["dialect"].default
@@ -214,7 +229,7 @@ def grid(
             cells.append(
                 pytest.param(
                     harness,
-                    runtime_config(runtime),
+                    runtime_config(runtime, harness),
                     marks=marks,
                     id=f"{harness_id(harness)}-in-{runtime}",
                 )
@@ -269,28 +284,26 @@ def skip_harness(cells: list, harness: str, reason: str) -> list:
 
 
 def placements(
-    harness_runtimes: tuple[str, ...] = ("docker", "prime"),
-    tool_runtimes: tuple[str, ...] = ("default", "prime"),
+    harness_runtimes: tuple[str, ...] = ("prime",),
+    tool_runtimes: tuple[str, ...] = ("subprocess", "prime"),
     *,
     shared: bool = False,
 ) -> list:
     """`(harness_runtime, tool_runtime)` cells for a tool server placed in a native
-    service VM beside the harness (`service`), or in a runtime of its own: by
-    `default` one from the harness's provider (a Docker container beside a Docker
-    harness, on Prime beside a Prime harness a VM on the rollout's private network),
-    or an explicit one by type. A `shared` server runs once per eval, so it joins no
-    rollout's network. A local tool runtime cannot serve a remote harness."""
+    service VM beside the harness (`service`), or in its own runtime
+    (on Prime beside a Prime harness, a VM on the rollout's private network). A
+    `subprocess` tool runtime is a server on the host, reached from the sandbox through
+    the tunnel. A `shared` server runs once per eval, so it joins no rollout's network."""
     cells = []
     for harness_runtime in harness_runtimes:
         for tool_runtime in tool_runtimes:
-            marks = [mark(harness_runtime)]
-            if tool_runtime != "default":
-                marks.append(mark(tool_runtime))
+            marks = [mark(harness_runtime), mark(tool_runtime)]
             reason = None
             if tool_runtime == "service":
                 reason = unsupported("null", harness_runtime, ("services",))
-            elif tool_runtime == "docker" and harness_runtime != "docker":
-                reason = "a remote harness cannot reach a local tool server"
+            # Beside a Prime harness, a rollout's Prime server joins its private network.
+            elif shared or tool_runtime != "prime" or harness_runtime != "prime":
+                reason = unsupported("null", tool_runtime, ("expose",))
             if reason:
                 marks.append(pytest.mark.skip(reason=reason))
             cells.append(

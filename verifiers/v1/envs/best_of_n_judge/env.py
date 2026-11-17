@@ -25,6 +25,7 @@ from verifiers.v1.envs.agentic_judge.env import (
     TextSource,
 )
 from verifiers.v1.envs.best_of_n import BestOfNEnv, BestOfNEnvConfig
+from verifiers.v1.runtimes import backend_cls
 from verifiers.v1.utils.artifacts import _validate_restore
 
 ATTEMPTS_DIR = "/tmp/attempts"
@@ -119,7 +120,9 @@ class Ranking(BaseModel):
 class RankTask(vf.Task):
     """One judge's ranking task: every attempt's record and artifacts uploaded
     under its label before the judge starts, the ranking scraped off the box after
-    it exits."""
+    it exits. `NEEDS_CONTAINER`: the judge executes code, never on the host."""
+
+    NEEDS_CONTAINER = True
 
     def __init__(self, data: vf.TaskData, labels: dict[str, vf.Trace]) -> None:
         super().__init__(data)
@@ -243,15 +246,23 @@ class BestOfNJudgeEnv(BestOfNEnv, vf.Env[BestOfNJudgeEnvConfig]):
                 "best-of-n-judge requires a judge harness that can execute code, but "
                 f"harness {judge.config.id!r} is a tool-less chat loop"
             )
+        if not backend_cls(config.judge.runtime).SUPPORTS_TASK_IMAGES:
+            raise ValueError(
+                "best-of-n-judge requires a container judge runtime: "
+                "--env.judge.runtime.type docker|prime"
+            )
 
     async def setup(self, agents: vf.Agents) -> None:
         # The judges grade the policy; their tokens are never training data.
         agents.judge.trainable = False
 
     async def run(self, task: vf.Task, agents: vf.Agents) -> None:
+        # Artifacts need a runtime with its own filesystem; a subprocess attempt
+        # is ranked on its trace alone.
+        collect = backend_cls(self.config.agent.runtime).SUPPORTS_TASK_IMAGES
         async with asyncio.TaskGroup() as tg:
             runs = [
-                tg.create_task(agents.agent.run(task, collect_artifacts=True))
+                tg.create_task(agents.agent.run(task, collect_artifacts=collect))
                 for _ in range(self.config.n)
             ]
         attempts = [run.result() for run in runs]

@@ -4,20 +4,22 @@ A `Runtime` provides command and file access inside a sandbox with immutable use
 
 ## Capabilities
 
-Every runtime is a sandbox: it boots the task image in its own filesystem, runs commands as other existing users, enforces memory limits, publishes a port for servers hosted in it, and confirms its own teardown. The runtimes differ in where they run and in a few features beyond that baseline:
+Every runtime runs commands, reads and writes files, and starts background services. The runtimes differ in where they run and which features they support:
 
-- **`docker`** runs each rollout in a local container. Use it for local testing. CPU, memory, and GPU limits depend on the host; GPU pass-through requires the NVIDIA Container Toolkit.
+- **`subprocess`** runs commands directly on the evaluator host, with full access to local files, processes, and networking. Use it for fast local debugging with lightweight harnesses such as `bash` or `null`.
+- **`docker`** runs each rollout in a local container. Use it for local testing of tasks that need an image or a container-only harness. CPU, memory, and GPU limits depend on the host; GPU pass-through requires the NVIDIA Container Toolkit.
 - **`prime`** runs each rollout in a remote Prime sandbox, built for high-concurrency evaluation and RL training. It uses your Prime Intellect credentials, and it is the only runtime that enforces hard `disk` limits.
 - **`custom`** loads a runtime from your own package. See [runtime plugins](#runtime-plugins).
 
-Before it provisions anything, the framework refuses a run that needs a feature beyond the baseline that the runtime does not provide. The error names the runtime and the missing feature.
+Each runtime declares its features through its backend's class attributes, and network policy support through its config. Before it provisions anything, the framework refuses a run that needs a feature the runtime does not declare. The error names the runtime and the missing feature.
 
-| Feature | Provided by | Built-in runtimes |
+| Feature | Declared by | Built-in runtimes |
 | --- | --- | --- |
+| Task image, container-only harnesses, isolated scoring | `SUPPORTS_TASK_IMAGES` | `docker`, `prime` |
 | Task network policy | config inherits `NetworkPolicyConfig` | `docker`, `prime` |
-| Hard disk limit, submission execution | `SUPPORTS_DISK_LIMIT` | `prime` |
-| Compose services | built-in runtime | `docker`, `prime` (subset below) |
-| Native service VMs | built-in runtime | `prime` |
+| Task `agent_user` | `SUPPORTS_USER_SWITCHING` | `docker`, `prime` |
+| Tool server in its own runtime | `SUPPORTS_PORT_EXPOSURE` | `subprocess`, `docker`, `prime` |
+| Compose services | `SUPPORTS_COMPOSE` | `docker`, `prime` (subset below) |
 
 Runtime capabilities are orthogonal to agent harness capabilities like MCP tool support, image inputs, or conversation resumption; see [harnesses](harnesses.md) for harness features and [building environments](building-environments.md#separate-agent-and-grading-sandboxes) for running separate solver and grading sandboxes.
 
@@ -103,7 +105,7 @@ async def correct(self, runtime: vf.Runtime) -> float:
     return float(json.loads(result.stdout)["score"])
 ```
 
-Calling `prepare_uv_script` during `stage_verifier` (or during `setup` for a public checker that runs inside the solver sandbox) installs the script's PEP 723 dependencies before execution-time network restrictions lock down the container. Passing the identical script bytes to `run_uv_script` during scoring then reuses the prepared interpreter offline. Whenever your grader imports or executes code written by the agent, run it inside the sandbox through `runtime.run` rather than in a Python hook on the evaluator. Have the grader script exit `0` and emit a `0.0` score when the submission is wrong or crashes, and reserve nonzero exit codes (raising in `@vf.reward`) for failures that prevented a valid grade from being computed.
+Calling `prepare_uv_script` during `stage_verifier` (or during `setup` for a public checker that runs inside the solver sandbox) installs the script's PEP 723 dependencies before execution-time network restrictions lock down the container. Passing the identical script bytes to `run_uv_script` during scoring then reuses the prepared interpreter offline. Whenever your grader imports or executes code written by the agent, run it inside a container (`NEEDS_CONTAINER = True`) rather than in a Python hook on the evaluator. Have the grader script exit `0` and emit a `0.0` score when the submission is wrong or crashes, and reserve nonzero exit codes (raising in `@vf.reward`) for failures that prevented a valid grade from being computed.
 
 ## Runtime plugins
 
@@ -119,22 +121,28 @@ region = "us-east-1"
 ```
 
 The backend sets `config_class` to its own `CustomRuntimeConfig` subclass. That class
-validates every field next to `import_path` when the config loads, and inherits the
-`SandboxConfig` fields every runtime honors (`image`, `workdir`, `cpu`, `memory`, `gpu`,
-`disk`). The framework constructs the backend as `MyBackend(config, name)` with the
-validated config, like the built-in backends. A config that also inherits
-`NetworkPolicyConfig` enforces task network policies:
+validates every field next to `import_path` when the config loads. The framework
+constructs the backend as `MyBackend(config, name)` with the validated config, like
+the built-in backends. A backend with `SUPPORTS_TASK_IMAGES` declares `image` and `workdir`
+fields, and a config that inherits `NetworkPolicyConfig` enforces task network
+policies:
 
 ```python
+from typing import ClassVar
+
 from verifiers.v1.runtimes import CustomRuntimeConfig, CustomRuntimeInfo, RuntimeBackend
 
 
 class MyConfig(CustomRuntimeConfig):
     region: str
+    image: str = "python:3.11-slim"
+    workdir: str | None = None
 
 
 class MyBackend(RuntimeBackend):
     config_class = MyConfig
+    is_local: ClassVar[bool] = False
+    SUPPORTS_TASK_IMAGES: ClassVar[bool] = True
 
     def __init__(self, config: MyConfig, name: str | None = None) -> None:
         super().__init__(name)
@@ -142,10 +150,8 @@ class MyBackend(RuntimeBackend):
         self.info = CustomRuntimeInfo(**config.model_dump())
 ```
 
-A backend implements this contract, including the sandbox baseline: it boots
-`config.image`, runs commands as `runtime.user`, and enforces `config.memory`.
-`Runtime` views add user and environment bindings and the uv-script helpers on top of
-it:
+A backend implements this contract; `Runtime` views add user and environment
+bindings and the uv-script helpers on top of it:
 
 | Method | Required | Purpose |
 | --- | --- | --- |
@@ -156,20 +162,19 @@ it:
 | `run(runtime, argv, env)` | no | Run to completion. The default drains an `exec`. |
 | `run_background(runtime, argv, env, log)` | no | Start a long-lived process with its output in `log`. The default keeps an `exec` open for the process's life; override it when the provider runs detached jobs. |
 | `read(runtime, path, max_bytes)` | no | Read a file. The default reads through `run`. |
-| `expose(port)` | yes | Publish `SERVICE_PORT` (8000) to a URL outside the runtime. |
-| `verify_stopped()` | yes | Confirm the resource was terminated after `stop`, or raise. |
+| `expose(port)` | with `SUPPORTS_PORT_EXPOSURE` | Publish a port to a URL outside the runtime. |
 | `prepare_execution(routes, network)` | with `NetworkPolicyConfig` | Apply the network policy, or `network` in its place, before the agent starts; `None` routes reopen the network. |
 | `host_url(url)` | no | Rewrite a host URL for programs inside the runtime. |
 
 Install the plugin's package in every process that loads the config, because
-validation imports the backend. `is_local` and `SUPPORTS_DISK_LIMIT` default to off.
+validation imports the backend. The capability flags and `is_local` default to off.
 `tests/unit/test_runtimes.py` has a complete example.
 
 ### Checking a runtime
 
-`tests/unit/test_runtimes.py` tests the backend contract and every runtime feature. The
-baseline must work, and a network policy the config does not declare must be refused
-before anything is provisioned. Pass your plugin's config with `--runtime` to
+`tests/unit/test_runtimes.py` tests the backend contract and every runtime feature. A
+feature the runtime declares must work, and a feature it does not declare must be
+refused before anything is provisioned. Pass your plugin's config with `--runtime` to
 run the tests against it. Run them before you use the plugin, and after you change it:
 
 ```bash
@@ -184,7 +189,7 @@ expect `sh` and Python 3 in the runtime's default image.
 
 A `Deployment` coordinates all execution resources for a single rollout attempt: provisioning, placement, connectivity, and cleanup of the harness environment, the task workspace, supporting sidecar services, and fresh verification targets.
 
-The **workspace** (`deployment.workspace`) is the `Runtime` where task commands run and task files live; setting `agent.deployment.mode = "colocated"` places the harness inside that same workspace. Toolsets run in runtimes of their own (from the harness's provider by default) or named task services.
+The **workspace** (`deployment.workspace`) is the `Runtime` where task commands run and task files live; setting `agent.deployment.mode = "colocated"` places the harness inside that same workspace. Toolsets run in their own runtimes or named task services.
 
 Setting `agent.deployment.mode = "split"` on Docker or Prime provisions a separate sandbox for the harness. All built-in harnesses support core split execution. Task setup, tools, finalization, artifacts, and scoring use the workspace; the model loop and interception credential stay in the harness sandbox. The workspace keeps the task's network rules with framework control endpoints excluded. Traces record both `agent.runtime` and `agent.harness_runtime`.
 
@@ -262,7 +267,7 @@ The Prime subset requires a workspace named `main` and project-scoped networks, 
 
 Task and runtime disk settings apply only to `main`. Set a service's `storage_opt: {size: "20G"}` to request its own VM disk size; other storage driver options are rejected. Sizes use Docker's binary units (`G`, `GB`, and `GiB` all mean 1024³ bytes); a number without a suffix is bytes. A non-default disk setting on `main` takes precedence over its Compose size. Sidecars otherwise use the 5 GB default, and Compose sizes never reduce that default. Every disk is also large enough for its image plus room to write. These are total disk sizes per VM, not a shared allocation or extra writable space.
 
-A tool server beside a Prime harness runs on a Prime VM of its own by default. To give it an image or egress policy of its own, set its `ToolsetConfig.runtime` to a Prime runtime, such as `vf.PrimeConfig(image="example/tools:1", allow=["*"])` for a server that calls public APIs beside an offline workspace, or `allow=[]` for one that runs agent-submitted code with no egress at all. Beside a Prime workspace without a task service spec, the server's VM boots with the workspace and joins it over a LAN network of the rollout's own, on which the workspace's VM may open connections to the server and nothing may open one to the workspace; the harness reaches the server at its VM's LAN name (`<sandbox-id>.sandbox.internal`), and `deployment.target(name)` gives task hooks the server's VM. The VM's policy applies when the workspace's does, after setup. Elsewhere such a server keeps its runtime's published port, which takes no network policy. On Prime, the published port is a public HTTPS URL (`https://<port>-<sandbox-id>.sandbox-v2-prod.pinfra.io`) without authentication.
+A tool server can also run on a Prime VM of its own, under an egress policy of its own: set its `ToolsetConfig.runtime` to a Prime runtime, such as `vf.PrimeConfig(image="example/tools:1", allow=["*"])` for a server that calls public APIs beside an offline workspace, or `allow=[]` for one that runs agent-submitted code with no egress at all. Beside a Prime workspace without a task service spec, the server's VM boots with the workspace and joins it over a LAN network of the rollout's own, on which the workspace's VM may open connections to the server and nothing may open one to the workspace; the harness reaches the server at its VM's LAN name (`<sandbox-id>.sandbox.internal`), and `deployment.target(name)` gives task hooks the server's VM. The VM's policy applies when the workspace's does, after setup. Elsewhere such a server keeps its runtime's published port, which takes no network policy. On Prime, the published port is a public HTTPS URL (`https://<port>-<sandbox-id>.sandbox-v2-prod.pinfra.io`) without authentication.
 
 To validate an isolated task without calling a model, finalize the submission, collect its artifacts, and call `vf.grade_submission(task, trace, runtime)`. This runs the task's normal grader, verifier image, timeouts, and retries in a fresh verification target without taking ownership of the supplied solver runtime. As in a rollout, the verifier derives from the agent's runtime config on the trace (`trace.agent.config.runtime`), not from the solver's resolved config, so the solver task's requirements, such as its network policy, don't carry over. Inside `Task.validate`, request `trace` by name for vf-validate's trace, which records its runtime config.
 

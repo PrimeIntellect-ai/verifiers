@@ -63,6 +63,7 @@ class BrowserUseHarness(Harness[BrowserUseHarnessConfig]):
     SUPPORTS_TOOL_INTERCEPTION = True
     SUPPORTS_SPLIT_EXECUTION = True
     # The browser tool executes model-authored Python through a third-party daemon.
+    NEEDS_CONTAINER = True
 
     async def setup(self, runtime: Runtime) -> None:
         await runtime.prepare_uv_script(PROGRAM_SOURCE, self.config.resolved_env)

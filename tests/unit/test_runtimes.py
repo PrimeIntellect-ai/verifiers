@@ -1,10 +1,7 @@
-"""Runtimes: the backend contract, against each runtime. Every runtime boots task
-images, runs commands as other users, publishes `SERVICE_PORT`, and confirms teardown.
-A runtime whose config does not inherit `NetworkPolicyConfig` must refuse a network
-policy before anything is provisioned, with a message that names the runtime. A custom
-runtime plugin loads from its import path and passes the same tests. The `plugin` cell
-is a host-process test double: it covers plugin loading and the base class's default
-`run` and `read`, and skips the sandbox features it cannot provide.
+"""Runtimes: the backend contract and every runtime feature, against each runtime. A
+runtime that declares a feature must run it. A runtime that does not must refuse it
+before anything is provisioned, with a message that names the runtime. A custom runtime
+plugin loads from its import path and passes the same tests.
 
 To check a custom runtime plugin, or any other runtime config, pass it with `--runtime`:
 
@@ -22,12 +19,14 @@ import os
 import re
 import shutil
 import signal
+import socket
 import subprocess
 import tempfile
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from functools import cache
 from pathlib import Path
 from types import SimpleNamespace
+from typing import ClassVar
 
 import aiohttp
 import pytest
@@ -35,7 +34,9 @@ from pydantic import TypeAdapter, ValidationError
 
 import verifiers.v1 as vf
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
-from verifiers.v1.errors import SandboxError
+from verifiers.v1.errors import SandboxError, ToolsetError
+from verifiers.v1.mcp import launch
+from verifiers.v1.mcp.toolset import ToolsetConfig
 from verifiers.v1.runtimes import (
     CustomRuntimeConfig,
     CustomRuntimeInfo,
@@ -47,13 +48,19 @@ from verifiers.v1.runtimes import (
     make_backend,
     provision_runtime,
 )
-from verifiers.v1.runtimes.backends.cli import signal_process
-from verifiers.v1.runtimes.base import SERVICE_PORT
+from verifiers.v1.runtimes.backends.subprocess import signal_process
 from verifiers.v1.runtimes.compose import ComposeSpec, compose_services
 from verifiers.v1.runtimes.strategies import _deployment_strategy
 from verifiers.v1.utils.compile import resolve_runtime_config
 
-RUNTIMES = ["docker", "prime", "plugin"]
+RUNTIMES = ["subprocess", "docker", "prime", "plugin"]
+SUPPORTED = {
+    "task_images": {"docker", "prime"},
+    "user_switching": {"docker", "prime"},
+    "port_exposure": {"subprocess", "docker", "prime"},
+    "compose": {"docker", "prime"},
+    "network_policies": {"docker", "prime"},
+}
 PYTHON = ["sh", "-c", 'exec "$(command -v python3 || command -v python)" "$@"', "py"]
 IMAGE = "python:3.12-alpine"
 TIMEOUT = 600
@@ -150,9 +157,18 @@ def task(**data) -> vf.Task:
     return vf.Task(data=vf.TaskData(idx=0, prompt=None, **data))
 
 
-def needs_sandbox(config: RuntimeConfig) -> None:
-    if isinstance(config, HostConfig):
-        pytest.skip("the host test plugin is not a sandbox")
+@pytest.mark.parametrize("name", ["subprocess", "docker", "prime"])
+def test_built_in_runtime_declares_its_features(name) -> None:
+    config = TypeAdapter(RuntimeConfig).validate_python({"type": name})
+    cls = backend_cls(config)
+    declared = {
+        "task_images": cls.SUPPORTS_TASK_IMAGES,
+        "user_switching": cls.SUPPORTS_USER_SWITCHING,
+        "port_exposure": cls.SUPPORTS_PORT_EXPOSURE,
+        "compose": cls.SUPPORTS_COMPOSE,
+        "network_policies": isinstance(config, NetworkPolicyConfig),
+    }
+    assert declared == {f: name in runtimes for f, runtimes in SUPPORTED.items()}
 
 
 async def test_run(runtime) -> None:
@@ -229,7 +245,10 @@ async def test_files(runtime) -> None:
 
 
 async def test_task_images(runtime) -> None:
-    needs_sandbox(runtime)
+    if not backend_cls(runtime).SUPPORTS_TASK_IMAGES:
+        with refused(runtime, ValueError, "cannot run images"):
+            resolve_runtime_config(runtime, task(image=IMAGE))
+        return
     # Prime builds a VM image on an image's first use; use one it has cached.
     image = "python:3.11-slim" if runtime.type == "prime" else IMAGE
     async with provisioned(runtime, image=image) as view:
@@ -239,16 +258,35 @@ async def test_task_images(runtime) -> None:
 
 
 async def test_user_switching(runtime) -> None:
-    needs_sandbox(runtime)
+    if not backend_cls(runtime).SUPPORTS_USER_SWITCHING:
+        with refused(runtime, ValueError, "cannot run as another user"):
+            resolve_runtime_config(runtime, task(agent_user="nobody"))
+        return
     async with provisioned(runtime) as view:
         result = await view.with_user("nobody").run(["id", "-un"], {})
         assert result.stdout.strip() == "nobody", result
 
 
-async def test_port_exposure(runtime) -> None:
-    needs_sandbox(runtime)
+async def test_port_exposure(runtime, monkeypatch) -> None:
+    if not backend_cls(runtime).SUPPORTS_PORT_EXPOSURE:
+
+        def provision(*args, **kwargs):
+            raise AssertionError("an undeclared feature must be refused first")
+
+        monkeypatch.setattr(launch, "provision_backend", provision)
+        server = SimpleNamespace(
+            config=ToolsetConfig(runtime=runtime), server_name="tools"
+        )
+        with refused(runtime, ToolsetError, "cannot expose a port"):
+            async with launch.serve(server):
+                pass
+        return
     async with provisioned(runtime) as view:
-        port = SERVICE_PORT
+        port = view.published_port
+        if port is None:
+            with socket.socket() as probe:
+                probe.bind(("127.0.0.1", 0))
+                port = probe.getsockname()[1]
         await view.write("vf-www/index.html", b"exposed")
         await view.run_background(
             [*PYTHON, "-m", "http.server", str(port), "-d", "vf-www"], {}, "http.log"
@@ -268,8 +306,8 @@ async def test_port_exposure(runtime) -> None:
 
 
 async def test_compose(runtime, tmp_path) -> None:
-    if runtime.type == "custom":
-        backend = SimpleNamespace(type=runtime.type)
+    if not backend_cls(runtime).SUPPORTS_COMPOSE:
+        backend = SimpleNamespace(type=runtime.type, SUPPORTS_COMPOSE=False)
         with refused(runtime, ValueError, "cannot run Compose services"):
             _deployment_strategy(None, backend, ComposeSpec(directory="."))
         return
@@ -387,9 +425,8 @@ class HostConfig(CustomRuntimeConfig):
 
 
 class HostBackend(RuntimeBackend):
-    """A host-process test double for the plugin hooks: `start`, `exec`, `write`,
-    `expose`, `verify_stopped`, and `cleanup`. `run` and `read` come from the base
-    class. It is not a sandbox, so the sandbox feature tests skip it."""
+    """A minimal plugin: `start`, `exec`, `write`, and `cleanup`. `run` and `read`
+    come from the base class."""
 
     config_class = HostConfig
 
@@ -427,13 +464,6 @@ class HostBackend(RuntimeBackend):
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(data)
 
-    async def expose(self, port: int) -> str:
-        return f"http://127.0.0.1:{port}"
-
-    async def verify_stopped(self) -> None:
-        if self.root is not None and self.root.exists():
-            raise SandboxError(f"runtime {self.name!r} still holds {self.root}")
-
     def cleanup(self) -> None:
         if self.root is not None:
             shutil.rmtree(self.root, ignore_errors=True)
@@ -441,6 +471,10 @@ class HostBackend(RuntimeBackend):
 
 class UntypedBackend(HostBackend):
     config_class = dict
+
+
+class ImagelessBackend(HostBackend):
+    SUPPORTS_TASK_IMAGES: ClassVar[bool] = True
 
 
 NOT_A_BACKEND = object()
@@ -488,6 +522,11 @@ def test_custom_runtime_validates_its_typed_config() -> None:
         (f"{__name__}.Missing", ValueError, "cannot import custom runtime"),
         (f"{__name__}.NOT_A_BACKEND", TypeError, "must be a RuntimeBackend subclass"),
         (f"{__name__}.UntypedBackend", TypeError, "must set config_class"),
+        (
+            f"{__name__}.ImagelessBackend",
+            TypeError,
+            r"must declare \['image', 'workdir'\]",
+        ),
     ],
 )
 def test_custom_runtime_rejects_a_bad_import_path(import_path, error, match) -> None:

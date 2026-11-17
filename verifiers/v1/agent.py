@@ -38,6 +38,7 @@ from verifiers.v1.rollout import Rollout, RolloutTimeouts
 from verifiers.v1.runtimes import (
     Runtime,
     RuntimeConfig,
+    backend_cls,
     provision_backend,
     runtime_is_local,
 )
@@ -95,6 +96,16 @@ def resolve_rollout_timeouts(timeout: TimeoutConfig, task: Task) -> RolloutTimeo
     )
 
 
+def _check_artifact_runtime(runtime_config: RuntimeConfig) -> None:
+    """Artifact collection reads the task's paths out of the box, so the box needs a
+    filesystem of its own."""
+    if not backend_cls(runtime_config).SUPPORTS_TASK_IMAGES:
+        raise TypeError(
+            "artifact collection requires a runtime with its own filesystem; the "
+            f"{runtime_config.type} runtime cannot run images"
+        )
+
+
 def _check_borrowed_placement(
     task: Task, runtime: Runtime, base_config: RuntimeConfig
 ) -> None:
@@ -135,7 +146,13 @@ def _check_borrowed_placement(
             )
     if task.data.image is None:
         return
-    box_image = runtime.config.image
+    if not runtime.backend.SUPPORTS_TASK_IMAGES:
+        raise TypeError(
+            f"task {task.data.idx!r} requires image {task.data.image!r}, but the "
+            f"borrowed {runtime.type} runtime cannot run images; borrow a container "
+            "box (e.g. agent.provision(task)) or drop the task's image"
+        )
+    box_image = getattr(runtime.config, "image", None)
     if box_image != task.data.image:
         logger.warning(
             "Running task %s in borrowed box %s on its image - the task requires %s "
@@ -592,6 +609,7 @@ class Agent:
         self.trainable: bool = True
         self._entered = False
         self._server: InterceptionServer | None = None
+        self._warned_resources: set[tuple[str, str]] = set()
 
     async def __aenter__(self) -> Self:
         if self._entered:
@@ -747,6 +765,8 @@ class Agent:
         attempt: int,
     ) -> Trace:
         params = self._rollout_params(task, runtime, dict(shared_tools or {}), route)
+        if collect_artifacts:
+            _check_artifact_runtime(params["runtime_config"])
         run = Rollout(
             task=task,
             on_trace=on_trace,
@@ -815,6 +835,8 @@ class Agent:
             params = self._rollout_params(
                 task, runtime, dict(tools or {}), route or ModelRoute(self.ctx)
             )
+            if collect_artifacts:
+                _check_artifact_runtime(params["runtime_config"])
             run = Rollout(
                 task=task,
                 has_user=True,
@@ -877,7 +899,9 @@ class Agent:
             runtime_config = runtime.config
             run_is_local = runtime.is_local
         else:
-            runtime_config = resolve_runtime_config(self.runtime_config, task)
+            runtime_config = resolve_runtime_config(
+                self.runtime_config, task, self._warned_resources
+            )
             run_is_local = runtime_is_local(runtime_config)
         validate_pairing(
             harness,
@@ -906,7 +930,7 @@ class Agent:
         if self.config.deployment.mode == "split":
             raise ValueError("split deployment cannot borrow a provisioned runtime")
         config = (
-            resolve_runtime_config(self.runtime_config, task)
+            resolve_runtime_config(self.runtime_config, task, self._warned_resources)
             if task is not None
             else self.runtime_config
         )
@@ -937,8 +961,11 @@ class _EpisodeAgent(Agent):
         completed: list[Trace],
         on_trace: Callable[[Trace], None] | None,
         on_discard: Callable[[Trace], None] | None,
+        warned_resources: set,
     ) -> None:
         super().__init__(config, interception=interception)
+        # Resource warnings dedupe env-wide, not per episode.
+        self._warned_resources = warned_resources
         self._name = name
         self._shared_tools = shared_tools
         self._task_cls = task_cls

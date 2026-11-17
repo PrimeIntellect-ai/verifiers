@@ -111,6 +111,8 @@ def test_ranking_must_cover_every_label_once(ranking, reasons) -> None:
 def test_construction_refuses_impossible_judges(tmp_path) -> None:
     with pytest.raises(ValueError, match="execute code"):
         make_env(judge={"harness": {"id": "null"}})
+    with pytest.raises(ValueError, match="container judge runtime"):
+        make_env(judge={"harness": {"id": "bash"}, "runtime": {"type": "subprocess"}})
     with pytest.raises(FileNotFoundError):
         make_env(task={"prompt": {"path": str(tmp_path / "missing.md")}})
     with pytest.raises(ValueError):

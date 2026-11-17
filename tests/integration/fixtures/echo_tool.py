@@ -3,8 +3,7 @@
 The v1 tool fixture for the integration grid. The task constructs an `EchoToolset`
 (`vf.Toolset`) in `Task.toolsets`, with one `@vf.tool` method whose placement is
 CLI-tunable (`--taskset.task.tools.service`, `--taskset.task.tools.runtime.type`): it
-runs in the task's native `tools` service VM, or in a runtime of its own (by default
-one from the harness's provider), and the
+runs in the task's native `tools` service VM or in its own runtime, and the
 harness must reach it wherever it lives. The tool stamps its output with a token the prompt
 never reveals, so the reward is 1.0 only if the model actually called the tool —
 trivial when the infra works, impossible when it doesn't. The tool is task-agnostic,

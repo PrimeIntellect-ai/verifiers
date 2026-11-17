@@ -63,7 +63,7 @@ ResultRow = dict[str, Any]
 
 USAGE = (
     "usage: uv run vf-validate [<taskset-id>] [--only-setup | --only-gold | --only-noop] "
-    "[-o <output-dir>] [--runtime.type docker] [options] [@ file.toml]\n"
+    "[-o <output-dir>] [--runtime.type subprocess] [options] [@ file.toml]\n"
     "       uv run vf-validate @ <run-dir>/configs/validate.json --resume   (re-run missing/errored/timed-out tasks)\n"
     "       runs persisted gold and noop (untouched scoring) checks per task (no agent)"
 )
@@ -448,6 +448,12 @@ async def run_validate(config: ValidateConfig) -> list[dict]:
             f"{type(taskset).__name__} is infinite - bound the run with -n"
         )
     tasks = list(taskset)
+    if isinstance(config.runtime, vf.SubprocessConfig) and any(
+        type(t).NEEDS_CONTAINER or t.data.image for t in tasks
+    ):
+        raise SystemExit(
+            "taskset needs a container runtime to validate - pass --runtime.type docker (or prime)"
+        )
     mode = validation_mode(config)
     checks = "gold+noop" if mode == "all" else mode
     out = output_path(config)

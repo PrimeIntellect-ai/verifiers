@@ -135,6 +135,8 @@ class ContextData(vf.TaskData):
 
 
 class ContextTask(vf.Task[ContextData]):
+    NEEDS_CONTAINER = True
+
     async def setup(self, runtime: vf.Runtime) -> None:
         await runtime.write("/workspace/context.txt", self.data.context.encode())
 
@@ -274,9 +276,9 @@ Tools defined on `Taskset.toolsets(config)` run in a server shared across a work
 
 A toolset's config controls where the MCP server runs:
 
-- **Default** — launches the server in a sandbox of its own from the harness's provider: a Docker container beside a Docker harness, a Prime VM beside a Prime one.
+- **Host subprocess (default)** — launches the server as a local subprocess with its own filesystem.
 - **`service = "<name>"`** (per-task toolsets on Prime) — runs the tool server inside a named native VM from the task's `ServicesSpec`. The harness reaches it over the rollout's private network by its LAN hostname.
-- **`runtime = { type = "prime", ... }`** — runs the tool server in a runtime of its own with that config, such as a different image, resources, or egress policy. A local (`docker`) runtime cannot serve a remote (`prime`) harness, so such a run is refused.
+- **`runtime = { type = "docker", ... }`** — runs the tool server in its own dedicated container.
 - **`url = "https://.../mcp"`** — connects to an already-running streamable-HTTP MCP server instead of launching one.
 
 A launched server has `timeout.startup` seconds (600 by default) to start serving. Raise it for a server that builds a large index in `setup()`, or set it to `None` to wait indefinitely.

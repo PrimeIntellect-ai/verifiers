@@ -117,7 +117,10 @@ HINT_SECTION = """\
 class JudgeTask(vf.Task):
     """The judge's verdict task: the solver task's world mirrored onto the minted
     row, the trace record written (and any stale verdict removed) before the
-    judge starts, verdict scraped off the live box after it exits."""
+    judge starts, verdict scraped off the live box after it exits. `NEEDS_CONTAINER`
+    keeps `Agent.run`'s per-task backstop aligned with the judge's declared need."""
+
+    NEEDS_CONTAINER = True
 
     def __init__(
         self,
@@ -272,8 +275,8 @@ class AgenticJudgeEnv(vf.Env[AgenticJudgeEnvConfig]):
         config.task.criteria()
 
     def _check_agents(self) -> None:
-        """Refuse an impossible judge at construction, not after burning a full
-        solver run."""
+        """The judge executes real code, never on the host — refuse an impossible
+        pairing at construction, not after burning a full solver run."""
         judge = self._harnesses["judge"]
         if not judge.EXECUTES_CODE:
             raise ValueError(
@@ -319,6 +322,8 @@ class AgenticJudgeEnv(vf.Env[AgenticJudgeEnvConfig]):
         workspace = (
             policy.runtime if policy.mode == "isolated" else None
         ) or self.config.solver.runtime
+        if isinstance(workspace, vf.SubprocessConfig):
+            raise TypeError("agentic judging requires a container scoring workspace")
         validate_pairing(self._harnesses["judge"], JudgeTask, workspace)
 
         async def judge(solution: vf.Trace, runtime: vf.Runtime) -> None:
