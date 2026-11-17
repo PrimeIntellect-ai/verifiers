@@ -877,11 +877,8 @@ class Agent:
                     "split deployment provisions the harness's VM per rollout; it "
                     "cannot run in a borrowed runtime"
                 )
-            if any(toolset.config.colocated for toolset in task.toolsets(task.config)):
-                raise ValueError(
-                    "split deployment does not support task tools colocated with the "
-                    "harness"
-                )
+            for toolset in task.toolsets(task.config):
+                toolset.validate_split_execution()
         if runtime is not None:
             _check_borrowed_placement(task, runtime, self.runtime_config)
             runtime_config = runtime.config

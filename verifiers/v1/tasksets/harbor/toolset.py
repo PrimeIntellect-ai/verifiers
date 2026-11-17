@@ -1,6 +1,9 @@
-"""Task-declared Harbor MCP tools served through the standard VF toolset lifecycle."""
+"""Adapt Harbor's task-declared MCP servers to the harness's HTTP transport."""
 
 import os
+import secrets
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import Any, cast
 
 from mcp import Client
@@ -10,19 +13,36 @@ from mcp.client.streamable_http import streamable_http_client
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import CallToolResult, Tool
+from pydantic_config import BaseConfig
 
-from verifiers.v1.mcp import Toolset, ToolsetConfig
+from verifiers.v1.mcp import Toolset
+from verifiers.v1.mcp.auth import MCPURL
+from verifiers.v1.mcp.launch import serve_in_runtime
+from verifiers.v1.runtimes import Runtime
 
 
-class HarborMCPConfig(ToolsetConfig):
+class HarborMCPConfig(BaseConfig):
     server: dict[str, Any]
     """One declaration already validated by Harbor's task parser."""
 
 
-class HarborMCPToolset(Toolset[HarborMCPConfig]):
+class HarborMCPAdapter(Toolset[HarborMCPConfig]):
+    def validate_split_execution(self) -> None:
+        raise ValueError(
+            "Harbor task-local MCP adapters do not support split deployment"
+        )
+
     @property
     def server_name(self) -> str:
         return self.config.server["name"]
+
+    @asynccontextmanager
+    async def serve(self, runtime: Runtime, **kwargs) -> AsyncIterator[str]:
+        # Harbor commands and task-local URLs belong to the task environment.
+        secret = secrets.token_urlsafe(32)
+        port = await serve_in_runtime(self, runtime, exposed=False, mcp_secret=secret)
+        host = "localhost" if runtime.network_restricted else "127.0.0.1"
+        yield MCPURL(f"http://{host}:{port}/mcp", secret)
 
     async def setup(self) -> None:
         spec = self.config.server
@@ -37,6 +57,7 @@ class HarborMCPToolset(Toolset[HarborMCPConfig]):
                         "VF_CONFIG",
                         "VF_STATE_URL",
                         "VF_STATE_SECRET",
+                        "TOOL_SERVICE_MCP_SECRET",
                         "MCP_HOST",
                         "MCP_PORT",
                         "MCP_PORT_FILE",
@@ -88,4 +109,4 @@ class HarborMCPToolset(Toolset[HarborMCPConfig]):
 
 
 if __name__ == "__main__":
-    HarborMCPToolset.run()
+    HarborMCPAdapter.run()

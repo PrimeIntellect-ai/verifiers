@@ -371,10 +371,8 @@ class Rollout:
                     self.harness.validate_split_execution()
                     if self._borrowed_runtime is not None:
                         raise HarnessError("split deployment cannot borrow a runtime")
-                    if any(toolset.config.colocated for toolset in toolsets):
-                        raise HarnessError(
-                            "split deployment cannot colocate MCP servers"
-                        )
+                    for toolset in toolsets:
+                        toolset.validate_split_execution()
                 self.deployment = runtime.backend.deploy(
                     spec=spec,
                     # Tool servers on Prime VMs of their own boot with the workspace.

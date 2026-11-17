@@ -39,13 +39,15 @@ def tool_vms(
     network, by server name: those on Prime runtimes of their own beside a Prime
     workspace of the rollout's own, without a task service spec. Any other server keeps its
     runtime's published port, which takes no network policy."""
+    from verifiers.v1.mcp.toolset import ToolsetConfig
+
     if composed or borrowed or not isinstance(workspace, PrimeConfig):
         return {}
     vms = {
         toolset.server_name: toolset.config.runtime
         for toolset in toolsets
-        if isinstance(toolset.config.runtime, PrimeConfig)
-        and not toolset.config.colocated
+        if isinstance(toolset.config, ToolsetConfig)
+        and isinstance(toolset.config.runtime, PrimeConfig)
         and not toolset.config.url
         and toolset.config.service is None
     }
