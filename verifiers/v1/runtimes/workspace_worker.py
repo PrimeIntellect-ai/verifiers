@@ -19,29 +19,53 @@ import uuid
 async def main():
     processes = {}
     locks = {}
+    completed = {}
     closed = False
 
-    def stop(process, sig):
+    def stop(pid, sig):
         with contextlib.suppress(ProcessLookupError):
-            os.killpg(process.pid, sig)
+            os.killpg(pid, sig)
+
+    def retire(identifier):
+        process = processes.get(identifier)
+        if (
+            process is not None
+            and process.returncode is not None
+            and process.stdout.at_eof()
+            and process.stderr.at_eof()
+        ):
+            process.stdin.close()
+            # Late reads and lifecycle calls still work without retaining pipes,
+            # readers, or transports for every completed command.
+            completed[identifier] = (process.pid, process.returncode)
+            del processes[identifier], locks[identifier]
 
     async def reap():
-        async def drain(identifier, stream):
-            async with locks[identifier][stream]:
-                while await getattr(processes[identifier], stream).read(65536):
+        active = [
+            (identifier, process, locks[identifier])
+            for identifier, process in processes.items()
+        ]
+
+        async def drain(process, lock, stream):
+            async with lock:
+                while await getattr(process, stream).read(65536):
                     pass
 
-        for process in processes.values():
-            stop(process, signal.SIGKILL)
+        for _, process, _ in active:
+            stop(process.pid, signal.SIGKILL)
+        for pid, _ in completed.values():
+            stop(pid, signal.SIGKILL)
         # Waiting without draining can hang on a child's full output pipe.
         await asyncio.gather(
             *(
-                drain(identifier, stream)
-                for identifier in processes
+                drain(process, stream_locks[stream], stream)
+                for _, process, stream_locks in active
                 for stream in ("stdout", "stderr")
             ),
-            *(process.wait() for process in processes.values()),
+            *(process.wait() for _, process, _ in active),
         )
+        for identifier, _, _ in active:
+            retire(identifier)
 
     async def handle(message):
         nonlocal closed
@@ -73,7 +97,7 @@ async def main():
                 start_new_session=True,
             )
             if closed:
-                stop(process, signal.SIGKILL)
+                stop(process.pid, signal.SIGKILL)
                 await process.wait()
                 raise RuntimeError("workspace worker closed during exec")
             identifier = uuid.uuid4().hex
@@ -83,6 +107,18 @@ async def main():
             }
             return identifier
         identifier = message["process_id"]
+        if identifier in completed:
+            pid, status = completed[identifier]
+            if operation in ("poll", "wait"):
+                return status
+            if operation == "read" and message["stream"] in ("stdout", "stderr"):
+                return None
+            if operation in ("kill", "terminate"):
+                stop(pid, signal.SIGKILL if operation == "kill" else signal.SIGTERM)
+                return None
+            if operation == "write":
+                raise BrokenPipeError("workspace process has exited")
+            raise ValueError("unknown workspace operation")
         process = processes[identifier]
         if operation == "write":
             data = base64.b64decode(message["data"], validate=True)
@@ -96,13 +132,17 @@ async def main():
                 raise ValueError("unknown workspace stream")
             async with locks[identifier][stream]:
                 data = await getattr(process, stream).read(65536)
+            retire(identifier)
             return base64.b64encode(data).decode() if data else None
         if operation == "poll":
+            retire(identifier)
             return process.returncode
         if operation == "wait":
-            return await process.wait()
+            status = await process.wait()
+            retire(identifier)
+            return status
         if operation in ("kill", "terminate"):
-            stop(process, signal.SIGKILL if operation == "kill" else signal.SIGTERM)
+            stop(process.pid, signal.SIGKILL if operation == "kill" else signal.SIGTERM)
             return None
         raise ValueError("unknown workspace operation")
 
