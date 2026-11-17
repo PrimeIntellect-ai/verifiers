@@ -221,6 +221,14 @@ async def private_network(
                 await client._join_lan(network_id, workspace.info.id, [])
 
         if start_workspace is None:
+
+            async def leave_workspace() -> None:
+                await run_shielded(
+                    client.remove_lan_member(network_id, workspace.info.id)
+                )
+
+            # Joining may attach the borrowed VM before failing or being cancelled.
+            stack.push_async_callback(leave_workspace)
             await client._join_lan(network_id, workspace.info.id, memberships["main"])
         else:
             workspace.lan = (network_id, memberships["main"])
