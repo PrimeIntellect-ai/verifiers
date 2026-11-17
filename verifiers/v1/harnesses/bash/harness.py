@@ -53,6 +53,7 @@ class BashHarness(Harness[BashHarnessConfig]):
     SUPPORTS_MCP = True
     SUPPORTS_RESUME = True
     SUPPORTS_TOOL_INTERCEPTION = True
+    NEEDS_CONTAINER = False
     SUPPORTS_SPLIT_EXECUTION = True
 
     async def remote_tools(self, runtime: Runtime, data: TaskData):

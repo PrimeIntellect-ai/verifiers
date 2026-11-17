@@ -9,7 +9,7 @@ A verifiers evaluation spans up to four execution boundaries:
 - **The evaluator** (the machine running the environment server) loads datasets, runs Python task hooks (`setup`, `finalize`, `@vf.reward`), coordinates agents, and records traces.
 - **The agent sandbox** (the agent's configured [runtime](runtimes.md#capability-matrix)) runs the harness, holds the task workspace, and executes any commands the agent invokes.
 - **The grading sandbox** is a fresh container started after the agent finishes when you use isolated scoring (`ScoringConfig(mode="isolated")`), giving graders a clean filesystem containing only declared agent outputs and private test assets.
-- **Task tools** run in a sandbox of their own from the harness's provider by default (a Docker container beside a Docker harness, a Prime VM on the rollout's private network beside a Prime one), inside a named task service when configured with `service = "<name>"`, or in an explicitly configured `runtime`, such as a Prime VM with its own egress policy.
+- **Task tools** run in their own configured runtime by default, inside a named task service when configured with `service = "<name>"`, or on a Prime VM of their own, under its own egress policy, when their `runtime` is a Prime runtime beside a Prime workspace.
 
 Because Python task hooks always execute on the evaluator, calling `Path.read_text()` reads from the evaluator's own filesystem, whereas `await runtime.read()` or `await runtime.run()` operates inside whichever sandbox was passed to the hook (the agent sandbox during `setup` and `finalize`, or the grading sandbox during isolated scoring). For answer-only benchmarks, scoring the final message in `@vf.reward` with the default `SingleAgentEnv` is all you need. When tasks modify files or execute untrusted code, you can either score directly inside the agent's sandbox or transfer the outputs into a separate grading sandbox.
 
@@ -72,6 +72,8 @@ import verifiers.v1 as vf
 
 
 class FileSumTask(vf.Task[vf.TaskData]):
+    NEEDS_CONTAINER = True
+
     async def setup(self, runtime: vf.Runtime) -> None:
         await runtime.write("/app/input.txt", b"1\n2\n3\n")
         await runtime.write("/app/output/answer.txt", b"")
@@ -147,7 +149,7 @@ memory = 1
 
 If you omit `[env.agent.scoring.runtime]`, the verifier provisions a fresh container using the agent's runtime policy and the task's scoring requirements. Providing `[env.agent.scoring.runtime]` lets you configure the grading sandbox independently: you can give it smaller CPU and memory limits, different network rules, a different container backend, or a dedicated `image` preloaded with test dependencies that you do not want in the solver image. You can also set `env.agent.scoring.env` to merge scoring-only environment variables over `TaskData.scoring.env` (using `${VAR}` or `${VAR:-default}` templates so raw secrets are resolved at scoring time rather than written into saved configs).
 
-Both the solver and verifier must run on runtimes that support artifact collection and isolated grading. Because artifacts are restored without path translation, relative artifact paths require the solver and verifier to share the same `workdir`; use absolute paths if their working directories differ.
+Both the solver and verifier must run on container-backed runtimes (`subprocess` does not support artifact collection or isolated grading). Because artifacts are restored without path translation, relative artifact paths require the solver and verifier to share the same `workdir`; use absolute paths if their working directories differ.
 
 ### Transfer outputs and prepare private tests
 
