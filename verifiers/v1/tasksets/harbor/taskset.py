@@ -208,10 +208,10 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
 
     @classmethod
     def toolsets(cls, config: HarborTaskConfig):
-        from .toolset import HarborMCPConfig, HarborMCPToolset
+        from .toolset import HarborMCPAdapter, HarborMCPConfig
 
         return super().toolsets(config) + [
-            HarborMCPToolset(HarborMCPConfig(colocated=True, server=server))
+            HarborMCPAdapter(HarborMCPConfig(server=server))
             for server in config.mcp_servers
         ]
 
