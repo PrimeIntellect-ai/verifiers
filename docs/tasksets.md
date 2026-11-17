@@ -277,7 +277,6 @@ Tools defined on `Taskset.toolsets(config)` run in a server shared across a work
 A toolset's config controls where the MCP server runs:
 
 - **Prime sandbox (default)** — launches the server in its own sandbox.
-- **`colocated = true`** (per-task toolsets only) — runs the tool server inside the agent's own runtime container so tools share the agent's filesystem directly.
 - **`service = "<name>"`** (per-task toolsets on Prime) — runs the tool server inside a named native VM from the task's `ServicesSpec`. The harness reaches it over the rollout's private network by its LAN hostname.
 - **`runtime = { type = "docker", ... }`** — runs the tool server in its own dedicated container.
 - **`url = "https://.../mcp"`** — connects to an already-running streamable-HTTP MCP server instead of launching one.

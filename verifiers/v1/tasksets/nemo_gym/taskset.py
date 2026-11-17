@@ -164,7 +164,7 @@ class NeMoGymEnv(SingleAgentEnv):
             deadline = loop.time() + (math.inf if timeout is None else timeout)
             port = await _read_back_port(runtime, port_file, deadline)
             resources_url = await stack.enter_async_context(
-                reachable_url(runtime, port, colocated=False, consumer_is_local=False)
+                reachable_url(runtime, port, consumer_is_local=False)
             )
             async with httpx.AsyncClient(
                 timeout=1, headers={"X-Verifiers-Nemo-Token": token}

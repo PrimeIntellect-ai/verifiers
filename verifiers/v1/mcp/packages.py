@@ -27,7 +27,17 @@ from verifiers.v1.utils.logging import clip, get_logger
 
 logger = get_logger(__name__)
 _BUILD_TIMEOUT = 300
-_EXCLUDED = {".git", ".venv", "venv", "__pycache__", ".pytest_cache", ".ruff_cache"}
+_EXCLUDED = {
+    ".git",
+    ".venv",
+    "venv",
+    ".cache",
+    "build",
+    "dist",
+    "__pycache__",
+    ".pytest_cache",
+    ".ruff_cache",
+}
 
 # Prime signals only the immediate process. Keep build/install children in a
 # separate group and reap that group before acknowledging cancellation.
@@ -57,40 +67,61 @@ sys.exit(143 if stopping else child.returncode)
 
 
 def _source_files(src: Path) -> tuple[Path, list[Path]]:
-    # Keep repository-relative dependencies, including uncommitted source files.
-    def git(*args):
-        return subprocess.check_output(
-            ["git", "-c", "core.fsmonitor=false", "-C", str(src), *args],
-            stderr=subprocess.DEVNULL,
-            timeout=30,
-        )
+    # A package's repository may contain unrelated datasets or other projects.
+    # Only an explicit uv workspace expands the package's source boundary.
+    root = src
+    for parent in src.parents:
+        project = parent / "pyproject.toml"
+        if project.is_file() and "workspace" in tomllib.loads(project.read_text()).get(
+            "tool", {}
+        ).get("uv", {}):
+            root = parent
+            break
 
-    try:
-        root = Path(os.fsdecode(git("rev-parse", "--show-toplevel")).strip())
-        files = git(
-            "-C",
-            str(root),
-            "ls-files",
-            "-z",
-            "--cached",
-            "--others",
-            "--exclude-standard",
-        )
-        return root, [root / os.fsdecode(name) for name in files.split(b"\0") if name]
-    except (FileNotFoundError, subprocess.CalledProcessError):
-        # Unpacked projects may still belong to a uv workspace.
-        root = src
-        for parent in src.parents:
-            project = parent / "pyproject.toml"
-            if project.is_file() and "workspace" in tomllib.loads(
-                project.read_text()
-            ).get("tool", {}).get("uv", {}):
-                root = parent
+    def collect(directory: Path) -> list[Path]:
+        try:
+            listing = subprocess.check_output(
+                [
+                    "git",
+                    "-c",
+                    "core.fsmonitor=false",
+                    "-C",
+                    str(directory),
+                    "ls-files",
+                    "-z",
+                    "--cached",
+                    "--others",
+                    "--exclude-standard",
+                    "--",
+                    ".",
+                ],
+                stderr=subprocess.DEVNULL,
+                timeout=30,
+            )
+        except (FileNotFoundError, subprocess.CalledProcessError):
+            files = []
+            for current, dirs, names in os.walk(directory):
+                dirs[:] = [name for name in dirs if name not in _EXCLUDED]
+                files.extend(Path(current) / name for name in names)
+            return files
         files = []
-        for directory, dirs, names in os.walk(root):
-            dirs[:] = [name for name in dirs if name not in _EXCLUDED]
-            files.extend(Path(directory) / name for name in names)
-        return root, files
+        for name in listing.split(b"\0"):
+            if not name:
+                continue
+            path = directory / os.fsdecode(name)
+            if path.is_dir() and not path.is_symlink():
+                # Git lists a submodule as one directory. Recurse separately so
+                # its untracked and modified files are included as well.
+                if not (path / ".git").exists():
+                    raise ToolsetError(
+                        f"initialize package submodule before building: {path}"
+                    )
+                files.extend(collect(path))
+            else:
+                files.append(path)
+        return files
+
+    return root, collect(root)
 
 
 @cache

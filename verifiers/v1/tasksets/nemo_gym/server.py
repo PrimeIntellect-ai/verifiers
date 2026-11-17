@@ -42,7 +42,8 @@ from nemo_gym.config_types import BaseServerConfig
 from nemo_gym.server_utils import ServerClient
 from omegaconf import OmegaConf
 
-# The managed server runs in a runtime reached by the evaluator and tool server.
+# This bind is inside the provisioned sandbox, reached through its published port.
+# Docker publishes on host loopback; every request requires the worker's token.
 HOST = "0.0.0.0"
 
 

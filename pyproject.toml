@@ -218,7 +218,6 @@ markers = [
     # is applied per axis, so it matches every cell touching that value on any axis.
     "docker: integration cells touching the docker runtime",
     "prime: integration cells touching the prime runtime (real sandbox + tunnel)",
-    "colocated: integration cells with a tool server colocated in the harness runtime",
     "service: integration cells with a tool server in a Compose service beside the harness",
     "null: integration cells on the null harness",
     "bash: integration cells on the bash harness",
