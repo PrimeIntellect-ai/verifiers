@@ -15,21 +15,20 @@ import uuid
 
 from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes.base import RuntimeProcess
+from verifiers.v1.runtimes.lan_stream import CLIENT_SOURCE, PYTHON
 from verifiers.v1.runtimes.runtime import Runtime
 from verifiers.v1.utils.logging import clip, get_logger
 
 logger = get_logger(__name__)
 
-_PYTHON = """# /// script
-# requires-python = ">=3.10"
-# dependencies = []
-# ///
-"""
+_PYTHON = PYTHON
 
 # Run inside the same user, environment, cwd and filesystem view as the command.
 # The capability arrives over provider stdin, never in the child environment.
 _SERVER = r"""
-import base64, concurrent.futures, hmac, http.server, json, os, signal, subprocess, sys, threading
+import base64, concurrent.futures, hmac, json, os, signal, subprocess, sys, threading
+from websockets.exceptions import ConnectionClosed
+from websockets.sync.server import serve
 
 config = json.loads(sys.stdin.readline())
 secret = config.pop("secret")
@@ -111,35 +110,61 @@ def handle(body):
             future.set_exception(error)
     return future.result()
 
-class Handler(http.server.BaseHTTPRequestHandler):
-    def log_message(self, *args):
-        pass
+connections = set()
+connections_lock = threading.Lock()
 
-    def do_POST(self):
-        if not hmac.compare_digest(self.headers.get("Authorization", ""), "Bearer " + secret):
-            self.send_error(401)
-            return
+def authenticate(connection, request):
+    if request.path != "/execution":
+        return connection.respond(404, "Unknown execution endpoint\n")
+    if not hmac.compare_digest(request.headers.get("Authorization", ""), "Bearer " + secret):
+        return connection.respond(401, "Unauthorized\n")
+
+def stream(connection):
+    with connections_lock:
+        connections.add(connection)
+    slots = threading.BoundedSemaphore(8)
+
+    def reply(body):
         try:
-            size = int(self.headers.get("Content-Length", "0"))
-            if self.path != "/execution" or not 0 < size <= 32 * 1024 * 1024:
-                raise ValueError("invalid execution request")
-            result = handle(json.loads(self.rfile.read(size)))
-            status = 200
+            result = {"result": handle(body)}
         except Exception as error:
-            status, result = 400, {"error": str(error)}
-        data = json.dumps(result).encode()
+            result = {"error": str(error)}
         try:
-            self.send_response(status)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(data)))
-            self.end_headers()
-            self.wfile.write(data)
-        except (BrokenPipeError, ConnectionResetError):
+            connection.send(json.dumps({"id": body.get("request_id"), **result}))
+        except ConnectionClosed:
             pass
 
-server = http.server.ThreadingHTTPServer(("0.0.0.0", 0), Handler)
+    def work(body):
+        try:
+            reply(body)
+        finally:
+            slots.release()
+
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+            for raw in connection:
+                body = json.loads(raw)
+                if not isinstance(body, dict):
+                    connection.close(1008, "Invalid execution request")
+                    break
+                # Termination must remain available while reads/wait are blocked.
+                if body.get("operation") in ("kill", "terminate", "poll"):
+                    reply(body)
+                elif slots.acquire(blocking=False):
+                    pool.submit(work, body)
+                else:
+                    connection.close(1008, "Too many pending execution requests")
+                    break
+    except ConnectionClosed:
+        pass
+    finally:
+        with connections_lock:
+            connections.discard(connection)
+
+server = serve(stream, "0.0.0.0", 0, process_request=authenticate,
+               compression=None, max_size=32 * 1024 * 1024, close_timeout=1)
 threading.Thread(target=server.serve_forever, daemon=True).start()
-print(json.dumps({"port": server.server_port}), flush=True)
+print(json.dumps({"port": server.socket.getsockname()[1]}), flush=True)
 try:
     # Only the owning evaluator's provider stream can end the listener. A native
     # client may finish while its output still needs draining or replaying.
@@ -147,43 +172,39 @@ try:
 finally:
     stop(signal.SIGKILL)
     server.shutdown()
-    server.server_close()
+    with connections_lock:
+        active = list(connections)
+    for connection in active:
+        connection.close()
 """
 
 # Trusted evaluator setup and lifecycle calls can reach LAN endpoints through A.
 # Harness clients and adapters use /execution directly from A for workspace I/O.
-_RELAY = r"""
-import concurrent.futures, json, sys, threading, time, urllib.error, urllib.request
+_RELAY = (
+    CLIENT_SOURCE
+    + r"""
+import sys
 config = json.loads(sys.stdin.readline())
 lock = threading.Lock()
-opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+client = LanStream(config)
 
 def relay(message):
-    body = json.dumps(message["body"]).encode()
     result = {"id": message["id"]}
     try:
-        for attempt in range(3):
-            request = urllib.request.Request(config["url"], data=body, headers={
-                "Authorization": "Bearer " + config["secret"], "Content-Type": "application/json"})
-            try:
-                with opener.open(request, timeout=86400) as response:
-                    result["result"] = json.load(response)
-                break
-            except urllib.error.HTTPError as error:
-                raise RuntimeError(error.read(4096).decode(errors="replace")) from error
-            except OSError:
-                if attempt == 2:
-                    raise
-                time.sleep(0.2 * (attempt + 1))
+        result["result"] = client.request(message["body"])
     except Exception as error:
         result["error"] = str(error)
     with lock:
         print(json.dumps(result), flush=True)
 
 with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
-    for line in sys.stdin:
-        pool.submit(relay, json.loads(line))
+    try:
+        for line in sys.stdin:
+            pool.submit(relay, json.loads(line))
+    finally:
+        client.close()
 """
+)
 
 
 class LanProcess(RuntimeProcess):
@@ -379,7 +400,7 @@ class LanExecution:
                 self.harness,
                 self._harness_python,
                 {
-                    "url": f"http://{self.host}:{port}/execution",
+                    "url": f"ws://{self.host}:{port}/execution",
                     "secret": secret,
                     "process_id": process_id,
                 },

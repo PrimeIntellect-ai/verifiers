@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.runtimes.base import RuntimeProcess
+from verifiers.v1.runtimes.lan_stream import CLIENT_SOURCE, PYTHON
 from verifiers.v1.types import ToolCall, ToolMessage
 
 # Embedded in Python harness programs so their native environment adapters use
@@ -162,10 +163,10 @@ def remote_shell_tools(runtime: Runtime, *, persistent: bool = False):
     return execute
 
 
-REMOTE_RUNTIME_SOURCE = r"""# /// script
-# requires-python = ">=3.10"
-# dependencies = []
-# ///
+REMOTE_RUNTIME_SOURCE = (
+    PYTHON
+    + CLIENT_SOURCE
+    + r"""
 import argparse
 import base64
 import json
@@ -188,6 +189,7 @@ args = parser.parse_args()
 process_id = uuid.uuid4().hex
 execution_url, execution_secret = args.url, args.secret
 execution_opener = urllib.request.build_opener()
+execution_client = None
 handed_off = False
 failed = threading.Event()
 stdout_lock = threading.Lock()
@@ -302,9 +304,12 @@ def rlm_input(packet):
     return None
 
 def rpc(operation, **values):
-    global execution_url, execution_secret, execution_opener, process_id, handed_off
-    body = json.dumps({"operation": operation, "process_id": process_id,
-                       "request_id": uuid.uuid4().hex, **values}).encode()
+    global execution_client, process_id, handed_off
+    message = {"operation": operation, "process_id": process_id,
+               "request_id": uuid.uuid4().hex, **values}
+    if execution_client is not None:
+        return execution_client.request(message)
+    body = json.dumps(message).encode()
     for attempt in range(3):
         request = urllib.request.Request(execution_url, data=body, headers={
             "Authorization": "Bearer " + execution_secret,
@@ -325,10 +330,8 @@ def rpc(operation, **values):
         if handed_off:
             raise RuntimeError("Only the host registry may select the execution transport")
         handed_off = True
-        execution_url = transport["url"]
-        execution_secret = transport["secret"]
+        execution_client = LanStream(transport)
         process_id = transport["process_id"]
-        execution_opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
         return rpc("open", **values)
     return result
 
@@ -415,8 +418,11 @@ finally:
         rpc("kill")
     except Exception:
         pass
+    if execution_client is not None:
+        execution_client.close()
 raise SystemExit(code)
 """
+)
 
 
 async def prepare_remote_bridge(
