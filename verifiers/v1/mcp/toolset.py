@@ -8,7 +8,7 @@ from pydantic import Field, model_validator
 from pydantic_config import BaseConfig
 
 from verifiers.v1.mcp.server import ConfigT, ServerBase
-from verifiers.v1.runtimes import RuntimeConfig, SubprocessConfig
+from verifiers.v1.runtimes import RuntimeConfig
 from verifiers.v1.state import StateT
 from verifiers.v1.utils.decorators import discover_decorated
 
@@ -28,8 +28,9 @@ class ToolsetTimeoutConfig(BaseConfig):
 class BaseToolsetConfig(BaseConfig):
     """Runtime and connection settings for per-task and shared tool servers."""
 
-    runtime: RuntimeConfig = SubprocessConfig()
-    """Where the server runs: the evaluator by default."""
+    runtime: RuntimeConfig | None = None
+    """Isolated runtime (`docker` / `prime`) for the server, or `None` (default) to
+    serve in-process on the evaluator host."""
     url: str | None = None
     timeout: ToolsetTimeoutConfig = ToolsetTimeoutConfig()
 
@@ -52,8 +53,8 @@ class ToolsetConfig(BaseToolsetConfig):
                 "a tool server placed in a service cannot use a remote URL"
             )
         # The service is the server's runtime; another one, or its policy, would go unused.
-        if not isinstance(self.runtime, SubprocessConfig):
-            raise ValueError(  # noqa: TRY004 - Pydantic validators must raise ValueError
+        if self.runtime is not None:
+            raise ValueError(
                 "a tool server placed in a service runs in that service and "
                 f"takes no runtime of its own (got {self.runtime.type})"
             )
@@ -66,14 +67,22 @@ class SharedToolsetConfig(BaseToolsetConfig):
 
 class Toolset(ServerBase[ConfigT, StateT]):
     @asynccontextmanager
-    async def serve(self, runtime: Runtime, **kwargs) -> AsyncIterator[str]:
+    async def serve(
+        self, runtime: Runtime, *, harness_on_host: bool = False, **kwargs
+    ) -> AsyncIterator[str]:
         """Connect a rollout to this server; task-format adapters own their transport."""
         from verifiers.v1.mcp.launch import serve
 
         if self.config.url:
-            yield runtime.host_url(self.config.url)
+            yield (
+                self.config.url
+                if harness_on_host
+                else runtime.host_url(self.config.url)
+            )
         else:
-            async with serve(self, runtime, **kwargs) as url:
+            async with serve(
+                self, runtime, harness_on_host=harness_on_host, **kwargs
+            ) as url:
                 yield url
 
     def register(self, mcp: MCPServer) -> None:

@@ -109,25 +109,84 @@ async def test_prompt_text_stays_off_argv(name):
         task=vf.TraceTask(type="Task", data=data),
     )
     ctx = ModelContext(model="openai/test-model", client=EvalClientConfig())
-    session = await harness.session(
-        ctx,
-        trace,
-        runtime,
-        "http://127.0.0.1:1/v1",
-        "secret",
-        {},
-        data,
-        tool_interception_url="http://127.0.0.1:1/tool",
-    )
     protocol = ""
-    if isinstance(harness, ACPHarness):
-        assert isinstance(session, ACPHarnessSession)
-        config = session.config
-        argvs = [*runtime.argvs, config.command]
-        protocol = f"{config.prompt} {config.system_prompt} {config.session_meta}"
-    else:
-        await session.turn()
+    if harness.RUNS_ON_HOST:
+        from aiohttp import web
+
+        from verifiers.v1.dialects.chat import ChatDialect
+
+        bodies: list[bytes] = []
+
+        async def completions(request: web.Request) -> web.StreamResponse:
+            bodies.append(await request.read())
+            raw = {
+                "id": "cmpl-test",
+                "object": "chat.completion",
+                "created": 0,
+                "model": "openai/test-model",
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {"role": "assistant", "content": "ok"},
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": 1,
+                    "completion_tokens": 1,
+                    "total_tokens": 2,
+                },
+            }
+            resp = web.StreamResponse(headers={"Content-Type": "text/event-stream"})
+            await resp.prepare(request)
+            for event in ChatDialect().stream_events(raw):
+                await resp.write(event)
+            await resp.write_eof()
+            return resp
+
+        app = web.Application()
+        app.router.add_post("/{tail:.*}", completions)
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, "127.0.0.1", 0)
+        await site.start()
+        port = site._server.sockets[0].getsockname()[1]
+        try:
+            session = await harness.session(
+                ctx,
+                trace,
+                runtime,
+                f"http://127.0.0.1:{port}/v1",
+                "secret",
+                {},
+                data,
+                tool_interception_url=f"http://127.0.0.1:{port}/tool",
+            )
+            await session.turn()
+        finally:
+            await runner.cleanup()
         argvs = runtime.argvs
+        assert argvs == []
+        protocol = b"\n".join(bodies).decode(errors="replace")
+    else:
+        session = await harness.session(
+            ctx,
+            trace,
+            runtime,
+            "http://127.0.0.1:1/v1",
+            "secret",
+            {},
+            data,
+            tool_interception_url="http://127.0.0.1:1/tool",
+        )
+        if isinstance(harness, ACPHarness):
+            assert isinstance(session, ACPHarnessSession)
+            config = session.config
+            argvs = [*runtime.argvs, config.command]
+            protocol = f"{config.prompt} {config.system_prompt} {config.session_meta}"
+        else:
+            await session.turn()
+            argvs = runtime.argvs
 
     # A script the harness writes is exec'd with its contents as argv.
     scripts = [data for data in runtime.files.values() if data.startswith(b"#!")]

@@ -8,12 +8,11 @@ The orchestrator and workers are managed by verifiers themselves and thus are le
 
 A model in its harness solving a task produces a **rollout**. Each rollout has an independent trace and runtime state. verifiers supports several [runtimes](runtimes.md) that you can use for most tasksets:
 
-- The `subprocess` runtime runs rollouts in local Python subprocesses. It is meant for debugging, since processes share your machine and can have side effects on one another (such as altering a harness's config files).
-- The `docker` runtime runs rollouts in Docker containers on your local machine.
-- The `prime` runtime runs rollouts in remote Prime sandboxes. It is meant for production workloads like training or high-concurrency evaluation.
+- The `docker` runtime runs sandboxed commands in Docker containers on your local machine, provisioned lazily on first use.
+- The `prime` runtime runs sandboxed commands in remote Prime sandboxes, provisioned lazily on first use. It is meant for production workloads like training or high-concurrency evaluation.
 - A `custom` runtime loads another provider from your own package, without upstreaming it. See [runtime plugins](runtimes.md#runtime-plugins).
 
-The `subprocess` and `docker` runtimes are for quick local testing without billing, and support fewer features. `subprocess` refuses tasks that need an image, a network policy, or Compose services. Docker runs Compose services only for trusted tasks, with unrestricted networking. On Linux, an unrestricted Docker container shares the host network. On other platforms, Docker containers reach host services through `host.docker.internal`. A Docker container with a network policy runs on the bridge network, and its traffic goes through a verifiers proxy that enforces the policy.
+Built-in chat harnesses (`null`, `bash`) drive their model and host-MCP loops directly in the worker event loop, so pure-chat, math, judge, and host-MCP rollouts spawn no container or VM unless `bash`/`edit` or a task hook touches `runtime`. The `docker` runtime is for local testing without billing. Docker runs Compose services only for trusted tasks, with unrestricted networking. On Linux, an unrestricted Docker container shares the host network. On other platforms, Docker containers reach host services through `host.docker.internal`. A Docker container with a network policy runs on the bridge network, and its traffic goes through a verifiers proxy that enforces the policy.
 
 The harness runs inside the rollout runtime to interact with the task. Rather than calling the model provider directly, the harness sends model traffic through verifiers' **interception server** over a local connection or [Prime Tunnel](https://docs.primeintellect.ai/sandboxes/tunnel).
 

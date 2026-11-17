@@ -19,7 +19,7 @@ class _ColocatedDeployment(_DeploymentStrategy):
             d.execution_backend = d.harness_backend = d.borrowed_runtime.backend
         else:
             d.backend.env = d.env
-            await d.own(d.backend)
+            await d.own(d.backend, eager=False)
             d.execution_backend = d.harness_backend = d.backend
         d.target_backends = {"main": d.execution_backend}
 

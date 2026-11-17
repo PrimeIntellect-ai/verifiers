@@ -383,6 +383,11 @@ class Rollout:
                 # The harness reaches the model at `{base_url}/v1`; tool servers reach this
                 # rollout's `/state` + `/task` at `base_url` — it's universally reachable
                 # (the interception is exposed whenever any consumer is remote).
+                harness_on_host = (
+                    self.harness.RUNS_ON_HOST
+                    and not self.deployment.hosts
+                    and self.deployment.spec is None
+                )
                 (
                     base_url,
                     model_secret,
@@ -394,9 +399,13 @@ class Rollout:
                         self._session,
                         toolsets,
                         self._shared_tools,
+                        harness_on_host=harness_on_host,
                     )
                 )
-                self._endpoint = runtime.host_url(f"{base_url.rstrip('/')}/v1")
+                raw_endpoint = f"{base_url.rstrip('/')}/v1"
+                self._endpoint = (
+                    raw_endpoint if harness_on_host else runtime.host_url(raw_endpoint)
+                )
                 self._secret = model_secret
                 services = (
                     {
@@ -411,6 +420,7 @@ class Rollout:
                         toolsets,
                         self._agent_runtime,
                         shared=self._shared_tools,
+                        harness_on_host=harness_on_host,
                         state_secret=state_secret,
                         proxy_mcp=self._session.proxy_mcp,
                         state_route=self.trace.id,
@@ -529,10 +539,13 @@ class Rollout:
                             }
                         )
                     if not self._session.stopped:
+                        raw_tool_url = f"{base_url.rstrip('/')}/tool"
                         session_kwargs = (
                             {
-                                "tool_interception_url": runtime.host_url(
-                                    f"{base_url.rstrip('/')}/tool"
+                                "tool_interception_url": (
+                                    raw_tool_url
+                                    if harness_on_host
+                                    else runtime.host_url(raw_tool_url)
                                 )
                             }
                             if self.harness.SUPPORTS_TOOL_INTERCEPTION
@@ -1004,6 +1017,8 @@ class Rollout:
                     span.end = now
             trace.split_agent_time()
             if runtime is not None:
+                if trace.agent is not None:
+                    trace.agent.runtime = runtime.info.model_copy()
                 await self._cleanup_harness(runtime)
             # Tear down here — the env's `score()` (later) needs only the traces,
             # not a live runtime. A borrowed runtime is its creator's to tear down,

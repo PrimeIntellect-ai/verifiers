@@ -88,6 +88,8 @@ class Runtime:
         return self.backend.host_url(url)
 
     async def expose(self, port: int) -> str:
+        if hasattr(self.backend, "ensure_started"):
+            await self.backend.ensure_started()
         return await self.backend.expose(port)
 
     async def set_network(self, network: NetworkPolicyConfig) -> None:
@@ -95,8 +97,11 @@ class Runtime:
         on the whole runtime rather than only this view; return once the provider
         enforces it. Framework routes are not added. A runtime that started without a
         policy can only stay open."""
+        apply = getattr(
+            self.backend, "apply_execution_policy", self.backend.prepare_execution
+        )
         if not network.network_restricted:
-            await self.backend.prepare_execution(None)
+            await apply(None)
             return
         config = self.backend.config
         if not self.backend.network_restricted or not isinstance(
@@ -109,14 +114,18 @@ class Runtime:
         policy = type(config).model_validate(
             {**config.model_dump(), "allow": network.allow, "block": network.block}
         )
-        await self.backend.prepare_execution([], policy)
+        await apply([], policy)
 
     async def run(self, argv: list[str], env: dict[str, str]) -> ProgramResult:
         """Run `argv` to completion and collect its output."""
+        if hasattr(self.backend, "ensure_started"):
+            await self.backend.ensure_started()
         return await self.backend.run(self, argv, env)
 
     async def exec(self, argv: list[str], env: dict[str, str]) -> RuntimeProcess:
         """Start `argv` and return a handle that streams its stdio."""
+        if hasattr(self.backend, "ensure_started"):
+            await self.backend.ensure_started()
         return await self.backend.exec(self, argv, env)
 
     async def run_background(
@@ -124,9 +133,13 @@ class Runtime:
     ) -> None:
         """Start `argv` with its combined output in `log`, a path in the working
         directory, and return. The process runs until the runtime stops."""
+        if hasattr(self.backend, "ensure_started"):
+            await self.backend.ensure_started()
         await self.backend.run_background(self, argv, env, log)
 
     async def write(self, path: str, data: bytes) -> None:
+        if hasattr(self.backend, "ensure_started"):
+            await self.backend.ensure_started()
         await self.backend.write(self, path, data)
 
     async def alive(self) -> bool:
@@ -134,6 +147,8 @@ class Runtime:
         the box is gone — some surface it as `exec`'s own non-zero result,
         indistinguishable from the command failing. One probe on the failure path
         tells the two apart before we blame anyone."""
+        if not getattr(self.backend, "started", True):
+            return True
         try:
             return (await self.run(["true"], {})).exit_code == 0
         except Exception:  # noqa: BLE001 - failing to exec at all means the box is gone
@@ -247,6 +262,8 @@ class Runtime:
         the cap — for a file written by something we don't control, whose size we
         can't assume. The cap is enforced inside the box rather than after the
         transfer. Backends implement `RuntimeBackend.read`."""
+        if hasattr(self.backend, "ensure_started"):
+            await self.backend.ensure_started()
         if max_bytes is None:
             return await self.backend.read(self, path)
         if max_bytes < 0:

@@ -1,12 +1,15 @@
 """Tool-output bounding and context compaction for bundled chat programs."""
 
-from typing import TYPE_CHECKING
-
 from openai import APIError, APIStatusError, AsyncOpenAI
 
-if TYPE_CHECKING:
-    # The harness bundles this module into the generated script before execution.
-    from verifiers.v1.harnesses.utils.core import chat  # noqa: TC004
+
+def _chat_fn():
+    if "chat" in globals():
+        return globals()["chat"]
+    from verifiers.v1.harnesses.utils.core import chat as host_chat
+
+    return host_chat
+
 
 RESERVE_TOKENS = 16_384
 """Compact when this many tokens remain below the model context window."""
@@ -177,8 +180,9 @@ class Compactor:
         self.last_good = len(messages)
 
     async def complete(self, messages: list[dict]):
+        chat_fn = _chat_fn()
         try:
-            completion = await chat(self.client, self.model, messages, self.tools)
+            completion = await chat_fn(self.client, self.model, messages, self.tools)
         except APIStatusError as error:
             if (
                 not self.enabled
@@ -206,7 +210,7 @@ class Compactor:
 
         messages = await self.compact(messages)
         try:
-            completion = await chat(self.client, self.model, messages, self.tools)
+            completion = await chat_fn(self.client, self.model, messages, self.tools)
         except APIStatusError as error:
             # The rebuilt conversation is sized to fit, so this is out of moves.
             if is_context_overflow(error):
@@ -217,6 +221,7 @@ class Compactor:
         return completion, messages
 
     async def compact(self, messages: list[dict]) -> list[dict]:
+        chat_fn = _chat_fn()
         # A rejected checkpoint falls back to the last good snapshot (which has a
         # full reserve of room, so it fits); an empty or tool-calling reply is
         # resampled. Reasoning is never part of the summary.
@@ -228,7 +233,7 @@ class Compactor:
                 {"role": "user", "content": CHECKPOINT_COMPACTION_PROMPT},
             ]
             try:
-                completion = await chat(
+                completion = await chat_fn(
                     self.client,
                     self.model,
                     checkpoint,

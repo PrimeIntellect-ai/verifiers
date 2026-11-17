@@ -140,6 +140,8 @@ class ServerBase(Generic[ConfigT, StateT]):
         self._state_adapter = TypeAdapter(self._state_cls)
         self._inert_state: StateT = self._state_cls()  # type: ignore[assignment]
         self._state_client: AsyncClient | None = None
+        self._state_url: str | None = None
+        self._state_secret: str = ""
         self._exit_stack = contextlib.AsyncExitStack()
 
     @property
@@ -148,9 +150,13 @@ class ServerBase(Generic[ConfigT, StateT]):
         return current if current is not None else self._inert_state  # type: ignore[return-value]
 
     def _state_channel(self) -> tuple[str | None, str, str | None]:
-        """Use an env channel, or authenticate the exact coordinates of a shared call."""
-        url = os.environ.get("VF_STATE_URL")
-        secret = os.environ.get("VF_STATE_SECRET", "")
+        """Use an instance/env channel, or authenticate the exact coordinates of a shared call."""
+        url = (
+            self._state_url
+            if self._state_url is not None
+            else os.environ.get("VF_STATE_URL")
+        )
+        secret = self._state_secret or os.environ.get("VF_STATE_SECRET", "")
         if url:
             return url, secret, None
         shared_url = _request_query(STATE_URL_PARAM)
@@ -272,15 +278,127 @@ class ServerBase(Generic[ConfigT, StateT]):
         """Register this server's MCP handlers."""
         raise NotImplementedError
 
+    def _build_app(self):
+        from mcp.server.mcpserver import MCPServer
+        from mcp.server.transport_security import TransportSecuritySettings
+        from starlette.responses import PlainTextResponse
+
+        from verifiers import __version__
+        from verifiers.v1.interception.tunnel.base import HEALTH_PATH
+
+        # These servers are reached through localhost or a tunnel, never a browser.
+        security = TransportSecuritySettings(enable_dns_rebinding_protection=False)
+        mcp = MCPServer(
+            self.server_name or type(self).__name__,
+            version=__version__,
+        )
+        self.register(mcp)
+
+        @mcp.custom_route(HEALTH_PATH, methods=["GET"])
+        async def health(_request):
+            return PlainTextResponse("ok", headers={"Connection": "close"})
+
+        # Modern HTTP is inherently sessionless. Keep the legacy leg stateless too so
+        # older agent clients can use the same reconnect-per-call endpoint.
+        mcp_app = mcp.streamable_http_app(
+            json_response=True,
+            stateless_http=True,
+            transport_security=security,
+        )
+
+        async def app(scope, receive, send):
+            query = (
+                parse_qs(
+                    scope.get("query_string", b"").decode(),
+                    keep_blank_values=True,
+                )
+                if scope["type"] == "http"
+                else None
+            )
+            token = _request_query_params.set(query)
+            try:
+                await mcp_app(scope, receive, send)
+            finally:
+                _request_query_params.reset(token)
+
+        return app
+
+    @contextlib.asynccontextmanager
+    async def serve_in_process(
+        self,
+        *,
+        state_url: str | None = None,
+        state_secret: str = "",
+        startup_timeout: float | None = None,
+    ):
+        """Serve this MCP server in-process on an ephemeral localhost port in the active
+        event loop — no subprocess or container spawned — and tear it down cleanly."""
+        import asyncio
+        import socket
+
+        import httpx
+        import uvicorn
+
+        ready = asyncio.Event()
+        stop = asyncio.Event()
+
+        class _InProcessServer(uvicorn.Server):
+            def install_signal_handlers(self) -> None:
+                pass
+
+            async def main_loop(self) -> None:
+                ready.set()
+                await stop.wait()
+                self.should_exit = True
+
+        self._state_url = state_url or ""
+        self._state_secret = state_secret
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+        try:
+            async with (
+                self._exit_stack,
+                httpx.AsyncClient(timeout=STATE_TIMEOUT) as client,
+            ):
+                self._state_client = client
+                async with asyncio.timeout(startup_timeout):
+                    await self.setup()
+                    url, secret, _ = self._state_channel()
+                    await self._setup_task_from_channel(url, secret)
+                    server = _InProcessServer(
+                        uvicorn.Config(
+                            self._build_app(), log_level="critical", date_header=False
+                        )
+                    )
+                    serve_task = asyncio.create_task(server.serve(sockets=[sock]))
+                    serve_task.add_done_callback(lambda _: ready.set())
+                    await ready.wait()
+                    if serve_task.done():
+                        serve_task.result()
+                try:
+                    yield port
+                finally:
+                    stop.set()
+                    server.should_exit = True
+                    try:
+                        await asyncio.shield(serve_task)
+                    except asyncio.CancelledError:
+                        serve_task.cancel()
+                        with contextlib.suppress(BaseException):
+                            await serve_task
+                        raise
+        finally:
+            self._state_client = None
+            sock.close()
+
     def _serve(self) -> None:
         import asyncio
         import socket
         from pathlib import Path
 
         import uvicorn
-        from mcp.server.mcpserver import MCPServer
-
-        from verifiers import __version__
 
         _die_with_parent()
         host = os.environ.get("MCP_HOST", "127.0.0.1")
@@ -295,10 +413,6 @@ class ServerBase(Generic[ConfigT, StateT]):
 
         async def serve() -> None:
             import httpx
-            from mcp.server.transport_security import TransportSecuritySettings
-            from starlette.responses import PlainTextResponse
-
-            from verifiers.v1.interception.tunnel.base import HEALTH_PATH
 
             try:
                 async with (
@@ -309,45 +423,9 @@ class ServerBase(Generic[ConfigT, StateT]):
                     await self.setup()
                     state_url, secret, _ = self._state_channel()
                     await self._setup_task_from_channel(state_url, secret)
-                    # These servers are reached through localhost or a tunnel, never a browser.
-                    security = TransportSecuritySettings(
-                        enable_dns_rebinding_protection=False
+                    server = uvicorn.Server(
+                        uvicorn.Config(self._build_app(), log_level="critical")
                     )
-                    mcp = MCPServer(
-                        self.server_name or type(self).__name__,
-                        version=__version__,
-                    )
-                    self.register(mcp)
-
-                    @mcp.custom_route(HEALTH_PATH, methods=["GET"])
-                    async def health(_request):
-                        # See HEALTH_PATH.
-                        return PlainTextResponse("ok", headers={"Connection": "close"})
-
-                    # Modern HTTP is inherently sessionless. Keep the legacy leg stateless too so
-                    # older agent clients can use the same reconnect-per-call endpoint.
-                    mcp_app = mcp.streamable_http_app(
-                        json_response=True,
-                        stateless_http=True,
-                        transport_security=security,
-                    )
-
-                    async def app(scope, receive, send):
-                        query = (
-                            parse_qs(
-                                scope.get("query_string", b"").decode(),
-                                keep_blank_values=True,
-                            )
-                            if scope["type"] == "http"
-                            else None
-                        )
-                        token = _request_query_params.set(query)
-                        try:
-                            await mcp_app(scope, receive, send)
-                        finally:
-                            _request_query_params.reset(token)
-
-                    server = uvicorn.Server(uvicorn.Config(app, log_level="critical"))
                     await server.serve(sockets=[sock])
             finally:
                 self._state_client = None

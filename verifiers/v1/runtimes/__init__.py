@@ -10,7 +10,6 @@ from verifiers.v1.configs.runtime import (
     NetworkPolicyConfig,
     PrimeConfig,
     RuntimeConfig,
-    SubprocessConfig,
 )
 from verifiers.v1.runtimes.backends.custom import CustomRuntimeInfo, import_backend
 from verifiers.v1.runtimes.backends.docker import DockerBackend, DockerRuntimeInfo
@@ -19,21 +18,16 @@ from verifiers.v1.runtimes.backends.prime import (
     PrimeRuntimeInfo,
     set_base_sandbox_labels,
 )
-from verifiers.v1.runtimes.backends.subprocess import (
-    SubprocessBackend,
-    SubprocessRuntimeInfo,
-)
 from verifiers.v1.runtimes.base import (
     BaseRuntimeInfo,
     ProgramResult,
     RuntimeBackend,
     RuntimeProcess,
-    register,
 )
 from verifiers.v1.runtimes.runtime import Runtime
 
 RuntimeInfo = Annotated[
-    SubprocessRuntimeInfo | DockerRuntimeInfo | PrimeRuntimeInfo | CustomRuntimeInfo,
+    DockerRuntimeInfo | PrimeRuntimeInfo | CustomRuntimeInfo,
     Field(discriminator="type"),
 ]
 
@@ -43,16 +37,13 @@ def backend_cls(config: RuntimeConfig) -> type[RuntimeBackend]:
     if isinstance(config, CustomRuntimeConfig):
         return import_backend(config.import_path)
     return {
-        "subprocess": SubprocessBackend,
         "docker": DockerBackend,
         "prime": PrimeBackend,
     }[config.type]
 
 
 def make_backend(config: RuntimeConfig, name: str | None = None) -> RuntimeBackend:
-    backend = backend_cls(config)(config, name)
-    register(backend)
-    return backend
+    return backend_cls(config)(config, name)
 
 
 @asynccontextmanager
@@ -63,12 +54,12 @@ async def provision_backend(
 ) -> AsyncIterator[RuntimeBackend]:
     """Provision a box from `config` and tear it down on exit.
 
-    `start()` sits inside the `try`: a failed start may already hold a paid sandbox, so
-    it has to reach `stop()` (which is safe on a partially-started runtime)."""
+    `ensure_started()` sits inside the `try`: a failed start may already hold a paid
+    sandbox, so it has to reach `stop()` (which is safe on a partially-started runtime)."""
     backend = make_backend(config, name)
     backend.env = dict(env or {})
     try:
-        await backend.start()
+        await backend.ensure_started()
         yield backend
     finally:
         await backend.stop()
@@ -108,9 +99,6 @@ __all__ = [
     "RuntimeConfig",
     "RuntimeInfo",
     "RuntimeProcess",
-    "SubprocessBackend",
-    "SubprocessConfig",
-    "SubprocessRuntimeInfo",
     "backend_cls",
     "make_backend",
     "provision_backend",

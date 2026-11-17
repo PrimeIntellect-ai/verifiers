@@ -15,9 +15,6 @@ from verifiers.v1.runtimes import (
     RuntimeConfig,
     provision_backend,
 )
-from verifiers.v1.runtimes.base import (
-    register,
-)
 from verifiers.v1.runtimes.compose import ComposeSpec
 from verifiers.v1.utils.aio import run_shielded
 from verifiers.v1.utils.logging import get_logger
@@ -46,7 +43,8 @@ class _DeploymentStrategy:
     async def prepare_execution(
         self, deployment: Deployment, routes: list[str], state_route: str | None = None
     ) -> None:
-        await deployment.harness_backend.prepare_execution(routes)
+        assert deployment.harness_backend is not None
+        await deployment.harness_backend.apply_execution_policy(routes)
 
     async def stop_execution(self, deployment: Deployment) -> None:
         return
@@ -103,14 +101,16 @@ class Deployment:
         self._owned: set[int] = set()
         self._close_task: asyncio.Task[None] | None = None
 
-    async def own(self, backend: RuntimeBackend) -> RuntimeBackend:
+    async def own(
+        self, backend: RuntimeBackend, *, eager: bool = True
+    ) -> RuntimeBackend:
         """Acquire a target; register cleanup before startup can partially fail."""
         if id(backend) in self._owned:
             raise ValueError("runtime already owned by this deployment")
         self._owned.add(id(backend))
-        register(backend)
         self._stack.push_async_callback(backend.stop)
-        await backend.start()
+        if eager:
+            await backend.ensure_started()
         return backend
 
     async def enter(self, resource):

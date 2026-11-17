@@ -32,9 +32,8 @@ from tenacity import (
     wait_random_exponential,
 )
 
-if TYPE_CHECKING:
-    # The harness bundles this module into the generated script before execution.
-    from verifiers.v1.harnesses.utils.compaction import (  # noqa: TC004
+try:
+    from verifiers.v1.harnesses.utils.compaction import (
         TOOL_OUTPUT_MAX_BYTES,
         Compactor,
         bound_tool_message,
@@ -43,8 +42,24 @@ if TYPE_CHECKING:
         estimated_tokens,
         is_context_overflow,
     )
-    from verifiers.v1.harnesses.utils.mcp import call_mcp, connect_mcp  # noqa: TC004
-    from verifiers.v1.utils.network import network_rule_matches  # noqa: TC004
+    from verifiers.v1.harnesses.utils.mcp import call_mcp, connect_mcp
+    from verifiers.v1.utils.network import network_rule_matches
+except ModuleNotFoundError:
+    if TYPE_CHECKING:
+        from verifiers.v1.harnesses.utils.compaction import (  # noqa: TC004
+            TOOL_OUTPUT_MAX_BYTES,
+            Compactor,
+            bound_tool_message,
+            compactable,
+            discover_threshold,
+            estimated_tokens,
+            is_context_overflow,
+        )
+        from verifiers.v1.harnesses.utils.mcp import (  # noqa: TC004
+            call_mcp,
+            connect_mcp,
+        )
+        from verifiers.v1.utils.network import network_rule_matches  # noqa: TC004
 
 # Mirror of verifiers.v1.errors.MODEL_TRANSPORT_ERROR_EXIT_CODE;
 # this bundled script cannot import verifiers.

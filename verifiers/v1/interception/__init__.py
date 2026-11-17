@@ -45,7 +45,10 @@ def requires_tunnel(
     return any(
         isinstance(config, BaseToolsetConfig)
         and not config.url
-        and not runtime_is_local(config.runtime)
+        and (
+            getattr(config, "service", None) is not None
+            or (config.runtime is not None and not runtime_is_local(config.runtime))
+        )
         for config in server_configs
     )
 
@@ -73,6 +76,8 @@ async def serve_interception(
     session: RolloutSession,
     servers: list,
     shared_tools: "dict[str, SharedToolServer]",
+    *,
+    harness_on_host: bool = False,
 ) -> AsyncIterator[Slot]:
     """A slot on the shared interception when one was injected (its owner keeps the
     lifecycle), else on a per-rollout `InterceptionServer` owned — brought up and torn
@@ -82,7 +87,7 @@ async def serve_interception(
             yield slot
         return
     tunneled = requires_tunnel(
-        runtime.is_local,
+        True if harness_on_host else runtime.is_local,
         [server.config for server in servers],
         shared_tools.values(),
     )

@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
-from verifiers.v1.errors import ToolsetError
+from verifiers.v1.errors import ToolsetError, boundary
 from verifiers.v1.interception.tunnel import PrimeTunnel
 from verifiers.v1.mcp.server import (
     STATE_ROUTE_PARAM,
@@ -364,10 +364,6 @@ async def serve_in_runtime(
         "VF_STATE_URL": state_url or "",
         "VF_STATE_SECRET": state_secret,
     }
-    if runtime.type == "subprocess":
-        # Keep provider temp files in the runtime workdir so cleanup removes them.
-        assert runtime.info.id is not None
-        env["TMPDIR"] = runtime.info.id
     if listen_all or (exposed and runtime.published_port is not None):
         env["MCP_HOST"] = "0.0.0.0"
     fixed = runtime.published_port if exposed else None
@@ -377,20 +373,17 @@ async def serve_in_runtime(
     else:
         port_file = runtime.temp_path(f"tool-port-{uuid.uuid4().hex}", env=env)
         env["MCP_PORT_FILE"] = port_file
-    python = sys.executable
-    if runtime.type != "subprocess":
-        python = await _install_in_sandbox(server, runtime)
+    python = await _install_in_sandbox(server, runtime)
     command = [python, "-m", type(server).__module__]
-    if runtime.type != "subprocess":
-        # Providers may invoke uv after the install shell exits, so preserve its PATH.
-        path = "$HOME/.local/bin:$PATH"
-        if runtime.user is not None:
-            path = f"{PurePosixPath(python).parent}:{path}"
-        command = [
-            "sh",
-            "-c",
-            f'export PATH="{path}"; exec {shlex.join(command)}',
-        ]
+    # Providers may invoke uv after the install shell exits, so preserve its PATH.
+    path = "$HOME/.local/bin:$PATH"
+    if runtime.user is not None:
+        path = f"{PurePosixPath(python).parent}:{path}"
+    command = [
+        "sh",
+        "-c",
+        f'export PATH="{path}"; exec {shlex.join(command)}',
+    ]
     log = f"vf_tool_{server.server_name}.log"
     if runtime.user is not None:
         # The agent user may not be able to write the workdir.
@@ -449,7 +442,8 @@ async def reachable_url(
 @dataclass(frozen=True)
 class _ServedServer:
     url: str
-    runtime: Runtime
+    runtime: Runtime | None = None
+    local: bool = True
 
 
 @contextlib.asynccontextmanager
@@ -458,6 +452,7 @@ async def _serve(
     harness_runtime: Runtime | None = None,
     harness_is_local: bool = True,
     *,
+    harness_on_host: bool = False,
     state_secret: str = "",
     state_base: str | None = None,
     proxy_mcp: MCPProxy | None = None,
@@ -468,7 +463,45 @@ async def _serve(
     cfg = server.config
     service = getattr(cfg, "service", None)
     own_vm = (placements or {}).get(server.server_name)
+    consumer_is_local = (
+        True
+        if harness_on_host
+        else (
+            harness_runtime.is_local
+            if harness_runtime is not None
+            else harness_is_local
+        )
+    )
     async with contextlib.AsyncExitStack() as stack:
+        if service is None and own_vm is None and cfg.runtime is None:
+            timeouts = (
+                cfg.timeout
+                if isinstance(cfg, BaseToolsetConfig)
+                else ToolsetTimeoutConfig()
+            )
+            state_url = f"{state_base.rstrip('/')}/state" if state_base else ""
+            async with boundary(ToolsetError, f"server {server.server_name!r}"):
+                port = await stack.enter_async_context(
+                    server.serve_in_process(
+                        state_url=state_url,
+                        state_secret=state_secret,
+                        startup_timeout=timeouts.startup,
+                    )
+                )
+            local_base = f"http://127.0.0.1:{port}"
+            if proxy_mcp is not None and not consumer_is_local:
+                url = await stack.enter_async_context(proxy_mcp(f"{local_base}/mcp"))
+                yield _ServedServer(url, None, True)
+                return
+            if not consumer_is_local:
+                base = await stack.enter_async_context(PrimeTunnel().expose(port))
+                yield _ServedServer(f"{base.rstrip('/')}/mcp", None, True)
+                return
+            if harness_runtime is not None and not harness_on_host:
+                local_base = harness_runtime.host_url(local_base)
+            yield _ServedServer(f"{local_base.rstrip('/')}/mcp", None, True)
+            return
+
         host = None
         if service is not None or own_vm is not None:
             if own_vm is not None:
@@ -488,6 +521,7 @@ async def _serve(
                     "which needs a native Prime service VM"
                 )
         else:
+            assert cfg.runtime is not None
             if (
                 isinstance(cfg.runtime, NetworkPolicyConfig)
                 and cfg.runtime.network_restricted
@@ -520,28 +554,23 @@ async def _serve(
             state_secret=state_secret,
         )
         if host is not None:
-            yield _ServedServer(f"http://{host}:{port}/mcp", runtime)
+            yield _ServedServer(f"http://{host}:{port}/mcp", runtime, runtime.is_local)
             return
 
-        consumer_is_local = (
-            harness_runtime.is_local
-            if harness_runtime is not None
-            else harness_is_local
-        )
         if proxy_mcp is not None and runtime.is_local and not consumer_is_local:
             backend_url = await runtime.expose(port)
             # Revoke and drain the proxy before releasing the runtime.
             url = await stack.enter_async_context(
                 proxy_mcp(f"{backend_url.rstrip('/')}/mcp")
             )
-            yield _ServedServer(url, runtime)
+            yield _ServedServer(url, runtime, runtime.is_local)
             return
         base = await stack.enter_async_context(
             reachable_url(runtime, port, consumer_is_local=consumer_is_local)
         )
-        if harness_runtime is not None:
+        if harness_runtime is not None and not harness_on_host:
             base = harness_runtime.host_url(base)
-        yield _ServedServer(f"{base.rstrip('/')}/mcp", runtime)
+        yield _ServedServer(f"{base.rstrip('/')}/mcp", runtime, runtime.is_local)
 
 
 @contextlib.asynccontextmanager
@@ -550,6 +579,7 @@ async def serve(
     harness_runtime: Runtime | None = None,
     harness_is_local: bool = True,
     *,
+    harness_on_host: bool = False,
     state_secret: str = "",
     state_base: str | None = None,
     proxy_mcp: MCPProxy | None = None,
@@ -562,6 +592,7 @@ async def serve(
         server,
         harness_runtime,
         harness_is_local,
+        harness_on_host=harness_on_host,
         state_secret=state_secret,
         state_base=state_base,
         proxy_mcp=proxy_mcp,
@@ -636,7 +667,7 @@ async def serve_shared(toolsets: list[Toolset], harness_is_local: bool = True):
                 )
                 servers[name] = SharedToolServer(
                     url=served.url,
-                    local=served.runtime.is_local,
+                    local=served.local,
                     runtime=served.runtime,
                     state_secret=state_secret,
                 )
@@ -672,6 +703,7 @@ async def serve_tools(
     harness_runtime: Runtime,
     shared: dict[str, SharedToolServer] | None = None,
     *,
+    harness_on_host: bool = False,
     state_secret: str = "",
     state_route: str = "",
     state_base: str | None = None,
@@ -694,10 +726,18 @@ async def serve_tools(
                 # Not ours: a pre-existing endpoint with no vf state channel. Pass the URL
                 # through bare — a state tag would be useless, and the per-rollout secret
                 # must not ride the query string to a third-party host.
-                urls[name] = harness_runtime.host_url(server.url)
+                urls[name] = (
+                    server.url
+                    if harness_on_host
+                    else harness_runtime.host_url(server.url)
+                )
                 logger.debug("Using external tool server %s url=%s", name, server.url)
                 continue
-            url = harness_runtime.host_url(server.url) if server.local else server.url
+            url = (
+                server.url
+                if (harness_on_host or not server.local)
+                else harness_runtime.host_url(server.url)
+            )
             urls[name] = _shared_url_for_rollout(server, url, state_base, state_route)
             logger.debug("Using shared tool server %s url=%s", name, server.url)
         for toolset in toolsets:
@@ -710,6 +750,7 @@ async def serve_tools(
             urls[name] = await stack.enter_async_context(
                 toolset.serve(
                     harness_runtime,
+                    harness_on_host=harness_on_host,
                     state_secret=state_secret,
                     state_base=state_base,
                     proxy_mcp=proxy_mcp,

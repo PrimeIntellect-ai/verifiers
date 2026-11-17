@@ -618,10 +618,12 @@ class Agent:
             raise RuntimeError("Agent is closed; create a new agent")
         self._entered = True
         if self.interception is None:
-            # Sized to the runtime policy (remote needs the tunnel); runs the
-            # server can't serve fall back per run.
+            # Sized to the harness/runtime locality (remote CLI needs the tunnel);
+            # runs the server can't serve fall back per run.
             self._server = InterceptionServer(
-                requires_tunnel=not runtime_is_local(self.runtime_config)
+                requires_tunnel=not (
+                    self.harness.RUNS_ON_HOST or runtime_is_local(self.runtime_config)
+                )
             )
             try:
                 await self._server.__aenter__()
@@ -886,12 +888,12 @@ class Agent:
         if runtime is not None:
             _check_borrowed_placement(task, runtime, self.runtime_config)
             runtime_config = runtime.config
-            run_is_local = runtime.is_local
+            run_is_local = harness.RUNS_ON_HOST or runtime.is_local
         else:
             runtime_config = resolve_runtime_config(
                 self.runtime_config, task, self._warned_resources
             )
-            run_is_local = runtime_is_local(runtime_config)
+            run_is_local = harness.RUNS_ON_HOST or runtime_is_local(runtime_config)
         validate_pairing(
             harness,
             type(task),

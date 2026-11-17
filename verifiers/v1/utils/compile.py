@@ -20,11 +20,11 @@ logger = get_logger(__name__)
 def resolve_runtime_config(
     base: RuntimeConfig, task: Task, warned: set[tuple[str, str]] | None = None
 ) -> RuntimeConfig:
-    """Resolve a task's runtime config from `base`: inject the task's `image` (an
-    image needs a container — refuse subprocess), apply its network policy, `workdir`,
-    and requested `resources` where the runtime supports them. Precedence: cli/toml >
-    task > default except that restrictions compose; an unsupported resource warns once
-    (deduped via `warned`)."""
+    """Resolve a task's runtime config from `base`: inject the task's `image`,
+    apply its network policy, `workdir`, and requested `resources` where the
+    runtime supports them. Precedence: cli/toml > task > default except that
+    restrictions compose; an unsupported resource warns once (deduped via
+    `warned`)."""
     config = base
     updates: dict = {}
     if task.data.image is not None:

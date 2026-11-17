@@ -149,7 +149,7 @@ memory = 1
 
 If you omit `[env.agent.scoring.runtime]`, the verifier provisions a fresh container using the agent's runtime policy and the task's scoring requirements. Providing `[env.agent.scoring.runtime]` lets you configure the grading sandbox independently: you can give it smaller CPU and memory limits, different network rules, a different container backend, or a dedicated `image` preloaded with test dependencies that you do not want in the solver image. You can also set `env.agent.scoring.env` to merge scoring-only environment variables over `TaskData.scoring.env` (using `${VAR}` or `${VAR:-default}` templates so raw secrets are resolved at scoring time rather than written into saved configs).
 
-Both the solver and verifier must run on container-backed runtimes (`subprocess` does not support artifact collection or isolated grading). Because artifacts are restored without path translation, relative artifact paths require the solver and verifier to share the same `workdir`; use absolute paths if their working directories differ.
+Both the solver and verifier must run on container-backed runtimes (`SUPPORTS_TASK_IMAGES`). Because artifacts are restored without path translation, relative artifact paths require the solver and verifier to share the same `workdir`; use absolute paths if their working directories differ.
 
 ### Transfer outputs and prepare private tests
 

@@ -64,9 +64,12 @@ class Harness(ABC, Generic[ConfigT]):
     `skills` on a harness without support is rejected up front."""
     NEEDS_CONTAINER: ClassVar[bool] = True
     """Whether the program must run in a container runtime: True for every harness
-    that installs and drives a third-party program — on the host (subprocess) it
-    leaks host state (auth, config, processes) both ways. Only the minimal
-    in-house loops (`bash`, `null`) override to False."""
+    that installs and drives a third-party program. Only the minimal in-house loops
+    (`bash`, `null`) override to False."""
+    RUNS_ON_HOST: ClassVar[bool] = False
+    """Whether this harness drives its model and host-MCP client loop in-process on
+    the evaluator host, touching `runtime` only when a local tool (`bash`/`edit`)
+    actually executes."""
 
     def __init__(self, config: ConfigT) -> None:
         self.config = config

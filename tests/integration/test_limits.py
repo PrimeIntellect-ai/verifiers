@@ -100,7 +100,7 @@ async def test_skip_scoring_on_stop(run, scripted_model, skip):
     (episode,) = await run(
         "counter-tool",
         harness="null",
-        runtime={"type": "subprocess"},
+        runtime={"type": "docker"},
         client=scripted_model,
         taskset_overrides={
             "task": {"constant_reward": True, "stops": {"any_response": stop}}

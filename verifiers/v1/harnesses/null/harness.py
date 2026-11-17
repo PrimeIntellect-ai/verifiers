@@ -7,7 +7,9 @@ from verifiers.v1.harnesses.utils.launch import (
     CHAT_PROGRAM_SOURCE,
     CompactionConfig,
     compaction_args,
+    has_internal_mcp,
     launch_chat_program,
+    run_in_process_chat,
 )
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.task import TaskData
@@ -29,9 +31,7 @@ class NullHarness(Harness[NullHarnessConfig]):
     SUPPORTS_TOOL_INTERCEPTION = True
     EXECUTES_CODE = False
     NEEDS_CONTAINER = False
-
-    async def setup(self, runtime: Runtime) -> None:
-        await runtime.prepare_uv_script(CHAT_PROGRAM_SOURCE, self.config.resolved_env)
+    RUNS_ON_HOST = True
 
     async def launch(
         self,
@@ -45,19 +45,34 @@ class NullHarness(Harness[NullHarnessConfig]):
         tool_interception_url: str | None = None,
     ) -> ProgramResult:
         system_prompt, prompt = self.resolve_prompt(data)
-        args = compaction_args(self.config.compaction)
-        if tool_interception_url:
-            args.append(f"--tool-interception-url={tool_interception_url}")
-        return await launch_chat_program(
-            CHAT_PROGRAM_SOURCE,
+        if has_internal_mcp(mcp_urls):
+            args = compaction_args(self.config.compaction)
+            if tool_interception_url:
+                args.append(
+                    f"--tool-interception-url={runtime.host_url(tool_interception_url)}"
+                )
+            return await launch_chat_program(
+                CHAT_PROGRAM_SOURCE,
+                self.config,
+                ctx,
+                trace,
+                runtime,
+                runtime.host_url(endpoint),
+                secret,
+                mcp_urls,
+                system_prompt,
+                prompt,
+                extra_args=args,
+            )
+        return await run_in_process_chat(
             self.config,
             ctx,
-            trace,
             runtime,
             endpoint,
             secret,
             mcp_urls,
             system_prompt,
             prompt,
-            extra_args=args,
+            compaction_cfg=self.config.compaction,
+            tool_interception_url=tool_interception_url,
         )

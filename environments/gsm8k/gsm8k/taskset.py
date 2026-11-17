@@ -1,14 +1,12 @@
-"""gsm8k: grade-school math word problems (single-turn, in-runtime verification).
+"""gsm8k: grade-school math word problems (single-turn, in-process verification).
 
-Loads questions from GSM8K; the model reasons and gives a final number. The reward
-runs a uv script (`verify.py`, with `math-verify` as an isolated dependency) IN the
-rollout's runtime via `runtime.write` + `runtime.run` — so the verifier's deps never
-touch the eval process, and it works identically on the subprocess, docker, and
-prime runtimes. (A reward is thus either a pure function of the trace or, like this
-one, runtime read/write/exec.)
+Loads questions from GSM8K; the model reasons and gives a final number prefixed with
+`#### `. The reward verifies equivalence directly in-process via
+`vf.verify_boxed_math_answer`, so neither rollouts nor `vf-validate` spawn a container
+or sandbox.
 """
 
-from pathlib import Path
+import re
 from typing import Literal
 
 import verifiers.v1 as vf
@@ -17,7 +15,13 @@ SYSTEM = (
     "Solve the grade-school math problem. Reason step by step, then give the final "
     "answer as a single number on the last line, prefixed with '#### ' (e.g. '#### 42')."
 )
-VERIFY = (Path(__file__).parent / "verify.py").read_bytes()
+
+
+def _score_gsm8k(answer: str, reply: str | None) -> float:
+    text = reply or ""
+    matches = re.findall(r"####\s*(.+)", text)
+    prediction = matches[-1].strip() if matches else text
+    return vf.verify_boxed_math_answer(f"\\boxed{{{prediction}}}", answer)
 
 
 class GSM8KData(vf.TaskData):
@@ -26,34 +30,14 @@ class GSM8KData(vf.TaskData):
 
 
 class GSM8KTask(vf.Task[GSM8KData]):
-    async def setup(self, runtime: vf.Runtime) -> None:
-        # Pre-provision the verifier's uv env while the runtime still has internet —
-        # with a restricted allowlist it is cut before the agent runs, and
-        # scoring happens after that.
-        await runtime.prepare_uv_script(VERIFY)
-
     @vf.reward(weight=1.0)
-    async def correct(self, trace: vf.Trace, runtime: vf.Runtime) -> float:
-        prediction = trace.last_reply
-        result = await runtime.run_uv_script(
-            VERIFY, args=[self.data.answer, prediction or ""]
-        )
-        if result.exit_code != 0:
-            raise RuntimeError(f"verify.py failed: {result.stderr.strip()[-500:]}")
-        lines = result.stdout.strip().splitlines()
-        return float(lines[-1]) if lines else 0.0
+    async def correct(self, trace: vf.Trace) -> float:
+        return _score_gsm8k(self.data.answer, trace.last_reply)
 
-    async def validate(self, runtime: vf.Runtime) -> bool:
-        """Valid iff the verifier accepts the ground-truth answer: run `verify.py` on the gold
-        answer as a well-formed `#### N` prediction and require a 1.0 score — catching rows the
-        verifier can't parse or grade (the model-free counterpart of the `correct` reward)."""
-        result = await runtime.run_uv_script(
-            VERIFY, args=[self.data.answer, f"#### {self.data.answer}"]
-        )
-        if result.exit_code != 0:
-            raise RuntimeError(f"verify.py failed: {result.stderr.strip()[-500:]}")
-        lines = result.stdout.strip().splitlines()
-        return bool(lines) and float(lines[-1]) == 1.0
+    async def validate(self) -> bool:
+        """Valid iff the verifier accepts the ground-truth answer as a well-formed
+        `#### N` prediction — catching rows the verifier can't parse or grade."""
+        return _score_gsm8k(self.data.answer, f"#### {self.data.answer}") == 1.0
 
 
 class GSM8KConfig(vf.TasksetConfig):

@@ -36,7 +36,7 @@ async def test_tool(run, harness, harness_runtime):
 
 @pytest.mark.parametrize(
     "harness_runtime,tool_runtime",
-    placements(tool_runtimes=("service", "subprocess", "prime")),
+    placements(tool_runtimes=("service", "host", "prime")),
     indirect=True,
 )
 async def test_tool_placement(run, harness_runtime, tool_runtime):

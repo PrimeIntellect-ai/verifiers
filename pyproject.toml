@@ -216,7 +216,7 @@ addopts = [
 markers = [
     # Integration grid axes — select subsets with `-m` (see tests/integration/grid.py). A mark
     # is applied per axis, so it matches every cell touching that value on any axis.
-    "subprocess: integration cells touching the subprocess (host) runtime",
+    "host: integration cells with a tool server running in-process on the host",
     "docker: integration cells touching the docker runtime",
     "prime: integration cells touching the prime runtime (real sandbox + tunnel)",
     "service: integration cells with a tool server in a Compose service beside the harness",

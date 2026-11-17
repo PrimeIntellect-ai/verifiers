@@ -276,7 +276,7 @@ Tools defined on `Taskset.toolsets(config)` run in a server shared across a work
 
 A toolset's config controls where the MCP server runs:
 
-- **Host subprocess (default)** — launches the server as a local subprocess with its own filesystem.
+- **In-process on the evaluator host (`runtime = None`, default)** — serves the FastMCP app directly on the worker event loop with no subprocess or sandbox overhead.
 - **`service = "<name>"`** (per-task toolsets on Prime) — runs the tool server inside a named native VM from the task's `ServicesSpec`. The harness reaches it over the rollout's private network by its LAN hostname.
 - **`runtime = { type = "docker", ... }`** — runs the tool server in its own dedicated container.
 - **`url = "https://.../mcp"`** — connects to an already-running streamable-HTTP MCP server instead of launching one.

@@ -48,16 +48,16 @@ from verifiers.v1.runtimes import (
     make_backend,
     provision_runtime,
 )
-from verifiers.v1.runtimes.backends.subprocess import signal_process
+from verifiers.v1.runtimes.backends.cli import signal_process
 from verifiers.v1.runtimes.compose import ComposeSpec, compose_services
 from verifiers.v1.runtimes.strategies import _deployment_strategy
 from verifiers.v1.utils.compile import resolve_runtime_config
 
-RUNTIMES = ["subprocess", "docker", "prime", "plugin"]
+RUNTIMES = ["docker", "prime", "plugin"]
 SUPPORTED = {
     "task_images": {"docker", "prime"},
     "user_switching": {"docker", "prime"},
-    "port_exposure": {"subprocess", "docker", "prime"},
+    "port_exposure": {"docker", "prime"},
     "compose": {"docker", "prime"},
     "network_policies": {"docker", "prime"},
 }
@@ -157,7 +157,7 @@ def task(**data) -> vf.Task:
     return vf.Task(data=vf.TaskData(idx=0, prompt=None, **data))
 
 
-@pytest.mark.parametrize("name", ["subprocess", "docker", "prime"])
+@pytest.mark.parametrize("name", ["docker", "prime"])
 def test_built_in_runtime_declares_its_features(name) -> None:
     config = TypeAdapter(RuntimeConfig).validate_python({"type": name})
     cls = backend_cls(config)
@@ -569,3 +569,203 @@ async def test_concurrent_background_starts_keep_every_handle() -> None:
         )
     )
     assert len(backend._background) == 8
+
+
+async def test_lazy_runtime_skips_provisioning_for_pure_chat_and_host_mcp(
+    monkeypatch,
+) -> None:
+    """Pure-chat and host-MCP rollouts never call `DockerBackend.start` or
+    `PrimeBackend.start`, while `BashHarness` starts the backend lazily on the first
+    `bash`/`edit` call."""
+    from aiohttp import web
+
+    from verifiers.v1.dialects.chat import ChatDialect
+    from verifiers.v1.runtimes.backends.docker import DockerBackend
+    from verifiers.v1.runtimes.backends.prime import PrimeBackend
+
+    assert not hasattr(vf, "SubprocessConfig")
+    with pytest.raises(ValidationError):
+        TypeAdapter(RuntimeConfig).validate_python({"type": "subprocess"})
+
+    replies: list[dict] = []
+
+    async def completions(request: web.Request) -> web.StreamResponse:
+        await request.json()
+        msg = replies.pop(0)
+        raw = {
+            "id": "cmpl-lazy",
+            "object": "chat.completion",
+            "created": 0,
+            "model": "test-model",
+            "choices": [
+                {
+                    "index": 0,
+                    "message": msg,
+                    "finish_reason": "tool_calls" if msg.get("tool_calls") else "stop",
+                }
+            ],
+            "usage": {"prompt_tokens": 8, "completion_tokens": 4, "total_tokens": 12},
+        }
+        resp = web.StreamResponse(headers={"Content-Type": "text/event-stream"})
+        await resp.prepare(request)
+        for event in ChatDialect().stream_events(raw):
+            await resp.write(event)
+        await resp.write_eof()
+        return resp
+
+    app = web.Application()
+    app.router.add_post("/{tail:.*}", completions)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "127.0.0.1", 0)
+    await site.start()
+    port = site._server.sockets[0].getsockname()[1]
+    client_cfg = vf.EvalClientConfig(base_url=f"http://127.0.0.1:{port}/v1")
+
+    async def forbid_start(self) -> None:
+        raise AssertionError(f"{type(self).__name__}.start must not be called")
+
+    monkeypatch.setattr(DockerBackend, "start", forbid_start)
+    monkeypatch.setattr(PrimeBackend, "start", forbid_start)
+
+    try:
+        # 1. Single-turn chat on both NullHarness + BashHarness over Docker + Prime
+        for harness_id in ("null", "bash"):
+            for rt_type in ("docker", "prime"):
+                replies.append({"role": "assistant", "content": "#### 42"})
+                cfg = vf.AgentConfig(
+                    model="test-model",
+                    client=client_cfg,
+                    harness={"id": harness_id},
+                    runtime={"type": rt_type},
+                )
+                async with vf.make_agent(cfg) as agent:
+                    trace = await agent.run(vf.Task(vf.TaskData(prompt="6 * 7?")))
+                assert trace.ok, trace.errors
+                assert trace.last_reply == "#### 42"
+                assert trace.agent is not None and trace.agent.runtime is not None
+                assert trace.agent.runtime.id is None
+
+        # 2. In-process stateful MCP tool server (`ToolsetConfig.runtime is None`)
+        class BumpState(vf.State):
+            count: int = 0
+
+        class BumpTools(vf.Toolset[vf.ToolsetConfig, BumpState]):
+            TOOL_PREFIX = "bump"
+
+            @vf.tool
+            async def inc(self) -> str:
+                self.state.count += 1
+                return f"count={self.state.count}"
+
+        class BumpTask(vf.Task[vf.TaskData, vf.TaskConfig, BumpState]):
+            @classmethod
+            def toolsets(cls, config):
+                return [BumpTools(vf.ToolsetConfig())]
+
+            @vf.reward
+            async def checked(self, trace: vf.Trace) -> float:
+                return float(trace.state.count == 2)
+
+        replies.extend(
+            [
+                {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": "c1",
+                            "type": "function",
+                            "function": {"name": "bump_inc", "arguments": "{}"},
+                        }
+                    ],
+                },
+                {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": "c2",
+                            "type": "function",
+                            "function": {"name": "bump_inc", "arguments": "{}"},
+                        }
+                    ],
+                },
+                {"role": "assistant", "content": "done"},
+            ]
+        )
+        async with vf.make_agent(
+            vf.AgentConfig(
+                model="test-model",
+                client=client_cfg,
+                harness={"id": "null"},
+                runtime={"type": "prime"},
+            )
+        ) as agent:
+            trace = await agent.run(BumpTask(vf.TaskData(prompt="bump twice")))
+        assert trace.ok, trace.errors
+        assert trace.reward == 1.0
+        assert trace.agent is not None and trace.agent.runtime is not None
+        assert trace.agent.runtime.id is None
+
+        # 3. `BashHarness` lazily starts `HostBackend` on the first `bash` / `edit` call
+        starts = 0
+        orig_host_start = HostBackend.start
+
+        async def counted_start(self) -> None:
+            nonlocal starts
+            starts += 1
+            await orig_host_start(self)
+
+        monkeypatch.setattr(HostBackend, "start", counted_start)
+        replies.extend(
+            [
+                {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": "b1",
+                            "type": "function",
+                            "function": {
+                                "name": "bash",
+                                "arguments": '{"command": "printf draft > note.txt"}',
+                            },
+                        },
+                        {
+                            "id": "e1",
+                            "type": "function",
+                            "function": {
+                                "name": "edit",
+                                "arguments": '{"path": "note.txt", "old_str": "draft", "new_str": "done"}',
+                            },
+                        },
+                    ],
+                },
+                {"role": "assistant", "content": "all set"},
+            ]
+        )
+
+        class EditCheckTask(vf.Task):
+            @vf.reward
+            async def file_edited(self, runtime: vf.Runtime) -> float:
+                return float(
+                    (await runtime.read("note.txt")).decode().strip() == "done"
+                )
+
+        async with vf.make_agent(
+            vf.AgentConfig(
+                model="test-model",
+                client=client_cfg,
+                harness={"id": "bash"},
+                runtime={"type": "custom", "import_path": f"{__name__}.HostBackend"},
+            )
+        ) as agent:
+            trace = await agent.run(EditCheckTask(vf.TaskData(prompt="edit file")))
+        assert trace.ok, trace.errors
+        assert trace.reward == 1.0
+        assert starts == 1
+        assert trace.agent is not None and trace.agent.runtime is not None
+        assert trace.agent.runtime.id is not None
+    finally:
+        await runner.cleanup()

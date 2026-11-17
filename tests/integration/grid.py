@@ -55,7 +55,7 @@ HARNESSES: list[str | dict] = [
     "mini-swe-agent",
     "prime-agent",
 ]
-DEBUG_RUNTIMES = ("subprocess",)
+DEBUG_RUNTIMES = ("docker",)
 RUNTIMES = (*DEBUG_RUNTIMES, "prime")
 
 # The runtime features a behavior can need, as `needs` names them.
@@ -278,33 +278,35 @@ def skip_harness(cells: list, harness: str, reason: str) -> list:
 
 def placements(
     harness_runtimes: tuple[str, ...] = ("prime",),
-    tool_runtimes: tuple[str, ...] = ("subprocess", "prime"),
+    tool_runtimes: tuple[str, ...] = ("host", "prime"),
     *,
     shared: bool = False,
 ) -> list:
-    """`(harness_runtime, tool_runtime)` cells for a tool server placed in a native
-    service VM beside the harness (`service`), or in its own runtime
-    (on Prime beside a Prime harness, a VM on the rollout's private network). A
-    `subprocess` tool runtime is a server on the host, reached from the sandbox through
-    the tunnel. A `shared` server runs once per eval, so it joins no rollout's network."""
+    """`(harness_runtime, tool_runtime)` cells for a tool server running in-process on
+    the host (`host`), placed in a native service VM beside the harness (`service`), or
+    in its own runtime (on Prime beside a Prime harness, a VM on the rollout's private
+    network). A `shared` server runs once per eval, so it joins no rollout's network."""
     cells = []
     for harness_runtime in harness_runtimes:
         for tool_runtime in tool_runtimes:
             marks = [mark(harness_runtime), mark(tool_runtime)]
             reason = None
-            if tool_runtime == "service":
+            if tool_runtime == "host":
+                reason = None
+            elif tool_runtime == "service":
                 reason = unsupported("null", harness_runtime, ("services",))
             # Beside a Prime harness, a rollout's Prime server joins its private network.
             elif shared or tool_runtime != "prime" or harness_runtime != "prime":
                 reason = unsupported("null", tool_runtime, ("expose",))
             if reason:
                 marks.append(pytest.mark.skip(reason=reason))
+            label = "on-host" if tool_runtime == "host" else f"in-{tool_runtime}"
             cells.append(
                 pytest.param(
                     harness_runtime,
                     tool_runtime,
                     marks=marks,
-                    id=f"harness-in-{harness_runtime}-with-tool-in-{tool_runtime}",
+                    id=f"harness-in-{harness_runtime}-with-tool-{label}",
                 )
             )
     return cells

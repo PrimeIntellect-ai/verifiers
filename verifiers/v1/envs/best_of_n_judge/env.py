@@ -257,8 +257,8 @@ class BestOfNJudgeEnv(BestOfNEnv, vf.Env[BestOfNJudgeEnvConfig]):
         agents.judge.trainable = False
 
     async def run(self, task: vf.Task, agents: vf.Agents) -> None:
-        # Artifacts need a runtime with its own filesystem; a subprocess attempt
-        # is ranked on its trace alone.
+        # Artifacts need a runtime with its own filesystem; an unprovisioned chat
+        # attempt skips collection unless the task declares required artifacts.
         collect = backend_cls(self.config.agent.runtime).SUPPORTS_TASK_IMAGES
         async with asyncio.TaskGroup() as tg:
             runs = [

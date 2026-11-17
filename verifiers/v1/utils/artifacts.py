@@ -135,6 +135,10 @@ async def collect(
 
     Each source is archived separately so its exclude patterns stay local.
     """
+    if not getattr(getattr(runtime, "backend", None), "started", True) and not any(
+        a.required for a in (artifacts or [])
+    ):
+        return {}
     started = time.perf_counter()
     # Resolve relative sources against the runtime workdir. Joining also normalises
     # `/work/` to `/work`, so one tree cannot key two entries (the source is both the
@@ -332,12 +336,13 @@ async def restore(runtime: Runtime, collected: dict[str, bytes | None]) -> None:
     if not collected:
         return
     await validate_runtime_mounts(runtime, collected)
-    # Restoring into the subprocess runtime would extract absolute paths onto the
-    # developer's filesystem, so refuse it before any archive reaches the host.
-    if getattr(runtime.config, "type", None) == "subprocess":
+    # Restoring into a non-container runtime would extract absolute paths onto the
+    # host filesystem, so refuse it before any archive reaches the runtime.
+    backend = getattr(runtime, "backend", None)
+    if backend is not None and not getattr(backend, "SUPPORTS_TASK_IMAGES", True):
         raise RuntimeError(
-            "refusing to restore artifacts into the subprocess runtime: extraction "
-            "writes to absolute paths on the host. Grade in a container."
+            f"refusing to restore artifacts into the {runtime.config.type} runtime: "
+            "extraction requires an isolated container filesystem."
         )
     for root, archive in collected.items():
         _validate_restore(root, archive)

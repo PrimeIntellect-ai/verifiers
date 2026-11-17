@@ -1,53 +1,27 @@
-# /// script
-# requires-python = ">=3.12,<3.14"
-# dependencies = ["nemo-gym==0.4.0"]
-#
-# [[tool.uv.dependency-metadata]]
-# name = "nemo-gym"
-# version = "0.4.0"
-# requires-python = ">=3.12"
-# requires-dist = [
-#     "aiohttp>=3.14.1",
-#     "fastapi",
-#     "gprof2dot",
-#     "hydra-core",
-#     "itsdangerous",
-#     "mcp>=1.27,<2",
-#     "omegaconf",
-#     "openai>=2.9",
-#     "orjson",
-#     "pandas",
-#     "pydantic",
-#     "pydot",
-#     "ray>=2.55.1",
-#     "requests",
-#     "rich",
-#     "typing-extensions",
-#     "uvicorn",
-#     "wandb",
-#     "yappi",
-# ]
-# ///
 """Serve one resource-server class from the published NeMo Gym package."""
 
 import os
+import secrets
 import socket
 from importlib import import_module
 from pathlib import Path
 
 import uvicorn
+from fastapi.responses import JSONResponse
 from nemo_gym.config_types import BaseServerConfig
 from nemo_gym.server_utils import ServerClient
 from omegaconf import OmegaConf
 
-# Managed Gym servers share the evaluator host and never need a routable bind.
-HOST = "127.0.0.1"
-
 
 def main() -> None:
+    # Bind only the sandbox's routed interface. UDP connect selects a local
+    # address without sending traffic to this documentation-only destination.
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as route:
+        route.connect(("192.0.2.1", 9))
+        host = route.getsockname()[0]
     sock = socket.socket()
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    sock.bind((HOST, 0))
+    sock.bind((host, int(os.environ.get("NEMO_GYM_PORT", "0"))))
     port = sock.getsockname()[1]
 
     module_name, class_name = os.environ["NEMO_GYM_RESOURCE_SERVER"].split(":", 1)
@@ -55,17 +29,26 @@ def main() -> None:
     config_class = server_class.model_fields["config"].annotation
     name = module_name.rsplit(".", 2)[-2] if "." in module_name else module_name
     server = server_class(
-        config=config_class(name=name, host=HOST, port=port, entrypoint="app.py"),
+        config=config_class(name=name, host=host, port=port, entrypoint="app.py"),
         server_client=ServerClient(
-            head_server_config=BaseServerConfig(host=HOST, port=11000),
+            head_server_config=BaseServerConfig(host="127.0.0.1", port=11000),
             global_config_dict=OmegaConf.create({}),
         ),
     )
     app = server.setup_webserver()
     server.setup_liveness(app)
     server.setup_exception_middleware(app)
-    Path("nemo_gym.port").write_text(str(port), encoding="ascii")
-    uvicorn.Server(uvicorn.Config(app, host=HOST, port=port)).run(sockets=[sock])
+    token = os.environ["NEMO_GYM_TOKEN"]
+
+    @app.middleware("http")
+    async def authenticate(request, call_next):
+        supplied = request.headers.get("X-Verifiers-Nemo-Token", "")
+        if not secrets.compare_digest(supplied, token):
+            return JSONResponse({"detail": "Unauthorized"}, status_code=401)
+        return await call_next(request)
+
+    Path("/tmp/nemo_gym.port").write_text(str(port), encoding="ascii")
+    uvicorn.Server(uvicorn.Config(app, host=host, port=port)).run(sockets=[sock])
 
 
 if __name__ == "__main__":

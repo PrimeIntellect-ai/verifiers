@@ -165,7 +165,7 @@ class RuntimeBackend(ABC):
 
     is_local: bool = False
     """Whether this runtime exchanges host-local URLs without a public tunnel, as
-    subprocess and docker do. Remote runtimes use a host `Tunnel` inward plus `expose`
+    Docker does. Remote runtimes use a host `Tunnel` inward plus `expose`
     outward."""
 
     SUPPORTS_TASK_IMAGES: ClassVar[bool] = False
@@ -192,8 +192,7 @@ class RuntimeBackend(ABC):
     """Whether the runtime can run a task's Docker Compose services."""
 
     scripts_dir: ClassVar[str] = "/tmp/vf-scripts"
-    """Digest-keyed PEP 723 scripts inside the runtime. Sandboxes own their `/tmp`;
-    the host subprocess runtime overrides this with its per-user cache."""
+    """Digest-keyed PEP 723 scripts inside the runtime's filesystem."""
 
     info: BaseRuntimeInfo
 
@@ -205,6 +204,12 @@ class RuntimeBackend(ABC):
         self.cache = RuntimeCache()
         self._setup_claimed = False
         self._background: list[RuntimeProcess] = []
+        self._provisioning = False
+        self._started = False
+        self._start_lock = asyncio.Lock()
+        self._pending_execution: (
+            tuple[list[str] | None, NetworkPolicyConfig | None] | None
+        ) = None
         self.stopped = False
         """Whether teardown has begun (set by `stop`). A stopped runtime is dead: a rollout
         refuses to borrow one — the owner tore it down, so any use is a lifetime bug in the
@@ -225,9 +230,35 @@ class RuntimeBackend(ABC):
     def type(self) -> str:
         return self.config.type
 
+    @property
+    def started(self) -> bool:
+        """Whether this backend has provisioned its underlying container or VM."""
+        return self._started or self.info.id is not None
+
     @abstractmethod
     async def start(self) -> None:
         pass
+
+    async def ensure_started(self) -> None:
+        """Provision this backend idempotently on first use and apply any deferred
+        execution policy."""
+        if self.stopped:
+            raise SandboxError(f"runtime {self.name!r} has already stopped")
+        if self.started:
+            return
+        async with self._start_lock:
+            if self.stopped:
+                raise SandboxError(f"runtime {self.name!r} has already stopped")
+            if self.started:
+                return
+            self._provisioning = True
+            register(self)
+            await self.start()
+            self._started = True
+            if self._pending_execution is not None:
+                routes, network = self._pending_execution
+                self._pending_execution = None
+                await self.prepare_execution(routes, network)
 
     async def stop(self) -> None:
         """Free the provisioned resource on the normal path (the owner's `finally`),
@@ -237,6 +268,8 @@ class RuntimeBackend(ABC):
         `teardown`, not this."""
         first = not self.stopped
         self.stopped = True  # before the await: no new borrows once teardown begins
+        if not self._provisioning and self.info.id is None and not self._background:
+            return
         started = time.perf_counter()
         await run_shielded(self.teardown())
         if first:
@@ -363,8 +396,18 @@ class RuntimeBackend(ABC):
         if not self.network_restricted:
             return
         if self._setup_claimed:
-            await self.prepare_execution(None)
+            await self.apply_execution_policy(None)
         self._setup_claimed = True
+
+    async def apply_execution_policy(
+        self, routes: list[str] | None, network: NetworkPolicyConfig | None = None
+    ) -> None:
+        """Apply `prepare_execution` immediately when started, else defer until
+        `ensure_started` boots the container or VM."""
+        if self.started:
+            await self.prepare_execution(routes, network)
+            return
+        self._pending_execution = None if routes is None else (routes, network)
 
     async def prepare_execution(
         self, routes: list[str] | None, network: NetworkPolicyConfig | None = None
@@ -387,8 +430,7 @@ class RuntimeBackend(ABC):
         """A fixed port this runtime exposes to the outside at startup, declared up front to the
         provider (some forward only ports named at creation). When set, a server placed
         here binds it instead of a host-chosen free port, and `expose` returns its public URL.
-        `None` for runtimes whose services already sit on host loopback (subprocess),
-        which pick a free port."""
+        `None` when a runtime can dynamically select and publish a free port."""
         return None
 
     async def expose(self, port: int) -> str:

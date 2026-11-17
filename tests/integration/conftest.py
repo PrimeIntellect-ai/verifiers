@@ -57,8 +57,11 @@ def harness_runtime(request) -> dict:
 
 @pytest.fixture
 def tool_runtime(request) -> dict:
-    """A `taskset.task.tools` override placing the tool server in the task's native
-    `tools` service VM (`service`), or its own runtime, by type."""
+    """A `taskset.task.tools` override placing the tool server in-process on the host
+    (`host`), in the task's native `tools` service VM (`service`), or in its own
+    runtime, by type."""
+    if request.param == "host":
+        return {"runtime": None}
     if request.param == "service":
         return {"service": "tools"}
     return {"runtime": runtime_config(request.param)}

@@ -10,7 +10,9 @@ from verifiers.v1.harnesses.utils.launch import (
     CHAT_PROGRAM_SOURCE,
     CompactionConfig,
     compaction_args,
+    has_internal_mcp,
     launch_chat_program,
+    run_in_process_chat,
 )
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.task import TaskData
@@ -54,9 +56,7 @@ class BashHarness(Harness[BashHarnessConfig]):
     SUPPORTS_RESUME = True
     SUPPORTS_TOOL_INTERCEPTION = True
     NEEDS_CONTAINER = False
-
-    async def setup(self, runtime: Runtime) -> None:
-        await runtime.prepare_uv_script(CHAT_PROGRAM_SOURCE, self.config.resolved_env)
+    RUNS_ON_HOST = True
 
     async def launch(
         self,
@@ -90,44 +90,66 @@ class BashHarness(Harness[BashHarnessConfig]):
         ):
             system_prompt = None
         env = {**self.config.resolved_env}
-        args = ["--bash"]
-        if tool_interception_url:
-            args.append(f"--tool-interception-url={tool_interception_url}")
-        args += compaction_args(self.config.compaction)
-        if self.config.edit:
-            args.append("--edit")
+        serper_key = ""
+        search_block: list[str] | None = None
         if self.config.search:
-            # Resolve the key and keep it OUT of the program env: it's handed to the program over
-            # argv (--serper-key), so popping it here stops the agent's `bash` subprocesses from
-            # inheriting it via $SERPER_API_KEY / /proc/self/environ. Prefer a key set in the harness
-            # env (harness config env / forward_env); fall back to the host env only when the key is
-            # *absent* (None), not present-but-empty — a rollout setting SERPER_API_KEY="" is
-            # deliberately masking the host secret, so honor that (the check below then fails loudly
-            # rather than leaking the host key). The pop is scoped to search=true, so an unrelated
-            # key forwarded for the agent's own bash-side use is left untouched.
-            serper_key = env.pop("SERPER_API_KEY", None)
-            if serper_key is None:
-                serper_key = os.environ.get("SERPER_API_KEY")
-            if not serper_key:
+            # Pop SERPER_API_KEY from the sandbox env so `bash` commands never inherit it.
+            popped = env.pop("SERPER_API_KEY", None)
+            if popped is None:
+                popped = os.environ.get("SERPER_API_KEY")
+            if not popped:
                 raise ValueError(
                     "bash search=true requires SERPER_API_KEY in the eval environment "
                     "(the host env or the harness config's env)"
                 )
-            args += ["--search", f"--serper-key={serper_key}"]
+            serper_key = popped
             if isinstance(runtime.config, NetworkPolicyConfig) and runtime.config.block:
-                args.append(f"--search-block={json.dumps(runtime.config.block)}")
-        return await launch_chat_program(
-            CHAT_PROGRAM_SOURCE,
+                search_block = list(runtime.config.block)
+
+        if has_internal_mcp(mcp_urls):
+            args = ["--bash"]
+            if tool_interception_url:
+                args.append(
+                    f"--tool-interception-url={runtime.host_url(tool_interception_url)}"
+                )
+            args += compaction_args(self.config.compaction)
+            if self.config.edit:
+                args.append("--edit")
+            if self.config.search:
+                args += ["--search", f"--serper-key={serper_key}"]
+                if search_block:
+                    args.append(f"--search-block={json.dumps(search_block)}")
+            return await launch_chat_program(
+                CHAT_PROGRAM_SOURCE,
+                self.config,
+                ctx,
+                trace,
+                runtime,
+                runtime.host_url(endpoint),
+                secret,
+                mcp_urls,
+                system_prompt,
+                prompt,
+                extra_args=args,
+                env=env,
+                activate=False,
+            )
+
+        return await run_in_process_chat(
             self.config,
             ctx,
-            trace,
             runtime,
             endpoint,
             secret,
             mcp_urls,
             system_prompt,
             prompt,
-            extra_args=args,
+            bash=True,
+            edit=self.config.edit,
+            search=self.config.search,
+            serper_key=serper_key,
+            search_block=search_block,
+            compaction_cfg=self.config.compaction,
+            tool_interception_url=tool_interception_url,
             env=env,
-            activate=False,
         )
