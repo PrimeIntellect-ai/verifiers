@@ -202,27 +202,14 @@ class _PendingMessage:
 
 
 class _Steers:
-    """One rollout's steering state, shared by its `Interaction` and a bound
-    `Steering`: deliveries in flight (each runs once, shielded from its caller's
-    cancellation), the receipts of injected message IDs, so a repeat delivers
-    nothing, and the messages queued for the next turn by ID."""
+    """One rollout's steering deliveries: each runs once, shielded from its caller's
+    cancellation, and an injected message ID keeps its receipt, so a repeat
+    delivers nothing."""
 
-    def __init__(self, run: Rollout, stopped: Callable[[], bool] | None = None) -> None:
+    def __init__(self, run: Rollout) -> None:
         self.run = run
         self.receipts: dict[str, tuple[str, dict]] = {}
         self.tasks: dict[object, tuple[str, asyncio.Task[dict]]] = {}
-        self.pending: dict[str, _PendingMessage] = {}
-        self._stopped = stopped
-
-    @property
-    def stopped(self) -> bool:
-        """Whether the rollout takes no more messages: closed or stopped, or an
-        interaction closing or over."""
-        return (
-            self.run.closed
-            or not self.run.ok
-            or (self._stopped is not None and self._stopped())
-        )
 
     def receipt(self, message: str, message_id: str | None) -> dict | None:
         """The receipt an earlier delivery of this message ID got, if it was injected."""
@@ -259,103 +246,75 @@ class _Steers:
             )
         return await asyncio.shield(task)
 
-    async def settle(self) -> None:
-        """Let deliveries in flight finish for up to `_SETTLE_S` (the harness answers
-        a steer at the end of a turn quickly), then cancel the rest."""
+    async def cancel(self) -> None:
         tasks = [task for _, task in self.tasks.values()]
-        if tasks:
-            _, late = await asyncio.wait(tasks, timeout=_SETTLE_S)
-            for task in late:
-                task.cancel()
-            await asyncio.gather(*late, return_exceptions=True)
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
         self.tasks.clear()
 
 
-_SETTLE_S = 5.0
-_STOPPED = {"outcome": "promptRequired", "reason": "interactionStopped"}
-_NO_RUNNING_TURN = {"outcome": "promptRequired", "reason": "noRunningTurn"}
-_CUT_OFF = {"outcome": "unknown", "reason": "turnEnded"}
-
-
 class Steering:
-    """User messages for a rollout while it runs, from its caller: pass one to
-    `Agent.run` or `Agent.interaction` (`steering=`) and `steer` it from anywhere,
-    as `ModelRoute` is updated. It serves one rollout at a time, from the call's
-    start to its end, and survives retries: each attempt of a `run` takes messages
-    while its turn runs, an interaction from open to close."""
+    """User messages for an `Agent.run` rollout while it runs, from its caller:
+    pass one as `steering=` and `steer` it from anywhere, as a `ModelRoute` is
+    updated. It serves one `run` at a time (passing one in use raises
+    `RuntimeError`) and each attempt's turn in turn. An interaction is steered
+    through `Interaction.steer` / `send`."""
 
     def __init__(self) -> None:
         self._claimed = False
         self._steers: _Steers | None = None
 
     async def steer(self, message: str, *, message_id: str | None = None) -> dict:
-        """Inject a user message into the rollout's running turn, and return the
-        harness's receipt: `{"outcome": "injected"}` once it took the message (taken,
-        not necessarily followed). With no turn running (before the rollout starts,
-        between a run's attempts, after it ends) the receipt is
-        `{"outcome": "promptRequired", ...}` and nothing is delivered: a message is
-        never queued or replayed into a later attempt, and an idle interaction is not
-        woken (that is `Interaction.send`). A delivery the turn's end cuts off
-        answers `{"outcome": "unknown", "reason": "turnEnded"}`: the harness may
-        have taken it. A stable `message_id` delivers once per attempt, also when
-        the interaction already queued it. Raises `NotImplementedError` when the
-        harness can't be steered."""
+        """Inject a user message into the running turn and return the harness's
+        receipt: `{"outcome": "injected"}` once it took the message (taken, not
+        necessarily followed). With no turn running (before the rollout starts,
+        between attempts, after it ends or stops) the receipt is
+        `{"outcome": "promptRequired", "reason": "noRunningTurn"}` and nothing is
+        delivered; a message is never queued or replayed into a later attempt. A
+        delivery the turn's end cuts off answers `{"outcome": "unknown"}`: the
+        harness may have taken it. A stable `message_id` delivers once per attempt
+        (`ValueError` when reused with other content). Raises `NotImplementedError`
+        when the harness can't be steered."""
         if not isinstance(message, str) or not message.strip():
             raise ValueError("steering requires a nonempty user message")
         steers = self._steers
         if steers is None:
-            return dict(_NO_RUNNING_TURN)
+            return {"outcome": "promptRequired", "reason": "noRunningTurn"}
         if (receipt := steers.receipt(message, message_id)) is not None:
             return receipt
-        if message_id is not None and (queued := steers.pending.get(message_id)):
-            if queued.text != message:
-                raise ValueError("steering message ID reused with different content")
-            await queued.done.wait()
-            if queued.error is not None or queued.receipt is None:
-                return dict(_STOPPED)
-            return dict(queued.receipt)
-        if message_id not in steers.tasks and steers.stopped:
-            return dict(_STOPPED)
         try:
             return await steers.deliver(message, message_id)
         except asyncio.CancelledError:
             if (task := asyncio.current_task()) is not None and task.cancelling():
                 raise
-            return dict(_CUT_OFF)
+            return {"outcome": "unknown", "reason": "turnEnded"}
         except RuntimeError:
-            if steers.stopped:
-                return dict(_STOPPED)
+            if steers.run.closed or not steers.run.ok:
+                return {"outcome": "promptRequired", "reason": "noRunningTurn"}
             raise
 
     @contextmanager
     def _claim(self) -> Iterator[None]:
-        """Hold the handle for one `run` or `interaction`, before it provisions anything."""
+        """Hold the handle for one `run`, before it provisions anything."""
         if self._claimed:
-            raise RuntimeError("a Steering serves one rollout at a time")
+            raise RuntimeError("a Steering serves one run at a time")
         self._claimed = True
         try:
             yield
         finally:
-            self._claimed, self._steers = False, None
-
-    def _bind(self, steers: _Steers) -> None:
-        self._steers = steers
-
-    async def _unbind(self, steers: _Steers) -> None:
-        """Release the rollout's turn, settling deliveries still in flight."""
-        if self._steers is steers:
-            self._steers = None
-            await steers.settle()
+            self._claimed = False
 
     @asynccontextmanager
     async def _turn(self, run: Rollout) -> AsyncIterator[None]:
-        """Take messages into `run` while the block runs its turn."""
-        steers = _Steers(run)
-        self._bind(steers)
+        """Deliver to `run` while the block runs its turn; cut off what's in flight
+        when it ends."""
+        steers = self._steers = _Steers(run)
         try:
             yield
         finally:
-            await self._unbind(steers)
+            self._steers = None
+            await steers.cancel()
 
 
 class Interaction:
@@ -381,8 +340,9 @@ class Interaction:
         self._steering_locks: WeakValueDictionary[str, asyncio.Lock] = (
             WeakValueDictionary()
         )
-        self._steers = _Steers(run, stopped=lambda: self._closing or self._over)
+        self._steers = _Steers(run)
         self._pending_messages: list[_PendingMessage] = []
+        self._pending_by_id: dict[str, _PendingMessage] = {}
         self._message_drain: asyncio.Task[None] | None = None
         self._closing = False
 
@@ -455,8 +415,8 @@ class Interaction:
                 raise RuntimeError("this interaction is closed")
             if (receipt := self._steers.receipt(message, message_id)) is not None:
                 return receipt
-            if message_id is not None and message_id in self._steers.pending:
-                pending = self._steers.pending[message_id]
+            if message_id is not None and message_id in self._pending_by_id:
+                pending = self._pending_by_id[message_id]
                 if pending.text != message:
                     raise ValueError(
                         "steering message ID reused with different content"
@@ -469,7 +429,7 @@ class Interaction:
             if message_id in self._steers.tasks:
                 receipt = await self._steers.deliver(message, message_id)
             elif self._over or not self._run.ok:
-                return dict(_STOPPED)
+                return {"outcome": "promptRequired", "reason": "interactionStopped"}
             elif mode == "steer":
                 receipt = await self._steers.deliver(message, message_id)
             else:
@@ -497,7 +457,7 @@ class Interaction:
             item.error = error
             item.done.set()
             if item.message_id is not None:
-                self._steers.pending.pop(item.message_id, None)
+                self._pending_by_id.pop(item.message_id, None)
         self._pending_messages.clear()
 
     async def _resume_messages(self, message: str, message_id: str | None) -> dict:
@@ -506,7 +466,7 @@ class Interaction:
         pending = _PendingMessage(message, message_id)
         self._pending_messages.append(pending)
         if message_id is not None:
-            self._steers.pending[message_id] = pending
+            self._pending_by_id[message_id] = pending
         if self._message_drain is None or self._message_drain.done():
             self._message_drain = asyncio.create_task(self._drain_messages())
             self._message_drain.add_done_callback(
@@ -523,7 +483,7 @@ class Interaction:
             if message_id is not None and any(
                 item is pending for item in self._pending_messages
             ):
-                self._steers.pending.pop(message_id, None)
+                self._pending_by_id.pop(message_id, None)
             self._pending_messages = [
                 item for item in self._pending_messages if item is not pending
             ]
@@ -561,7 +521,7 @@ class Interaction:
                                             item.text,
                                             dict(item.receipt),
                                         )
-                                        self._steers.pending.pop(item.message_id, None)
+                                        self._pending_by_id.pop(item.message_id, None)
                                     item.done.set()
 
                             segment = await self._turn(
@@ -596,7 +556,7 @@ class Interaction:
                     finally:
                         for item in batch:
                             if item.message_id is not None:
-                                self._steers.pending.pop(item.message_id, None)
+                                self._pending_by_id.pop(item.message_id, None)
                             item.done.set()
         except BaseException as error:
             self._finish_pending(error)
@@ -932,7 +892,6 @@ class Agent:
         on_trace: Callable[[Trace], None] | None = None,
         collect_artifacts: bool = False,
         route: ModelRoute | None = None,
-        steering: Steering | None = None,
     ) -> AsyncIterator[Interaction]:
         """Interact with this agent turn-by-turn: a full rollout of `task` where
         the CALLER is the run's user — the one exchange surface. Yields an
@@ -959,14 +918,12 @@ class Agent:
         included. A failure while opening the rollout raises before the context
         is entered (the failed trace is still completed and reported through
         `on_trace`). An exchange is caller-driven, so `config.retries` does not
-        apply here. `route` is where its model turns go, and `steering` takes
-        messages into its running turns from open to close, as for `run()`."""
+        apply here. `route` is where its model turns go, as for `run()`."""
         if self._closed:
             raise RuntimeError("Agent is closed; create a new agent")
         self._check_resume_support()
         trace_id = uuid.uuid4().hex
-        claim = steering._claim() if steering is not None else nullcontext()
-        with scope(trace=short_id(trace_id), agent=self._log_name), claim:
+        with scope(trace=short_id(trace_id), agent=self._log_name):
             params = self._rollout_params(
                 task, runtime, dict(tools or {}), route or ModelRoute(self.ctx)
             )
@@ -989,8 +946,6 @@ class Agent:
                         trace.agent.runtime.borrowed = runtime is not None
                     raise failure
             try:
-                if steering is not None:
-                    steering._bind(interaction._steers)
                 yield interaction
             except Exception as e:
                 run.fail(e)
@@ -1000,8 +955,6 @@ class Agent:
                 await run.abort()
                 raise
             finally:
-                if steering is not None:
-                    await steering._unbind(interaction._steers)
                 trace = run.trace if run.closed else await interaction.close()
                 if trace.agent.runtime is not None:
                     trace.agent.runtime.borrowed = runtime is not None
@@ -1199,7 +1152,6 @@ class _EpisodeAgent(Agent):
         on_trace: Callable[[Trace], None] | None = None,
         collect_artifacts: bool = False,
         route: ModelRoute | None = None,
-        steering: Steering | None = None,
     ) -> AsyncIterator[Interaction]:
         """The agent's `interaction`, with every trace stamped with its standing
         at mint and captured in `completed` at close — an interaction driven from
@@ -1223,7 +1175,6 @@ class _EpisodeAgent(Agent):
                 on_trace=self._watch(remember),
                 collect_artifacts=collect_artifacts,
                 route=route,
-                steering=steering,
             ) as interaction:
                 yield interaction
         finally:
