@@ -8,7 +8,7 @@ from parallel import ParallelHarnessConfig
 N = 4
 
 
-@pytest.mark.parametrize("harness_runtime", ["subprocess"], indirect=True)
+@pytest.mark.parametrize("harness_runtime", ["docker"], indirect=True)
 @pytest.mark.parametrize("same_prompt", [True, False], ids=["same", "distinct"])
 async def test_parallel_requests(run, harness_runtime, scripted_model, same_prompt):
     (episode,) = await run(

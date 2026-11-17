@@ -9,7 +9,7 @@ from contextlib import AsyncExitStack
 from dataclasses import dataclass
 from urllib.parse import urlsplit
 
-from verifiers.v1.clients import ModelContext
+from verifiers.v1.clients import ModelRoute
 from verifiers.v1.configs.agent import AgentConfig
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.configs.scoring import resolve_scoring
@@ -115,7 +115,7 @@ class Rollout:
         task: Task,
         agent_config: AgentConfig,
         harness: Harness,
-        ctx: ModelContext,
+        route: ModelRoute,
         runtime_config: RuntimeConfig,
         has_user: bool = False,
         timeouts: RolloutTimeouts,
@@ -132,7 +132,7 @@ class Rollout:
         self._on_score = on_score
         self.task = task
         self.harness = harness
-        self.ctx = ctx
+        self.route = route
         self.runtime_config = runtime_config
         self._scoring_policy = resolve_scoring(task.scoring, agent_config.scoring)
         self._grading_config = None
@@ -175,7 +175,7 @@ class Rollout:
         }
         execution_policy = runtime_config
         self._session = RolloutSession(
-            ctx=ctx,
+            route=route,
             trace=self.trace,
             network_policy=(
                 execution_policy
@@ -563,7 +563,7 @@ class Rollout:
                             else {}
                         )
                         self._harness_session = await self.harness.session(
-                            self.ctx,
+                            self.route.ctx,
                             self.trace,
                             self._split_runtime or self._agent_runtime,
                             self._endpoint,

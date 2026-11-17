@@ -21,14 +21,14 @@ import json
 from collections import Counter
 from collections.abc import Awaitable, Callable
 from contextlib import AbstractAsyncContextManager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from functools import cached_property
 from typing import get_origin, get_type_hints
 
 from pydantic import TypeAdapter
 
 from verifiers.v1 import graph
-from verifiers.v1.clients import Client, ModelContext
+from verifiers.v1.clients import Client, ModelContext, ModelRoute
 from verifiers.v1.configs.harness import DialectName
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.errors import HarnessError, RolloutError, TaskError
@@ -160,7 +160,8 @@ class ReplayResponse:
 
 @dataclass
 class RolloutSession:
-    ctx: ModelContext
+    route: ModelRoute
+    """Where its model turns go; `ctx` is the route's current context."""
     trace: Trace
     network_policy: NetworkPolicyConfig = field(default_factory=NetworkPolicyConfig)
     """The resolved execution policy, including task-level restrictions."""
@@ -181,9 +182,10 @@ class RolloutSession:
     `Harness.SUPPORTS_TOOL_INTERCEPTION`). Without that gate a pre-execution rewrite
     cannot be enforced, so it ends the rollout instead of letting the call run."""
     client: Client | None = None
-    """The model client serving this rollout's turns. The interception server assigns it at
-    `register` (one server-owned client per distinct endpoint config), so every rollout it
-    multiplexes shares one keepalive connection pool instead of opening its own."""
+    """The model client serving this rollout's turns. The interception server gives it the
+    server-owned client for its route's endpoint config (one per distinct config) at
+    `register` and again when the route changes, so every rollout it multiplexes shares one
+    keepalive connection pool instead of opening its own."""
     proxy_mcp: MCPProxy | None = field(default=None, repr=False)
     """Register a host MCP backend on this session's interception server while serving."""
     error: "RolloutError | None" = None
@@ -219,6 +221,19 @@ class RolloutSession:
     last_request: tuple[list, Messages] = ((), [])
     """The last chat request's raw messages (copied: the server rewrites a body in place) and
     their parse, which the next request's equal prefix reuses instead of parsing again."""
+
+    @property
+    def ctx(self) -> ModelContext:
+        """The model, client config and sampling of its next model turn: the route's, with
+        `max_turn_tokens` capping its `max_tokens` whatever sampling the route was given."""
+        ctx = self.route.ctx
+        cap = self.limits.max_turn_tokens
+        max_tokens = ctx.sampling.max_tokens
+        if cap is None or (max_tokens is not None and max_tokens <= cap):
+            return ctx
+        return replace(
+            ctx, sampling=ctx.sampling.model_copy(update={"max_tokens": cap})
+        )
 
     @property
     def stopped(self) -> bool:

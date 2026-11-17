@@ -5,16 +5,12 @@ import contextlib
 import math
 import secrets
 import shlex
-import shutil
-import subprocess
 import sys
-import sysconfig
-import tempfile
 import uuid
 from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass, field
 from functools import cache
-from importlib.metadata import PathDistribution, distribution, packages_distributions
+from importlib.metadata import distribution, packages_distributions
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
@@ -22,6 +18,7 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.errors import ToolsetError
 from verifiers.v1.interception.tunnel import PrimeTunnel
+from verifiers.v1.mcp.packages import install_package
 from verifiers.v1.mcp.server import (
     STATE_ROUTE_PARAM,
     STATE_SIGNATURE_PARAM,
@@ -45,22 +42,6 @@ if TYPE_CHECKING:
     from verifiers.v1.session import MCPProxy
 
 logger = get_logger(__name__)
-
-_PACKAGE_BUILD_TIMEOUT_SECONDS = 300
-
-
-@dataclass
-class _PackageBuildState:
-    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
-    build: asyncio.Task[tuple[str, bytes]] | None = None
-    users: int = 0
-
-
-# Coordination and caching are process-local. Separate worker processes each
-# build once; within an event loop, concurrent rollouts share the completed artifact.
-_PACKAGE_BUILD_STATES: dict[
-    tuple[Path, asyncio.AbstractEventLoop], _PackageBuildState
-] = {}
 
 # Any HTTP response, including MCP's 406 to a bare GET, proves the server is listening.
 _PROBE = """
@@ -105,165 +86,18 @@ def _package_dir(cls: type) -> str:
     )
 
 
-@cache
-def _build_package(src: Path) -> tuple[str, bytes]:
-    """Transfer installed wheel files or build a source project's PEP 517 sdist."""
-    with tempfile.TemporaryDirectory(prefix="vf-package-") as directory:
-        out = Path(directory)
-        if src.suffix == ".dist-info":
-            dist = PathDistribution(src)
-            files = dist.files
-            if not files:
-                raise ToolsetError(f"cannot package {src}: missing RECORD")
-            package = out / "package"
-            scripts = {
-                entry.name
-                for entry in dist.entry_points
-                if entry.group in {"console_scripts", "gui_scripts"}
-            }
-            for file in files:
-                # Installers regenerate entry-point scripts for the target Python.
-                if ".." in file.parts or file.is_absolute():
-                    if (
-                        file.name in scripts
-                        and Path(file.locate()).parent.resolve()
-                        == Path(sysconfig.get_path("scripts")).resolve()
-                    ):
-                        continue
-                    raise ToolsetError(
-                        f"cannot package {src}: installed file outside site-packages: {file}"
-                    )
-                if file.suffix == ".pyc" or (
-                    file.parent.name == src.name
-                    and file.name
-                    in {
-                        "RECORD",
-                        "RECORD.jws",
-                        "RECORD.p7s",
-                        "INSTALLER",
-                        "REQUESTED",
-                        "direct_url.json",
-                        "uv_cache.json",
-                    }
-                ):
-                    continue
-                target = package / file
-                target.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(file.locate(), target)
-            command = [
-                "uv",
-                "tool",
-                "run",
-                "--from",
-                "wheel==0.48.0",
-                "wheel",
-                "pack",
-                "--dest-dir",
-                str(out),
-                str(package),
-            ]
-        else:
-            command = [
-                "uv",
-                "build",
-                "--sdist",
-                "--no-create-gitignore",
-                "--color",
-                "never",
-                "--out-dir",
-                str(out),
-                ".",
-            ]
-        try:
-            # Run from the source root so uv discovers this project's workspace,
-            # uv.toml, indexes, constraints, and Python configuration rather than
-            # inheriting configuration from the launcher's working directory.
-            result = subprocess.run(
-                command,
-                cwd=src,
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=_PACKAGE_BUILD_TIMEOUT_SECONDS,
-            )
-        except FileNotFoundError as e:
-            raise ToolsetError(
-                f"cannot build package for {src}: uv is not installed"
-            ) from e
-        except subprocess.TimeoutExpired as e:
-            raise ToolsetError(
-                "package build timed out after "
-                f"{_PACKAGE_BUILD_TIMEOUT_SECONDS}s for {src}"
-            ) from e
-        if result.returncode != 0:
-            detail = "\n".join(
-                part.strip() for part in (result.stdout, result.stderr) if part.strip()
-            )
-            raise ToolsetError(f"package build failed for {src}: {detail[-2000:]}")
-        artifacts = [path for path in out.iterdir() if path.is_file()]
-        if len(artifacts) != 1:
-            names = ", ".join(sorted(path.name for path in artifacts)) or "none"
-            raise ToolsetError(
-                f"package build for {src} produced {len(artifacts)} distributions: {names}"
-            )
-        artifact = artifacts[0]
-        return artifact.name, artifact.read_bytes()
-
-
-async def _cached_package(src: Path) -> tuple[str, bytes]:
-    """Build once per source without parking waiters in the thread pool."""
-    src = src.resolve()
-    key = (src, asyncio.get_running_loop())
-    state = _PACKAGE_BUILD_STATES.get(key)
-    if state is None:
-        state = _PackageBuildState()
-        _PACKAGE_BUILD_STATES[key] = state
-    state.users += 1
-    try:
-        async with state.lock:
-            # Coordinate before entering the default executor so concurrent
-            # same-source waiters do not occupy executor threads.
-            if state.build is None:
-                state.build = asyncio.create_task(
-                    asyncio.to_thread(_build_package, src)
-                )
-            build = state.build
-            try:
-                return await asyncio.shield(build)
-            except asyncio.CancelledError:
-                # Cancelling to_thread does not stop its worker. Keep the lock until
-                # that worker exits so a replacement caller cannot overlap the build.
-                with contextlib.suppress(Exception):
-                    await build
-                raise
-    finally:
-        state.users -= 1
-        if state.users == 0 and _PACKAGE_BUILD_STATES.get(key) is state:
-            del _PACKAGE_BUILD_STATES[key]
-
-
 async def _install_in_sandbox(server: ServerBase, agent_runtime: Runtime) -> str:
-    # Install as root; the agent user only runs the server.
-    runtime = (
-        agent_runtime if agent_runtime.user is None else agent_runtime.with_user(None)
-    )
-    # Prime VMs mount /tmp as a small tmpfs, while the runtime workdir lives on
-    # the VM's root disk. Keep source, build scratch space, and uv's cache on the
-    # durable runtime filesystem so ordinary dependency installs cannot exhaust
-    # the tmpfs.
-    # Every runtime runs commands in its working directory; not every config names it.
-    located = await runtime.run(["pwd"], {})
-    workdir = located.stdout.strip()
-    if located.exit_code or not workdir:
-        raise ToolsetError(
-            f"server {server.server_name!r}: cannot locate the runtime's working "
-            f"directory: {located.stderr.strip()}"
-        )
-    root = str(PurePosixPath(workdir) / ".vf-src")
-    temp = str(PurePosixPath(workdir) / ".vf-tmp")
-    cache = str(PurePosixPath(workdir) / ".vf-uv-cache")
-    venv = str(PurePosixPath(workdir) / ".vf-venv")
-    python_dir = str(PurePosixPath(workdir) / ".vf-python")
+    # Dependency installation is trusted setup as the backend's default user.
+    # The server itself keeps the agent's user and filesystem policy when launched.
+    runtime = agent_runtime.backend.bind(env=agent_runtime.env)
+    # Prime mounts /tmp as a small tmpfs. Keep dependencies on the root disk,
+    # outside the task workspace so its files contain only the task's work.
+    support = "/var/tmp/tool-service"
+    root = f"{support}/src"
+    temp = f"{support}/tmp"
+    cache = f"{support}/uv-cache"
+    venv = f"{support}/venv"
+    python_dir = f"{support}/python"
     root_q, temp_q, cache_q, venv_q = map(shlex.quote, (root, temp, cache, venv))
     # Servers in the same service install into one physical environment.
     # Serialize its mutations and only remember sources after a successful install.
@@ -275,29 +109,27 @@ async def _install_in_sandbox(server: ServerBase, agent_runtime: Runtime) -> str
             if source not in runtime.backend.cache.mcp_sources
         ]
         if pending:
+            env = {"TMPDIR": temp, "UV_CACHE_DIR": cache}
+            if agent_runtime.user is not None:
+                env["UV_PYTHON_INSTALL_DIR"] = python_dir
             setup = (
                 f"set -e; mkdir -p {root_q} {temp_q} {cache_q}; "
-                f"export TMPDIR={temp_q} UV_CACHE_DIR={cache_q}; "
                 'export PATH="$HOME/.local/bin:$PATH"; '
             )
-            if agent_runtime.user is not None:
-                setup += f"export UV_PYTHON_INSTALL_DIR={shlex.quote(python_dir)}; "
             if not runtime.backend.cache.mcp_sources:
                 # Failed installs can leave the venv behind; retain it when retrying.
                 setup += f"{_ENSURE_UV}; uv venv --allow-existing {venv_q}; "
-            # Drain remote writes and installs before cancellation releases the lock.
-            for source in pending:
-                name, data = await _cached_package(Path(source))
-                remote = f"{root}/{name}"
-                await run_shielded(runtime.write(remote, data))
-                setup += f"uv pip install --python {venv_q} {shlex.quote(remote)}; "
-            result = await run_shielded(runtime.run(["sh", "-c", setup], {}))
+            result = await run_shielded(runtime.run(["sh", "-c", setup], env))
             if result.exit_code != 0:
                 raise ToolsetError(
-                    f"server {server.server_name!r} install failed in runtime: "
+                    f"server {server.server_name!r} environment setup failed in runtime: "
                     f"{(result.stderr or result.stdout).strip()[-2000:]}"
                 )
-            runtime.backend.cache.mcp_sources.update(pending)
+            for source in pending:
+                await install_package(
+                    runtime, Path(source), root, env, python=f"{venv}/bin/python"
+                )
+                runtime.backend.cache.mcp_sources.add(source)
         if agent_runtime.user is not None:
             # Root's uv lives in its home; copy it into the venv, open to the agent.
             python_q = shlex.quote(python_dir)
@@ -364,10 +196,6 @@ async def serve_in_runtime(
         "VF_STATE_URL": state_url or "",
         "VF_STATE_SECRET": state_secret,
     }
-    if runtime.type == "subprocess":
-        # Keep provider temp files in the runtime workdir so cleanup removes them.
-        assert runtime.info.id is not None
-        env["TMPDIR"] = runtime.info.id
     if listen_all or (exposed and runtime.published_port is not None):
         env["MCP_HOST"] = "0.0.0.0"
     fixed = runtime.published_port if exposed else None
@@ -377,24 +205,19 @@ async def serve_in_runtime(
     else:
         port_file = runtime.temp_path(f"tool-port-{uuid.uuid4().hex}", env=env)
         env["MCP_PORT_FILE"] = port_file
-    python = sys.executable
-    if runtime.type != "subprocess":
-        python = await _install_in_sandbox(server, runtime)
+    python = await _install_in_sandbox(server, runtime)
     command = [python, "-m", type(server).__module__]
-    if runtime.type != "subprocess":
-        # Providers may invoke uv after the install shell exits, so preserve its PATH.
-        path = "$HOME/.local/bin:$PATH"
-        if runtime.user is not None:
-            path = f"{PurePosixPath(python).parent}:{path}"
-        command = [
-            "sh",
-            "-c",
-            f'export PATH="{path}"; exec {shlex.join(command)}',
-        ]
-    log = f"vf_tool_{server.server_name}.log"
+    # Providers may invoke uv after the install shell exits, so preserve its PATH.
+    path = "$HOME/.local/bin:$PATH"
     if runtime.user is not None:
-        # The agent user may not be able to write the workdir.
-        log = f"/tmp/vf_tool_{server.server_name}-{uuid.uuid4().hex[:8]}.log"
+        path = f"{PurePosixPath(python).parent}:{path}"
+    command = [
+        "sh",
+        "-c",
+        f'export PATH="{path}"; exec {shlex.join(command)}',
+    ]
+    # Keep infrastructure logs out of task artifacts and support read-only workdirs.
+    log = runtime.temp_path(f"tool-{uuid.uuid4().hex}.log", env=env)
     loop = asyncio.get_running_loop()
     # Servers without a toolset config, such as custom `ServerBase` subclasses, keep the default.
     timeouts = (

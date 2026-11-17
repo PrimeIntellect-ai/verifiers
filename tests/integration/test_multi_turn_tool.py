@@ -36,7 +36,7 @@ async def test_tool(run, harness, harness_runtime):
 
 @pytest.mark.parametrize(
     "harness_runtime,tool_runtime",
-    placements(tool_runtimes=("service", "subprocess", "prime")),
+    placements(tool_runtimes=("service", "docker", "prime")),
     indirect=True,
 )
 async def test_tool_placement(run, harness_runtime, tool_runtime):
@@ -77,7 +77,7 @@ async def test_tool_error(run):
     "placement",
     [
         {"url": "http://example.com/mcp"},
-        {"runtime": {"type": "prime"}},
+        {"runtime": {"type": "docker"}},
     ],
 )
 def test_service_placement_is_exclusive(placement):
