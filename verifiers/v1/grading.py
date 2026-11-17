@@ -13,7 +13,6 @@ from verifiers.v1.runtimes import (
     PrimeConfig,
     Runtime,
     RuntimeConfig,
-    backend_cls,
 )
 from verifiers.v1.task import Task
 from verifiers.v1.trace import Error, Trace
@@ -57,26 +56,21 @@ def verifier_runtime(
     # A task without its own image/workdir inherits the actual workspace's values,
     # including a Compose image or split execution configuration.
     task = task.with_data(
-        image=task.data.image or getattr(solver_runtime.config, "image", None),
-        workdir=task.data.workdir or getattr(solver_runtime.config, "workdir", None),
+        image=task.data.image or solver_runtime.config.image,
+        workdir=task.data.workdir or solver_runtime.config.workdir,
     )
     if policy.network is not None:
         task = task.with_data(network=policy.network)
     config = resolve_runtime_config(source, task)
     if policy.runtime is not None and "image" in policy.runtime.model_fields_set:
         config = config.model_copy(update={"image": policy.runtime.image})
-    if not backend_cls(config).SUPPORTS_TASK_IMAGES:
-        raise TaskError(
-            f"isolated verification requires an isolated filesystem; the "
-            f"{config.type} runtime cannot run images"
-        )
     relative = [
         a.source
         for a in task.data.artifacts
         if not PurePosixPath(a.source).is_absolute()
     ]
-    solver_dir = PurePosixPath(getattr(solver_runtime.config, "workdir", "/") or "/app")
-    grader_dir = PurePosixPath(getattr(config, "workdir", "/") or "/app")
+    solver_dir = PurePosixPath(solver_runtime.config.workdir or "/app")
+    grader_dir = PurePosixPath(config.workdir or "/app")
     if relative and solver_dir != grader_dir:
         raise TaskError(
             f"cannot restore relative artifacts {relative!r} from {solver_dir} into {grader_dir}; use matching workdirs or absolute paths"

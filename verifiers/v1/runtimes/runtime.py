@@ -17,6 +17,7 @@ from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes.base import (
     _ENSURE_UV,
     _INSTALL_CURL,
+    SCRIPTS_DIR,
     ProgramResult,
     RuntimeBackend,
     RuntimeProcess,
@@ -43,10 +44,6 @@ class Runtime:
     _execution_bridge: ExecutionBridge | None = None
 
     def __post_init__(self) -> None:
-        if self.user is not None and not self.backend.SUPPORTS_USER_SWITCHING:
-            raise ValueError(
-                f"the {self.backend.type} runtime cannot run as another user"
-            )
         if self.user is None and self.home is not None:
             raise ValueError("home requires a user binding")
         object.__setattr__(self, "env", MappingProxyType(dict(self.env)))
@@ -84,10 +81,6 @@ class Runtime:
     @property
     def network_restricted(self) -> bool:
         return self.backend.network_restricted
-
-    @property
-    def published_port(self) -> int | None:
-        return self.backend.published_port
 
     def host_url(self, url: str) -> str:
         return self.backend.host_url(url)
@@ -176,11 +169,7 @@ class Runtime:
         data = script.encode() if isinstance(script, str) else script
         digest = hashlib.sha256(data).hexdigest()
         # Each user needs its own writable script dir and uv environment.
-        directory = (
-            self.backend.scripts_dir
-            if self.user is None
-            else f"{self.backend.scripts_dir}-{self.user}"
-        )
+        directory = SCRIPTS_DIR if self.user is None else f"{SCRIPTS_DIR}-{self.user}"
         path = f"{directory}/{digest}.py"
         if path not in self.backend.cache.uv_interpreters:
             async with self.backend.cache.uv_locks.setdefault(path, asyncio.Lock()):

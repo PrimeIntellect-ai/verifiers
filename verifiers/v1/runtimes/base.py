@@ -52,10 +52,13 @@ _ENSURE_UV = (
     f"|| {{ {{ {_INSTALL_CURL}; {_DOWNLOAD_UV}; }} && hash -r && uv_supports_scripts; }}"
 )
 
-# The single port a sandbox runtime forwards out for a server hosted in it, e.g. a host
-# loopback port on Docker. A server placed in such
-# a runtime binds this (on 0.0.0.0) and is reached at the URL `expose` returns.
+# The port every runtime publishes for a server hosted in it, e.g. a host loopback
+# port on Docker. A server placed in a runtime binds this (on 0.0.0.0) and is reached
+# at the URL `expose(SERVICE_PORT)` returns.
 SERVICE_PORT = 8000
+
+# Digest-keyed PEP 723 scripts inside the runtime's filesystem.
+SCRIPTS_DIR = "/tmp/vf-scripts"
 
 
 @dataclass(frozen=True)
@@ -165,12 +168,18 @@ class RuntimeCache:
 
 
 class RuntimeBackend(ABC):
-    """Provider implementation for one container, VM, or local execution environment.
+    """Provider implementation for one sandbox: a container or VM booted from a task
+    image.
 
-    A backend implements `start`, `exec`, `write`, and `cleanup` or `teardown`, and
-    may override `run`, `read`, `expose`, `prepare_execution`, and `host_url`. Its
-    `SUPPORTS_*` flags declare optional features. Tasks and harnesses use it through
-    `Runtime` views (`bind`), which add user and environment bindings.
+    Every backend provides the same baseline: it boots `config.image` in its own
+    filesystem, runs commands as other existing users, enforces `config.memory`,
+    publishes `SERVICE_PORT` through `expose`, and confirms termination in
+    `verify_stopped`. It implements `start`, `exec`, `write`, `expose`,
+    `verify_stopped`, and `cleanup` or `teardown`, and may override `run`, `read`,
+    `prepare_execution`, and `host_url`. A config that inherits `NetworkPolicyConfig`
+    enforces network policies, and `SUPPORTS_DISK_LIMIT` declares a hard disk ceiling.
+    Tasks and harnesses use it through `Runtime` views (`bind`), which add user and
+    environment bindings.
     """
 
     is_local: bool = False
@@ -178,31 +187,8 @@ class RuntimeBackend(ABC):
     Docker does. Remote runtimes use a host `Tunnel` inward plus `expose`
     outward."""
 
-    SUPPORTS_TASK_IMAGES: ClassVar[bool] = False
-    """Whether the runtime boots a task image in its own filesystem. Tasks with an image,
-    container-only harnesses, and isolated grading require it."""
-
-    SUPPORTS_USER_SWITCHING: ClassVar[bool] = False
-    """Whether handles can bind another existing user."""
-
-    SUPPORTS_STOP_CONFIRMATION: ClassVar[bool] = False
-    """Whether `verify_stopped` can confirm the provider resource was terminated."""
-
-    SUPPORTS_MEMORY_LIMIT: ClassVar[bool] = False
-    """Whether a positive `config.memory` enforces a runtime-wide memory ceiling."""
-
     SUPPORTS_DISK_LIMIT: ClassVar[bool] = False
     """Whether a positive `config.disk` enforces a runtime-wide storage ceiling."""
-
-    SUPPORTS_PORT_EXPOSURE: ClassVar[bool] = False
-    """Whether `expose` can publish a port inside this runtime to the outside, so a
-    server here is reachable from another runtime."""
-
-    SUPPORTS_COMPOSE: ClassVar[bool] = False
-    """Whether the runtime can run a task's Docker Compose services."""
-
-    scripts_dir: ClassVar[str] = "/tmp/vf-scripts"
-    """Digest-keyed PEP 723 scripts inside the runtime's filesystem."""
 
     info: BaseRuntimeInfo
 
@@ -249,11 +235,10 @@ class RuntimeBackend(ABC):
         started = time.perf_counter()
         await run_shielded(self.teardown())
         if first:
-            # A local runtime's id is its working directory; its last part is the name.
             logger.debug(
                 "Stopped %s runtime %s in %s",
                 self.config.type,
-                (self.info.id or self.name).rsplit("/", 1)[-1],
+                self.info.id or self.name,
                 format_time(time.perf_counter() - started),
             )
 
@@ -264,7 +249,7 @@ class RuntimeBackend(ABC):
         `cleanup` keys off before its first await: if the event loop dies mid-teardown
         (second Ctrl-C), the atexit backstop must still find the resource."""
         try:
-            # Stop background commands before removing their working directory.
+            # Stop background commands before freeing the resource they run in.
             for process in self._background:
                 with contextlib.suppress(Exception):
                     async with asyncio.timeout(5):
@@ -279,11 +264,11 @@ class RuntimeBackend(ABC):
         source of truth for teardown: usable from the atexit backstop where async machinery
         is dead, and run off the event loop by `stop` on the normal path. Default no-op."""
 
+    @abstractmethod
     async def verify_stopped(self) -> None:
         """Confirm provider termination after `stop`, or raise without returning a
         result whose safety depends on cleanup. Ordinary rollout cleanup remains
         best-effort; callers that execute untrusted submissions use this check."""
-        raise SandboxError(f"the {self.type} runtime cannot confirm termination")
 
     @abstractmethod
     async def exec(
@@ -396,21 +381,13 @@ class RuntimeBackend(ABC):
             and self.config.network_restricted
         )
 
-    @property
-    def published_port(self) -> int | None:
-        """A fixed port this runtime exposes to the outside at startup, declared up front to the
-        provider (some forward only ports named at creation). When set, a server placed
-        here binds it instead of a host-chosen free port, and `expose` returns its public URL.
-        `None` when a runtime can dynamically select and publish a free port."""
-        return None
-
+    @abstractmethod
     async def expose(self, port: int) -> str:
-        """Publish a port running *inside this runtime* to a URL reachable from the host/outside.
-        A runtime on the host network is reached at host loopback as is; a sandbox overrides
-        this with its port exposure (e.g. a container engine's published port), torn
-        down with the sandbox in `stop()`. The reverse of a
-        host `Tunnel` (interception.tunnel, which reaches a host port from inside a runtime)."""
-        return f"http://127.0.0.1:{port}"
+        """Publish a port running *inside this runtime* to a URL reachable from the
+        host/outside, torn down with the sandbox in `stop()`. Every runtime publishes
+        `SERVICE_PORT`; some providers forward only ports named at creation, so other
+        ports may raise. The reverse of a host `Tunnel` (interception.tunnel, which
+        reaches a host port from inside a runtime)."""
 
 
 async def _drain(stream: AsyncIterator[bytes]) -> bytes:

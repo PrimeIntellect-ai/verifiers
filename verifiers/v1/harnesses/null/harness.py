@@ -30,7 +30,6 @@ class NullHarness(Harness[NullHarnessConfig]):
     SUPPORTS_SPLIT_EXECUTION = True
     SUPPORTS_SPLIT_MCP = True
     EXECUTES_CODE = False
-    NEEDS_CONTAINER = False
 
     async def setup(self, runtime: Runtime) -> None:
         await runtime.prepare_uv_script(CHAT_PROGRAM_SOURCE, self.config.resolved_env)
