@@ -287,6 +287,8 @@ async def compose_project(
             if main.get("command") is None:
                 main.pop("command", None)
             authored_file = "authored.json"
+            # `compose config` already escapes literal dollars for reuse as input.
+            # Preserve that escaping when merging the flattened include model.
             await host_backend.bind().write(
                 f"{root}/{authored_file}",
                 json.dumps(authored).encode(),

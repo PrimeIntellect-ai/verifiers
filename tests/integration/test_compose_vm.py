@@ -21,6 +21,10 @@ services:
   main:
     build: .
     working_dir: /app
+    environment:
+      LITERAL_TOKEN: 'a$$VALUE'
+      EXPANDED_TOKEN: '${{TOKEN_VALUE}}'
+    env_file: values.env
     network_mode: service:world
     volumes: [world_logs:/logs/world:ro, ../payload:/payload:ro]
     depends_on:
@@ -62,6 +66,18 @@ class ComposeVMTask(HarborTask):
         await super().setup(runtime, deployment)
         if deployment is not None:
             assert set(deployment.target_backends) == {"main", "world"}
+            result = await runtime.run(
+                [
+                    "python",
+                    "-c",
+                    (
+                        "import os; assert all(os.environ[key] == 'a$VALUE' for key in "
+                        "('LITERAL_TOKEN', 'EXPANDED_TOKEN', 'FROM_FILE'))"
+                    ),
+                ],
+                {},
+            )
+            assert result.exit_code == 0, result.stderr
             # A write after startup must be visible through main's read-only mount.
             await deployment.target("world").write("/logs/world/answer", b"43\n")
             # Context upload and binary transfers must fit on disk, not host /tmp.
@@ -105,6 +121,8 @@ async def test_compose_vm(tmp_path, scoring_mode, monkeypatch):
     )
     environment = tmp_path / "environment"
     environment.mkdir()
+    (environment / ".env").write_text("TOKEN_VALUE='a$VALUE'\nVALUE=expanded\n")
+    (environment / "values.env").write_text("FROM_FILE='a$VALUE'\n")
     if scoring_mode == "isolated":
         (environment / "docker-compose.yaml").write_text("include: [services.yaml]\n")
         (environment / "services.yaml").write_text(COMPOSE)
