@@ -15,15 +15,14 @@ Lazy views pick which tasks an iteration yields, chainable in any order:
 
     taskset.include(idx=["0:100"]).exclude(names=["broken"]).shuffle(seed=0).take(5)
 
-`select(SelectConfig)` chains them in the config's fixed order; the eval, debug,
-validate and GEPA entrypoints and prime-rl all select through it.
+`select(SelectConfig)` chains them in the config's fixed order; the run, debug,
+and validate entrypoints and prime-rl all select through it.
 """
 
 from __future__ import annotations
 
 import copy
 import itertools
-import logging
 import random
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterable, Iterator
@@ -35,11 +34,12 @@ from verifiers.v1.configs.select import SelectConfig, TaskMatchConfig
 from verifiers.v1.configs.taskset import TasksetConfig
 from verifiers.v1.task import Task, TaskT
 from verifiers.v1.utils.generic import concrete_type
+from verifiers.v1.utils.logging import get_logger
 
 if TYPE_CHECKING:
     from verifiers.v1.mcp import Toolset
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 TasksetConfigT = TypeVar("TasksetConfigT", bound=TasksetConfig, default=TasksetConfig)
 

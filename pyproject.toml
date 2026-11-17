@@ -32,15 +32,11 @@ dependencies = [
     "numpy>=2.1.0",
     "math-verify>=0.8.0",
     "openai>=2.54.0,<3.0.0",
-    "prime-tunnel>=0.1.14",
-    "prime-sandboxes>=0.5.1",
-    "prime-runs>=0.1.4",
+    "prime-tunnel>=0.1.17",
+    "prime-sandboxes>=0.5.9",
     "pydantic>=2.12.3",
-    "rich>=11.0.0",
     "tenacity>=8.5.0",
-    "gepa>=0.0.6",
-    "pyzmq>=27.1.0",
-    "msgpack>=1.1.2",
+    "orjson>=3.10.0",
     "httpx>=0.27.0",
     "httpx2>=2.12.0",
     "h11>=0.16.0",
@@ -49,7 +45,7 @@ dependencies = [
     "prime-pydantic-config[toml]>=0.4.3",
     "loguru>=0.7.0",
     "tomli-w>=1.0.0",
-    "renderers[multimodal]>=0.1.13.dev17",
+    "renderers[multimodal]>=0.2.1.dev12",
     "typing_extensions>=4.12.2",
     "mcp==2.2.0",
 ]
@@ -100,6 +96,9 @@ openenv = [
     "openenv>=0.4.1",
 ]
 [tool.uv]
+constraint-dependencies = ["brotli>=1.2.1", "brotlicffi>=1.2.1.0"]
+# gradio (via the openenv extra) caps pillow<13, which has unfixed advisories.
+override-dependencies = ["pillow>=13.0.0"]
 preview = true
 required-version = ">=0.11.1"
 exclude-newer = "7 days"
@@ -131,6 +130,9 @@ bash-interception = { path = "environments/bash_interception", editable = true }
 web-search-interception = { path = "environments/web_search_interception", editable = true }
 
 [tool.uv.exclude-newer-package]
+# Admit the reviewed CVE-2026-111497 fixes without exempting future uploads.
+brotli = "2026-10-23T00:00:00Z"
+brotlicffi = "2026-10-23T00:00:00Z"
 # CA bundle: security fixes (e.g. 2026.10.19 for the eMudhra compromise) must not wait out the cooldown
 certifi = false
 # Bounded cutoffs for the explicitly requested tool upgrades.
@@ -142,16 +144,13 @@ ty = "2026-07-28T00:00:00Z"
 # PrimeIntellect-published on PyPI (trusted publisher)
 prime-tunnel = false
 prime-sandboxes = false
-prime-runs = false
 prime-pydantic-config = false
 renderers = false
 
 [project.scripts]
-vf-eval = "verifiers.v1.cli.eval.main:main"
+vf-run = "verifiers.v1.cli.run:main"
 vf-validate = "verifiers.v1.cli.validate:main"
 vf-debug = "verifiers.v1.cli.debug:main"
-vf-replay = "verifiers.v1.cli.replay:main"
-vf-gepa = "verifiers.v1.cli.gepa:main"
 
 # hatchling configuration
 [tool.hatch.version]
@@ -220,13 +219,13 @@ markers = [
     "subprocess: integration cells touching the subprocess (host) runtime",
     "docker: integration cells touching the docker runtime",
     "prime: integration cells touching the prime runtime (real sandbox + tunnel)",
-    "colocated: integration cells with a tool server colocated in the harness runtime",
     "service: integration cells with a tool server in a Compose service beside the harness",
     "null: integration cells on the null harness",
     "bash: integration cells on the bash harness",
     "claude_code: integration cells on the claude-code harness",
     "openclaw: integration cells on the OpenClaw harness",
     "hermes_agent: integration cells on the hermes-agent harness",
+    "stirrup: integration cells on the Stirrup harness",
     "deepseek: integration cells on the DeepSeek minimal harness",
     "rlm: integration cells on the rlm harness",
     "kimi_code: integration cells on the kimi-code harness",

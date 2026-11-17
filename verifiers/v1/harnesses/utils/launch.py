@@ -1,5 +1,7 @@
 import inspect
 import json
+import logging
+import uuid
 from collections.abc import Sequence
 from types import ModuleType
 
@@ -10,9 +12,14 @@ from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.dialects.chat import message_to_wire
 from verifiers.v1.harnesses.utils import compaction, core, mcp
+from verifiers.v1.harnesses.utils.install import remove_dir
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.trace import Trace
 from verifiers.v1.types import Messages
+from verifiers.v1.utils import network
+from verifiers.v1.utils.logging import clip, get_logger
+
+logger = get_logger(__name__)
 
 PEP_723_END = "# ///\n"
 
@@ -29,10 +36,10 @@ def bundle_program(program: str, *modules: ModuleType) -> str:
 # use argv so tools do not inherit them.
 CHAT_PROGRAM = (
     '# /// script\n# requires-python = ">=3.10"\n'
-    '# dependencies = ["openai", "mcp==2.0.0", "httpx", "httpx2", "tenacity", "certifi"]\n'
+    '# dependencies = ["openai", "mcp==2.3.0", "httpx", "httpx2", "tenacity", "certifi"]\n'
     "# ///\n"
 )
-CHAT_PROGRAM_SOURCE = bundle_program(CHAT_PROGRAM, mcp, compaction, core)
+CHAT_PROGRAM_SOURCE = bundle_program(CHAT_PROGRAM, network, mcp, compaction, core)
 
 
 class CompactionConfig(BaseConfig):
@@ -51,6 +58,28 @@ def compaction_args(compaction: CompactionConfig | None) -> list[str]:
     if compaction.summarize_at_tokens is not None:
         args.append(f"--summarize-at-tokens={compaction.summarize_at_tokens}")
     return args
+
+
+async def stage_text(
+    runtime: Runtime,
+    trace: Trace,
+    name: str,
+    text: str,
+    *,
+    env: dict[str, str] | None = None,
+) -> str:
+    """Write `text` to a new file in `runtime` and return its path.
+
+    Prompt text reaches programs by file, never on argv: an agent's `pkill -f <word>`
+    kills every process whose command line contains the word, and Linux caps one
+    argument at 128 KiB. Each call gets its own path, so concurrent launches on one
+    trace do not collide. The program that reads the file deletes it."""
+    stem, dot, suffix = name.partition(".")
+    path = runtime.temp_path(
+        f"{stem}-{trace.id}-{uuid.uuid4().hex[:8]}{dot}{suffix}", env=env
+    )
+    await runtime.write(path, text.encode())
+    return path
 
 
 async def launch_chat_program(
@@ -76,32 +105,55 @@ async def launch_chat_program(
         f"--model={ctx.model}",
         *extra_args,
     ]
-    if system_prompt:
-        args.append(f"--system-prompt={system_prompt}")
-    if mcp_urls:
-        args.append(
-            "--mcp-config="
-            + json.dumps(
-                {
-                    "mcpServers": {
-                        name: {"url": url, "timeout": config.tool_timeout}
-                        for name, url in mcp_urls.items()
-                    }
-                }
+    process_env = env if env is not None else {**config.resolved_env}
+    prompt_files = []
+    try:
+        if system_prompt:
+            path = await stage_text(
+                runtime, trace, "system-prompt.txt", system_prompt, env=process_env
             )
+            prompt_files.append(path)
+            args.append(f"--system-prompt-file={path}")
+        if mcp_urls:
+            args.append(
+                "--mcp-config="
+                + json.dumps(
+                    {
+                        "mcpServers": {
+                            name: {"url": url, "timeout": config.tool_timeout}
+                            for name, url in mcp_urls.items()
+                        }
+                    }
+                )
+            )
+        if isinstance(prompt, str):
+            initial = [{"role": "user", "content": prompt}] if prompt else []
+        else:
+            initial = [message_to_wire(message) for message in prompt or []]
+        if initial:
+            path = await stage_text(
+                runtime,
+                trace,
+                "initial-messages.json",
+                json.dumps(initial),
+                env=process_env,
+            )
+            prompt_files.append(path)
+            args.append(f"--initial-messages-file={path}")
+        program = await runtime.prepare_uv_script(
+            source, config.resolved_env, activate=activate
         )
-    if isinstance(prompt, str):
-        args.append(f"--prompt={prompt}")
-    elif prompt is not None:
-        path = f".vf-initial-messages-{trace.id}.json"
-        await runtime.write(
-            path,
-            json.dumps([message_to_wire(message) for message in prompt]).encode(),
-        )
-        args.append(f"--initial-messages-file={path}")
-    program = await runtime.prepare_uv_script(
-        source, config.resolved_env, activate=activate
-    )
-    return await runtime.run(
-        [*program, *args], env if env is not None else {**config.resolved_env}
-    )
+        return await runtime.run([*program, *args], process_env)
+    finally:
+        for path in prompt_files:
+            try:
+                await remove_dir(runtime, path, "prompt file")
+            except Exception as error:
+                # Teardown is the backstop if the runtime is gone or the agent
+                # changed permissions. Preserve the result or original failure.
+                logger.warning(
+                    "Failed to clean up prompt file - %s: %s",
+                    type(error).__name__,
+                    clip(str(error)),
+                    exc_info=logger.isEnabledFor(logging.DEBUG),
+                )

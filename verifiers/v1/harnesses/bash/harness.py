@@ -1,8 +1,10 @@
+import json
 import os
 from typing import Literal
 
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
+from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.harness import Harness
 from verifiers.v1.harnesses.utils.launch import (
     CHAT_PROGRAM_SOURCE,
@@ -38,7 +40,8 @@ class BashHarnessConfig(HarnessConfig):
     search: bool = False
     """Offer a `search` tool (Google web results via serper.dev). Requires `SERPER_API_KEY` in the
     eval environment; the key is handed to the program over argv (like the interception secret) so
-    the agent's `bash` subprocesses don't inherit it."""
+    the agent's `bash` subprocesses don't inherit it. Results matching the runtime's
+    network blocklist are excluded."""
 
     compaction: CompactionConfig | None = CompactionConfig()
     """Context compaction. Auto-compaction by default; set `summarize_at_tokens`
@@ -111,6 +114,8 @@ class BashHarness(Harness[BashHarnessConfig]):
                     "(the host env or the harness config's env)"
                 )
             args += ["--search", f"--serper-key={serper_key}"]
+            if isinstance(runtime.config, NetworkPolicyConfig) and runtime.config.block:
+                args.append(f"--search-block={json.dumps(runtime.config.block)}")
         return await launch_chat_program(
             CHAT_PROGRAM_SOURCE,
             self.config,

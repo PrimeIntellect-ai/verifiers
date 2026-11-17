@@ -20,6 +20,7 @@ from openai import (
     omit,
 )
 from openai.lib.streaming.chat import AsyncChatCompletionStream
+from pydantic import AnyHttpUrl, ValidationError
 from tenacity import (
     AsyncRetrying,
     before_sleep_log,
@@ -39,6 +40,7 @@ if TYPE_CHECKING:
         is_context_overflow,
     )
     from verifiers.v1.harnesses.utils.mcp import call_mcp, connect_mcp  # noqa: TC004
+    from verifiers.v1.utils.network import network_rule_matches  # noqa: TC004
 
 # Mirror of verifiers.v1.errors.MODEL_TRANSPORT_ERROR_EXIT_CODE;
 # this bundled script cannot import verifiers.
@@ -128,7 +130,12 @@ def format_results(results, query: str) -> str:
     return "\n\n---\n\n".join(sections)
 
 
-def run_search(query: str, api_key: str, num_results: int = 5) -> str:
+def run_search(
+    query: str,
+    api_key: str,
+    num_results: int = 5,
+    network_block: list[str] | None = None,
+) -> str:
     """Serper Google web search -> formatted organic results.
 
     The key arrives as an argument (handed in by the harness over argv, like the interception
@@ -152,6 +159,25 @@ def run_search(query: str, api_key: str, num_results: int = 5) -> str:
         )
         response.raise_for_status()
         organic = response.json().get("organic") or []
+        if network_block:
+            filtered = []
+            for result in organic:
+                try:
+                    url = AnyHttpUrl(result.get("link", ""))
+                except ValidationError:
+                    continue
+                if not any(
+                    network_rule_matches(
+                        rule,
+                        url.scheme,
+                        url.host.strip("[]"),
+                        url.port,
+                        subdomains=True,
+                    )
+                    for rule in network_block
+                ):
+                    filtered.append(result)
+            organic = filtered
         return format_results(organic[:num_results], query)
     except Exception as e:  # noqa: BLE001 - tool failures are returned to the model
         return f"search failed ({e}). Try again or rephrase the query."
@@ -427,6 +453,7 @@ async def run_chat_loop(
                         tool_args.get("query", ""),
                         args.serper_key,
                         tool_args.get("num_results", 5),
+                        args.search_block,
                     )
                 else:
                     content = f"error: unknown tool {name!r}"
@@ -439,13 +466,22 @@ async def run_chat_loop(
             messages = await compactor.compact(messages)
 
 
+def read_staged(path: str) -> bytes:
+    """Read and delete a file the harness staged for this launch; empty without one."""
+    if not path:
+        return b""
+    file = Path(path)
+    data = file.read_bytes()
+    file.unlink()
+    return data
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--base-url", required=True)
     parser.add_argument("--api-key", required=True)
     parser.add_argument("--model", required=True)
-    parser.add_argument("--system-prompt", default="")
-    parser.add_argument("--prompt", default="")
+    parser.add_argument("--system-prompt-file", default="")
     parser.add_argument("--initial-messages-file", default="")
     parser.add_argument("--mcp-config", default="")
     parser.add_argument("--tool-interception-url", default="")
@@ -454,18 +490,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--summarize-at-tokens", type=int)
     parser.add_argument("--edit", action="store_true")
     parser.add_argument("--search", action="store_true")
+    parser.add_argument("--search-block", type=json.loads, default=[])
     parser.add_argument("--serper-key", default="")
     return parser.parse_args()
 
 
 async def main() -> None:
     args = parse_args()
-    initial = []
-    if args.initial_messages_file:
-        path = Path(args.initial_messages_file)
-        payload = path.read_bytes()
-        path.unlink()
-        initial = json.loads(payload)
+    system_prompt = read_staged(args.system_prompt_file).decode()
+    initial = json.loads(read_staged(args.initial_messages_file) or b"[]")
     # Minimal task images may lack a system CA bundle.
     client = AsyncOpenAI(
         base_url=args.base_url,
@@ -497,14 +530,9 @@ async def main() -> None:
             mcp_tools, dispatch, servers = [], {}, {}
         tools += mcp_tools
         messages = (
-            [{"role": "system", "content": args.system_prompt}]
-            if args.system_prompt
-            else []
+            [{"role": "system", "content": system_prompt}] if system_prompt else []
         )
-        if initial:
-            messages.extend(initial)
-        elif args.prompt:
-            messages.append({"role": "user", "content": args.prompt})
+        messages.extend(initial)
         compactor = Compactor(
             client,
             args.model,

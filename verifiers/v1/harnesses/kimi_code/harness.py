@@ -1,6 +1,5 @@
 """Run Kimi Code's native ACP server against interception."""
 
-import logging
 import tomllib
 
 import tomli_w
@@ -15,8 +14,9 @@ from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
 from verifiers.v1.types import Message
+from verifiers.v1.utils.logging import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 KIMI_DIR = "/var/tmp/vf-kimi-code"
 KIMI_BIN = f"{KIMI_DIR}/node_modules/.bin/kimi"
@@ -29,16 +29,16 @@ INSTALL = r"""
 set -e
 packages=/var/tmp/vf-kimi-code
 export PATH="/var/tmp/vf-node/bin:$PATH"
-if [ "$(cat "$packages/.version" 2>/dev/null)" != "$VF_KIMI_VERSION" ]; then
+if [ "$(cat "$packages/.version" 2>/dev/null)" != "$AGENT_KIMI_VERSION" ]; then
     npm install --prefix "$packages" --ignore-scripts --no-audit --no-fund --omit=dev \
-        "@moonshot-ai/kimi-code@$VF_KIMI_VERSION" >/dev/null
-    printf %s "$VF_KIMI_VERSION" > "$packages/.version"
+        "@moonshot-ai/kimi-code@$AGENT_KIMI_VERSION" >/dev/null
+    printf %s "$AGENT_KIMI_VERSION" > "$packages/.version"
 fi
 """
 
 
 class KimiCodeHarnessConfig(HarnessConfig):
-    version: PinnedVersion = "2.0.2"
+    version: PinnedVersion = "2.4.1"
     """Kimi Code release to install, pinned for reproducibility."""
     dialect: DialectName = "chat_completions"
 
@@ -51,20 +51,19 @@ class KimiCodeHarness(ACPHarness[KimiCodeHarnessConfig]):
 
     # Kimi Code drops whitespace-only assistant text when it stores a step, so every
     # transport replays it without. Recheck on version bumps:
-    # https://github.com/MoonshotAI/kimi-code/blob/@moonshot-ai/kimi-code@2.0.2/packages/agent-core-v2/src/agent/loop/loopService.ts#L1723
+    # https://github.com/MoonshotAI/kimi-code/blob/@moonshot-ai/kimi-code@2.4.1/packages/agent-core-v2/src/agent/loop/loopService.ts#L1819
+    # https://github.com/MoonshotAI/kimi-code/blob/@moonshot-ai/kimi-code@2.4.1/packages/agent-core-v2/src/agent/contextMemory/vacuousContent.ts#L6
     def replay_view(self, message: Message, dialect: DialectName | None) -> Message:
         return drop_blank_text(message)
 
     async def setup(self, runtime: Runtime) -> None:
         await ensure_node(runtime)
-        logger.info(
-            "kimi-code: ensuring Kimi Code %s is installed", self.config.version
-        )
+        logger.debug("Ensuring Kimi Code %s is installed", self.config.version)
         await ensure_installed(
             runtime,
             directory=KIMI_DIR,
             install=INSTALL,
-            env={"VF_KIMI_VERSION": self.config.version},
+            env={"AGENT_KIMI_VERSION": self.config.version},
             label="Kimi Code",
         )
         await super().setup(runtime)
@@ -102,7 +101,7 @@ class KimiCodeHarness(ACPHarness[KimiCodeHarnessConfig]):
                                 "decision": "deny",
                                 "scope": "user",
                                 "pattern": tool,
-                                "reason": "Disabled by Verifiers harness configuration.",
+                                "reason": "Disabled by the current configuration.",
                             }
                             for tool in self.config.disabled_tools
                         ]
