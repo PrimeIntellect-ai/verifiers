@@ -52,7 +52,11 @@ class RemoteProcess(RuntimeProcess):
 
 
 class RemoteBackend(RuntimeBackend):
-    """B is bound to its task user; no provider or local-exec fallback."""
+    """Internal view of B's process worker, not a provisionable sandbox provider.
+
+    B is bound to its task user. Resource ownership and port publication stay
+    with the evaluator's deployment, outside this credential-free proxy.
+    """
 
     def __init__(self, command: list[str]):
         super().__init__()
@@ -111,3 +115,9 @@ class RemoteBackend(RuntimeBackend):
                     await self.rpc.call("close")
             finally:
                 await self.rpc.close()
+
+    async def expose(self, port: int) -> str:
+        raise SandboxError("workspace port publication is owned by the deployment")
+
+    async def verify_stopped(self) -> None:
+        raise SandboxError("workspace termination is verified by the deployment")
