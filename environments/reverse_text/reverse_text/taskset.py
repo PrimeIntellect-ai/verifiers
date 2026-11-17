@@ -3,7 +3,7 @@
 The model is asked to reverse the prompt and wrap the answer in `<reversed_text>`
 tags; the reward is the LCS ratio between the parsed answer and the ground-truth
 reversal. A pure-trace reward (no runtime needed) — the canonical tiny RL env, and
-the starter for prime-rl training against a v1 env server.
+the starter for prime-rl training.
 """
 
 import re

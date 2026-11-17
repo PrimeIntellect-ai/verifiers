@@ -46,6 +46,9 @@ class Episode(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     """The artifact Env.run produces. Contains multiple agents' traces."""
 
     id: str = Field(default_factory=lambda: uuid.uuid4().hex)
+    """Unique ID for this episode, auto-generated. Stable across retries."""
+    attempt: int = 1
+    """Which attempt of the episode this is, from 1."""
 
     env: EnvInfo = Field(default_factory=EnvInfo)
     """The env that produced this episode."""
@@ -76,6 +79,7 @@ class Episode(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         """The last episode-level error captured across attempts."""
         return self.errors[-1] if self.errors else None
 
+    @computed_field
     @property
     def usage(self) -> Usage | None:
         """Provider-reported usage summed across every trace's model calls;
@@ -100,6 +104,7 @@ class Episode(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         """Final sequence lengths per branch, summed across traces."""
         return sum(t.num_total_tokens for t in self.traces)
 
+    @computed_field
     @property
     def num_turns(self) -> int:
         """Sampled turns, summed across traces."""
@@ -118,7 +123,7 @@ class Episode(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         float_decimals: int | None = RECORD_FLOAT_DECIMALS,
         exclude: dict | set | None = None,
     ) -> dict[str, Any]:
-        """JSON record without raw trace tensors, which remain on the msgpack wire.
+        """JSON record without raw trace tensors, which a python-mode `model_dump` keeps.
         Per-token node streams are numpy arrays (`graph.RECORD_STREAMS`): encode it with
         `to_json`, or with orjson and `OPT_SERIALIZE_NUMPY`. Per-token float streams are
         rounded to `float_decimals` (`None` keeps every digit). `exclude` is a pydantic

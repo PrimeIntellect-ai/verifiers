@@ -33,12 +33,9 @@ dependencies = [
     "math-verify>=0.8.0",
     "openai>=2.54.0,<3.0.0",
     "prime-tunnel>=0.1.17",
-    "prime-sandboxes>=0.5.5",
+    "prime-sandboxes>=0.5.9",
     "pydantic>=2.12.3",
     "tenacity>=8.5.0",
-    "gepa>=0.0.6",
-    "pyzmq>=27.1.0",
-    "msgpack>=1.1.2",
     "orjson>=3.10.0",
     "httpx>=0.27.0",
     "httpx2>=2.12.0",
@@ -48,7 +45,7 @@ dependencies = [
     "prime-pydantic-config[toml]>=0.4.3",
     "loguru>=0.7.0",
     "tomli-w>=1.0.0",
-    "renderers[multimodal]>=0.1.13.dev17",
+    "renderers[multimodal]>=0.2.1.dev12",
     "typing_extensions>=4.12.2",
     "mcp==2.2.0",
 ]
@@ -100,6 +97,8 @@ openenv = [
 ]
 [tool.uv]
 constraint-dependencies = ["brotli>=1.2.1", "brotlicffi>=1.2.1.0"]
+# gradio (via the openenv extra) caps pillow<13, which has unfixed advisories.
+override-dependencies = ["pillow>=13.0.0"]
 preview = true
 required-version = ">=0.11.1"
 exclude-newer = "7 days"
@@ -152,7 +151,6 @@ renderers = false
 vf-run = "verifiers.v1.cli.run:main"
 vf-validate = "verifiers.v1.cli.validate:main"
 vf-debug = "verifiers.v1.cli.debug:main"
-vf-gepa = "verifiers.v1.cli.gepa:main"
 
 # hatchling configuration
 [tool.hatch.version]
@@ -221,13 +219,13 @@ markers = [
     "subprocess: integration cells touching the subprocess (host) runtime",
     "docker: integration cells touching the docker runtime",
     "prime: integration cells touching the prime runtime (real sandbox + tunnel)",
-    "colocated: integration cells with a tool server colocated in the harness runtime",
     "service: integration cells with a tool server in a Compose service beside the harness",
     "null: integration cells on the null harness",
     "bash: integration cells on the bash harness",
     "claude_code: integration cells on the claude-code harness",
     "openclaw: integration cells on the OpenClaw harness",
     "hermes_agent: integration cells on the hermes-agent harness",
+    "stirrup: integration cells on the Stirrup harness",
     "deepseek: integration cells on the DeepSeek minimal harness",
     "rlm: integration cells on the rlm harness",
     "kimi_code: integration cells on the kimi-code harness",

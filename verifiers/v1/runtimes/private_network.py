@@ -11,7 +11,6 @@ workspace. The harness reaches a server at its VM's LAN name,
 
 import asyncio
 import contextlib
-import logging
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import AsyncExitStack, asynccontextmanager
@@ -24,8 +23,9 @@ from verifiers.v1.runtimes import (
 )
 from verifiers.v1.runtimes.backends.prime import leased_client
 from verifiers.v1.utils.aio import run_shielded
+from verifiers.v1.utils.logging import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 WORKSPACE_TAG = "vf-workspace"
 
@@ -37,13 +37,15 @@ def tool_vms(
     network, by server name: those on Prime runtimes of their own beside a Prime
     workspace of the rollout's own, without a task service spec. Any other server keeps its
     runtime's published port, which takes no network policy."""
+    from verifiers.v1.mcp.toolset import ToolsetConfig
+
     if composed or borrowed or not isinstance(workspace, PrimeConfig):
         return {}
     vms = {
         toolset.server_name: toolset.config.runtime
         for toolset in toolsets
-        if isinstance(toolset.config.runtime, PrimeConfig)
-        and not toolset.config.colocated
+        if isinstance(toolset.config, ToolsetConfig)
+        and isinstance(toolset.config.runtime, PrimeConfig)
         and not toolset.config.url
         and toolset.config.service is None
     }
@@ -159,8 +161,8 @@ async def private_network(
                     group.create_task(provision(name, config))
         except ExceptionGroup as failed:
             raise failed.exceptions[0]  # one VM's failure, typed for retries
-        logger.info(
-            "LAN network %s joins %s to %s",
+        logger.debug(
+            "Joined LAN network %s from %s to %s",
             network.id,
             workspace.info.id,
             {name: backend.info.id for name, backend in backends.items()},

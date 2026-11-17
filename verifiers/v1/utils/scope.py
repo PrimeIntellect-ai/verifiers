@@ -1,17 +1,18 @@
 """The scope that state shared by a run's processes is keyed by."""
 
-import logging
 import os
 import uuid
 
-logger = logging.getLogger(__name__)
+from verifiers.v1.utils.logging import get_logger
+
+logger = get_logger(__name__)
 
 _process_scope: str | None = None
 
 
 def run_scope() -> str:
     """``$VF_RUN_ID``, set by every entrypoint (the `vf-*` CLIs and the prime-rl launchers)
-    and inherited by spawned env servers and pool workers. A process started without one
+    and inherited by every process they spawn. A process started without one
     gets a scope of its own, minted once per process."""
     global _process_scope
     run_id = os.environ.get("VF_RUN_ID")

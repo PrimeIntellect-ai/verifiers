@@ -28,6 +28,7 @@ def _trace() -> vf.Trace:
         ("max_total_turns", "max_turns"),
         ("token_budget", "max_output_tokens"),
         ("compaction_failed", "compaction_failed"),
+        ("format_violation", "format_violation"),
         ("done", "agent_completed"),
         (None, "agent_completed"),
     ],
@@ -50,15 +51,34 @@ def test_rlm_stop_reason_survives_completion_and_serialization(reason, condition
 
     restored = vf.WireTrace.model_validate_json(trace.model_dump_json())
     assert restored.stop_condition == condition
-    assert restored.is_truncated is (condition != "agent_completed")
+    assert restored.is_truncated is (
+        condition not in ("agent_completed", "format_violation")
+    )
+    assert restored.is_format_violation is (condition == "format_violation")
 
 
-def _sent_policy(config: RLMHarnessConfig, runtime_config) -> dict:
+def _sent_contract(config: RLMHarnessConfig, runtime_config) -> dict:
     runtime = SimpleNamespace(config=runtime_config, env={})
     metadata = RLMHarness(config)._runtime_metadata(
         SimpleNamespace(model="m"), _trace(), runtime, "http://endpoint", "s", None
     )
-    return metadata[RLM_RUNTIME_METADATA_KEY]["policy"]
+    return metadata[RLM_RUNTIME_METADATA_KEY]
+
+
+def _sent_policy(config: RLMHarnessConfig, runtime_config) -> dict:
+    return _sent_contract(config, runtime_config)["policy"]
+
+
+@pytest.mark.parametrize("max_retries", [0, 30])
+def test_rlm_sends_provider_max_retries_when_set(max_retries):
+    config = RLMHarnessConfig(id="rlm", provider_max_retries=max_retries)
+    provider = _sent_contract(config, DockerConfig())["provider"]
+    assert provider["max_retries"] == max_retries
+
+
+def test_rlm_leaves_provider_max_retries_to_nano_rlm_by_default():
+    provider = _sent_contract(RLMHarnessConfig(id="rlm"), DockerConfig())["provider"]
+    assert "max_retries" not in provider
 
 
 @pytest.mark.parametrize(

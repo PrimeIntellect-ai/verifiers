@@ -46,6 +46,7 @@ HARNESSES: list[str | dict] = [
     "codex",
     "claude-code",
     "hermes-agent",
+    "stirrup",
     "deepseek",
     "kimi-code",
     "pi",
@@ -277,12 +278,12 @@ def skip_harness(cells: list, harness: str, reason: str) -> list:
 
 def placements(
     harness_runtimes: tuple[str, ...] = ("prime",),
-    tool_runtimes: tuple[str, ...] = ("colocated", "subprocess", "prime"),
+    tool_runtimes: tuple[str, ...] = ("subprocess", "prime"),
     *,
     shared: bool = False,
 ) -> list:
-    """`(harness_runtime, tool_runtime)` cells for a tool server placed colocated in the
-    harness's box, in a native service VM beside it (`service`), or in its own runtime
+    """`(harness_runtime, tool_runtime)` cells for a tool server placed in a native
+    service VM beside the harness (`service`), or in its own runtime
     (on Prime beside a Prime harness, a VM on the rollout's private network). A
     `subprocess` tool runtime is a server on the host, reached from the sandbox through
     the tunnel. A `shared` server runs once per eval, so it joins no rollout's network."""
@@ -294,9 +295,7 @@ def placements(
             if tool_runtime == "service":
                 reason = unsupported("null", harness_runtime, ("services",))
             # Beside a Prime harness, a rollout's Prime server joins its private network.
-            elif tool_runtime != "colocated" and not (
-                not shared and tool_runtime == harness_runtime == "prime"
-            ):
+            elif shared or tool_runtime != "prime" or harness_runtime != "prime":
                 reason = unsupported("null", tool_runtime, ("expose",))
             if reason:
                 marks.append(pytest.mark.skip(reason=reason))
@@ -305,12 +304,7 @@ def placements(
                     harness_runtime,
                     tool_runtime,
                     marks=marks,
-                    id=f"harness-in-{harness_runtime}-with-tool-"
-                    + (
-                        "colocated"
-                        if tool_runtime == "colocated"
-                        else f"in-{tool_runtime}"
-                    ),
+                    id=f"harness-in-{harness_runtime}-with-tool-in-{tool_runtime}",
                 )
             )
     return cells

@@ -1,7 +1,6 @@
 """Run OpenClaw's Gateway-backed ACP agent against interception."""
 
 import json
-import logging
 from typing import Literal
 
 from verifiers.v1.acp import ACPConfig, ACPHarness
@@ -11,8 +10,9 @@ from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
+from verifiers.v1.utils.logging import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 # OpenClaw and its bundled Node runtime exceed the small /tmp tmpfs in some VMs.
 OPENCLAW_DIR = "/var/tmp/vf-openclaw-{version}"
@@ -22,11 +22,11 @@ set -e
 if [ ! -x "$VF_OPENCLAW_BIN" ]; then
     command -v curl >/dev/null || (apt-get update -qq && apt-get install -y -qq curl ca-certificates >/dev/null)
     curl -fsSL --proto '=https' --tlsv1.2 https://openclaw.ai/install-cli.sh \
-        | bash -s -- --prefix "$VF_OPENCLAW_DIR" --version "$VF_OPENCLAW_VERSION" --no-onboard
+        | bash -s -- --prefix "$AGENT_OPENCLAW_DIR" --version "$AGENT_OPENCLAW_VERSION" --no-onboard
 fi
-set -- $(find "$VF_OPENCLAW_DIR/tools" -type f -path '*/openclaw/dist/session-accessor.sqlite-transcript-store-*.mjs')
+set -- $(find "$AGENT_OPENCLAW_DIR/tools" -type f -path '*/openclaw/dist/session-accessor.sqlite-transcript-store-*.mjs')
 [ "$#" -eq 1 ] || { echo "could not locate OpenClaw's transcript sanitizer for replay patch" >&2; exit 1; }
-"$VF_OPENCLAW_DIR/tools/node/bin/node" - "$1" <<'NODE'
+"$AGENT_OPENCLAW_DIR/tools/node/bin/node" - "$1" <<'NODE'
 const fs = require("node:fs");
 const file = process.argv[2];
 const stat = fs.statSync(file);
@@ -145,7 +145,7 @@ class OpenClawHarness(ACPHarness[OpenClawHarnessConfig]):
     async def setup(self, runtime: Runtime) -> None:
         directory = OPENCLAW_DIR.format(version=self.config.version)
         binary = OPENCLAW_BIN.format(version=self.config.version)
-        logger.info("openclaw: ensuring OpenClaw %s is installed", self.config.version)
+        logger.debug("Ensuring OpenClaw %s is installed", self.config.version)
         # Borrowed runtimes can share this cache, so one filesystem lock owns both
         # installation and the transcript adjustment.
         await ensure_installed(
@@ -155,8 +155,8 @@ class OpenClawHarness(ACPHarness[OpenClawHarnessConfig]):
             env={
                 **self.config.resolved_env,
                 "VF_OPENCLAW_BIN": binary,
-                "VF_OPENCLAW_DIR": directory,
-                "VF_OPENCLAW_VERSION": self.config.version,
+                "AGENT_OPENCLAW_DIR": directory,
+                "AGENT_OPENCLAW_VERSION": self.config.version,
             },
             label="OpenClaw",
             shell=("bash", "-o", "pipefail", "-c"),

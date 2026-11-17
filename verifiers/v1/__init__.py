@@ -50,12 +50,6 @@ if TYPE_CHECKING:
         SelectConfig,
         TaskMatchConfig,
     )
-    from verifiers.v1.configs.serve import (
-        ElasticPoolConfig,
-        ServeConfig,
-        StaticPoolConfig,
-        pool_serve_kwargs,
-    )
     from verifiers.v1.configs.task import (
         DecoratedFunctionConfig,
         RewardFunctionConfig,
@@ -112,6 +106,7 @@ if TYPE_CHECKING:
         SemanticEdgeSet,
     )
     from verifiers.v1.state import State, StateT
+    from verifiers.v1.submission import run_submission
     from verifiers.v1.task import (
         Task,
         TaskData,
@@ -155,13 +150,12 @@ if TYPE_CHECKING:
         Messages,
         Request,
         Response,
-        SamplingMask,
+        SamplerSupport,
         SystemMessage,
         TextContentPart,
         Tool,
         ToolCall,
         ToolMessage,
-        TopLogprobs,
         TurnTokens,
         Usage,
         UserMessage,
@@ -198,6 +192,7 @@ if TYPE_CHECKING:
     )
 
 _NAME_TO_MODULE = {
+    "run_submission": "verifiers.v1.submission",
     "ACPConfig": "verifiers.v1.acp",
     "ACPHarness": "verifiers.v1.acp",
     "ACPInfo": "verifiers.v1.semantic",
@@ -227,7 +222,6 @@ _NAME_TO_MODULE = {
     "Deployment": "verifiers.v1.runtimes.deployment",
     "DeploymentConfig": "verifiers.v1.configs.deployment",
     "DockerConfig": "verifiers.v1.configs.runtime",
-    "ElasticPoolConfig": "verifiers.v1.configs.serve",
     "Env": "verifiers.v1.env",
     "EnvConfig": "verifiers.v1.configs.env",
     "EnvError": "verifiers.v1.errors",
@@ -286,7 +280,7 @@ _NAME_TO_MODULE = {
     "RuntimeProcess": "verifiers.v1.runtimes",
     "Sampling": "verifiers.v1.configs.sampling",
     "SamplingConfig": "verifiers.v1.configs.sampling",
-    "SamplingMask": "verifiers.v1.types",
+    "SamplerSupport": "verifiers.v1.types",
     "SandboxError": "verifiers.v1.errors",
     "ScoringConfig": "verifiers.v1.configs.scoring",
     "ServicesSpec": "verifiers.v1.runtimes.deployment",
@@ -295,7 +289,6 @@ _NAME_TO_MODULE = {
     "SelectConfig": "verifiers.v1.configs.select",
     "SemanticEdge": "verifiers.v1.semantic",
     "SemanticEdgeSet": "verifiers.v1.semantic",
-    "ServeConfig": "verifiers.v1.configs.serve",
     "SharedEnvConfig": "verifiers.v1.configs.env",
     "SharedTasksetConfig": "verifiers.v1.configs.taskset",
     "SharedToolsetConfig": "verifiers.v1.mcp",
@@ -303,7 +296,6 @@ _NAME_TO_MODULE = {
     "SingleAgentEnvConfig": "verifiers.v1.configs.env",
     "State": "verifiers.v1.state",
     "StateT": "verifiers.v1.state",
-    "StaticPoolConfig": "verifiers.v1.configs.serve",
     "StopFunctionConfig": "verifiers.v1.configs.task",
     "SubprocessConfig": "verifiers.v1.configs.runtime",
     "SystemMessage": "verifiers.v1.types",
@@ -328,7 +320,6 @@ _NAME_TO_MODULE = {
     "ToolsetConfig": "verifiers.v1.mcp",
     "ToolsetTimeoutConfig": "verifiers.v1.mcp",
     "ToolsetError": "verifiers.v1.errors",
-    "TopLogprobs": "verifiers.v1.types",
     "Trace": "verifiers.v1.trace",
     "TraceTask": "verifiers.v1.trace",
     "TrainClientConfig": "verifiers.v1.configs.client",
@@ -369,7 +360,6 @@ _NAME_TO_MODULE = {
     "narrowed_env_annotation": "verifiers.v1.configs.cli.env",
     "parse_judge_choice": "verifiers.v1.utils.score",
     "parse_pytest_outcomes": "verifiers.v1.utils.score",
-    "pool_serve_kwargs": "verifiers.v1.configs.serve",
     "read_answer_file_or_last_reply": "verifiers.v1.utils.score",
     "resolve_client": "verifiers.v1.clients",
     "resolve_env_config": "verifiers.v1.utils.loaders",
@@ -441,8 +431,7 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "MessageNode",
     "Branch",
     "TurnTokens",
-    "SamplingMask",
-    "TopLogprobs",
+    "SamplerSupport",
     "Timing",
     "TimeSpan",
     "TimeSplit",
@@ -508,16 +497,12 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "SingleAgentEnv",
     "EnvConfig",
     "SharedEnvConfig",
-    "ServeConfig",
     "resolve_env_field",
     "merge_defaults",
     "narrowed_env_annotation",
     "SingleAgentEnvConfig",
     "AgentConfig",
-    "StaticPoolConfig",
-    "ElasticPoolConfig",
     "default_agent_harness",
-    "pool_serve_kwargs",
     "RetryConfig",
     "RetryRule",
     # agent
@@ -559,6 +544,7 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "capture_patch",
     "resolve_head",
     "grade_submission",
+    "run_submission",
     # grading artifacts
     "ARTIFACTS_DIR",
     "Artifact",
