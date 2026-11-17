@@ -55,7 +55,7 @@ run = asyncio.create_task(agent.run(task, steering=steering))
 receipt = await steering.steer("Use the existing parser.", message_id="op-1")
 ```
 
-It injects into the running turn the way `mode="steer"` does, on harnesses that support live steering, and never queues or wakes. With no turn running (before the rollout opens, between retries, after it ends) the receipt is `{"outcome": "promptRequired", "reason": "noRunningTurn"}` and nothing is delivered; a retry starts over without earlier messages. A delivery the end of the turn cuts off answers `{"outcome": "unknown"}`. A `Steering` serves one `run` at a time, and a stable `message_id` delivers once per attempt.
+It injects into the running turn the way `mode="steer"` does, on harnesses that support live steering, and never queues or wakes. With no turn running (before the rollout opens, between retries, after it ends) the receipt is `{"outcome": "promptRequired", "reason": "noRunningTurn"}` and nothing is delivered; a retry starts over without earlier messages. A `Steering` serves one `run` at a time.
 
 ## Verification placement
 
