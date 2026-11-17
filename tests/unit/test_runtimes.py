@@ -48,16 +48,16 @@ from verifiers.v1.runtimes import (
     make_backend,
     provision_runtime,
 )
-from verifiers.v1.runtimes.backends.subprocess import signal_process
+from verifiers.v1.runtimes.backends.cli import signal_process
 from verifiers.v1.runtimes.compose import ComposeSpec, compose_services
 from verifiers.v1.runtimes.strategies import _deployment_strategy
 from verifiers.v1.utils.compile import resolve_runtime_config
 
-RUNTIMES = ["subprocess", "docker", "prime", "plugin"]
+RUNTIMES = ["docker", "prime", "plugin"]
 SUPPORTED = {
     "task_images": {"docker", "prime"},
     "user_switching": {"docker", "prime"},
-    "port_exposure": {"subprocess", "docker", "prime"},
+    "port_exposure": {"docker", "prime"},
     "compose": {"docker", "prime"},
     "network_policies": {"docker", "prime"},
 }
@@ -157,7 +157,7 @@ def task(**data) -> vf.Task:
     return vf.Task(data=vf.TaskData(idx=0, prompt=None, **data))
 
 
-@pytest.mark.parametrize("name", ["subprocess", "docker", "prime"])
+@pytest.mark.parametrize("name", ["docker", "prime"])
 def test_built_in_runtime_declares_its_features(name) -> None:
     config = TypeAdapter(RuntimeConfig).validate_python({"type": name})
     cls = backend_cls(config)

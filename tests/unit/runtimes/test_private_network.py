@@ -33,14 +33,15 @@ def toolset(name, **config):
 def test_tool_servers_on_prime_runtimes_beside_a_prime_workspace_get_vms():
     toolsets = [
         toolset("atlas", runtime=ATLAS),
-        toolset("search"),  # the evaluator
+        toolset("search"),  # its own Prime VM by default
         toolset("remote", url="https://tools.example/mcp"),
         toolset("gym", service="tools"),  # a named task service
         toolset("local", runtime=DockerConfig()),  # a published port
     ]
     vms = private_network.tool_vms
     assert vms(toolsets, PrimeConfig(), composed=False, borrowed=False) == {
-        "atlas": ATLAS
+        "atlas": ATLAS,
+        "search": PrimeConfig(),
     }
     # Without a Prime workspace of the rollout's own, servers keep their published port.
     for workspace, composed, borrowed in [

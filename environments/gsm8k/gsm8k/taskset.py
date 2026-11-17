@@ -3,8 +3,8 @@
 Loads questions from GSM8K; the model reasons and gives a final number. The reward
 runs a uv script (`verify.py`, with `math-verify` as an isolated dependency) IN the
 rollout's runtime via `runtime.write` + `runtime.run` — so the verifier's deps never
-touch the eval process, and it works identically on the subprocess, docker, and
-prime runtimes. (A reward is thus either a pure function of the trace or, like this
+touch the eval process, and it works identically on the docker and prime runtimes.
+(A reward is thus either a pure function of the trace or, like this
 one, runtime read/write/exec.)
 """
 

@@ -34,7 +34,7 @@ from urllib.parse import urlsplit
 
 from verifiers.v1.configs.runtime import DockerConfig, NetworkPolicyConfig
 from verifiers.v1.errors import SandboxError
-from verifiers.v1.runtimes.backends.subprocess import SubprocessProcess
+from verifiers.v1.runtimes.backends.cli import CLIProcess
 from verifiers.v1.runtimes.base import (
     SERVICE_PORT,
     BaseRuntimeInfo,
@@ -738,7 +738,7 @@ class DockerBackend(RuntimeBackend):
             pidfile,
             *argv,
         ]
-        proc = SubprocessProcess(
+        proc = CLIProcess(
             await asyncio.create_subprocess_exec(
                 *command,
                 stdin=asyncio.subprocess.PIPE,
