@@ -209,7 +209,7 @@ class Task(Generic[DataT, StateT, ConfigT]):
     async def finalize_services(
         self, trace: Trace, targets: dict[str, Runtime]
     ) -> None:
-        """Collect isolated-grading evidence after the workspace has stopped."""
+        """Collect isolated-grading evidence after workspace access to services ends."""
         return
 
     async def setup(self, trace: Trace, runtime: Runtime) -> None:

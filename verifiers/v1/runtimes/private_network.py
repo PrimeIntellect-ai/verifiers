@@ -149,14 +149,15 @@ async def join_shared_tool_network(network_id: str, consumer: RuntimeBackend) ->
 async def private_network(
     workspace: RuntimeBackend,
     members: Mapping[str, PrimeConfig],
-    start_workspace: Callable[[], Awaitable[object]],
+    start_workspace: Callable[[], Awaitable[object]] | None,
     *,
     interconnect: bool = False,
     networks: Mapping[str, list[str]] | None = None,
     tool_names: frozenset[str] = frozenset(),
-) -> AsyncIterator[dict[str, RuntimeBackend]]:
-    """Boot the workspace's VM and one VM per member together, each joining a LAN
-    network of the rollout's own as it boots."""
+) -> AsyncIterator[tuple[dict[str, RuntimeBackend], Callable[[], Awaitable[None]]]]:
+    """Join the workspace and service VMs to a rollout LAN, yielding services and
+    a callback that ends the workspace's access before evidence collection.
+    A missing `start_workspace` borrows an already running workspace."""
     if not isinstance(workspace, PrimeBackend):
         raise TypeError(
             "tool servers on Prime runtimes of their own join the workspace over a "
@@ -191,11 +192,12 @@ async def private_network(
     )
     # Install connectivity before boot, and release the VMs before their LAN.
     async with (
-        _lan_network(rules) as (_, network_id),
+        _lan_network(rules) as (client, network_id),
         AsyncExitStack() as stack,
     ):
         # Failed startup unwinds this stack before the deployment's workspace owner.
-        stack.push_async_callback(workspace.stop)
+        if start_workspace is not None:
+            stack.push_async_callback(workspace.stop)
 
         backends: dict[str, RuntimeBackend] = {}
 
@@ -209,10 +211,23 @@ async def private_network(
                 )
             )
 
-        workspace.lan = (network_id, memberships["main"])
+        async def stop_workspace() -> None:
+            if start_workspace is not None:
+                await workspace.stop()
+            else:
+                # Every rule on this LAN requires tags. Clear this membership's
+                # tags and wait for the VM layer to apply them before collecting
+                # service evidence; an API acknowledgement alone is not a barrier.
+                await client._join_lan(network_id, workspace.info.id, [])
+
+        if start_workspace is None:
+            await client._join_lan(network_id, workspace.info.id, memberships["main"])
+        else:
+            workspace.lan = (network_id, memberships["main"])
         try:
             async with asyncio.TaskGroup() as group:
-                group.create_task(start_workspace())
+                if start_workspace is not None:
+                    group.create_task(start_workspace())
                 for name, config in members.items():
                     group.create_task(provision(name, config))
         except ExceptionGroup as failed:
@@ -223,4 +238,4 @@ async def private_network(
             workspace.info.id,
             {name: backend.info.id for name, backend in backends.items()},
         )
-        yield backends
+        yield backends, stop_workspace

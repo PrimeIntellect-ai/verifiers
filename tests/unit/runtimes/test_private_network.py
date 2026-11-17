@@ -62,8 +62,10 @@ def test_the_deployment_joins_tool_vms_over_a_private_network():
     )
 
 
-def test_private_network_deployment_rejects_borrowed_workspace():
-    deployment = SimpleNamespace(borrowed_runtime=object())
+def test_native_services_deployment_rejects_borrowed_workspace():
+    deployment = SimpleNamespace(
+        borrowed_runtime=object(), spec=vf.ServicesSpec({"atlas": ATLAS})
+    )
     with pytest.raises(ValueError, match="cannot borrow a single target"):
         asyncio.run(_PrivateNetworkDeployment().start(deployment))
 
@@ -188,6 +190,7 @@ def test_the_workspace_stops_before_tool_evidence_and_is_released_regardless():
         raise RuntimeError("network deletion failed")
 
     strategy = _PrivateNetworkDeployment()
+    strategy._stop_main = stop
     strategy._services = SimpleNamespace(aclose=aclose)
     deployment = SimpleNamespace(
         execution_backend=SimpleNamespace(stop=stop), borrowed_runtime=None
