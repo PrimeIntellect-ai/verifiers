@@ -38,6 +38,46 @@ async def test_hung_cleanup_is_given_up_after_its_grace():
     assert hung.is_set()
 
 
+async def test_cleanup_that_ignores_its_cancellation_is_left_behind():
+    release = asyncio.Event()
+
+    async def cleanup():
+        while not release.is_set():
+            try:
+                await release.wait()
+            except asyncio.CancelledError:
+                pass  # swallows every cancellation until the test releases it
+
+    task = asyncio.ensure_future(run_shielded(cleanup(), grace=0.05))
+    await asyncio.sleep(0.01)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, 2)
+    release.set()  # lets the left-behind coroutine end before the loop closes
+    await asyncio.sleep(0)
+
+
+async def test_second_cancellation_still_waits_for_the_unwind():
+    unwound = []
+
+    async def cleanup():
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            await asyncio.sleep(0.03)  # its own cleanup after the grace cancels it
+            unwound.append(True)
+            raise
+
+    task = asyncio.ensure_future(run_shielded(cleanup(), grace=0.05))
+    await asyncio.sleep(0.01)
+    task.cancel()
+    await asyncio.sleep(0.06)  # past the grace, while the coroutine unwinds
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, 2)
+    assert unwound == [True]
+
+
 async def test_uncancelled_cleanup_is_unbounded_and_returns():
     async def cleanup():
         await asyncio.sleep(0.1)

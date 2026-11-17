@@ -22,7 +22,8 @@ async def run_shielded(coro: Awaitable[T], *, grace: float | None = GRACE_S) -> 
     If `coro` raises without a cancellation, the error propagates unchanged; with one,
     the cancellation wins and the error is chained under it (`from`), so it is never
     silently lost. Once cancelled, `coro` has `grace` seconds more (None: unbounded);
-    past them it is cancelled too, and the cancellation re-raised. Uncancelled, it runs
+    past them it is cancelled too, given one more `grace` to unwind, and the cancellation
+    re-raised (a coroutine that ignores its cancellation is left running). Uncancelled, it runs
     as long as it takes. A second Ctrl-C that raises KeyboardInterrupt out of the event
     loop itself is beyond any task-level shield — that path is the atexit backstop's job."""
     task = asyncio.ensure_future(coro)
@@ -32,8 +33,15 @@ async def run_shielded(coro: Awaitable[T], *, grace: float | None = GRACE_S) -> 
     while not task.done():
         left = None if deadline is None else deadline - loop.time()
         if left is not None and left <= 0:
-            task.cancel()  # past its grace: given up, and awaited below as it unwinds
-            await asyncio.wait([task])
+            # Past its grace: cancelled, and awaited as it unwinds for one more grace, absorbing
+            # further cancellations. A coroutine that ignores its cancellation is left behind.
+            task.cancel()
+            end = loop.time() + grace
+            while not task.done() and (remaining := end - loop.time()) > 0:
+                try:
+                    await asyncio.wait([task], timeout=remaining)
+                except asyncio.CancelledError:
+                    pass
             break
         try:
             await asyncio.wait_for(asyncio.shield(task), left)
@@ -46,5 +54,7 @@ async def run_shielded(coro: Awaitable[T], *, grace: float | None = GRACE_S) -> 
         except BaseException:  # noqa: BLE001, S110 - re-raised or chained below
             pass  # `coro` itself failed → task is done; re-raised (or chained) below
     if cancelled is not None:
-        raise cancelled from (None if task.cancelled() else task.exception())
+        raise cancelled from (
+            None if not task.done() or task.cancelled() else task.exception()
+        )
     return task.result()
