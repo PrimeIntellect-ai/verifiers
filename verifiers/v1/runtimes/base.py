@@ -33,14 +33,21 @@ logger = get_logger(__name__)
 # Python images, then fall back to the standalone installer (curl/wget), installing curl + CA
 # certs when a bare image has no downloader. Both install paths land in ~/.local/bin, which we
 # prepend to PATH first. (Installing needs network + one of pip / curl / wget / apt-get / apk.)
+# The standalone installer runs unmanaged (UV_UNMANAGED_INSTALL): it then only places the
+# binaries, without editing shell profiles or writing its self-update receipt to
+# ${XDG_CONFIG_HOME:-$HOME/.config}/uv. That receipt is shared by every user with the same
+# HOME (a task image can give root and the agent user one), and an installer that cannot
+# overwrite another user's receipt fails after it has already installed uv.
 _INSTALL_CURL = (  # only when the image has no downloader; needs a known package manager
     "{ command -v curl >/dev/null 2>&1 || command -v wget >/dev/null 2>&1; } "
     "|| { apt-get update -qq && apt-get install -y -qq curl ca-certificates; } "
     "|| apk add --no-cache curl ca-certificates"
 )
 _DOWNLOAD_UV = (
-    "{ command -v curl >/dev/null 2>&1 && curl -LsSf https://astral.sh/uv/install.sh | sh; } "
-    "|| { command -v wget >/dev/null 2>&1 && wget -qO- https://astral.sh/uv/install.sh | sh; }"
+    "{ command -v curl >/dev/null 2>&1 && curl -LsSf https://astral.sh/uv/install.sh "
+    '| UV_UNMANAGED_INSTALL="$HOME/.local/bin" sh; } '
+    "|| { command -v wget >/dev/null 2>&1 && wget -qO- https://astral.sh/uv/install.sh "
+    '| UV_UNMANAGED_INSTALL="$HOME/.local/bin" sh; }'
 )
 _ENSURE_UV = (
     'export PATH="$HOME/.local/bin:$PATH" UV_INSTALL_DIR="$HOME/.local/bin"; '

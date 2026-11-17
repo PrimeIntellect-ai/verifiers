@@ -169,7 +169,10 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
             # The editable install needs the files, not the history; agents searching
             # their workspace for a repository must not find the harness's own.
             f"rm -rf {checkout}/.git && "
-            f"{home_env}UV_INSTALL_DIR={directory}/bin UV_TOOL_BIN_DIR={directory}/bin "
+            # Unmanaged: install.sh's uv installer then writes no receipt under root's
+            # $HOME/.config/uv, which a task image can point at the agent's workspace.
+            f"{home_env}UV_INSTALL_DIR={directory}/bin UV_UNMANAGED_INSTALL={directory}/bin "
+            f"UV_TOOL_BIN_DIR={directory}/bin "
             f"UV_TOOL_DIR={directory}/tools "
             f"RLM_CHECKOUT_PATH={checkout} bash {checkout}/install.sh && "
             f"touch {ready})"
