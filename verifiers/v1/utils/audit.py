@@ -160,7 +160,8 @@ def redact(value):
     secrets: set[str] = set()
 
     def sensitive(key: str) -> bool:
-        key = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", str(key)).lower()
+        key = str(key).rsplit(".", 1)[-1]
+        key = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", key).lower()
         return bool(SECRET_KEY.search(key)) and not key.endswith("_var")
 
     def strings(item):

@@ -81,7 +81,7 @@ def load_evidence(config: AuditConfig) -> tuple[str, list[dict]]:
                 for episode in parse_episodes(stream, WireTrace)
                 for trace in episode.traces
             ]
-    return hashlib.sha256(raw).hexdigest(), redact(records)
+    return hashlib.sha256(raw).hexdigest(), records
 
 
 async def run_audit(config: AuditConfig) -> tuple[Path, int]:
@@ -102,6 +102,10 @@ async def run_audit(config: AuditConfig) -> tuple[Path, int]:
     )
     criteria = [criterion.model_dump(mode="json") for criterion in judge.criteria]
     source = source_evidence(config.source) if config.source is not None else None
+    # Discover credentials before scrubbing any record, including echoes in the
+    # shared source or another trace. Redact the shared source only once.
+    evidence = redact({"records": records, "source": source})
+    records, source = evidence["records"], evidence["source"]
     semaphore = asyncio.Semaphore(config.max_concurrent)
     question = TaskData(
         prompt=(
@@ -114,9 +118,13 @@ async def run_audit(config: AuditConfig) -> tuple[Path, int]:
     )
 
     async def one(record: dict) -> dict:
+        async with semaphore:
+            return await review_record(record)
+
+    async def review_record(record: dict) -> dict:
         # Judge accounting and verdicts belong to a new sidecar, never to saved scores.
         result = dict(record)
-        content = redact({"trajectory": result.pop("evidence"), "source": source})
+        content = {"trajectory": result.pop("evidence"), "source": source}
         scratch = Trace(
             task=TraceTask(type="Audit", data=question),
             agent=AgentInfo(config=AgentConfig()),
@@ -127,8 +135,7 @@ async def run_audit(config: AuditConfig) -> tuple[Path, int]:
         try:
             if len(encoded) > MAX_REVIEW_BYTES:
                 raise ValueError(f"review evidence exceeds {MAX_REVIEW_BYTES} bytes")
-            async with semaphore:
-                result["analysis_score"] = await judge.score(question, scratch)
+            result["analysis_score"] = await judge.score(question, scratch)
             result["status"] = "reviewed"
         except Exception as error:
             result.update(
