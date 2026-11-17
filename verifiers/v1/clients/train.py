@@ -10,6 +10,7 @@ from typing import Any, ClassVar, TypeVar
 
 import numpy as np
 from openai import OpenAIError
+from openai.types import CompletionUsage
 from renderers import OverlongPromptError, RenderedTokens, Renderer, RendererConfig
 from renderers.base import ToolCallParseStatus, is_multimodal
 
@@ -165,11 +166,8 @@ def response_from_generate(
             tool_calls=tool_calls,
         ),
         finish_reason=finish,
-        # /inference/v1/generate returns exact token ids but no usage details, so the
-        # completion's reasoning-token subset is unknown.
-        usage=Usage(
-            prompt_tokens=len(prompt_ids), completion_tokens=len(completion_ids)
-        ),
+        # Require provider usage to preserve cache and reasoning accounting.
+        usage=Usage.from_openai(CompletionUsage.model_validate(result["usage"])),
         # The streams are already typed arrays, so skip revalidation.
         tokens=TurnTokens.model_construct(
             prompt_ids=prompt_ids,
@@ -204,6 +202,18 @@ def _is_valid_incremental_tail(messages: list[dict[str, Any]]) -> bool:
     return bool(messages) and all(
         message.get("role") in ("tool", "user") for message in messages
     )
+
+
+def _previous_tool_call_ids(
+    messages: list[dict[str, Any]], tail_length: int
+) -> list[str] | None:
+    """IDs of the tool calls of the assistant message the tail extends, if it is one."""
+    index = len(messages) - tail_length - 1
+    if index < 0 or messages[index].get("role") != "assistant":
+        return None
+    return [
+        str(call.get("id") or "") for call in messages[index].get("tool_calls") or []
+    ]
 
 
 def _has_multimodal_content(messages) -> bool:
@@ -415,6 +425,13 @@ class TrainClient(Client):
                     f"{type(renderer).__name__} does not support process_multimodal=False"
                 )
             render_kwargs = {} if process_multimodal else {"process_multimodal": False}
+            bridge_kwargs = dict(render_kwargs)
+            if getattr(renderer, "supports_previous_tool_call_ids", False):
+                # Templates that order tool results by the assistant's calls need the call
+                # IDs, which the sampled tokens do not carry.
+                bridge_kwargs["previous_tool_call_ids"] = _previous_tool_call_ids(
+                    wire_messages, len(wire_tail)
+                )
             # Only build the O(context) previous token stream for a bridgeable tail.
             can_bridge = turn is not None and _is_valid_incremental_tail(wire_tail)
             previous_ids = turn.previous_renderer_token_ids() if can_bridge else None
@@ -427,7 +444,7 @@ class TrainClient(Client):
                         previous_completion_ids,
                         wire_tail,
                         tools=wire_tools,
-                        **render_kwargs,
+                        **bridge_kwargs,
                     )
 
                 bridged = await slot.run(bridge)

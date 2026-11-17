@@ -22,15 +22,27 @@ class SkillCodewordTask(vf.Task):
         return float(CODEWORD in (trace.last_reply or ""))
 
 
-class SkillCodewordTaskset(vf.Taskset[SkillCodewordTask, vf.TasksetConfig]):
+class SkillCodewordConfig(vf.TasksetConfig):
+    finish_tool: bool = False
+    """Request the answer through finish for harnesses that require it."""
+
+
+class SkillCodewordTaskset(vf.Taskset[SkillCodewordTask, SkillCodewordConfig]):
     def load(self) -> list[SkillCodewordTask]:
+        # A finish-tool harness replies with its finish reason, which models fill
+        # with a summary of their work unless told to put the codeword there.
+        reply = (
+            "call your finish tool with reason set to only the codeword and paths=[]."
+            if self.config.finish_tool
+            else "reply with only the codeword."
+        )
         return [
             SkillCodewordTask(
                 vf.TaskData(
                     idx=0,
                     prompt=(
                         "What is the project codeword? Look it up with your "
-                        "`project-codeword` skill, then reply with only the codeword."
+                        f"`project-codeword` skill, then {reply}"
                     ),
                     skills=[SKILL],
                 ),

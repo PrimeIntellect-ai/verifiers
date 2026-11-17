@@ -15,8 +15,8 @@ Lazy views pick which tasks an iteration yields, chainable in any order:
 
     taskset.include(idx=["0:100"]).exclude(names=["broken"]).shuffle(seed=0).take(5)
 
-`select(SelectConfig)` chains them in the config's fixed order; the eval, debug,
-validate and GEPA entrypoints and prime-rl all select through it.
+`select(SelectConfig)` chains them in the config's fixed order; the run, debug,
+and validate entrypoints and prime-rl all select through it.
 """
 
 from __future__ import annotations

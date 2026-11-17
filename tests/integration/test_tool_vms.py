@@ -6,6 +6,7 @@ import json
 import os
 
 import pytest
+from conftest import CI_RETRIES
 from fetch_tool import FetchToolTask, FetchToolTaskConfig
 
 import verifiers.v1 as vf
@@ -77,6 +78,7 @@ async def test_a_tool_vm_keeps_its_own_egress_beside_a_restricted_workspace(
     config = vf.AgentConfig(
         model="unused",
         runtime=vf.PrimeConfig(labels=["vf-integration"]),
+        retries=CI_RETRIES,
         timeout=TimeoutConfig(setup=900, finalize=120, scoring=60),
     )
     async with vf.Agent(config) as agent:

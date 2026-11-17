@@ -75,7 +75,7 @@ class CompactionConfig(BaseConfig):
 class RLMHarnessConfig(HarnessConfig):
     dialect: Literal["chat_completions"] = "chat_completions"
     version: str = Field(
-        default="ae1cc01f8293987d18b09286b34d93c0dfbf8dac", min_length=1
+        default="695ac48461fbd154859093eaa14589b21f63c22e", min_length=1
     )
     """Git ref (branch, tag, or commit) of nano-rlm to install. Must know every
     field this harness puts on the wire, i.e. be at least the default ref."""
@@ -105,6 +105,9 @@ class RLMHarnessConfig(HarnessConfig):
     exec_timeout: PositiveInt | None = None
     """IPython/native tool execution timeout in seconds; `None` uses nano-rlm's
     default (300). Separate from `tool_timeout`, which controls MCP calls."""
+    provider_max_retries: NonNegativeInt | None = None
+    """SDK retries per model call (429, 5xx, connection errors); `None` uses nano-rlm's
+    default (5). Raise it so long rollouts ride out extended rate-limit bursts."""
     allow_git: bool | None = None
     """Allow unrestricted Git history queries (e.g. `git log --all`); `None` uses
     nano-rlm's default (false). Ordinary Git commands remain allowed either way;
@@ -156,7 +159,9 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
     async def setup(self, runtime: Runtime) -> None:
         if self.config.skills:
             # Editable skill packages and uv's tool environment must belong to this run.
-            self._skills_install_dir = f"{RLM_CACHE_DIR}-skills-{secrets.token_hex(16)}"
+            self._skills_install_dir = runtime.temp_path(
+                f"rlm-skills-{secrets.token_hex(16)}", env=self.config.resolved_env
+            )
             await self.install_skills(runtime, f"{self._skills_home()}/skills")
         directory = self._install_dir()
         binary = f"{directory}/bin/rlm"
@@ -164,7 +169,7 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
         ready = f"{directory}/.ready"
         # install.sh installs the Python skill packages under $RLM_HOME/skills.
         home = self._skills_home()
-        home_env = f"RLM_HOME={home} " if home else ""
+        home_env = f"RLM_HOME={shlex.quote(home)} " if home else ""
         env = self.config.resolved_env.copy()
         extra_uv_args = env.get("RLM_EXTRA_UV_ARGS", "")
         env["RLM_EXTRA_UV_ARGS"] = f"{extra_uv_args} --with mcp~=1.28".strip()
@@ -174,38 +179,44 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
         pin = ""
         if "--exclude-newer" not in extra_uv_args:
             pin = (
-                f"pinned=$(git -C {checkout} log -1 --format=%cI) && "
+                f"pinned=$(git -C {shlex.quote(checkout)} log -1 --format=%cI) && "
                 'export RLM_EXTRA_UV_ARGS="$RLM_EXTRA_UV_ARGS --exclude-newer $pinned" && '
             )
         # install.sh fetches curl/uv itself; add git only when the image lacks it.
         install = (
-            f"rm -f {ready} && "
+            f"rm -f {shlex.quote(ready)} && "
             "(command -v git >/dev/null 2>&1 || "
             "{ apt-get update -qq && apt-get install -y -qq git; } || dnf install -y -q git || apk add --no-cache git && "
-            f"rm -rf {checkout} && git clone https://{RLM_REPO} {checkout} && "
-            f"git -C {checkout} checkout {shlex.quote(self.config.version)} && "
+            f"rm -rf {shlex.quote(checkout)} && git clone https://{RLM_REPO} {shlex.quote(checkout)} && "
+            f"git -C {shlex.quote(checkout)} checkout {shlex.quote(self.config.version)} && "
             f"{pin}"
             # The editable install needs the files, not the history; agents searching
             # their workspace for a repository must not find the harness's own.
-            f"rm -rf {checkout}/.git && "
-            f"{home_env}UV_INSTALL_DIR={directory}/bin UV_TOOL_BIN_DIR={directory}/bin "
-            f"UV_TOOL_DIR={directory}/tools "
-            f"RLM_CHECKOUT_PATH={checkout} bash {checkout}/install.sh && "
-            f"touch {ready})"
+            f"rm -rf {shlex.quote(checkout + '/.git')} && "
+            f"{home_env}UV_INSTALL_DIR={shlex.quote(directory + '/bin')} "
+            f"UV_TOOL_BIN_DIR={shlex.quote(directory + '/bin')} "
+            f"UV_TOOL_DIR={shlex.quote(directory + '/tools')} "
+            f"RLM_CHECKOUT_PATH={shlex.quote(checkout)} bash {shlex.quote(checkout + '/install.sh')} && "
+            f"touch {shlex.quote(ready)})"
         )
-        check = f"[ -f {ready} ] && [ -x {binary} ]"
+        check = f"[ -f {shlex.quote(ready)} ] && [ -x {shlex.quote(binary)} ]"
         if self._skills_install_dir is None:
             # An image that installed this version under the old /tmp path keeps using
             # it: link its bin/ instead of resolving dependencies again from the network.
             legacy = f"{RLM_LEGACY_CACHE_DIR}-{self._cache_key()}"
+            bin_dir, legacy_bin = (
+                shlex.quote(f"{directory}/bin"),
+                shlex.quote(f"{legacy}/bin"),
+            )
             check = (
-                f"{check} || {{ [ -f {legacy}/.ready ] && [ -x {legacy}/bin/rlm ] && "
-                f"mkdir -p {directory} && rm -rf {directory}/bin && "
-                f"ln -s {legacy}/bin {directory}/bin && "
-                f"touch {ready}; }}"
+                f"{check} || {{ [ -f {shlex.quote(legacy + '/.ready')} ] && "
+                f"[ -x {shlex.quote(legacy + '/bin/rlm')} ] && "
+                f"mkdir -p {shlex.quote(directory)} && rm -rf {bin_dir} && "
+                f"ln -s {legacy_bin} {bin_dir} && "
+                f"touch {shlex.quote(ready)}; }}"
             )
             # A link left dangling by a later /tmp cleanup is replaced by the install.
-            install = f"rm -rf {directory}/bin && {install}"
+            install = f"rm -rf {bin_dir} && {install}"
         await ensure_installed(
             runtime,
             directory=directory,
@@ -257,6 +268,11 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
             "provider": {
                 "base_url": endpoint,
                 "api_key": secret,
+                **(
+                    {"max_retries": self.config.provider_max_retries}
+                    if self.config.provider_max_retries is not None
+                    else {}
+                ),
             },
             # None = passthrough: the key stays off the wire and nano-rlm's own
             # default applies.

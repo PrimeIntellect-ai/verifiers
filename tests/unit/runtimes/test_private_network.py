@@ -34,7 +34,6 @@ def test_tool_servers_on_prime_runtimes_beside_a_prime_workspace_get_vms():
     toolsets = [
         toolset("atlas", runtime=ATLAS),
         toolset("search"),  # the evaluator
-        toolset("files", colocated=True, runtime=ATLAS),  # the workspace
         toolset("remote", url="https://tools.example/mcp"),
         toolset("gym", service="tools"),  # a named task service
         toolset("local", runtime=DockerConfig()),  # a published port

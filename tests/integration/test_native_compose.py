@@ -5,6 +5,7 @@ internal service, and grading in place or in a fresh verifier."""
 import os
 
 import pytest
+from conftest import CI_RETRIES
 
 import verifiers.v1 as vf
 from verifiers.v1.configs.agent import TimeoutConfig
@@ -118,6 +119,7 @@ async def test_native_compose(tmp_path, mode):
     config = vf.AgentConfig(
         model="unused",
         runtime=vf.PrimeConfig(labels=["vf-ci"]),
+        retries=CI_RETRIES,
         scoring=vf.ScoringConfig(mode=mode, retries=vf.RetryConfig(max_retries=0)),
         # A cold run builds and imports the VM image during setup.
         timeout=TimeoutConfig(setup=1200, finalize=60, scoring=300),

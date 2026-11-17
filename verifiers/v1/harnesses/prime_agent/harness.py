@@ -27,7 +27,6 @@ PRIME_AGENT_COMMIT: Literal["ea9d9602ec0938d9e454e8963107cd85af1565c6"] = (
 PRIME_AGENT_VERSION = "0.10.2"
 PRIME_AGENT_DIR = "/var/tmp/vf-prime-agent"
 STATE_ROOT = "/tmp/vf-prime-agent-runs"
-PROVIDER = "intercept"
 LIFECYCLE_META_NAMESPACE = "ai.primeintellect.prime-agent"
 KEY_VAR = "PRIME_AGENT_INTERCEPT_KEY"
 ENV_AGENT_DIR = "PRIME_AGENT_CODING_AGENT_DIR"
@@ -37,7 +36,7 @@ INSTALL = (
     "set -e\n"
     + _ENSURE_UV
     + r"""
-prefix="$VF_PRIME_AGENT_DIR/$PRIME_AGENT_COMMIT"
+prefix="$AGENT_PRIME_AGENT_DIR/$PRIME_AGENT_COMMIT"
 if [ ! -x "$prefix/bin/prime-agent" ]; then
     case "$(uname -s)-$(uname -m)" in
         Linux-x86_64) platform=linux-x64; sha=09659961dfde201cc39f1e69b607385d708da3e591f267a4fea04970afb8b005 ;;
@@ -47,9 +46,9 @@ if [ ! -x "$prefix/bin/prime-agent" ]; then
         *) echo "unsupported prime-agent platform: $(uname -s)-$(uname -m)" >&2; exit 1 ;;
     esac
     command -v curl >/dev/null || { apt-get update -qq && apt-get install -y -qq curl ca-certificates; } || apk add --no-cache curl ca-certificates
-    release_url="$VF_PRIME_AGENT_GITHUB_RELEASE_URL/v$PRIME_AGENT_RELEASE_VERSION"
+    release_url="$AGENT_PRIME_AGENT_GITHUB_RELEASE_URL/v$PRIME_AGENT_RELEASE_VERSION"
     tarball="prime-agent-$PRIME_AGENT_RELEASE_VERSION-$platform.tar.gz"
-    download_dir="$(mktemp -d "$VF_PRIME_AGENT_DIR/install.XXXXXX")"
+    download_dir="$(mktemp -d "$AGENT_PRIME_AGENT_DIR/install.XXXXXX")"
     trap 'rm -rf "$download_dir"' EXIT
     curl -fsSL --retry 5 --retry-all-errors "$release_url/$tarball" -o "$download_dir/$tarball"
     printf '%s  %s\n' "$sha" "$tarball" > "$download_dir/SHA256SUMS"
@@ -82,8 +81,7 @@ class PrimeAgentHarnessConfig(HarnessConfig):
 
     autonomous: bool = False
     """Enable Prime Agent's autonomous continuation loop."""
-    # Over Responses it replays an earlier turn without its reasoning.
-    dialect: Literal["chat_completions", "anthropic_messages"] = "chat_completions"
+    dialect: Literal["auto"] = "auto"
 
 
 class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
@@ -158,8 +156,8 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
             install=INSTALL,
             env={
                 **self.config.resolved_env,
-                "VF_PRIME_AGENT_DIR": PRIME_AGENT_DIR,
-                "VF_PRIME_AGENT_GITHUB_RELEASE_URL": GITHUB_RELEASE_URL,
+                "AGENT_PRIME_AGENT_DIR": PRIME_AGENT_DIR,
+                "AGENT_PRIME_AGENT_GITHUB_RELEASE_URL": GITHUB_RELEASE_URL,
                 "PRIME_AGENT_COMMIT": self.config.commit,
                 "PRIME_AGENT_RELEASE_VERSION": PRIME_AGENT_VERSION,
                 "PRIME_AGENT_KERNEL_VENV": self._kernel_venv(),
@@ -213,22 +211,20 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
             None,
             "none",
         ) or ctx.model.rsplit("/", 1)[-1].startswith(("gpt-5", "o1", "o3", "o4"))
+        provider, separator, model = ctx.model.partition("/")
+        if not separator:
+            provider, model = "openai", ctx.model
+        elif provider in ("internal", "dev"):
+            provider, model = "prime-inference", ctx.model
         models = {
             "providers": {
-                PROVIDER: {
-                    # Its Anthropic provider appends `/v1/messages` to the base URL.
-                    "baseUrl": endpoint.removesuffix("/v1")
-                    if self.config.dialect == "anthropic_messages"
-                    else endpoint,
-                    "api": {
-                        "chat_completions": "openai-completions",
-                        "responses": "openai-responses",
-                        "anthropic_messages": "anthropic-messages",
-                    }[self.config.dialect],
+                provider: {
+                    # The native provider owns its API path, including any version prefix.
+                    "baseUrl": endpoint.removesuffix("/v1"),
                     "apiKey": KEY_VAR,
                     "models": [
                         {
-                            "id": ctx.model,
+                            "id": model,
                             "reasoning": reasoning,
                             "input": ["text", "image"],
                         }
@@ -251,9 +247,9 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
             "acp",
             "--no-session",  # The ACP connection owns the session's lifetime.
             "--provider",
-            PROVIDER,
+            provider,
             "--model",
-            ctx.model,
+            model,
             "--daemon-socket",
             f"{root}/daemon.sock",
             "--offline",
@@ -263,7 +259,11 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
         for skill in self.config.skills:
             args += ["--skill", skill_destination(skill, skills_dir)]
         if system_prompt:
-            args += ["--append-system-prompt", system_prompt]
+            # prime-agent reads a path argument as the file's contents when it
+            # builds a session, so the file stays until cleanup.
+            path = f"{agent_dir}/system-prompt.md"
+            await runtime.write(path, system_prompt.encode())
+            args += ["--append-system-prompt", path]
         if mcp_urls:
             # ACP servers need discovery guidance; importing the SDK shadows the REPL helper.
             args += [

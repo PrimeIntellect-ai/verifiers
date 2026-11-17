@@ -14,8 +14,7 @@
         "harnesses",
         "agent",
         "env",
-        "harbor",
-        "gepa"
+        "harbor"
       ]
     }
   ],
@@ -55,10 +54,6 @@
     {
       "source": "/v1/harbor",
       "destination": "/harbor"
-    },
-    {
-      "source": "/v1/gepa",
-      "destination": "/gepa"
     },
     {
       "source": "/v0/overview",

@@ -149,7 +149,7 @@ class ContainerProcess(RuntimeProcess):
                 "sh",
                 "-c",
                 'kill -"$1" "-$2" 2>/dev/null || kill -"$1" "$2" 2>/dev/null',
-                "vf-signal",
+                "process-signal",
                 signal,
                 str(self._pid),
             ],
@@ -184,7 +184,7 @@ async def _abort_process_startup(
                         "sh",
                         "-c",
                         cleanup,
-                        "vf-process-cleanup",
+                        "process-cleanup",
                         pidfile,
                     ],
                     {},
@@ -209,6 +209,8 @@ class DockerBackend(RuntimeBackend):
 
     SUPPORTS_TASK_IMAGES: ClassVar[bool] = True
     SUPPORTS_USER_SWITCHING: ClassVar[bool] = True
+    SUPPORTS_STOP_CONFIRMATION: ClassVar[bool] = True
+    SUPPORTS_MEMORY_LIMIT: ClassVar[bool] = True
     SUPPORTS_PORT_EXPOSURE: ClassVar[bool] = True
     SUPPORTS_COMPOSE: ClassVar[bool] = True
     is_local = True
@@ -411,7 +413,7 @@ class DockerBackend(RuntimeBackend):
             "sh",
             "-c",
             'if [ ! -d "$1" ]; then mkdir -p "$1" && chown "$2" "$1"; fi',
-            "vf-workdir",
+            "workspace-directory",
             self.config.workdir,
             container["User"] or "0",
         )
@@ -624,6 +626,22 @@ class DockerBackend(RuntimeBackend):
             await self._proxy.stop()
         await super().teardown()
 
+    async def verify_stopped(self) -> None:
+        if not self.stopped or self.info.borrowed:
+            raise SandboxError(
+                "cannot confirm termination of a live or borrowed container"
+            )
+        if self._container is None:
+            return
+        async with asyncio.timeout(60):
+            result = await cli("docker", "container", "inspect", self._container)
+        if result.exit_code and any(
+            message in result.stderr
+            for message in ("No such container:", "No such object:")
+        ):
+            return
+        raise SandboxError("could not confirm Docker container removal")
+
     def _exec_argv(
         self, env: dict[str, str], *, stdin: bool = False, user: str | None = None
     ) -> list[str]:
@@ -700,7 +718,7 @@ class DockerBackend(RuntimeBackend):
     async def exec(
         self, runtime: Runtime, argv: list[str], env: dict[str, str]
     ) -> RuntimeProcess:
-        pidfile = f"/tmp/vf-process-{uuid.uuid4().hex}.pid"
+        pidfile = f"/tmp/runtime-process-{uuid.uuid4().hex}.pid"
         # Give the target its own process group when `setsid -w` is available so
         # terminate()/kill() reap its descendants while the CLI client remains
         # attached if setsid needs to fork. The inner shell records the
@@ -708,7 +726,7 @@ class DockerBackend(RuntimeBackend):
         wrapper = (
             "if setsid -w true >/dev/null 2>&1; then "
             'exec setsid -w sh -c \'echo $$ > "$1"; shift; exec "$@"\' '
-            'vf-process "$@"; '
+            'runtime-process "$@"; '
             'fi; echo $$ > "$1"; shift; exec "$@"'
         )
         command = [
@@ -716,7 +734,7 @@ class DockerBackend(RuntimeBackend):
             "sh",
             "-c",
             wrapper,
-            "vf-process",
+            "runtime-process",
             pidfile,
             *argv,
         ]
