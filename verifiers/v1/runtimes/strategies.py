@@ -40,13 +40,13 @@ class _ColocatedDeployment(_DeploymentStrategy):
 
 
 class _SplitDeployment(_DeploymentStrategy):
-    """Keep the harness process and task workspace in different provider sandboxes."""
+    """Docker split execution, where workers use the evaluator's host bridge."""
 
     async def start(self, d):
         if d.borrowed_runtime is not None or d.spec is not None or d.tool_vms:
             raise ValueError("split deployment requires a dedicated single workspace")
-        if d.backend.type not in ("docker", "prime") or d.harness_config is None:
-            raise ValueError("split deployment requires Docker or Prime")
+        if d.backend.type != "docker" or d.harness_config is None:
+            raise ValueError("host-mediated deployment requires Docker")
         if d.backend.type == "docker" and d.backend.config.mounts:
             raise ValueError(
                 "split deployment cannot use Docker bind mounts in the task workspace"
@@ -67,43 +67,7 @@ class _SplitDeployment(_DeploymentStrategy):
 
     async def prepare_execution(self, d, routes, state_route=None):
         await d.harness_backend.prepare_execution(routes)
-        if not isinstance(d.execution_network, NetworkPolicyConfig):
-            raise SandboxError("split workspace has no enforceable network policy")
-        if not d.control_routes or any(
-            urlsplit(route).scheme not in ("http", "https")
-            or not urlsplit(route).hostname
-            for route in d.control_routes
-        ):
-            raise SandboxError("split workspace has no valid control-plane routes")
-        policy = d.execution_network
-        hosts = {
-            urlsplit(route).hostname
-            for route in d.control_routes
-            if urlsplit(route).hostname
-        }
-        for route in d.control_routes:
-            parsed = urlsplit(route)
-            if policy.allow != ["*"] and policy.permits(
-                parsed.scheme,
-                parsed.hostname or "",
-                parsed.port or (443 if parsed.scheme == "https" else 80),
-            ):
-                raise SandboxError(
-                    "task network allowlist includes a framework endpoint"
-                )
-        if policy.allow == ["*"]:
-            policy = type(policy).model_validate(
-                {
-                    **policy.model_dump(),
-                    "block": list(dict.fromkeys([*policy.block, *sorted(hosts)])),
-                }
-            )
-        await d.execution_backend.prepare_execution([], policy)
-        d.execution_backend.config = d.execution_backend.config.model_copy(
-            update={"allow": policy.allow, "block": policy.block}
-        )
-        d.execution_backend.info.allow = policy.allow
-        d.execution_backend.info.block = policy.block
+        await _prepare_split_workspace(d)
 
     async def stop_execution(self, d):
         await d.execution_backend.stop()
@@ -116,6 +80,44 @@ class _SplitDeployment(_DeploymentStrategy):
                 "Failed to tear down the solver before grading",
                 exc_info=logger.isEnabledFor(logging.DEBUG),
             )
+
+
+async def _prepare_split_workspace(d):
+    """Apply task egress without exposing the evaluator's control endpoints."""
+    if not isinstance(d.execution_network, NetworkPolicyConfig):
+        raise SandboxError("split workspace has no enforceable network policy")
+    if not d.control_routes or any(
+        urlsplit(route).scheme not in ("http", "https") or not urlsplit(route).hostname
+        for route in d.control_routes
+    ):
+        raise SandboxError("split workspace has no valid control-plane routes")
+    policy = d.execution_network
+    hosts = {
+        urlsplit(route).hostname
+        for route in d.control_routes
+        if urlsplit(route).hostname
+    }
+    for route in d.control_routes:
+        parsed = urlsplit(route)
+        if policy.allow != ["*"] and policy.permits(
+            parsed.scheme,
+            parsed.hostname or "",
+            parsed.port or (443 if parsed.scheme == "https" else 80),
+        ):
+            raise SandboxError("task network allowlist includes a framework endpoint")
+    if policy.allow == ["*"]:
+        policy = type(policy).model_validate(
+            {
+                **policy.model_dump(),
+                "block": list(dict.fromkeys([*policy.block, *sorted(hosts)])),
+            }
+        )
+    await d.execution_backend.prepare_execution([], policy)
+    d.execution_backend.config = d.execution_backend.config.model_copy(
+        update={"allow": policy.allow, "block": policy.block}
+    )
+    d.execution_backend.info.allow = policy.allow
+    d.execution_backend.info.block = policy.block
 
 
 class _ContainerDeployment(_DeploymentStrategy):
@@ -148,6 +150,7 @@ class _ContainerDeployment(_DeploymentStrategy):
 class _PrivateNetworkDeployment(_DeploymentStrategy):
     _networks: dict[str, list[str]] | None = None
     _internal: frozenset[str] = frozenset()
+    _harness = None
 
     async def start(self, d):
         if d.borrowed_runtime is not None:
@@ -158,6 +161,14 @@ class _PrivateNetworkDeployment(_DeploymentStrategy):
         d.backend.env = d.env
         native = isinstance(d.spec, ServicesSpec)
         members = d.spec.services if native else d.tool_vms
+        harness = self._harness = None
+        if d.config.mode == "split":
+            harness = self._harness = make_backend(
+                _harness_config(
+                    d.config.harness, d.execution_network or d.backend.config
+                ),
+                f"{d.backend.name}-harness",
+            )
         self._services = await d.enter(AsyncExitStack())
         vms = await self._services.enter_async_context(
             private_network(
@@ -166,41 +177,53 @@ class _PrivateNetworkDeployment(_DeploymentStrategy):
                 partial(d.own, d.backend),
                 interconnect=native,
                 networks=self._networks,
+                harness=harness,
+                start_harness=harness and partial(d.own, harness),
+                harness_peers=d.tool_services,
             )
         )
         d.target_backends = {"main": d.backend, **vms}
         d.hosts = {name: lan_host(backend) for name, backend in vms.items()}
         if native:
             d.hosts["main"] = lan_host(d.backend)
-        d.execution_backend = d.harness_backend = d.backend
+        d.execution_backend = d.backend
+        d.harness_backend = harness or d.backend
 
     async def prepare_execution(self, d, routes, state_route=None):
         # Each VM enforces its own policy. A tool server's VM keeps only its state
         # channel, reached as the server reaches it; LAN traffic is unaffected by either.
+        # A split harness's VM keeps the routes; the workspace then keeps none.
         def own(name, backend):
             if name == "main":
-                return routes
+                return [] if self._harness else routes
             if name in self._internal:
                 return []
             return [backend.host_url(state_route)] if state_route else []
 
         await asyncio.gather(
             *(
-                backend.prepare_execution(own(name, backend))
+                _prepare_split_workspace(d)
+                if name == "main" and self._harness
+                else backend.prepare_execution(own(name, backend))
                 for name, backend in d.target_backends.items()
             ),
+            *([self._harness.prepare_execution(routes)] if self._harness else []),
         )
 
     async def stop_execution(self, d):
-        # Nothing the agent left running may reach services while their evidence is
-        # collected.
-        await d.execution_backend.stop()
+        # Neither agent VM may reach services while their evidence is collected.
+        await asyncio.gather(
+            d.execution_backend.stop(),
+            *([self._harness.stop()] if self._harness else []),
+        )
 
     async def prepare_verifier(self, deployment):
         # Evidence is collected; release the solver's VMs before the verifier clock
         # starts, the workspace's even if the service VMs' or the network's release
         # fails.
+        harness = [(self._harness.stop, "harness VM")] if self._harness else []
         for release, what in (
+            *harness,
             (deployment.execution_backend.stop, "workspace VM"),
             (self._services.aclose, "service VMs"),
         ):
@@ -279,9 +302,30 @@ class _NativeComposeDeployment(_PrivateNetworkDeployment):
             )
 
 
+def _harness_config(harness: PrimeConfig, workspace: PrimeConfig) -> PrimeConfig:
+    """A split harness's VM: placed and labelled like the workspace unless set, and
+    under the task's network policy, which the harness would share colocated."""
+    return harness.model_copy(
+        update={
+            "labels": list(dict.fromkeys([*workspace.labels, *harness.labels])),
+            "region": harness.region or workspace.region,
+            "creates_per_min": (
+                harness.creates_per_min
+                if harness.creates_per_min is not None
+                else workspace.creates_per_min
+            ),
+            "allow": workspace.allow,
+            "block": workspace.block,
+        }
+    )
+
+
 def _deployment_strategy(config, backend, spec, tool_vms=None):
-    if config is not None and config.mode == "split":
+    split = config is not None and config.mode == "split"
+    if split and backend.type == "docker":
         return _SplitDeployment()
+    if split and not isinstance(backend, PrimeBackend):
+        raise ValueError("split deployment requires Docker or Prime")
     if isinstance(spec, ServicesSpec):
         if not isinstance(backend, PrimeBackend):
             raise TypeError("Native service VMs require a Prime workspace")
@@ -303,6 +347,6 @@ def _deployment_strategy(config, backend, spec, tool_vms=None):
                 "cannot run Compose services; use ServicesSpec on Prime or local Docker"
             )
         return _ContainerDeployment()
-    if tool_vms:
+    if tool_vms or split:
         return _PrivateNetworkDeployment()
     return _ColocatedDeployment()

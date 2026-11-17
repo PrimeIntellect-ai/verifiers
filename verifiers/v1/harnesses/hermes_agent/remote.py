@@ -53,12 +53,15 @@ class HermesRemoteTools:
     _buffer: bytes = b""
 
     async def aclose(self) -> None:
-        if self._worker is not None:
-            await self._worker.terminate()
+        try:
+            if self._worker is not None:
+                await self._worker.terminate()
+        finally:
             self._worker = None
-        if self._stderr is not None:
-            self._stderr.cancel()
-            await asyncio.gather(self._stderr, return_exceptions=True)
+            if self._stderr is not None:
+                self._stderr.cancel()
+                await asyncio.gather(self._stderr, return_exceptions=True)
+                self._stderr = None
 
     async def __call__(self, call: ToolCall) -> ToolMessage:
         content = f"error: split Hermes has no execution-side implementation for {call.name!r}"

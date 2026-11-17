@@ -11,7 +11,7 @@ import sys
 import sysconfig
 import tempfile
 import uuid
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Callable, Mapping
 from dataclasses import dataclass, field
 from functools import cache
 from importlib.metadata import PathDistribution, distribution, packages_distributions
@@ -82,7 +82,7 @@ while True:
 
 
 @cache
-def _package_dir(cls: type) -> str:
+def _package_dir(cls: Callable) -> str:
     module = sys.modules.get(cls.__module__)
     path = getattr(module, "__file__", None)
     if path:
@@ -244,20 +244,26 @@ async def _cached_package(src: Path) -> tuple[str, bytes]:
 
 
 async def _install_in_sandbox(server: ServerBase, agent_runtime: Runtime) -> str:
-    # Install as root; the agent user only runs the server.
-    runtime = (
-        agent_runtime if agent_runtime.user is None else agent_runtime.with_user(None)
+    return await install_in_runtime(
+        type(server), agent_runtime, label=f"server {server.server_name!r}"
     )
-    # Prime VMs mount /tmp as a small tmpfs, while the runtime workdir lives on
-    # the VM's root disk. Keep source, build scratch space, and uv's cache on the
-    # durable runtime filesystem so ordinary dependency installs cannot exhaust
-    # the tmpfs.
+
+
+async def install_in_runtime(
+    cls: Callable, agent_runtime: Runtime, *, label: str
+) -> str:
+    """Install the framework and a component's source package in a runtime."""
+    # Dependency installation is trusted setup as the backend's default user.
+    # The server itself keeps the agent's user when launched.
+    runtime = agent_runtime.backend.bind(env=agent_runtime.env).with_user(None)
+    # Prime VMs mount /tmp as a small tmpfs. Keep dependency installation on the
+    # durable runtime filesystem so ordinary installs cannot exhaust the tmpfs.
     # Every runtime runs commands in its working directory; not every config names it.
     located = await runtime.run(["pwd"], {})
     workdir = located.stdout.strip()
     if located.exit_code or not workdir:
         raise ToolsetError(
-            f"server {server.server_name!r}: cannot locate the runtime's working "
+            f"{label}: cannot locate the runtime's working "
             f"directory: {located.stderr.strip()}"
         )
     root = str(PurePosixPath(workdir) / ".vf-src")
@@ -269,7 +275,7 @@ async def _install_in_sandbox(server: ServerBase, agent_runtime: Runtime) -> str
     # Colocated servers and borrowed views install into one physical environment.
     # Serialize its mutations and only remember sources after a successful install.
     async with runtime.backend.cache.mcp_lock:
-        sources = dict.fromkeys((_package_dir(ServerBase), _package_dir(type(server))))
+        sources = dict.fromkeys((_package_dir(ServerBase), _package_dir(cls)))
         pending = [
             source
             for source in sources
@@ -295,7 +301,7 @@ async def _install_in_sandbox(server: ServerBase, agent_runtime: Runtime) -> str
             result = await run_shielded(runtime.run(["sh", "-c", setup], {}))
             if result.exit_code != 0:
                 raise ToolsetError(
-                    f"server {server.server_name!r} install failed in runtime: "
+                    f"{label} install failed in runtime: "
                     f"{(result.stderr or result.stdout).strip()[-2000:]}"
                 )
             runtime.backend.cache.mcp_sources.update(pending)
@@ -310,7 +316,7 @@ async def _install_in_sandbox(server: ServerBase, agent_runtime: Runtime) -> str
             result = await run_shielded(runtime.run(["sh", "-c", share], {}))
             if result.exit_code != 0:
                 raise ToolsetError(
-                    f"server {server.server_name!r} could not be shared with "
+                    f"{label} could not be shared with "
                     f"{agent_runtime.user!r}: {(result.stderr or result.stdout).strip()[-2000:]}"
                 )
     return f"{venv}/bin/python"

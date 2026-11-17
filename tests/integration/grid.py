@@ -10,8 +10,8 @@ from a capability the code declares, never from a list of names, so the grid fol
 the code.
 
 A harness without a capability the behavior needs is collected as a skip with its
-reason (`Harness.EXECUTES_CODE`, `SUPPORTS_MCP`, `SUPPORTS_SKILLS`, resume support via
-`SUPPORTS_RESUME` or a native session).
+reason (`Harness.EXECUTES_CODE`, `SUPPORTS_MCP`, `SUPPORTS_SKILLS`,
+`SUPPORTS_SPLIT_EXECUTION`, resume support via `SUPPORTS_RESUME` or a native session).
 
 A runtime without a feature the behavior needs (`RuntimeBackend.SUPPORTS_*`, or a
 `NetworkPolicyConfig` for a network policy) skips the cell the same way. That a runtime
@@ -66,6 +66,7 @@ RUNTIME_FEATURES = {
     "expose": "port exposure",
     "compose": "Compose services",
     "services": "native service VMs",
+    "split": "split deployment",
 }
 
 # Harness dialects that cannot run against the CI model yet.
@@ -138,6 +139,8 @@ def supports(runtime: str, feature: str) -> bool:
     if feature == "network":
         config = TypeAdapter(RuntimeConfig).validate_python(runtime_config(runtime))
         return isinstance(config, NetworkPolicyConfig)
+    if feature == "split":
+        return runtime in ("docker", "prime")
     if feature == "services":
         return issubclass(runtime_cls(runtime), PrimeBackend)
     flag = {
@@ -170,12 +173,21 @@ def unsupported(
         return f"{name} gives the model no shell"
     if "mcp" in needs and not cls.SUPPORTS_MCP:
         return f"{name} does not support MCP tools"
-    if "mcp" in needs and cls.EXECUTES_CODE and not cls.ISOLATES_TOOL_EXECUTION:
+    if "mcp" in needs and "split" in needs and not cls.SUPPORTS_SPLIT_MCP:
+        return f"{name} does not support MCP in split deployment"
+    if (
+        "mcp" in needs
+        and "split" not in needs
+        and cls.EXECUTES_CODE
+        and not cls.ISOLATES_TOOL_EXECUTION
+    ):
         return f"{name} does not isolate execution from its MCP credentials"
     if "skills" in needs and not cls.SUPPORTS_SKILLS:
         return f"{name} has no native skill support"
     if "resume" in needs and not resumes(cls):
         return f"{name} cannot resume an exchange"
+    if "split" in needs and not cls.SUPPORTS_SPLIT_EXECUTION:
+        return f"{name} does not support split deployment"
     runtime_needs = (*(("container",) if cls.NEEDS_CONTAINER else ()), *needs)
     for feature in runtime_needs:
         if feature in RUNTIME_FEATURES and not supports(runtime, feature):

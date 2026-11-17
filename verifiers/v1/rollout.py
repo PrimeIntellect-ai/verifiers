@@ -29,14 +29,15 @@ from verifiers.v1.grading import (
     verifier_runtime,
 )
 from verifiers.v1.harness import Harness, HarnessSession
+from verifiers.v1.harnesses.utils.sandbox_tools import SandboxTools
 from verifiers.v1.interception import Interception, serve_interception
 from verifiers.v1.mcp import SharedToolServer, serve_tools
 from verifiers.v1.runtimes import (
     Runtime,
     RuntimeConfig,
+    RuntimeLoss,
     make_backend,
 )
-from verifiers.v1.runtimes.bridge import ExecutionBridge
 from verifiers.v1.runtimes.private_network import tool_vms
 from verifiers.v1.session import RolloutLimits, RolloutSession, hook_boundary
 from verifiers.v1.state import state_cls
@@ -143,6 +144,7 @@ class Rollout:
         self.deployment = None
         self._deployment_config = agent_config.deployment
         self._split_execution = agent_config.deployment.mode == "split"
+        self._lost: RuntimeLoss | None = None
         self._has_user = has_user
         self._timeouts = timeouts
         self._agent_time_remaining = self._timeouts.agent
@@ -260,6 +262,46 @@ class Rollout:
         logger.debug("Hit the %s timeout", stage)
         self.trace.record_timeout(stage)
 
+    async def _workspace_lost(self) -> RuntimeLoss | None:
+        """The workspace's loss as its provider reports it, when the scoring policy
+        keeps such a rollout as a sample. Checked after a failure rather than polled:
+        an unreachable provider proves nothing."""
+        backend = self.deployment and self.deployment.execution_backend
+        if backend is None or not self._scoring_policy.skip_on_workspace_loss:
+            return None
+        # A guest that just powered itself off still reads as running for a while, a
+        # status poll can fail, and a wedged guest may never answer: none of these
+        # proves anything, so a workspace that no longer executes is watched until its
+        # provider reports it lost.
+        with contextlib.suppress(TimeoutError):
+            async with asyncio.timeout(60):
+                loss = await backend.lost()
+                if loss is None:
+                    # Reserve the remaining budget for provider confirmation when
+                    # a wedged guest never answers its execution probe.
+                    with contextlib.suppress(TimeoutError):
+                        async with asyncio.timeout(5):
+                            if await backend.bind().alive():
+                                return None
+                while loss is None:
+                    await asyncio.sleep(2)
+                    loss = await backend.lost()
+                return loss
+        return None
+
+    def _workspace_gone(self, loss: RuntimeLoss) -> None:
+        """End the agent's execution on a lost workspace. A loss the provider attributes
+        to its own infrastructure fails the rollout, so that it can be retried; any
+        other leaves nothing to finalize or score, so the trace keeps no rewards."""
+        self.trace.info["workspace_loss"] = {"cause": loss.cause, **loss.evidence}
+        if loss.infra:
+            self.fail(SandboxError(f"workspace lost by its provider ({loss.cause})"))
+            return
+        logger.warning("Lost workspace cause=%s", loss.cause)
+        self._lost = loss
+        self.trace.stop("workspace_lost", override=True)
+        self._session.release()
+
     async def open(self) -> bool:
         """Boot the rollout's world up to the point where segments can run: start
         (or borrow) the runtime, run task + harness setup, bring up the
@@ -325,17 +367,14 @@ class Rollout:
                 async with boundary(ToolsetError, "building tool servers"):
                     toolsets = self.task.toolsets(self.task.config)
                 spec = self.task.deployment_spec()
-                if self._split_execution and (
-                    not self.harness.SUPPORTS_SPLIT_EXECUTION
-                    or self._borrowed_runtime is not None
-                    or spec is not None
-                    or toolsets
-                    or self._shared_tools
-                ):
-                    raise HarnessError(
-                        f"split deployment requires a supported harness and a dedicated "
-                        f"workspace without MCP services (harness={self.harness.config.id!r})"
-                    )
+                if self._split_execution:
+                    self.harness.validate_split_execution()
+                    if self._borrowed_runtime is not None:
+                        raise HarnessError("split deployment cannot borrow a runtime")
+                    if any(toolset.config.colocated for toolset in toolsets):
+                        raise HarnessError(
+                            "split deployment cannot colocate MCP servers"
+                        )
                 self.deployment = runtime.backend.deploy(
                     spec=spec,
                     # Tool servers on Prime VMs of their own boot with the workspace.
@@ -345,6 +384,11 @@ class Rollout:
                         composed=spec is not None,
                         borrowed=self._borrowed_runtime is not None,
                     ),
+                    tool_services={
+                        service
+                        for toolset in toolsets
+                        if (service := getattr(toolset.config, "service", None))
+                    },
                     env=runtime.env,
                     config=self._deployment_config,
                     borrowed_runtime=self._borrowed_runtime,
@@ -359,6 +403,10 @@ class Rollout:
                     await self.deployment.start()
                     self._deployment_started = True
                     runtime = self.runtime = self.deployment.workspace
+                    if self.deployment.split:
+                        self.trace.agent.harness_runtime = (
+                            self.deployment.harness_backend.info.model_copy()
+                        )
                 finally:
                     # Providers may assign an ID before startup fails; retain it for diagnostics.
                     self.trace.agent.runtime = runtime.info.model_copy()
@@ -404,40 +452,13 @@ class Rollout:
                 async with (
                     boundary(HarnessError, "harness setup"),
                 ):
+                    self._agent_runtime = await resolve_agent_runtime(
+                        runtime, self.task.data.agent_user, self.task.data.agent_home
+                    )
                     if self._split_execution:
-                        execution_view = await resolve_agent_runtime(
-                            runtime,
-                            self.task.data.agent_user,
-                            self.task.data.agent_home,
-                        )
-                        bridge = self._session.execution_bridge = ExecutionBridge(
-                            execution_view, setup_runtime=runtime
-                        )
-                        self._stack.push_async_callback(bridge.close)
-                        execution_view = replace(
-                            execution_view, _execution_bridge=bridge
-                        )
-                        self._session.remote_tool_handler = (
-                            await self.harness.remote_tools(
-                                execution_view, self.task.data
-                            )
-                        )
-                        if close_tools := getattr(
-                            self._session.remote_tool_handler, "aclose", None
-                        ):
-                            self._stack.push_async_callback(close_tools)
-                        self._agent_runtime = replace(
-                            self.deployment._harness_runtime,
-                            _remote_tools_only=True,
-                            _execution_bridge=bridge,
-                        )
+                        await self._setup_split_harness()
                     else:
-                        self._agent_runtime = await resolve_agent_runtime(
-                            runtime,
-                            self.task.data.agent_user,
-                            self.task.data.agent_home,
-                        )
-                    await self.harness.setup(self._agent_runtime)
+                        await self.harness.setup(self._agent_runtime)
                 logger.debug(
                     "Set up %s harness in %s",
                     self.harness.config.name,
@@ -465,6 +486,13 @@ class Rollout:
                     f"{base_url.rstrip('/')}/v1"
                 )
                 self._secret = model_secret
+                if isinstance(self._session.remote_tool_handler, SandboxTools):
+                    await self._session.remote_tool_handler.connect(
+                        self._agent_runtime.host_url(
+                            f"{base_url.rstrip('/')}/execution"
+                        ),
+                        model_secret,
+                    )
                 services = (
                     {
                         name: self.deployment.target(name)
@@ -662,6 +690,36 @@ class Rollout:
         logger.debug("Starting agent")
         return not self._session.stopped
 
+    async def _setup_split_harness(self) -> None:
+        """Bind adapters and native workers to the workspace, with one lifecycle."""
+        workspace = self._agent_runtime
+        bridge = self._session.execution_bridge = self.deployment.connection(workspace)
+        self._stack.push_async_callback(bridge.close)
+        await bridge.start()
+        workspace = replace(bridge.runtime, _execution_bridge=bridge)
+        adapter = await self.harness.remote_tools(workspace, self.task.data)
+        if adapter is not None:
+            handler = self._session.remote_tool_handler = SandboxTools(
+                self.deployment._harness_runtime, bridge, adapter
+            )
+            self._stack.push_async_callback(handler.aclose)
+            await handler.prepare()
+        self._agent_runtime = replace(
+            self.deployment._harness_runtime,
+            _remote_tools_only=True,
+            _execution_bridge=bridge,
+        )
+        try:
+            async with asyncio.TaskGroup() as group:
+                group.create_task(self.harness.setup(self._agent_runtime))
+                group.create_task(
+                    self.harness.setup_execution(
+                        self._agent_runtime, bridge.runtime, bridge
+                    )
+                )
+        except ExceptionGroup as failed:
+            raise failed.exceptions[0]
+
     async def steer(self, message: str, *, message_id: str | None = None) -> dict:
         if self._closed or not self.ok:
             raise RuntimeError("this rollout is closed or stopped")
@@ -717,6 +775,8 @@ class Rollout:
             # expired deadline stays the raw failure.
             if self.deadline_at is not None and (loop.time() >= self.deadline_at):
                 self.timeout("agent")
+            elif loss := await self._workspace_lost():
+                self._workspace_gone(loss)
             else:
                 self.fail(e)
             return False
@@ -728,6 +788,11 @@ class Rollout:
             # deadline is still the outcome.
             if deadline.expired():
                 self.timeout("agent")
+                return False
+            # A harness that dies with its workspace, or loses its tools' worker
+            # there, fails here; the provider says whether the workspace is gone.
+            if loss := await self._workspace_lost():
+                self._workspace_gone(loss)
                 return False
             real = self._session.error
             if real is not None and isinstance(e, RolloutError):
@@ -898,8 +963,21 @@ class Rollout:
                 )
             if not self._agent_finished():
                 await self._close_harness()
+            # A harness can finish on its own after its tools lost the workspace, and
+            # a timed-out agent's workspace can be gone too: neither can be graded, so
+            # the loss decides the outcome (is_timeout stays). Loss before the agent
+            # started is a setup outcome, not an execution one.
+            if (
+                not self._failed
+                and self._lost is None
+                and trace.timing.agent.start
+                and (loss := await self._workspace_lost())
+            ):
+                self._workspace_gone(loss)
             trace.notify()
-            if not self._failed and self._opened:
+            if self._lost is not None:
+                trace.info["scoring_skipped"] = "workspace_lost"
+            elif not self._failed and self._opened:
                 assert runtime is not None
                 assert self.deployment is not None
                 grader = self._grader

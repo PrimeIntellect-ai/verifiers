@@ -9,6 +9,7 @@ from verifiers.v1.harnesses.utils.remote_runtime import (
     REMOTE_TOOL_CLIENT_SOURCE,
     remote_shell_tools,
 )
+from verifiers.v1.harnesses.utils.sandbox_tools import RemoteToolsSpec
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
@@ -34,7 +35,9 @@ class MiniSWEAgentHarness(Harness[MiniSWEAgentHarnessConfig]):
         )
 
     async def remote_tools(self, runtime: Runtime, data: TaskData):
-        return remote_shell_tools(runtime)
+        return RemoteToolsSpec(
+            remote_shell_tools, {"persistent": False}, defer_until_gate=True
+        )
 
     async def setup(self, runtime: Runtime) -> None:
         source = self._source()

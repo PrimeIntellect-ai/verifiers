@@ -16,6 +16,7 @@ from verifiers.v1.harnesses.node import NODE_BIN_DIR, ensure_node
 from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
 from verifiers.v1.harnesses.utils.remote_runtime import prepare_remote_bridge
 from verifiers.v1.runtimes import Runtime
+from verifiers.v1.runtimes.deployment import ExecutionConnection
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
 from verifiers.v1.types import ToolCall
@@ -75,6 +76,8 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
     SUPPORTS_SKILLS = True
     SUPPORTS_TOOL_INTERCEPTION = True
     SUPPORTS_SPLIT_EXECUTION = True
+    SUPPORTS_SPLIT_MCP = True
+    _executor_cwd: str | None = None
 
     async def remote_tools(self, runtime: Runtime, data: TaskData) -> None:
         # Codex's native execution environment transports files and persistent
@@ -105,6 +108,10 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
             raise RuntimeError(f"Codex {failure['category']}: {failure['title']}")
 
     async def setup(self, runtime: Runtime) -> None:
+        await self._install(runtime)
+        await super().setup(runtime)
+
+    async def _install(self, runtime: Runtime) -> None:
         await ensure_node(runtime)
         logger.debug(
             "Ensuring Codex %s and codex-acp %s are installed",
@@ -130,20 +137,25 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
             },
             label="codex",
         )
-        if bridge := runtime._execution_bridge:
-            await self.setup_executor(bridge.setup_runtime)
-            bridge.register(
-                "codex",
-                [
-                    f"{NODE_BIN_DIR}/node",
-                    EXECUTOR_BIN.format(version=self.config.version),
-                    "exec-server",
-                    "--listen",
-                    "stdio",
-                ],
-                {},
-            )
-        await super().setup(runtime)
+
+    def validate_split_execution(self) -> None:
+        super().validate_split_execution()
+        if self.config.skills:
+            raise ValueError("Codex split deployment does not support custom skills")
+
+    async def setup_execution(
+        self, runtime: Runtime, workspace: Runtime, connection: ExecutionConnection
+    ) -> None:
+        # Codex's own executor runs native tools through the same connection
+        # on every runtime. The harness's VM has no local execution environment.
+        await self.setup_executor(connection.setup_runtime)
+        codex = EXECUTOR_BIN.format(version=self.config.version)
+        connection.register(
+            "codex",
+            [f"{NODE_BIN_DIR}/node", codex, "exec-server", "--listen", "stdio"],
+            {},
+        )
+        self._executor_cwd = workspace.info.workdir
 
     async def setup_executor(self, runtime: Runtime) -> None:
         """Install only the credential-free executor in B during trusted setup."""
@@ -178,16 +190,12 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
         env = await self.build_env(ctx, trace, runtime, endpoint, secret, mcp_urls)
         return ACPConfig(
             env=env,
-            cwd=(
-                runtime._execution_bridge.runtime.info.workdir
-                if runtime._execution_bridge is not None
-                else None
-            ),
             command=[
                 f"{NODE_BIN_DIR}/node",
                 ACP_BIN.format(version=self.config.version, acp_version=ACP_VERSION),
             ],
             prompt=prompt,
+            cwd=self._executor_cwd,
             # Codex reads MCP servers from the config written by build_env().
             mcp_urls={},
             system_prompt=system_prompt,
@@ -292,7 +300,6 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
             else ""
         )
         await runtime.write(f"{home}/config.toml", mcp_config.encode())
-
         features: dict[str, object] = {
             "apps": False,
             "plugins": False,

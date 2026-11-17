@@ -1,6 +1,7 @@
 """RLM over ACP, with MCP tools exposed as pre-imported IPython skills."""
 
 import hashlib
+import re
 import secrets
 import shlex
 from typing import Any, Literal
@@ -22,6 +23,7 @@ from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
 from verifiers.v1.harnesses.utils.remote_runtime import prepare_remote_bridge
 from verifiers.v1.runtimes import Runtime
+from verifiers.v1.runtimes.deployment import ExecutionConnection
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
 from verifiers.v1.utils.logging import clip, get_logger
@@ -36,6 +38,44 @@ RLM_CACHE_DIR = "/tmp/vf-rlm"
 RLM_STATE_DIR = "/tmp/vf-rlm-state"
 RLM_RUNTIME_METADATA_KEY = "ai.prime.rlm/runtime-v1"
 RLM_SESSION_METADATA_KEY = "ai.prime.rlm/session-v1"
+
+_WORKER_CONNECTION = r"""
+import contextlib
+import os
+import socket
+import sys
+import threading
+
+from rlm.config import TcpExecutionConfig
+from rlm.execution_transport import TcpTransport
+
+transport = TcpTransport(TcpExecutionConfig(
+    host="127.0.0.1", port=int(sys.argv[1]),
+    token=os.environ.pop("RLM_EXECUTION_TOKEN"),
+))
+transport.connect()
+connection = transport.connection
+
+def forward_input():
+    try:
+        while data := os.read(sys.stdin.fileno(), 65536):
+            connection.sendall(data)
+    except OSError:
+        pass  # the execution session has closed
+    finally:
+        with contextlib.suppress(OSError):
+            connection.shutdown(socket.SHUT_WR)
+
+threading.Thread(target=forward_input, daemon=True).start()
+try:
+    while data := connection.recv(65536):
+        sys.stdout.buffer.write(data)
+        sys.stdout.buffer.flush()
+finally:
+    transport.close()
+"""
+"""Workspace-side stdio for one native execution session. The loopback listener
+serves execution sessions while detached jobs remain available for grading."""
 
 
 class _SessionSnapshot(BaseModel):
@@ -147,6 +187,7 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
     SUPPORTS_MCP = True
     SUPPORTS_SKILLS = True
     SUPPORTS_SPLIT_EXECUTION = True
+    SUPPORTS_SPLIT_MCP = True
     SUPPORTS_SPLIT_TOOL_INTERCEPTION = True
     _skills_install_dir: str | None = None
 
@@ -157,9 +198,6 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
                 f"rlm-skills-{secrets.token_hex(16)}", env=self.config.resolved_env
             )
         await self._install(runtime, self.config.resolved_env)
-        if runtime._remote_tools_only:
-            assert runtime._execution_bridge is not None
-            await self._install(runtime._execution_bridge.setup_runtime, {})
         await super().setup(runtime)
 
     async def remote_tools(self, runtime: Runtime, data: TaskData):
@@ -203,6 +241,43 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
             install=install,
             env=env,
             label="rlm",
+        )
+
+    def validate_split_execution(self) -> None:
+        super().validate_split_execution()
+        if self.config.skills:
+            raise ValueError("RLM split deployment supports builtin skills only")
+
+    async def setup_execution(
+        self, runtime: Runtime, workspace: Runtime, connection: ExecutionConnection
+    ) -> None:
+        # The native listener lives only inside B. A always uses the gated execution
+        # connection; keeping the listener apart from that session lets detached
+        # jobs survive until grading on every runtime.
+        await self._install(connection.setup_runtime, {})
+        token = secrets.token_urlsafe(32)
+        python = f"{self._install_dir()}/tools/rlm/bin/python"
+        port = await connection.serve(
+            workspace,
+            [
+                python,
+                "-m",
+                "rlm.execution",
+                "--listen",
+                "127.0.0.1",
+                "--port",
+                "0",
+            ],
+            {"RLM_EXECUTION_TOKEN": token},
+            re.compile(r"^listening on \S+:(\d+)$", re.MULTILINE),
+            # A session that closes stops what is still attached to its kernel, as it
+            # does colocated; a daemon the agent started outlives the harness.
+            keep_detached=True,
+        )
+        connection.register(
+            "rlm",
+            [python, "-u", "-c", _WORKER_CONNECTION, str(port)],
+            {"RLM_EXECUTION_TOKEN": token},
         )
 
     def _runtime_metadata(
@@ -320,18 +395,12 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
         if runtime._remote_tools_only:
             assert runtime._execution_bridge is not None
             workspace = runtime._execution_bridge.runtime
-            worker = f"rlm-{trace.id}"
-            runtime._execution_bridge.register(
-                worker,
-                [f"{self._install_dir()}/tools/rlm/bin/python", "-m", "rlm.execution"],
-                {"RLM_HOME": rlm_home},
-            )
             root = endpoint.removesuffix("/v1").rstrip("/")
             worker_command = await prepare_remote_bridge(
                 runtime,
                 f"{root}/execution",
                 secret,
-                worker,
+                "rlm",
                 protocol="rlm",
                 tool_url=f"{root}/tool",
             )

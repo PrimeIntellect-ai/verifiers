@@ -1,4 +1,3 @@
-import json
 import secrets
 from pathlib import Path
 from typing import Literal
@@ -11,12 +10,13 @@ from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.errors import HarnessError
 from verifiers.v1.harness import Harness
+from verifiers.v1.harnesses.browser_use.remote import BrowserRemoteTools
 from verifiers.v1.harnesses.utils import mcp
 from verifiers.v1.harnesses.utils.launch import bundle_program, launch_chat_program
+from verifiers.v1.harnesses.utils.sandbox_tools import RemoteToolsSpec
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
-from verifiers.v1.types import ToolCall, ToolMessage
 
 PROGRAM_SOURCE = bundle_program(
     (Path(__file__).resolve().parent / "program.py").read_text(), mcp
@@ -76,25 +76,7 @@ class BrowserUseHarness(Harness[BrowserUseHarnessConfig]):
         state = f"/tmp/browser-session-{secrets.token_hex(16)}"
         args = await self._browser_args(runtime, state)
 
-        async def execute(call: ToolCall) -> ToolMessage:
-            if call.name != "browser":
-                raise HarnessError(f"browser-use has no built-in tool {call.name!r}")
-            try:
-                arguments = json.loads(call.arguments)
-                if not isinstance(arguments, dict) or not isinstance(
-                    arguments.get("code"), str
-                ):
-                    raise TypeError("browser code must be a string")
-            except (json.JSONDecodeError, TypeError) as error:
-                content = f"error: {error}"
-            else:
-                result = await runtime.run(
-                    [*program, *args, f"--execute-code={arguments['code']}"], {}
-                )
-                content = result.stdout + result.stderr
-            return ToolMessage(tool_call_id=call.id, name=call.name, content=content)
-
-        return execute
+        return RemoteToolsSpec(BrowserRemoteTools, {"program": [*program, *args]})
 
     async def _browser_args(self, runtime: Runtime, state: str) -> list[str]:
         args = [f"--browser={self.config.browser}", f"--state-dir={state}"]

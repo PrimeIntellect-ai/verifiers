@@ -9,6 +9,7 @@ from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig, PinnedVersion
 from verifiers.v1.harnesses.openclaw.remote import OpenClawRemoteTools
 from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
+from verifiers.v1.harnesses.utils.sandbox_tools import RemoteToolsSpec
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
@@ -156,10 +157,8 @@ class OpenClawHarness(ACPHarness[OpenClawHarnessConfig]):
     SUPPORTS_TOOL_INTERCEPTION = True
     SUPPORTS_SPLIT_EXECUTION = True
 
-    async def remote_tools(
-        self, runtime: Runtime, data: TaskData
-    ) -> OpenClawRemoteTools:
-        return OpenClawRemoteTools(runtime)
+    async def remote_tools(self, runtime: Runtime, data: TaskData) -> RemoteToolsSpec:
+        return RemoteToolsSpec(OpenClawRemoteTools, {})
 
     def __init__(self, config: OpenClawHarnessConfig) -> None:
         super().__init__(config)

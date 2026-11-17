@@ -184,6 +184,9 @@ parser.add_argument("--protocol", choices=("raw", "rlm", "prime", "codex"), defa
 parser.add_argument("--tool-url", default="")
 args = parser.parse_args()
 process_id = uuid.uuid4().hex
+execution_url, execution_secret = args.url, args.secret
+execution_opener = urllib.request.build_opener()
+handed_off = False
 failed = threading.Event()
 stdout_lock = threading.Lock()
 history_receipts = {}
@@ -254,11 +257,10 @@ def codex_output(buffer):
 def rlm_input(packet):
     message = json.loads(packet[4:])
     method = message.get("method", "")
-    if method == "start":
-        # A owns delegation and credentialed services. A compromised workspace
-        # must never receive a capability that can invoke its supervisor broker.
-        message["params"]["capability"] = None
-        return pack(message)
+    if method == "host.events":
+        # Status polling must survive a denied call so existing jobs can finish.
+        # It launches no work; jobs.start and services.start still cross the gate.
+        return packet
     if method != "tool" and method.split(".", 1)[0] not in ("host", "jobs", "services", "watch"):
         return packet
     params = message.get("params") or {}
@@ -298,22 +300,35 @@ def rlm_input(packet):
     return None
 
 def rpc(operation, **values):
+    global execution_url, execution_secret, execution_opener, process_id, handed_off
     body = json.dumps({"operation": operation, "process_id": process_id,
                        "request_id": uuid.uuid4().hex, **values}).encode()
     for attempt in range(3):
-        request = urllib.request.Request(args.url, data=body, headers={
-            "Authorization": "Bearer " + args.secret,
+        request = urllib.request.Request(execution_url, data=body, headers={
+            "Authorization": "Bearer " + execution_secret,
             "Content-Type": "application/json",
         })
         try:
-            with urllib.request.urlopen(request, timeout=3600) as response:
-                return json.load(response)
+            with execution_opener.open(request, timeout=3600) as response:
+                result = json.load(response)
+            break
         except urllib.error.HTTPError as error:
             raise RuntimeError(f"execution bridge returned HTTP {error.code}") from error
         except (OSError, urllib.error.URLError):
             if attempt == 2:
                 raise
             time.sleep(0.2 * (attempt + 1))
+
+    if operation == "open" and (transport := result.get("transport")):
+        if handed_off:
+            raise RuntimeError("Only the host registry may select the execution transport")
+        handed_off = True
+        execution_url = transport["url"]
+        execution_secret = transport["secret"]
+        process_id = transport["process_id"]
+        execution_opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        return rpc("open", **values)
+    return result
 
 def copy_input():
     try:
@@ -352,9 +367,10 @@ def copy_output(stream, output):
                     pending.extend(data)
                     for packet in frames(pending):
                         message = json.loads(packet[4:])
-                        if "method" in message:
-                            # B may emit arbitrary frames; never let it initiate
-                            # supervisor RPCs, even if it forges a broker token.
+                        if "method" in message and message["method"] != "broker":
+                            # Only nano-rlm's scoped broker may call back into A.
+                            # RemoteREPL checks the session capability, and the
+                            # supervisor checks the active cell and operation.
                             reply = pack({"id": message["id"], "error":
                                           "Supervisor callbacks are unavailable in split execution"})
                             rpc("write", data=base64.b64encode(reply).decode())
@@ -410,7 +426,11 @@ async def prepare_remote_bridge(
     protocol: str = "raw",
     tool_url: str = "",
 ) -> list[str]:
-    """Install a stdio bridge in A; only its host registry can choose B's command."""
+    """Install the common client in A; only its host registry chooses B's command.
+
+    Registration selects the deployment's process transport. Policy calls retain
+    their evaluator URL and capability even when process traffic uses the LAN.
+    """
     program = await runtime.prepare_uv_script(REMOTE_RUNTIME_SOURCE, {})
     return [
         *program,

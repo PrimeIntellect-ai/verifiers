@@ -65,11 +65,23 @@ class ProgramResult:
     stderr: str
 
 
+@dataclass(frozen=True)
+class RuntimeLoss:
+    """A runtime its provider reports gone, as the provider explains it."""
+
+    cause: str
+    infra: bool
+    """Whether the provider's own infrastructure lost it, such as a lost host."""
+    evidence: dict = field(default_factory=dict)
+
+
 class RuntimeProcess(ABC):
     """A process whose stdio streams across a runtime boundary."""
 
     stdout: AsyncIterator[bytes]
     stderr: AsyncIterator[bytes]
+    execution_endpoint: dict | None = None
+    """Optional process-scoped LAN endpoint, using the execution bridge protocol."""
 
     @abstractmethod
     async def write(self, data: bytes) -> None:
@@ -90,6 +102,21 @@ class RuntimeProcess(ABC):
     @abstractmethod
     async def kill(self) -> None:
         pass
+
+
+async def collect_process(process: RuntimeProcess) -> ProgramResult:
+    """Drain both streams and reap a process, including on cancellation."""
+    try:
+        stdout, stderr, exit_code = await asyncio.gather(
+            _drain(process.stdout), _drain(process.stderr), process.wait()
+        )
+    except BaseException:
+        with contextlib.suppress(Exception):
+            await run_shielded(process.kill())
+        raise
+    return ProgramResult(
+        exit_code, stdout.decode(errors="replace"), stderr.decode(errors="replace")
+    )
 
 
 def parse_gpu(gpu: str | None) -> tuple[str | None, int]:
@@ -291,17 +318,7 @@ class RuntimeBackend(ABC):
         process = await self.exec(
             runtime, ["sh", "-c", 'exec "$@" < /dev/null', "sh", *argv], env
         )
-        try:
-            stdout, stderr, exit_code = await asyncio.gather(
-                _drain(process.stdout), _drain(process.stderr), process.wait()
-            )
-        except BaseException:
-            with contextlib.suppress(Exception):
-                await run_shielded(process.kill())
-            raise
-        return ProgramResult(
-            exit_code, stdout.decode(errors="replace"), stderr.decode(errors="replace")
-        )
+        return await collect_process(process)
 
     async def run_background(
         self, runtime: Runtime, argv: list[str], env: dict[str, str], log: str
@@ -365,6 +382,11 @@ class RuntimeBackend(ABC):
         if self._setup_claimed:
             await self.prepare_execution(None)
         self._setup_claimed = True
+
+    async def lost(self) -> RuntimeLoss | None:
+        """The provider's report that this runtime is gone; None while it runs, and
+        whenever the provider cannot say: an unreachable provider proves nothing."""
+        return None
 
     async def prepare_execution(
         self, routes: list[str] | None, network: NetworkPolicyConfig | None = None
