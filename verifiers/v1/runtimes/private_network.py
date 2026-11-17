@@ -223,9 +223,19 @@ async def private_network(
         if start_workspace is None:
 
             async def leave_workspace() -> None:
-                await run_shielded(
-                    client.remove_lan_member(network_id, workspace.info.id)
-                )
+                try:
+                    await run_shielded(
+                        client.remove_lan_member(network_id, workspace.info.id)
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to remove borrowed workspace %s from LAN network %s - %s: %s",
+                        workspace.info.id,
+                        network_id,
+                        type(exc).__name__,
+                        clip(str(exc)),
+                        exc_info=logger.isEnabledFor(logging.DEBUG),
+                    )
 
             # Joining may attach the borrowed VM before failing or being cancelled.
             stack.push_async_callback(leave_workspace)
