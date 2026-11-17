@@ -122,7 +122,7 @@ def _validate_compose_inputs(file: Path, task_dir: Path) -> None:
             raise SandboxError(
                 "Interpolated include/extends paths require explicit VM mode"
             )
-        candidate = directory / value
+        candidate = Path(os.path.abspath(directory / value))
         if not candidate.resolve().is_relative_to(task_dir):
             raise SandboxError("Native Compose inputs must be inside the task")
         return candidate
@@ -166,7 +166,8 @@ def _validate_compose_inputs(file: Path, task_dir: Path) -> None:
                 continue
             extends = {"service": extends} if isinstance(extends, str) else extends
             source = path(extends["file"], directory) if extends.get("file") else file
-            pending.append((source, source.parent, extends["service"]))
+            source_dir = source.parent if extends.get("file") else directory
+            pending.append((source, source_dir, extends["service"]))
 
 
 @asynccontextmanager
