@@ -8,7 +8,7 @@ from grid import placements
 
 @pytest.mark.parametrize(
     "harness_runtime,tool_runtime",
-    placements(tool_runtimes=("subprocess", "prime"), shared=True),
+    placements(tool_runtimes=("docker", "prime"), shared=True),
     indirect=True,
 )
 async def test_shared_tool(run, harness_runtime, tool_runtime):

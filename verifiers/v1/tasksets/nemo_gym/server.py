@@ -31,23 +31,25 @@
 """Serve one resource-server class from the published NeMo Gym package."""
 
 import os
+import secrets
 import socket
 from importlib import import_module
 from pathlib import Path
 
 import uvicorn
+from fastapi.responses import JSONResponse
 from nemo_gym.config_types import BaseServerConfig
 from nemo_gym.server_utils import ServerClient
 from omegaconf import OmegaConf
 
-# Managed Gym servers share the evaluator host and never need a routable bind.
-HOST = "127.0.0.1"
+# The managed server runs in a runtime reached by the evaluator and tool server.
+HOST = "0.0.0.0"
 
 
 def main() -> None:
     sock = socket.socket()
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    sock.bind((HOST, 0))
+    sock.bind((HOST, int(os.environ.get("NEMO_GYM_PORT", "0"))))
     port = sock.getsockname()[1]
 
     module_name, class_name = os.environ["NEMO_GYM_RESOURCE_SERVER"].split(":", 1)
@@ -64,7 +66,16 @@ def main() -> None:
     app = server.setup_webserver()
     server.setup_liveness(app)
     server.setup_exception_middleware(app)
-    Path("nemo_gym.port").write_text(str(port), encoding="ascii")
+    token = os.environ["NEMO_GYM_TOKEN"]
+
+    @app.middleware("http")
+    async def authenticate(request, call_next):
+        supplied = request.headers.get("X-Verifiers-Nemo-Token", "")
+        if not secrets.compare_digest(supplied, token):
+            return JSONResponse({"detail": "Unauthorized"}, status_code=401)
+        return await call_next(request)
+
+    Path("/tmp/nemo_gym.port").write_text(str(port), encoding="ascii")
     uvicorn.Server(uvicorn.Config(app, host=HOST, port=port)).run(sockets=[sock])
 
 
