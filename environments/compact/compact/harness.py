@@ -27,6 +27,12 @@ class CompactingHarness(Harness[CompactingHarnessConfig]):
     SUPPORTS_MCP = True
     EXECUTES_CODE = False
     NEEDS_CONTAINER = False
+    SUPPORTS_SPLIT_EXECUTION = True
+
+    async def remote_tools(self, runtime: Runtime, data: TaskData):
+        # Summarization only updates supervisor memory; there is no local
+        # execution surface to move into the workspace runtime.
+        return None
 
     async def setup(self, runtime: Runtime) -> None:
         await runtime.prepare_uv_script(PROGRAM_SOURCE, self.config.env)

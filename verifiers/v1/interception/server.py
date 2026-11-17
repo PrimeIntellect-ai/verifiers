@@ -64,6 +64,7 @@ from verifiers.v1.errors import (
 from verifiers.v1.interception.base import Interception, Slot
 from verifiers.v1.interception.tunnel import Tunnel, make_tunnel
 from verifiers.v1.interception.tunnel.base import HEALTH_PATH
+from verifiers.v1.mcp.auth import authorized
 from verifiers.v1.semantic import ACPInfo, extract_acp_info, routing_session_id
 from verifiers.v1.session import IdempotentRequest, ReplayResponse, RolloutSession
 from verifiers.v1.trace import Error, ModelCall, PolicyEvent, TimeSpan
@@ -112,6 +113,7 @@ _HOP_HEADERS = {
 class _MCPRoute:
     session: RolloutSession
     url: str
+    secret: str
     client: httpx.AsyncClient
     handlers: set[asyncio.Task] = field(default_factory=set)
 
@@ -439,11 +441,13 @@ class InterceptionServer(Interception):
             self.unregister(model_secret, state_secret)
 
     @asynccontextmanager
-    async def proxy_mcp(self, model_secret: str, url: str) -> AsyncIterator[str]:
-        """Expose one fixed host backend with its own capability, revoked before reuse.
+    async def proxy_mcp(
+        self, model_secret: str, url: str, secret: str
+    ) -> AsyncIterator[str]:
+        """Expose one fixed host backend with a scoped path and bearer credential.
 
-        All harnesses accept URLs, including ACP consumers. A fresh URL capability
-        grants only this MCP endpoint, never the private task/state or model channels.
+        All harnesses accept URLs, including ACP consumers. The path and credential
+        grant only this MCP endpoint, never the private task/state or model channels.
         Only the launcher can register destinations; request paths cannot select one.
         """
         session = self.sessions[model_secret]
@@ -455,7 +459,7 @@ class InterceptionServer(Interception):
             limits=httpx.Limits(max_connections=None, max_keepalive_connections=8),
             trust_env=False,
         ) as client:
-            route = _MCPRoute(session, url, client)
+            route = _MCPRoute(session, url, secret, client)
             self.mcp_routes[capability] = route
             try:
                 yield f"{self.base_url.rstrip('/')}/mcp/{capability}"
@@ -468,7 +472,12 @@ class InterceptionServer(Interception):
 
     async def handle_mcp(self, request: web.Request) -> web.StreamResponse:
         route = self.mcp_routes.get(request.match_info["capability"])
-        if route is None or route.session.released:
+        if (
+            route is None
+            or route.session.released
+            or len(request.headers.getall("Authorization", [])) != 1
+            or not authorized(request.headers, route.secret)
+        ):
             return web.json_response({"error": "unauthorized"}, status=401)
         handler = asyncio.current_task()
         assert handler is not None
@@ -498,6 +507,7 @@ class InterceptionServer(Interception):
         # aiohttp decodes incoming bodies; HTTPX supplies backend Host and framing.
         for name in blocked | {"host", "content-length", "content-encoding"}:
             headers.pop(name, None)
+        headers["Authorization"] = f"Bearer {route.secret}"
         upstream = httpx.Request(
             request.method,
             httpx.URL(route.url).copy_with(
@@ -585,11 +595,12 @@ class InterceptionServer(Interception):
         app.router.add_get("/state", self.handle_state_get)
         app.router.add_put("/state", self.handle_state_put)
         app.router.add_post("/tool", self.handle_tool)
+        app.router.add_post("/execution", self.handle_execution)
         # A launched tool server fetches its rollout's task here to run `setup_task` — the task
         # is never passed via env, only over this channel, keyed by the state bearer.
         app.router.add_get("/task", self.handle_task_get)
         app.router.add_route("*", "/mcp/{capability}", self.handle_mcp)
-        # MCP paths are bearer capabilities, so do not write them to access logs.
+        # MCP paths are scoped capabilities, so do not write them to access logs.
         self.runner = web.AppRunner(app, access_log=None)
         await self.runner.setup()
         self.stack.push_async_callback(self.runner.cleanup)
@@ -645,6 +656,25 @@ class InterceptionServer(Interception):
                 ",".join(capabilities),
             )
         return mediated, capabilities
+
+    async def handle_execution(self, request: web.Request) -> web.Response:
+        """Rollout-authenticated transport to registered B-side workers."""
+        session = self.sessions.get(
+            request.headers.get("Authorization", "").removeprefix("Bearer ")
+        )
+        if session is None:
+            return web.json_response({"error": "unauthorized"}, status=401)
+        session.adopt(asyncio.current_task())
+        if session.released or session.execution_bridge is None:
+            return web.json_response({"error": "execution unavailable"}, status=409)
+        try:
+            body = from_json(await request.read())
+            if not isinstance(body, dict):
+                return web.json_response({"error": "expected an object"}, status=400)
+            return web.json_response(await session.execution_bridge.handle(body))
+        except RolloutError as error:
+            session.error = error
+            return web.json_response({"error": str(error)}, status=400)
 
     async def handle_tool(self, request: web.Request) -> web.Response:
         """`POST /tool`: the harness's gate asks whether to run a tool call — its

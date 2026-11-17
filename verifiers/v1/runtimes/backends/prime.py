@@ -144,6 +144,7 @@ class PrimeBackend(RuntimeBackend):
     SUPPORTS_MEMORY_LIMIT: ClassVar[bool] = True
     SUPPORTS_DISK_LIMIT: ClassVar[bool] = True
     SUPPORTS_COMPOSE: ClassVar[bool] = True
+
     SUPPORTS_PORT_EXPOSURE: ClassVar[bool] = True
 
     def __init__(self, config: PrimeConfig, name: str | None = None) -> None:
