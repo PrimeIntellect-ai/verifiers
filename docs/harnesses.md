@@ -1,10 +1,10 @@
 # Harnesses
 
-verifiers ships with a range of harnesses out of the box, including Claude Code, Codex, Pi, Prime-Agent, the tool-enabled `bash` harness, the CDP-driven `browser-use` harness, and the minimal `null` harness (which has no built-in shell tools of its own, though it can still call task MCP tools). Most third-party CLI harnesses must run inside a container runtime, and individual harnesses vary in which optional features they support (such as MCP tools, follow-up messages, image input, and skills). A harness that runs model-controlled code can use MCP only when its tool execution is isolated from the MCP client and its credentials. The built-in `rlm` harness supplies this boundary; `null` has no model-controlled code execution.
+verifiers ships with a range of harnesses out of the box, including Claude Code, Codex, Pi, Prime-Agent, the tool-enabled `bash` harness, the CDP-driven `browser-use` harness, and the minimal `null` harness (which has no built-in shell tools of its own, though it can still call task MCP tools). Most third-party CLI harnesses must run inside a container runtime, and individual harnesses vary in which optional features they support (such as MCP tools, follow-up messages, image input, and skills).
 
 ## Bash harness
 
-The built-in `bash` harness provides shell execution and file-editing tools, multi-turn conversation resume, and tool interception (though not harness skills). It cannot be paired with MCP tools. With `agent.deployment.mode = "split"`, its model loop and Bash/edit execution run in separate Docker containers or Prime sandboxes. Because it runs an in-house loop rather than installing an external CLI, it can also run on `subprocess` for trusted local work.
+The built-in `bash` harness provides shell execution and file-editing tools, multi-turn conversation resume, and tool interception (though not harness skills). It supports MCP tools in colocated mode. With `agent.deployment.mode = "split"`, its model loop and Bash/edit execution run in separate Docker containers or Prime sandboxes. Because it runs an in-house loop rather than installing an external CLI, it can also run on `subprocess` for trusted local work.
 
 Context compaction is enabled by default: when the model provider reports a context window size, `bash` automatically summarizes older context once roughly 16,000 tokens remain. You can set a fixed token threshold in your config, or set `compaction = "None"` to disable compaction altogether:
 
@@ -83,7 +83,7 @@ Replace the placeholder installation command, binary, and environment variable n
 Class-level capability flags declare which optional features your harness implements:
 
 - `APPENDS_SYSTEM_PROMPT`: passes `TaskData.system_prompt` as a separate system message; when `False`, `resolve_prompt` prepends it to the first user message instead.
-- `SUPPORTS_MCP`: indicates that `launch` wires `mcp_urls` into the program. A code-running harness also needs `ISOLATES_TOOL_EXECUTION = True`, backed by an enforced process boundary that prevents model-controlled code from reading the MCP client or its credentials. MCP pairings fail before runtime provisioning otherwise.
+- `SUPPORTS_MCP`: indicates that `launch` wires `mcp_urls` into the program.
 - `SUPPORTS_RESUME`: indicates that a multi-turn exchange can restart from the conversation so far (programs with native session state should override `resume` or `session` instead). Note that live mid-turn steering requires a `HarnessSession` that implements `steer`; conversation resume support alone is not enough (see [message delivery](agent.md#messages-during-an-active-turn)).
 - `SUPPORTS_SKILLS`: indicates that the harness calls `install_skills` to copy configured skills into the directory where the program discovers them.
 - `SUPPORTS_TOOL_INTERCEPTION`: indicates that the harness checks tool calls against the rollout's tool gate (`tool_interception_url`) before executing them.
