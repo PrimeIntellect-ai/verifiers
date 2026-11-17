@@ -113,6 +113,62 @@ def _validate_env_files(definition: dict, task_dir: Path) -> None:
                 raise SandboxError("Native Compose env_file must be inside the task")
 
 
+def _validate_compose_inputs(file: Path, task_dir: Path) -> None:
+    """Confine files the non-interpolating Compose probe can read recursively."""
+    import yaml
+
+    def path(value: str, directory: Path) -> Path:
+        if "$" in value:
+            raise SandboxError(
+                "Interpolated include/extends paths require explicit VM mode"
+            )
+        candidate = directory / value
+        if not candidate.resolve().is_relative_to(task_dir):
+            raise SandboxError("Native Compose inputs must be inside the task")
+        return candidate
+
+    pending = [(file, file.parent, None)]
+    seen = set()
+    while pending:
+        file, directory, selected = pending.pop()
+        key = (file, directory, selected)
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            definition = yaml.safe_load(file.read_text())
+        except (OSError, yaml.YAMLError) as error:
+            raise SandboxError(
+                f"Cannot inspect Compose file {file} - {error}"
+            ) from error
+        services = definition.get("services", {})
+        if selected is None:
+            for entry in definition.get("include", []):
+                include = {"path": entry} if isinstance(entry, str) else entry
+                files = include["path"]
+                files = [files] if isinstance(files, str) else files
+                files = [path(value, directory) for value in files]
+                project_dir = (
+                    path(include["project_directory"], directory)
+                    if include.get("project_directory")
+                    else files[0].parent
+                )
+                env_files = include.get("env_file") or [str(project_dir / ".env")]
+                env_files = [env_files] if isinstance(env_files, str) else env_files
+                for env_file in env_files:
+                    path(env_file, directory)
+                pending.extend((child, project_dir, None) for child in files)
+        else:
+            services = {selected: services.get(selected, {})}
+        for service in services.values():
+            extends = service.get("extends")
+            if not extends:
+                continue
+            extends = {"service": extends} if isinstance(extends, str) else extends
+            source = path(extends["file"], directory) if extends.get("file") else file
+            pending.append((source, source.parent, extends["service"]))
+
+
 @asynccontextmanager
 async def compose_project(
     config: DockerConfig | PrimeConfig,
@@ -302,32 +358,27 @@ async def compose_project(
             compose_env["MEMORY"] = f"{round(config.memory * 1024)}M"
 
         authored_file = f"task/{spec.file}" if spec.file else None
+        if native_composed:
+            # Include-level env_file and implicit .env files load even when service
+            # env-file resolution is disabled. Check them before invoking Compose.
+            _validate_compose_inputs(task_dir / compose_file, task_dir)
         if (host_backend is not None and authored.get("include")) or native_composed:
             # Includes own their resources: resolve them before merging workspace
             # defaults and overrides, or Compose rejects duplicate service names.
             compose_argv += ["-f", f"{root}/{authored_file}"]
-            try:
-                authored = json.loads(
-                    await compose(
-                        "config",
-                        "--no-consistency",
-                        *(
-                            ["--no-interpolate", "--no-env-resolution"]
-                            if native_composed
-                            else []
-                        ),
-                        "--format",
-                        "json",
-                    )
+            authored = json.loads(
+                await compose(
+                    "config",
+                    "--no-consistency",
+                    *(
+                        ["--no-interpolate", "--no-env-resolution"]
+                        if native_composed
+                        else []
+                    ),
+                    "--format",
+                    "json",
                 )
-            except SandboxError as error:
-                if native_composed:
-                    raise SandboxError(
-                        "Native Compose could not inspect include/extends files; "
-                        "interpolated include/extends paths require explicit VM mode "
-                        f"- {error}"
-                    ) from error
-                raise
+            )
             del compose_argv[-2:]
             if host_backend is None:
                 # Some Compose versions resolve env files despite --no-env-resolution.
