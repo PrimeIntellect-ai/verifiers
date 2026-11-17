@@ -175,13 +175,6 @@ def unsupported(
         return f"{name} does not support MCP tools"
     if "mcp" in needs and "split" in needs and not cls.SUPPORTS_SPLIT_MCP:
         return f"{name} does not support MCP in split deployment"
-    if (
-        "mcp" in needs
-        and "split" not in needs
-        and cls.EXECUTES_CODE
-        and not cls.ISOLATES_TOOL_EXECUTION
-    ):
-        return f"{name} does not isolate execution from its MCP credentials"
     if "skills" in needs and not cls.SUPPORTS_SKILLS:
         return f"{name} has no native skill support"
     if "resume" in needs and not resumes(cls):
