@@ -200,7 +200,11 @@ def relay(message):
 with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
     try:
         for line in sys.stdin:
-            pool.submit(relay, json.loads(line))
+            message = json.loads(line)
+            if message["body"].get("operation") in ("kill", "terminate", "poll"):
+                relay(message)
+            else:
+                pool.submit(relay, message)
     finally:
         client.close()
 """
@@ -251,12 +255,20 @@ class LanProcess(RuntimeProcess):
             raise SandboxError("LAN execution process is closed")
         async with self._lock:
             if self._relay is None:
-                self._relay = await self.harness.exec(
+                relay = await self.harness.exec(
                     [self.python, "-I", "-u", "-c", _RELAY], {}
                 )
-                await self._relay.write(
-                    (json.dumps(self.execution_endpoint) + "\n").encode()
-                )
+                try:
+                    await relay.write(
+                        (json.dumps(self.execution_endpoint) + "\n").encode()
+                    )
+                    if self._closed:
+                        raise SandboxError("LAN execution process is closed")
+                except BaseException:
+                    with contextlib.suppress(Exception):
+                        await relay.kill()
+                    raise
+                self._relay = relay
                 self._tasks.append(asyncio.create_task(self._receive()))
 
                 async def drain() -> None:
