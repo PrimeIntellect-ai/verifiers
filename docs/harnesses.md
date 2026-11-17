@@ -4,7 +4,7 @@ verifiers ships with a range of harnesses out of the box, including Claude Code,
 
 ## Bash harness
 
-The built-in `bash` harness provides shell execution and file-editing tools, multi-turn conversation resume, and tool interception (though not harness skills). It supports MCP tools in colocated mode. With `agent.deployment.mode = "split"`, its model loop and Bash/edit execution run in separate Docker containers or Prime sandboxes. Because it runs an in-house loop rather than installing an external CLI, it can also run on `subprocess` for trusted local work.
+The built-in `bash` harness provides shell execution and file-editing tools, multi-turn conversation resume, and tool interception (though not harness skills). It supports MCP tools in colocated mode. With `agent.deployment.mode = "split"`, its model loop and Bash/edit execution run in separate Docker containers or Prime sandboxes.
 
 Context compaction is enabled by default: when the model provider reports a context window size, `bash` automatically summarizes older context once roughly 16,000 tokens remain. You can set a fixed token threshold in your config, or set `compaction = "None"` to disable compaction altogether:
 
