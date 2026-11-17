@@ -301,12 +301,14 @@ class ServerBase(Generic[ConfigT, StateT]):
 
             from verifiers.v1.interception.tunnel.base import HEALTH_PATH
 
-            # Uvicorn replays SIGTERM after serving. Cancel this task so provider
-            # cleanup runs through the outer stack, including during setup.
+            # Uvicorn replaces this handler while serving and replays SIGTERM
+            # after draining requests. Outside serving, cancel setup/cleanup
+            # through the outer stack rather than terminating the interpreter.
             serving = asyncio.current_task()
             assert serving is not None
-            asyncio.get_running_loop().add_signal_handler(
-                signal.SIGTERM, serving.cancel
+            loop = asyncio.get_running_loop()
+            previous_handler = signal.signal(
+                signal.SIGTERM, lambda *_: loop.call_soon_threadsafe(serving.cancel)
             )
             try:
                 async with (
@@ -357,7 +359,10 @@ class ServerBase(Generic[ConfigT, StateT]):
 
                     server = uvicorn.Server(uvicorn.Config(app, log_level="critical"))
                     await server.serve(sockets=[sock])
+                    # Deliver a replayed cancellation before exiting provider contexts.
+                    await asyncio.sleep(0)
             finally:
+                signal.signal(signal.SIGTERM, previous_handler)
                 self._state_client = None
 
         asyncio.run(serve())
