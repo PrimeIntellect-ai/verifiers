@@ -11,7 +11,6 @@ from openai import APITimeoutError
 from verifiers.v1.configs.judge import JudgeConfig
 from verifiers.v1.errors import TaskError
 from verifiers.v1.judge import Judge, JudgeView
-from verifiers.v1.trace import RECORD_DUMP_EXCLUDE, merge_exclude
 from verifiers.v1.types import SystemMessage, UserMessage
 
 MAX_PLAN_BYTES = 32 * 1024 * 1024
@@ -153,18 +152,23 @@ async def grade_authored(task, runtime, trace, env):
     prefix = f"/tmp/vf-rewardkit-{uuid.uuid4().hex}"
     trajectory = "/logs/agent/trajectory.json"
     await runtime.run(["rm", "-f", trajectory], {})
+    # Trajectory criteria consume only sampled turns and tool names. Do not
+    # export evaluator configuration, credentials, or training tensors.
     await runtime.write(
         trajectory,
         trace.model_dump_json(
-            exclude=merge_exclude(
-                RECORD_DUMP_EXCLUDE,
-                {
-                    "ok": True,
-                    "nodes": {
-                        "__all__": {"message": {"reasoning_content", "provider_state"}}
-                    },
+            include={
+                "version": True,
+                "nodes": {
+                    "__all__": {
+                        "sampled": True,
+                        "message": {
+                            "role": True,
+                            "tool_calls": {"__all__": {"name", "namespace"}},
+                        },
+                    }
                 },
-            )
+            }
         ).encode(),
     )
     worker = await prepare_authored(runtime, env)
