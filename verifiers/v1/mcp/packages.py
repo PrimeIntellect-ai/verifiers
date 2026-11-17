@@ -27,6 +27,14 @@ from verifiers.v1.utils.logging import clip, get_logger
 
 logger = get_logger(__name__)
 _BUILD_TIMEOUT = 300
+# uv fetches Git dependencies with the runtime's `git`, which slim images lack. Best
+# effort: where git cannot be installed, uv reports the missing executable itself.
+_ENSURE_GIT = (
+    "command -v git >/dev/null 2>&1 "
+    "|| { apt-get update -qq && apt-get install -y -qq git; } "
+    "|| apk add --no-cache git "
+    "|| true"
+)
 _EXCLUDED = {
     ".git",
     ".venv",
@@ -129,10 +137,42 @@ def _source_files(src: Path) -> tuple[Path, list[Path]]:
     return root, collect(root)
 
 
+def _normalize(name: str) -> str:
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def _git_requirement(path: Path) -> bool:
+    """Whether a `pyproject.toml` or wheel `METADATA` requires a dependency from Git
+    for an install without extras, the only kind `install_package` runs."""
+    if path.name == "METADATA":
+        return any(
+            line.startswith("Requires-Dist:")
+            and "git+" in line
+            and "extra" not in line.partition(";")[2]
+            for line in path.read_text(errors="replace").splitlines()
+        )
+    data = tomllib.loads(path.read_text())
+    requirements = data.get("project", {}).get("dependencies", [])
+    names = {
+        _normalize(match.group())
+        for requirement in requirements
+        if (match := re.match(r"[A-Za-z0-9][A-Za-z0-9._-]*", requirement.strip()))
+    }
+    sources = data.get("tool", {}).get("uv", {}).get("sources", {})
+    return any("git+" in requirement for requirement in requirements) or any(
+        isinstance(source, dict) and "git" in source
+        for name, entry in sources.items()
+        if _normalize(name) in names
+        for source in (entry if isinstance(entry, list) else [entry])
+    )
+
+
 @cache
-def package_source(src: Path) -> tuple[bytes, str, dict[str, str]]:
-    """Snapshot source or installed files without executing a host build hook."""
+def package_source(src: Path) -> tuple[bytes, str, dict[str, str], bool]:
+    """Snapshot source or installed files without executing a host build hook, and
+    report whether installing them fetches a dependency from Git."""
     env = {}
+    git = False
     if src.suffix == ".dist-info":
         dist = PathDistribution(src)
         if not dist.files:
@@ -176,6 +216,10 @@ def package_source(src: Path) -> tuple[bytes, str, dict[str, str]]:
             relative = path.relative_to(root)
             if _EXCLUDED.intersection(relative.parts) or not path.exists():
                 continue
+            if path.name == "pyproject.toml" or (
+                path.name == "METADATA" and path.parent.suffix == ".dist-info"
+            ):
+                git = git or _git_requirement(path)
             if src.suffix != ".dist-info":
                 if not path.resolve().is_relative_to(root):
                     raise ToolsetError(f"package input escapes {root}: {path}")
@@ -201,7 +245,7 @@ def package_source(src: Path) -> tuple[bytes, str, dict[str, str]]:
                 return info
 
             archive.add(path, arcname=str(relative), recursive=False, filter=include)
-    return buffer.getvalue(), directory, env
+    return buffer.getvalue(), directory, env, git
 
 
 async def _build(
@@ -248,7 +292,7 @@ async def _build(
 async def install_package(
     runtime: Runtime, src: Path, root: str, env: dict[str, str], *, python: str
 ) -> None:
-    data, directory, version_env = await asyncio.to_thread(
+    data, directory, version_env, git = await asyncio.to_thread(
         package_source, src.resolve()
     )
     build = f"{root}/build-{uuid.uuid4().hex}"
@@ -259,6 +303,8 @@ async def install_package(
         f"cd {quote(build + '/source/' + directory)}; "
         'export PATH="$HOME/.local/bin:$PATH"; '
     )
+    if git:
+        command += f"{_ENSURE_GIT}; "
     target = "."
     if src.suffix == ".dist-info":
         output = quote(build + "/dist")

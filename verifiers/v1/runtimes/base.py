@@ -28,8 +28,9 @@ if TYPE_CHECKING:
 
 logger = get_logger(__name__)
 
-# Ensure `uv` supports both script commands used below. Reuse a compatible installation;
-# upgrade older binaries bundled in task images. Prefer pip on
+# Ensure `uv` supports the commands verifiers runs: both script commands used below and
+# `uv pip install --no-editable`, which installs tool server packages. Reuse a compatible
+# installation; upgrade older binaries bundled in task images. Prefer pip on
 # Python images, then fall back to the standalone installer (curl/wget), installing curl + CA
 # certs when a bare image has no downloader. Both install paths land in ~/.local/bin, which we
 # prepend to PATH first. (Installing needs network + one of pip / curl / wget / apt-get / apk.)
@@ -44,12 +45,13 @@ _DOWNLOAD_UV = (
 )
 _ENSURE_UV = (
     'export PATH="$HOME/.local/bin:$PATH" UV_INSTALL_DIR="$HOME/.local/bin"; '
-    "uv_supports_scripts() { "
+    "uv_supported() { "
     "uv sync --help 2>/dev/null | grep -q -- '--script' "
-    "&& uv python find --help 2>/dev/null | grep -q -- '--script'; }; "
-    "uv_supports_scripts "
-    "|| { pip install -q -U --user uv 2>/dev/null && hash -r && uv_supports_scripts; } "
-    f"|| {{ {{ {_INSTALL_CURL}; {_DOWNLOAD_UV}; }} && hash -r && uv_supports_scripts; }}"
+    "&& uv python find --help 2>/dev/null | grep -q -- '--script' "
+    "&& uv pip install --help 2>/dev/null | grep -qE -- '--no-editable([^-]|$)'; }; "
+    "uv_supported "
+    "|| { pip install -q -U --user uv 2>/dev/null && hash -r && uv_supported; } "
+    f"|| {{ {{ {_INSTALL_CURL}; {_DOWNLOAD_UV}; }} && hash -r && uv_supported; }}"
 )
 
 # The port every runtime publishes for a server hosted in it, e.g. a host loopback
