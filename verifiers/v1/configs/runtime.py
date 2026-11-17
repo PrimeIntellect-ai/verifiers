@@ -152,10 +152,6 @@ class NetworkPolicyConfig(BaseConfig):
         return type(self).model_validate({**values, "allow": allow, "block": block})
 
 
-class SubprocessConfig(BaseConfig):
-    type: Literal["subprocess"] = "subprocess"
-
-
 class DockerConfig(NetworkPolicyConfig):
     type: Literal["docker"] = "docker"
     image: str = "python:3.11-slim"
@@ -275,7 +271,7 @@ class CustomRuntimeConfig(BaseConfig):
 # Serialized by the runtime type, so a custom runtime's typed config keeps its fields.
 RuntimeConfig = SerializeAsAny[
     Annotated[
-        SubprocessConfig | DockerConfig | PrimeConfig | CustomRuntimeConfig,
+        DockerConfig | PrimeConfig | CustomRuntimeConfig,
         Field(discriminator="type"),
     ]
 ]

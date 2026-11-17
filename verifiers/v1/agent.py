@@ -21,6 +21,7 @@ from typing_extensions import TypeVar
 from verifiers.v1.clients import (
     EvalClientConfig,
     ModelContext,
+    ModelRoute,
 )
 from verifiers.v1.configs.agent import (
     AgentConfig,
@@ -685,6 +686,7 @@ class Agent:
         on_trace: Callable[[Trace], None] | None = None,
         collect_artifacts: bool = False,
         on_score: Callable[[Trace, Runtime], Awaitable[None]] | None = None,
+        route: ModelRoute | None = None,
     ) -> Trace:
         """Run this agent on `task` once and return the trace: one segment — the
         program runs on the task's prompt until it exits (a multi-turn exchange
@@ -697,9 +699,13 @@ class Agent:
         (`config.retries`) — never into a borrowed box; every attempt's trace keeps
         the run's id with its own `attempt`, and the final trace keeps earlier
         attempts' errors. `on_score(trace, runtime)` runs after task scoring in
-        the selected verifier workspace, inside its timeout and retry boundary."""
+        the selected verifier workspace, inside its timeout and retry boundary.
+        `route` is where its model turns go, from the agent's model, client and
+        sampling unless given; the caller may change it while the rollout runs
+        (`ModelRoute.update`), and a retry takes it as it is then."""
         if self._closed:
             raise RuntimeError("Agent is closed; create a new agent")
+        route = route or ModelRoute(self.ctx)
         retry = self.config.retries
         retry_state = RetryState(retry)
         history: list = []
@@ -713,6 +719,7 @@ class Agent:
                     on_trace,
                     collect_artifacts,
                     on_score,
+                    route,
                     trace_id=trace_id,
                     attempt=attempt + 1,
                 )
@@ -752,11 +759,12 @@ class Agent:
         on_trace: Callable[[Trace], None] | None,
         collect_artifacts: bool,
         on_score: Callable[[Trace, Runtime], Awaitable[None]] | None,
+        route: ModelRoute,
         *,
         trace_id: str,
         attempt: int,
     ) -> Trace:
-        params = self._rollout_params(task, runtime, dict(shared_tools or {}))
+        params = self._rollout_params(task, runtime, dict(shared_tools or {}), route)
         if collect_artifacts:
             _check_artifact_runtime(params["runtime_config"])
         run = Rollout(
@@ -791,6 +799,7 @@ class Agent:
         tools: Mapping[str, SharedToolServer] | None = None,
         on_trace: Callable[[Trace], None] | None = None,
         collect_artifacts: bool = False,
+        route: ModelRoute | None = None,
     ) -> AsyncIterator[Interaction]:
         """Interact with this agent turn-by-turn: a full rollout of `task` where
         the CALLER is the run's user — the one exchange surface. Yields an
@@ -817,13 +826,15 @@ class Agent:
         included. A failure while opening the rollout raises before the context
         is entered (the failed trace is still completed and reported through
         `on_trace`). An exchange is caller-driven, so `config.retries` does not
-        apply here."""
+        apply here. `route` is where its model turns go, as for `run()`."""
         if self._closed:
             raise RuntimeError("Agent is closed; create a new agent")
         self._check_resume_support()
         trace_id = uuid.uuid4().hex
         with scope(trace=short_id(trace_id), agent=self._log_name):
-            params = self._rollout_params(task, runtime, dict(tools or {}))
+            params = self._rollout_params(
+                task, runtime, dict(tools or {}), route or ModelRoute(self.ctx)
+            )
             if collect_artifacts:
                 _check_artifact_runtime(params["runtime_config"])
             run = Rollout(
@@ -857,7 +868,11 @@ class Agent:
                     trace.agent.runtime.borrowed = runtime is not None
 
     def _rollout_params(
-        self, task: Task, runtime: Runtime | None, shared_tools: dict
+        self,
+        task: Task,
+        runtime: Runtime | None,
+        shared_tools: dict,
+        route: ModelRoute,
     ) -> dict:
         """Resolve one run's runtime config, pairing checks, timeouts,
         interception — shared by `run` and `interaction`."""
@@ -899,7 +914,7 @@ class Agent:
         return {
             "agent_config": self.config,
             "harness": harness,
-            "ctx": self.ctx,
+            "route": route,
             "runtime_config": runtime_config,
             "timeouts": timeouts,
             "limits": self.limits,
@@ -1032,6 +1047,7 @@ class _EpisodeAgent(Agent):
         on_trace: Callable[[Trace], None] | None = None,
         collect_artifacts: bool = False,
         on_score: Callable[[Trace, Runtime], Awaitable[None]] | None = None,
+        route: ModelRoute | None = None,
     ) -> Trace:
         async with self._gate or nullcontext():
             trace = await super().run(
@@ -1041,6 +1057,7 @@ class _EpisodeAgent(Agent):
                 on_trace=self._watch(on_trace),
                 collect_artifacts=collect_artifacts,
                 on_score=self._scoring_callback(on_score),
+                route=route,
             )
         self._completed.append(trace)
         return trace
@@ -1054,6 +1071,7 @@ class _EpisodeAgent(Agent):
         tools: Mapping[str, SharedToolServer] | None = None,
         on_trace: Callable[[Trace], None] | None = None,
         collect_artifacts: bool = False,
+        route: ModelRoute | None = None,
     ) -> AsyncIterator[Interaction]:
         """The agent's `interaction`, with every trace stamped with its standing
         at mint and captured in `completed` at close — an interaction driven from
@@ -1076,6 +1094,7 @@ class _EpisodeAgent(Agent):
                 tools=tools if tools is not None else self._shared_for(task),
                 on_trace=self._watch(remember),
                 collect_artifacts=collect_artifacts,
+                route=route,
             ) as interaction:
                 yield interaction
         finally:
