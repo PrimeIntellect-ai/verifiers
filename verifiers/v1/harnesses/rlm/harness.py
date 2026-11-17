@@ -1,7 +1,6 @@
 """RLM over ACP, with MCP tools exposed as pre-imported IPython skills."""
 
 import hashlib
-import logging
 import re
 import secrets
 import shlex
@@ -26,8 +25,9 @@ from verifiers.v1.runtimes import Runtime
 from verifiers.v1.runtimes.deployment import ExecutionConnection
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
+from verifiers.v1.utils.logging import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 BuiltinSkill = Literal["bash", "edit", "fetch", "search"]
 BuiltinTool = Literal["bash", "edit", "fetch", "ipython"]
@@ -52,6 +52,7 @@ _TRUNCATION_STOPS = {
     "max_total_turns": "max_turns",
     "token_budget": "max_output_tokens",
     "compaction_failed": "compaction_failed",
+    "format_violation": "format_violation",
 }
 
 
@@ -66,13 +67,13 @@ class CompactionConfig(BaseConfig):
     nano-rlm's default."""
     max_attempts: PositiveInt | None = None
     """Summary-generation attempts within one compaction cycle; `None` =
-    nano-rlm's default (5)."""
+    nano-rlm's default (5). Set 1 for training without summary resampling."""
 
 
 class RLMHarnessConfig(HarnessConfig):
     dialect: Literal["chat_completions"] = "chat_completions"
     version: str = Field(
-        default="208aea96cdd6e59fd8551ac543b837a76cda4b9f", min_length=1
+        default="695ac48461fbd154859093eaa14589b21f63c22e", min_length=1
     )
     """Git ref (branch, tag, or commit) of nano-rlm to install. Must know every
     field this harness puts on the wire, i.e. be at least the default ref."""
@@ -102,10 +103,17 @@ class RLMHarnessConfig(HarnessConfig):
     exec_timeout: PositiveInt | None = None
     """IPython/native tool execution timeout in seconds; `None` uses nano-rlm's
     default (300). Separate from `tool_timeout`, which controls MCP calls."""
+    provider_max_retries: NonNegativeInt | None = None
+    """SDK retries per model call (429, 5xx, connection errors); `None` uses nano-rlm's
+    default (5). Raise it so long rollouts ride out extended rate-limit bursts."""
     allow_git: bool | None = None
     """Allow unrestricted Git history queries (e.g. `git log --all`); `None` uses
     nano-rlm's default (false). Ordinary Git commands remain allowed either way;
     this is not filesystem or process isolation."""
+    network_guidance: bool | None = None
+    """Keep nano-rlm's prompt guidance that assumes outbound network access (installing
+    extra kernel packages, the online-solutions warning). `None` turns it off when the
+    box allows no network destinations and otherwise uses nano-rlm's default (on)."""
     max_total_turns: PositiveInt | None = None
     """Tree-total turn budget (one turn = one work-loop model call, any engine); every
     engine stops before its next call once spent. `None` = uncapped."""
@@ -146,42 +154,45 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
     async def setup(self, runtime: Runtime) -> None:
         if self.config.skills:
             # Editable skill packages and uv's tool environment must belong to this run.
-            self._skills_install_dir = f"{RLM_CACHE_DIR}-skills-{secrets.token_hex(16)}"
+            self._skills_install_dir = runtime.temp_path(
+                f"rlm-skills-{secrets.token_hex(16)}", env=self.config.resolved_env
+            )
             await self.install_skills(runtime, f"{self._skills_home()}/skills")
-        await self._install(runtime)
+        await self._install(runtime, self.config.resolved_env)
         await super().setup(runtime)
 
-    async def _install(self, runtime: Runtime) -> None:
+    async def _install(self, runtime: Runtime, install_env: dict[str, str]) -> None:
         directory = self._install_dir()
         binary = f"{directory}/bin/rlm"
         checkout = f"{directory}/checkout"
         ready = f"{directory}/.ready"
         # install.sh installs the Python skill packages under $RLM_HOME/skills.
         home = self._skills_home()
-        home_env = f"RLM_HOME={home} " if home else ""
+        home_env = f"RLM_HOME={shlex.quote(home)} " if home else ""
         # install.sh fetches curl/uv itself; add git only when the image lacks it.
         install = (
-            f"rm -f {ready} && "
+            f"rm -f {shlex.quote(ready)} && "
             "(command -v git >/dev/null 2>&1 || "
-            "{ apt-get update -qq && apt-get install -y -qq git; } && "
-            f"rm -rf {checkout} && git clone https://{RLM_REPO} {checkout} && "
-            f"git -C {checkout} checkout {shlex.quote(self.config.version)} && "
+            "{ apt-get update -qq && apt-get install -y -qq git; } || dnf install -y -q git || apk add --no-cache git && "
+            f"rm -rf {shlex.quote(checkout)} && git clone https://{RLM_REPO} {shlex.quote(checkout)} && "
+            f"git -C {shlex.quote(checkout)} checkout {shlex.quote(self.config.version)} && "
             # The editable install needs the files, not the history; agents searching
             # their workspace for a repository must not find the harness's own.
-            f"rm -rf {checkout}/.git && "
-            f"{home_env}UV_INSTALL_DIR={directory}/bin UV_TOOL_BIN_DIR={directory}/bin "
-            f"UV_TOOL_DIR={directory}/tools "
-            f"RLM_CHECKOUT_PATH={checkout} bash {checkout}/install.sh && "
-            f"touch {ready})"
+            f"rm -rf {shlex.quote(checkout + '/.git')} && "
+            f"{home_env}UV_INSTALL_DIR={shlex.quote(directory + '/bin')} "
+            f"UV_TOOL_BIN_DIR={shlex.quote(directory + '/bin')} "
+            f"UV_TOOL_DIR={shlex.quote(directory + '/tools')} "
+            f"RLM_CHECKOUT_PATH={shlex.quote(checkout)} bash {shlex.quote(checkout + '/install.sh')} && "
+            f"touch {shlex.quote(ready)})"
         )
-        logger.info("rlm: ensuring rlm is installed (version=%s)", self.config.version)
-        env = self.config.resolved_env.copy()
+        logger.debug("Ensuring rlm %s is installed", self.config.version)
+        env = install_env.copy()
         extra_uv_args = env.get("RLM_EXTRA_UV_ARGS", "")
         env["RLM_EXTRA_UV_ARGS"] = f"{extra_uv_args} --with mcp~=1.28".strip()
         await ensure_installed(
             runtime,
             directory=directory,
-            ready=f"[ -f {ready} ] && [ -x {binary} ]",
+            ready=f"[ -f {shlex.quote(ready)} ] && [ -x {shlex.quote(binary)} ]",
             install=install,
             env=env,
             label="rlm",
@@ -197,7 +208,7 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
     ) -> None:
         # The same pinned nano-rlm runs the tools in the workspace; the agent loop and
         # the model credentials stay on the harness's VM.
-        await self._install(workspace)
+        await self._install(workspace, {})
         token = secrets.token_urlsafe(32)
         port = await connection.serve(
             workspace,
@@ -239,6 +250,7 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
             "delegation_prompt": self.config.delegation_prompt,
             "exec_timeout": self.config.exec_timeout,
             "allow_git": self.config.allow_git,
+            "network_guidance": self._network_guidance(runtime),
             "max_total_turns": self.config.max_total_turns,
             "max_total_tokens": self.config.max_total_tokens or None,
             "max_tool_output_bytes": self.config.max_tool_output_bytes,
@@ -261,6 +273,11 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
             "provider": {
                 "base_url": endpoint,
                 "api_key": secret,
+                **(
+                    {"max_retries": self.config.provider_max_retries}
+                    if self.config.provider_max_retries is not None
+                    else {}
+                ),
             },
             # None = passthrough: the key stays off the wire and nano-rlm's own
             # default applies.
@@ -295,6 +312,15 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
             payload.update(self._execution)
         return {RLM_RUNTIME_METADATA_KEY: payload}
 
+    def _network_guidance(self, runtime: Runtime) -> bool | None:
+        if self.config.network_guidance is not None:
+            return self.config.network_guidance
+        # The rollout's runtime config already carries the task's network policy.
+        policy = runtime.config
+        if isinstance(policy, NetworkPolicyConfig) and not policy.allow:
+            return False
+        return None
+
     async def prepare_acp(
         self,
         ctx: ModelContext,
@@ -322,6 +348,8 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
         if snapshot.session_id != trace.id:
             raise ValueError("RLM session snapshot does not match the rollout")
         trace.record_metrics(snapshot.metrics)
+        if trace.is_format_violation:
+            trace.stop("format_violation")
         if condition := _TRUNCATION_STOPS.get(snapshot.last_stop_reason or ""):
             trace.stop(condition)
 

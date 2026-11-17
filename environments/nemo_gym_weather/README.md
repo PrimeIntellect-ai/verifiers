@@ -10,7 +10,7 @@ Run it from the Verifiers checkout with any MCP-capable harness:
 
 ```bash
 uv run --with-editable . --with-editable environments/nemo_gym_weather \
-  eval nemo-gym-weather -n 5 --env.agent.harness.id bash --no-push
+  eval nemo-gym-weather -n 5 --env.agent.harness.id bash
 ```
 
 ## Layout

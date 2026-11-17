@@ -2,8 +2,9 @@
 
 import asyncio
 import contextlib
-import logging
+import time
 import traceback
+import uuid
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -32,11 +33,13 @@ from verifiers.v1.mcp import SharedToolServer, serve_shared
 from verifiers.v1.runtimes import SubprocessConfig, runtime_is_local
 from verifiers.v1.task import Task
 from verifiers.v1.trace import Error, Trace, TraceTask
+from verifiers.v1.utils.format import format_time
 from verifiers.v1.utils.generic import concrete_type
+from verifiers.v1.utils.logging import clip, get_logger, scope, short_id
 from verifiers.v1.utils.memory import trim_memory_periodically
 from verifiers.v1.utils.retries import run_episode_with_retry
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 def _as_error(e: Exception) -> Error:
@@ -54,10 +57,12 @@ def _as_error(e: Exception) -> Error:
 class RunSlot:
     """One planned episode, observable while it happens: `traces` collects the
     current attempt (a retry restarts the list), `episode`/`done` land when final.
-    A runner that can't watch live traces (the env-server path) stamps `started`
+    A runner that can't watch live traces stamps `started`
     at dispatch so the slot still reads as running."""
 
     task: Task
+    id: str = field(default_factory=lambda: uuid.uuid4().hex)
+    """The episode's id. Stable across retries."""
     traces: list[Trace] = field(default_factory=list)
     episode: Episode | None = None
     done: bool = False
@@ -67,6 +72,7 @@ class RunSlot:
     def finished(cls, episode: Episode) -> "RunSlot":
         return cls(
             task=Task(episode.task.data),
+            id=episode.id,
             traces=list(episode.traces),
             episode=episode,
             done=True,
@@ -238,6 +244,8 @@ class Env(ABC, Generic[ConfigT]):
         *,
         on_trace: Callable[[Trace], None] | None = None,
         on_discard: Callable[[Trace], None] | None = None,
+        episode_id: str | None = None,
+        attempt: int = 1,
     ) -> Episode:
         """One episode of `task`, minted as the wire atom: `setup()` then `run()`
         over fresh agents, then `finalize()`. Its agents run one at a time
@@ -246,8 +254,11 @@ class Env(ABC, Generic[ConfigT]):
         Traces join the episode as runs complete — a hook raising mid-way yields the
         completed subset, its exception on the episode's `errors`. `on_trace` observes
         each agent-run's trace at mint; `on_discard` its abandonment (a per-agent
-        retry mints a replacement)."""
+        retry replaces it). `episode_id` and `attempt` place a retry under the
+        episode it repeats."""
         episode = Episode(
+            **({"id": episode_id} if episode_id is not None else {}),
+            attempt=attempt,
             env=EnvInfo(id=self.config.env_id),
             task=TraceTask(
                 type=type(task).__name__,
@@ -319,7 +330,11 @@ class Env(ABC, Generic[ConfigT]):
         `on_complete` (the runners' persistence hook, which fires when final).
         `on_trace` sees each trace at mint, after it joined `slot.traces`."""
 
+        attempts = 0
+
         async def attempt() -> Episode:
+            nonlocal attempts, started
+            attempts += 1
             slot.traces = []  # a retry shows the fresh attempt's traces
             live = slot.traces
 
@@ -334,14 +349,57 @@ class Env(ABC, Generic[ConfigT]):
                     live.remove(trace)
 
             async with semaphore or contextlib.nullcontext():
+                if started is None:
+                    started = time.perf_counter()
+                    data = slot.task.data
+                    optional = (
+                        ("name", data.name),
+                        ("id", data.id),
+                        ("image", data.image),
+                    )
+                    logger.info(
+                        "Starting episode env=%s idx=%s%s",
+                        self.config.env_id,
+                        data.idx,
+                        "".join(f" {k}={v}" for k, v in optional if v is not None),
+                    )
                 return await self.run_episode(
                     slot.task,
                     ctx,
                     on_trace=minted,
                     on_discard=discard,
+                    episode_id=slot.id,
+                    attempt=attempts,
                 )
 
-        episode = await run_episode_with_retry(attempt, self.config.retries)
+        started: float | None = None
+        with scope(episode=short_id(slot.id)):
+            episode = await run_episode_with_retry(attempt, self.config.retries)
+            elapsed = format_time(
+                time.perf_counter() - (started or time.perf_counter())
+            )
+            failed = sum(not trace.ok for trace in episode.traces)
+            if episode.ok:
+                logger.info(
+                    "Finished episode in %s rollouts=%d failed=%d",
+                    elapsed,
+                    len(episode.traces),
+                    failed,
+                )
+            else:
+                # Name a failed rollout's error first: ok traces keep recovered
+                # retry errors, and `episode.errors` starts with earlier attempts'.
+                errors = [t.last_error for t in episode.traces if not t.ok]
+                errors += episode.errors[-1:]
+                error = next((e for e in errors if e is not None), None)
+                reason = f" - {error.type}: {clip(error.message)}" if error else ""
+                logger.warning(
+                    "Failed episode in %s rollouts=%d failed=%d%s",
+                    elapsed,
+                    len(episode.traces),
+                    failed,
+                    reason,
+                )
         slot.traces = list(episode.traces)
         slot.episode = episode
         slot.done = True

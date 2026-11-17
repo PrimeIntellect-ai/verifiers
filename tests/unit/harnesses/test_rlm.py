@@ -1,13 +1,24 @@
-"""The rlm harness maps its session's stop reason onto the trace's stop condition."""
+"""The rlm harness's runtime contract and stop-reason mapping."""
+
+from types import SimpleNamespace
 
 import pytest
 
 import verifiers.v1 as vf
+from verifiers.v1.configs.runtime import DockerConfig, NetworkPolicyConfig
 from verifiers.v1.harnesses.rlm.harness import (
+    RLM_RUNTIME_METADATA_KEY,
     RLM_SESSION_METADATA_KEY,
     RLMHarness,
     RLMHarnessConfig,
 )
+
+
+def _trace() -> vf.Trace:
+    return vf.Trace(
+        agent=vf.AgentInfo(config=vf.AgentConfig()),
+        task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt="q")),
+    )
 
 
 @pytest.mark.parametrize(
@@ -17,15 +28,13 @@ from verifiers.v1.harnesses.rlm.harness import (
         ("max_total_turns", "max_turns"),
         ("token_budget", "max_output_tokens"),
         ("compaction_failed", "compaction_failed"),
+        ("format_violation", "format_violation"),
         ("done", "agent_completed"),
         (None, "agent_completed"),
     ],
 )
 def test_rlm_stop_reason_survives_completion_and_serialization(reason, condition):
-    trace = vf.Trace(
-        agent=vf.AgentInfo(config=vf.AgentConfig()),
-        task=vf.TraceTask(type="Task", data=vf.TaskData(idx=0, prompt="q")),
-    )
+    trace = _trace()
     harness = RLMHarness(RLMHarnessConfig(id="rlm"))
     metadata = {
         RLM_SESSION_METADATA_KEY: {
@@ -42,4 +51,61 @@ def test_rlm_stop_reason_survives_completion_and_serialization(reason, condition
 
     restored = vf.WireTrace.model_validate_json(trace.model_dump_json())
     assert restored.stop_condition == condition
-    assert restored.is_truncated is (condition != "agent_completed")
+    assert restored.is_truncated is (
+        condition not in ("agent_completed", "format_violation")
+    )
+    assert restored.is_format_violation is (condition == "format_violation")
+
+
+def _sent_contract(config: RLMHarnessConfig, runtime_config) -> dict:
+    runtime = SimpleNamespace(config=runtime_config, env={})
+    metadata = RLMHarness(config)._runtime_metadata(
+        SimpleNamespace(model="m"), _trace(), runtime, "http://endpoint", "s", None
+    )
+    return metadata[RLM_RUNTIME_METADATA_KEY]
+
+
+def _sent_policy(config: RLMHarnessConfig, runtime_config) -> dict:
+    return _sent_contract(config, runtime_config)["policy"]
+
+
+@pytest.mark.parametrize("max_retries", [0, 30])
+def test_rlm_sends_provider_max_retries_when_set(max_retries):
+    config = RLMHarnessConfig(id="rlm", provider_max_retries=max_retries)
+    provider = _sent_contract(config, DockerConfig())["provider"]
+    assert provider["max_retries"] == max_retries
+
+
+def test_rlm_leaves_provider_max_retries_to_nano_rlm_by_default():
+    provider = _sent_contract(RLMHarnessConfig(id="rlm"), DockerConfig())["provider"]
+    assert "max_retries" not in provider
+
+
+@pytest.mark.parametrize(
+    "runtime_config",
+    [
+        DockerConfig(allow=[]),
+        DockerConfig().with_task_network_policy(NetworkPolicyConfig(allow=[])),
+    ],
+)
+def test_rlm_drops_network_guidance_for_boxes_with_no_network(runtime_config):
+    policy = _sent_policy(RLMHarnessConfig(id="rlm"), runtime_config)
+    assert policy["network_guidance"] is False
+
+
+@pytest.mark.parametrize(
+    "runtime_config",
+    [DockerConfig(), DockerConfig(allow=["pypi.org"]), SimpleNamespace(type="local")],
+)
+def test_rlm_leaves_network_guidance_to_nano_rlm_when_network_reachable(
+    runtime_config,
+):
+    policy = _sent_policy(RLMHarnessConfig(id="rlm"), runtime_config)
+    assert "network_guidance" not in policy
+
+
+@pytest.mark.parametrize("value", [True, False])
+def test_rlm_explicit_network_guidance_overrides_runtime_policy(value):
+    config = RLMHarnessConfig(id="rlm", network_guidance=value)
+    for runtime_config in (DockerConfig(allow=[]), DockerConfig()):
+        assert _sent_policy(config, runtime_config)["network_guidance"] is value

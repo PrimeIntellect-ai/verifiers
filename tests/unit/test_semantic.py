@@ -13,6 +13,7 @@ from verifiers.v1.semantic import (
     ACP_EXTENSION_HEADERS,
     ACP_SEMANTIC_EDGES_METADATA_KEY,
     extract_acp_info,
+    routing_session_id,
 )
 from verifiers.v1.types import AssistantMessage, UserMessage
 
@@ -236,10 +237,11 @@ def test_acp_info_is_validated_and_stripped():
         "Authorization": "Bearer local",
         "Idempotency-Key": "provider-key",
         "X-ACP-Model-Request-ID": "request-1",
+        "X-ACP-Agent-Session-ID": "child",
         "OpenAI-Beta": "feature",
     }
     acp, forwarded = extract_acp_info(headers)
-    assert acp == vf.ACPInfo(request_id="request-1")
+    assert acp == vf.ACPInfo(request_id="request-1", agent_session_id="child")
     assert not ACP_EXTENSION_HEADERS.intersection(map(str.lower, forwarded))
     assert forwarded["Idempotency-Key"] == "provider-key"
     assert forwarded["OpenAI-Beta"] == "feature"
@@ -249,6 +251,15 @@ def test_acp_info_is_validated_and_stripped():
 
     with pytest.raises(ValueError, match="not a valid ACP request ID"):
         extract_acp_info({"X-ACP-Model-Request-ID": "not/a/valid/id"})
+    with pytest.raises(ValueError, match="not a valid ACP session ID"):
+        extract_acp_info(
+            {"X-ACP-Model-Request-ID": "request-1", "X-ACP-Agent-Session-ID": "a/b"}
+        )
+
+    # The root agent routes as the rollout; each sub-agent as its own session in it.
+    assert routing_session_id("trace", None) == "trace"
+    assert routing_session_id("trace", "trace") == "trace"
+    assert routing_session_id("trace", "child") == "trace:child"
 
 
 def test_acp_semantic_edge_metadata_is_optional():
@@ -395,6 +406,20 @@ def test_acp_derives_compaction_attempt_branch_trainability():
     }
     assert restored_branches["bad tool call"].trainable is False
     assert restored_branches["accepted summary"].trainable is True
+
+    # A terminal rejection is a zero-reward training sample, including in a child.
+    trace.nodes[3].semantic_parents.append(
+        vf.ParentLink(node=1, type="format_violation")
+    )
+    restored = vf.WireTrace.model_validate_json(trace.model_dump_json())
+    assert restored.is_format_violation
+    assert restored.rewards == {}
+    assert restored.reward == 0.0
+    assert not restored.is_dropped
+    branches = {
+        branch.nodes[-1].message.content: branch for branch in restored.branches
+    }
+    assert branches["bad tool call"].trainable is True
 
 
 def test_semantic_edge_set_rejects_duplicate_and_self_edges_but_accepts_loops():

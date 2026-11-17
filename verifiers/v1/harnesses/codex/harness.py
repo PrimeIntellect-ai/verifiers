@@ -2,7 +2,6 @@
 
 import hashlib
 import json
-import logging
 import re
 import tomllib
 from pathlib import Path
@@ -19,8 +18,9 @@ from verifiers.v1.runtimes import Runtime
 from verifiers.v1.runtimes.deployment import ExecutionConnection
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
+from verifiers.v1.utils.logging import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 CODEX_DIR = "/var/tmp/vf-codex-{version}-{acp_version}"
 PACKAGES_DIR = f"{CODEX_DIR}/acp"
@@ -33,16 +33,36 @@ export PATH="/var/tmp/vf-node/bin:$PATH"
 rm -f {ready}
 npm install --prefix {packages} --ignore-scripts --no-audit --no-fund \
     --omit=dev \
-    "@agentclientprotocol/codex-acp@$VF_CODEX_ACP_VERSION" \
-    "@openai/codex@$VF_CODEX_VERSION" >/dev/null
+    "@agentclientprotocol/codex-acp@$AGENT_CODEX_ACP_VERSION" \
+    "@openai/codex@$AGENT_CODEX_VERSION" >/dev/null
 touch {ready}
+"""
+
+
+EXECUTOR_DIR = "/var/tmp/agent-tools/codex-executor-{version}"
+EXECUTOR_BIN = f"{EXECUTOR_DIR}/node_modules/.bin/codex"
+INSTALL = r"""
+set -e
+export PATH="/var/tmp/vf-node/bin:$PATH"
+rm -f {ready}
+npm install --prefix {packages} --ignore-scripts --no-audit --no-fund \
+    --omit=dev \
+    "@agentclientprotocol/codex-acp@$AGENT_CODEX_ACP_VERSION" \
+    "@openai/codex@$AGENT_CODEX_VERSION" >/dev/null
+touch {ready}
+"""
+EXECUTOR_INSTALL = r"""
+set -e
+export PATH="{node_bin}:$PATH"
+npm install --prefix {directory} --ignore-scripts --no-audit --no-fund \
+    --omit=dev "@openai/codex@$AGENT_CODEX_VERSION" >/dev/null
 """
 
 
 GATE_HOOK = (Path(__file__).resolve().parent / "gate.mjs").read_text()
 GATE_HANDLER = {
     "type": "command",
-    "command": f'{NODE_BIN_DIR}/node "$CODEX_HOME/vf-gate.mjs"',
+    "command": f'{NODE_BIN_DIR}/node "$CODEX_HOME/tool-gate.mjs"',
     "timeout": 120,
     "async": False,
 }
@@ -87,8 +107,8 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
 
     async def _install(self, runtime: Runtime) -> None:
         await ensure_node(runtime)
-        logger.info(
-            "codex: ensuring Codex %s and codex-acp %s are installed",
+        logger.debug(
+            "Ensuring Codex %s and codex-acp %s are installed",
             self.config.version,
             ACP_VERSION,
         )
@@ -106,8 +126,8 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
             install=script,
             env={
                 **self.config.resolved_env,
-                "VF_CODEX_VERSION": self.config.version,
-                "VF_CODEX_ACP_VERSION": ACP_VERSION,
+                "AGENT_CODEX_VERSION": self.config.version,
+                "AGENT_CODEX_ACP_VERSION": ACP_VERSION,
             },
             label="codex",
         )
@@ -123,8 +143,8 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
         # Codex's own executor runs the native shell and file tools in the workspace.
         # Its client sends credentials only over TLS or loopback, so the listener takes
         # none; the LAN admits the harness's VM and the workspace's own services.
-        await self._install(workspace)
-        codex = CODEX_BIN.format(version=self.config.version, acp_version=ACP_VERSION)
+        await self.setup_executor(workspace)
+        codex = EXECUTOR_BIN.format(version=self.config.version)
         port = await connection.serve(
             workspace,
             [
@@ -144,6 +164,22 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
             )
         self._executor = f"ws://{connection.host}:{port}"
         self._executor_cwd = cwd.stdout.strip()
+
+    async def setup_executor(self, runtime: Runtime) -> None:
+        """Install only the credential-free executor in B during trusted setup."""
+        await ensure_node(runtime)
+        directory = EXECUTOR_DIR.format(version=self.config.version)
+        await ensure_installed(
+            runtime,
+            directory=directory,
+            ready=f"[ -x {EXECUTOR_BIN.format(version=self.config.version)} ]",
+            install=EXECUTOR_INSTALL.replace("{directory}", directory).replace(
+                "{node_bin}", NODE_BIN_DIR
+            ),
+            # Harness environment overrides belong to A, never the task worker.
+            env={"AGENT_CODEX_VERSION": self.config.version},
+            label="Codex executor",
+        )
 
     async def prepare_acp(
         self,
@@ -186,14 +222,14 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
         # Codex asks its ACP client only when a command escapes the sandbox, and never in
         # full access, so the gate is a PreToolUse hook instead.
         await runtime.write(
-            f"{config.env['CODEX_HOME']}/vf-gate.mjs",
+            f"{config.env['CODEX_HOME']}/tool-gate.mjs",
             GATE_HOOK.replace("__URL__", json.dumps(url))
             .replace("__SECRET__", json.dumps(secret))
             .encode(),
         )
         # Codex keys hook trust by the config's canonical path, resolving symlinks.
         home = await runtime.run(
-            ["sh", "-c", 'cd "$1" && pwd -P', "vf-gate", config.env["CODEX_HOME"]],
+            ["sh", "-c", 'cd "$1" && pwd -P', "tool-gate", config.env["CODEX_HOME"]],
             {},
         )
         if home.exit_code:

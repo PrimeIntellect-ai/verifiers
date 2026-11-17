@@ -1,16 +1,25 @@
 from __future__ import annotations
 
 import copy
+import functools
 import math
 import time
 import traceback
 import uuid
 from collections.abc import Callable, Iterable, Iterator, Mapping
-from typing import TYPE_CHECKING, Any, Generic
+from typing import TYPE_CHECKING, Annotated, Any, Generic, Literal, Self, get_args
 
 import numpy as np
 import orjson
-from pydantic import BaseModel, Field, PrivateAttr, computed_field, field_serializer
+from pydantic import (
+    BaseModel,
+    Field,
+    PrivateAttr,
+    TypeAdapter,
+    computed_field,
+    field_serializer,
+    model_validator,
+)
 from typing_extensions import TypeVar
 
 if TYPE_CHECKING:
@@ -30,10 +39,9 @@ from verifiers.v1.types import (
     FinishReason,
     Message,
     Messages,
-    SamplingMask,
+    SamplerSupport,
     Tool,
     ToolMessage,
-    TopLogprobs,
     Usage,
     content_text,
 )
@@ -46,12 +54,11 @@ EXCLUDE_FIELDS: dict = {
     "nodes": {
         "__all__": {
             "routed_experts",
-            "sampling_mask",
-            "top_logprobs",
+            "sampler_support",
         }
     }
 }
-"""Raw tensor fields kept on the msgpack wire but excluded from disk serialization."""
+"""Raw tensor fields kept by `model_dump` but excluded from disk serialization."""
 
 RECORD_DUMP_EXCLUDE: dict = {
     "nodes": {"__all__": EXCLUDE_FIELDS["nodes"]["__all__"] | set(graph.RECORD_STREAMS)}
@@ -90,12 +97,145 @@ def add_record_streams(
         node_record.update(node.record_streams(float_decimals, exclude_none))
 
 
+_SPLICE = f"\x00splice-{uuid.uuid4().hex}"
+"""Holds a list field's place in a record head until its encoded items replace it."""
+_SPLICE_JSON = orjson.dumps(_SPLICE)
+YIELD_INTERVAL_S = 0.001
+"""How long `to_json` encodes before it releases the GIL to other threads."""
+
+
+@functools.cache
+def item_adapter(model: type[BaseModel], field: str) -> TypeAdapter:
+    """Dumps one item of `model`'s list `field` as `model` itself does: as the declared
+    item type, not the item's own class."""
+    return TypeAdapter(get_args(model.model_fields[field].annotation)[0])
+
+
+def item_exclude(exclude: dict, field: str, index: int) -> dict | None:
+    """The part of the pydantic `exclude` spec that applies to item `index` of `field`."""
+    spec = exclude.get(field)
+    if not isinstance(spec, dict):
+        return None
+    return merge_exclude(spec.get("__all__"), spec.get(index)) or None
+
+
+def splice_json(head: dict, field: str, items: Iterable[list[bytes]]) -> list[bytes]:
+    """`head` as JSON parts, with the encoded `items` as the array at its `field`. A head
+    without `field` (excluded whole) is encoded alone."""
+    if field not in head:
+        return [orjson.dumps(head)]
+    head[field] = _SPLICE
+    before, after = orjson.dumps(head).split(_SPLICE_JSON, 1)
+    parts = [before, b"["]
+    for index, item in enumerate(items):
+        if index:
+            parts.append(b",")
+        parts.extend(item)
+    parts += [b"]", after]
+    return parts
+
+
+def trace_json_parts(
+    trace: Trace,
+    dump: Callable[..., dict[str, Any]],
+    exclude: dict,
+    float_decimals: int | None,
+    exclude_none: bool,
+) -> list[bytes]:
+    """A trace's record as JSON parts, one per node: `dump` (the trace's pydantic dump
+    with `exclude`) gives the head."""
+    head = dump(
+        mode="json",
+        exclude=merge_exclude(exclude, {"nodes": {"__all__": True}}),
+        exclude_none=exclude_none,
+    )
+    adapter = item_adapter(type(trace), "nodes")
+
+    def nodes() -> Iterator[list[bytes]]:
+        last_yield = time.perf_counter()
+        for index, node in enumerate(trace.nodes):
+            # A busy thread keeps the GIL until CPython's switch interval forces a
+            # handoff, so another thread (an event loop) waits that long each time it
+            # wakes. Releasing the GIL every millisecond lets it run at once.
+            if time.perf_counter() - last_yield > YIELD_INTERVAL_S:
+                time.sleep(0)
+                last_yield = time.perf_counter()
+            record = adapter.dump_python(
+                node,
+                mode="json",
+                exclude=item_exclude(exclude, "nodes", index),
+                exclude_none=exclude_none,
+            )
+            record.update(node.record_streams(float_decimals, exclude_none))
+            yield [orjson.dumps(record, option=orjson.OPT_SERIALIZE_NUMPY)]
+
+    return splice_json(head, "nodes", nodes())
+
+
+class PolicySpan(BaseModel):
+    """Live policy versions spanned while generating an episode."""
+
+    start: int
+    end: int
+
+    @model_validator(mode="after")
+    def ordered(self) -> Self:
+        if self.end < self.start:
+            raise ValueError("policy span end must be at least its start")
+        return self
+
+    @computed_field
+    @property
+    def drift(self) -> int:
+        return self.end - self.start
+
+
+class TrainWorkInfo(BaseModel):
+    type: Literal["train"] = "train"
+    step: int
+    """The training step at which the episode was dispatched."""
+    policy: PolicySpan | None = None
+    """The live policy used for generation; None for frozen-policy work."""
+
+
+class EvalWorkInfo(BaseModel):
+    type: Literal["eval"] = "eval"
+    step: int
+    """The training step at which the episode was dispatched."""
+    policy: PolicySpan | None = None
+    """The live policy used for generation; None for frozen-policy work."""
+
+
+WorkInfo = Annotated[TrainWorkInfo | EvalWorkInfo, Field(discriminator="type")]
+
+
+class TrainRunInfo(BaseModel):
+    """A training run and the kind of work this episode performed for it."""
+
+    type: Literal["train"] = "train"
+    id: str
+    name: str | None = None
+    work: WorkInfo
+
+
+class EvalRunInfo(BaseModel):
+    """A standalone evaluation run."""
+
+    type: Literal["eval"] = "eval"
+    id: str
+    name: str | None = None
+
+
+RunInfo = Annotated[TrainRunInfo | EvalRunInfo, Field(discriminator="type")]
+
+
 class TimeSpan(BaseModel):
-    """Wall-clock timestamps with a derived, non-serialized duration in seconds."""
+    """Wall-clock timestamps, with their duration in seconds."""
 
     start: float = 0.0
     end: float = 0.0
 
+    @computed_field
     @property
     def duration(self) -> float:
         return max(0.0, self.end - self.start) if self.end else 0.0
@@ -165,7 +305,7 @@ class TraceTask(BaseModel, Generic[DataT]):
     data: DataT
     """The (immutable) row being solved."""
     key: str | None = None
-    """Stable task identity (``Task.key``); defaults to the content hash unless overridden."""
+    """Stable task identity (``Task.key``); defaults to a hash of data excluding ``idx``."""
     hash: str | None = None
     """Content hash of ``data`` (``Task.hash``)."""
 
@@ -366,42 +506,33 @@ class Branch(BaseModel):
         return merged if merged.shape[0] == total else None
 
     @property
-    def sampling_mask(self) -> SamplingMask | None:
-        """Sampling masks aligned to this branch's token ids."""
-        if all(n.sampling_mask is None for n in self.nodes):
+    def sampler_support(self) -> SamplerSupport | None:
+        """The sampler support aligned to this branch's token ids: one row per token, empty
+        for tokens without one. `logprobs` is None unless every node's support carries them."""
+        supports = [
+            n.sampler_support for n in self.nodes if n.sampler_support is not None
+        ]
+        if not supports:
             return None
-        # Attribution validates each mask against the node's sampled positions.
-        ids_parts: list[np.ndarray] = []
         counts_parts: list[np.ndarray] = []
+        replayed_parts: list[np.ndarray] = []
         for node in self.nodes:
             counts = np.zeros(len(node.mask), dtype=np.int32)
-            if node.sampling_mask is not None and len(node.sampling_mask.counts):
-                counts[np.nonzero(node.mask)[0]] = node.sampling_mask.counts
-                ids_parts.append(node.sampling_mask.ids)
+            replayed = np.zeros(len(node.mask), dtype=np.bool_)
+            if node.sampler_support is not None:
+                sampled = np.nonzero(node.mask)[0]
+                counts[sampled] = node.sampler_support.counts
+                replayed[sampled] = node.sampler_support.replayed
             counts_parts.append(counts)
-        ids = (
-            np.concatenate(ids_parts).astype(np.int32, copy=False)
-            if ids_parts
-            else np.zeros(0, dtype=np.int32)
-        )
-        return SamplingMask(ids=ids, counts=np.concatenate(counts_parts))
-
-    @property
-    def top_logprobs(self) -> TopLogprobs | None:
-        """Top-k sampling heads aligned to this branch's token ids."""
-        heads = [n.top_logprobs for n in self.nodes if n.top_logprobs is not None]
-        if not heads:
-            return None
-        counts = []
-        for node in self.nodes:
-            rows = np.zeros(len(node.mask), dtype=np.int32)
-            if node.top_logprobs is not None:
-                rows[np.nonzero(node.mask)[0]] = node.top_logprobs.counts
-            counts.append(rows)
-        return TopLogprobs(
-            ids=np.concatenate([head.ids for head in heads]),
-            logprobs=np.concatenate([head.logprobs for head in heads]),
-            counts=np.concatenate(counts),
+            replayed_parts.append(replayed)
+        logprobs = None
+        if all(support.logprobs is not None for support in supports):
+            logprobs = np.concatenate([support.logprobs for support in supports])
+        return SamplerSupport(
+            ids=np.concatenate([support.ids for support in supports]),
+            counts=np.concatenate(counts_parts),
+            replayed=np.concatenate(replayed_parts),
+            logprobs=logprobs,
         )
 
     @property
@@ -438,11 +569,16 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     version: int = TRACE_VERSION
     """The trace schema this trace serializes as."""
     id: str = Field(default_factory=lambda: uuid.uuid4().hex)
-    """Unique ID for this trace, auto-generated."""
+    """Unique ID for this agent run, auto-generated. Stable across retries."""
+    attempt: int = 1
+    """Which attempt of the agent run this trace records, from 1."""
     verifiers: VersionInfo = Field(default_factory=_current_build)
     """The verifiers version that produced this trace."""
     task: TraceTask[DataT]
     """The task data that seeded this trace."""
+    run: RunInfo | None = None
+    """The run this trace belongs to, consumer-stamped with its episode's
+    (`Episode.record_run`): trace stores such as Prime Traces key traces by it."""
     agent: AgentInfo[AgentConfigT]
     """The agent (harness x model x runtime) that produced this trace."""
     tools: list[Tool] = Field(default_factory=list)
@@ -528,14 +664,26 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
 
     @field_serializer("mm_token_type_id_map")
     def serialize_mm_token_type_id_map(self, mapping: dict[int, int]) -> dict[str, int]:
-        """The wire unpacks with msgpack's `strict_map_key`, which forbids int map keys —
+        """Binary wire formats forbid int map keys (msgpack's `strict_map_key`) —
         dump str keys; validation coerces them back to int."""
         return {str(k): v for k, v in mapping.items()}
 
+    @computed_field
     @property
     def reward(self) -> float:
         return sum(r.value for r in self.rewards.values() if r is not None)
 
+    @computed_field
+    @property
+    def is_format_violation(self) -> bool:
+        """The harness rejected a terminal model response as invalid training output."""
+        return self.stop_condition == "format_violation" or any(
+            link.type == "format_violation"
+            for node in self.nodes
+            for link in node.semantic_parents
+        )
+
+    @computed_field
     @property
     def has_error(self) -> bool:
         return not self.ok
@@ -574,6 +722,7 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         usage = self.usage
         return self.num_input_tokens + (usage.completion_tokens if usage else 0)
 
+    @computed_field
     @property
     def usage(self) -> Usage | None:
         """Provider-reported usage summed once per actual model call in this rollout."""
@@ -584,7 +733,7 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         """One root-to-leaf view per graph leaf, with no duplicated node storage.
 
         A compaction attempt is a dangling physical leaf. It is trainable only when
-        the final semantic graph shows that the harness resumed from it.
+        the harness resumed from it or declared it a terminal format violation.
         """
         by_node = {c.node: c for c in self.calls if c.node is not None}
         accepted_compaction_attempts = {
@@ -613,6 +762,10 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
                     trainable=(
                         not is_compaction_attempt
                         or leaf in accepted_compaction_attempts
+                        or any(
+                            link.type == "format_violation"
+                            for link in self.nodes[leaf].semantic_parents
+                        )
                     ),
                     mm_token_type_id_map=self.mm_token_type_id_map,
                 )
@@ -676,14 +829,17 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
             raise ValueError("trace has no messages")
         return self.nodes[-1].message
 
+    @computed_field
     @property
     def num_branches(self) -> int:
         return len(graph.leaves(self))
 
+    @computed_field
     @property
     def num_turns(self) -> int:
         return sum(1 for n in self.nodes if n.sampled)
 
+    @computed_field
     @property
     def is_truncated(self) -> bool:
         """True for framework limits, failed compaction, or a length-finished response."""
@@ -714,6 +870,7 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         """Every tool result, in order — branch-independent."""
         return [n.message for n in self.nodes if isinstance(n.message, ToolMessage)]
 
+    @computed_field
     @property
     def last_reply(self) -> str:
         """The root agent's response, falling back to the last assistant message."""
@@ -839,7 +996,7 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         float_decimals: int | None = RECORD_FLOAT_DECIMALS,
         exclude: dict | set | None = None,
     ) -> dict[str, Any]:
-        """JSON record without raw tensors, which remain available on the msgpack wire.
+        """JSON record without raw tensors, which a python-mode `model_dump` keeps.
         Per-token node streams are numpy arrays (`graph.RECORD_STREAMS`): encode it with
         `to_json`, or with orjson and `OPT_SERIALIZE_NUMPY`. Per-token float streams are
         rounded to `float_decimals` (`None` keeps every digit). `exclude` is a pydantic
@@ -855,10 +1012,17 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         float_decimals: int | None = RECORD_FLOAT_DECIMALS,
         exclude: dict | set | None = None,
     ) -> bytes:
-        """`to_record` as compact UTF-8 JSON. NaN and infinity become `null`."""
-        return orjson.dumps(
-            self.to_record(float_decimals, exclude), option=orjson.OPT_SERIALIZE_NUMPY
+        """`to_record` as compact UTF-8 JSON, byte for byte. NaN and infinity become
+        `null`. Encoded one node at a time, like `Episode.to_json`, so a long trace does
+        not stall other threads."""
+        parts = trace_json_parts(
+            self,
+            self.model_dump,
+            merge_exclude(RECORD_DUMP_EXCLUDE, exclude),
+            float_decimals,
+            exclude_none=False,
         )
+        return b"".join(parts)
 
 
 WireTrace = Trace[WireTaskData, State, WireAgentConfig]

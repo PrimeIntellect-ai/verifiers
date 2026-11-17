@@ -11,7 +11,6 @@ workspace. The harness reaches a server at its VM's LAN name,
 
 import asyncio
 import contextlib
-import logging
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable, Collection, Mapping
 from contextlib import AsyncExitStack, asynccontextmanager
@@ -24,8 +23,9 @@ from verifiers.v1.runtimes import (
 )
 from verifiers.v1.runtimes.backends.prime import leased_client
 from verifiers.v1.utils.aio import run_shielded
+from verifiers.v1.utils.logging import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 WORKSPACE_TAG = "vf-workspace"
 HARNESS_TAG = "vf-harness"
@@ -39,13 +39,15 @@ def tool_vms(
     network, by server name: those on Prime runtimes of their own beside a Prime
     workspace of the rollout's own, without a task service spec. Any other server keeps its
     runtime's published port, which takes no network policy."""
+    from verifiers.v1.mcp.toolset import ToolsetConfig
+
     if composed or borrowed or not isinstance(workspace, PrimeConfig):
         return {}
     vms = {
         toolset.server_name: toolset.config.runtime
         for toolset in toolsets
-        if isinstance(toolset.config.runtime, PrimeConfig)
-        and not toolset.config.colocated
+        if isinstance(toolset.config, ToolsetConfig)
+        and isinstance(toolset.config.runtime, PrimeConfig)
         and not toolset.config.url
         and toolset.config.service is None
     }
@@ -171,30 +173,33 @@ async def private_network(
                     stop, asyncio.create_task(_keepalive(backend.bind(), every))
                 )
 
+        async def provision_workspace() -> None:
+            await start_workspace()
+            idle_timeout = workspace.config.idle_timeout
+            if harness is not None and idle_timeout is not None:
+                # The harness's tools reach the workspace over the LAN alone.
+                stack.push_async_callback(
+                    stop,
+                    asyncio.create_task(
+                        _keepalive(workspace.bind(), max(10.0, idle_timeout / 3))
+                    ),
+                )
+
         workspace.lan = (network.id, memberships["main"])
         if harness is not None:
             harness.lan = (network.id, [HARNESS_TAG])
             stack.push_async_callback(harness.stop)
         try:
             async with asyncio.TaskGroup() as group:
-                group.create_task(start_workspace())
+                group.create_task(provision_workspace())
                 if start_harness is not None:
                     group.create_task(start_harness())
                 for name, config in members.items():
                     group.create_task(provision(name, config))
         except ExceptionGroup as failed:
             raise failed.exceptions[0]  # one VM's failure, typed for retries
-        idle_timeout = workspace.config.idle_timeout
-        if harness is not None and idle_timeout is not None:
-            # The harness's tools reach the workspace over the LAN alone.
-            stack.push_async_callback(
-                stop,
-                asyncio.create_task(
-                    _keepalive(workspace.bind(), max(10.0, idle_timeout / 3))
-                ),
-            )
-        logger.info(
-            "LAN network %s joins %s to %s",
+        logger.debug(
+            "Joined LAN network %s from %s to %s",
             network.id,
             workspace.info.id,
             {name: backend.info.id for name, backend in backends.items()},
