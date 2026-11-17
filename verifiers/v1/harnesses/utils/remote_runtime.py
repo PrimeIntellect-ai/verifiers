@@ -51,6 +51,8 @@ def remote_shell_result(content):
             return result
     except (TypeError, ValueError):
         pass
+    # vf.intercept may supply a synthetic tool result without executing a shell.
+    # Preserve it as stdout; an explicit shell-result envelope carries failures.
     return {"stdout": content if isinstance(content, str) else json.dumps(content),
             "stderr": "", "returncode": 0, "exception_info": ""}
 """

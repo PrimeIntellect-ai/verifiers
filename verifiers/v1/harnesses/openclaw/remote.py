@@ -2,6 +2,7 @@
 
 import asyncio
 import base64
+import fnmatch
 import json
 import uuid
 from dataclasses import dataclass, field
@@ -184,11 +185,14 @@ class _Session:
 @dataclass
 class OpenClawRemoteTools:
     runtime: Runtime
+    disabled_tools: tuple[str, ...] = ()
     files: NativeRemoteTools = field(init=False)
     sessions: dict[str, _Session] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        self.files = NativeRemoteTools(self.runtime, "openclaw")
+        self.files = NativeRemoteTools(
+            self.runtime, "openclaw", disabled_tools=self.disabled_tools
+        )
 
     async def aclose(self) -> None:
         await self.files.aclose()
@@ -211,6 +215,14 @@ class OpenClawRemoteTools:
         )
 
     async def __call__(self, call: ToolCall) -> ToolMessage:
+        if any(
+            fnmatch.fnmatchcase(call.name, pattern) for pattern in self.disabled_tools
+        ):
+            return ToolMessage(
+                tool_call_id=call.id,
+                name=call.name,
+                content=f"error: tool {call.name!r} is disabled",
+            )
         if call.name not in {"exec", "process"}:
             return await self.files(call)
         try:

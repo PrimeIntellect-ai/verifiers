@@ -159,7 +159,9 @@ class OpenClawHarness(ACPHarness[OpenClawHarnessConfig]):
     async def remote_tools(
         self, runtime: Runtime, data: TaskData
     ) -> OpenClawRemoteTools:
-        return OpenClawRemoteTools(runtime)
+        return OpenClawRemoteTools(
+            runtime, disabled_tools=tuple(self.config.disabled_tools or ())
+        )
 
     def __init__(self, config: OpenClawHarnessConfig) -> None:
         super().__init__(config)
