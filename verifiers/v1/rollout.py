@@ -459,7 +459,7 @@ class Rollout:
                     runtime = self.runtime = self.deployment.workspace
                     if self.deployment.split:
                         self.trace.agent.harness_runtime = (
-                            self.deployment.harness_backend.info.model_copy()
+                            self.deployment._harness_runtime.info.model_copy()
                         )
                 finally:
                     # Providers may assign an ID before startup fails; retain it for diagnostics.

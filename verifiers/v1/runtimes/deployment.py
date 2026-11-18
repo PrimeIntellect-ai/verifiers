@@ -7,9 +7,9 @@ import contextlib
 import logging
 import re
 import uuid
-from collections.abc import AsyncIterator, Collection, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Collection, Mapping
 from contextlib import AsyncExitStack, asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from verifiers.v1.configs.deployment import DeploymentConfig
 from verifiers.v1.errors import SandboxError
@@ -311,6 +311,8 @@ class Deployment:
         self._owned: set[int] = set()
         self._close_task: asyncio.Task[None] | None = None
         self._reused_harness: bool = False
+        self._harness_workdir: str | None = None
+        self._harness_lan_waiter: Callable[[], Awaitable[None]] | None = None
 
     async def own(self, backend: RuntimeBackend) -> RuntimeBackend:
         """Acquire a target; register cleanup before startup can partially fail."""
@@ -389,7 +391,12 @@ class Deployment:
     @property
     def _harness_runtime(self) -> Runtime:
         """The trusted harness view, separate from the workspace in split mode."""
-        return self.harness_backend.bind(env={})
+        view = self.harness_backend.bind(env={})
+        if self._harness_workdir is not None:
+            view = view.with_workdir(self._harness_workdir)
+        if self._harness_lan_waiter is not None:
+            view = replace(view, _lan_waiter=self._harness_lan_waiter)
+        return view
 
     def target(self, name: str) -> Runtime:
         """Access a named service or workspace through an execution view."""

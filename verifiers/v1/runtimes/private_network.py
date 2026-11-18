@@ -85,6 +85,7 @@ async def private_network(
     start_harness: Callable[[], Awaitable[object]] | None = None,
     harness_peers: Collection[str] = (),
     own_harness: bool = True,
+    assign_harness_lan: bool = True,
     network_state: dict | None = None,
 ) -> AsyncIterator[dict[str, RuntimeBackend]]:
     """Boot the workspace's VM and one VM per member together, each joining a LAN
@@ -197,6 +198,8 @@ async def private_network(
             return network_id
 
         network_task = asyncio.create_task(create_and_own())
+        if network_state is not None:
+            network_state["task"] = network_task
         await asyncio.sleep(0)
         if network_task.done() and network_task.exception() is not None:
             await network_task
@@ -254,7 +257,8 @@ async def private_network(
         assign_lan(workspace, memberships["main"])
         if harness is not None:
             assert isinstance(harness, PrimeBackend)
-            assign_lan(harness, [HARNESS_TAG])
+            if assign_harness_lan:
+                assign_lan(harness, [HARNESS_TAG])
             if own_harness:
                 started_vms.append(harness)
         try:

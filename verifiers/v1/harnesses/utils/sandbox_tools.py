@@ -134,9 +134,8 @@ class SandboxTools:
             self._rpc, ready_info = await self._spawn_rpc()
             if self.uses_local_gate and ready_info.get("gate_port"):
                 self.local_gate_url = f"http://127.0.0.1:{ready_info['gate_port']}/tool"
-        for backend in (self.runtime.backend, self.connection.runtime.backend):
-            if wait_lan := getattr(backend, "wait_lan_ready", None):
-                await wait_lan()
+        for rt in (self.runtime, self.connection.runtime):
+            await rt.wait_lan_ready()
         gate_target = interception_url if self.uses_local_gate else None
         if self._endpoint is not None:
             await self._rpc.call(
