@@ -243,6 +243,8 @@ class ACPHarnessSession(HarnessSession):
         self._responses: dict[int, asyncio.Future] = {}
         self._request_id = 0
         self._response_task: asyncio.Task | None = None
+        self._abandon_on_close = False
+        self._fast_kill_on_close = False
 
     async def _start(self) -> None:
         self._stderr_tail.clear()
@@ -399,6 +401,16 @@ class ACPHarnessSession(HarnessSession):
             return {}
         response_metadata: dict[str, Any] = {}
         try:
+            if self._abandon_on_close:
+                with contextlib.suppress(BaseException):
+                    await process.abandon()
+                return {}
+            if self._fast_kill_on_close:
+                with contextlib.suppress(BaseException):
+                    await process.kill()
+                with contextlib.suppress(BaseException):
+                    await asyncio.wait_for(process.wait(), 2.0)
+                return {}
             if graceful:
                 with contextlib.suppress(BaseException):
                     response = await asyncio.wait_for(

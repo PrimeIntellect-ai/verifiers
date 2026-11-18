@@ -693,6 +693,28 @@ class InterceptionServer(Interception):
             return web.json_response({"error": "rollout concluded"}, status=409)
         body = from_json(await request.read())
         try:
+            op = body.get("op")
+            if op == "poll":
+                return web.json_response(await session.poll_remote_gate())
+            if op == "pin":
+                async with session._tool_gate_lock:
+                    session.record_remote_pin(
+                        (str(body["key"][0]), str(body["key"][1])),
+                        str(body["alias_prefix"]),
+                        body["call"],
+                        body["message"],
+                        body.get("arguments"),
+                    )
+                return web.json_response({"ok": True})
+            if op == "ack_denied":
+                async with session._tool_gate_lock:
+                    session.record_remote_denial_ack(
+                        (str(body["key"][0]), str(body["key"][1])),
+                        str(body["alias_prefix"]),
+                        body["call"],
+                        body.get("arguments"),
+                    )
+                return web.json_response({"ok": True})
             return web.json_response(
                 await session.decide_tool(
                     str(body.get("tool_call_id", "")),

@@ -310,6 +310,7 @@ class Deployment:
         self._stack = AsyncExitStack()
         self._owned: set[int] = set()
         self._close_task: asyncio.Task[None] | None = None
+        self._reused_harness: bool = False
 
     async def own(self, backend: RuntimeBackend) -> RuntimeBackend:
         """Acquire a target; register cleanup before startup can partially fail."""

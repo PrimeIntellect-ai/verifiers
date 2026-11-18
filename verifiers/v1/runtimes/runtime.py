@@ -106,6 +106,15 @@ class Runtime:
         enforces it. Framework routes are not added. A runtime that started without a
         policy can only stay open."""
         if not network.network_restricted:
+            config = self.backend.config
+            control_hosts = getattr(self.backend, "_control_blocked_hosts", frozenset())
+            if (
+                control_hosts
+                and isinstance(config, NetworkPolicyConfig)
+                and config.allow == ["*"]
+                and set(config.block) <= control_hosts
+            ):
+                return
             await self.backend.prepare_execution(None)
             return
         config = self.backend.config

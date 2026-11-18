@@ -14,5 +14,7 @@ class DeploymentConfig(BaseConfig):
     """The harness's Prime VM in split mode. It shares the workspace's labels,
     region and creation rate unless set here, and always the task's network policy.
     Docker uses the evaluator's runtime configuration for its harness container."""
+    reuse_harness: bool = False
+    """Pool and reuse split Prime harness VMs across rollouts in the same eval."""
     trust_compose: bool = False
     """Permit task-authored Compose privileges and bind mounts on local Docker."""
