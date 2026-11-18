@@ -358,13 +358,19 @@ async def main() -> None:
     parser.add_argument("--base-url", required=True)
     parser.add_argument("--api-key", required=True)
     parser.add_argument("--model", required=True)
-    parser.add_argument("--system-prompt")
+    parser.add_argument("--system-prompt-file")
     parser.add_argument("--context-window-tokens", type=int, required=True)
     parser.add_argument("--max-tokens", type=int, required=True)
     parser.add_argument("--skills-dir", required=True)
     parser.add_argument("--tool-timeout", type=float, required=True)
     parser.add_argument("--disabled-tools", default="[]")
-    agent = StirrupACPAgent(parser.parse_args())
+    args = parser.parse_args()
+    args.system_prompt = (
+        Path(args.system_prompt_file).read_text(encoding="utf-8")
+        if args.system_prompt_file
+        else None
+    )
+    agent = StirrupACPAgent(args)
     reader, writer = await stdio_streams()
     # Reserve stdout for ACP packets; Stirrup's logger prints rich console output.
     with redirect_stdout(sys.stderr):
