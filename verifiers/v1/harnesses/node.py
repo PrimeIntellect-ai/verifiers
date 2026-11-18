@@ -3,13 +3,13 @@ from verifiers.v1.runtimes import Runtime
 
 NODE_DIR = "/var/tmp/vf-node"
 NODE_BIN_DIR = f"{NODE_DIR}/bin"
-NODE_VERSION = "22.23.4"
+NODE_VERSION = "24.22.3"
 
 INSTALL = r"""
 set -e
 node=/var/tmp/vf-node
 # Node bundles Brotli; a newer major alone does not prove CVE-2026-111497 is fixed.
-node_ok() { "$1" -e 'const [a,b,c]=process.versions.node.split(".").map(Number); const f={22:[23,4],24:[22,1],26:[12,1]}[a]; process.exit(f && (b>f[0] || b===f[0] && c>=f[1]) ? 0 : 1)'; }
+node_ok() { "$1" -e 'const [a,b,c]=process.versions.node.split(".").map(Number); const f={24:[22,1],26:[12,1]}[a]; process.exit(f && (b>f[0] || b===f[0] && c>=f[1]) ? 0 : 1)'; }
 
 install_node() {
     if [ -x "$node/bin/node" ] && [ -x "$node/bin/npm" ] \
@@ -91,7 +91,7 @@ else
     case "$(uname -m)" in aarch64|arm64) node_arch=arm64 ;; *) node_arch=x64 ;; esac
     install_node "$node_os-$node_arch"
 fi
-node_ok "$node/bin/node" || { echo "ACP adapters require patched Node.js (22.23.4, 24.22.1 or 26.12.1 minimum)" >&2; exit 1; }
+node_ok "$node/bin/node" || { echo "ACP adapters require patched Node.js (24.22.1 or 26.12.1 minimum)" >&2; exit 1; }
 """
 
 

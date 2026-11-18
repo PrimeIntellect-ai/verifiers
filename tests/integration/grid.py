@@ -83,7 +83,7 @@ FORKS = {
     "mini-swe-agent": "https://github.com/SWE-agent/mini-swe-agent/blob/v2.4.6/src/minisweagent/models/litellm_model.py#L79-L90",
     # Drops historical runtime-context messages and can relocate the current
     # prompt's context around user turns.
-    "openclaw": "https://github.com/openclaw/openclaw/blob/v2026.10.9/src/agents/internal-runtime-context.ts#L403-L513",
+    "openclaw": "https://github.com/openclaw/openclaw/blob/v2026.11.5/src/agents/internal-runtime-context.ts#L445-L563",
 }
 
 
