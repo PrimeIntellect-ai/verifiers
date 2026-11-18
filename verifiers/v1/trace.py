@@ -597,7 +597,7 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
 
     rewards: dict[str, Reward | None] = Field(default_factory=dict)
     """Named, weighted rewards; `None` means scoring didn't run (e.g. because of a
-    preceding error)."""
+    preceding error). Empty for a format violation: a zero-reward training sample."""
     metrics: dict[str, float | None] = Field(default_factory=dict)
     """Unweighted, named metrics; `None` as in `rewards`."""
     info: dict[str, Any] = Field(default_factory=dict)
@@ -634,6 +634,9 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     _pending: dict[int, list[Message]] = PrivateAttr(default_factory=dict)
     """The messages of the request in flight that no node holds yet (the harness's tool
     results and user turns): a preview for live watchers until the turn commits."""
+    _discarded_rewards: set[str] = PrivateAttr(default_factory=set)
+    """Reward names written to this trace after (or before) it became a format
+    violation, and discarded."""
 
     def watch(self, on_change: Callable[[Trace], None]) -> None:
         """Have `on_change` called at each of this trace's phase changes and turns."""
@@ -913,11 +916,26 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
             self.record_metric(name, value)
 
     def record_reward(self, name: str, value: float, weight: float = 1.0) -> None:
-        """Record a finite reward; a trace that has no reward signal is dropped instead."""
+        """Record a finite reward; a trace that has no reward signal is dropped instead.
+        A format violation takes no reward: the write is discarded."""
         if not math.isfinite(value):
             raise ValueError(f"reward {name!r} must be finite, got {value}")
+        if self.is_format_violation:
+            self._discarded_rewards.add(name)
+            return
         reward = Reward(score=float(value), weight=float(weight))
         self.rewards[name] = reward
+
+    def discard_invalid_rewards(self) -> set[str]:
+        """Empty a format violation's rewards, however they were written (before it
+        became invalid, or straight into `rewards`), so it trains at reward 0. Returns
+        every reward name discarded on this trace so far."""
+        if self.is_format_violation and self.rewards:
+            self._discarded_rewards.update(
+                name for name, reward in self.rewards.items() if reward is not None
+            )
+            self.rewards = {}
+        return self._discarded_rewards
 
     def record_judge_call(
         self,

@@ -453,3 +453,25 @@ def test_run_sampling_stays_with_run_client(pinned):
     if not pinned:
         expected |= {"temperature": 0.8, "top_k": 20}
     assert resolved.model_dump(exclude_none=True) == expected
+
+
+def test_format_violation_keeps_no_reward(make_trace):
+    """A format violation is a zero-reward training sample: reward writes are
+    discarded, rewards written before it turned invalid or straight into `rewards`
+    are emptied, and metrics stay (#3072)."""
+    trace = make_trace()
+    trace.record_reward("early", 1.0)
+    trace.stop("format_violation")
+    trace.record_reward("late", 1.0)
+    trace.rewards["direct"] = vf.Reward(score=1.0)
+    trace.record_metric("diagnostic", 1.0)
+    assert trace.discard_invalid_rewards() == {"early", "late", "direct"}
+    assert trace.rewards == {} and trace.reward == 0.0
+    assert trace.metrics == {"diagnostic": 1.0}
+    restored = vf.Trace.model_validate_json(trace.model_dump_json())
+    assert restored.is_format_violation and restored.rewards == {}
+
+    valid = make_trace()
+    valid.record_reward("correct", 1.0, weight=0.5)
+    assert valid.discard_invalid_rewards() == set()
+    assert valid.rewards == {"correct": vf.Reward(score=1.0, weight=0.5)}
