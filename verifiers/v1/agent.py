@@ -9,11 +9,12 @@ server; un-entered, each run brings its own."""
 
 import asyncio
 import uuid
-from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Mapping
 from contextlib import asynccontextmanager, nullcontext
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from typing import Generic, Literal, Self, cast
+from functools import partial
+from typing import Any, Generic, Literal, Self, cast
 from weakref import WeakValueDictionary
 
 from typing_extensions import TypeVar
@@ -201,38 +202,47 @@ class _PendingMessage:
     done: asyncio.Event = field(default_factory=asyncio.Event)
 
 
-class Steering:
-    """User messages for an `Agent.run` rollout while it runs, from its caller:
-    pass one as `steering=` and `steer` it from anywhere, as a `ModelRoute` is
-    updated. Each attempt takes messages while its turn runs; give each `run` its
-    own. An interaction is steered through `Interaction.steer` / `send`."""
+class AgentRun:
+    """One execution scheduled by Agent.start(), including its retry attempts."""
 
-    def __init__(self) -> None:
-        self._run: Rollout | None = None
-        self._taken: dict[str, dict] = {}
-        self._steering = asyncio.Lock()
+    def __init__(self, execute: Callable[[Self], Coroutine[Any, Any, Trace]]) -> None:
+        self._active: Rollout | None = None
+        self._taken: dict[str, tuple[str, dict]] = {}
+        self._lock = asyncio.Lock()
+        self._deliveries: set[asyncio.Task[dict]] = set()
+        self._task = asyncio.create_task(execute(self))
+
+    async def wait(self) -> Trace:
+        """Wait for the final trace. Cancelling this wait also cancels the run."""
+        return await self._task
 
     async def steer(self, message: str, *, message_id: str | None = None) -> dict:
-        """Inject a user message into the running turn and return the harness's
-        receipt: `{"outcome": "injected"}` once it took the message (taken, not
-        necessarily followed). With no turn running (before the rollout starts,
-        between attempts, after it ends or stops) the receipt is
-        `{"outcome": "promptRequired", "reason": "noRunningTurn"}` and nothing is
-        delivered; a message is never queued or replayed into a later attempt. A
-        `message_id` the run took answers with its first receipt and delivers
-        nothing again, as `Interaction.steer` does; a delivery finishes even when
-        its caller is cancelled, so a retry sees its receipt. Raises
-        `NotImplementedError` when the harness can't be steered."""
-        delivery = asyncio.create_task(self._deliver(message, message_id))
-        delivery.add_done_callback(lambda done: done.cancelled() or done.exception())
+        """Send input to the current attempt. Accepted receipts identify the attempt."""
+        if not isinstance(message, str) or not message.strip():
+            raise ValueError("delivery requires a nonempty user message")
+        # Capture the attempt before waiting for other deliveries.
+        delivery = asyncio.create_task(self._deliver(self._active, message, message_id))
+        self._deliveries.add(delivery)
+        delivery.add_done_callback(self._delivery_done)
         return dict(await asyncio.shield(delivery))
 
-    async def _deliver(self, message: str, message_id: str | None) -> dict:
-        # One at a time, as `ModelRoute` updates: a repeated `message_id` waits for the first one's receipt.
-        async with self._steering:
-            if message_id in self._taken:
-                return self._taken[message_id]
-            if (run := self._run) is None:
+    def _delivery_done(self, delivery: asyncio.Task[dict]) -> None:
+        self._deliveries.discard(delivery)
+        if not delivery.cancelled():
+            delivery.exception()  # The caller may have cancelled its wait for this receipt.
+
+    async def _deliver(
+        self, run: Rollout | None, message: str, message_id: str | None
+    ) -> dict:
+        async with self._lock:
+            if message_id is not None and message_id in self._taken:
+                previous, receipt = self._taken[message_id]
+                if previous != message:
+                    raise ValueError(
+                        "steering message ID reused with different content"
+                    )
+                return receipt
+            if run is None or run is not self._active:
                 return {"outcome": "promptRequired", "reason": "noRunningTurn"}
             try:
                 receipt = await run.steer(message, message_id=message_id)
@@ -242,8 +252,10 @@ class Steering:
                 if run.closed or not run.ok:
                     return {"outcome": "promptRequired", "reason": "noRunningTurn"}
                 raise
-            if message_id is not None and receipt.get("outcome") == "injected":
-                self._taken[message_id] = dict(receipt)
+            if receipt.get("outcome") == "injected":
+                receipt = {**receipt, "attempt": run.trace.attempt}
+                if message_id is not None:
+                    self._taken[message_id] = (message, receipt)
             return receipt
 
 
@@ -733,7 +745,6 @@ class Agent:
         collect_artifacts: bool = False,
         on_score: Callable[[Trace, Runtime], Awaitable[None]] | None = None,
         route: ModelRoute | None = None,
-        steering: Steering | None = None,
     ) -> Trace:
         """Run this agent on `task` once and return the trace: one segment — the
         program runs on the task's prompt until it exits (a multi-turn exchange
@@ -749,12 +760,58 @@ class Agent:
         the selected verifier workspace, inside its timeout and retry boundary.
         `route` is where its model turns go, from the agent's model, client and
         sampling unless given; the caller may change it while the rollout runs
-        (`ModelRoute.update`), and a retry takes it as it is then. `steering` lets
-        the caller message each attempt's running turn (`Steering.steer`)."""
+        (`ModelRoute.update`), and a retry takes it as it is then."""
+        return await self._run(
+            None,
+            task,
+            runtime=runtime,
+            tools=tools,
+            on_trace=on_trace,
+            collect_artifacts=collect_artifacts,
+            on_score=on_score,
+            route=route,
+        )
+
+    def start(
+        self,
+        task: Task,
+        *,
+        runtime: Runtime | None = None,
+        tools: Mapping[str, SharedToolServer] | None = None,
+        on_trace: Callable[[Trace], None] | None = None,
+        collect_artifacts: bool = False,
+        on_score: Callable[[Trace, Runtime], Awaitable[None]] | None = None,
+        route: ModelRoute | None = None,
+    ) -> AgentRun:
+        """Schedule a rollout and return the object used to steer it and await its trace."""
+        return AgentRun(
+            partial(
+                self._run,
+                task=task,
+                runtime=runtime,
+                tools=tools,
+                on_trace=on_trace,
+                collect_artifacts=collect_artifacts,
+                on_score=on_score,
+                route=route,
+            )
+        )
+
+    async def _run(
+        self,
+        handle: AgentRun | None,
+        task: Task,
+        *,
+        runtime: Runtime | None = None,
+        tools: Mapping[str, SharedToolServer] | None = None,
+        on_trace: Callable[[Trace], None] | None = None,
+        collect_artifacts: bool = False,
+        on_score: Callable[[Trace, Runtime], Awaitable[None]] | None = None,
+        route: ModelRoute | None = None,
+    ) -> Trace:
         if self._closed:
             raise RuntimeError("Agent is closed; create a new agent")
         route = route or ModelRoute(self.ctx)
-        steering = steering or Steering()
         retry = self.config.retries
         retry_state = RetryState(retry)
         history: list = []
@@ -769,7 +826,7 @@ class Agent:
                     collect_artifacts,
                     on_score,
                     route,
-                    steering,
+                    handle,
                     trace_id=trace_id,
                     attempt=attempt + 1,
                 )
@@ -810,7 +867,7 @@ class Agent:
         collect_artifacts: bool,
         on_score: Callable[[Trace, Runtime], Awaitable[None]] | None,
         route: ModelRoute,
-        steering: Steering,
+        handle: AgentRun | None,
         *,
         trace_id: str,
         attempt: int,
@@ -829,11 +886,13 @@ class Agent:
         )
         try:
             if await run.open():
-                steering._run = run
+                if handle is not None:
+                    handle._active = run
                 try:
                     await run.step()
                 finally:
-                    steering._run = None
+                    if handle is not None:
+                        handle._active = None
                 if run.ok:
                     run.trace.stop("agent_completed")
             trace = await run.close()
@@ -1079,8 +1138,9 @@ class _EpisodeAgent(Agent):
 
         return score
 
-    async def run(
+    async def _run(
         self,
+        handle: AgentRun | None,
         task: Task,
         *,
         runtime: Runtime | None = None,
@@ -1089,10 +1149,10 @@ class _EpisodeAgent(Agent):
         collect_artifacts: bool = False,
         on_score: Callable[[Trace, Runtime], Awaitable[None]] | None = None,
         route: ModelRoute | None = None,
-        steering: Steering | None = None,
     ) -> Trace:
         async with self._gate or nullcontext():
-            trace = await super().run(
+            trace = await super()._run(
+                handle,
                 task,
                 runtime=runtime,
                 tools=tools if tools is not None else self._shared_for(task),
@@ -1100,7 +1160,6 @@ class _EpisodeAgent(Agent):
                 collect_artifacts=collect_artifacts,
                 on_score=self._scoring_callback(on_score),
                 route=route,
-                steering=steering,
             )
         self._completed.append(trace)
         return trace

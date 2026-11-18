@@ -46,16 +46,17 @@ receipt = await interaction.send(
 
 For tasks that define an initial `prompt`, start the opening `turn()` before calling `send()`. Note that the returned receipt confirms whether the message was accepted for delivery, not that the agent has finished acting on it. Keep the `interaction` context open while the agent works, since exiting the block cancels outstanding deliveries and finishes the rollout.
 
-To steer an `Agent.run` rollout from outside the code that runs it, such as a scheduler or an operator's command, pass it a `Steering` and call it from anywhere while the rollout runs:
+Use `agent.start(task)` to send input during a one-shot rollout. It schedules the same execution as `agent.run(task)` and returns an `AgentRun` immediately. Keep the agent context open until `wait()` returns the final trace.
 
 ```python
-steering = vf.Steering()
-run = asyncio.create_task(agent.run(task, steering=steering))
-...
-receipt = await steering.steer("Use the existing parser.", message_id="op-1")
+run = agent.start(task)
+# An operator supplies input while this run is working.
+message = await next_operator_message()
+receipt = await run.steer(message, message_id="op-1")
+trace = await run.wait()
 ```
 
-It injects into the running turn the way `mode="steer"` does, on harnesses that support live steering, and never queues or wakes. With no turn running (before the rollout opens, between retries, after it ends) the receipt is `{"outcome": "promptRequired", "reason": "noRunningTurn"}` and nothing is delivered; a retry starts over without earlier messages. A `message_id` the run took delivers once. Give each `run` its own `Steering`.
+A steerable harness accepts input during the active turn. An accepted receipt includes the one-based rollout attempt, for example `{"outcome": "injected", "attempt": 1}`. Before the turn opens, between retries, and after completion, a fresh message receives `{"outcome": "promptRequired", "reason": "noRunningTurn"}`. Each retry starts a fresh conversation. Repeating an accepted message ID returns its original receipt, even on a later attempt. Use a new ID to intentionally deliver the instruction again. Cancelling `wait()` cancels the rollout and runs its cleanup.
 
 ## Verification placement
 
