@@ -406,6 +406,9 @@ class HarnessSession:
         self.tool_interception_url = tool_interception_url
         self._closed = False
 
+    async def warm(self) -> None:
+        """Pre-start any rollout-scoped runner process while policy setup completes."""
+
     async def steer(self, message: str, *, message_id: str | None = None) -> dict:
         """Deliver a user message during a running turn, if supported by the harness."""
         raise NotImplementedError(

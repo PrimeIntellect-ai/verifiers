@@ -103,6 +103,9 @@ class RuntimeProcess(ABC):
     async def kill(self) -> None:
         pass
 
+    async def abandon(self) -> None:
+        """Release local client resources without remote signals when the VM is stopping."""
+
 
 async def collect_process(process: RuntimeProcess) -> ProgramResult:
     """Drain both streams and reap a process, including on cancellation."""
@@ -183,6 +186,9 @@ class RuntimeCache:
     prepared_loaded: set[str] = field(default_factory=set)
     prepared_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     setup_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    system_python: str | None = None
+    arch: str | None = None
+    installed: set[str] = field(default_factory=set)
 
 
 class RuntimeBackend(ABC):

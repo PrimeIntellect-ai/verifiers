@@ -32,6 +32,7 @@ from verifiers.v1.runtimes.base import (
     parse_gpu,
 )
 from verifiers.v1.runtimes.limiters import creation_limiter
+from verifiers.v1.runtimes.prepared import apply_prepared, load_prepared_command
 from verifiers.v1.runtimes.runtime import Runtime
 from verifiers.v1.utils.aio import run_shielded
 from verifiers.v1.utils.artifacts import validate_runtime_mounts
@@ -51,6 +52,151 @@ _PUBLIC_DOMAIN = "sandbox-v2-prod.pinfra.io"
 """Domain of the public URLs `https://<port>-<sandbox-id>.<domain>` that a LAN network's
 `internet` rule publishes ports at."""
 _EXPOSE_TAG = "vf-exposed"
+
+
+async def _join_lan_fast(
+    client: Any, network_id: str, sandbox_id: str, tags: list[str] | None
+) -> None:
+    """Enroll `sandbox_id` in `network_id` and poll sync without the SDK's 2s floor."""
+    lease = client._operation_leases.acquire(sandbox_id)
+    try:
+        await client.add_lan_member(network_id, sandbox_id, tags)
+        deadline = time.monotonic() + 120.0
+        delay = 0.15
+        while True:
+            await asyncio.sleep(delay)
+            network = await client.get_lan_network(network_id)
+            member = next(
+                (m for m in network.members or () if m.sandbox_id == sandbox_id), None
+            )
+            if member is None:
+                raise RuntimeError(
+                    f"Sandbox {sandbox_id} left LAN network {network_id}"
+                )
+            if member.synced and network.synced:
+                return
+            if time.monotonic() > deadline:
+                raise TimeoutError(
+                    f"Sandbox {sandbox_id} joined LAN network {network_id}, but the "
+                    "membership and rules were not synced within 120s"
+                )
+            delay = min(delay * 1.6, 1.0)
+    finally:
+        lease.release()
+
+
+async def _wait_and_init_sandbox(
+    client: Any,
+    sandbox_id: str,
+    init_cmd: str,
+    lan: tuple[str, list[str]] | None,
+    *,
+    max_attempts: int = 900,
+    image_build_timeout_seconds: int = 3000,
+) -> Any:
+    """Wait for `sandbox_id` to reach RUNNING, enroll LAN, and run `init_cmd` in one pass."""
+    from prime_sandboxes.sandbox import (
+        _creation_timeout_seconds,
+        _is_retryable_reachability_error,
+        _is_waiting_for_image_build,
+        _raise_not_running_error,
+        _reachability_timeout_error,
+    )
+
+    timeout_seconds = _creation_timeout_seconds(max_attempts)
+    deadline = time.monotonic() + timeout_seconds
+    image_build_deadline: float | None = None
+    poll_index = 0
+    reachability_phase = False
+    last_reachability_error: BaseException | None = None
+    lan_task: asyncio.Task[None] | None = None
+
+    try:
+        while time.monotonic() < deadline:
+            if not reachability_phase:
+                sandbox = await client._sandbox_status_batcher.get(sandbox_id)
+                if sandbox.status == "RUNNING":
+                    reachability_phase = True
+                    deadline = time.monotonic() + timeout_seconds
+                    poll_index = 0
+                    if lan is not None:
+                        lan_task = asyncio.create_task(
+                            _join_lan_fast(client, lan[0], sandbox_id, lan[1])
+                        )
+                elif sandbox.status in ("ERROR", "TERMINATED", "TIMEOUT"):
+                    _raise_not_running_error(
+                        sandbox.sandbox_id,
+                        {
+                            "status": sandbox.status,
+                            "error_type": sandbox.error_type,
+                            "error_message": sandbox.error_message,
+                        },
+                    )
+                elif _is_waiting_for_image_build(sandbox):
+                    if image_build_deadline is None:
+                        image_build_deadline = (
+                            time.monotonic() + image_build_timeout_seconds
+                        )
+                    if time.monotonic() >= image_build_deadline:
+                        from prime_sandboxes import SandboxNotRunningError
+
+                        raise SandboxNotRunningError(
+                            sandbox_id,
+                            message="Timeout waiting for the VM image build",
+                        )
+                    await asyncio.sleep(10)
+                    deadline = time.monotonic() + timeout_seconds
+                    poll_index = 0
+                    continue
+                else:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        break
+                    delay = (
+                        0.4
+                        if poll_index < 12
+                        else min(0.4 * (1.4 ** (poll_index - 11)), 5.0)
+                    )
+                    await asyncio.sleep(min(delay, remaining))
+                    poll_index += 1
+                    continue
+
+            lease = client._poll_leases.acquire(sandbox_id)
+            try:
+                try:
+                    response = await client.execute_command(
+                        sandbox_id, init_cmd, timeout=30
+                    )
+                    if lan_task is not None:
+                        await lan_task
+                    return response
+                finally:
+                    lease.release()
+            except Exception as error:
+                if not _is_retryable_reachability_error(error):
+                    raise
+                last_reachability_error = error
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                await asyncio.sleep(min(0.3, remaining))
+
+        if reachability_phase:
+            error = _reachability_timeout_error(
+                sandbox_id, timeout_seconds, last_reachability_error
+            )
+            raise error from last_reachability_error
+        from prime_sandboxes import SandboxNotRunningError
+
+        raise SandboxNotRunningError(
+            sandbox_id,
+            message=f"Sandbox did not reach RUNNING within {timeout_seconds:g}s",
+        )
+    except BaseException:
+        if lan_task is not None and not lan_task.done():
+            lan_task.cancel()
+            await asyncio.gather(lan_task, return_exceptions=True)
+        raise
 
 
 BASE_LABELS: list[str] = []
@@ -138,6 +284,11 @@ class PrimeProcess(RuntimeProcess):
     async def kill(self) -> None:
         await self._process.kill()
 
+    async def abandon(self) -> None:
+        self._process._remote_exited = True
+        with contextlib.suppress(Exception):
+            await self._process.aclose()
+
 
 class PrimeBackend(RuntimeBackend):
     SUPPORTS_TASK_IMAGES: ClassVar[bool] = True
@@ -193,6 +344,18 @@ class PrimeBackend(RuntimeBackend):
                 )
                 self.info.id, self.info.image_cached = info["id"], info["image_cached"]
                 self._client = _lease_client()
+                if auth := info.get("gateway_auth"):
+                    await self._client._auth_cache.set(self.info.id, auth)
+                if arch := info.get("arch"):
+                    self.cache.arch = arch
+                if system_python := info.get("system_python"):
+                    self.cache.system_python = system_python
+                if "prepared_json" in info:
+                    apply_prepared(
+                        self.cache,
+                        f"{self.scripts_dir}-prepared",
+                        info["prepared_json"],
+                    )
 
             await run_shielded(create_and_attach())
             return
@@ -230,8 +393,6 @@ class PrimeBackend(RuntimeBackend):
                 "docker_image": self.config.image,
                 "disk_size_gb": self.config.disk,
             }
-        if self.lan is not None:
-            options["lan_network_id"], options["lan_tags"] = self.lan
         scope = run_scope()
         labels = [*BASE_LABELS, *self.config.labels, scope]
         try:
@@ -282,21 +443,37 @@ class PrimeBackend(RuntimeBackend):
                     self.config.image,
                     self.info.id,
                 )
-            await self._client.wait_for_creation(self.info.id, max_attempts=900)
+            prepared_root = f"{self.scripts_dir}-prepared"
+            init_cmd = (
+                f"mkdir -p {shlex.quote(self.config.workdir)} && "
+                '({ getent hosts "$(cat /proc/sys/kernel/hostname)" >/dev/null || '
+                'printf "127.0.1.1 %s\\n" "$(cat /proc/sys/kernel/hostname)" >> /etc/hosts; } 2>/dev/null || true) && '
+                'printf "VF_ARCH=%s\\nVF_PYTHON=%s\\nVF_PREPARED\\n" '
+                '"$(uname -m)" "$(command -v python3 || command -v python || true)" && '
+                + load_prepared_command(prepared_root)
+            )
+            init_response = await _wait_and_init_sandbox(
+                self._client, self.info.id, init_cmd, self.lan, max_attempts=900
+            )
+            self._prepared_json = ""
+            if init_response.exit_code == 0:
+                header, _, prepared_out = init_response.stdout.partition(
+                    "VF_PREPARED\n"
+                )
+                for line in header.splitlines():
+                    if line.startswith("VF_ARCH="):
+                        self.cache.arch = line.removeprefix("VF_ARCH=").strip() or None
+                    elif line.startswith("VF_PYTHON="):
+                        self.cache.system_python = (
+                            line.removeprefix("VF_PYTHON=").strip() or None
+                        )
+                self._prepared_json = prepared_out
+                apply_prepared(self.cache, prepared_root, prepared_out)
             logger.debug(
                 "Started prime runtime %s in %s image=%s",
                 self.info.id,
                 format_time(time.perf_counter() - started),
                 self.config.image,
-            )
-            await self._client.execute_command(
-                self.info.id, f"mkdir -p {shlex.quote(self.config.workdir)}"
-            )
-            # Imported image filesystems may not map the VM's generated hostname.
-            await self._client.execute_command(
-                self.info.id,
-                'getent hosts "$(cat /proc/sys/kernel/hostname)" >/dev/null || '
-                'printf "127.0.1.1 %s\\n" "$(cat /proc/sys/kernel/hostname)" >> /etc/hosts',
             )
             await validate_runtime_mounts(self.bind(), [])
         except (
@@ -372,7 +549,7 @@ class PrimeBackend(RuntimeBackend):
                     delay = 0.1
                     while not status.applied:
                         await asyncio.sleep(delay)
-                        delay = min(delay * 2, 3)
+                        delay = min(delay * 1.5, 0.75)
                         status = await self._client.get_network(self.info.id)
             except TimeoutError as e:
                 raise SandboxError(
@@ -473,8 +650,11 @@ class PrimeBackend(RuntimeBackend):
                         await self._client.set_lan_rules(self._expose_network_id, rules)
                     # Joins (an idempotent PUT, so a retry re-adds a failed join) and
                     # waits until the platform has pushed the membership and rules.
-                    await self._client._join_lan(
-                        self._expose_network_id, self.info.id, [_EXPOSE_TAG]
+                    await _join_lan_fast(
+                        self._client,
+                        self._expose_network_id,
+                        self.info.id,
+                        [_EXPOSE_TAG],
                     )
                 except Exception as e:
                     raise SandboxError(f"prime expose port {port} failed: {e}") from e

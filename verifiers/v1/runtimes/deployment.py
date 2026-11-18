@@ -109,7 +109,8 @@ class WorkerGroup:
 
     async def close(self):
         workers, self._listeners = self._listeners, []
-        for runtime, marker, keep_detached in workers:
+
+        async def reap_one(runtime: Runtime, marker: str, keep_detached: bool) -> None:
             # Cleanup is trusted control code. Do not source task BASH_ENV or use
             # task PATH while reaping the worker under its original Unix user.
             runtime = runtime.with_env({})
@@ -141,6 +142,14 @@ class WorkerGroup:
                     exc_info=logger.isEnabledFor(logging.DEBUG),
                 )
 
+        if workers:
+            await asyncio.gather(
+                *(
+                    reap_one(runtime, marker, keep_detached)
+                    for runtime, marker, keep_detached in workers
+                )
+            )
+
 
 class ExecutionConnection(ExecutionBridge):
     """One execution connection and lifecycle for a split workspace.
@@ -154,6 +163,7 @@ class ExecutionConnection(ExecutionBridge):
         super().__init__(runtime, setup_runtime=setup_runtime)
         self._workers = WorkerGroup()
         self.transport: LanExecution | None = None
+        self._abandon_on_close = False
 
     async def start(self) -> None:
         if self.transport is not None:
@@ -214,6 +224,12 @@ class ExecutionConnection(ExecutionBridge):
         """Stop every worker, with the processes their tools started that `serve` says
         to stop."""
         if self.closed:
+            return
+        if self._abandon_on_close:
+            await self.abandon()
+            if self.transport is not None:
+                await self.transport.abandon()
+            self._workers._listeners.clear()
             return
         await super().close()
         if self.transport is not None:

@@ -5,6 +5,8 @@ stdio and lifecycle operations on one registered worker. It grants no model,
 policy, filesystem-management, or command-registration capability.
 """
 
+from __future__ import annotations
+
 import asyncio
 import base64
 import contextlib
@@ -15,25 +17,43 @@ import uuid
 
 from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes.base import RuntimeProcess
-from verifiers.v1.runtimes.lan_stream import CLIENT_SOURCE, PYTHON
+from verifiers.v1.runtimes.lan_stream import CLIENT_SOURCE, AsyncLanStream
 from verifiers.v1.runtimes.runtime import Runtime
 from verifiers.v1.utils.logging import clip, get_logger
 
 logger = get_logger(__name__)
 
-_PYTHON = PYTHON
-
 # Run inside the same user, environment, cwd and filesystem view as the command.
-# The capability arrives over provider stdin, never in the child environment.
+# The capability is minted locally and returned over provider stdout, never in env.
 _SERVER = r"""
-import base64, concurrent.futures, hmac, json, os, signal, subprocess, sys, threading
-from websockets.exceptions import ConnectionClosed
-from websockets.sync.server import serve
+import base64, concurrent.futures, hmac, json, os, secrets, signal, socket, struct, subprocess, sys, threading
 
-config = json.loads(sys.stdin.readline())
-secret = config.pop("secret")
-process_id = config.pop("process_id")
-process = subprocess.Popen(config["argv"], stdin=subprocess.PIPE,
+_MAX_FRAME = 32 * 1024 * 1024
+
+def _read_exact(sock, size):
+    buf = bytearray()
+    while len(buf) < size:
+        chunk = sock.recv(size - len(buf))
+        if not chunk:
+            raise EOFError("closed")
+        buf.extend(chunk)
+    return bytes(buf)
+
+def _read_frame(sock):
+    size = struct.unpack("!I", _read_exact(sock, 4))[0]
+    if size > _MAX_FRAME:
+        raise ValueError("execution frame exceeds 32 MiB")
+    return json.loads(_read_exact(sock, size))
+
+def _send_frame(sock, value):
+    data = json.dumps(value).encode()
+    if len(data) > _MAX_FRAME:
+        raise ValueError("execution frame exceeds 32 MiB")
+    sock.sendall(struct.pack("!I", len(data)) + data)
+
+secret = secrets.token_urlsafe(32)
+process_id = sys.argv[1]
+process = subprocess.Popen(sys.argv[2:], stdin=subprocess.PIPE,
                            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                            start_new_session=True)
 locks = {name: threading.Lock() for name in ("stdin", "stdout", "stderr", "receipts")}
@@ -113,15 +133,24 @@ def handle(body):
 connections = set()
 connections_lock = threading.Lock()
 
-def authenticate(connection, request):
-    if request.path != "/execution":
-        return connection.respond(404, "Unknown execution endpoint\n")
-    if not hmac.compare_digest(request.headers.get("Authorization", ""), "Bearer " + secret):
-        return connection.respond(401, "Unauthorized\n")
+def handle_connection(conn):
+    send_lock = threading.Lock()
+    try:
+        conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        conn.settimeout(10)
+        auth = _read_frame(conn)
+        provided = auth.get("secret", "") if isinstance(auth, dict) else ""
+        if not isinstance(provided, str) or not hmac.compare_digest(provided, secret):
+            _send_frame(conn, {"ok": False, "error": "Unauthorized"})
+            return
+        _send_frame(conn, {"ok": True})
+        conn.settimeout(None)
+    except Exception:
+        conn.close()
+        return
 
-def stream(connection):
     with connections_lock:
-        connections.add(connection)
+        connections.add(conn)
     slots = threading.BoundedSemaphore(8)
 
     def reply(body):
@@ -130,8 +159,9 @@ def stream(connection):
         except Exception as error:
             result = {"error": str(error)}
         try:
-            connection.send(json.dumps({"id": body.get("request_id"), **result}))
-        except ConnectionClosed:
+            with send_lock:
+                _send_frame(conn, {"id": body.get("request_id"), **result})
+        except OSError:
             pass
 
     def work(body):
@@ -142,10 +172,9 @@ def stream(connection):
 
     try:
         with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
-            for raw in connection:
-                body = json.loads(raw)
+            while True:
+                body = _read_frame(conn)
                 if not isinstance(body, dict):
-                    connection.close(1008, "Invalid execution request")
                     break
                 # Termination must remain available while reads/wait are blocked.
                 if body.get("operation") in ("kill", "terminate", "poll"):
@@ -153,33 +182,54 @@ def stream(connection):
                 elif slots.acquire(blocking=False):
                     pool.submit(work, body)
                 else:
-                    connection.close(1008, "Too many pending execution requests")
                     break
-    except ConnectionClosed:
+    except (EOFError, OSError, ValueError):
         pass
     finally:
         with connections_lock:
-            connections.discard(connection)
+            connections.discard(conn)
+        try:
+            conn.close()
+        except OSError:
+            pass
 
-server = serve(stream, "0.0.0.0", 0, process_request=authenticate,
-               compression=None, max_size=32 * 1024 * 1024, close_timeout=1)
-threading.Thread(target=server.serve_forever, daemon=True).start()
-print(json.dumps({"port": server.socket.getsockname()[1]}), flush=True)
+server = socket.create_server(("0.0.0.0", 0), backlog=16)
+
+def accept_loop():
+    while True:
+        try:
+            conn, _ = server.accept()
+        except OSError:
+            return
+        threading.Thread(target=handle_connection, args=(conn,), daemon=True).start()
+
+threading.Thread(target=accept_loop, daemon=True).start()
+print(json.dumps({"port": server.getsockname()[1], "secret": secret}), flush=True)
 try:
     # Only the owning evaluator's provider stream can end the listener. A native
     # client may finish while its output still needs draining or replaying.
     sys.stdin.readline()
 finally:
     stop(signal.SIGKILL)
-    server.shutdown()
+    try:
+        server.close()
+    except OSError:
+        pass
     with connections_lock:
         active = list(connections)
-    for connection in active:
-        connection.close()
+    for conn in active:
+        try:
+            conn.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+        try:
+            conn.close()
+        except OSError:
+            pass
 """
 
 # Trusted evaluator setup and lifecycle calls can reach LAN endpoints through A.
-# Harness clients and adapters use /execution directly from A for workspace I/O.
+# Harness clients and adapters connect directly from A for workspace I/O.
 _RELAY = (
     CLIENT_SOURCE
     + r"""
@@ -210,15 +260,104 @@ with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
 """
 )
 
+_TAR_RECEIVER = r"""
+import hmac, json, os, shutil, socket, subprocess, sys, uuid
+
+secret = sys.stdin.readline().strip()
+target = sys.argv[1]
+parent = os.path.dirname(target.rstrip("/")) or "/"
+os.makedirs(parent, exist_ok=True)
+staging = f"{target.rstrip('/')}.tmp.{uuid.uuid4().hex}"
+os.makedirs(staging, exist_ok=True)
+os.chmod(staging, 0o755)
+
+server = socket.create_server(("0.0.0.0", 0), backlog=1)
+server.settimeout(30)
+print(json.dumps({"port": server.getsockname()[1]}), flush=True)
+try:
+    conn, _ = server.accept()
+    server.close()
+    with conn:
+        conn.settimeout(60)
+        header = bytearray()
+        while b"\n" not in header and len(header) < 256:
+            chunk = conn.recv(256 - len(header))
+            if not chunk:
+                break
+            header.extend(chunk)
+        line, _, remainder = bytes(header).partition(b"\n")
+        if not hmac.compare_digest(line.decode("utf-8", "replace"), secret):
+            raise PermissionError("Unauthorized LAN transfer")
+        tar = subprocess.Popen(["tar", "-xzf", "-", "-C", staging], stdin=subprocess.PIPE)
+        assert tar.stdin is not None
+        try:
+            if remainder:
+                tar.stdin.write(remainder)
+            while True:
+                data = conn.recv(262144)
+                if not data:
+                    break
+                tar.stdin.write(data)
+            tar.stdin.close()
+        except BaseException:
+            tar.kill()
+            tar.wait()
+            raise
+        if tar.wait() != 0:
+            raise RuntimeError("tar extraction failed")
+        if os.path.exists(target):
+            shutil.rmtree(target)
+        os.replace(staging, target)
+    print(json.dumps({"ok": True}), flush=True)
+finally:
+    shutil.rmtree(staging, ignore_errors=True)
+"""
+
+_TAR_SENDER = r"""
+import gzip, os, socket, subprocess, sys
+
+host, port, source_dir, *excludes = sys.argv[1:]
+secret = os.environ["VF_SYNC_SECRET"]
+tar = subprocess.Popen(
+    ["tar", "-C", source_dir, *excludes, "-cf", "-", "."],
+    stdout=subprocess.PIPE,
+)
+assert tar.stdout is not None
+try:
+    with socket.create_connection((host, int(port)), timeout=15) as sock:
+        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        sock.sendall((secret + "\n").encode())
+        with sock.makefile("wb", buffering=262144) as raw, gzip.GzipFile(
+            fileobj=raw, mode="wb", compresslevel=1
+        ) as gz:
+            while True:
+                chunk = tar.stdout.read(262144)
+                if not chunk:
+                    break
+                gz.write(chunk)
+        sock.shutdown(socket.SHUT_WR)
+finally:
+    tar.stdout.close()
+if tar.wait() != 0:
+    raise RuntimeError("tar archive creation failed")
+"""
+
 
 class LanProcess(RuntimeProcess):
     def __init__(
-        self, owner: RuntimeProcess, harness: Runtime, python: str, endpoint: dict
+        self,
+        owner: RuntimeProcess | None,
+        harness: Runtime | None,
+        python: str,
+        endpoint: dict,
+        *,
+        direct: bool = False,
     ) -> None:
         self.owner = owner
         self.harness = harness
         self.python = python
         self.execution_endpoint = endpoint
+        self._direct = AsyncLanStream(endpoint) if direct else None
         self._relay: RuntimeProcess | None = None
         self._lock = asyncio.Lock()
         self._stdin_lock = asyncio.Lock()
@@ -253,11 +392,24 @@ class LanProcess(RuntimeProcess):
     async def _rpc(self, operation: str, **values) -> dict:
         if self._closed:
             raise SandboxError("LAN execution process is closed")
+        if self._direct is not None:
+            try:
+                result = await self._direct.request(operation, **values)
+            except Exception as error:
+                raise SandboxError(str(error)) from error
+            if operation == "wait":
+                self._exit_code = result["exit_code"]
+                self._finished.add("wait")
+            elif operation == "read" and result.get("eof"):
+                self._finished.add(values["stream"])
+            if len(self._finished) == 3:
+                await self.aclose()
+            return result
+        assert self.harness is not None
         async with self._lock:
             if self._relay is None:
-                relay = await self.harness.exec(
-                    [self.python, "-I", "-u", "-c", _RELAY], {}
-                )
+                python = self.python or await self.harness.resolve_python()
+                relay = await self.harness.exec([python, "-I", "-u", "-c", _RELAY], {})
                 try:
                     await relay.write(
                         (json.dumps(self.execution_endpoint) + "\n").encode()
@@ -343,17 +495,36 @@ class LanProcess(RuntimeProcess):
             return
         await self._rpc("kill")
 
+    async def abandon(self) -> None:
+        """Drop local streams without remote RPCs when the owning VM is stopping."""
+        if self._closed:
+            return
+        self._closed = True
+        if self._direct is not None:
+            await self._direct.aclose()
+        if self.owner is not None:
+            await self.owner.abandon()
+        if self._relay is not None:
+            await self._relay.abandon()
+        for task in self._tasks:
+            task.cancel()
+        await asyncio.gather(*self._tasks, return_exceptions=True)
+
     async def aclose(self) -> None:
         if self._closed:
             return
         self._closed = True
         try:
-            await self.owner.write(b"close\n")
-            async with asyncio.timeout(5):
-                await self.owner.wait()
+            if self._direct is not None:
+                await self._direct.aclose()
+            if self.owner is not None:
+                await self.owner.write(b"close\n")
+                async with asyncio.timeout(5):
+                    await self.owner.wait()
         finally:
-            with contextlib.suppress(Exception):
-                await self.owner.kill()
+            if self.owner is not None:
+                with contextlib.suppress(Exception):
+                    await self.owner.kill()
             if self._relay is not None:
                 with contextlib.suppress(Exception):
                     await self._relay.kill()
@@ -365,46 +536,44 @@ class LanProcess(RuntimeProcess):
 class LanExecution:
     """Select LAN once for the deployment, underneath every harness adapter."""
 
-    def __init__(self, harness: Runtime, host: str) -> None:
+    def __init__(self, harness: Runtime, host: str, *, direct: bool = False) -> None:
         self.harness = harness
         self.host = host
+        self.direct = direct
         self._python = ""
         self._harness_python = ""
         self._processes: list[LanProcess] = []
         self._closed = False
 
     async def start(self, workspace: Runtime) -> None:
-        worker, relay = await asyncio.gather(
-            workspace.prepare_uv_script(_PYTHON, activate=False),
-            self.harness.prepare_uv_script(_PYTHON, activate=False),
+        if self.direct:
+            self._python = await workspace.resolve_python()
+            self._harness_python = ""
+            return
+        self._python, self._harness_python = await asyncio.gather(
+            workspace.resolve_python(),
+            self.harness.resolve_python(),
         )
-        self._python, self._harness_python = worker[0], relay[0]
 
     async def exec(
         self, runtime: Runtime, argv: list[str], env: dict[str, str]
-    ) -> RuntimeProcess:
+    ) -> LanProcess:
         if self._closed:
             raise SandboxError("LAN execution transport is closed")
+        python = self._python or await runtime.resolve_python()
+        process_id = uuid.uuid4().hex
         owner = await runtime.backend.exec(
             runtime,
-            [self._python, "-I", "-u", "-c", _SERVER],
+            [python, "-I", "-u", "-c", _SERVER, process_id, *argv],
             env,
         )
-        secret, process_id = secrets.token_urlsafe(32), uuid.uuid4().hex
         try:
-            await owner.write(
-                (
-                    json.dumps(
-                        {"secret": secret, "process_id": process_id, "argv": argv}
-                    )
-                    + "\n"
-                ).encode()
-            )
             async with asyncio.timeout(30):
                 output = b""
                 while b"\n" not in output:
                     output += await anext(owner.stdout)
-                port = json.loads(output.split(b"\n", 1)[0])["port"]
+                announced = json.loads(output.split(b"\n", 1)[0])
+                port, secret = announced["port"], announced["secret"]
             if self._closed:
                 raise SandboxError("LAN execution transport closed during startup")
             process = LanProcess(
@@ -412,10 +581,13 @@ class LanExecution:
                 self.harness,
                 self._harness_python,
                 {
-                    "url": f"ws://{self.host}:{port}/execution",
+                    "url": f"tcp://{self.host}:{port}",
+                    "host": self.host,
+                    "port": port,
                     "secret": secret,
                     "process_id": process_id,
                 },
+                direct=self.direct,
             )
             self._processes.append(process)
             return process
@@ -423,6 +595,76 @@ class LanExecution:
             with contextlib.suppress(Exception):
                 await owner.kill()
             raise
+
+    async def sync_dir(
+        self,
+        source_runtime: Runtime,
+        source_dir: str,
+        target_runtime: Runtime,
+        target_dir: str,
+        *,
+        exclude: tuple[str, ...] = (),
+    ) -> None:
+        """Stream a directory from `source_runtime` (A) to `target_runtime` (B) over LAN."""
+        target_python = self._python or await target_runtime.resolve_python()
+        source_python = self._harness_python or await source_runtime.resolve_python()
+        secret = secrets.token_urlsafe(32)
+        receiver = await target_runtime.backend.exec(
+            target_runtime,
+            [target_python, "-I", "-u", "-c", _TAR_RECEIVER, target_dir],
+            {},
+        )
+        try:
+            await receiver.write((secret + "\n").encode())
+            async with asyncio.timeout(30):
+                output = b""
+                while b"\n" not in output:
+                    output += await anext(receiver.stdout)
+                line, output = output.split(b"\n", 1)
+                port = json.loads(line)["port"]
+            excludes = [f"--exclude={item}" for item in exclude]
+            send_result = await source_runtime.run(
+                [
+                    source_python,
+                    "-I",
+                    "-c",
+                    _TAR_SENDER,
+                    self.host,
+                    str(port),
+                    source_dir,
+                    *excludes,
+                ],
+                {"VF_SYNC_SECRET": secret},
+            )
+            if send_result.exit_code != 0:
+                raise SandboxError(
+                    f"LAN directory sync sender failed: {send_result.stderr.strip()[-500:]}"
+                )
+            async with asyncio.timeout(60):
+                while b"\n" not in output:
+                    chunk = await anext(receiver.stdout, b"")
+                    if not chunk:
+                        break
+                    output += chunk
+                code = await receiver.wait()
+            if code != 0 or b'"ok": true' not in output:
+                stderr = b"".join([c async for c in receiver.stderr]).decode(
+                    errors="replace"
+                )
+                raise SandboxError(
+                    f"LAN directory sync receiver failed ({code}): {stderr.strip()[-500:]}"
+                )
+        except BaseException:
+            with contextlib.suppress(Exception):
+                await receiver.kill()
+            raise
+
+    async def abandon(self) -> None:
+        self._closed = True
+        processes, self._processes = self._processes, []
+        await asyncio.gather(
+            *(process.abandon() for process in processes), return_exceptions=True
+        )
 
     async def close(self) -> None:
         self._closed = True

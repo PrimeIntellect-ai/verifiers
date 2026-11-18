@@ -331,6 +331,21 @@ def _content_identity(
     return package, digest.hexdigest()
 
 
+async def warmup_runtime_packages(*classes: Callable) -> None:
+    """Pre-compute local package identities while remote sandboxes are booting."""
+    sources: dict[str, None] = dict.fromkeys([_package_dir(ServerBase)])
+    for cls in classes:
+        with contextlib.suppress(ToolsetError):
+            sources[_package_dir(cls)] = None
+    for source in sources:
+        src = Path(source)
+        if src.suffix == ".dist-info":
+            await asyncio.to_thread(_installed_package_identity, src)
+        else:
+            artifact = await _cached_package(src)
+            await asyncio.to_thread(_package_identity, *artifact)
+
+
 async def install_in_runtime(
     cls: Callable, agent_runtime: Runtime, *, label: str
 ) -> str:

@@ -166,6 +166,54 @@ class Runtime:
             return default
         return str(PurePosixPath(directory or "/tmp").joinpath(*parts))
 
+    async def resolve_python(self) -> str:
+        """Locate a Python 3 interpreter in this runtime without bootstrapping `uv`."""
+        if self.backend.cache.system_python:
+            return self.backend.cache.system_python
+        async with self.backend.cache.setup_lock:
+            if self.backend.cache.system_python:
+                return self.backend.cache.system_python
+            probe = await self.with_user(None).run(
+                [
+                    "sh",
+                    "-c",
+                    (
+                        'printf "%s\\n%s\\n" "$(uname -m)" '
+                        '"$(command -v python3 || command -v python || true)"'
+                    ),
+                ],
+                {},
+            )
+            lines = probe.stdout.splitlines()
+            if lines and lines[0].strip() and not self.backend.cache.arch:
+                self.backend.cache.arch = lines[0].strip()
+            python = lines[1].strip() if len(lines) > 1 else ""
+            if not python:
+                install = await self.with_user(None).run(
+                    [
+                        "sh",
+                        "-c",
+                        (
+                            "(command -v apk >/dev/null 2>&1 && apk add --no-cache python3 >/dev/null) || "
+                            "(command -v apt-get >/dev/null 2>&1 && apt-get update -qq && apt-get install -y -qq python3 >/dev/null) || "
+                            "(command -v dnf >/dev/null 2>&1 && dnf install -y -q python3 >/dev/null); "
+                            "command -v python3 || command -v python"
+                        ),
+                    ],
+                    {},
+                )
+                python = (
+                    install.stdout.strip().splitlines()[-1]
+                    if install.exit_code == 0 and install.stdout.strip()
+                    else ""
+                )
+            if not python:
+                raise SandboxError(
+                    f"no Python 3 interpreter available in runtime {self.name!r}"
+                )
+            self.backend.cache.system_python = python
+            return python
+
     async def prepare_uv_script(
         self,
         script: str | bytes,

@@ -74,6 +74,11 @@ class KimiCodeHarness(ACPHarness[KimiCodeHarnessConfig]):
         await ensure_installed(
             runtime,
             directory=KIMI_DIR,
+            ready=(
+                f'[ -x "{KIMI_BIN}" ] && '
+                f'[ "$(cat "{KIMI_DIR}/.version" 2>/dev/null)" = '
+                f'"{self.config.version}" ]'
+            ),
             install=INSTALL,
             env={"AGENT_KIMI_VERSION": self.config.version},
             label="Kimi Code",

@@ -8,6 +8,7 @@ model client and interception server in one process for the entire job.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import importlib
 import os
 import sys
@@ -150,9 +151,18 @@ class PrimeController:
                         await backend.stop()
                         raise
                     vms[backend.info.id] = backend
+                    auth = None
+                    with contextlib.suppress(Exception):
+                        auth = await backend._client._auth_cache.get_or_refresh(
+                            backend.info.id
+                        )
                     return {
                         "id": backend.info.id,
                         "image_cached": backend.info.image_cached,
+                        "gateway_auth": auth,
+                        "arch": backend.cache.arch,
+                        "system_python": backend.cache.system_python,
+                        "prepared_json": getattr(backend, "_prepared_json", ""),
                     }
                 if operation == "stop":
                     await vms[message["sandbox_id"]].stop()

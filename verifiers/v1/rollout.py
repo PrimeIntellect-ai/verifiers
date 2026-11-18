@@ -37,6 +37,7 @@ from verifiers.v1.runtimes import (
     RuntimeConfig,
     RuntimeLoss,
     make_backend,
+    runtime_is_local,
 )
 from verifiers.v1.runtimes.private_network import tool_vms
 from verifiers.v1.session import RolloutLimits, RolloutSession, hook_boundary
@@ -398,7 +399,24 @@ class Rollout:
                     else None,
                 )
                 try:
-                    await self.deployment.start()
+                    warmup_task: asyncio.Task[None] | None = None
+                    if self._split_execution or any(
+                        not runtime_is_local(t.config.runtime)
+                        for t in toolsets
+                        if hasattr(t.config, "runtime")
+                        and not getattr(t.config, "url", None)
+                    ):
+                        from verifiers.v1.mcp.launch import warmup_runtime_packages
+
+                        warmup_task = asyncio.create_task(
+                            warmup_runtime_packages(*(type(t) for t in toolsets))
+                        )
+                    try:
+                        await self.deployment.start()
+                    finally:
+                        if warmup_task is not None:
+                            with contextlib.suppress(Exception):
+                                await warmup_task
                     self._deployment_started = True
                     runtime = self.runtime = self.deployment.workspace
                     if self.deployment.split:
@@ -533,38 +551,8 @@ class Rollout:
                         self._endpoint,
                         *self._urls.values(),
                     ]
-                # Adapter configuration is trusted setup. It can connect while
-                # policy is applying, but no harness session starts until both
-                # have succeeded. A failure cancels and drains its sibling.
-                try:
-                    async with asyncio.TaskGroup() as group:
-                        group.create_task(
-                            self.deployment.prepare_execution(
-                                [
-                                    url
-                                    for url in [self._endpoint, *self._urls.values()]
-                                    if urlsplit(url).hostname not in internal
-                                ],
-                                state_route=f"{state_base.rstrip('/')}/state",
-                            )
-                        )
-                        if isinstance(self._session.remote_tool_handler, SandboxTools):
-                            group.create_task(
-                                self._session.remote_tool_handler.connect(
-                                    self._agent_runtime.host_url(
-                                        f"{base_url.rstrip('/')}/execution"
-                                    ),
-                                    model_secret,
-                                )
-                            )
-                except ExceptionGroup as failed:
-                    raise failed.exceptions[0]
-                if self._split_execution:
-                    self.trace.agent.runtime = runtime.info.model_copy()
-                async with (
-                    boundary(HarnessError, "opening harness session"),
-                ):
-                    harness_data = self.trace.task.data
+                harness_data = self.trace.task.data
+                async with boundary(HarnessError, "opening harness session"):
                     policy = self._session.network_policy
                     if (
                         self.trace.agent.config.network_notice
@@ -647,7 +635,11 @@ class Rollout:
                                 "system_prompt": system_prompt,
                             }
                         )
-                    if not self._session.stopped:
+
+                async def open_session() -> None:
+                    if self._session.stopped:
+                        return
+                    async with boundary(HarnessError, "opening harness session"):
                         session_kwargs = (
                             {
                                 "tool_interception_url": self._agent_runtime.host_url(
@@ -678,6 +670,36 @@ class Rollout:
                             harness_data,
                             **session_kwargs,
                         )
+                        await self._harness_session.warm()
+
+                # Adapter and session configuration are trusted setup. They run while
+                # policy is applying, and no harness process starts until all succeed.
+                try:
+                    async with asyncio.TaskGroup() as group:
+                        group.create_task(
+                            self.deployment.prepare_execution(
+                                [
+                                    url
+                                    for url in [self._endpoint, *self._urls.values()]
+                                    if urlsplit(url).hostname not in internal
+                                ],
+                                state_route=f"{state_base.rstrip('/')}/state",
+                            )
+                        )
+                        if isinstance(self._session.remote_tool_handler, SandboxTools):
+                            group.create_task(
+                                self._session.remote_tool_handler.connect(
+                                    self._agent_runtime.host_url(
+                                        f"{base_url.rstrip('/')}/execution"
+                                    ),
+                                    model_secret,
+                                )
+                            )
+                        group.create_task(open_session())
+                except ExceptionGroup as failed:
+                    raise failed.exceptions[0]
+                if self._split_execution:
+                    self.trace.agent.runtime = runtime.info.model_copy()
         except TimeoutError as e:
             # Only our expired setup budget owns the timeout; a provider can
             # raise its own TimeoutError before the overall deadline.
@@ -724,16 +746,15 @@ class Rollout:
             _execution_bridge=bridge,
         )
 
-        async def setup_execution():
-            await bridge.start()
-            await self.harness.setup_execution(
-                self._agent_runtime, bridge.runtime, bridge
-            )
-
         try:
             async with asyncio.TaskGroup() as group:
                 group.create_task(self.harness.setup(self._agent_runtime))
-                group.create_task(setup_execution())
+                group.create_task(bridge.start())
+                group.create_task(
+                    self.harness.setup_execution(
+                        self._agent_runtime, bridge.runtime, bridge
+                    )
+                )
                 if adapter is not None:
                     group.create_task(handler.prepare())
         except ExceptionGroup as failed:
@@ -838,11 +859,36 @@ class Rollout:
         # never moved, forever.
         return self.ok and trace.num_turns > turns_before
 
-    async def _cleanup_harness(self, runtime: Runtime) -> None:
+    def _abandon_workers(self) -> None:
+        target = self._agent_runtime or self.runtime
+        if (
+            self._borrowed_runtime is not None
+            or target is None
+            or target.type != "prime"
+        ):
+            return
+        if self._session.execution_bridge is not None and hasattr(
+            self._session.execution_bridge, "_abandon_on_close"
+        ):
+            self._session.execution_bridge._abandon_on_close = True
+        if isinstance(self._session.remote_tool_handler, SandboxTools):
+            self._session.remote_tool_handler._abandon_on_close = True
+
+    async def _cleanup_harness(
+        self, runtime: Runtime, *, runtime_stopping: bool = False
+    ) -> None:
         if self._harness_cleaned:
             return
+        target = self._agent_runtime or runtime
+        if (
+            runtime_stopping
+            and self._borrowed_runtime is None
+            and target.type in ("prime", "docker")
+        ):
+            self._harness_cleaned = True
+            return
         try:
-            await self.harness.cleanup(self.trace, self._agent_runtime or runtime)
+            await self.harness.cleanup(self.trace, target)
         except Exception as e:
             logger.warning(
                 "Failed to clean up harness - %s: %s",
@@ -858,6 +904,7 @@ class Rollout:
         (a cancellation mid-setup, a lifetime bug raised to the caller) means the
         driver will never reach `close()`. Safe after a partial `close()`."""
         self._closed = True
+        self._abandon_workers()
         if self._harness_session is not None:
             with contextlib.suppress(Exception):
                 await self._harness_session.close()
@@ -865,7 +912,7 @@ class Rollout:
             await self._stack.aclose()
         if self.runtime is not None:
             with contextlib.suppress(Exception):
-                await self._cleanup_harness(self.runtime)
+                await self._cleanup_harness(self.runtime, runtime_stopping=True)
         if self.deployment is not None:
             with contextlib.suppress(Exception):
                 await self.deployment.close()
@@ -1154,6 +1201,7 @@ class Rollout:
                     if grader is None:
                         # Graded in the agent's own box: now the session can close, and
                         # the metrics read what it handed over and left behind.
+                        self._abandon_workers()
                         await self._close_harness()
                         await self._score_harness(runtime, self._metrics_deadline())
                 trace.timing.scoring.end = time.time()
@@ -1164,6 +1212,7 @@ class Rollout:
         except Exception as e:  # noqa: BLE001 - finalize boundary records every rollout failure
             self.fail(e)
         finally:
+            self._abandon_workers()
             if self._harness_session is not None:
                 with contextlib.suppress(Exception):
                     await self._harness_session.close()
@@ -1183,7 +1232,7 @@ class Rollout:
                     span.end = now
             trace.split_agent_time()
             if runtime is not None:
-                await self._cleanup_harness(runtime)
+                await self._cleanup_harness(runtime, runtime_stopping=True)
             # Tear down here — the env's `score()` (later) needs only the traces,
             # not a live runtime. A borrowed runtime is its creator's to tear down,
             # not this rollout's.

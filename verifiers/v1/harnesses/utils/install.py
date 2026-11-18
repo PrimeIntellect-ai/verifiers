@@ -1,8 +1,10 @@
 """Host-side helpers for installing a harness's program into a runtime."""
 
+import hashlib
 import shlex
 
 from verifiers.v1.runtimes import Runtime
+from verifiers.v1.runtimes.prepared import load_prepared, record_arguments
 
 
 async def ensure_installed(
@@ -25,8 +27,25 @@ async def ensure_installed(
     The lock is `flock` (Linux, busybox) or `lockf` (macOS/BSD), both released when the holder
     dies; an image with neither falls back to a symlink spinlock whose owner is recorded as
     `pid:starttime` so a dead holder is reaped even if its pid was reused."""
+    await load_prepared(runtime.with_user(None))
+    cache = runtime.backend.cache
+    install_key = (
+        f"install:{directory}:"
+        + hashlib.sha256(f"{ready or ''}\0{install}".encode()).hexdigest()[:16]
+    )
+    if ready and install_key in cache.installed:
+        return
+    record = shlex.join(
+        record_arguments(
+            runtime.with_user(None),
+            install_key,
+            {"install": directory, **({"ready": ready} if ready else {})},
+        )
+    )
+    save_record = f'if py=$(command -v python3 || command -v python 2>/dev/null); then "$py" {record} || true; fi'
     lock = shlex.quote(lock or f"{directory}/install.lock")
-    script = f"{ready} || ({install})" if ready else install
+    script = f"({ready}) || ({install})" if ready else install
+    script = f"({script}) && {save_record}"
     run = f"{shlex.join(shell)} {shlex.quote(script)}"
     # The owner token is pid:starttime (starttime from /proc where readable), so a reused pid
     # does not pass as the live holder. A lock that is not a symlink (left behind by
@@ -53,7 +72,9 @@ async def ensure_installed(
     )
     # Different harness/script/package installers share uv and the OS package
     # manager, even when their target directories and filesystem locks differ.
-    async with runtime.backend.cache.setup_lock:
+    async with cache.setup_lock:
+        if ready and install_key in cache.installed:
+            return
         if runtime.user is None:
             result = await runtime.run(["sh", "-c", guarded], env)
         else:
@@ -66,6 +87,8 @@ async def ensure_installed(
             result = await runtime.with_user(None).run(
                 ["sh", "-c", shareable], {**python_dir, **env}
             )
+        if result.exit_code == 0 and ready:
+            cache.installed.add(install_key)
     if result.exit_code != 0:
         detail = (result.stderr.strip() or result.stdout.strip())[-500:]
         raise RuntimeError(f"{label} install failed: {detail}")

@@ -39,6 +39,7 @@ class ExecutionBridge:
         self.setup_runtime = setup_runtime or runtime
         self.commands: dict[str, tuple[list[str], dict[str, str]]] = {}
         self.workers: dict[str, _Worker] = {}
+        self._prewarmed: dict[str, list[RuntimeProcess]] = {}
         self.receipts: dict[str, tuple[str, asyncio.Task]] = {}
         self._open_lock = asyncio.Lock()
         self._receipt_bytes = 0
@@ -55,6 +56,19 @@ class ExecutionBridge:
         if self.closed or name in self.commands or not argv:
             raise HarnessError(f"invalid split worker registration {name!r}")
         self.commands[name] = (list(argv), dict(env))
+
+    async def prewarm(self, name: str) -> dict | None:
+        """Start one registered worker up front and return its LAN endpoint, if any."""
+        if self.closed or name not in self.commands:
+            raise HarnessError(f"cannot prewarm unregistered split worker {name!r}")
+        async with self._open_lock:
+            argv, env = self.commands[name]
+            process = await self._exec(argv, env)
+            if endpoint := process.execution_endpoint:
+                self.workers[endpoint["process_id"]] = _Worker(name, process)
+                return endpoint
+            self._prewarmed.setdefault(name, []).append(process)
+            return None
 
     async def _exec(self, argv: list[str], env: dict[str, str]) -> RuntimeProcess:
         return await self.runtime.exec(argv, env)
@@ -97,8 +111,12 @@ class ExecutionBridge:
                 raise HarnessError("split execution requested an unregistered worker")
             async with self._open_lock:
                 if process_id not in self.workers:
-                    argv, env = self.commands[name]
-                    process = await self._exec(argv, env)
+                    warm = self._prewarmed.get(name)
+                    if warm:
+                        process = warm.pop(0)
+                    else:
+                        argv, env = self.commands[name]
+                        process = await self._exec(argv, env)
                     self.workers[process_id] = _Worker(name, process)
                 elif self.workers[process_id].name != name:
                     raise HarnessError("split process_id was reused for another worker")
@@ -140,6 +158,27 @@ class ExecutionBridge:
             return {"exit_code": await worker.process.wait()}
         raise HarnessError(f"unknown split execution operation {operation!r}")
 
+    async def abandon(self) -> None:
+        """Cancel local bridge tasks without remote RPCs when VMs are being deleted."""
+        if self.closed:
+            return
+        self.closed = True
+        tasks = [task for _, task in self.receipts.values()]
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        warm = [proc for items in self._prewarmed.values() for proc in items]
+        processes = [*(worker.process for worker in self.workers.values()), *warm]
+        await asyncio.gather(
+            *tasks,
+            *(proc.abandon() for proc in processes),
+            return_exceptions=True,
+        )
+        self.receipts.clear()
+        self.workers.clear()
+        self._prewarmed.clear()
+        self._receipt_bytes = 0
+
     async def close(self) -> None:
         if self.closed:
             return
@@ -148,15 +187,17 @@ class ExecutionBridge:
         for task in tasks:
             if not task.done():
                 task.cancel()
+        warm = [proc for items in self._prewarmed.values() for proc in items]
+        processes = [*(worker.process for worker in self.workers.values()), *warm]
         try:
             async with asyncio.timeout(10):
                 await asyncio.gather(*tasks, return_exceptions=True)
                 await asyncio.gather(
-                    *(worker.process.kill() for worker in self.workers.values()),
+                    *(proc.kill() for proc in processes),
                     return_exceptions=True,
                 )
                 await asyncio.gather(
-                    *(worker.process.wait() for worker in self.workers.values()),
+                    *(proc.wait() for proc in processes),
                     return_exceptions=True,
                 )
         except TimeoutError:
@@ -166,4 +207,5 @@ class ExecutionBridge:
             )
         self.receipts.clear()
         self.workers.clear()
+        self._prewarmed.clear()
         self._receipt_bytes = 0

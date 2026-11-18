@@ -58,14 +58,30 @@ class RemoteBackend(RuntimeBackend):
     with the evaluator's deployment, outside this credential-free proxy.
     """
 
-    def __init__(self, command: list[str]):
+    def __init__(
+        self, command: list[str] | None = None, *, endpoint: dict | None = None
+    ):
         super().__init__()
-        self.command = command
+        self.command = command or []
+        self.endpoint = endpoint
         self.config = CustomRuntimeConfig(import_path=f"{__name__}.RemoteBackend")
         self.info = BaseRuntimeInfo()
         self.rpc: ProcessRPC | None = None
+        self._lan_process: RuntimeProcess | None = None
 
     async def start(self) -> None:
+        if self.endpoint is not None:
+            from verifiers.v1.runtimes.lan_execution import LanProcess
+
+            lan = LanProcess(None, None, "", self.endpoint, direct=True)
+            try:
+                await lan._rpc("open")
+            except BaseException:
+                await lan.aclose()
+                raise
+            self._lan_process = lan
+            self.rpc = ProcessRPC(lan)
+            return
         process = await asyncio.create_subprocess_exec(
             *self.command,
             stdin=asyncio.subprocess.PIPE,
@@ -109,12 +125,17 @@ class RemoteBackend(RuntimeBackend):
             raise SandboxError(f"write {path!r}: {result.stderr[-500:]}")
 
     async def teardown(self) -> None:
-        if self.rpc is not None:
-            try:
-                async with asyncio.timeout(5):
-                    await self.rpc.call("close")
-            finally:
-                await self.rpc.close()
+        try:
+            if self.rpc is not None:
+                try:
+                    async with asyncio.timeout(5):
+                        await self.rpc.call("close")
+                finally:
+                    await self.rpc.close()
+        finally:
+            if self._lan_process is not None:
+                await self._lan_process.aclose()
+                self._lan_process = None
 
     async def expose(self, port: int) -> str:
         raise SandboxError("workspace port publication is owned by the deployment")

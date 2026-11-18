@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.runtimes.base import RuntimeProcess
-from verifiers.v1.runtimes.lan_stream import CLIENT_SOURCE, PYTHON
+from verifiers.v1.runtimes.lan_stream import CLIENT_SOURCE
 from verifiers.v1.types import ToolCall, ToolMessage
 
 # Embedded in Python harness programs so their native environment adapters use
@@ -164,8 +164,7 @@ def remote_shell_tools(runtime: Runtime, *, persistent: bool = False):
 
 
 REMOTE_RUNTIME_SOURCE = (
-    PYTHON
-    + CLIENT_SOURCE
+    CLIENT_SOURCE
     + r"""
 import argparse
 import base64
@@ -185,12 +184,27 @@ parser.add_argument("--secret", required=True)
 parser.add_argument("--worker", required=True)
 parser.add_argument("--protocol", choices=("raw", "rlm", "prime", "codex"), default="raw")
 parser.add_argument("--tool-url", default="")
+parser.add_argument("--endpoint-file", default="")
 args = parser.parse_args()
 process_id = uuid.uuid4().hex
 execution_url, execution_secret = args.url, args.secret
 execution_opener = urllib.request.build_opener()
 execution_client = None
 handed_off = False
+if args.endpoint_file:
+    claimed = f"{args.endpoint_file}.{os.getpid()}.claim"
+    try:
+        os.replace(args.endpoint_file, claimed)
+        try:
+            with open(claimed, "rb") as handle:
+                transport = json.load(handle)
+        finally:
+            os.remove(claimed)
+        handed_off = True
+        execution_client = LanStream(transport)
+        process_id = transport["process_id"]
+    except FileNotFoundError:
+        pass
 failed = threading.Event()
 stdout_lock = threading.Lock()
 history_receipts = {}
@@ -434,17 +448,36 @@ async def prepare_remote_bridge(
     protocol: str = "raw",
     tool_url: str = "",
 ) -> list[str]:
-    """Install the common client in A; only its host registry chooses B's command.
+    """Configure the stdlib execution client in A; only its host registry chooses B's command.
 
     Registration selects the deployment's process transport. Policy calls retain
     their evaluator URL and capability even when process traffic uses the LAN.
     """
-    program = await runtime.prepare_uv_script(REMOTE_RUNTIME_SOURCE, {})
-    return [
-        *program,
+    import uuid as _uuid
+
+    python_task = asyncio.create_task(runtime.resolve_python())
+    endpoint_file = ""
+    bridge = getattr(runtime, "_execution_bridge", None)
+    if bridge is not None and worker in bridge.commands:
+        endpoint = await bridge.prewarm(worker)
+        if endpoint is not None:
+            endpoint_file = runtime.temp_path(
+                f"vf-lan-{worker}-{_uuid.uuid4().hex}.json"
+            )
+            await runtime.write(endpoint_file, json.dumps(endpoint).encode())
+    python = await python_task
+    args = [
+        python,
+        "-I",
+        "-u",
+        "-c",
+        REMOTE_RUNTIME_SOURCE,
         f"--url={url}",
         f"--secret={secret}",
         f"--worker={worker}",
         f"--protocol={protocol}",
         f"--tool-url={tool_url}",
     ]
+    if endpoint_file:
+        args.append(f"--endpoint-file={endpoint_file}")
+    return args

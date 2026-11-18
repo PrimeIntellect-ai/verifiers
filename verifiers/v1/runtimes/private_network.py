@@ -174,8 +174,15 @@ async def private_network(
             return network_id
 
         network_id = await run_shielded(create_and_own())
-        # Failed startup unwinds this stack before the deployment's workspace owner.
-        stack.push_async_callback(workspace.stop)
+        started_vms: list[RuntimeBackend] = [workspace]
+
+        async def stop_all_vms() -> None:
+            await asyncio.gather(
+                *(vm.stop() for vm in started_vms), return_exceptions=True
+            )
+
+        # Failed startup unwinds VMs concurrently before deleting the network.
+        stack.push_async_callback(stop_all_vms)
 
         backends: dict[str, RuntimeBackend] = {}
 
@@ -187,8 +194,8 @@ async def private_network(
             backend = make_backend(config, f"{workspace.name}-{tags[name]}")
             assert isinstance(backend, PrimeBackend)
             backend.lan = (network_id, memberships[name])
-            # Pushed before `start()`: a failed start may already hold a paid sandbox.
-            stack.push_async_callback(backend.stop)
+            # Registered before `start()`: a failed start may already hold a paid sandbox.
+            started_vms.append(backend)
             await backend.start()  # running, and joined to the network
             backends[name] = backend
             # LAN traffic is not activity to the platform, and a server's VM sees no
@@ -214,7 +221,7 @@ async def private_network(
         workspace.lan = (network_id, memberships["main"])
         if harness is not None:
             harness.lan = (network_id, [HARNESS_TAG])
-            stack.push_async_callback(harness.stop)
+            started_vms.append(harness)
         try:
             async with asyncio.TaskGroup() as group:
                 group.create_task(provision_workspace())

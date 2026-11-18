@@ -9,32 +9,46 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from verifiers.v1.runtimes import Runtime
+    from verifiers.v1.runtimes.base import RuntimeCache
 
 # The interpreter belongs to a prepared environment. Neither loading nor saving
 # imports the framework inside the sandbox, or captures an active session.
 _LOAD = r"""
-import hashlib, json, os, pathlib, sys
+import hashlib, json, os, pathlib, subprocess, sys
 records = {}
 for path in pathlib.Path(sys.argv[1]).glob('*.json'):
     try:
         if path.stat().st_size > 65536:
             continue
         record = json.loads(path.read_text())
-        if record['schema'] != 1 or not os.access(record['python'], os.X_OK):
+        if record['schema'] != 1:
             continue
         value = record['value']
         if not isinstance(record['key'], str) or not isinstance(value, dict):
             continue
-        if not isinstance(record['files'], dict) or not record['files']:
-            continue
-        if 'script' in value:
-            if value['script'] != record['key']:
+        if 'install' in value:
+            if not isinstance(value['install'], str) or not os.path.isdir(value['install']):
                 continue
-        elif not all(isinstance(value[k], str) for k in ('distribution', 'digest', 'marker')):
-            continue
-        if not all(hashlib.sha256(pathlib.Path(p).read_bytes()).hexdigest() == digest
-                   for p, digest in record['files'].items()):
-            continue
+            ready = value.get('ready')
+            if ready and subprocess.call(
+                ['sh', '-c', ready],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            ) != 0:
+                continue
+        else:
+            if not os.access(record['python'], os.X_OK):
+                continue
+            if not isinstance(record['files'], dict) or not record['files']:
+                continue
+            if 'script' in value:
+                if value['script'] != record['key']:
+                    continue
+            elif not all(isinstance(value[k], str) for k in ('distribution', 'digest', 'marker')):
+                continue
+            if not all(hashlib.sha256(pathlib.Path(p).read_bytes()).hexdigest() == digest
+                       for p, digest in record['files'].items()):
+                continue
         records[record['key']] = record
     except (OSError, ValueError, KeyError, TypeError):
         continue
@@ -50,6 +64,11 @@ def write(path, data):
     temporary = path.with_name(path.name + '.' + uuid.uuid4().hex + '.tmp')
     temporary.write_bytes(data)
     os.replace(temporary, path)
+if 'install' in value:
+    record = dict(schema=1, key=key, python='', value=value, files={})
+    write(directory / (hashlib.sha256(key.encode()).hexdigest() + '.json'),
+          json.dumps(record).encode())
+    sys.exit(0)
 files = []
 if 'script' in value:
     files.append(pathlib.Path(value['script']))
@@ -88,6 +107,32 @@ def directory(runtime: Runtime) -> str:
     return f"{script_directory(runtime)}-prepared"
 
 
+def load_prepared_command(root: str) -> str:
+    pointer = shlex.quote(f"{root}/python")
+    root_q = shlex.quote(root)
+    return (
+        f"if [ -d {root_q} ]; then "
+        f'python=""; if [ -r {pointer} ]; then python=$(cat {pointer}); fi; '
+        'if [ ! -x "$python" ]; then python=$(command -v python3 || command -v python || true); fi; '
+        f'if [ -n "$python" ] && [ -x "$python" ]; then "$python" -I -c {shlex.quote(_LOAD)} {root_q}; fi; fi'
+    )
+
+
+def apply_prepared(cache: RuntimeCache, root: str, output: str) -> None:
+    if output.strip():
+        try:
+            records = json.loads(output)
+            for key, record in records.items():
+                cache.prepared[key] = record
+                if script := record["value"].get("script"):
+                    cache.uv_interpreters[script] = record["python"]
+                elif record["value"].get("install"):
+                    cache.installed.add(key)
+        except (ValueError, KeyError, TypeError, AttributeError):
+            pass
+    cache.prepared_loaded.add(root)
+
+
 async def load_prepared(runtime: Runtime) -> None:
     cache = runtime.backend.cache
     root = directory(runtime)
@@ -96,25 +141,10 @@ async def load_prepared(runtime: Runtime) -> None:
     async with cache.prepared_lock:
         if root in cache.prepared_loaded:
             return
-        pointer = shlex.quote(f"{root}/python")
-        command = (
-            f"if [ -r {pointer} ]; then "
-            f'python=$(cat {pointer}); if [ -x "$python" ]; then '
-            f'"$python" -I -c {shlex.quote(_LOAD)} {shlex.quote(root)}; fi; fi'
-        )
-        result = await runtime.run(["sh", "-c", command], {})
+        result = await runtime.run(["sh", "-c", load_prepared_command(root)], {})
         # Missing or damaged preparation is just a cold setup, including a
         # deleted interpreter that prevented the manifest reader from starting.
-        if result.exit_code == 0 and result.stdout.strip():
-            try:
-                records = json.loads(result.stdout)
-                for key, record in records.items():
-                    cache.prepared[key] = record
-                    if script := record["value"].get("script"):
-                        cache.uv_interpreters[script] = record["python"]
-            except (ValueError, KeyError, TypeError, AttributeError):
-                pass
-        cache.prepared_loaded.add(root)
+        apply_prepared(cache, root, result.stdout if result.exit_code == 0 else "")
 
 
 def record_arguments(runtime: Runtime, key: str, value: dict) -> list[str]:

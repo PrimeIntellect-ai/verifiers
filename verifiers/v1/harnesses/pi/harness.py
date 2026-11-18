@@ -94,6 +94,11 @@ class PiHarness(ACPHarness[PiHarnessConfig]):
         await ensure_installed(
             runtime,
             directory=PI_DIR,
+            ready=(
+                f'[ -x "{ACP_BIN}" ] && '
+                f'[ "$(cat "{PACKAGES_DIR}/.versions" 2>/dev/null)" = '
+                f'"{self.config.version}:{ACP_VERSION}" ]'
+            ),
             install=INSTALL,
             env={
                 "AGENT_PI_VERSION": self.config.version,
