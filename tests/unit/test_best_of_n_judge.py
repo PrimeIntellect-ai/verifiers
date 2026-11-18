@@ -159,3 +159,33 @@ async def test_a_failed_attempt_skips_judging(make_trace):
     await env.run(vf.Task(vf.TaskData(prompt="go")), agents)
     assert judge.tasks == []
     assert all("judge" not in t.rewards for t in attempts)
+
+
+@pytest.mark.parametrize(
+    "rewards,threshold,best,pass_at_n",
+    [
+        # A crashed attempt scores 0, which would top the negative rewards.
+        ([-0.5, -1.0, None], 1.0, [1.0, 0.0, 0.0], 0.0),
+        # ...and would reach a threshold of 0 that no real attempt did.
+        ([-0.5, -1.0, None], 0.0, [1.0, 0.0, 0.0], 0.0),
+        ([1.0, None], 1.0, [1.0, 0.0], 1.0),
+        ([None, None, None], 0.0, [0.0, 0.0, 0.0], 0.0),
+    ],
+)
+async def test_finalize_ranks_only_attempts_that_ran(
+    make_trace, rewards, threshold, best, pass_at_n
+):
+    env = make_env(threshold=threshold)
+    attempts = []
+    for reward in rewards:  # None: crashed before scoring, so no rewards
+        trace = make_trace() if reward is None else attempt(make_trace, reward)
+        trace.ok = reward is not None
+        trace.record_metric("task_reward", trace.reward)
+        attempts.append(trace)
+    episode = vf.Episode(
+        task=vf.TraceTask(type="Task", data=vf.TaskData(prompt="go")),
+        traces=attempts,
+    )
+    await env.finalize(vf.Task(vf.TaskData(prompt="go")), episode)
+    assert [t.metrics["best"] for t in attempts] == best
+    assert all(t.metrics["pass_at_n"] == pass_at_n for t in attempts)

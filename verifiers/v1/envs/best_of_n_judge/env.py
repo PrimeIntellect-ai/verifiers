@@ -323,15 +323,19 @@ class BestOfNJudgeEnv(BestOfNEnv, vf.Env[BestOfNJudgeEnvConfig]):
     async def finalize(self, task: vf.Task, episode: vf.Episode) -> None:
         """best-of-n's sibling metrics over the attempts alone: `best` marks the
         attempt with the top final (judged) reward, `pass_at_n` whether any
-        attempt's own task reward reached the threshold."""
+        attempt's own task reward reached the threshold. A crashed attempt was
+        never scored, so it is never `best` and never counts toward `pass_at_n`."""
         attempts = [t for t in episode.traces if t.agent.name == "agent"]
-        top = max(t.reward for t in attempts)
+        scored = [t for t in attempts if t.ok]
+        top = max((t.reward for t in scored), default=None)
         solved = float(
-            max(t.metrics["task_reward"] or 0.0 for t in attempts)
-            >= self.config.threshold
+            any(
+                (t.metrics["task_reward"] or 0.0) >= self.config.threshold
+                for t in scored
+            )
         )
         for trace in attempts:
-            trace.record_metric("best", float(trace.reward == top))
+            trace.record_metric("best", float(trace.ok and trace.reward == top))
             trace.record_metric("pass_at_n", solved)
 
 
