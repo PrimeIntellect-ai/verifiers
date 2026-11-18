@@ -210,6 +210,7 @@ class Steering:
     def __init__(self) -> None:
         self._run: Rollout | None = None
         self._taken: dict[str, dict] = {}
+        self._steering = asyncio.Lock()
 
     async def steer(self, message: str, *, message_id: str | None = None) -> dict:
         """Inject a user message into the running turn and return the harness's
@@ -219,22 +220,31 @@ class Steering:
         `{"outcome": "promptRequired", "reason": "noRunningTurn"}` and nothing is
         delivered; a message is never queued or replayed into a later attempt. A
         `message_id` the run took answers with its first receipt and delivers
-        nothing again, as `Interaction.steer` does. Raises `NotImplementedError`
-        when the harness can't be steered."""
-        if message_id in self._taken:
-            return dict(self._taken[message_id])
-        run = self._run
-        if run is None:
-            return {"outcome": "promptRequired", "reason": "noRunningTurn"}
-        try:
-            receipt = await run.steer(message, message_id=message_id)
-        except RuntimeError:
-            if run.closed or not run.ok:
+        nothing again, as `Interaction.steer` does; a delivery finishes even when
+        its caller is cancelled, so a retry sees its receipt. Raises
+        `NotImplementedError` when the harness can't be steered."""
+        delivery = asyncio.create_task(self._deliver(message, message_id))
+        delivery.add_done_callback(lambda done: done.cancelled() or done.exception())
+        return dict(await asyncio.shield(delivery))
+
+    async def _deliver(self, message: str, message_id: str | None) -> dict:
+        # One at a time, as `ModelRoute` updates: a repeated `message_id` waits for the first one's receipt.
+        async with self._steering:
+            if message_id in self._taken:
+                return self._taken[message_id]
+            if (run := self._run) is None:
                 return {"outcome": "promptRequired", "reason": "noRunningTurn"}
-            raise
-        if message_id is not None and receipt.get("outcome") == "injected":
-            self._taken[message_id] = dict(receipt)
-        return receipt
+            try:
+                receipt = await run.steer(message, message_id=message_id)
+            except NotImplementedError:
+                raise
+            except RuntimeError:
+                if run.closed or not run.ok:
+                    return {"outcome": "promptRequired", "reason": "noRunningTurn"}
+                raise
+            if message_id is not None and receipt.get("outcome") == "injected":
+                self._taken[message_id] = dict(receipt)
+            return receipt
 
 
 class Interaction:
