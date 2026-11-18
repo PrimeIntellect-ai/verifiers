@@ -1,15 +1,63 @@
 """One task, two segments: the harness preserves context and MCP access across a resumed
 exchange (echo-acp-resume), across the harness x runtime grid."""
 
+import re
+
 import pytest
 from grid import assert_one_branch, grid
+from pydantic_core import to_json
+
+from verifiers.v1.clients.eval import EvalClient
 
 
 @pytest.mark.parametrize(
     "harness,harness_runtime", grid(needs=("resume", "mcp")), indirect=True
 )
-async def test_resume_tool(run, harness, harness_runtime):
+async def test_resume_tool(run, harness, harness_runtime, monkeypatch):
     """Each harness preserves context and MCP access across two segments."""
+    if harness.id == "codex":
+        send = EvalClient._request
+
+        async def inspect_rejection(self, url, body, headers, **kwargs):
+            try:
+                return await send(self, url, body, headers, **kwargs)
+            except Exception as error:
+                match = re.search(r"InputItemWire at line 1 column (\d+)", str(error))
+                if match and isinstance(body.get("input"), list):
+                    wire = to_json(body, inf_nan_mode="null")
+                    prefix = b'"input":['
+                    offset = wire.index(prefix) + len(prefix)
+                    for index, item in enumerate(body["input"]):
+                        end = offset + len(to_json(item, inf_nan_mode="null"))
+                        fields = {
+                            key: type(value).__name__ for key, value in item.items()
+                        }
+                        tags = {
+                            key: item[key]
+                            for key in ("type", "role", "phase", "status")
+                            if key in item
+                        }
+                        children = {
+                            key: [p.get("type") for p in value if isinstance(p, dict)][
+                                :10
+                            ]
+                            for key, value in item.items()
+                            if isinstance(value, list)
+                        }
+                        print(
+                            "RESPONSES INPUT",
+                            index,
+                            "bytes",
+                            offset + 1,
+                            end,
+                            tags,
+                            fields,
+                            children,
+                        )
+                        offset = end + 1
+                raise
+
+        monkeypatch.setattr(EvalClient, "_request", inspect_rejection)
     (episode,) = await run(
         "echo-acp-resume",
         harness=harness,
@@ -24,7 +72,14 @@ async def test_resume_tool(run, harness, harness_runtime):
     assert_one_branch(trace, harness, forks=("openclaw",))
     assert trace.ok, [error.message for error in trace.errors]
     assert trace.stop_condition == "user_closed"
-    assert trace.rewards["resumed"].score == 1.0
+    assert trace.rewards["resumed"].score == 1.0, [
+        (
+            segment["roles"],
+            [value[:240] for value in segment["tool_outputs"]],
+            segment["last_reply"][:240],
+        )
+        for segment in trace.info["acp_segments"]
+    ]
     segments = trace.info["acp_segments"]
     assert len(segments) == 2
     assert segments[0]["terminated"] is False
