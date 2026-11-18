@@ -12,7 +12,7 @@ import numpy as np
 from openai import OpenAIError
 from openai.types import CompletionUsage
 from renderers import OverlongPromptError, RenderedTokens, Renderer, RendererConfig
-from renderers.base import ToolCallParseStatus, is_multimodal
+from renderers.base import MultiModalData, PlaceholderRange, ToolCallParseStatus
 
 from verifiers.v1.clients.base import build_async_openai
 from verifiers.v1.clients.client import SESSION_ID_HEADER, Client
@@ -25,6 +25,7 @@ from verifiers.v1.graph import PendingTurn
 from verifiers.v1.types import (
     AssistantMessage,
     FinishReason,
+    MMPlaceholders,
     Response,
     SamplerSupport,
     Tool,
@@ -106,11 +107,28 @@ def serialize_completion(response: Response, model: str) -> dict:
     }
 
 
+def _placeholders_from(
+    ranges: Mapping[str, Any] | None,
+) -> MMPlaceholders | None:
+    """`{modality: [(offset, length)]}` from renderer `PlaceholderRange`s or vLLM's
+    `{"offset", "length"}` dicts."""
+    if ranges is None:
+        return None
+    return {
+        modality: [
+            (r["offset"], r["length"])
+            if isinstance(r, Mapping)
+            else (r.offset, r.length)
+            for r in modality_ranges
+        ]
+        for modality, modality_ranges in ranges.items()
+    }
+
+
 def response_from_generate(
     result: dict,
     model: str,
     bridged_turn: PendingTurn | None = None,
-    mm_token_type_id_map: dict[int, int] | None = None,
 ) -> Response:
     """Parse a `renderers.client.generate` result dict into a typed `Response`,
     mirroring the chat client's `response_from_wire` (plus the token encoding)."""
@@ -146,15 +164,14 @@ def response_from_generate(
         message_spans = bridged_turn.prompt_message_spans(attribution)
     else:
         message_spans = attribution.message_token_spans()
-    raw_mm_placeholders = result.get("mm_placeholders")
+    # Where the renderer placed media in its logical prompt; vLLM's ranges cover the
+    # expanded prompt it returned (None when nothing was expanded, so the two coincide).
+    mm_data = attribution.multi_modal_data if attribution is not None else None
+    renderer_mm_placeholders = _placeholders_from(
+        mm_data.mm_placeholders if mm_data is not None else None
+    )
     mm_placeholders = (
-        sorted(
-            (placeholder["offset"], placeholder["length"])
-            for ranges in raw_mm_placeholders.values()
-            for placeholder in ranges
-        )
-        if raw_mm_placeholders is not None
-        else None
+        _placeholders_from(result.get("mm_placeholders")) or renderer_mm_placeholders
     )
     return Response(
         id=result.get("request_id", ""),
@@ -185,7 +202,7 @@ def response_from_generate(
             if attribution is not None and attribution.is_content is not None
             else None,
             mm_placeholders=mm_placeholders,
-            mm_token_type_id_map=mm_token_type_id_map,
+            renderer_mm_placeholders=renderer_mm_placeholders,
             routed_experts=result.get("routed_experts"),
             sampler_support=SamplerSupport.from_response(support)
             if (support := result.get("sampler_support")) is not None
@@ -413,9 +430,6 @@ class TrainClient(Client):
 
         async with pool.acquire() as slot:
             renderer = slot.renderer
-            mm_token_type_id_map = (
-                renderer.mm_token_type_id_map if is_multimodal(renderer) else None
-            )
             has_images = _has_multimodal_content(prompt)
             process_multimodal = not has_images
             if has_images and not getattr(
@@ -437,6 +451,17 @@ class TrainClient(Client):
             previous_ids = turn.previous_renderer_token_ids() if can_bridge else None
             if previous_ids is not None:
                 previous_prompt_ids, previous_completion_ids = previous_ids
+
+                # Token ids can't tell placed media from a sampled or literal placeholder
+                # token, so the bridge gets the prefix's placeholder positions.
+                previous_placeholders = turn.previous_mm_placeholders()
+                if previous_placeholders:
+                    bridge_kwargs["previous_multi_modal_data"] = MultiModalData(
+                        mm_placeholders={
+                            modality: [PlaceholderRange(*r) for r in ranges]
+                            for modality, ranges in previous_placeholders.items()
+                        }
+                    )
 
                 def bridge():
                     return renderer.bridge_to_next_turn(
@@ -493,9 +518,7 @@ class TrainClient(Client):
                 raise ProviderError(str(e), status_code=400) from e
             except OpenAIError as e:
                 raise model_error(e) from e
-        response = response_from_generate(
-            result, model, bridged_turn, mm_token_type_id_map
-        )
+        response = response_from_generate(result, model, bridged_turn)
         # No provider response to relay (we generated), so serialize one for the program; the
         # interception server hands `Response.raw` back regardless of client.
         response.raw = serialize_completion(response, model)
