@@ -8,7 +8,7 @@ from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import DialectName, HarnessConfig, PinnedVersion
 from verifiers.v1.harnesses.node import NODE_BIN_DIR, ensure_node
 from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
-from verifiers.v1.harnesses.utils.replay import drop_blank_text
+from verifiers.v1.harnesses.utils.replay import drop_blank_text_blocks
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
@@ -46,10 +46,9 @@ class ClaudeCodeHarness(ACPHarness[ClaudeCodeHarnessConfig]):
     SUPPORTS_SKILLS = True
     SUPPORTS_TOOL_INTERCEPTION = True
 
-    # Claude Code drops whitespace-only text blocks on replay. Closed source: observed
-    # with 2.1.314, recheck on version bumps.
+    # Claude Code 2.1.327 filters each whitespace-only text block on replay.
     def replay_view(self, message: Message, dialect: DialectName | None) -> Message:
-        return drop_blank_text(message)
+        return drop_blank_text_blocks(message)
 
     async def setup(self, runtime: Runtime) -> None:
         await ensure_node(runtime)

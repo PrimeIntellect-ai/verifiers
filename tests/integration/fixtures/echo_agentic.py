@@ -53,7 +53,8 @@ class EchoAgenticTaskset(vf.Taskset[EchoAgenticTask, EchoAgenticConfig]):
                     idx=0,
                     prompt=(
                         f"Use the bash tool to write exactly the text '{phrase}' to a file "
-                        f"named {TARGET} in the current directory, then finish."
+                        f"named {TARGET} in the current directory. Use only the arguments "
+                        "required to run the command, then finish."
                     ),
                     system_prompt=SYSTEM,
                     answer=phrase,

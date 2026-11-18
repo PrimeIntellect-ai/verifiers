@@ -5,6 +5,11 @@ import pytest
 
 import verifiers.v1 as vf
 from verifiers.v1 import graph
+from verifiers.v1.dialects.anthropic import AnthropicDialect
+from verifiers.v1.harnesses.claude_code.harness import (
+    ClaudeCodeHarness,
+    ClaudeCodeHarnessConfig,
+)
 from verifiers.v1.harnesses.utils.replay import drop_blank_text, strip_text
 from verifiers.v1.types import TurnTokens
 
@@ -319,6 +324,48 @@ def test_replay_view_matches_cosmetically_rewritten_turns(view, sampled, replaye
     assert _replayed_trace(None, sampled, replayed).num_branches == 2
     trace = _replayed_trace(lambda message, _: view(message), sampled, replayed)
     assert trace.num_branches == 1
+
+
+@pytest.mark.parametrize(
+    "blocks,branches",
+    [(["One ", "\n\n", " two"], 1), (["One \n\n two"], 2)],
+)
+def test_claude_replay_only_drops_independently_blank_text_blocks(blocks, branches):
+    dialect = AnthropicDialect()
+    harness = ClaudeCodeHarness(ClaudeCodeHarnessConfig())
+    response = dialect.validate_response(
+        {
+            "type": "message",
+            "id": "msg",
+            "model": "test",
+            "role": "assistant",
+            "content": [{"type": "text", "text": block} for block in blocks],
+            "usage": {"input_tokens": 1, "output_tokens": 1},
+        }
+    )
+    sampled = dialect.parse_response(response).message
+    assert sampled.content == "One \n\n two"
+    (replayed,) = dialect.parse_request(
+        {
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "text", "text": "One "},
+                        {"type": "text", "text": " two"},
+                    ],
+                }
+            ]
+        }
+    ).messages
+    fields = {"content", "text_block_offsets"}
+    trace = _replayed_trace(
+        harness.replay_view,
+        sampled.model_dump(include=fields),
+        replayed.model_dump(include=fields),
+        dialect="anthropic_messages",
+    )
+    assert trace.num_branches == branches
 
 
 @pytest.mark.parametrize(
