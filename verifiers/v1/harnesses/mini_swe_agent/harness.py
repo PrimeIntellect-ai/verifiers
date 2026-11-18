@@ -20,7 +20,7 @@ class MiniSWEAgentHarnessConfig(HarnessConfig):
 
 class MiniSWEAgentHarness(Harness[MiniSWEAgentHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = False
-    SUPPORTS_MCP = False
+    SUPPORTS_MCP = True
 
     async def setup(self, runtime: Runtime) -> None:
         source = PROGRAM_SOURCE.replace("{version}", self.config.version)
@@ -41,6 +41,13 @@ class MiniSWEAgentHarness(Harness[MiniSWEAgentHarnessConfig]):
         _, prompt = self.resolve_text_prompt(data)
         if prompt is None:
             raise ValueError("mini-swe-agent requires a task prompt")
+        if mcp_urls:
+            # Harbor's mini-SWE-agent adapter makes the task's MCP servers reachable from bash.
+            servers = "\n".join(
+                f"- {name}: streamable-http transport, url: {url}"
+                for name, url in mcp_urls.items()
+            )
+            prompt += f"\n\nMCP Servers:\nThe following MCP servers are available for this task.\n{servers}\n"
         source = PROGRAM_SOURCE.replace("{version}", self.config.version)
         args = [
             "--model",
