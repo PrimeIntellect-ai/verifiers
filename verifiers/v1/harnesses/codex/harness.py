@@ -460,17 +460,19 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
         self._staged_configs[home] = tomllib.loads(mcp_config)
         writes.append(runtime.write(f"{home}/config.toml", mcp_config.encode()))
         await asyncio.gather(*writes)
+        disabled = set(self.config.disabled_tools or ())
         features: dict[str, object] = {
             "apps": False,
             "plugins": False,
             "code_mode": self.config.code_mode,
             "multi_agent": False,
             "multi_agent_v2": {"enabled": self.config.multi_agent},
-            **{tool: False for tool in self.config.disabled_tools or []},
+            **{tool: False for tool in disabled - {"web_search"}},
         }
-        config = {
+        config: dict[str, object] = {
             "model": ctx.model,
             "features": features,
+            **({"web_search": "disabled"} if "web_search" in disabled else {}),
         }
         return {
             **self.config.resolved_env,
