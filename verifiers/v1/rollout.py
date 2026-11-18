@@ -76,6 +76,12 @@ async def resolve_agent_runtime(runtime: Runtime, user: str | None) -> Runtime:
     runtime ignoring the user never runs the agent as root."""
     if user is None:
         return runtime
+    if user.isdigit():
+        lookup = await runtime.run(["getent", "passwd", user], {})
+        fields = lookup.stdout.strip().split(":")
+        if lookup.exit_code or len(fields) < 7 or fields[2] != user or not fields[0]:
+            raise TaskError(f"agent_user UID {user!r} does not exist in the image")
+        user = fields[0]
     lookup = await runtime.run(["sh", "-c", _HOME_PROBE, "sh", user], {})
     home = lookup.stdout.strip()
     if not home:
