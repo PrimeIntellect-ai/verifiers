@@ -3,6 +3,7 @@ to a file, checked in the runtime) across the harness x runtime grid, and on pri
 every other `dialect` a harness config can select. A turn the harness re-sends
 differently, beyond what its `replay_view` declares, forks the trace."""
 
+import json
 from collections import defaultdict
 
 import pytest
@@ -28,7 +29,7 @@ async def test_multi_turn(run, harness, harness_runtime):
         runtime=harness_runtime,
         max_turns=10,
         max_tokens=8192,
-        n=12
+        n=16
         if harness.id == "claude-code" and harness_runtime["type"] == "prime"
         else 1,
     )
@@ -92,6 +93,39 @@ async def test_multi_turn(run, harness, harness_runtime):
                                 label in str(a.message.content).lower(),
                                 label in str(b.message.content).lower(),
                             )
+                    if a.message.role == b.message.role == "assistant":
+                        for first, replay in zip(
+                            a.message.tool_calls or [], b.message.tool_calls or []
+                        ):
+                            print(
+                                "CLAUDE CALL",
+                                first.name == "Bash",
+                                first.name == replay.name,
+                                first.id == replay.id,
+                                first.namespace == replay.namespace,
+                            )
+                            x, y = (
+                                json.loads(first.arguments),
+                                json.loads(replay.arguments),
+                            )
+                            if isinstance(x, dict) and isinstance(y, dict):
+                                for k in (
+                                    "command",
+                                    "description",
+                                    "timeout",
+                                    "run_in_background",
+                                    "file_path",
+                                    "content",
+                                ):
+                                    if x.get(k) != y.get(k):
+                                        print(
+                                            "CLAUDE PARAM",
+                                            k,
+                                            type(x.get(k)).__name__,
+                                            type(y.get(k)).__name__,
+                                            str(x.get(k)).strip()
+                                            == str(y.get(k)).strip(),
+                                        )
     for episode in episodes:
         (trace,) = episode.traces
         assert_one_branch(trace, harness, forks=("openclaw",))

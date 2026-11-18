@@ -31,9 +31,10 @@ export PATH="/var/tmp/vf-node/bin:$PATH"
 rm -f {ready}
 # Resolve the adapter's bundled CLI to the harness pin, including across minor releases.
 mkdir -p {packages}
+cd {packages}
 printf '{"overrides":{"@agentclientprotocol/codex-acp":{"@openai/codex":"%s"}}}\n' \
-    "$AGENT_CODEX_VERSION" > {packages}/package.json
-npm install --prefix {packages} --ignore-scripts --no-audit --no-fund \
+    "$AGENT_CODEX_VERSION" > package.json
+npm install --ignore-scripts --no-audit --no-fund \
     --omit=dev \
     "@agentclientprotocol/codex-acp@$AGENT_CODEX_ACP_VERSION" \
     "@openai/codex@$AGENT_CODEX_VERSION" >/dev/null
