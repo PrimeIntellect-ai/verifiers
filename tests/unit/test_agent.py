@@ -8,8 +8,11 @@ import pytest
 
 import verifiers.v1 as vf
 from verifiers.v1.agent import Interaction
+from verifiers.v1.clients import EvalClientConfig, ModelContext, ModelRoute
 from verifiers.v1.graph import MessageNode
+from verifiers.v1.harnesses.utils.replay import drop_blank_text_blocks
 from verifiers.v1.rollout import Rollout, RolloutTimeouts
+from verifiers.v1.session import RolloutSession
 from verifiers.v1.types import AssistantMessage
 
 
@@ -31,6 +34,45 @@ def make_trace() -> vf.Trace:
             hash="content-digest",
         ),
     )
+
+
+async def test_blocked_tool_result_survives_an_assistant_replay():
+    def replace_result(request: vf.Request) -> vf.Request | None:
+        tool = request.messages[-1]
+        if isinstance(tool, vf.ToolMessage) and tool.content == "":
+            tool.content = "Replacement result"
+            return request
+        return None
+
+    trace = make_trace()
+    trace._replay_view = lambda message, dialect: (
+        drop_blank_text_blocks(message) if dialect == "anthropic_messages" else message
+    )
+    sampled = AssistantMessage(
+        content="Ready\n",
+        text_block_offsets=[5],
+        tool_calls=[vf.ToolCall(id="call", name="lookup", arguments="{}")],
+    )
+    trace.nodes.append(MessageNode(message=sampled, sampled=True))
+    session = RolloutSession(
+        ModelRoute(ModelContext(model="test", client=EvalClientConfig())),
+        trace,
+        request_interceptors=[replace_result],
+        gates_tools=True,
+    )
+    await session.gate_tool_calls(0, "anthropic_messages")
+    assert (await session.decide_tool("call"))["action"] == "deny"
+    replay = sampled.model_copy(update={"content": "Ready", "text_block_offsets": None})
+    request = vf.Request(
+        messages=[
+            replay,
+            vf.ToolMessage(tool_call_id="call", content="Tool unavailable"),
+        ]
+    )
+    rewritten, _, _ = await session.rewrite_request(
+        request, dialect="anthropic_messages"
+    )
+    assert rewritten.messages[-1].content == "Replacement result"
 
 
 def make_rollout(trace: vf.Trace, session, time_remaining=None):
