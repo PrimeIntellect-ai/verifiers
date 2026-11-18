@@ -8,6 +8,7 @@ from grid import assert_one_branch, grid
 from pydantic_core import to_json
 
 from verifiers.v1.clients.eval import EvalClient
+from verifiers.v1.errors import ProviderError
 
 
 @pytest.mark.parametrize(
@@ -55,6 +56,28 @@ async def test_resume_tool(run, harness, harness_runtime, monkeypatch):
                             children,
                         )
                         offset = end + 1
+                    items = body["input"]
+                    print(
+                        "ACP title request",
+                        "title for a conversation" in str(items[-1]),
+                    )
+                    for label, sample in [
+                        ("without catalog", items[1:]),
+                        (
+                            "catalog alone",
+                            [items[0], {"role": "user", "content": "Reply OK."}],
+                        ),
+                        ("control", [{"role": "user", "content": "Reply OK."}]),
+                    ]:
+                        try:
+                            probe = await send(
+                                self, url, {**body, "input": sample}, headers, **kwargs
+                            )
+                        except ProviderError as probe_error:
+                            print("PROVIDER A/B", label, str(probe_error)[:400])
+                        else:
+                            print("PROVIDER A/B", label, probe.status_code)
+                            await probe.aclose()
                 raise
 
         monkeypatch.setattr(EvalClient, "_request", inspect_rejection)
