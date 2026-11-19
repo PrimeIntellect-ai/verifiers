@@ -33,14 +33,21 @@ logger = get_logger(__name__)
 # Python images, then fall back to the standalone installer (curl/wget), installing curl + CA
 # certs when a bare image has no downloader. Both install paths land in ~/.local/bin, which we
 # prepend to PATH first. (Installing needs network + one of pip / curl / wget / apt-get / apk.)
+# The standalone installer runs unmanaged (UV_UNMANAGED_INSTALL): it then only places the
+# binaries, without editing shell profiles or writing its self-update receipt to
+# ${XDG_CONFIG_HOME:-$HOME/.config}/uv. That receipt is shared by every user with the same
+# HOME (a task image can give root and the agent user one), and an installer that cannot
+# overwrite another user's receipt fails after it has already installed uv.
 _INSTALL_CURL = (  # only when the image has no downloader; needs a known package manager
     "{ command -v curl >/dev/null 2>&1 || command -v wget >/dev/null 2>&1; } "
     "|| { apt-get update -qq && apt-get install -y -qq curl ca-certificates; } "
     "|| apk add --no-cache curl ca-certificates"
 )
 _DOWNLOAD_UV = (
-    "{ command -v curl >/dev/null 2>&1 && curl -LsSf https://astral.sh/uv/install.sh | sh; } "
-    "|| { command -v wget >/dev/null 2>&1 && wget -qO- https://astral.sh/uv/install.sh | sh; }"
+    "{ command -v curl >/dev/null 2>&1 && curl -LsSf https://astral.sh/uv/install.sh "
+    '| UV_UNMANAGED_INSTALL="$HOME/.local/bin" sh; } '
+    "|| { command -v wget >/dev/null 2>&1 && wget -qO- https://astral.sh/uv/install.sh "
+    '| UV_UNMANAGED_INSTALL="$HOME/.local/bin" sh; }'
 )
 _ENSURE_UV = (
     'export PATH="$HOME/.local/bin:$PATH" UV_INSTALL_DIR="$HOME/.local/bin"; '
@@ -180,6 +187,15 @@ class RuntimeBackend(ABC):
     SUPPORTS_USER_SWITCHING: ClassVar[bool] = False
     """Whether handles can bind another existing user."""
 
+    SUPPORTS_STOP_CONFIRMATION: ClassVar[bool] = False
+    """Whether `verify_stopped` can confirm the provider resource was terminated."""
+
+    SUPPORTS_MEMORY_LIMIT: ClassVar[bool] = False
+    """Whether a positive `config.memory` enforces a runtime-wide memory ceiling."""
+
+    SUPPORTS_DISK_LIMIT: ClassVar[bool] = False
+    """Whether a positive `config.disk` enforces a runtime-wide storage ceiling."""
+
     SUPPORTS_PORT_EXPOSURE: ClassVar[bool] = False
     """Whether `expose` can publish a port inside this runtime to the outside, so a
     server here is reachable from another runtime."""
@@ -265,6 +281,12 @@ class RuntimeBackend(ABC):
         """Synchronously free the provisioned resource — best-effort and idempotent. The
         source of truth for teardown: usable from the atexit backstop where async machinery
         is dead, and run off the event loop by `stop` on the normal path. Default no-op."""
+
+    async def verify_stopped(self) -> None:
+        """Confirm provider termination after `stop`, or raise without returning a
+        result whose safety depends on cleanup. Ordinary rollout cleanup remains
+        best-effort; callers that execute untrusted submissions use this check."""
+        raise SandboxError(f"the {self.type} runtime cannot confirm termination")
 
     @abstractmethod
     async def exec(

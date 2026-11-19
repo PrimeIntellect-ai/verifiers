@@ -4,7 +4,10 @@ import argparse
 import asyncio
 import json
 import logging
+import os
+import selectors
 import subprocess
+import time
 import traceback
 from contextlib import AsyncExitStack
 from pathlib import Path
@@ -32,6 +35,7 @@ from tenacity import (
 if TYPE_CHECKING:
     # The harness bundles this module into the generated script before execution.
     from verifiers.v1.harnesses.utils.compaction import (  # noqa: TC004
+        TOOL_OUTPUT_MAX_BYTES,
         Compactor,
         bound_tool_message,
         compactable,
@@ -183,16 +187,62 @@ def run_search(
         return f"search failed ({e}). Try again or rephrase the query."
 
 
+class _BashOutput:
+    def __init__(self) -> None:
+        self.head = b""
+        self.tail = b""
+        self.size = 0
+
+    def add(self, chunk: bytes) -> None:
+        self.head += chunk[: max(0, TOOL_OUTPUT_MAX_BYTES - len(self.head))]
+        self.tail = (self.tail + chunk)[-TOOL_OUTPUT_MAX_BYTES:]
+        self.size += len(chunk)
+
+
 def run_bash(command: str) -> str:
     try:
-        result = subprocess.run(
+        with subprocess.Popen(
             ["bash", "-c", command],
-            capture_output=True,
-            text=True,
-            timeout=3600,
-            check=False,
-        )
-        return result.stdout + result.stderr
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        ) as process:
+            stdout, stderr = _BashOutput(), _BashOutput()
+            deadline = time.monotonic() + 3600
+            try:
+                with selectors.DefaultSelector() as selector:
+                    assert process.stdout is not None and process.stderr is not None
+                    selector.register(process.stdout, selectors.EVENT_READ, stdout)
+                    selector.register(process.stderr, selectors.EVENT_READ, stderr)
+                    while selector.get_map():
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            raise subprocess.TimeoutExpired(process.args, 3600)
+                        for key, _ in selector.select(remaining):
+                            chunk = os.read(key.fd, 8192)
+                            if chunk:
+                                key.data.add(chunk)
+                            else:
+                                selector.unregister(key.fileobj)
+                    process.wait(timeout=max(0, deadline - time.monotonic()))
+            finally:
+                # Do not communicate() here: descendants may still hold the pipes.
+                if process.returncode is None:
+                    process.kill()
+                    process.wait()
+        size = stdout.size + stderr.size
+        if size <= TOOL_OUTPUT_MAX_BYTES:
+            text = "".join(
+                output.head.decode().replace("\r\n", "\n").replace("\r", "\n")
+                for output in (stdout, stderr)
+            )
+        else:
+            marker = f"\n[... bash output truncated; {size} bytes total ...]\n"
+            keep = (TOOL_OUTPUT_MAX_BYTES - len(marker.encode())) // 2
+            # Preserve stdout-then-stderr ordering, including when just one is large.
+            head = (stdout.head + stderr.head)[:keep].decode(errors="ignore")
+            tail = (stdout.tail + stderr.tail)[-keep:].decode(errors="ignore")
+            text = head + marker + tail
+        return text.replace("\r\n", "\n").replace("\r", "\n")
     except Exception as e:  # noqa: BLE001 - tool failures are returned to the model
         return f"error: {e}"
 
@@ -466,13 +516,22 @@ async def run_chat_loop(
             messages = await compactor.compact(messages)
 
 
+def read_staged(path: str) -> bytes:
+    """Read and delete a file the harness staged for this launch; empty without one."""
+    if not path:
+        return b""
+    file = Path(path)
+    data = file.read_bytes()
+    file.unlink()
+    return data
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--base-url", required=True)
     parser.add_argument("--api-key", required=True)
     parser.add_argument("--model", required=True)
-    parser.add_argument("--system-prompt", default="")
-    parser.add_argument("--prompt", default="")
+    parser.add_argument("--system-prompt-file", default="")
     parser.add_argument("--initial-messages-file", default="")
     parser.add_argument("--mcp-config", default="")
     parser.add_argument("--tool-interception-url", default="")
@@ -488,12 +547,8 @@ def parse_args() -> argparse.Namespace:
 
 async def main() -> None:
     args = parse_args()
-    initial = []
-    if args.initial_messages_file:
-        path = Path(args.initial_messages_file)
-        payload = path.read_bytes()
-        path.unlink()
-        initial = json.loads(payload)
+    system_prompt = read_staged(args.system_prompt_file).decode()
+    initial = json.loads(read_staged(args.initial_messages_file) or b"[]")
     # Minimal task images may lack a system CA bundle.
     client = AsyncOpenAI(
         base_url=args.base_url,
@@ -525,14 +580,9 @@ async def main() -> None:
             mcp_tools, dispatch, servers = [], {}, {}
         tools += mcp_tools
         messages = (
-            [{"role": "system", "content": args.system_prompt}]
-            if args.system_prompt
-            else []
+            [{"role": "system", "content": system_prompt}] if system_prompt else []
         )
-        if initial:
-            messages.extend(initial)
-        elif args.prompt:
-            messages.append({"role": "user", "content": args.prompt})
+        messages.extend(initial)
         compactor = Compactor(
             client,
             args.model,

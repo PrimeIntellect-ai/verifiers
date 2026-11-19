@@ -47,7 +47,7 @@ Timeouts and token budgets can be tuned at evaluation time under `env.agent`:
 
 ## Execution users
 
-On `docker` and `prime`, you can set `TaskData.agent_user` to run the agent under an existing non-root user account in the container image (with a writable home directory). Task `setup` still runs as the container's default user, after which harness setup, the agent process itself, and any colocated task tools execute as `agent_user`. Once the agent finishes, `finalize`, scoring, and artifact collection switch back to the default user.
+On `docker` and `prime`, you can set `TaskData.agent_user` to run the agent under an existing non-root user account in the container image (with a writable home directory). Task `setup` still runs as the container's default user, after which harness setup, the agent process itself, and Harbor MCP adapters execute as `agent_user`. Once the agent finishes, `finalize`, scoring, and artifact collection switch back to the default user.
 
 Calling `runtime.with_user(...)` or `runtime.with_env(...)` returns an independent view over the same underlying resource without mutating existing views. Under the hood, a `RuntimeBackend` (such as `DockerBackend` or `PrimeBackend`) owns the provider lifecycle, including container startup, network policy, and teardown; `backend.bind()` creates a `Runtime` view without provisioning a new resource, and `runtime.backend` exposes the backend when explicit infrastructure operations are needed. `Agent.provision()` lends a runtime whose cleanup remains owned by the caller's context.
 
@@ -189,7 +189,7 @@ expect `sh` and Python 3 in the runtime's default image.
 
 A `Deployment` coordinates all execution resources for a single rollout attempt: provisioning, placement, connectivity, and cleanup of the harness environment, the task workspace, supporting sidecar services, and fresh verification targets.
 
-The **workspace** (`deployment.workspace`) is the `Runtime` where task commands run and task files live; setting `agent.deployment.mode = "colocated"` places the harness and colocated tools inside that same workspace.
+The **workspace** (`deployment.workspace`) is the `Runtime` where task commands run and task files live; setting `agent.deployment.mode = "colocated"` places the harness inside that same workspace. Toolsets run in their own runtimes or named task services.
 
 On Prime, return a `ServicesSpec` from `deployment_spec()` to provision one native VM per named service beside the task's `main` workspace. Each service has its own image, resources, filesystem, and egress policy. The VMs join a private LAN for the rollout; they can call each other and the workspace through the names in `deployment.hosts`. Services bind to `0.0.0.0`, since each VM has its own loopback interface. No Docker daemon runs inside these VMs.
 
@@ -292,4 +292,4 @@ vf.TaskData(
 
 Unset, isolated scoring runs under `TaskData.network` and shared scoring keeps the agent phase's network. Shared scoring can't restrict a runtime that started without a policy; use isolated scoring for that. A hook that needs a different policy at another point can call `runtime.set_network(policy)`, which enforces the policy as given on the whole runtime.
 
-These egress rules govern processes inside the sandbox (including task tools configured with `colocated = true`), not Python hooks running on the evaluator or tools running in separate containers. For provider-hosted server tools that execute outside the sandbox, verifiers forwards supported domain restrictions to web search tools and disables any provider tools it cannot constrain (see [Harbor network policies](harbor.md#network-policies)). By default, restricted runs also append a short notice to the agent's system prompt (or first user message when the harness cannot append a system prompt) explaining the network policy; pass `--no-env.agent.network-notice` if a benchmark requires the unmodified prompt verbatim.
+These egress rules govern processes inside the sandbox, not Python hooks running on the evaluator or tools running in separate containers. For provider-hosted server tools that execute outside the sandbox, verifiers forwards supported domain restrictions to web search tools and disables any provider tools it cannot constrain (see [Harbor network policies](harbor.md#network-policies)). By default, restricted runs also append a short notice to the agent's system prompt (or first user message when the harness cannot append a system prompt) explaining the network policy; pass `--no-env.agent.network-notice` if a benchmark requires the unmodified prompt verbatim.

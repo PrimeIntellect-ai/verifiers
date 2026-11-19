@@ -36,7 +36,7 @@ INSTALL = (
     "set -e\n"
     + _ENSURE_UV
     + r"""
-prefix="$VF_PRIME_AGENT_DIR/$PRIME_AGENT_COMMIT"
+prefix="$AGENT_PRIME_AGENT_DIR/$PRIME_AGENT_COMMIT"
 if [ ! -x "$prefix/bin/prime-agent" ]; then
     case "$(uname -s)-$(uname -m)" in
         Linux-x86_64) platform=linux-x64; sha=09659961dfde201cc39f1e69b607385d708da3e591f267a4fea04970afb8b005 ;;
@@ -46,9 +46,9 @@ if [ ! -x "$prefix/bin/prime-agent" ]; then
         *) echo "unsupported prime-agent platform: $(uname -s)-$(uname -m)" >&2; exit 1 ;;
     esac
     command -v curl >/dev/null || { apt-get update -qq && apt-get install -y -qq curl ca-certificates; } || apk add --no-cache curl ca-certificates
-    release_url="$VF_PRIME_AGENT_GITHUB_RELEASE_URL/v$PRIME_AGENT_RELEASE_VERSION"
+    release_url="$AGENT_PRIME_AGENT_GITHUB_RELEASE_URL/v$PRIME_AGENT_RELEASE_VERSION"
     tarball="prime-agent-$PRIME_AGENT_RELEASE_VERSION-$platform.tar.gz"
-    download_dir="$(mktemp -d "$VF_PRIME_AGENT_DIR/install.XXXXXX")"
+    download_dir="$(mktemp -d "$AGENT_PRIME_AGENT_DIR/install.XXXXXX")"
     trap 'rm -rf "$download_dir"' EXIT
     curl -fsSL --retry 5 --retry-all-errors "$release_url/$tarball" -o "$download_dir/$tarball"
     printf '%s  %s\n' "$sha" "$tarball" > "$download_dir/SHA256SUMS"
@@ -81,6 +81,10 @@ class PrimeAgentHarnessConfig(HarnessConfig):
 
     autonomous: bool = False
     """Enable Prime Agent's autonomous continuation loop."""
+    api: str | None = None
+    """The API Prime Agent speaks to the model's provider, e.g. `openai-completions` for an
+    OpenAI-compatible endpoint that serves only chat completions. Unset, Prime Agent picks the
+    provider's native API (Responses for `openai`)."""
     dialect: Literal["auto"] = "auto"
 
 
@@ -156,8 +160,8 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
             install=INSTALL,
             env={
                 **self.config.resolved_env,
-                "VF_PRIME_AGENT_DIR": PRIME_AGENT_DIR,
-                "VF_PRIME_AGENT_GITHUB_RELEASE_URL": GITHUB_RELEASE_URL,
+                "AGENT_PRIME_AGENT_DIR": PRIME_AGENT_DIR,
+                "AGENT_PRIME_AGENT_GITHUB_RELEASE_URL": GITHUB_RELEASE_URL,
                 "PRIME_AGENT_COMMIT": self.config.commit,
                 "PRIME_AGENT_RELEASE_VERSION": PRIME_AGENT_VERSION,
                 "PRIME_AGENT_KERNEL_VENV": self._kernel_venv(),
@@ -217,6 +221,7 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
                     # The native provider owns its API path, including any version prefix.
                     "baseUrl": endpoint.removesuffix("/v1"),
                     "apiKey": KEY_VAR,
+                    **({"api": self.config.api} if self.config.api else {}),
                     "models": [
                         {
                             "id": model,
@@ -254,7 +259,11 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
         for skill in self.config.skills:
             args += ["--skill", skill_destination(skill, skills_dir)]
         if system_prompt:
-            args += ["--append-system-prompt", system_prompt]
+            # prime-agent reads a path argument as the file's contents when it
+            # builds a session, so the file stays until cleanup.
+            path = f"{agent_dir}/system-prompt.md"
+            await runtime.write(path, system_prompt.encode())
+            args += ["--append-system-prompt", path]
         if mcp_urls:
             # ACP servers need discovery guidance; importing the SDK shadows the REPL helper.
             args += [

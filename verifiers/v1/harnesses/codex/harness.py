@@ -31,8 +31,8 @@ export PATH="/var/tmp/vf-node/bin:$PATH"
 rm -f {ready}
 npm install --prefix {packages} --ignore-scripts --no-audit --no-fund \
     --omit=dev \
-    "@agentclientprotocol/codex-acp@$VF_CODEX_ACP_VERSION" \
-    "@openai/codex@$VF_CODEX_VERSION" >/dev/null
+    "@agentclientprotocol/codex-acp@$AGENT_CODEX_ACP_VERSION" \
+    "@openai/codex@$AGENT_CODEX_VERSION" >/dev/null
 touch {ready}
 """
 
@@ -40,7 +40,7 @@ touch {ready}
 GATE_HOOK = (Path(__file__).resolve().parent / "gate.mjs").read_text()
 GATE_HANDLER = {
     "type": "command",
-    "command": f'{NODE_BIN_DIR}/node "$CODEX_HOME/vf-gate.mjs"',
+    "command": f'{NODE_BIN_DIR}/node "$CODEX_HOME/tool-gate.mjs"',
     "timeout": 120,
     "async": False,
 }
@@ -96,8 +96,8 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
             install=script,
             env={
                 **self.config.resolved_env,
-                "VF_CODEX_VERSION": self.config.version,
-                "VF_CODEX_ACP_VERSION": ACP_VERSION,
+                "AGENT_CODEX_VERSION": self.config.version,
+                "AGENT_CODEX_ACP_VERSION": ACP_VERSION,
             },
             label="codex",
         )
@@ -143,14 +143,14 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
         # Codex asks its ACP client only when a command escapes the sandbox, and never in
         # full access, so the gate is a PreToolUse hook instead.
         await runtime.write(
-            f"{config.env['CODEX_HOME']}/vf-gate.mjs",
+            f"{config.env['CODEX_HOME']}/tool-gate.mjs",
             GATE_HOOK.replace("__URL__", json.dumps(url))
             .replace("__SECRET__", json.dumps(secret))
             .encode(),
         )
         # Codex keys hook trust by the config's canonical path, resolving symlinks.
         home = await runtime.run(
-            ["sh", "-c", 'cd "$1" && pwd -P', "vf-gate", config.env["CODEX_HOME"]],
+            ["sh", "-c", 'cd "$1" && pwd -P', "tool-gate", config.env["CODEX_HOME"]],
             {},
         )
         if home.exit_code:
