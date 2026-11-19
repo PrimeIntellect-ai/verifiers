@@ -29,7 +29,12 @@ INSTALL = r"""
 set -e
 export PATH="/var/tmp/vf-node/bin:$PATH"
 rm -f {ready}
-npm install --prefix {packages} --ignore-scripts --no-audit --no-fund \
+# Resolve the adapter's bundled CLI to the harness pin, including across minor releases.
+mkdir -p {packages}
+cd {packages}
+printf '{"overrides":{"@agentclientprotocol/codex-acp":{"@openai/codex":"%s"}}}\n' \
+    "$AGENT_CODEX_VERSION" > package.json
+npm install --ignore-scripts --no-audit --no-fund \
     --omit=dev \
     "@agentclientprotocol/codex-acp@$AGENT_CODEX_ACP_VERSION" \
     "@openai/codex@$AGENT_CODEX_VERSION" >/dev/null
@@ -187,20 +192,31 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
     ) -> dict[str, str]:
         home = self.trace_home(trace)
         await self.install_skills(runtime, f"{home}/skills")
-        mcp_config = "features={mcp_2026_07_28=true}\n" + (
-            "mcp_servers={"
-            + ",".join(
-                f"{json.dumps(name, ensure_ascii=False)}="
-                f"{{url={json.dumps(url, ensure_ascii=False)},required=true,"
-                'omit_tools_from=["deferred","code_mode"],'
-                f"startup_timeout_sec=60.0,tool_timeout_sec={self.config.tool_timeout}}}"
+        # The app server and its ACP sessions must start with the same provider.
+        settings = {
+            "model_provider": "custom-gateway",
+            "model_providers": {
+                "custom-gateway": {
+                    "name": "Verifiers",
+                    "base_url": endpoint,
+                    "wire_api": "responses",
+                    "env_key": "CODEX_INTERCEPT_KEY",
+                    "http_headers": {"X-Client-Feature-ID": "codex"},
+                }
+            },
+            "features": {"mcp_2026_07_28": True},
+            "mcp_servers": {
+                name: {
+                    "url": url,
+                    "required": True,
+                    "omit_tools_from": ["deferred", "code_mode"],
+                    "startup_timeout_sec": 60.0,
+                    "tool_timeout_sec": self.config.tool_timeout,
+                }
                 for name, url in mcp_urls.items()
-            )
-            + "}"
-            if mcp_urls
-            else ""
-        )
-        await runtime.write(f"{home}/config.toml", mcp_config.encode())
+            },
+        }
+        await runtime.write(f"{home}/config.toml", tomli_w.dumps(settings).encode())
 
         features: dict[str, object] = {
             "apps": False,
@@ -218,18 +234,7 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
             **self.config.resolved_env,
             "CODEX_CONFIG": json.dumps(config),
             "CODEX_HOME": home,
-            "DEFAULT_AUTH_REQUEST": json.dumps(
-                {
-                    "methodId": "gateway",
-                    "_meta": {
-                        "gateway": {
-                            "baseUrl": endpoint,
-                            "headers": {"Authorization": f"Bearer {secret}"},
-                            "providerName": "Verifiers",
-                        }
-                    },
-                }
-            ),
+            "CODEX_INTERCEPT_KEY": secret,
             "INITIAL_AGENT_MODE": "agent-full-access",
             "NO_BROWSER": "1",
         }
