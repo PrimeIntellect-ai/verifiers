@@ -34,12 +34,15 @@ if (stat.size > 1_000_000) {
     throw new Error("OpenClaw's transcript sanitizer exceeds the replay patch size limit");
 }
 const source = fs.readFileSync(file, "utf8");
+// The published bundle can rename the local that holds the validated reasoning item.
+const item = source.match(/(\w+)\.summary !== void 0 && !Array\.isArray\(\1\.summary\)/)?.[1];
+if (!item) throw new Error("could not locate OpenClaw's reasoning summary validation");
 const patches = [
     [
         "const OPAQUE_REPLAY_TOKEN_RE = /^[A-Za-z0-9+/_-]+={0,2}$/;",
         "const OPAQUE_REPLAY_TOKEN_RE = /^[A-Za-z0-9+/_-]+={0,2}(?:[.][A-Za-z0-9+/_-]+={0,2})*$/;",
     ],
-    ["\t\tsummary: [],", "\t\tsummary: parsed.summary ?? [],"],
+    ['type: "reasoning",\n\t\tsummary: [],', `type: "reasoning",\n\t\tsummary: ${item}.summary ?? [],`],
 ];
 let patched = source;
 for (const [before, after] of patches) {
@@ -125,7 +128,7 @@ wait "$acp_pid"
 
 
 class OpenClawHarnessConfig(HarnessConfig):
-    version: PinnedVersion = "2026.10.9"
+    version: PinnedVersion = "2026.11.5"
     """OpenClaw release to install, pinned for reproducibility."""
     dialect: Literal["auto"] = "auto"
     """OpenClaw takes the transport from its model catalog."""
@@ -219,7 +222,6 @@ class OpenClawHarness(ACPHarness[OpenClawHarnessConfig]):
                 "defaults": {
                     "workspace": ".",
                     "skipBootstrap": True,
-                    "heartbeat": {"every": "0m"},
                     "sandbox": {"mode": "off"},
                     "model": {"primary": ctx.model},
                     "utilityModel": "",  # Disable background recap model calls.

@@ -272,6 +272,10 @@ class ACPSession:
                 mcp_servers=mcp_servers(config),
                 **config["session_meta"],
             )
+            if title := config.get("session_title"):
+                await self.connection.ext_method(
+                    "session/rename", {"sessionId": session.session_id, "title": title}
+                )
         except BaseException:
             with suppress(BaseException):
                 await self.stack.aclose()

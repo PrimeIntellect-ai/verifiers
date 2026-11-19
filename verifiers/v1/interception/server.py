@@ -68,7 +68,7 @@ from verifiers.v1.interception.tunnel.base import HEALTH_PATH
 from verifiers.v1.semantic import ACPInfo, extract_acp_info, routing_session_id
 from verifiers.v1.session import IdempotentRequest, ReplayResponse, RolloutSession
 from verifiers.v1.trace import Error, ModelCall, PolicyEvent, TimeSpan
-from verifiers.v1.types import FinishReason, Response, Usage
+from verifiers.v1.types import FinishReason, Response, ToolMessage, Usage
 from verifiers.v1.utils.aio import run_shielded
 from verifiers.v1.utils.format import format_time
 from verifiers.v1.utils.logging import clip, get_logger, isolated
@@ -986,6 +986,7 @@ class InterceptionServer(Interception):
                     dialect, f"rollout stopped: {refused}", status=400
                 )
             original_request = model_request
+            harness_history = original_request.messages
             model_request, request_rewrites, stopped = await session.rewrite_request(
                 model_request, dialect=dialect.name
             )
@@ -993,6 +994,14 @@ class InterceptionServer(Interception):
             # A pinned tool result changes the request without a fresh record.
             if stopped is None and model_request != original_request:
                 dialect.rewrite_request(body, original_request, model_request)
+                # Match future receipts against the prompt the harness will replay.
+                # It retains its own user messages. We reapply pinned tool results.
+                harness_history = [
+                    after if isinstance(after, ToolMessage) else before
+                    for before, after in zip(
+                        original_request.messages, model_request.messages, strict=True
+                    )
+                ]
         except RolloutError as error:
             return await self._abort(session, error)
         except Exception as error:  # noqa: BLE001 - surface task hook failures
@@ -1130,7 +1139,9 @@ class InterceptionServer(Interception):
                         session.consume_prepared(turn.tail)
                         session.trace.response_rewrites.extend(response_rewrites)
                         if stopped is None:
-                            stopped = await session.gate_tool_calls(node)
+                            stopped = await session.gate_tool_calls(
+                                node, dialect.name, harness_history
+                            )
                         if stopped is not None:
                             session.trace.stop(stopped)
                             return _error_response(
