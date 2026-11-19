@@ -261,8 +261,9 @@ async def prompt(
 class ACPSession:
     """One live ACP process, connection, and session shared by several turns."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, env: dict[str, str] | None = None) -> None:
         self.client = VerifiersACPClient()
+        self._env = env
         self._reset()
 
     def _reset(self) -> None:
@@ -275,13 +276,14 @@ class ACPSession:
 
     async def start(self, config: dict) -> None:
         command = config["command"]
+        proc_env = {**os.environ, **(self._env or {})}
         try:
             agent_process = await self.stack.enter_async_context(
                 spawn_agent_process(
                     self.client,
                     command[0],
                     *command[1:],
-                    env=os.environ.copy(),
+                    env=proc_env,
                     transport_kwargs={"stderr": None},
                 )
             )
@@ -352,10 +354,10 @@ class ACPSession:
             params["messageId"] = message_id
         return await self.connection.ext_method("session/steering", params)
 
-    async def close(self) -> dict[str, Any]:
+    async def close(self, *, graceful: bool = True) -> dict[str, Any]:
         response_metadata: dict[str, Any] = {}
         try:
-            if self.connection is not None and self.session_id is not None:
+            if graceful and self.connection is not None and self.session_id is not None:
                 session_capabilities = (
                     self.capabilities and self.capabilities.session_capabilities
                 )

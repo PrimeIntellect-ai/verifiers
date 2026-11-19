@@ -6,7 +6,7 @@ import asyncio
 import hashlib
 import shlex
 import uuid
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import PurePosixPath
 from types import MappingProxyType
@@ -47,7 +47,6 @@ class Runtime:
     workdir: str | None = None
     _remote_tools_only: bool = False
     _execution_bridge: ExecutionBridge | None = None
-    _lan_waiter: Callable[[], Awaitable[None]] | None = None
     _lease: Any = None
 
     def __post_init__(self) -> None:
@@ -69,8 +68,8 @@ class Runtime:
         return replace(self, workdir=workdir)
 
     async def wait_lan_ready(self) -> None:
-        if self._lan_waiter is not None:
-            await self._lan_waiter()
+        if self._lease is not None:
+            await self._lease.wait_lan_ready()
             return
         if wait_lan := getattr(self.backend, "wait_lan_ready", None):
             await wait_lan()
@@ -88,7 +87,8 @@ class Runtime:
         info = self.backend.info
         if (
             self.workdir is not None
-            and getattr(info, "workdir", self.workdir) != self.workdir
+            and hasattr(info, "workdir")
+            and info.workdir != self.workdir
         ):
             return info.model_copy(update={"workdir": self.workdir})
         return info
@@ -164,21 +164,20 @@ class Runtime:
         directory, and return. The process runs until the runtime stops."""
         await self.backend.run_background(self, argv, env, log)
 
+    def resolve_path(self, path: str) -> str:
+        if path.startswith("/"):
+            return path
+        base = self.workdir or getattr(self.backend.config, "workdir", "/app") or "/app"
+        return f"{base.rstrip('/')}/{path}"
+
     async def write(self, path: str, data: bytes) -> None:
         if (
             self.user is None
             and len(data) <= 512 * 1024
-            and self._lease is not None
-            and (daemon := getattr(self._lease.entry, "daemon", None)) is not None
+            and (daemon := getattr(self.backend, "_daemon", None)) is not None
             and daemon.alive
         ):
-            base_dir = (
-                self.workdir
-                or getattr(self.backend.config, "workdir", "/app")
-                or "/app"
-            )
-            target = path if path.startswith("/") else f"{base_dir.rstrip('/')}/{path}"
-            await daemon.write_file(target, data)
+            await daemon.write_file(self.resolve_path(path), data)
             return
         await self.backend.write(self, path, data)
 

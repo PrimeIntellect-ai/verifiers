@@ -276,6 +276,10 @@ class RuntimeBackend(ABC):
         first = not self.stopped
         self.stopped = True  # before the await: no new borrows once teardown begins
         started = time.perf_counter()
+        if (daemon := getattr(self, "_daemon", None)) is not None:
+            self._daemon = None
+            with contextlib.suppress(Exception):
+                await run_shielded(daemon.aclose())
         await run_shielded(self.teardown())
         if first:
             # A local runtime's id is its working directory; its last part is the name.

@@ -669,7 +669,7 @@ class Agent:
             _current_pool.reset(token)
         try:
             if pool is not None:
-                await pool.aclose()
+                await run_shielded(pool.aclose())
         finally:
             if server is not None:
                 await server.__aexit__(*exc)

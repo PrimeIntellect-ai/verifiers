@@ -2,12 +2,15 @@
 
 import asyncio
 import hashlib
+import io
 import json
 import shlex
+import tarfile
 import tomllib
 from pathlib import Path
 from typing import Literal
 
+import httpx
 import tomli_w
 
 from verifiers.v1.acp import ACPConfig, ACPHarness, ACPTurn
@@ -33,14 +36,16 @@ ACP_VERSION = "2.5.0"
 CODEX_BIN = f"{PACKAGES_DIR}/node_modules/.bin/codex"
 ACP_BIN = f"{PACKAGES_DIR}/node_modules/.bin/codex-acp"
 EXECUTOR_DIR = "/var/tmp/agent-tools/codex-executor-{version}"
-EXECUTOR_BIN = f"{EXECUTOR_DIR}/node_modules/.bin/codex"
 NATIVE_EXECUTOR_BIN = f"{EXECUTOR_DIR}/bin/codex"
 _LINUX_VENDOR = {
-    "x86_64": ("@openai/codex-linux-x64", "x86_64-unknown-linux-musl"),
-    "amd64": ("@openai/codex-linux-x64", "x86_64-unknown-linux-musl"),
-    "aarch64": ("@openai/codex-linux-arm64", "aarch64-unknown-linux-musl"),
-    "arm64": ("@openai/codex-linux-arm64", "aarch64-unknown-linux-musl"),
+    "x86_64": ("linux-x64", "x86_64-unknown-linux-musl"),
+    "amd64": ("linux-x64", "x86_64-unknown-linux-musl"),
+    "aarch64": ("linux-arm64", "aarch64-unknown-linux-musl"),
+    "arm64": ("linux-arm64", "aarch64-unknown-linux-musl"),
 }
+_EXECUTOR_BUNDLE_CACHE: dict[tuple[str, str], bytes] = {}
+_EXECUTOR_BUNDLE_LOCKS: dict[tuple[str, str], asyncio.Lock] = {}
+
 INSTALL = r"""
 set -e
 export PATH="/var/tmp/vf-node/bin:$PATH"
@@ -51,53 +56,55 @@ npm install --prefix {packages} --ignore-scripts --no-audit --no-fund \
     "@openai/codex@$AGENT_CODEX_VERSION" >/dev/null
 touch {ready}
 """
-EXECUTOR_INSTALL = r"""
-set -e
-export PATH="{node_bin}:$PATH"
-npm install --prefix {directory} --ignore-scripts --no-audit --no-fund \
-    --omit=dev "@openai/codex@$AGENT_CODEX_VERSION" >/dev/null
-"""
 
 
-_DOWNLOAD_NATIVE_CODEX = r"""
-import os, shutil, sys, tarfile, urllib.request, uuid
+async def _cached_executor_bundle(
+    version: str, tarball_suffix: str, triple: str
+) -> bytes:
+    """Download and repack Codex's static musl executor once per host process."""
+    key = (version, triple)
+    if cached := _EXECUTOR_BUNDLE_CACHE.get(key):
+        return cached
+    lock = _EXECUTOR_BUNDLE_LOCKS.setdefault(key, asyncio.Lock())
+    async with lock:
+        if cached := _EXECUTOR_BUNDLE_CACHE.get(key):
+            return cached
+        url = f"https://registry.npmjs.org/@openai/codex/-/codex-{version}-{tarball_suffix}.tgz"
+        async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
+            resp = await client.get(url, headers={"User-Agent": "verifiers"})
+            resp.raise_for_status()
+            raw = resp.content
 
-url, triple, target = sys.argv[1], sys.argv[2], sys.argv[3]
-parent = os.path.dirname(target.rstrip("/")) or "/"
-os.makedirs(parent, exist_ok=True)
-staging = f"{target.rstrip('/')}.tmp.{uuid.uuid4().hex}"
-os.makedirs(staging, exist_ok=True)
-os.chmod(staging, 0o755)
-prefix = f"package/vendor/{triple}/"
-wanted = ("bin/codex", "codex-resources/bwrap", "codex-path/rg")
-found = set()
-try:
-    req = urllib.request.Request(url, headers={"User-Agent": "verifiers"})
-    with urllib.request.urlopen(req, timeout=60) as resp, tarfile.open(
-        fileobj=resp, mode="r|gz"
-    ) as archive:
-        for member in archive:
-            if not member.name.startswith(prefix):
-                continue
-            rel = member.name[len(prefix):]
-            if rel in wanted:
-                dest = os.path.join(staging, rel)
-                os.makedirs(os.path.dirname(dest), exist_ok=True)
-                stream = archive.extractfile(member)
-                if stream is None:
-                    raise RuntimeError(f"missing content for {rel}")
-                with open(dest, "wb") as out:
-                    shutil.copyfileobj(stream, out, length=262144)
-                os.chmod(dest, 0o755)
-                found.add(rel)
-    if "bin/codex" not in found:
-        raise RuntimeError("codex binary missing from archive")
-    if os.path.exists(target):
-        shutil.rmtree(target)
-    os.replace(staging, target)
-finally:
-    shutil.rmtree(staging, ignore_errors=True)
-"""
+        def repack() -> bytes:
+            prefix = f"package/vendor/{triple}/"
+            wanted = {"bin/codex", "codex-resources/bwrap", "codex-path/rg"}
+            found: set[str] = set()
+            buf = io.BytesIO()
+            with (
+                tarfile.open(fileobj=io.BytesIO(raw), mode="r:gz") as src,
+                tarfile.open(fileobj=buf, mode="w:gz", compresslevel=1) as dst,
+            ):
+                for member in src:
+                    if not member.name.startswith(prefix):
+                        continue
+                    rel = member.name[len(prefix) :]
+                    if rel in wanted:
+                        stream = src.extractfile(member)
+                        if stream is None:
+                            raise RuntimeError(f"missing content for {rel}")
+                        data = stream.read()
+                        info = tarfile.TarInfo(name=rel)
+                        info.size = len(data)
+                        info.mode = 0o755
+                        dst.addfile(info, io.BytesIO(data))
+                        found.add(rel)
+            if "bin/codex" not in found:
+                raise RuntimeError("codex binary missing from archive")
+            return buf.getvalue()
+
+        bundle = await asyncio.to_thread(repack)
+        _EXECUTOR_BUNDLE_CACHE[key] = bundle
+        return bundle
 
 
 GATE_HOOK = (Path(__file__).resolve().parent / "gate.mjs").read_text()
@@ -129,14 +136,7 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
     SUPPORTS_SPLIT_EXECUTION = True
     SUPPORTS_SPLIT_MCP = True
     _executor_cwd: str | None = None
-    _install_event: asyncio.Event | None = None
-    _install_failed: bool = False
     _staged_configs: dict[str, dict] | None = None
-
-    def _ready_event(self) -> asyncio.Event:
-        if self._install_event is None:
-            self._install_event = asyncio.Event()
-        return self._install_event
 
     async def remote_tools(self, runtime: Runtime, data: TaskData) -> None:
         # Codex's native execution environment transports files and persistent
@@ -167,16 +167,6 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
             raise RuntimeError(f"Codex {failure['category']}: {failure['title']}")
 
     async def setup(self, runtime: Runtime) -> None:
-        try:
-            await self._install(runtime)
-        except BaseException:
-            self._install_failed = True
-            raise
-        finally:
-            self._ready_event().set()
-        await super().setup(runtime)
-
-    async def _install(self, runtime: Runtime) -> None:
         await ensure_node(runtime)
         logger.debug(
             "Ensuring Codex %s and codex-acp %s are installed",
@@ -202,66 +192,37 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
             },
             label="codex",
         )
+        await super().setup(runtime)
 
     def validate_split_execution(self) -> None:
         super().validate_split_execution()
         if self.config.skills:
             raise ValueError("Codex split deployment does not support custom skills")
 
-    async def _sync_native_executor(
-        self, runtime: Runtime, setup_runtime: Runtime, connection: ExecutionConnection
-    ) -> list[str] | None:
+    async def setup_execution(
+        self, runtime: Runtime, workspace: Runtime, connection: ExecutionConnection
+    ) -> None:
         """Install the static musl Codex binary in B without Node or npm."""
-        target_root = setup_runtime.with_user(None)
+        target_root = connection.setup_runtime.with_user(None)
         python = await target_root.resolve_python()
         b_vendor = _LINUX_VENDOR.get(target_root.backend.cache.arch or "")
         if b_vendor is None:
-            return None
-        pkg_name, triple = b_vendor
+            raise HarnessError(
+                f"unsupported workspace architecture for Codex executor: {target_root.backend.cache.arch!r}"
+            )
+        tarball_suffix, triple = b_vendor
         directory = EXECUTOR_DIR.format(version=self.config.version)
         native_bin = NATIVE_EXECUTOR_BIN.format(version=self.config.version)
         ready_check = f"[ -x {shlex.quote(native_bin)} ]"
         await load_prepared(target_root)
         install_key = f"install:{directory}:native-{triple}-{self.config.version}"
         if install_key not in target_root.backend.cache.installed:
-            tarball_suffix = pkg_name.removeprefix("@openai/codex-")
-            url = (
-                "https://registry.npmjs.org/@openai/codex/-/"
-                f"codex-{self.config.version}-{tarball_suffix}.tgz"
+            bundle = await _cached_executor_bundle(
+                self.config.version, tarball_suffix, triple
             )
-            dl = await target_root.run(
-                [
-                    python,
-                    "-I",
-                    "-c",
-                    _DOWNLOAD_NATIVE_CODEX,
-                    url,
-                    triple,
-                    directory,
-                ],
-                {},
-            )
-            if dl.exit_code != 0:
-                if connection.transport is None:
-                    return None
-                await self._ready_event().wait()
-                if self._install_failed:
-                    return None
-                await runtime.resolve_python()
-                if _LINUX_VENDOR.get(runtime.backend.cache.arch or "") != b_vendor:
-                    return None
-                packages = PACKAGES_DIR.format(
-                    version=self.config.version, acp_version=ACP_VERSION
-                )
-                source_vendor = f"{packages}/node_modules/{pkg_name}/vendor/{triple}"
-                await connection.transport.sync_dir(
-                    runtime.with_user(None),
-                    source_vendor,
-                    target_root,
-                    directory,
-                    exclude=("codex-resources/voice", "bin/codex-code-mode-host"),
-                )
-            await target_root.run(
+            archive = f"{directory}.tgz"
+            await target_root.write(archive, bundle)
+            rec = shlex.join(
                 [
                     python,
                     *record_arguments(
@@ -269,55 +230,35 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
                         install_key,
                         {"install": directory, "ready": ready_check},
                     ),
+                ]
+            )
+            dir_q, arc_q = shlex.quote(directory), shlex.quote(archive)
+            res = await target_root.run(
+                [
+                    "sh",
+                    "-c",
+                    (
+                        f'set -e; stage={dir_q}.tmp.$$; mkdir -p "$stage"; '
+                        f'tar -xzf {arc_q} -C "$stage"; rm -f {arc_q}; '
+                        f'rm -rf {dir_q}; mv "$stage" {dir_q}; chmod -R a+rX {dir_q}; {rec}'
+                    ),
                 ],
                 {},
             )
+            if res.exit_code != 0:
+                raise HarnessError(
+                    f"Codex executor install failed: {(res.stderr or res.stdout).strip()[-500:]}"
+                )
             target_root.backend.cache.installed.add(install_key)
-        return [native_bin, "exec-server", "--listen", "stdio"]
-
-    async def setup_execution(
-        self, runtime: Runtime, workspace: Runtime, connection: ExecutionConnection
-    ) -> None:
-        # Codex's own executor runs native tools through the same connection
-        # on every runtime. The harness's VM has no local execution environment.
-        native_cmd = await self._sync_native_executor(
-            runtime, connection.setup_runtime, connection
+        connection.register(
+            "codex",
+            [native_bin, "exec-server", "--listen", "stdio"],
+            {
+                "CODEX_MANAGED_PACKAGE_ROOT": directory,
+                "CODEX_MANAGED_BY_NPM": "1",
+            },
         )
-        if native_cmd is not None:
-            directory = EXECUTOR_DIR.format(version=self.config.version)
-            connection.register(
-                "codex",
-                native_cmd,
-                {
-                    "CODEX_MANAGED_PACKAGE_ROOT": directory,
-                    "CODEX_MANAGED_BY_NPM": "1",
-                },
-            )
-        else:
-            await self.setup_executor(connection.setup_runtime)
-            codex = EXECUTOR_BIN.format(version=self.config.version)
-            connection.register(
-                "codex",
-                [f"{NODE_BIN_DIR}/node", codex, "exec-server", "--listen", "stdio"],
-                {},
-            )
         self._executor_cwd = workspace.info.workdir
-
-    async def setup_executor(self, runtime: Runtime) -> None:
-        """Install only the credential-free executor in B during trusted setup."""
-        await ensure_node(runtime)
-        directory = EXECUTOR_DIR.format(version=self.config.version)
-        await ensure_installed(
-            runtime,
-            directory=directory,
-            ready=f"[ -x {EXECUTOR_BIN.format(version=self.config.version)} ]",
-            install=EXECUTOR_INSTALL.replace("{directory}", directory).replace(
-                "{node_bin}", NODE_BIN_DIR
-            ),
-            # Harness environment overrides belong to A, never the task worker.
-            env={"AGENT_CODEX_VERSION": self.config.version},
-            label="Codex executor",
-        )
 
     async def prepare_acp(
         self,

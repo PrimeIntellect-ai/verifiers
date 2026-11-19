@@ -413,28 +413,13 @@ class Rollout:
                         )
                     interception_task: asyncio.Task | None = None
                     if self._interception is None and not runtime.is_local:
-                        from verifiers.v1.interception import (
-                            InterceptionServer,
-                            requires_tunnel,
-                        )
+                        from verifiers.v1.interception import start_rollout_interception
 
-                        async def warm_interception() -> InterceptionServer:
-                            server = InterceptionServer(
-                                requires_tunnel=requires_tunnel(
-                                    runtime.is_local,
-                                    [server.config for server in toolsets],
-                                    self._shared_tools.values(),
-                                ),
-                                state_service_secrets=tuple(
-                                    tool.state_secret
-                                    for tool in self._shared_tools.values()
-                                    if tool.state_secret
-                                ),
+                        interception_task = asyncio.create_task(
+                            start_rollout_interception(
+                                runtime.is_local, toolsets, self._shared_tools
                             )
-                            await server.__aenter__()
-                            return server
-
-                        interception_task = asyncio.create_task(warm_interception())
+                        )
                     started_ok = False
                     try:
                         await self.deployment.start()
@@ -808,7 +793,11 @@ class Rollout:
                 if adapter is not None:
                     group.create_task(handler.prepare())
                 elif lease is not None:
-                    group.create_task(lease.ensure_daemon())
+                    from verifiers.v1.runtimes.harness_daemon import (
+                        ensure_backend_daemon,
+                    )
+
+                    group.create_task(ensure_backend_daemon(lease.backend))
         except ExceptionGroup as failed:
             raise failed.exceptions[0]
         if lease is not None:
@@ -927,20 +916,12 @@ class Rollout:
             self._session.execution_bridge, "_abandon_on_close"
         ):
             self._session.execution_bridge._abandon_on_close = True
-        reused_harness = bool(getattr(self.deployment, "_reused_harness", False))
-        if isinstance(self._session.remote_tool_handler, SandboxTools):
-            if reused_harness:
-                self._session.remote_tool_handler._fast_kill_on_close = True
-            else:
-                self._session.remote_tool_handler._abandon_on_close = True
+        leased = getattr(self.deployment, "_harness_lease", None) is not None
         if (
             isinstance(self._harness_session, ACPHarnessSession)
             and type(self.harness).acp_close_result is ACPHarness.acp_close_result
         ):
-            if reused_harness:
-                self._harness_session._fast_kill_on_close = True
-            else:
-                self._harness_session._abandon_on_close = True
+            self._harness_session._close_mode = "kill" if leased else "abandon"
 
     async def _cleanup_harness(
         self, runtime: Runtime, *, runtime_stopping: bool = False
@@ -951,7 +932,7 @@ class Rollout:
         if (
             runtime_stopping
             and self._borrowed_runtime is None
-            and not getattr(self.deployment, "_reused_harness", False)
+            and getattr(self.deployment, "_harness_lease", None) is None
             and target.type in ("prime", "docker")
         ):
             self._harness_cleaned = True
@@ -1019,24 +1000,15 @@ class Rollout:
         from verifiers.v1.acp import ACPHarness, ACPHarnessSession
 
         target = self._agent_runtime or self.runtime
-        on_owned_prime = (
+        if (
             self._borrowed_runtime is None
             and target is not None
             and target.type == "prime"
-        )
-        if (
-            on_owned_prime
             and isinstance(self._harness_session, ACPHarnessSession)
             and type(self.harness).acp_close_result is ACPHarness.acp_close_result
-            and not self._harness_session._abandon_on_close
+            and self._harness_session._close_mode == "graceful"
         ):
-            self._harness_session._fast_kill_on_close = True
-        if (
-            on_owned_prime
-            and isinstance(self._session.remote_tool_handler, SandboxTools)
-            and not self._session.remote_tool_handler._abandon_on_close
-        ):
-            self._session.remote_tool_handler._fast_kill_on_close = True
+            self._harness_session._close_mode = "kill"
         if self._harness_session is not None:
             try:
                 await self._harness_session.close()

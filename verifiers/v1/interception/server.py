@@ -56,6 +56,7 @@ from verifiers.v1.dialects.base import (
 )
 from verifiers.v1.dialects.chat import ChatDialect
 from verifiers.v1.errors import (
+    HarnessError,
     ProviderError,
     RolloutError,
     TaskError,
@@ -692,28 +693,25 @@ class InterceptionServer(Interception):
         if session.released:
             return web.json_response({"error": "rollout concluded"}, status=409)
         body = from_json(await request.read())
+        if not isinstance(body, dict):
+            return web.json_response({"error": "expected an object"}, status=400)
         try:
             op = body.get("op")
             if op == "poll":
                 return web.json_response(await session.poll_remote_gate())
-            if op == "pin":
+            if op in ("pin", "ack_denied"):
+                raw_key = body.get("key")
+                if not isinstance(raw_key, list) or len(raw_key) != 2:
+                    raise HarnessError("invalid remote gate key")
+                key = (str(raw_key[0]), str(raw_key[1]))
                 async with session._tool_gate_lock:
-                    session.record_remote_pin(
-                        (str(body["key"][0]), str(body["key"][1])),
-                        str(body["alias_prefix"]),
-                        body["call"],
-                        body["message"],
-                        body.get("arguments"),
-                    )
-                return web.json_response({"ok": True})
-            if op == "ack_denied":
-                async with session._tool_gate_lock:
-                    session.record_remote_denial_ack(
-                        (str(body["key"][0]), str(body["key"][1])),
-                        str(body["alias_prefix"]),
-                        body["call"],
-                        body.get("arguments"),
-                    )
+                    if op == "pin":
+                        raw_msg = body.get("message")
+                        if not isinstance(raw_msg, dict):
+                            raise HarnessError("invalid remote gate message")
+                        session.record_remote_pin(key, raw_msg, body.get("arguments"))
+                    else:
+                        session.record_remote_denial_ack(key, body.get("arguments"))
                 return web.json_response({"ok": True})
             return web.json_response(
                 await session.decide_tool(

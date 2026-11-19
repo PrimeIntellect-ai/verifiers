@@ -7,6 +7,7 @@ import contextlib
 import json
 import logging
 import shlex
+import time
 from collections import Counter, defaultdict
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -24,12 +25,13 @@ from verifiers.v1.utils.logging import clip, get_logger, isolated
 
 if TYPE_CHECKING:
     from verifiers.v1.runtimes.backends.prime import PrimeBackend
-    from verifiers.v1.runtimes.harness_daemon import HarnessDaemonClient
 
 logger = get_logger(__name__)
 
 MAX_LANS_PER_SANDBOX = 32
 """Prime Sandboxes hard limit on simultaneous LAN network memberships per VM."""
+_AUTO_CHECKPOINT_TTL_SECONDS = 3600
+_AUTO_CHECKPOINT_USABLE_SECONDS = 3000
 
 _current_pool: ContextVar[HarnessPool | None] = ContextVar(
     "vf_harness_pool", default=None
@@ -60,8 +62,6 @@ class _PooledHarness:
     healthy: bool = True
     workdir_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     egress_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
-    daemon_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
-    daemon: HarnessDaemonClient | None = None
     route_counts: Counter[str] = field(default_factory=Counter)
     applied_sig: tuple | None = None
 
@@ -86,29 +86,6 @@ class HarnessLease:
         self._registered_hosts: list[str] = []
         self._released = False
 
-    async def ensure_daemon(self) -> HarnessDaemonClient | None:
-        """Start or return the single multi-tenant `HarnessDaemonClient` on this `VM A`."""
-        if self.backend._client is None or not hasattr(
-            self.backend._client, "open_process"
-        ):
-            return None
-        if self.entry.daemon is not None and self.entry.daemon.alive:
-            return self.entry.daemon
-        async with self.entry.daemon_lock:
-            if self.entry.daemon is not None and self.entry.daemon.alive:
-                return self.entry.daemon
-            if self.entry.daemon is not None:
-                with contextlib.suppress(Exception):
-                    await self.entry.daemon.aclose()
-                self.entry.daemon = None
-            from verifiers.v1.runtimes.harness_daemon import HarnessDaemonClient
-
-            with isolated():
-                daemon = HarnessDaemonClient(self.backend.bind())
-                await daemon.start()
-            self.entry.daemon = daemon
-            return daemon
-
     def notify_setup_complete(self) -> None:
         """Trigger background prepared checkpoint minting once `VM A #1` finishes setup."""
         if not self.original_checkpoint:
@@ -122,6 +99,8 @@ class HarnessLease:
 
         try:
             await asyncio.shield(self.entry.boot_task)
+        except asyncio.CancelledError:
+            raise
         except BaseException:
             self.entry.healthy = False
             raise
@@ -145,9 +124,13 @@ class HarnessLease:
                 async with self.entry.workdir_lock:
                     if self.workdir in self.backend._created_workdirs:
                         return
-                    await self.backend.bind().run(
+                    made = await self.backend.bind().run(
                         ["sh", "-c", f"mkdir -p {shlex.quote(self.workdir)}"], {}
                     )
+                    if made.exit_code != 0:
+                        raise SandboxError(
+                            f"harness workdir setup failed: {made.stderr.strip()[-500:]}"
+                        )
                     self.backend._created_workdirs.add(self.workdir)
 
             tasks.append(ensure_workdir())
@@ -268,12 +251,6 @@ class HarnessLease:
                 if bucket and self.entry in bucket:
                     bucket.remove(self.entry)
                 stop_backend = self.backend
-                stop_daemon, self.entry.daemon = self.entry.daemon, None
-            else:
-                stop_daemon = None
-        if stop_daemon is not None:
-            with contextlib.suppress(Exception):
-                await stop_daemon.aclose()
         if stop_backend is not None:
             await stop_backend.stop()
 
@@ -283,10 +260,22 @@ class HarnessPool:
 
     def __init__(self) -> None:
         self._entries: dict[str, list[_PooledHarness]] = defaultdict(list)
-        self._auto_checkpoints: dict[str, str] = {}
+        self._auto_checkpoints: dict[str, tuple[str, float]] = {}
+        self._created_checkpoint_ids: set[str] = set()
         self._auto_checkpoint_tasks: dict[str, asyncio.Task[None]] = {}
+        self._clock = time.monotonic
         self._lock = asyncio.Lock()
         self._closed = False
+
+    def _active_auto_checkpoint(self, key: str) -> str | None:
+        record = self._auto_checkpoints.get(key)
+        if record is None:
+            return None
+        cp_id, expires_at = record
+        if self._clock() >= expires_at:
+            self._auto_checkpoints.pop(key, None)
+            return None
+        return cp_id
 
     def maybe_auto_checkpoint(self, entry: _PooledHarness) -> None:
         """Mint a background filesystem checkpoint of `entry` so scale-out VMs boot warm."""
@@ -300,7 +289,7 @@ class HarnessPool:
             or entry.backend._client is None
             or entry.backend.info.id is None
             or not hasattr(entry.backend._client, "checkpoint")
-            or entry.key in self._auto_checkpoints
+            or self._active_auto_checkpoint(entry.key) is not None
             or entry.key in self._auto_checkpoint_tasks
         ):
             return
@@ -309,21 +298,27 @@ class HarnessPool:
         key = entry.key
 
         async def mint() -> None:
+            cp_id: str | None = None
+            ready = False
             try:
                 async with leased_client() as client:
-                    cp = await client.checkpoint(sandbox_id, ttl_seconds=3600)
-                    await client.wait_for_checkpoint(cp.id, timeout_seconds=300)
-                if self._closed:
-                    async with leased_client() as client:
-                        with contextlib.suppress(Exception):
-                            await client.delete_checkpoint(cp.id)
-                    return
-                self._auto_checkpoints[key] = cp.id
-                logger.debug(
-                    "Minted auto-prepared harness checkpoint %s from %s",
-                    cp.id,
-                    sandbox_id,
-                )
+                    cp = await run_shielded(
+                        client.checkpoint(
+                            sandbox_id, ttl_seconds=_AUTO_CHECKPOINT_TTL_SECONDS
+                        )
+                    )
+                    cp_id = cp.id
+                    self._created_checkpoint_ids.add(cp_id)
+                    expires_at = self._clock() + _AUTO_CHECKPOINT_USABLE_SECONDS
+                    await client.wait_for_checkpoint(cp_id, timeout_seconds=300)
+                if not self._closed:
+                    self._auto_checkpoints[key] = (cp_id, expires_at)
+                    ready = True
+                    logger.debug(
+                        "Minted auto-prepared harness checkpoint %s from %s",
+                        cp_id,
+                        sandbox_id,
+                    )
             except asyncio.CancelledError:
                 raise
             except Exception as error:  # noqa: BLE001 - best-effort background optimization
@@ -335,6 +330,11 @@ class HarnessPool:
                 )
             finally:
                 self._auto_checkpoint_tasks.pop(key, None)
+                if cp_id is not None and not ready:
+                    with contextlib.suppress(Exception):
+                        async with leased_client() as client:
+                            await run_shielded(client.delete_checkpoint(cp_id))
+                    self._created_checkpoint_ids.discard(cp_id)
 
         with isolated():
             self._auto_checkpoint_tasks[key] = asyncio.create_task(mint())
@@ -347,10 +347,12 @@ class HarnessPool:
         cap = max(1, min(multiplex, MAX_LANS_PER_SANDBOX))
         key = _pool_key(config)
         workdir = config.workdir or "/app"
-        to_stop: list[tuple[PrimeBackend, HarnessDaemonClient | None]] = []
+        to_stop: list[PrimeBackend] = []
         selected: _PooledHarness | None = None
 
         async with self._lock:
+            if self._closed:
+                raise SandboxError("harness pool is closed")
             bucket = self._entries[key]
             for entry in list(bucket):
                 if (
@@ -361,8 +363,7 @@ class HarnessPool:
                     entry.healthy = False
                     if entry.load == 0:
                         bucket.remove(entry)
-                        dm, entry.daemon = entry.daemon, None
-                        to_stop.append((entry.backend, dm))
+                        to_stop.append(entry.backend)
             candidates = [
                 entry
                 for entry in bucket
@@ -376,7 +377,6 @@ class HarnessPool:
                 )
             ]
             if candidates:
-                # Prefer already-booted VMs with the lightest active load.
                 selected = min(
                     candidates,
                     key=lambda e: (0 if e.boot_task.done() else 1, e.load),
@@ -391,7 +391,7 @@ class HarnessPool:
             else:
                 base_cfg = config.model_copy(update={"workdir": "/app"})
                 if not base_cfg.checkpoint and (
-                    auto_cp := self._auto_checkpoints.get(key)
+                    auto_cp := self._active_auto_checkpoint(key)
                 ):
                     base_cfg = base_cfg.model_copy(update={"checkpoint": auto_cp})
                 backend = make_backend(base_cfg, name)
@@ -407,11 +407,7 @@ class HarnessPool:
                 logger.info("Grew harness pool to %d VM(s) multiplex=%d", total, cap)
 
         if to_stop:
-            await asyncio.gather(
-                *(dm.aclose() for _, dm in to_stop if dm is not None),
-                *(b.stop() for b, _ in to_stop),
-                return_exceptions=True,
-            )
+            await asyncio.gather(*(b.stop() for b in to_stop), return_exceptions=True)
         assert selected is not None
         return HarnessLease(
             self, selected, workdir, original_checkpoint=config.checkpoint
@@ -438,16 +434,12 @@ class HarnessPool:
         if boot_tasks:
             with contextlib.suppress(Exception):
                 await asyncio.gather(*boot_tasks, return_exceptions=True)
-        daemons = [e.daemon for e in entries if e.daemon is not None]
-        for e in entries:
-            e.daemon = None
-        if daemons:
-            await asyncio.gather(*(d.aclose() for d in daemons), return_exceptions=True)
         if entries:
             await asyncio.gather(
                 *(e.backend.stop() for e in entries), return_exceptions=True
             )
-        auto_cps = list(self._auto_checkpoints.values())
+        auto_cps = list(self._created_checkpoint_ids)
+        self._created_checkpoint_ids.clear()
         self._auto_checkpoints.clear()
         if auto_cps:
             with contextlib.suppress(Exception):

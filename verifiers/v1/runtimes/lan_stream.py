@@ -1,25 +1,17 @@
-"""Shared stdlib TCP client for a process-scoped, persistent LAN stream."""
+"""Shared stdlib TCP client and framing for a process-scoped LAN stream."""
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
-import json
 import socket
-import struct
 import uuid
 
-MAX_FRAME = 32 * 1024 * 1024
+from verifiers.v1.runtimes.rpc_wire import MAX_FRAME, encode
 
-# Embedded in sandbox-side sync bridges and relays. Pure Python stdlib (no uv/pip).
-# A single reader demultiplexes replies while writes, reads and lifecycle calls overlap.
-CLIENT_SOURCE = r"""
-import concurrent.futures
+WIRE_SOURCE = r"""
 import json
-import socket
 import struct
-import threading
-import time
 
 _MAX_FRAME = 32 * 1024 * 1024
 
@@ -43,6 +35,17 @@ def _send_frame(sock, value):
     if len(data) > _MAX_FRAME:
         raise ValueError("LAN execution frame exceeds 32 MiB")
     sock.sendall(struct.pack("!I", len(data)) + data)
+"""
+
+# Embedded in sandbox-side sync bridges and relays. Pure Python stdlib (no uv/pip).
+# A single reader demultiplexes replies while writes, reads and lifecycle calls overlap.
+CLIENT_SOURCE = (
+    WIRE_SOURCE
+    + r"""
+import concurrent.futures
+import socket
+import threading
+import time
 
 class LanStream:
     def __init__(self, endpoint):
@@ -75,7 +78,6 @@ class LanStream:
             while True:
                 response = _read_frame(connection)
                 with self.lock:
-                    # A response from a replaced socket cannot complete a retry.
                     if self.connection is not connection:
                         return
                     future = self.pending.get(response["id"])
@@ -143,8 +145,6 @@ class LanStream:
                 with self.lock:
                     if self.pending.get(request_id) is future:
                         del self.pending[request_id]
-        # Retries reuse the exact request ID and body. The server replays the
-        # receipt, including consumed output, instead of repeating the operation.
 
     def close(self):
         with self.lock:
@@ -152,18 +152,13 @@ class LanStream:
             connection = self.connection
         self.disconnect(connection)
 """
-
-
-def _encode_frame(value: dict) -> bytes:
-    data = json.dumps(value).encode()
-    if len(data) > MAX_FRAME:
-        raise ValueError("LAN execution frame exceeds 32 MiB")
-    return struct.pack("!I", len(data)) + data
+)
 
 
 async def _read_frame(reader: asyncio.StreamReader) -> dict:
-    header = await reader.readexactly(4)
-    size = struct.unpack("!I", header)[0]
+    import json
+
+    size = int.from_bytes(await reader.readexactly(4), "big")
     if size > MAX_FRAME:
         raise ValueError("LAN execution frame exceeds 32 MiB")
     return json.loads(await reader.readexactly(size))
@@ -230,7 +225,7 @@ class AsyncLanStream:
                 try:
                     if sock := writer.get_extra_info("socket"):
                         sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-                    writer.write(_encode_frame({"secret": self.endpoint["secret"]}))
+                    writer.write(encode({"secret": self.endpoint["secret"]}))
                     await writer.drain()
                     reply = await _read_frame(reader)
                     if not isinstance(reply, dict) or not reply.get("ok"):
@@ -246,13 +241,14 @@ class AsyncLanStream:
 
     async def request(self, operation: str, **values) -> dict:
         request_id = uuid.uuid4().hex
-        body = {
-            "operation": operation,
-            "process_id": self.endpoint["process_id"],
-            "request_id": request_id,
-            **values,
-        }
-        frame = _encode_frame(body)
+        frame = encode(
+            {
+                "operation": operation,
+                "process_id": self.endpoint["process_id"],
+                "request_id": request_id,
+                **values,
+            }
+        )
         for attempt in range(3):
             writer = None
             future = asyncio.get_running_loop().create_future()

@@ -12,12 +12,11 @@ import base64
 import contextlib
 import json
 import logging
-import secrets
 import uuid
 
 from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes.base import RuntimeProcess
-from verifiers.v1.runtimes.lan_stream import CLIENT_SOURCE, AsyncLanStream
+from verifiers.v1.runtimes.lan_stream import CLIENT_SOURCE, WIRE_SOURCE, AsyncLanStream
 from verifiers.v1.runtimes.runtime import Runtime
 from verifiers.v1.utils.logging import clip, get_logger
 
@@ -25,31 +24,10 @@ logger = get_logger(__name__)
 
 # Run inside the same user, environment, cwd and filesystem view as the command.
 # The capability is minted locally and returned over provider stdout, never in env.
-_SERVER = r"""
-import base64, concurrent.futures, hmac, json, os, secrets, signal, socket, struct, subprocess, sys, threading
-
-_MAX_FRAME = 32 * 1024 * 1024
-
-def _read_exact(sock, size):
-    buf = bytearray()
-    while len(buf) < size:
-        chunk = sock.recv(size - len(buf))
-        if not chunk:
-            raise EOFError("closed")
-        buf.extend(chunk)
-    return bytes(buf)
-
-def _read_frame(sock):
-    size = struct.unpack("!I", _read_exact(sock, 4))[0]
-    if size > _MAX_FRAME:
-        raise ValueError("execution frame exceeds 32 MiB")
-    return json.loads(_read_exact(sock, size))
-
-def _send_frame(sock, value):
-    data = json.dumps(value).encode()
-    if len(data) > _MAX_FRAME:
-        raise ValueError("execution frame exceeds 32 MiB")
-    sock.sendall(struct.pack("!I", len(data)) + data)
+_SERVER = (
+    WIRE_SOURCE
+    + r"""
+import base64, concurrent.futures, hmac, os, secrets, signal, socket, subprocess, sys, threading
 
 secret = secrets.token_urlsafe(32)
 process_id = sys.argv[1]
@@ -227,6 +205,7 @@ finally:
         except OSError:
             pass
 """
+)
 
 # Trusted evaluator setup and lifecycle calls can reach LAN endpoints through A.
 # Harness clients and adapters connect directly from A for workspace I/O.
@@ -259,88 +238,6 @@ with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
         client.close()
 """
 )
-
-_TAR_RECEIVER = r"""
-import hmac, json, os, shutil, socket, subprocess, sys, uuid
-
-secret = sys.stdin.readline().strip()
-target = sys.argv[1]
-parent = os.path.dirname(target.rstrip("/")) or "/"
-os.makedirs(parent, exist_ok=True)
-staging = f"{target.rstrip('/')}.tmp.{uuid.uuid4().hex}"
-os.makedirs(staging, exist_ok=True)
-os.chmod(staging, 0o755)
-
-server = socket.create_server(("0.0.0.0", 0), backlog=1)
-server.settimeout(30)
-print(json.dumps({"port": server.getsockname()[1]}), flush=True)
-try:
-    conn, _ = server.accept()
-    server.close()
-    with conn:
-        conn.settimeout(60)
-        header = bytearray()
-        while b"\n" not in header and len(header) < 256:
-            chunk = conn.recv(256 - len(header))
-            if not chunk:
-                break
-            header.extend(chunk)
-        line, _, remainder = bytes(header).partition(b"\n")
-        if not hmac.compare_digest(line.decode("utf-8", "replace"), secret):
-            raise PermissionError("Unauthorized LAN transfer")
-        tar = subprocess.Popen(["tar", "-xzf", "-", "-C", staging], stdin=subprocess.PIPE)
-        assert tar.stdin is not None
-        try:
-            if remainder:
-                tar.stdin.write(remainder)
-            while True:
-                data = conn.recv(262144)
-                if not data:
-                    break
-                tar.stdin.write(data)
-            tar.stdin.close()
-        except BaseException:
-            tar.kill()
-            tar.wait()
-            raise
-        if tar.wait() != 0:
-            raise RuntimeError("tar extraction failed")
-        if os.path.exists(target):
-            shutil.rmtree(target)
-        os.replace(staging, target)
-    print(json.dumps({"ok": True}), flush=True)
-finally:
-    shutil.rmtree(staging, ignore_errors=True)
-"""
-
-_TAR_SENDER = r"""
-import gzip, os, socket, subprocess, sys
-
-host, port, source_dir, *excludes = sys.argv[1:]
-secret = os.environ["VF_SYNC_SECRET"]
-tar = subprocess.Popen(
-    ["tar", "-C", source_dir, *excludes, "-cf", "-", "."],
-    stdout=subprocess.PIPE,
-)
-assert tar.stdout is not None
-try:
-    with socket.create_connection((host, int(port)), timeout=15) as sock:
-        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-        sock.sendall((secret + "\n").encode())
-        with sock.makefile("wb", buffering=262144) as raw, gzip.GzipFile(
-            fileobj=raw, mode="wb", compresslevel=1
-        ) as gz:
-            while True:
-                chunk = tar.stdout.read(262144)
-                if not chunk:
-                    break
-                gz.write(chunk)
-        sock.shutdown(socket.SHUT_WR)
-finally:
-    tar.stdout.close()
-if tar.wait() != 0:
-    raise RuntimeError("tar archive creation failed")
-"""
 
 
 class LanProcess(RuntimeProcess):
@@ -597,71 +494,6 @@ class LanExecution:
         except BaseException:
             with contextlib.suppress(Exception):
                 await owner.kill()
-            raise
-
-    async def sync_dir(
-        self,
-        source_runtime: Runtime,
-        source_dir: str,
-        target_runtime: Runtime,
-        target_dir: str,
-        *,
-        exclude: tuple[str, ...] = (),
-    ) -> None:
-        """Stream a directory from `source_runtime` (A) to `target_runtime` (B) over LAN."""
-        for rt in (source_runtime, target_runtime):
-            await rt.wait_lan_ready()
-        target_python = self._python or await target_runtime.resolve_python()
-        source_python = self._harness_python or await source_runtime.resolve_python()
-        secret = secrets.token_urlsafe(32)
-        receiver = await target_runtime.backend.exec(
-            target_runtime,
-            [target_python, "-I", "-u", "-c", _TAR_RECEIVER, target_dir],
-            {},
-        )
-        try:
-            await receiver.write((secret + "\n").encode())
-            async with asyncio.timeout(30):
-                output = b""
-                while b"\n" not in output:
-                    output += await anext(receiver.stdout)
-                line, output = output.split(b"\n", 1)
-                port = json.loads(line)["port"]
-            excludes = [f"--exclude={item}" for item in exclude]
-            send_result = await source_runtime.run(
-                [
-                    source_python,
-                    "-I",
-                    "-c",
-                    _TAR_SENDER,
-                    self.host,
-                    str(port),
-                    source_dir,
-                    *excludes,
-                ],
-                {"VF_SYNC_SECRET": secret},
-            )
-            if send_result.exit_code != 0:
-                raise SandboxError(
-                    f"LAN directory sync sender failed: {send_result.stderr.strip()[-500:]}"
-                )
-            async with asyncio.timeout(60):
-                while b"\n" not in output:
-                    chunk = await anext(receiver.stdout, b"")
-                    if not chunk:
-                        break
-                    output += chunk
-                code = await receiver.wait()
-            if code != 0 or b'"ok": true' not in output:
-                stderr = b"".join([c async for c in receiver.stderr]).decode(
-                    errors="replace"
-                )
-                raise SandboxError(
-                    f"LAN directory sync receiver failed ({code}): {stderr.strip()[-500:]}"
-                )
-        except BaseException:
-            with contextlib.suppress(Exception):
-                await receiver.kill()
             raise
 
     async def abandon(self) -> None:

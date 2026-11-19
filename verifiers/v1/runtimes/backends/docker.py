@@ -643,7 +643,12 @@ class DockerBackend(RuntimeBackend):
         raise SandboxError("could not confirm Docker container removal")
 
     def _exec_argv(
-        self, env: dict[str, str], *, stdin: bool = False, user: str | None = None
+        self,
+        env: dict[str, str],
+        *,
+        stdin: bool = False,
+        user: str | None = None,
+        workdir: str | None = None,
     ) -> list[str]:
         assert self._container is not None
         if self._proxy is not None and self._restricted:
@@ -661,7 +666,7 @@ class DockerBackend(RuntimeBackend):
                 "NO_PROXY": exclusions,
                 "no_proxy": exclusions,
             }
-            return self._exec_command(env, stdin=stdin, user=user)
+            return self._exec_command(env, stdin=stdin, user=user, workdir=workdir)
         # Callback URLs must bypass any proxy the image or task configures.
         values = {**self._image_env, **env}
         exclusions = dict.fromkeys(
@@ -676,10 +681,15 @@ class DockerBackend(RuntimeBackend):
             "NO_PROXY": ",".join(exclusions),
             "no_proxy": ",".join(exclusions),
         }
-        return self._exec_command(env, stdin=stdin, user=user)
+        return self._exec_command(env, stdin=stdin, user=user, workdir=workdir)
 
     def _exec_command(
-        self, env: dict[str, str], *, stdin: bool, user: str | None
+        self,
+        env: dict[str, str],
+        *,
+        stdin: bool,
+        user: str | None,
+        workdir: str | None = None,
     ) -> list[str]:
         assert self._container is not None
         return [
@@ -689,7 +699,7 @@ class DockerBackend(RuntimeBackend):
             *(arg for key, value in env.items() for arg in ("--env", f"{key}={value}")),
             *(("--user", user) if user is not None else ()),
             "--workdir",
-            self.config.workdir,
+            workdir or self.config.workdir,
             self._container,
         ]
 
@@ -712,7 +722,10 @@ class DockerBackend(RuntimeBackend):
         self, runtime: Runtime, argv: list[str], env: dict[str, str]
     ) -> ProgramResult:
         return await cli(
-            *self._exec_argv(runtime.process_env(env), user=runtime.user), *argv
+            *self._exec_argv(
+                runtime.process_env(env), user=runtime.user, workdir=runtime.workdir
+            ),
+            *argv,
         )
 
     async def exec(
@@ -730,7 +743,12 @@ class DockerBackend(RuntimeBackend):
             'fi; echo $$ > "$1"; shift; exec "$@"'
         )
         command = [
-            *self._exec_argv(runtime.process_env(env), user=runtime.user, stdin=True),
+            *self._exec_argv(
+                runtime.process_env(env),
+                user=runtime.user,
+                stdin=True,
+                workdir=runtime.workdir,
+            ),
             "sh",
             "-c",
             wrapper,
@@ -785,7 +803,9 @@ class DockerBackend(RuntimeBackend):
         self, runtime: Runtime, argv: list[str], env: dict[str, str], log: str
     ) -> None:
         # The engine owns the process as a detached exec; no client stays attached.
-        command = self._exec_argv(runtime.process_env(env), user=runtime.user)
+        command = self._exec_argv(
+            runtime.process_env(env), user=runtime.user, workdir=runtime.workdir
+        )
         command.insert(2, "--detach")
         script = f"exec {shlex.join(argv)} > {shlex.quote(log)} 2>&1 < /dev/null"
         result = await cli(*command, "sh", "-c", script)
@@ -799,7 +819,10 @@ class DockerBackend(RuntimeBackend):
     ) -> bytes:
         argv = ["cat"] if max_bytes is None else ["head", "-c", str(max_bytes)]
         code, data, stderr = await _communicate(
-            *self._exec_argv({}, user=runtime.user), *argv, "--", path
+            *self._exec_argv({}, user=runtime.user, workdir=runtime.workdir),
+            *argv,
+            "--",
+            path,
         )
         if code != 0:
             raise SandboxError(
@@ -810,7 +833,9 @@ class DockerBackend(RuntimeBackend):
     async def write(self, runtime: Runtime, path: str, data: bytes) -> None:
         parent = shlex.quote(str(PurePosixPath(path).parent))
         code, _, stderr = await _communicate(
-            *self._exec_argv({}, user=runtime.user, stdin=True),
+            *self._exec_argv(
+                {}, user=runtime.user, stdin=True, workdir=runtime.workdir
+            ),
             "sh",
             "-c",
             f"mkdir -p {parent} && cat > {shlex.quote(path)}",

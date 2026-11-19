@@ -11,9 +11,13 @@ from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes import PrimeBackend, PrimeConfig, make_backend
 from verifiers.v1.runtimes.compose import compose_services
 from verifiers.v1.runtimes.deployment import ServicesSpec, _DeploymentStrategy
-from verifiers.v1.runtimes.harness_pool import HarnessLease, current_harness_pool
+from verifiers.v1.runtimes.harness_pool import (
+    HarnessLease,
+    HarnessPool,
+    current_harness_pool,
+)
 from verifiers.v1.runtimes.private_network import (
-    HARNESS_TAG,
+    PrivateNetworkGroup,
     lan_host,
     private_network,
 )
@@ -168,17 +172,25 @@ class _ContainerDeployment(_DeploymentStrategy):
 class _PrivateNetworkDeployment(_DeploymentStrategy):
     _networks: dict[str, list[str]] | None = None
     _internal: frozenset[str] = frozenset()
-    _harness = None
     _lease: HarnessLease | None = None
+    _owned_pool: HarnessPool | None = None
     _harness_released: bool = False
-    _network_state: dict | None = None
+    _net: PrivateNetworkGroup | None = None
 
-    async def _release_pooled_harness(self, *, healthy: bool = True) -> None:
+    async def _release_harness(self, *, healthy: bool | None = None) -> None:
         if self._harness_released or self._lease is None:
             return
         self._harness_released = True
-        network_id = self._network_state.get("id") if self._network_state else None
-        await self._lease.release(network_id, healthy=healthy)
+        lease = self._lease
+        if healthy is None:
+            healthy = not lease.backend.stopped and (
+                not lease.entry.boot_task.done() or lease.backend._client is not None
+            )
+        network_id = self._net.network_id if self._net is not None else None
+        await lease.release(network_id, healthy=healthy)
+        if self._owned_pool is not None:
+            pool, self._owned_pool = self._owned_pool, None
+            await pool.aclose()
 
     async def start(self, d):
         if d.borrowed_runtime is not None:
@@ -189,56 +201,25 @@ class _PrivateNetworkDeployment(_DeploymentStrategy):
         d.backend.env = d.env
         native = isinstance(d.spec, ServicesSpec)
         members = d.spec.services if native else d.tool_vms
-        harness = self._harness = None
         self._lease = None
+        self._owned_pool = None
         self._harness_released = False
-        self._network_state = {}
-        start_harness = None
-        own_harness = True
-        assign_harness_lan = True
+        self._net = PrivateNetworkGroup()
         if d.config.mode == "split":
             d._harness_workdir = d.backend.config.workdir
             h_cfg = _harness_config(
                 d.config.harness, d.execution_network or d.backend.config
             ).model_copy(update={"workdir": d.backend.config.workdir})
-            pool = current_harness_pool() if d.config.reuse_harness else None
-            if pool is not None:
-                lease = self._lease = await pool.acquire(
-                    h_cfg,
-                    f"{d.backend.name}-harness",
-                    multiplex=d.config.multiplex,
-                )
-                harness = self._harness = lease.backend
-                d._reused_harness = True
-                d._harness_lan_waiter = lease.wait_lan_ready
-                d._harness_lease = lease
-                own_harness = False
-                assign_harness_lan = False
-                d._stack.push_async_callback(
-                    lambda: self._release_pooled_harness(
-                        healthy=not harness.stopped
-                        and (
-                            not lease.entry.boot_task.done()
-                            or harness._client is not None
-                        )
-                    )
-                )
-
-                async def start_leased() -> None:
-                    try:
-                        await lease.start(
-                            self._network_state.get("task"), [HARNESS_TAG]
-                        )
-                    except BaseException:
-                        await self._release_pooled_harness(healthy=False)
-                        raise
-
-                start_harness = start_leased
-            else:
-                harness = self._harness = make_backend(
-                    h_cfg, f"{d.backend.name}-harness"
-                )
-                start_harness = partial(d.own, harness)
+            pool = current_harness_pool()
+            if pool is None:
+                pool = self._owned_pool = HarnessPool()
+            lease = self._lease = await pool.acquire(
+                h_cfg,
+                f"{d.backend.name}-harness",
+                multiplex=d.config.multiplex,
+            )
+            d._harness_lease = lease
+            d._stack.push_async_callback(self._release_harness)
         self._services = await d.enter(AsyncExitStack())
         vms = await self._services.enter_async_context(
             private_network(
@@ -247,12 +228,9 @@ class _PrivateNetworkDeployment(_DeploymentStrategy):
                 partial(d.own, d.backend),
                 interconnect=native,
                 networks=self._networks,
-                harness=harness,
-                start_harness=start_harness,
+                harness_lease=self._lease,
                 harness_peers=d.tool_services,
-                own_harness=own_harness,
-                assign_harness_lan=assign_harness_lan,
-                network_state=self._network_state,
+                out=self._net,
             )
         )
         d.target_backends = {"main": d.backend, **vms}
@@ -260,15 +238,12 @@ class _PrivateNetworkDeployment(_DeploymentStrategy):
         if native:
             d.hosts["main"] = lan_host(d.backend)
         d.execution_backend = d.backend
-        d.harness_backend = harness or d.backend
+        d.harness_backend = self._lease.backend if self._lease else d.backend
 
     async def prepare_execution(self, d, routes, state_route=None):
-        # Each VM enforces its own policy. A tool server's VM keeps only its state
-        # channel, reached as the server reaches it; LAN traffic is unaffected by either.
-        # A split harness's VM keeps the routes; the workspace then keeps none.
         def own(name, backend):
             if name == "main":
-                return [] if self._harness else routes
+                return [] if self._lease else routes
             if name in self._internal:
                 return []
             return [backend.host_url(state_route)] if state_route else []
@@ -280,69 +255,46 @@ class _PrivateNetworkDeployment(_DeploymentStrategy):
         ]
         if self._lease is not None:
             lan_waiters.append(self._lease.wait_lan_ready())
-        elif (
-            self._harness is not None
-            and (wait_lan := getattr(self._harness, "wait_lan_ready", None)) is not None
-        ):
-            lan_waiters.append(wait_lan())
-        harness_egress = (
-            [self._lease.prepare_execution(routes)]
-            if self._lease is not None
-            else ([self._harness.prepare_execution(routes)] if self._harness else [])
-        )
         await asyncio.gather(
             *lan_waiters,
             *(
                 _prepare_split_workspace(d)
-                if name == "main" and self._harness
+                if name == "main" and self._lease
                 else backend.prepare_execution(own(name, backend))
                 for name, backend in d.target_backends.items()
             ),
-            *harness_egress,
+            *([self._lease.prepare_execution(routes)] if self._lease else []),
         )
 
     async def stop_execution(self, d):
         # Neither agent VM may reach services while their evidence is collected.
         await asyncio.gather(
             d.execution_backend.stop(),
-            *(
-                [
-                    self._release_pooled_harness()
-                    if self._lease is not None
-                    else self._harness.stop()
-                ]
-                if self._harness
-                else []
-            ),
+            *([self._release_harness()] if self._lease else []),
         )
 
     async def close(self, deployment):
         vms = [
-            *([self._harness] if self._harness and self._lease is None else []),
             *(
                 [deployment.execution_backend]
                 if deployment.execution_backend is not None
                 else []
             ),
-            *deployment.target_backends.values(),
+            *getattr(deployment, "target_backends", {}).values(),
         ]
-        seen = set()
+        seen: set[int] = set()
         unique = [vm for vm in vms if not (id(vm) in seen or seen.add(id(vm)))]
-        delete_net = self._network_state.get("delete") if self._network_state else None
         tasks = [vm.stop() for vm in unique]
-        if self._lease is not None and self._harness is not None:
+        if self._lease is not None:
 
             async def detach_and_delete() -> None:
-                await self._release_pooled_harness(
-                    healthy=not self._harness.stopped
-                    and self._harness._client is not None
-                )
-                if delete_net is not None:
-                    await delete_net()
+                await self._release_harness()
+                if self._net is not None:
+                    await self._net.delete_network()
 
             tasks.append(detach_and_delete())
-        elif delete_net is not None:
-            tasks.append(delete_net())
+        elif self._net is not None:
+            tasks.append(self._net.delete_network())
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -350,7 +302,7 @@ class _PrivateNetworkDeployment(_DeploymentStrategy):
         # Evidence is collected; release the solver's VMs before the verifier clock
         # starts, the workspace's even if the service VMs' or the network's release
         # fails.
-        if self._network_state:
+        if self._net is not None:
             await self.close(deployment)
             try:
                 await self._services.aclose()
@@ -359,20 +311,8 @@ class _PrivateNetworkDeployment(_DeploymentStrategy):
                     "Failed to tear down service VMs before grading", exc_info=True
                 )
             return
-        harness = (
-            [
-                (
-                    self._release_pooled_harness
-                    if self._lease is not None
-                    else self._harness.stop,
-                    "harness VM",
-                )
-            ]
-            if self._harness
-            else []
-        )
         for release, what in (
-            *harness,
+            *([(self._release_harness, "harness VM")] if self._lease else []),
             (deployment.execution_backend.stop, "workspace VM"),
             (self._services.aclose, "service VMs"),
         ):

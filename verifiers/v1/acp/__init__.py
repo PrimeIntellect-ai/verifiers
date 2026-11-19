@@ -245,22 +245,16 @@ class ACPHarnessSession(HarnessSession):
         self._response_task: asyncio.Task | None = None
         self._daemon = None
         self._daemon_key = f"{trace.id}:{id(self)}"
-        self._abandon_on_close = False
-        self._fast_kill_on_close = False
+        self._close_mode: str = "graceful"
 
     async def _start(self) -> None:
         self._stderr_tail.clear()
-        if (lease := getattr(self.runtime, "_lease", None)) is not None:
-            daemon = await lease.ensure_daemon()
+        if self.runtime._remote_tools_only and self.runtime.user is None:
+            from verifiers.v1.runtimes.harness_daemon import ensure_backend_daemon
+
+            daemon = await ensure_backend_daemon(self.runtime.backend)
             if daemon is not None:
                 self._daemon = daemon
-                await daemon.acp_warm(
-                    session_key=self._daemon_key,
-                    env=self.config.env,
-                    command=self.config.command,
-                    cwd=self.config.cwd or self.runtime.workdir,
-                    client_capabilities=self.config.client_capabilities,
-                )
                 return
         program = await self.runtime.prepare_uv_script(
             ACP_SOURCE,
@@ -390,7 +384,6 @@ class ACPHarnessSession(HarnessSession):
                         session_key=self._daemon_key,
                         env=self.config.env,
                         config=config,
-                        secret=self.secret,
                     )
                 else:
                     assert self._process is not None
@@ -427,8 +420,7 @@ class ACPHarnessSession(HarnessSession):
             daemon, self._daemon = self._daemon, None
             res = await daemon.acp_close(
                 self._daemon_key,
-                graceful=graceful
-                and not (self._abandon_on_close or self._fast_kill_on_close),
+                graceful=graceful and self._close_mode == "graceful",
             )
             meta = res.get("response_metadata") if isinstance(res, dict) else None
             return meta if isinstance(meta, dict) else {}
@@ -439,11 +431,11 @@ class ACPHarnessSession(HarnessSession):
             return {}
         response_metadata: dict[str, Any] = {}
         try:
-            if self._abandon_on_close:
+            if self._close_mode == "abandon":
                 with contextlib.suppress(BaseException):
                     await process.abandon()
                 return {}
-            if self._fast_kill_on_close:
+            if self._close_mode == "kill":
                 with contextlib.suppress(BaseException):
                     await process.kill()
                 with contextlib.suppress(BaseException):

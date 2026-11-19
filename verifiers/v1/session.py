@@ -238,8 +238,8 @@ class RolloutSession:
     _remote_gate_queue: asyncio.Queue[dict | None] = field(
         default_factory=asyncio.Queue
     )
-    _pending_pins: dict[tuple[str, str], tuple[str, asyncio.Future[None]]] = field(
-        default_factory=dict
+    _pending_pins: dict[tuple[str, str], tuple[ToolCall, str, asyncio.Future[None]]] = (
+        field(default_factory=dict)
     )
     prepared_users: Counter[str] = field(default_factory=Counter)
     last_request: tuple[list, Messages] = ((), [])
@@ -350,8 +350,8 @@ class RolloutSession:
             }
             pending = [
                 asyncio.shield(future)
-                for _, (call_id, future) in list(self._pending_pins.items())
-                if call_id in present_ids and not future.done()
+                for _, (call, _, future) in list(self._pending_pins.items())
+                if call.id in present_ids and not future.done()
             ]
             if pending:
                 with suppress(TimeoutError, asyncio.CancelledError):
@@ -558,6 +558,12 @@ class RolloutSession:
             ) from error
         return response, records, None
 
+    def _prefix_hash(self, messages: list, dialect: DialectName | None) -> str:
+        digest = hashlib.blake2b(digest_size=16)
+        for message in messages:
+            digest.update(graph._message_key(self.trace, message, dialect).encode())
+        return digest.hexdigest()
+
     async def gate_tool_calls(
         self, node: int, dialect: DialectName | None = None
     ) -> str | None:
@@ -576,16 +582,11 @@ class RolloutSession:
         uses_local_gate = bool(
             getattr(self.remote_tool_handler, "uses_local_gate", False)
         )
-        alias_prefix = ""
-        if uses_local_gate:
-            alias_hash = hashlib.blake2b(digest_size=16)
-            for message in branch[:-1]:
-                alias_hash.update(
-                    graph._message_key(self.trace, message, dialect).encode()
-                )
-            alias_prefix = alias_hash.hexdigest()
+        alias_prefix = (
+            self._prefix_hash(branch[:-1], dialect) if uses_local_gate else ""
+        )
         queued: list[dict] = []
-        pending_keys: list[tuple[tuple[str, str], str]] = []
+        pending_entries: list[tuple[tuple[str, str], ToolCall]] = []
         for call in assistant.tool_calls:
             if self.check_tool_call is not None:
                 self.check_tool_call(
@@ -609,48 +610,37 @@ class RolloutSession:
             assert isinstance(verdict, ToolMessage)
             if verdict == probe:
                 self.tool_decisions[key] = None
-                if uses_local_gate:
-                    queued.append(
-                        {
-                            "key": list(key),
-                            "alias_prefix": alias_prefix,
-                            "call": call.model_dump(),
-                            "denied": None,
-                        }
-                    )
-                    pending_keys.append((key, call.id))
-                continue
-            if not self.gates_tools or (
-                self.tool_gate_can_deny is not None
-                and not self.tool_gate_can_deny(call)
-            ):
-                # The harness would run the call regardless; only ending the rollout keeps
-                # the transcript and the sandbox in agreement.
-                return records[-1].handler
-            self.tool_decisions[key] = verdict
+                denied = None
+            else:
+                if not self.gates_tools or (
+                    self.tool_gate_can_deny is not None
+                    and not self.tool_gate_can_deny(call)
+                ):
+                    return records[-1].handler
+                self.tool_decisions[key] = verdict
+                denied = verdict.model_dump(exclude_none=True)
             if uses_local_gate:
                 queued.append(
                     {
                         "key": list(key),
-                        "alias_prefix": alias_prefix,
                         "call": call.model_dump(),
-                        "denied": verdict.model_dump(exclude_none=True),
+                        "denied": denied,
                     }
                 )
-                pending_keys.append((key, call.id))
+                pending_entries.append((key, call))
         if self.remote_tool_handler is not None and not self.gates_tools:
             raise HarnessError("split tool execution requires a harness tool gate")
         if uses_local_gate and queued:
             loop = asyncio.get_running_loop()
-            for key, call_id in pending_keys:
-                self._pending_pins[key] = (call_id, loop.create_future())
+            for key, call in pending_entries:
+                self._pending_pins[key] = (call, alias_prefix, loop.create_future())
             self._remote_gate_queue.put_nowait({"items": queued})
         return None
 
     def _finish_pending_pin(self, key: tuple[str, str]) -> None:
         entry = self._pending_pins.pop(key, None)
-        if entry is not None and not entry[1].done():
-            entry[1].set_result(None)
+        if entry is not None and not entry[2].done():
+            entry[2].set_result(None)
 
     def _record_replay_alias(
         self, alias_prefix: str, call: ToolCall, arguments: object
@@ -659,6 +649,21 @@ class RolloutSession:
             aliases = self.tool_call_replays.setdefault((alias_prefix, call.id), [])
             if not any(observed == arguments for observed, _ in aliases):
                 aliases.append((arguments, call))
+
+    def _pin_tool_verdict(
+        self, key: tuple[str, str], call: ToolCall, raw_or_msg: ToolMessage | dict
+    ) -> ToolMessage:
+        payload = (
+            raw_or_msg.model_dump(exclude_none=True)
+            if isinstance(raw_or_msg, ToolMessage)
+            else raw_or_msg
+        )
+        verdict = ToolMessage.model_validate(bound_tool_message(payload))
+        if verdict.tool_call_id != call.id or verdict.name != call.name:
+            raise HarnessError("remote tool handler returned the wrong call")
+        self.tool_decisions[key] = verdict
+        self.pinned_tool_results[key] = verdict
+        return verdict
 
     async def poll_remote_gate(self, timeout: float = 20.0) -> dict:
         if self.released or self.stopped:
@@ -676,29 +681,27 @@ class RolloutSession:
     def record_remote_pin(
         self,
         key: tuple[str, str],
-        alias_prefix: str,
-        raw_call: dict,
         raw_message: dict,
         arguments: object = None,
     ) -> None:
-        call = ToolCall.model_validate(raw_call)
-        verdict = ToolMessage.model_validate(bound_tool_message(raw_message))
-        if verdict.tool_call_id != call.id or verdict.name != call.name:
-            raise HarnessError("remote tool handler returned the wrong call")
+        pending = self._pending_pins.get(key)
+        if pending is None or self.tool_decisions.get(key) is not None:
+            raise HarnessError("unexpected or unapproved remote tool pin")
+        call, alias_prefix, _ = pending
+        self._pin_tool_verdict(key, call, raw_message)
         self._record_replay_alias(alias_prefix, call, arguments)
         self.gated_tools.add(key)
-        self.tool_decisions[key] = verdict
-        self.pinned_tool_results[key] = verdict
         self._finish_pending_pin(key)
 
     def record_remote_denial_ack(
         self,
         key: tuple[str, str],
-        alias_prefix: str,
-        raw_call: dict,
         arguments: object = None,
     ) -> None:
-        call = ToolCall.model_validate(raw_call)
+        pending = self._pending_pins.get(key)
+        if pending is None or self.tool_decisions.get(key) is None:
+            raise HarnessError("unexpected remote tool denial acknowledgement")
+        call, alias_prefix, _ = pending
         self._record_replay_alias(alias_prefix, call, arguments)
         self.gated_tools.add(key)
         self._finish_pending_pin(key)
@@ -769,24 +772,10 @@ class RolloutSession:
             ):
                 raise HarnessError("split tool gate call differs from the sampled call")
             branch = graph.path(self.trace, leaf)
-            if (
-                self.remote_tool_handler is not None
-                and not deferred
-                and not same_arguments(call, arguments)
-            ):
-                # Native clients may normalize arguments (e.g. drop a redundant
-                # `cd`). They will not run them: B executes the policy-approved
-                # sampled call, and its result replaces the local denial.
-                prefix = hashlib.blake2b(digest_size=16)
-                for message in branch[:-1]:
-                    prefix.update(
-                        graph._message_key(self.trace, message, dialect).encode()
-                    )
-                aliases = self.tool_call_replays.setdefault(
-                    (prefix.hexdigest(), call.id), []
+            if self.remote_tool_handler is not None and not deferred:
+                self._record_replay_alias(
+                    self._prefix_hash(branch[:-1], dialect), call, arguments
                 )
-                if not any(observed == arguments for observed, _ in aliases):
-                    aliases.append((arguments, call))
             request = Request(
                 messages=[*branch, ToolMessage(tool_call_id=call.id, content="")]
             )
@@ -800,14 +789,9 @@ class RolloutSession:
             if self.remote_tool_handler is not None and verdict is None:
                 if key not in self.tool_decisions:
                     raise HarnessError("split tool gate has no policy decision")
-                verdict = await self.remote_tool_handler(call)
-                if verdict.tool_call_id != call.id or verdict.name != call.name:
-                    raise HarnessError("remote tool handler returned the wrong call")
-                verdict = ToolMessage.model_validate(
-                    bound_tool_message(verdict.model_dump(exclude_none=True))
+                verdict = self._pin_tool_verdict(
+                    key, call, await self.remote_tool_handler(call)
                 )
-                self.tool_decisions[key] = verdict
-                self.pinned_tool_results[key] = verdict
             self._finish_pending_pin(key)
         elif matches or not name:
             raise HarnessError(
@@ -935,7 +919,7 @@ class RolloutSession:
         """Seal the session: no further trace mutation, and in-flight handlers cancel."""
         self.released = True
         self._remote_gate_queue.put_nowait(None)
-        for _, (_, future) in list(self._pending_pins.items()):
+        for _, (_, _, future) in list(self._pending_pins.items()):
             if not future.done():
                 future.cancel()
         self._pending_pins.clear()

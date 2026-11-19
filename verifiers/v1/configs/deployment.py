@@ -15,11 +15,9 @@ class DeploymentConfig(BaseConfig):
     """The harness's Prime VM in split mode. It shares the workspace's labels,
     region and creation rate unless set here, and always the task's network policy.
     Docker uses the evaluator's runtime configuration for its harness container."""
-    reuse_harness: bool = False
-    """Pool and reuse split Prime harness VMs across rollouts in the same eval."""
     multiplex: int = Field(8, ge=1, le=32)
-    """Concurrent rollouts that share one pooled Prime harness VM when `reuse_harness`
-    is enabled (up to Prime's 32-LAN-per-sandbox ceiling). N concurrent rollouts use
-    ~N/multiplex harness VMs; 1 = exclusive per active rollout."""
+    """Concurrent rollouts that share one pooled Prime harness VM (up to Prime's
+    32-LAN-per-sandbox ceiling). N concurrent rollouts use ~N/multiplex harness VMs;
+    1 = exclusive per active rollout."""
     trust_compose: bool = False
     """Permit task-authored Compose privileges and bind mounts on local Docker."""

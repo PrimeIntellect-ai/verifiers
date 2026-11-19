@@ -216,8 +216,9 @@ async def _wait_and_init_sandbox(
             message=f"Sandbox did not reach RUNNING within {timeout_seconds:g}s",
         )
     except BaseException:
-        if lan_task is not None and not lan_task.done():
-            lan_task.cancel()
+        if lan_task is not None:
+            if not lan_task.done():
+                lan_task.cancel()
             await asyncio.gather(lan_task, return_exceptions=True)
         raise
 
@@ -412,29 +413,21 @@ class PrimeBackend(RuntimeBackend):
             else None
         )
         options: dict[str, Any] = {
+            "cpu_cores": self.config.cpu,
+            "memory_gb": self.config.memory,
+            "gpu_count": gpu_count,
             "timeout_minutes": -1,
             "idle_timeout_minutes": idle_minutes,
+            "gpu_type": gpu_type,
             "region": self.config.region,
         }
-        if not (self.config.checkpoint and self.config.restore_memory):
-            options.update(
-                {
-                    "cpu_cores": self.config.cpu,
-                    "memory_gb": self.config.memory,
-                    "gpu_count": gpu_count,
-                    "gpu_type": gpu_type,
-                }
-            )
         if self.config.mounts:
             options["volumes"] = [
                 {"mount_path": target, **mount.model_dump()}
                 for target, mount in self.config.mounts.items()
             ]
         if self.config.checkpoint:
-            source: dict[str, Any] = {
-                "checkpoint_id": self.config.checkpoint,
-                **({"restore_memory": True} if self.config.restore_memory else {}),
-            }
+            source: dict[str, Any] = {"checkpoint_id": self.config.checkpoint}
         else:
             source = {
                 "docker_image": self.config.image,
@@ -464,17 +457,12 @@ class PrimeBackend(RuntimeBackend):
                 # mid-flight leaves the platform creating a sandbox this side
                 # never learned the id of — teardown() then cannot delete it
                 async def create_and_capture_id():
-                    env_kw = (
-                        {}
-                        if self.config.restore_memory and not self.env
-                        else {"environment_vars": self.env}
-                    )
                     sandbox = await self._client.create(
                         CreateSandboxRequest(
                             name=self.name,
                             labels=list(dict.fromkeys(labels)),
                             **source,
-                            **env_kw,
+                            environment_vars=self.env,
                             **{k: v for k, v in options.items() if v is not None},
                         )
                     )
@@ -507,9 +495,9 @@ class PrimeBackend(RuntimeBackend):
             init_response, self._lan_sync_task = await _wait_and_init_sandbox(
                 self, init_cmd, max_attempts=900
             )
-            self._created_workdirs.add(self.config.workdir)
             self._prepared_json = ""
             if init_response.exit_code == 0:
+                self._created_workdirs.add(self.config.workdir)
                 header, _, prepared_out = init_response.stdout.partition(
                     "VF_PREPARED\n"
                 )
@@ -829,10 +817,11 @@ class PrimeBackend(RuntimeBackend):
     async def teardown(self) -> None:
         # Best-effort, idempotent teardown: delete the sandbox (the costly resource). Runs via
         # `stop`, shielded from cancellation, so it fires on success, error, and Ctrl-C.
-        if self._lan_sync_task is not None and not self._lan_sync_task.done():
-            self._lan_sync_task.cancel()
+        if self._lan_sync_task is not None:
+            if not self._lan_sync_task.done():
+                self._lan_sync_task.cancel()
             await asyncio.gather(self._lan_sync_task, return_exceptions=True)
-        self._lan_sync_task = None
+            self._lan_sync_task = None
         client, self._client = self._client, None  # `_client` is the idempotency guard
         if client is None:
             return

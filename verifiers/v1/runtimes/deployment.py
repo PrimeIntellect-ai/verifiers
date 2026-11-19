@@ -7,7 +7,7 @@ import contextlib
 import logging
 import re
 import uuid
-from collections.abc import AsyncIterator, Awaitable, Callable, Collection, Mapping
+from collections.abc import AsyncIterator, Collection, Mapping
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass, replace
 
@@ -310,9 +310,7 @@ class Deployment:
         self._stack = AsyncExitStack()
         self._owned: set[int] = set()
         self._close_task: asyncio.Task[None] | None = None
-        self._reused_harness: bool = False
         self._harness_workdir: str | None = None
-        self._harness_lan_waiter: Callable[[], Awaitable[None]] | None = None
         self._harness_lease: object | None = None
 
     async def own(self, backend: RuntimeBackend) -> RuntimeBackend:
@@ -395,12 +393,8 @@ class Deployment:
         view = self.harness_backend.bind(env={})
         if self._harness_workdir is not None:
             view = view.with_workdir(self._harness_workdir)
-        if self._harness_lan_waiter is not None or self._harness_lease is not None:
-            view = replace(
-                view,
-                _lan_waiter=self._harness_lan_waiter,
-                _lease=self._harness_lease,
-            )
+        if self._harness_lease is not None:
+            view = replace(view, _lease=self._harness_lease)
         return view
 
     def target(self, name: str) -> Runtime:

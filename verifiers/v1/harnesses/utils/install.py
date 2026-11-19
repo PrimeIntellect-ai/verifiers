@@ -98,18 +98,14 @@ async def remove_dir(runtime: Runtime, path: str, label: str) -> None:
     """Delete `path` in `runtime`; a failure names `label` (what the path held)."""
     if (
         runtime.user is None
-        and (lease := getattr(runtime, "_lease", None)) is not None
-        and (daemon := getattr(lease.entry, "daemon", None)) is not None
+        and (daemon := getattr(runtime.backend, "_daemon", None)) is not None
         and daemon.alive
     ):
-        base_dir = (
-            runtime.workdir
-            or getattr(runtime.backend.config, "workdir", "/app")
-            or "/app"
-        )
-        target = path if path.startswith("/") else f"{base_dir.rstrip('/')}/{path}"
-        await daemon.remove_dir(target)
-        return
+        try:
+            await daemon.remove_dir(runtime.resolve_path(path))
+            return
+        except Exception as error:
+            raise RuntimeError(f"failed to clean up {label}: {error}") from error
     result = await runtime.run(["rm", "-rf", path], {})
     if result.exit_code != 0:
         raise RuntimeError(
