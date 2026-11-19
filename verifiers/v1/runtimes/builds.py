@@ -4,9 +4,10 @@ import json
 import os
 import tempfile
 from pathlib import Path
+from uuid import uuid4
 
 from verifiers.v1.errors import SandboxError
-from verifiers.v1.runtimes import DockerConfig, PrimeConfig, RuntimeConfig
+from verifiers.v1.runtimes import DockerConfig, PrimeConfig, Runtime, RuntimeConfig
 from verifiers.v1.runtimes.backends.docker import cli
 from verifiers.v1.runtimes.compose import DOCKER_ENV, ComposeSpec
 
@@ -22,13 +23,16 @@ async def prepare_verifier_image(
     if isinstance(config, PrimeConfig):
         from verifiers.v1.runtimes.native_compose import prepare_native
 
-        # Filesystem preparation uses CPU inspection containers. The fresh grader
-        # still receives the GPU requested by its task or scoring runtime.
+        # Inspect the image without provisioning any of the grader's resources.
         service = (
-            await prepare_native(config.model_copy(update={"gpu": None}), spec, env)
+            await prepare_native(
+                config.model_copy(update={"gpu": None, "mounts": {}}), spec, env
+            )
         )[spec.workspace]
         return (
-            service.config.model_copy(update={"gpu": config.gpu}),
+            service.config.model_copy(
+                update={"gpu": config.gpu, "mounts": config.mounts}
+            ),
             {**service.image_env, **env},
             service.user,
         )
@@ -62,3 +66,51 @@ async def prepare_verifier_image(
         env,
         metadata.get("User") or None,
     )
+
+
+async def prime_verifier_user(runtime: Runtime, user: str | None) -> str | None:
+    """Represent an OCI user as a guest username for Prime's command API."""
+    if user is None or (":" not in user and not user.isdecimal()):
+        return user
+
+    uid_spec, _, gid_spec = user.partition(":")
+    uid_spec = uid_spec or "0"
+    passwd = (await runtime.read("/etc/passwd")).decode().splitlines()
+    accounts = [row for line in passwd if len(row := line.split(":")) == 7]
+    if uid_spec.isdecimal():
+        uid = str(int(uid_spec))
+        account = next((row for row in accounts if row[2] == uid), None)
+    else:
+        account = next((row for row in accounts if row[0] == uid_spec), None)
+        if account is None:
+            raise SandboxError(f"Unknown verifier image user {uid_spec!r}")
+        uid = account[2]
+
+    if account and not gid_spec:
+        return account[0]
+    if gid_spec.isdecimal():
+        gid = str(int(gid_spec))
+    elif gid_spec:
+        group = (await runtime.read("/etc/group")).decode().splitlines()
+        groups = [row for line in group if len(row := line.split(":")) == 4]
+        match = next((row for row in groups if row[0] == gid_spec), None)
+        if match is None:
+            raise SandboxError(f"Unknown verifier image group {gid_spec!r}")
+        gid = match[2]
+    else:
+        # Docker defaults an unmapped numeric UID to group 0.
+        gid = "0"
+
+    # A group override discards the original account's supplementary groups.
+    # The fresh verifier's alias has no entries in /etc/group.
+    alias = f"vf-grader-{uuid4().hex[:16]}"
+    home, shell = account[5:7] if account else ("/", "/bin/sh")
+    entry = f"{alias}:x:{uid}:{gid}::{home or '/'}:{shell or '/bin/sh'}"
+    result = await runtime.run(
+        ["sh", "-c", 'printf "\\n%s\\n" "$1" >> /etc/passwd', "sh", entry], {}
+    )
+    if result.exit_code:
+        raise SandboxError(
+            f"Could not set verifier image user {user!r}: {result.stderr}"
+        )
+    return alias
