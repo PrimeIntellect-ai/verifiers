@@ -48,7 +48,7 @@ class ReadImageTaskset(vf.Taskset[ReadImageTask, vf.TasksetConfig]):
                 vf.TaskData(
                     idx=0,
                     prompt=(
-                        f"Call IPython once with attach('{PATH}'). Read the image "
+                        f"Call IPython once with attach_image('{PATH}'). Read the image "
                         "visually and reply immediately with only the four colors "
                         "left to right, separated by spaces. Do not decode the file "
                         "in code or make any further tool calls."

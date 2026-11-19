@@ -18,12 +18,12 @@ Web search is disabled by default; setting `search = true` enables it and requir
 
 ## View images with RLM
 
-For a vision-capable model, select a nano-rlm version that supports image attachments and enable vision. The model can then call `attach(path)` in IPython to view a rendered page or consume image blocks returned by MCP tools.
+For a vision-capable model, select a nano-rlm version that supports image attachments and enable vision. The model can then call `attach_image(path, ...)` in IPython to view a rendered page or consume image blocks returned by MCP tools.
 
 ```toml
 [env.agent.harness]
 id = "rlm"
-version = "bd5b007fcd863fa3262daec2de71ecc794d45346"
+version = "f6193accde159d223ab344c41a296c9c600cf084"
 vision = true
 ```
 
