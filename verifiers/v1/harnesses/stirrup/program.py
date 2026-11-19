@@ -23,10 +23,10 @@ from acp import (
     RequestError,
     run_agent,
     stdio_streams,
-    update_agent_message_text,
 )
 from acp.schema import (
     AgentCapabilities,
+    AgentMessageChunk,
     CloseSessionResponse,
     InitializeResponse,
     McpCapabilities,
@@ -34,6 +34,7 @@ from acp.schema import (
     PromptResponse,
     SessionCapabilities,
     SessionCloseCapabilities,
+    TextContentBlock,
 )
 from openai import APIError
 from stirrup import Agent
@@ -334,7 +335,10 @@ class StirrupACPAgent:
             return PromptResponse(stop_reason="cancelled")
         await self.connection.session_update(
             session_id=session_id,
-            update=update_agent_message_text(reply),
+            update=AgentMessageChunk(
+                sessionUpdate="agent_message_chunk",
+                content=TextContentBlock(type="text", text=reply),
+            ),
         )
         return PromptResponse(stop_reason="end_turn")
 
