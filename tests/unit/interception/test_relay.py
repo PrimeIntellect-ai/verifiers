@@ -417,13 +417,29 @@ def test_edge_error_pages_are_retried(upstreams, make_relay):
     response = connection.getresponse()
     assert response.status == 200
     assert json.loads(response.read()) == {"ok": True}
-    retries = [
-        a.requests.get(timeout=TIMEOUT)["headers"].get("x-stainless-retry-count")
-        for _ in range(3)
-    ]
-    # The edge's pages mean the server never saw the request, so the resends are
-    # not marked as retries: a repeated body is never answered from its replay cache.
-    assert retries == [None, None, None]
+    attempts = [a.requests.get(timeout=TIMEOUT)["headers"] for _ in range(3)]
+    # The resends are not marked as retries: a repeated body of a later turn is never
+    # answered from the replay cache.
+    assert [h.get("x-stainless-retry-count") for h in attempts] == [None] * 3
+    # One key on every attempt: an edge page can hide an attempt that reached the
+    # server, which then answers the resend instead of sampling again.
+    keys = {h.get("idempotency-key") for h in attempts}
+    assert len(keys) == 1 and None not in keys
+
+
+def test_a_harness_idempotency_key_is_kept(upstreams, make_relay):
+    a, _ = upstreams
+    a.respond = lambda handler: reply(handler, 200, {"ok": True})
+    connection = make_relay(a.url).connect()
+    connection.request(
+        "POST",
+        "/v1/chat/completions",
+        b"{}",
+        {"Authorization": "Bearer box", "Idempotency-Key": "harness-key"},
+    )
+    assert connection.getresponse().status == 200
+    seen = a.requests.get(timeout=TIMEOUT)["headers"]
+    assert seen["idempotency-key"] == "harness-key"
 
 
 def test_interception_errors_reach_the_harness(upstreams, make_relay):

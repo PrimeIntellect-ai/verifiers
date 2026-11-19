@@ -40,6 +40,7 @@ import struct
 import sys
 import threading
 import time
+import uuid
 from collections.abc import Iterator
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit
@@ -55,6 +56,7 @@ EDGE_STATUSES = frozenset({404, 502, 503, 504})
 """Statuses a tunnel edge answers with its own page when it cannot reach the upstream
 ("404 Tunnel Not Found", a bad gateway)."""
 SERVER_HEADER = "x-vf-interception"
+IDEMPOTENCY_KEY_HEADER = "Idempotency-Key"
 """Header on every response of the interception server, its own 404 for an unknown path
 included. A response with an edge status and without it never reached the server."""
 BACKOFF_SECONDS = 0.5
@@ -314,6 +316,10 @@ class Handler(BaseHTTPRequestHandler):
             for name, value in self.headers.items()
             if name.lower() not in dropped
         ]
+        if self.headers.get(IDEMPOTENCY_KEY_HEADER) is None:
+            # Every attempt of this request carries the key, so the interception server
+            # answers one that an edge page hid from the relay instead of sampling again.
+            self.forwarded.append((IDEMPOTENCY_KEY_HEADER, uuid.uuid4().hex))
         try:
             self.retry_count = int(self.headers.get(RETRY_COUNT_HEADER, 0))
         except ValueError:
@@ -321,9 +327,11 @@ class Handler(BaseHTTPRequestHandler):
         self.retries = 0
         self.sent = 0
         """Attempts that may have reached the interception server: the retry count it
-        sees. An attempt that failed to connect or got the tunnel edge's own page did
-        not, so a request that a legitimate later turn repeats is never taken for a
-        retry and answered from the server's replay cache."""
+        sees. An attempt that failed to connect or got the tunnel edge's own page is
+        not counted, so a request that a legitimate later turn repeats is never taken
+        for a retry and answered from the server's replay cache. An edge page can still
+        hide an attempt that reached the server: the request's idempotency key covers
+        that one."""
         self.failing_since: float | None = None
         self.delay = BACKOFF_SECONDS
         self.sent_status: int | None = None

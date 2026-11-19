@@ -189,7 +189,7 @@ def _replay_response(response: ReplayResponse) -> web.Response:
 @dataclass(frozen=True)
 class _IdempotentAttempt:
     session: RolloutSession
-    key: str
+    keys: tuple[str, ...]
     request: IdempotentRequest
     future: asyncio.Future[ReplayResponse | None]
 
@@ -206,11 +206,10 @@ def _finish_idempotent_attempt(
     record = attempt.request
     if record.inflight is attempt.future:
         record.inflight = None
-    if (
-        record.response is None
-        and attempt.session.idempotent_requests.get(attempt.key) is record
-    ):
-        attempt.session.idempotent_requests.pop(attempt.key)
+    if record.response is None:
+        for key in attempt.keys:
+            if attempt.session.idempotent_requests.get(key) is record:
+                attempt.session.idempotent_requests.pop(key)
     if not attempt.future.done():
         attempt.future.set_result(response)
     if record.response is not None:
@@ -885,15 +884,18 @@ class InterceptionServer(Interception):
             request.headers.get(RETRY_COUNT_HEADER, "0"),
         )
         # Graph atomicity under retries: one logical buffered call must commit at most
-        # one turn. An explicit key identifies that call directly; otherwise only the SDK's
-        # retry marker activates body-digest replay, since an unmarked repeated body can be a
-        # legitimate later turn.
+        # one turn. An explicit key identifies that call directly; only the SDK's retry
+        # marker activates body-digest replay, since an unmarked repeated body can be a
+        # legitimate later turn. A call is recorded under both: a box's relay keys each
+        # request it forwards, and the SDK's own retry of it comes with a new key.
         retried = is_retried_request(request.headers)
         idempotent: IdempotentRequest | None = None
         idempotency_key = request.headers.get(IDEMPOTENCY_KEY_HEADER)
         binding = (request.path, req_hash)
+        digest_key = f"retry:{request.path}:{req_hash.hex()}"
+        keys: tuple[str, ...] = (digest_key,)
         if idempotency_key:
-            replay_key = f"explicit:{idempotency_key}"
+            keys = (f"explicit:{idempotency_key}", digest_key)
             # This key identifies the harness-to-interception hop. The server owns its
             # replay semantics, and the body has since been rewritten with rollout model
             # and sampling overrides, so never expose the local key to the provider.
@@ -902,13 +904,13 @@ class InterceptionServer(Interception):
                 for name, value in upstream_headers.items()
                 if name.lower() != IDEMPOTENCY_KEY_HEADER.lower()
             }
-        else:
-            replay_key = f"retry:{request.path}:{req_hash.hex()}"
 
         now = time.monotonic()
         _prune_idempotent_requests(session, now)
-        if idempotency_key or retried:
-            idempotent = session.idempotent_requests.get(replay_key)
+        if idempotency_key:
+            idempotent = session.idempotent_requests.get(keys[0])
+        if idempotent is None and retried:
+            idempotent = session.idempotent_requests.get(digest_key)
         if idempotent is not None and idempotent.binding != binding:
             return _error_response(
                 dialect,
@@ -946,7 +948,8 @@ class InterceptionServer(Interception):
             )
         if idempotent is None:
             idempotent = IdempotentRequest(binding=binding)
-            session.idempotent_requests[replay_key] = idempotent
+        for key in keys:
+            session.idempotent_requests[key] = idempotent
 
         async def coalesced(
             inflight: "asyncio.Future[ReplayResponse | None]",
@@ -970,7 +973,7 @@ class InterceptionServer(Interception):
         idempotent.inflight = future
         request[_IDEMPOTENT_ATTEMPT] = _IdempotentAttempt(
             session=session,
-            key=replay_key,
+            keys=keys,
             request=idempotent,
             future=future,
         )
