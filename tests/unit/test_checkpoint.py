@@ -10,7 +10,7 @@ from typing import Literal
 
 import verifiers.v1 as vf
 import verifiers.v1.agent as agent_module
-from verifiers.v1.clients import ModelContext
+from verifiers.v1.clients import ModelContext, ModelRoute
 from verifiers.v1.configs.agent import RolloutCheckpointConfig
 from verifiers.v1.configs.client import EvalClientConfig
 from verifiers.v1.graph import MessageNode
@@ -183,7 +183,8 @@ def make_rollout(
     run.trace = make_trace()  # one turn so far
     run.runtime = SimpleNamespace(backend=backend)  # type: ignore[assignment]
     session = RolloutSession(
-        ctx=ModelContext(model="m", client=EvalClientConfig()), trace=run.trace
+        route=ModelRoute(ModelContext(model="m", client=EvalClientConfig())),
+        trace=run.trace,
     )
     run._session = session
     run._harness_session = SimpleNamespace(  # type: ignore[assignment]

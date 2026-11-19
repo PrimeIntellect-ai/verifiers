@@ -1318,6 +1318,7 @@ class _EpisodeAgent(Agent):
         collect_artifacts: bool = False,
         on_score: Callable[[Trace, Runtime], Awaitable[None]] | None = None,
         route: ModelRoute | None = None,
+        restore: dict[str, Any] | None = None,
     ) -> Trace:
         async with self._gate or nullcontext():
             trace = await super()._run(
@@ -1329,6 +1330,7 @@ class _EpisodeAgent(Agent):
                 collect_artifacts=collect_artifacts,
                 on_score=self._scoring_callback(on_score),
                 route=route,
+                restore=restore,
             )
         self._completed.append(trace)
         return trace
