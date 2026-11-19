@@ -1,6 +1,7 @@
 """Adapt Harbor's task-declared MCP servers to the harness's HTTP transport."""
 
 import os
+import secrets
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any, cast
@@ -15,6 +16,7 @@ from mcp.types import CallToolResult, Tool
 from pydantic_config import BaseConfig
 
 from verifiers.v1.mcp import Toolset
+from verifiers.v1.mcp.auth import MCPURL
 from verifiers.v1.mcp.launch import serve_in_runtime
 from verifiers.v1.runtimes import Runtime
 
@@ -37,9 +39,10 @@ class HarborMCPAdapter(Toolset[HarborMCPConfig]):
     @asynccontextmanager
     async def serve(self, runtime: Runtime, **kwargs) -> AsyncIterator[str]:
         # Harbor commands and task-local URLs belong to the task environment.
-        port = await serve_in_runtime(self, runtime, exposed=False)
+        secret = secrets.token_urlsafe(32)
+        port = await serve_in_runtime(self, runtime, exposed=False, mcp_secret=secret)
         host = "localhost" if runtime.network_restricted else "127.0.0.1"
-        yield f"http://{host}:{port}/mcp"
+        yield MCPURL(f"http://{host}:{port}/mcp", secret)
 
     async def setup(self) -> None:
         spec = self.config.server
@@ -54,6 +57,7 @@ class HarborMCPAdapter(Toolset[HarborMCPConfig]):
                         "VF_CONFIG",
                         "VF_STATE_URL",
                         "VF_STATE_SECRET",
+                        "TOOL_SERVICE_MCP_SECRET",
                         "MCP_HOST",
                         "MCP_PORT",
                         "MCP_PORT_FILE",

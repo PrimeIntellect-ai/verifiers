@@ -1022,6 +1022,7 @@ class Agent:
             type(task),
             runtime_config,
             tools=[*task.toolsets(task.config), *shared_tools.values()],
+            split=split,
         )
         timeouts = resolve_rollout_timeouts(self.timeout, task)
         return {
@@ -1041,10 +1042,7 @@ class Agent:
         """Provision (and on exit tear down) a box from this agent's runtime
         policy, resolved for `task` when given; share it via `run(..., runtime=runtime)`."""
         if self.config.deployment.mode == "split":
-            raise ValueError(
-                "split deployment provisions its VMs per rollout; provision() cannot "
-                "share them"
-            )
+            raise ValueError("split deployment cannot borrow a provisioned runtime")
         config = (
             resolve_runtime_config(self.runtime_config, task, self._warned_resources)
             if task is not None

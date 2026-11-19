@@ -2,7 +2,6 @@
 
 import hashlib
 import json
-import re
 import tomllib
 from pathlib import Path
 from typing import Literal
@@ -12,12 +11,15 @@ import tomli_w
 from verifiers.v1.acp import ACPConfig, ACPHarness, ACPTurn
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig, PinnedVersion
+from verifiers.v1.errors import HarnessError
 from verifiers.v1.harnesses.node import NODE_BIN_DIR, ensure_node
 from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
+from verifiers.v1.harnesses.utils.remote_runtime import prepare_remote_bridge
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.runtimes.deployment import ExecutionConnection
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
+from verifiers.v1.types import ToolCall
 from verifiers.v1.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -74,9 +76,25 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
     SUPPORTS_SKILLS = True
     SUPPORTS_TOOL_INTERCEPTION = True
     SUPPORTS_SPLIT_EXECUTION = True
-    _executor: str | None = None
-    """A split deployment's exec-server URL in the workspace."""
+    SUPPORTS_SPLIT_MCP = True
     _executor_cwd: str | None = None
+
+    async def remote_tools(self, runtime: Runtime, data: TaskData) -> None:
+        # Codex's native execution environment transports files and persistent
+        # processes, including nested Code Mode calls, without emulating tools.
+        return None
+
+    def can_gate_tool(self, call: ToolCall) -> bool:
+        # 0.166.0 deliberately omits PreToolUse for write_stdin. Only these
+        # native tools have a synchronous veto hook that can carry a replacement.
+        return call.name in {"exec_command", "shell", "shell_command", "apply_patch"}
+
+    def check_tool_call(self, call: ToolCall, *, intercepted: bool) -> None:
+        if intercepted and call.name in {"exec", "wait"}:
+            raise HarnessError(
+                "Codex Code Mode cannot enforce request interception on nested "
+                "write_stdin calls; use a model with direct tools for this task"
+            )
 
     def acp_turn_result(self, trace: Trace, result: ACPTurn) -> None:
         # codex-acp returns terminal failures in metadata with stop_reason=end_turn; a
@@ -128,30 +146,16 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
     async def setup_execution(
         self, runtime: Runtime, workspace: Runtime, connection: ExecutionConnection
     ) -> None:
-        # Codex's own executor runs the native shell and file tools in the workspace.
-        # Its client sends credentials only over TLS or loopback, so the listener takes
-        # none; the LAN admits the harness's VM and the workspace's own services.
-        await self.setup_executor(workspace)
+        # Codex's own executor runs native tools through the same connection
+        # on every runtime. The harness's VM has no local execution environment.
+        await self.setup_executor(connection.setup_runtime)
         codex = EXECUTOR_BIN.format(version=self.config.version)
-        port = await connection.serve(
-            workspace,
-            [
-                f"{NODE_BIN_DIR}/node",
-                codex,
-                "exec-server",
-                "--listen",
-                "ws://0.0.0.0:0",
-            ],
+        connection.register(
+            "codex",
+            [f"{NODE_BIN_DIR}/node", codex, "exec-server", "--listen", "stdio"],
             {},
-            re.compile(r"^ws://\S+:(\d+)$", re.MULTILINE),
         )
-        cwd = await workspace.run(["pwd", "-P"], {})
-        if cwd.exit_code:
-            raise RuntimeError(
-                f"could not resolve the workspace directory: {cwd.stderr}"
-            )
-        self._executor = f"ws://{connection.host}:{port}"
-        self._executor_cwd = cwd.stdout.strip()
+        self._executor_cwd = workspace.info.workdir
 
     async def setup_executor(self, runtime: Runtime) -> None:
         """Install only the credential-free executor in B during trusted setup."""
@@ -254,13 +258,41 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
     ) -> dict[str, str]:
         home = self.trace_home(trace)
         await self.install_skills(runtime, f"{home}/skills")
+        if runtime._execution_bridge is not None:
+            command = await prepare_remote_bridge(
+                runtime,
+                f"{endpoint.removesuffix('/v1')}/execution",
+                secret,
+                "codex",
+                protocol="codex",
+            )
+            # The pinned native environment provider routes every filesystem and
+            # process operation through this stdio worker. Removing the local
+            # environment also prevents explicit environment_id="local" fallback.
+            environments = {
+                "default": "task",
+                "include_local": False,
+                "environments": [
+                    {"id": "task", "program": command[0], "args": command[1:]}
+                ],
+            }
+            await runtime.write(
+                f"{home}/environments.toml", tomli_w.dumps(environments).encode()
+            )
+        mcp_headers = self.config.resolve_mcp_headers(mcp_urls)
         mcp_config = "features={mcp_2026_07_28=true}\n" + (
             "mcp_servers={"
             + ",".join(
                 f"{json.dumps(name, ensure_ascii=False)}="
                 f"{{url={json.dumps(url, ensure_ascii=False)},required=true,"
-                'omit_tools_from=["deferred","code_mode"],'
-                f"startup_timeout_sec=60.0,tool_timeout_sec={self.config.tool_timeout}}}"
+                + "http_headers={"
+                + ",".join(
+                    f"{json.dumps(key)}={json.dumps(value)}"
+                    for key, value in mcp_headers.get(name, {}).items()
+                )
+                + "},"
+                + 'omit_tools_from=["deferred","code_mode"],'
+                + f"startup_timeout_sec=60.0,tool_timeout_sec={self.config.tool_timeout}}}"
                 for name, url in mcp_urls.items()
             )
             + "}"
@@ -268,19 +300,6 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
             else ""
         )
         await runtime.write(f"{home}/config.toml", mcp_config.encode())
-        if self._executor is not None:
-            # The workspace's executor is the only one: the harness's VM runs no tools.
-            await runtime.write(
-                f"{home}/environments.toml",
-                tomli_w.dumps(
-                    {
-                        "default": "workspace",
-                        "include_local": False,
-                        "environments": [{"id": "workspace", "url": self._executor}],
-                    }
-                ).encode(),
-            )
-
         features: dict[str, object] = {
             "apps": False,
             "plugins": False,

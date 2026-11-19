@@ -1,9 +1,13 @@
 """Colocated execution, local Compose, and native Prime service VMs."""
 
 import asyncio
+import logging
 from contextlib import AsyncExitStack, asynccontextmanager
 from functools import partial
+from urllib.parse import urlsplit
 
+from verifiers.v1.configs.runtime import NetworkPolicyConfig
+from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes import PrimeBackend, PrimeConfig, make_backend
 from verifiers.v1.runtimes.compose import compose_services
 from verifiers.v1.runtimes.deployment import ServicesSpec, _DeploymentStrategy
@@ -33,6 +37,89 @@ class _ColocatedDeployment(_DeploymentStrategy):
                 logger.warning(
                     "Failed to tear down the solver before grading", exc_info=True
                 )
+
+
+class _SplitDeployment(_DeploymentStrategy):
+    """Docker split execution, where workers use the evaluator's host bridge."""
+
+    async def start(self, d):
+        if d.borrowed_runtime is not None or d.spec is not None or d.tool_vms:
+            raise ValueError("split deployment requires a dedicated single workspace")
+        if d.backend.type != "docker" or d.harness_config is None:
+            raise ValueError("host-mediated deployment requires Docker")
+        if d.backend.type == "docker" and d.backend.config.mounts:
+            raise ValueError(
+                "split deployment cannot use Docker bind mounts in the task workspace"
+            )
+        if not d.backend.network_restricted:
+            d.backend.config = d.backend.config.model_copy(
+                update={"allow": [], "block": ["*"]}
+            )
+        d.backend.env = d.env
+        await d.own(d.backend)
+        config = d.harness_config.model_copy(
+            update={"mounts": {}, "workdir": d.backend.config.workdir}
+        )
+        harness = make_backend(config, name=f"{d.backend.name}-harness")
+        harness.env = {}
+        await d.own(harness)
+        d.execution_backend = d.backend
+        d.harness_backend = harness
+        d.target_backends = {"main": d.backend}
+
+    async def prepare_execution(self, d, routes, state_route=None):
+        await d.harness_backend.prepare_execution(routes)
+        await _prepare_split_workspace(d)
+
+    async def stop_execution(self, d):
+        await d.execution_backend.stop()
+
+    async def prepare_verifier(self, d):
+        try:
+            await d.execution_backend.stop()
+        except Exception:
+            logger.warning(
+                "Failed to tear down the solver before grading",
+                exc_info=logger.isEnabledFor(logging.DEBUG),
+            )
+
+
+async def _prepare_split_workspace(d):
+    """Apply task egress without exposing the evaluator's control endpoints."""
+    if not isinstance(d.execution_network, NetworkPolicyConfig):
+        raise SandboxError("split workspace has no enforceable network policy")
+    if not d.control_routes or any(
+        urlsplit(route).scheme not in ("http", "https") or not urlsplit(route).hostname
+        for route in d.control_routes
+    ):
+        raise SandboxError("split workspace has no valid control-plane routes")
+    policy = d.execution_network
+    hosts = {
+        urlsplit(route).hostname
+        for route in d.control_routes
+        if urlsplit(route).hostname
+    }
+    for route in d.control_routes:
+        parsed = urlsplit(route)
+        if policy.allow != ["*"] and policy.permits(
+            parsed.scheme,
+            parsed.hostname or "",
+            parsed.port or (443 if parsed.scheme == "https" else 80),
+        ):
+            raise SandboxError("task network allowlist includes a framework endpoint")
+    if policy.allow == ["*"]:
+        policy = type(policy).model_validate(
+            {
+                **policy.model_dump(),
+                "block": list(dict.fromkeys([*policy.block, *sorted(hosts)])),
+            }
+        )
+    await d.execution_backend.prepare_execution([], policy)
+    d.execution_backend.config = d.execution_backend.config.model_copy(
+        update={"allow": policy.allow, "block": policy.block}
+    )
+    d.execution_backend.info.allow = policy.allow
+    d.execution_backend.info.block = policy.block
 
 
 class _ContainerDeployment(_DeploymentStrategy):
@@ -79,7 +166,9 @@ class _PrivateNetworkDeployment(_DeploymentStrategy):
         harness = self._harness = None
         if d.config.mode == "split":
             harness = self._harness = make_backend(
-                _harness_config(d.config.harness, d.backend.config),
+                _harness_config(
+                    d.config.harness, d.execution_network or d.backend.config
+                ).model_copy(update={"workdir": d.backend.config.workdir}),
                 f"{d.backend.name}-harness",
             )
         self._services = await d.enter(AsyncExitStack())
@@ -115,15 +204,16 @@ class _PrivateNetworkDeployment(_DeploymentStrategy):
 
         await asyncio.gather(
             *(
-                backend.prepare_execution(own(name, backend))
+                _prepare_split_workspace(d)
+                if name == "main" and self._harness
+                else backend.prepare_execution(own(name, backend))
                 for name, backend in d.target_backends.items()
             ),
             *([self._harness.prepare_execution(routes)] if self._harness else []),
         )
 
     async def stop_execution(self, d):
-        # Nothing the agent left running may reach services while their evidence is
-        # collected.
+        # Neither agent VM may reach services while their evidence is collected.
         await asyncio.gather(
             d.execution_backend.stop(),
             *([self._harness.stop()] if self._harness else []),
@@ -234,11 +324,10 @@ def _harness_config(harness: PrimeConfig, workspace: PrimeConfig) -> PrimeConfig
 
 def _deployment_strategy(config, backend, spec, tool_vms=None):
     split = config is not None and config.mode == "split"
+    if split and backend.type == "docker":
+        return _SplitDeployment()
     if split and not isinstance(backend, PrimeBackend):
-        raise ValueError(
-            "split deployment places the harness on a Prime VM beside a Prime "
-            f"workspace, not a {backend.type} one"
-        )
+        raise ValueError("split deployment requires Docker or Prime")
     if isinstance(spec, ServicesSpec):
         if not isinstance(backend, PrimeBackend):
             raise TypeError("Native service VMs require a Prime workspace")

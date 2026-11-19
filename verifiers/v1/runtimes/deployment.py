@@ -9,7 +9,7 @@ import re
 import uuid
 from collections.abc import AsyncIterator, Collection, Mapping
 from contextlib import AsyncExitStack, asynccontextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from verifiers.v1.configs.deployment import DeploymentConfig
 from verifiers.v1.errors import SandboxError
@@ -23,6 +23,7 @@ from verifiers.v1.runtimes import (
 from verifiers.v1.runtimes.base import (
     register,
 )
+from verifiers.v1.runtimes.bridge import ExecutionBridge
 from verifiers.v1.runtimes.compose import ComposeSpec
 from verifiers.v1.utils.aio import run_shielded
 from verifiers.v1.utils.logging import clip, get_logger
@@ -93,16 +94,17 @@ group: the processes there whose environment holds the marker `$1`, as the worke
 user."""
 
 
-@dataclass
-class ExecutionConnection:
-    """A split deployment's way into the workspace for the harness's tools: workers
-    started there listen on the rollout's private network, where the harness reaches
-    the workspace at `host`. A worker and every process its tools start carry a marker
-    in their environment, so `close` finds them wherever they were reparented."""
+class ExecutionConnection(ExecutionBridge):
+    """One execution connection and lifecycle for a split workspace.
 
-    host: str
-    """The workspace's name on the private network."""
-    _workers: list[tuple[Runtime, str, bool]] = field(default_factory=list)
+    Native workers register their stdio commands; host adapters execute against
+    the same workspace `runtime`. The evaluator mediates the connection.
+    Workspace-local listeners can outlive a session for grading.
+    """
+
+    def __init__(self, runtime: Runtime, *, setup_runtime: Runtime) -> None:
+        super().__init__(runtime, setup_runtime=setup_runtime)
+        self._listeners: list[tuple[Runtime, str, bool]] = []
 
     async def serve(
         self,
@@ -120,10 +122,11 @@ class ExecutionConnection:
         `close` stops the worker and every process its tools started, detached or not;
         with `keep_detached`, for a worker that stops what is still attached to a
         session as the session closes, only the worker and its own process group, so
-        a daemon its tools started keeps running, as after a colocated harness exits."""
+        a daemon its tools started keeps running, as after a colocated harness exits.
+        """
         worker = uuid.uuid4().hex
-        log = f"/tmp/vf-exec-{worker}.log"
-        self._workers.append((runtime, f"{_MARK}={worker}", keep_detached))
+        log = runtime.temp_path(f"vf-exec-{worker}.log")
+        self._listeners.append((runtime, f"{_MARK}={worker}", keep_detached))
         await runtime.run_background(
             ["sh", "-c", _WRAPPER, "sh", *argv],
             {**env, _MARK: worker},
@@ -146,7 +149,10 @@ class ExecutionConnection:
     async def close(self) -> None:
         """Stop every worker, with the processes their tools started that `serve` says
         to stop."""
-        workers, self._workers = self._workers, []
+        if self.closed:
+            return
+        await super().close()
+        workers, self._listeners = self._listeners, []
         for runtime, marker, keep_detached in workers:
             # Cleanup is trusted control code. Do not source task BASH_ENV or use
             # task PATH while reaping the worker under its original Unix user.
@@ -226,6 +232,8 @@ class Deployment:
         env: dict[str, str] | None = None,
         config: DeploymentConfig | None = None,
         borrowed_runtime: Runtime | None = None,
+        harness_config: RuntimeConfig | None = None,
+        execution_network: RuntimeConfig | None = None,
     ):
         self.backend = backend
         self.spec = spec
@@ -237,6 +245,9 @@ class Deployment:
         self.env = dict(env or {})
         self.config = config or DeploymentConfig()
         self.borrowed_runtime = borrowed_runtime
+        self.harness_config = harness_config
+        self.execution_network = execution_network or backend.config
+        self.control_routes: list[str] = []
         from verifiers.v1.runtimes.strategies import _deployment_strategy
 
         self._strategy = _deployment_strategy(self.config, backend, spec, self.tool_vms)
@@ -288,13 +299,12 @@ class Deployment:
             and self.harness_backend is not self.execution_backend
         )
 
-    def connection(self) -> ExecutionConnection:
-        """A split harness's way into the workspace, over the rollout's private network."""
-        from verifiers.v1.runtimes.private_network import lan_host
-
+    def connection(self, workspace: Runtime) -> ExecutionConnection:
+        """Bind split execution to one connection, independent of the runtime backend."""
         if not self.split:
             raise ValueError("only a split deployment connects its harness's tools")
-        return ExecutionConnection(lan_host(self.execution_backend))
+        connection = ExecutionConnection(workspace, setup_runtime=self.workspace)
+        return connection
 
     @property
     def execution_name(self) -> str:
@@ -317,6 +327,11 @@ class Deployment:
         if self.borrowed_runtime is not None:
             return self.borrowed_runtime.with_env(self.env)
         return self.execution_backend.bind(env=self.env)
+
+    @property
+    def _harness_runtime(self) -> Runtime:
+        """The trusted harness view, separate from the workspace in split mode."""
+        return self.harness_backend.bind(env={})
 
     def target(self, name: str) -> Runtime:
         """Access a named service or workspace through an execution view."""

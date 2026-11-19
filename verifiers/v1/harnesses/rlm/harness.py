@@ -21,11 +21,12 @@ from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
+from verifiers.v1.harnesses.utils.remote_runtime import prepare_remote_bridge
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.runtimes.deployment import ExecutionConnection
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
-from verifiers.v1.utils.logging import get_logger
+from verifiers.v1.utils.logging import clip, get_logger
 
 logger = get_logger(__name__)
 
@@ -37,6 +38,44 @@ RLM_CACHE_DIR = "/tmp/vf-rlm"
 RLM_STATE_DIR = "/tmp/vf-rlm-state"
 RLM_RUNTIME_METADATA_KEY = "ai.prime.rlm/runtime-v1"
 RLM_SESSION_METADATA_KEY = "ai.prime.rlm/session-v1"
+
+_WORKER_CONNECTION = r"""
+import contextlib
+import os
+import socket
+import sys
+import threading
+
+from rlm.config import TcpExecutionConfig
+from rlm.execution_transport import TcpTransport
+
+transport = TcpTransport(TcpExecutionConfig(
+    host="127.0.0.1", port=int(sys.argv[1]),
+    token=os.environ.pop("RLM_EXECUTION_TOKEN"),
+))
+transport.connect()
+connection = transport.connection
+
+def forward_input():
+    try:
+        while data := os.read(sys.stdin.fileno(), 65536):
+            connection.sendall(data)
+    except OSError:
+        pass  # the execution session has closed
+    finally:
+        with contextlib.suppress(OSError):
+            connection.shutdown(socket.SHUT_WR)
+
+threading.Thread(target=forward_input, daemon=True).start()
+try:
+    while data := connection.recv(65536):
+        sys.stdout.buffer.write(data)
+        sys.stdout.buffer.flush()
+finally:
+    transport.close()
+"""
+"""Workspace-side stdio for one native execution session. The loopback listener
+serves execution sessions while detached jobs remain available for grading."""
 
 
 class _SessionSnapshot(BaseModel):
@@ -148,8 +187,9 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
     SUPPORTS_MCP = True
     SUPPORTS_SKILLS = True
     SUPPORTS_SPLIT_EXECUTION = True
+    SUPPORTS_SPLIT_MCP = True
+    SUPPORTS_SPLIT_TOOL_INTERCEPTION = True
     _skills_install_dir: str | None = None
-    _execution: JsonObject | None = None
 
     async def setup(self, runtime: Runtime) -> None:
         if self.config.skills:
@@ -157,11 +197,16 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
             self._skills_install_dir = runtime.temp_path(
                 f"rlm-skills-{secrets.token_hex(16)}", env=self.config.resolved_env
             )
-            await self.install_skills(runtime, f"{self._skills_home()}/skills")
         await self._install(runtime, self.config.resolved_env)
         await super().setup(runtime)
 
+    async def remote_tools(self, runtime: Runtime, data: TaskData):
+        # Native workers register during prepare_acp.
+        return None
+
     async def _install(self, runtime: Runtime, install_env: dict[str, str]) -> None:
+        if self.config.skills:
+            await self.install_skills(runtime, f"{self._skills_home()}/skills")
         directory = self._install_dir()
         binary = f"{directory}/bin/rlm"
         checkout = f"{directory}/checkout"
@@ -209,18 +254,20 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
     async def setup_execution(
         self, runtime: Runtime, workspace: Runtime, connection: ExecutionConnection
     ) -> None:
-        # The same pinned nano-rlm runs the tools in the workspace; the agent loop and
-        # the model credentials stay on the harness's VM.
-        await self._install(workspace, {})
+        # The native listener lives only inside B. A always uses the gated execution
+        # connection; keeping the listener apart from that session lets detached
+        # jobs survive until grading on every runtime.
+        await self._install(connection.setup_runtime, {})
         token = secrets.token_urlsafe(32)
+        python = f"{self._install_dir()}/tools/rlm/bin/python"
         port = await connection.serve(
             workspace,
             [
-                f"{self._install_dir()}/tools/rlm/bin/python",
+                python,
                 "-m",
                 "rlm.execution",
                 "--listen",
-                "0.0.0.0",
+                "127.0.0.1",
                 "--port",
                 "0",
             ],
@@ -230,11 +277,11 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
             # does colocated; a daemon the agent started outlives the harness.
             keep_detached=True,
         )
-        self._execution = {
-            "execution_tcp": {"host": connection.host, "port": port, "token": token},
-            "execution_cwd": workspace.config.workdir,
-            "kernel_env": dict(workspace.env),
-        }
+        connection.register(
+            "rlm",
+            [python, "-u", "-c", _WORKER_CONNECTION, str(port)],
+            {"RLM_EXECUTION_TOKEN": token},
+        )
 
     def _runtime_metadata(
         self,
@@ -244,6 +291,8 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
         endpoint: str,
         secret: str,
         system_prompt: str | None,
+        worker_command: list[str] | None = None,
+        worker_cwd: str | None = None,
     ) -> JsonObject:
         compaction = self.config.compaction
         policy_knobs: dict[str, Any] = {
@@ -300,7 +349,13 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
             ),
             "leaf_append_to_system_prompt": self.config.leaf_append_to_system_prompt,
             "skills": list(self.config.builtin_skills),
-            "kernel_env": dict(runtime.env),
+            "kernel_env": dict(
+                runtime._execution_bridge.runtime.env
+                if getattr(runtime, "_execution_bridge", None) is not None
+                else runtime.env
+            ),
+            "execution_command": worker_command,
+            "execution_cwd": worker_cwd,
             "search_api_key": self.config.resolved_env.get("SERPER_API_KEY"),
         }
         if (
@@ -311,8 +366,6 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
             payload["network_block"] = runtime.config.block
         if self.config.builtin_tools is not None:
             payload["builtin_tools"] = list(self.config.builtin_tools)
-        if self._execution is not None:
-            payload.update(self._execution)
         return {RLM_RUNTIME_METADATA_KEY: payload}
 
     def _network_guidance(self, runtime: Runtime) -> bool | None:
@@ -335,12 +388,42 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
         data: TaskData,
     ) -> ACPConfig:
         system_prompt, prompt = self.resolve_prompt(data)
+        rlm_home = self._home(trace)
+        result = await runtime.run(["mkdir", "-p", f"{rlm_home}/sessions"], {})
+        if result.exit_code:
+            raise RuntimeError(
+                "cannot prepare RLM session directory - "
+                + (clip(result.stderr or result.stdout) or "unknown error")
+            )
+        if runtime._remote_tools_only:
+            assert runtime._execution_bridge is not None
+            workspace = runtime._execution_bridge.runtime
+            root = endpoint.removesuffix("/v1").rstrip("/")
+            worker_command = await prepare_remote_bridge(
+                runtime,
+                f"{root}/execution",
+                secret,
+                "rlm",
+                protocol="rlm",
+                tool_url=f"{root}/tool",
+            )
+            worker_cwd = workspace.info.workdir
+        else:
+            worker_command, worker_cwd = None, None
         return ACPConfig(
-            env={**self.config.resolved_env, "RLM_HOME": self._home(trace)},
+            env={**self.config.resolved_env, "RLM_HOME": rlm_home},
             command=[f"{self._install_dir()}/bin/rlm", "--acp"],
             prompt=prompt,
+            required_agent_metadata="ai.prime.rlm/execution-v1",
             session_meta=self._runtime_metadata(
-                ctx, trace, runtime, endpoint, secret, system_prompt
+                ctx,
+                trace,
+                runtime,
+                endpoint,
+                secret,
+                system_prompt,
+                worker_command,
+                worker_cwd,
             ),
         )
 

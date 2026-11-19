@@ -27,6 +27,8 @@ class NullHarness(Harness[NullHarnessConfig]):
     SUPPORTS_MCP = True
     SUPPORTS_RESUME = True
     SUPPORTS_TOOL_INTERCEPTION = True
+    SUPPORTS_SPLIT_EXECUTION = True
+    SUPPORTS_SPLIT_MCP = True
     EXECUTES_CODE = False
     NEEDS_CONTAINER = False
 
@@ -48,6 +50,8 @@ class NullHarness(Harness[NullHarnessConfig]):
         args = compaction_args(self.config.compaction)
         if tool_interception_url:
             args.append(f"--tool-interception-url={tool_interception_url}")
+        # Null has no local execution tools. Allowed MCP calls must reach their
+        # separate server after the gate; they cannot produce a workspace result.
         return await launch_chat_program(
             CHAT_PROGRAM_SOURCE,
             self.config,

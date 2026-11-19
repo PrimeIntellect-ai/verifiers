@@ -4,7 +4,7 @@ verifiers ships with a range of harnesses out of the box, including Claude Code,
 
 ## Bash harness
 
-The built-in `bash` harness provides shell execution and file-editing tools, and supports task MCP servers, multi-turn conversation resume, and tool interception (though not harness skills). Because it runs an in-house loop rather than installing an external CLI, it can run either on `subprocess` for trusted local work or inside a container.
+The built-in `bash` harness provides shell execution and file-editing tools, multi-turn conversation resume, and tool interception (though not harness skills). It supports MCP tools in colocated mode. With `agent.deployment.mode = "split"`, its model loop and Bash/edit execution run in separate Docker containers or Prime sandboxes. In colocated mode, it can also run on `subprocess` for trusted local work.
 
 Context compaction is enabled by default: when the model provider reports a context window size, `bash` automatically summarizes older context once roughly 16,000 tokens remain. You can set a fixed token threshold in your config, or set `compaction = "None"` to disable compaction altogether:
 
@@ -15,6 +15,16 @@ compaction = { summarize_at_tokens = 100000 }
 ```
 
 Web search is disabled by default; setting `search = true` enables it and requires `SERPER_API_KEY` on the evaluator host.
+
+## Split execution
+
+Every built-in harness supports `agent.deployment.mode = "split"` on Docker and Prime. The harness runs in one sandbox and the task workspace and model-controlled tools run in another. Native workers and host-managed adapters share one execution connection and lifecycle. Codex uses its native exec-server, RLM uses its execution worker, and Prime Agent uses a remote kernel through that connection. Other coding harnesses route tool calls or environment commands through adapters on the evaluator; Browser Use executes its browser code in the workspace. The evaluator authorizes calls, carries worker streams, and returns tool results. `null` keeps its tool-less model loop in the harness sandbox.
+
+Request interceptors check calls before execution without changing the transport. A native gate can return a replacement tool result; where a tool has no such gate, a blocked call ends the rollout before delivery. Codex Code Mode is rejected when request interception is active because its nested `write_stdin` calls have no upstream gate. OpenCode and OpenClaw expose direct tools in split mode instead of Code Mode. RLM's framed connection always checks its execution gate and preserves nano-rlm's capability-checked, cell-scoped supervisor callbacks. Its native listener is reachable only over loopback inside the workspace and keeps detached jobs alive for grading after the session closes. Prime Agent workers block supervisor callbacks.
+
+The default coding tools are supported. Prime split deployments support composed services and separate MCP servers for RLM, Codex, and Null. Harbor's task-local MCP adapters, custom RLM/Codex skills, and Bash search are unsupported. Docker split deployments require a single workspace without bind mounts or separate tool VMs. Adapters reject optional tools they cannot isolate, including agent delegation, provider integrations, skill discovery, interactive questions, and Claude notebook editing. These limits apply to split mode; an unsupported tool never falls back to running in the harness sandbox.
+
+The shared file adapters support text and image reads, exact text edits, and basic glob and regex search. They do not reproduce every upstream output format, fuzzy edit rule, ignore-file rule, advanced search option, or PDF/media reader. Background jobs expose status and output files; native automatic completion notifications are not available in every adapter.
 
 ## A minimal harness implementation
 
@@ -73,9 +83,10 @@ Replace the placeholder installation command, binary, and environment variable n
 Class-level capability flags declare which optional features your harness implements:
 
 - `APPENDS_SYSTEM_PROMPT`: passes `TaskData.system_prompt` as a separate system message; when `False`, `resolve_prompt` prepends it to the first user message instead.
-- `SUPPORTS_MCP`: indicates that `launch` wires `mcp_urls` into the program.
+- `SUPPORTS_MCP`: indicates that `launch` wires `mcp_urls` into the program. Split execution also needs `SUPPORTS_SPLIT_MCP = True`, which keeps the MCP client and credentials in the harness sandbox. Unsupported split pairings fail before provisioning.
 - `SUPPORTS_RESUME`: indicates that a multi-turn exchange can restart from the conversation so far (programs with native session state should override `resume` or `session` instead). Note that live mid-turn steering requires a `HarnessSession` that implements `steer`; conversation resume support alone is not enough (see [message delivery](agent.md#messages-during-an-active-turn)).
 - `SUPPORTS_SKILLS`: indicates that the harness calls `install_skills` to copy configured skills into the directory where the program discovers them.
 - `SUPPORTS_TOOL_INTERCEPTION`: indicates that the harness checks tool calls against the rollout's tool gate (`tool_interception_url`) before executing them.
+- `SUPPORTS_SPLIT_EXECUTION`: indicates that `remote_tools(runtime, data)` binds model-controlled execution to the separate task workspace. It returns a `RemoteToolsSpec` with an importable adapter factory and explicit JSON configuration, or `None` for a native worker. The adapter is instantiated in the harness sandbox with a remote `Runtime`; provider clients and credentials are never serialized. `setup_execution(runtime, workspace, connection)` prepares native workers concurrently with harness setup and registers their commands with `ExecutionConnection`, which owns their transport, streams, and cleanup. `SUPPORTS_SPLIT_TOOL_INTERCEPTION` declares a gate available specifically in split mode.
 
 For programs that speak the Agent Client Protocol (ACP), you can subclass `vf.ACPHarness` in [`acp/__init__.py`](../verifiers/v1/acp/__init__.py). If a harness deterministically reformats earlier messages when re-sending conversation history (for example, dropping whitespace-only text blocks), override `replay_view(message)` so replayed turns match the existing trace branch rather than forking the message graph. If your harness writes files or session state outside the temporary runtime (or runs inside an environment-owned runtime), override `cleanup(trace, runtime)` to remove per-rollout state after scoring completes; `cleanup` runs before the runtime is released and should be idempotent.

@@ -76,6 +76,8 @@ class RecordingRuntime:
         self.config = SimpleNamespace(type="docker", workdir="/app")
         self.env: dict[str, str] = {}
         self.user = None
+        self._remote_tools_only = False
+        self._execution_bridge = None
         self.argvs: list[list[str]] = []
         self.files: dict[str, bytes] = {}
 

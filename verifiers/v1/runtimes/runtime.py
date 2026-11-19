@@ -10,7 +10,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import PurePosixPath
 from types import MappingProxyType
-from typing import Self
+from typing import TYPE_CHECKING, Self
 
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.errors import SandboxError
@@ -21,6 +21,9 @@ from verifiers.v1.runtimes.base import (
     RuntimeBackend,
     RuntimeProcess,
 )
+
+if TYPE_CHECKING:
+    from verifiers.v1.runtimes.bridge import ExecutionBridge
 
 
 @dataclass(frozen=True, eq=False)
@@ -36,6 +39,8 @@ class Runtime:
     env: Mapping[str, str] = field(default_factory=dict)
     user: str | None = None
     home: str | None = None
+    _remote_tools_only: bool = False
+    _execution_bridge: ExecutionBridge | None = None
 
     def __post_init__(self) -> None:
         if self.user is not None and not self.backend.SUPPORTS_USER_SWITCHING:
@@ -149,8 +154,7 @@ class Runtime:
 
         Without TMPDIR, an established ``default`` path is retained. Callers choose
         it from task configuration so setup, execution and cleanup agree across views.
-        The selected directory still needs to exist and be writable in the view;
-        this never adds a filesystem-policy exception.
+        The selected directory still needs to exist and be writable in the view.
         """
         directory = (env or {}).get("TMPDIR") or self.env.get("TMPDIR")
         if not directory and default is not None:

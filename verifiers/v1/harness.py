@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 from abc import ABC, abstractmethod
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from typing import TYPE_CHECKING, ClassVar, Generic, TypeVar
 
 from verifiers.v1.clients import ModelContext
@@ -17,7 +17,7 @@ from verifiers.v1.errors import (
 )
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.task import TaskData
-from verifiers.v1.types import Message, Messages
+from verifiers.v1.types import Message, Messages, ToolCall, ToolMessage
 from verifiers.v1.utils.decorators import (
     discover_decorated,
     invoke_all,
@@ -51,6 +51,13 @@ class Harness(ABC, Generic[ConfigT]):
     `tool_interception_url`) before executing each tool call, so a request hook can
     deny a call and the model sees the policy's result in its place. Without the gate
     a pre-execution rewrite can only end the rollout."""
+    SUPPORTS_SPLIT_EXECUTION: ClassVar[bool] = False
+    """Whether model-controlled tools run in B through remote tool results or a
+    native worker transport, with no local execution fallback in A."""
+    SUPPORTS_SPLIT_TOOL_INTERCEPTION: ClassVar[bool] = False
+    """Whether split mode supplies a tool gate absent from colocated execution."""
+    SUPPORTS_SPLIT_MCP: ClassVar[bool] = False
+    """Whether split execution preserves the harness's native MCP client."""
     SUPPORTS_RESUME: ClassVar[bool] = False
     """Whether the default `resume()` can relaunch this harness from the
     accumulated Messages transcript."""
@@ -63,9 +70,6 @@ class Harness(ABC, Generic[ConfigT]):
     """Whether the program discovers SKILL.md skills — it calls
     `install_skills` with a run-scoped discovery location; configuring
     `skills` on a harness without support is rejected up front."""
-    SUPPORTS_SPLIT_EXECUTION: ClassVar[bool] = False
-    """Whether the program can run on a VM of its own while its tools execute in the
-    task workspace (`deployment.mode = "split"`), set up by `setup_execution`."""
     NEEDS_CONTAINER: ClassVar[bool] = True
     """Whether the program must run in a container runtime: True for every harness
     that installs and drives a third-party program — on the host (subprocess) it
@@ -124,6 +128,21 @@ class Harness(ABC, Generic[ConfigT]):
     async def setup(self, runtime: Runtime) -> None:
         """Provision this harness through `runtime` before its execution timeout starts."""
 
+    async def remote_tools(
+        self, runtime: Runtime, data: TaskData
+    ) -> Callable[[ToolCall], Awaitable[ToolMessage]] | None:
+        """Bind a host adapter to B. Native workers return None and register
+        their workspace commands with the connection in setup_execution()."""
+        self.validate_split_execution()
+        return None
+
+    def can_gate_tool(self, call: ToolCall) -> bool:
+        """Whether this native call can consume a policy replacement at its gate."""
+        return self.SUPPORTS_TOOL_INTERCEPTION or self.SUPPORTS_SPLIT_TOOL_INTERCEPTION
+
+    def check_tool_call(self, call: ToolCall, *, intercepted: bool) -> None:
+        """Refuse native modes whose execution cannot satisfy the active policy."""
+
     def validate_split_execution(self) -> None:
         """Reject a split deployment this harness cannot run before provisioning."""
         if not self.SUPPORTS_SPLIT_EXECUTION:
@@ -134,12 +153,10 @@ class Harness(ABC, Generic[ConfigT]):
     async def setup_execution(
         self, runtime: Runtime, workspace: Runtime, connection: ExecutionConnection
     ) -> None:
-        """In a split deployment, concurrently with `setup(runtime)` on the harness's own
-        VM: make the program's tools execute in `workspace`, through workers
-        `connection` starts there."""
-        raise HarnessError(
-            f"harness {self.config.id!r} does not support split deployment"
-        )
+        """Concurrently with `setup(runtime)` in the harness sandbox, prepare native
+        workers in `workspace` and register them with the shared execution connection.
+        The connection owns worker streams and cleanup on every runtime."""
+        # Adapters bind through remote_tools(); native workers override this hook.
 
     async def install_skills(self, runtime: Runtime, dest: str) -> None:
         """Install `config.skills` in the program's discovery directory.
@@ -313,6 +330,7 @@ copy_failed=$(
         kwargs = (
             {"tool_interception_url": tool_interception_url}
             if self.SUPPORTS_TOOL_INTERCEPTION
+            or (runtime._remote_tools_only and self.SUPPORTS_SPLIT_TOOL_INTERCEPTION)
             else {}
         )
         return await self.launch(
@@ -407,6 +425,10 @@ class HarnessSession:
             kwargs = (
                 {"tool_interception_url": self.tool_interception_url}
                 if self.harness.SUPPORTS_TOOL_INTERCEPTION
+                or (
+                    self.runtime._remote_tools_only
+                    and self.harness.SUPPORTS_SPLIT_TOOL_INTERCEPTION
+                )
                 else {}
             )
             return await self.harness.launch(

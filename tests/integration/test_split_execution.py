@@ -8,13 +8,13 @@ import verifiers.v1 as vf
 from verifiers.v1.rollout import Rollout
 
 SPLIT = {
-    "deployment": {"mode": "split"},
+    "deployment": {"mode": "split", "harness": {"cpu": 2, "memory": 4}},
     "timeout": {"setup": 900, "rollout": 300, "scoring": 60},
 }
 
 
 @pytest.mark.parametrize("entrypoint", ["run", "interaction"])
-@pytest.mark.parametrize("harness_id,skills", [("bash", False), ("codex", True)])
+@pytest.mark.parametrize("harness_id,skills", [("rlm", True), ("codex", True)])
 async def test_split_preflight_before_rollout(
     monkeypatch, tmp_path, entrypoint, harness_id, skills
 ):
@@ -34,7 +34,7 @@ async def test_split_preflight_before_rollout(
         )
     )
     task = vf.Task(vf.TaskData(prompt="unused", skills=[tmp_path] if skills else []))
-    message = "custom skills" if skills else "does not support split deployment"
+    message = "builtin skills" if harness_id == "rlm" else "custom skills"
     with pytest.raises(ValueError, match=message):
         if entrypoint == "run":
             await agent.run(task)

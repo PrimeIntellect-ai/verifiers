@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import io
+import logging
 import math
 import shlex
 import tempfile
@@ -35,7 +36,7 @@ from verifiers.v1.runtimes.runtime import Runtime
 from verifiers.v1.utils.aio import run_shielded
 from verifiers.v1.utils.artifacts import validate_runtime_mounts
 from verifiers.v1.utils.format import format_time
-from verifiers.v1.utils.logging import get_logger
+from verifiers.v1.utils.logging import clip, get_logger
 from verifiers.v1.utils.prime import ensure_prime_auth
 from verifiers.v1.utils.scope import run_scope
 
@@ -289,7 +290,13 @@ class PrimeBackend(RuntimeBackend):
         try:
             async with asyncio.timeout(10):
                 sandbox = await self._client.get(self.info.id)
-        except Exception:  # noqa: BLE001 - a failed observation is not a confirmed loss
+        except Exception as error:  # a failed observation is not a confirmed loss
+            logger.warning(
+                "Failed to check workspace status - %s: %s",
+                type(error).__name__,
+                clip(str(error)),
+                exc_info=logger.isEnabledFor(logging.DEBUG),
+            )
             return None
         if sandbox.status not in {"TERMINATED", "ERROR", "TIMEOUT"}:
             return None

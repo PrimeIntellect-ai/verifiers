@@ -139,7 +139,9 @@ def supports(runtime: str, feature: str) -> bool:
     if feature == "network":
         config = TypeAdapter(RuntimeConfig).validate_python(runtime_config(runtime))
         return isinstance(config, NetworkPolicyConfig)
-    if feature in ("services", "split"):
+    if feature == "split":
+        return runtime in ("docker", "prime")
+    if feature == "services":
         return issubclass(runtime_cls(runtime), PrimeBackend)
     flag = {
         "container": "SUPPORTS_TASK_IMAGES",
@@ -171,6 +173,8 @@ def unsupported(
         return f"{name} gives the model no shell"
     if "mcp" in needs and not cls.SUPPORTS_MCP:
         return f"{name} does not support MCP tools"
+    if "mcp" in needs and "split" in needs and not cls.SUPPORTS_SPLIT_MCP:
+        return f"{name} does not support MCP in split deployment"
     if "skills" in needs and not cls.SUPPORTS_SKILLS:
         return f"{name} has no native skill support"
     if "resume" in needs and not resumes(cls):

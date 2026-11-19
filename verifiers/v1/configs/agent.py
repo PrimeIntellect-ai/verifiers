@@ -95,10 +95,11 @@ class AgentConfig(BaseConfig):
 
     @model_validator(mode="after")
     def _validate_deployment(self):
-        if self.deployment.mode == "split" and not isinstance(
-            self.runtime, PrimeConfig
+        if self.deployment.mode == "split" and self.runtime.type not in (
+            "prime",
+            "docker",
         ):
-            raise ValueError("split deployment needs a Prime workspace runtime")
+            raise ValueError("split deployment requires Docker or Prime")
         return self
 
     @model_validator(mode="before")

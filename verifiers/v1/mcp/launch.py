@@ -11,7 +11,7 @@ import sys
 import sysconfig
 import tempfile
 import uuid
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Callable, Mapping
 from dataclasses import dataclass, field
 from functools import cache
 from importlib.metadata import PathDistribution, distribution, packages_distributions
@@ -22,6 +22,7 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.errors import ToolsetError
 from verifiers.v1.interception.tunnel import PrimeTunnel
+from verifiers.v1.mcp.auth import MCPURL
 from verifiers.v1.mcp.server import (
     STATE_ROUTE_PARAM,
     STATE_SIGNATURE_PARAM,
@@ -81,7 +82,7 @@ while True:
 
 
 @cache
-def _package_dir(cls: type) -> str:
+def _package_dir(cls: Callable) -> str:
     module = sys.modules.get(cls.__module__)
     path = getattr(module, "__file__", None)
     if path:
@@ -243,20 +244,26 @@ async def _cached_package(src: Path) -> tuple[str, bytes]:
 
 
 async def _install_in_sandbox(server: ServerBase, agent_runtime: Runtime) -> str:
-    # Install as root; the agent user only runs the server.
-    runtime = (
-        agent_runtime if agent_runtime.user is None else agent_runtime.with_user(None)
+    return await install_in_runtime(
+        type(server), agent_runtime, label=f"server {server.server_name!r}"
     )
-    # Prime VMs mount /tmp as a small tmpfs, while the runtime workdir lives on
-    # the VM's root disk. Keep source, build scratch space, and uv's cache on the
-    # durable runtime filesystem so ordinary dependency installs cannot exhaust
-    # the tmpfs.
+
+
+async def install_in_runtime(
+    cls: Callable, agent_runtime: Runtime, *, label: str
+) -> str:
+    """Install the framework and a component's source package in a runtime."""
+    # Dependency installation is trusted setup as the backend's default user.
+    # The server itself keeps the agent's user when launched.
+    runtime = agent_runtime.backend.bind(env=agent_runtime.env).with_user(None)
+    # Prime VMs mount /tmp as a small tmpfs. Keep dependency installation on the
+    # durable runtime filesystem so ordinary installs cannot exhaust the tmpfs.
     # Every runtime runs commands in its working directory; not every config names it.
     located = await runtime.run(["pwd"], {})
     workdir = located.stdout.strip()
     if located.exit_code or not workdir:
         raise ToolsetError(
-            f"server {server.server_name!r}: cannot locate the runtime's working "
+            f"{label}: cannot locate the runtime's working "
             f"directory: {located.stderr.strip()}"
         )
     root = str(PurePosixPath(workdir) / ".vf-src")
@@ -268,7 +275,7 @@ async def _install_in_sandbox(server: ServerBase, agent_runtime: Runtime) -> str
     # Servers in the same service install into one physical environment.
     # Serialize its mutations and only remember sources after a successful install.
     async with runtime.backend.cache.mcp_lock:
-        sources = dict.fromkeys((_package_dir(ServerBase), _package_dir(type(server))))
+        sources = dict.fromkeys((_package_dir(ServerBase), _package_dir(cls)))
         pending = [
             source
             for source in sources
@@ -294,7 +301,7 @@ async def _install_in_sandbox(server: ServerBase, agent_runtime: Runtime) -> str
             result = await run_shielded(runtime.run(["sh", "-c", setup], {}))
             if result.exit_code != 0:
                 raise ToolsetError(
-                    f"server {server.server_name!r} install failed in runtime: "
+                    f"{label} install failed in runtime: "
                     f"{(result.stderr or result.stdout).strip()[-2000:]}"
                 )
             runtime.backend.cache.mcp_sources.update(pending)
@@ -309,7 +316,7 @@ async def _install_in_sandbox(server: ServerBase, agent_runtime: Runtime) -> str
             result = await run_shielded(runtime.run(["sh", "-c", share], {}))
             if result.exit_code != 0:
                 raise ToolsetError(
-                    f"server {server.server_name!r} could not be shared with "
+                    f"{label} could not be shared with "
                     f"{agent_runtime.user!r}: {(result.stderr or result.stdout).strip()[-2000:]}"
                 )
     return f"{venv}/bin/python"
@@ -350,6 +357,7 @@ async def serve_in_runtime(
     listen_all: bool = False,
     state_url: str | None = None,
     state_secret: str = "",
+    mcp_secret: str,
 ) -> int:
     """Start a server and return its bound port.
 
@@ -363,6 +371,7 @@ async def serve_in_runtime(
         "VF_CONFIG": server.config.model_dump_json(),
         "VF_STATE_URL": state_url or "",
         "VF_STATE_SECRET": state_secret,
+        "TOOL_SERVICE_MCP_SECRET": mcp_secret,
     }
     if runtime.type == "subprocess":
         # Keep provider temp files in the runtime workdir so cleanup removes them.
@@ -450,6 +459,7 @@ async def reachable_url(
 class _ServedServer:
     url: str
     runtime: Runtime
+    mcp_secret: str
 
 
 @contextlib.asynccontextmanager
@@ -468,6 +478,7 @@ async def _serve(
     cfg = server.config
     service = getattr(cfg, "service", None)
     own_vm = (placements or {}).get(server.server_name)
+    mcp_secret = secrets.token_urlsafe(32)
     async with contextlib.AsyncExitStack() as stack:
         host = None
         if service is not None or own_vm is not None:
@@ -518,9 +529,10 @@ async def _serve(
                 else None
             ),
             state_secret=state_secret,
+            mcp_secret=mcp_secret,
         )
         if host is not None:
-            yield _ServedServer(f"http://{host}:{port}/mcp", runtime)
+            yield _ServedServer(f"http://{host}:{port}/mcp", runtime, mcp_secret)
             return
 
         consumer_is_local = (
@@ -532,16 +544,16 @@ async def _serve(
             backend_url = await runtime.expose(port)
             # Revoke and drain the proxy before releasing the runtime.
             url = await stack.enter_async_context(
-                proxy_mcp(f"{backend_url.rstrip('/')}/mcp")
+                proxy_mcp(f"{backend_url.rstrip('/')}/mcp", mcp_secret)
             )
-            yield _ServedServer(url, runtime)
+            yield _ServedServer(url, runtime, mcp_secret)
             return
         base = await stack.enter_async_context(
             reachable_url(runtime, port, consumer_is_local=consumer_is_local)
         )
         if harness_runtime is not None:
             base = harness_runtime.host_url(base)
-        yield _ServedServer(f"{base.rstrip('/')}/mcp", runtime)
+        yield _ServedServer(f"{base.rstrip('/')}/mcp", runtime, mcp_secret)
 
 
 @contextlib.asynccontextmanager
@@ -569,7 +581,7 @@ async def serve(
         hosts=hosts,
         placements=placements,
     ) as served:
-        yield served.url
+        yield MCPURL(served.url, served.mcp_secret)
 
 
 @dataclass(frozen=True)
@@ -588,6 +600,7 @@ class SharedToolServer:
     external: bool = False
     runtime: Runtime | None = field(default=None, repr=False)
     state_secret: str = field(default="", repr=False)
+    mcp_secret: str = field(default="", repr=False)
 
 
 @contextlib.asynccontextmanager
@@ -639,6 +652,7 @@ async def serve_shared(toolsets: list[Toolset], harness_is_local: bool = True):
                     local=served.runtime.is_local,
                     runtime=served.runtime,
                     state_secret=state_secret,
+                    mcp_secret=served.mcp_secret,
                 )
             logger.info("Started shared tool server %s url=%s", name, servers[name].url)
         yield servers
@@ -652,7 +666,7 @@ def _shared_url_for_rollout(
 ) -> str:
     """Attach signed state coordinates; the shared server keeps its bearer private."""
     if not state_base or not server.state_secret:
-        return visible_url
+        return MCPURL(visible_url, server.mcp_secret)
     state_url = f"{state_base.rstrip('/')}/state"
     if server.runtime is not None:
         state_url = server.runtime.host_url(state_url)
@@ -663,7 +677,7 @@ def _shared_url_for_rollout(
     query[STATE_SIGNATURE_PARAM] = state_signature(
         server.state_secret, state_url, state_route
     )
-    return urlunsplit(parts._replace(query=urlencode(query)))
+    return MCPURL(urlunsplit(parts._replace(query=urlencode(query))), server.mcp_secret)
 
 
 @contextlib.asynccontextmanager

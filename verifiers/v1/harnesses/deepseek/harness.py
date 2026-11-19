@@ -9,6 +9,7 @@ from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig, PinnedVersion
 from verifiers.v1.harnesses.node import NODE_BIN_DIR, ensure_node
 from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
+from verifiers.v1.harnesses.utils.remote import NativeRemoteTools
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
@@ -37,6 +38,12 @@ class DeepSeekHarness(ACPHarness[DeepSeekHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
     SUPPORTS_TOOL_INTERCEPTION = True
+    SUPPORTS_SPLIT_EXECUTION = True
+
+    async def remote_tools(self, runtime: Runtime, data: TaskData) -> NativeRemoteTools:
+        return NativeRemoteTools(
+            runtime, "deepseek", tuple(self.config.disabled_tools or ())
+        )
 
     async def setup(self, runtime: Runtime) -> None:
         await ensure_node(runtime)
