@@ -46,6 +46,18 @@ receipt = await interaction.send(
 
 For tasks that define an initial `prompt`, start the opening `turn()` before calling `send()`. Note that the returned receipt confirms whether the message was accepted for delivery, not that the agent has finished acting on it. Keep the `interaction` context open while the agent works, since exiting the block cancels outstanding deliveries and finishes the rollout.
 
+Use `agent.start(task)` to send input during a one-shot rollout. It schedules the same execution as `agent.run(task)` and returns an `AgentRun` immediately. Keep the agent context open until `wait()` returns the final trace.
+
+```python
+run = agent.start(task)
+# An operator supplies input while this run is working.
+message = await next_operator_message()
+receipt = await run.steer(message, message_id="op-1")
+trace = await run.wait()
+```
+
+A steerable harness accepts input during the active turn. An accepted receipt includes the one-based rollout attempt, for example `{"outcome": "injected", "attempt": 1}`. Before the turn opens, between retries, and after completion, a fresh message receives `{"outcome": "promptRequired", "reason": "noRunningTurn"}`. Each retry starts a fresh conversation. Repeating an accepted message ID returns its original receipt, even on a later attempt. Use a new ID to intentionally deliver the instruction again. Cancelling `wait()` cancels the rollout and runs its cleanup.
+
 ## Verification placement
 
 `agent.scoring.mode` selects whether task scoring runs in the agent's workspace (`shared`) or in a fresh container (`isolated`). Tasks can declare their own defaults on `TaskData.scoring` via `ScoringConfig`, and any fields explicitly set on `agent.scoring` override the task defaults (falling back to `shared` when neither sets a mode).

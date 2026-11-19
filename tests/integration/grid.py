@@ -84,7 +84,7 @@ FORKS = {
     "mini-swe-agent": "https://github.com/SWE-agent/mini-swe-agent/blob/v2.4.6/src/minisweagent/models/litellm_model.py#L79-L90",
     # Drops historical runtime-context messages and can relocate the current
     # prompt's context around user turns.
-    "openclaw": "https://github.com/openclaw/openclaw/blob/v2026.10.9/src/agents/internal-runtime-context.ts#L403-L513",
+    "openclaw": "https://github.com/openclaw/openclaw/blob/v2026.11.5/src/agents/internal-runtime-context.ts#L445-L563",
 }
 
 
@@ -95,8 +95,25 @@ def assert_one_branch(
     assert set(forks) <= FORKS.keys(), (
         f"no FORKS reason for {set(forks) - FORKS.keys()}"
     )
-    if harness.id not in forks:
-        assert trace.num_branches == 1, f"{trace.num_branches} branches"
+    if harness.id in forks or trace.num_branches == 1:
+        return
+    first_child: dict[int | None, int] = {}
+    for i, node in enumerate(trace.nodes):
+        first = first_child.setdefault(node.parent, i)
+        if first != i:
+            sibling = trace.nodes[first]
+            a, b = sibling.message, node.message
+            fields = type(a).model_fields.keys() | type(b).model_fields.keys()
+            changed = sorted(
+                k for k in fields if getattr(a, k, None) != getattr(b, k, None)
+            )
+            if sibling.tools != node.tools:
+                changed.append("tools")
+            pytest.fail(
+                f"{trace.num_branches} branches at parent {node.parent}, "
+                f"nodes {first} ({a.role}) and {i} ({b.role}), differing fields {changed}"
+            )
+    pytest.fail(f"{trace.num_branches} branches")
 
 
 def agent_seats(taskset: str, env_id: str = "") -> list[str]:

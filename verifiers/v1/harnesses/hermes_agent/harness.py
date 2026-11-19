@@ -30,7 +30,7 @@ curl -fsSL --retry 4 --retry-all-errors --retry-delay 2 --retry-max-time 90 \\
     -o "$archive"
 tar -xzf "$archive" --strip-components=1 -C "$AGENT_HERMES_DIR"
 # Replay one reasoning key: strict providers reject Hermes' duplicated aliases on custom routes.
-# Recheck: https://github.com/NousResearch/hermes-agent/blob/v0.22.5/agent/message_sanitization.py#L660
+# Recheck: https://github.com/NousResearch/hermes-agent/blob/v0.23.2/agent/message_sanitization.py#L733
 sed -i '/^_REASONING_CARRIER_ROUTES: tuple = (/a\\
     (_DEFAULT_CARRIERS, frozenset({{"custom"}}), ()),' "$AGENT_HERMES_DIR/agent/message_sanitization.py"
 uv sync --project "$AGENT_HERMES_DIR" --python 3.14 --locked --no-dev --extra acp --extra mcp --extra anthropic
@@ -39,7 +39,7 @@ touch "$AGENT_HERMES_DIR/.ready"
 
 
 class HermesAgentHarnessConfig(HarnessConfig):
-    version: PinnedVersion = "v0.22.5"
+    version: PinnedVersion = "v0.23.2"
     """Hermes Agent Git release tag to install, pinned for reproducibility."""
     use_bundled_skill: bool = False
     """Enable optional bundled skills; Hermes always includes its own operating manual."""
@@ -87,8 +87,8 @@ class HermesAgentHarness(ACPHarness[HermesAgentHarnessConfig]):
 
     # Hermes strips stored assistant text and pads missing reasoning with " " on
     # routes requiring reasoning replay. Recheck on version bumps:
-    # https://github.com/NousResearch/hermes-agent/blob/v0.22.5/agent/chat_completion_helpers.py#L1583
-    # https://github.com/NousResearch/hermes-agent/blob/v0.22.5/agent/message_sanitization.py#L867
+    # https://github.com/NousResearch/hermes-agent/blob/v0.23.2/agent/chat_completion_helpers.py#L1563
+    # https://github.com/NousResearch/hermes-agent/blob/v0.23.2/agent/message_sanitization.py#L1007
     def replay_view(self, message: Message, dialect: DialectName | None) -> Message:
         return strip_text(message)
 

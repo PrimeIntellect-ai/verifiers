@@ -2,8 +2,8 @@
 # requires-python = ">=3.12,<3.14"
 # dependencies = [
 #     "stirrup[mcp] @ https://github.com/ArtificialAnalysis/Stirrup/archive/{version}.tar.gz",
-#     "mcp==1.28.1",
-#     "agent-client-protocol==0.12.1",
+#     "mcp==1.30.0",
+#     "agent-client-protocol==1.0.0",
 # ]
 # ///
 """Expose Stirrup's agent loop as a rollout-scoped ACP agent over stdio."""
@@ -24,10 +24,10 @@ from acp import (
     RequestError,
     run_agent,
     stdio_streams,
-    update_agent_message_text,
 )
 from acp.schema import (
     AgentCapabilities,
+    AgentMessageChunk,
     CloseSessionResponse,
     InitializeResponse,
     McpCapabilities,
@@ -35,6 +35,7 @@ from acp.schema import (
     PromptResponse,
     SessionCapabilities,
     SessionCloseCapabilities,
+    TextContentBlock,
 )
 from openai import APIError
 from stirrup import Agent
@@ -426,7 +427,7 @@ class StirrupACPAgent:
             return PromptResponse(stop_reason="cancelled")
         await self.connection.session_update(
             session_id=session_id,
-            update=update_agent_message_text(reply),
+            update=AgentMessageChunk(content=TextContentBlock(text=reply)),
         )
         return PromptResponse(stop_reason="end_turn")
 

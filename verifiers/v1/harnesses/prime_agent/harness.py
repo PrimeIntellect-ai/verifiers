@@ -23,10 +23,10 @@ logger = get_logger(__name__)
 GITHUB_RELEASE_URL = (
     "https://github.com/PrimeIntellect-ai/prime-agent/releases/download"
 )
-PRIME_AGENT_COMMIT: Literal["ea9d9602ec0938d9e454e8963107cd85af1565c6"] = (
-    "ea9d9602ec0938d9e454e8963107cd85af1565c6"
+PRIME_AGENT_COMMIT: Literal["033eea1705c5ae953fe7cd7a5e7e7c45317e0dfe"] = (
+    "033eea1705c5ae953fe7cd7a5e7e7c45317e0dfe"
 )
-PRIME_AGENT_VERSION = "0.10.2"
+PRIME_AGENT_VERSION = "0.10.5"
 PRIME_AGENT_DIR = "/var/tmp/vf-prime-agent"
 STATE_ROOT = "/tmp/vf-prime-agent-runs"
 LIFECYCLE_META_NAMESPACE = "ai.primeintellect.prime-agent"
@@ -39,12 +39,13 @@ INSTALL = (
     + _ENSURE_UV
     + r"""
 prefix="$AGENT_PRIME_AGENT_DIR/$PRIME_AGENT_COMMIT"
+rm -f "$prefix/.ready"
 if [ ! -x "$prefix/bin/prime-agent" ]; then
     case "$(uname -s)-$(uname -m)" in
-        Linux-x86_64) platform=linux-x64; sha=09659961dfde201cc39f1e69b607385d708da3e591f267a4fea04970afb8b005 ;;
-        Linux-aarch64|Linux-arm64) platform=linux-arm64; sha=cd31de3a52dac3bdee44b723f10341cc5255f135acbcde8894575e324fa852b7 ;;
-        Darwin-x86_64) platform=darwin-x64; sha=32683ec045940093f6fea66ad234894f0361fd7c466932365c09097edf97499a ;;
-        Darwin-arm64) platform=darwin-arm64; sha=2f0894811f8ba047eb1874cc1d7392f45c0d6135be6090e7601983de17a6d1d7 ;;
+        Linux-x86_64) platform=linux-x64; sha=b9f653f4c32e83a2270f0b52edea6a72c7bdbd1f7b5c3e64c55e75157094f3b3 ;;
+        Linux-aarch64|Linux-arm64) platform=linux-arm64; sha=8ddee5f1ed1a4443829944117509212f1294abbf0cbed22765f8a6efefaa2516 ;;
+        Darwin-x86_64) platform=darwin-x64; sha=2a19423b21e79ac45050a246a18d507db66801072437e321b1f7063c6bcf9a4b ;;
+        Darwin-arm64) platform=darwin-arm64; sha=6eb082c66f5259b953c38f21c72055d11942fa61372718a5eab25603247bd49c ;;
         *) echo "unsupported prime-agent platform: $(uname -s)-$(uname -m)" >&2; exit 1 ;;
     esac
     command -v curl >/dev/null || { apt-get update -qq && apt-get install -y -qq curl ca-certificates; } || apk add --no-cache curl ca-certificates
@@ -73,16 +74,21 @@ for pyproject in "$prefix/bin/skills/"*/pyproject.toml; do
     set -- "$@" --editable "${pyproject%/pyproject.toml}"
 done
 uv pip install --python "$PRIME_AGENT_KERNEL_VENV/bin/python" "$@"
+touch "$prefix/.ready"
 """
 )
 
 
 class PrimeAgentHarnessConfig(HarnessConfig):
-    commit: Literal["ea9d9602ec0938d9e454e8963107cd85af1565c6"] = PRIME_AGENT_COMMIT
+    commit: Literal["033eea1705c5ae953fe7cd7a5e7e7c45317e0dfe"] = PRIME_AGENT_COMMIT
     """Prime Agent release commit to install."""
 
     autonomous: bool = False
     """Enable Prime Agent's autonomous continuation loop."""
+    api: str | None = None
+    """The API Prime Agent speaks to the model's provider, e.g. `openai-completions` for an
+    OpenAI-compatible endpoint that serves only chat completions. Unset, Prime Agent picks the
+    provider's native API (Responses for `openai`)."""
     dialect: Literal["auto"] = "auto"
 
 
@@ -96,7 +102,7 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
         return None
 
     # Its chat-completions provider drops whitespace-only assistant text on replay. Recheck on bumps:
-    # https://github.com/PrimeIntellect-ai/prime-agent/blob/v0.10.2/crates/pa-ai/src/providers/openai_completions/convert.rs#L106
+    # https://github.com/PrimeIntellect-ai/prime-agent/blob/v0.10.5/crates/pa-ai/src/providers/openai_completions/convert.rs#L106
     def replay_view(self, message: Message, dialect: DialectName | None) -> Message:
         return drop_blank_text(message)
 
@@ -167,9 +173,17 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
 
     async def _install(self, runtime: Runtime, env: dict[str, str]) -> None:
         logger.debug("Ensuring prime-agent %s is installed", self.config.commit)
+        ready = f"{PRIME_AGENT_DIR}/{self.config.commit}/.ready"
         await ensure_installed(
             runtime,
             directory=PRIME_AGENT_DIR,
+            # A finished install skips the script: its skills install resolves against
+            # the package index on every run, which a runtime reused after its network
+            # is restricted can no longer reach.
+            ready=(
+                f"[ -f {ready} ] && [ -x {self._bin()} ] "
+                f"&& [ -x {self._kernel_venv()}/bin/python ]"
+            ),
             install=INSTALL,
             env={
                 **env,
@@ -233,6 +247,7 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
                     # The native provider owns its API path, including any version prefix.
                     "baseUrl": endpoint.removesuffix("/v1"),
                     "apiKey": KEY_VAR,
+                    **({"api": self.config.api} if self.config.api else {}),
                     "models": [
                         {
                             "id": model,

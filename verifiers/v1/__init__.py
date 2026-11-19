@@ -13,7 +13,14 @@ if TYPE_CHECKING:
     from pydantic_config import BaseConfig
 
     from verifiers.v1.acp import ACPConfig, ACPHarness, ACPTurn
-    from verifiers.v1.agent import Agent, Agents, Interaction, Segment, make_agent
+    from verifiers.v1.agent import (
+        Agent,
+        AgentRun,
+        Agents,
+        Interaction,
+        Segment,
+        make_agent,
+    )
     from verifiers.v1.clients import (
         Client,
         ModelContext,
@@ -211,6 +218,7 @@ _NAME_TO_MODULE = {
     "ACP_SEMANTIC_EDGES_METADATA_KEY": "verifiers.v1.semantic",
     "ARTIFACTS_DIR": "verifiers.v1.utils.artifacts",
     "Agent": "verifiers.v1.agent",
+    "AgentRun": "verifiers.v1.agent",
     "AgentConfig": "verifiers.v1.configs.agent",
     "AgentInfo": "verifiers.v1.trace",
     "AgentSpan": "verifiers.v1.trace",
@@ -524,6 +532,7 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "RetryRule",
     # agent
     "Agent",
+    "AgentRun",
     "Agents",
     "make_agent",
     # loaders

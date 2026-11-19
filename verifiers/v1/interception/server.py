@@ -69,7 +69,7 @@ from verifiers.v1.mcp.auth import authorized
 from verifiers.v1.semantic import ACPInfo, extract_acp_info, routing_session_id
 from verifiers.v1.session import IdempotentRequest, ReplayResponse, RolloutSession
 from verifiers.v1.trace import Error, ModelCall, PolicyEvent, TimeSpan
-from verifiers.v1.types import FinishReason, Response, Usage
+from verifiers.v1.types import FinishReason, Response, ToolMessage, Usage
 from verifiers.v1.utils.aio import run_shielded
 from verifiers.v1.utils.format import format_time
 from verifiers.v1.utils.logging import clip, get_logger, isolated
@@ -703,15 +703,16 @@ class InterceptionServer(Interception):
                 raw_key = body.get("key")
                 if not isinstance(raw_key, list) or len(raw_key) != 2:
                     raise HarnessError("invalid remote gate key")
-                key = (str(raw_key[0]), str(raw_key[1]))
                 async with session._tool_gate_lock:
                     if op == "pin":
                         raw_msg = body.get("message")
                         if not isinstance(raw_msg, dict):
                             raise HarnessError("invalid remote gate message")
-                        session.record_remote_pin(key, raw_msg, body.get("arguments"))
+                        session.record_remote_pin(
+                            raw_key, raw_msg, body.get("arguments")
+                        )
                     else:
-                        session.record_remote_denial_ack(key, body.get("arguments"))
+                        session.record_remote_denial_ack(raw_key, body.get("arguments"))
                 return web.json_response({"ok": True})
             return web.json_response(
                 await session.decide_tool(
@@ -934,6 +935,7 @@ class InterceptionServer(Interception):
                     dialect, f"rollout stopped: {refused}", status=400
                 )
             original_request = model_request
+            harness_history = original_request.messages
             model_request, request_rewrites, stopped = await session.rewrite_request(
                 model_request, dialect=dialect.name
             )
@@ -941,6 +943,14 @@ class InterceptionServer(Interception):
             # A pinned tool result changes the request without a fresh record.
             if stopped is None and model_request != original_request:
                 dialect.rewrite_request(body, original_request, model_request)
+                # Match future receipts against the prompt the harness will replay.
+                # It retains its own user messages. We reapply pinned tool results.
+                harness_history = [
+                    after if isinstance(after, ToolMessage) else before
+                    for before, after in zip(
+                        original_request.messages, model_request.messages, strict=True
+                    )
+                ]
         except RolloutError as error:
             return self._fail(session, dialect, error)
         except Exception as error:  # noqa: BLE001 - surface task hook failures
@@ -1066,7 +1076,9 @@ class InterceptionServer(Interception):
                     session.consume_prepared(turn.tail)
                     session.trace.response_rewrites.extend(response_rewrites)
                     if stopped is None:
-                        stopped = await session.gate_tool_calls(node, dialect.name)
+                        stopped = await session.gate_tool_calls(
+                            node, dialect.name, harness_history
+                        )
                     if stopped is not None:
                         session.trace.stop(stopped)
                         return _error_response(

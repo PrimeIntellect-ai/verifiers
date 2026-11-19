@@ -53,7 +53,7 @@ fi
 
 
 class PiHarnessConfig(HarnessConfig):
-    version: PinnedVersion = "1.4.0"
+    version: PinnedVersion = "1.5.2"
     """Pi release to install, pinned for reproducibility."""
     dialect: DialectName = "chat_completions"
     supports_developer_role: bool | None = None
@@ -71,8 +71,8 @@ class PiHarness(ACPHarness[PiHarnessConfig]):
 
     # pi-ai drops whitespace-only assistant text on replay over chat completions and
     # Anthropic messages, not over Responses. Recheck on version bumps:
-    # https://github.com/earendil-works/pi/blob/v1.4.0/packages/ai/src/api/openai-completions.ts#L1310
-    # https://github.com/earendil-works/pi/blob/v1.4.0/packages/ai/src/api/anthropic-messages.ts#L1437
+    # https://github.com/earendil-works/pi/blob/v1.5.2/packages/ai/src/api/openai-completions.ts#L1295
+    # https://github.com/earendil-works/pi/blob/v1.5.2/packages/ai/src/api/anthropic-messages.ts#L1704
     def replay_view(self, message: Message, dialect: DialectName | None) -> Message:
         if dialect in ("chat_completions", "anthropic_messages"):
             return drop_blank_text(message)

@@ -414,7 +414,9 @@ def _tools_hash(tools: list[Tool] | None) -> str:
     return hashlib.blake2b(data, digest_size=16).hexdigest()
 
 
-def _message_key(trace: Trace, message: Message, dialect: DialectName | None) -> str:
+def replay_message_hash(
+    trace: Trace, message: Message, dialect: DialectName | None
+) -> str:
     """`message_hash` of the message as the trace's harness replays it over `dialect`,
     so a turn the harness re-sends with cosmetic rewrites still matches the node it
     came from."""
@@ -433,7 +435,7 @@ def _node_key(
     return (
         parent,
         _tools_hash(tools) if parent is None else None,
-        _message_key(trace, message, dialect),
+        replay_message_hash(trace, message, dialect),
     )
 
 
@@ -472,12 +474,12 @@ def message_prefix_len(
     parents: list[int | None] = [None]
     matched = 0
     for message in prompt:
-        key = _message_key(trace, message, dialect)
+        key = replay_message_hash(trace, message, dialect)
         parents = [
             node_id
             for parent in parents
             for node_id in children.get(parent, [])
-            if _message_key(trace, trace.nodes[node_id].message, dialect) == key
+            if replay_message_hash(trace, trace.nodes[node_id].message, dialect) == key
         ]
         if not parents:
             break
@@ -743,7 +745,7 @@ def prepare_turn(
             if len(children) == 1 and trace.nodes[children[0]].message == msg:
                 existing = children[0]
         if existing is None:
-            message_key = _message_key(trace, msg, dialect)
+            message_key = replay_message_hash(trace, msg, dialect)
             existing = idx.get(
                 (parent, tools_hash if parent is None else None, message_key)
             )
@@ -1140,12 +1142,17 @@ def leaves(trace: Trace) -> list[int]:
     return [i for i in range(len(trace.nodes)) if i not in has_child]
 
 
-def path(trace: Trace, node: int) -> list[Message]:
-    """The conversation ending at `node`: its root-to-node messages."""
-    messages: list[Message] = []
+def path_node_ids(trace: Trace, node: int) -> list[int]:
+    """The physical ancestry from the root through the given node."""
+    nodes: list[int] = []
     current: int | None = node
     while current is not None:
-        messages.append(trace.nodes[current].message)
+        nodes.append(current)
         current = trace.nodes[current].parent
-    messages.reverse()
-    return messages
+    nodes.reverse()
+    return nodes
+
+
+def path(trace: Trace, node: int) -> list[Message]:
+    """The conversation ending at `node`: its root-to-node messages."""
+    return [trace.nodes[i].message for i in path_node_ids(trace, node)]

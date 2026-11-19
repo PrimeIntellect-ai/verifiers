@@ -71,6 +71,7 @@ class ACPConfig:
     required_agent_metadata: str | None = None
     ready_file: str | None = None
     """A trusted native plugin must create this file before the first prompt."""
+    session_title: str | None = None
 
 
 class ACPHarness(Harness[ConfigT]):
@@ -321,6 +322,9 @@ class ACPHarnessSession(HarnessSession):
             return {"outcome": "promptRequired", "reason": "noRunningTurn"}
         response = await self._request("steer", message=message, message_id=message_id)
         if not response.get("ok"):
+            if response.get("error_type") == "NotImplementedError":
+                error = str(response.get("error"))
+                raise NotImplementedError(error.removeprefix("NotImplementedError: "))
             raise RuntimeError(response.get("error") or "ACP steering failed")
         result = response.get("result")
         if not isinstance(result, dict):
@@ -363,6 +367,7 @@ class ACPHarnessSession(HarnessSession):
             "session_meta": self.config.session_meta or {},
             "client_capabilities": self.config.client_capabilities or {},
             "required_agent_metadata": self.config.required_agent_metadata,
+            "session_title": self.config.session_title,
             "tool_interception": {
                 "url": self.tool_interception_url,
                 "secret": self.secret,

@@ -81,7 +81,11 @@ def match_queued_item(
             )
         ]
 
-    uncompleted = [item for item in items if tuple(item["key"]) not in completed]
+    uncompleted = [
+        item
+        for item in items
+        if (str(item["key"][0]), str(item["key"][1])) not in completed
+    ]
     matches = (
         id_matches(uncompleted)
         or id_matches(items)

@@ -112,7 +112,7 @@ class CompactionConfig(BaseConfig):
 class RLMHarnessConfig(HarnessConfig):
     dialect: Literal["chat_completions"] = "chat_completions"
     version: str = Field(
-        default="695ac48461fbd154859093eaa14589b21f63c22e", min_length=1
+        default="8ca926cdd64fd7725b78cf95a4e1667315d3b1f6", min_length=1
     )
     """Git ref (branch, tag, or commit) of nano-rlm to install. Must know every
     field this harness puts on the wire, i.e. be at least the default ref."""
@@ -224,7 +224,10 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
             # The editable install needs the files, not the history; agents searching
             # their workspace for a repository must not find the harness's own.
             f"rm -rf {shlex.quote(checkout + '/.git')} && "
+            # Unmanaged: install.sh's uv installer then writes no receipt under root's
+            # $HOME/.config/uv, which a task image can point at the agent's workspace.
             f"{home_env}UV_INSTALL_DIR={shlex.quote(directory + '/bin')} "
+            f"UV_UNMANAGED_INSTALL={shlex.quote(directory + '/bin')} "
             f"UV_TOOL_BIN_DIR={shlex.quote(directory + '/bin')} "
             f"UV_TOOL_DIR={shlex.quote(directory + '/tools')} "
             f"RLM_CHECKOUT_PATH={shlex.quote(checkout)} bash {shlex.quote(checkout + '/install.sh')} && "

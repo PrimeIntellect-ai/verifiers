@@ -32,7 +32,7 @@ logger = get_logger(__name__)
 
 CODEX_DIR = "/var/tmp/vf-codex-{version}-{acp_version}"
 PACKAGES_DIR = f"{CODEX_DIR}/acp"
-ACP_VERSION = "2.5.0"
+ACP_VERSION = "2.7.0"
 CODEX_BIN = f"{PACKAGES_DIR}/node_modules/.bin/codex"
 ACP_BIN = f"{PACKAGES_DIR}/node_modules/.bin/codex-acp"
 EXECUTOR_DIR = "/var/tmp/agent-tools/codex-executor-{version}"
@@ -50,7 +50,12 @@ INSTALL = r"""
 set -e
 export PATH="/var/tmp/vf-node/bin:$PATH"
 rm -f {ready}
-npm install --prefix {packages} --ignore-scripts --no-audit --no-fund \
+# Resolve the adapter's bundled CLI to the harness pin, including across minor releases.
+mkdir -p {packages}
+cd {packages}
+printf '{"overrides":{"@agentclientprotocol/codex-acp":{"@openai/codex":"%s"}}}\n' \
+    "$AGENT_CODEX_VERSION" > package.json
+npm install --ignore-scripts --no-audit --no-fund \
     --omit=dev \
     "@agentclientprotocol/codex-acp@$AGENT_CODEX_ACP_VERSION" \
     "@openai/codex@$AGENT_CODEX_VERSION" >/dev/null
@@ -118,9 +123,9 @@ GATE_HANDLER = {
 
 class CodexHarnessConfig(HarnessConfig):
     # Codex accepts no other wire API:
-    # https://github.com/openai/codex/blob/rust-v0.166.0/codex-rs/model-provider-info/src/lib.rs#L115
+    # https://github.com/openai/codex/blob/rust-v0.170.0/codex-rs/model-provider-info/src/lib.rs#L119
     dialect: Literal["responses"] = "responses"
-    version: PinnedVersion = "0.166.0"
+    version: PinnedVersion = "0.170.0"
     """Codex release to install, pinned for reproducibility."""
     code_mode: bool = False
     """Enable Code Mode when the model's metadata does not select its tool mode."""
@@ -286,10 +291,15 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
             # Codex reads MCP servers from the config written by build_env().
             mcp_urls={},
             system_prompt=system_prompt,
+            # An untitled session starts a separate model turn to generate a UI title.
+            session_title=f"Verifiers rollout {trace.id}",
             client_capabilities={
                 "_meta": {
                     "jetbrains": {
-                        "air": {"version": 1, "capabilities": ["sessionFailure"]}
+                        "air": {
+                            "version": 1,
+                            "capabilities": ["sessionFailure", "sessionIndex"],
+                        }
                     }
                 }
             },
@@ -377,29 +387,37 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
                 )
             )
         mcp_headers = self.config.resolve_mcp_headers(mcp_urls)
-        mcp_config = "features={mcp_2026_07_28=true}\n" + (
-            "mcp_servers={"
-            + ",".join(
-                f"{json.dumps(name, ensure_ascii=False)}="
-                f"{{url={json.dumps(url, ensure_ascii=False)},required=true,"
-                + "http_headers={"
-                + ",".join(
-                    f"{json.dumps(key)}={json.dumps(value)}"
-                    for key, value in mcp_headers.get(name, {}).items()
-                )
-                + "},"
-                + 'omit_tools_from=["deferred","code_mode"],'
-                + f"startup_timeout_sec=60.0,tool_timeout_sec={self.config.tool_timeout}}}"
+        # The app server and its ACP sessions must start with the same provider.
+        settings = {
+            "model_provider": "custom-gateway",
+            "model_providers": {
+                "custom-gateway": {
+                    "name": "Verifiers",
+                    "base_url": endpoint,
+                    "wire_api": "responses",
+                    "env_key": "CODEX_INTERCEPT_KEY",
+                    "http_headers": {"X-Client-Feature-ID": "codex"},
+                }
+            },
+            "features": {"mcp_2026_07_28": True},
+            "mcp_servers": {
+                name: {
+                    "url": str(url),
+                    "required": True,
+                    "http_headers": mcp_headers.get(name, {}),
+                    "omit_tools_from": ["deferred", "code_mode"],
+                    "startup_timeout_sec": 60.0,
+                    "tool_timeout_sec": self.config.tool_timeout,
+                }
                 for name, url in mcp_urls.items()
-            )
-            + "}"
-            if mcp_urls
-            else ""
-        )
+            },
+        }
         if self._staged_configs is None:
             self._staged_configs = {}
-        self._staged_configs[home] = tomllib.loads(mcp_config)
-        writes.append(runtime.write(f"{home}/config.toml", mcp_config.encode()))
+        self._staged_configs[home] = dict(settings)
+        writes.append(
+            runtime.write(f"{home}/config.toml", tomli_w.dumps(settings).encode())
+        )
         await asyncio.gather(*writes)
         disabled = set(self.config.disabled_tools or ())
         features: dict[str, object] = {
@@ -417,20 +435,11 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
         }
         return {
             **self.config.resolved_env,
+            # A rollout has no interactive composer that needs suggested follow-ups.
+            "CODEX_ACP_PROMPT_SUGGESTIONS": "false",
             "CODEX_CONFIG": json.dumps(config),
             "CODEX_HOME": home,
-            "DEFAULT_AUTH_REQUEST": json.dumps(
-                {
-                    "methodId": "gateway",
-                    "_meta": {
-                        "gateway": {
-                            "baseUrl": endpoint,
-                            "headers": {"Authorization": f"Bearer {secret}"},
-                            "providerName": "Verifiers",
-                        }
-                    },
-                }
-            ),
+            "CODEX_INTERCEPT_KEY": secret,
             "INITIAL_AGENT_MODE": "agent-full-access",
             "NO_BROWSER": "1",
         }
