@@ -9,6 +9,7 @@ from collections import Counter
 from typing import Any
 
 from pydantic_config import cli
+from pydantic_core import to_jsonable_python
 
 from verifiers.v1.cli.output import output_path, write_config
 from verifiers.v1.cli.resolve import (
@@ -69,13 +70,21 @@ async def regrade_trace(
             setup_timeout=config.timeout.setup, total_timeout=config.timeout.total
         )
         trace = replay.trace
+        if reason := trace.info.get("scoring_skipped"):
+            return {**row, "status": "skipped", "reason": reason}
         return {
             **row,
             "status": "regraded",
             "new": _scores(trace),
-            "diagnostics": trace.info.get("scoring_diagnostics", {}),
-            "judge_calls": trace.info.get("judge_calls", []),
-            "usage": [usage.model_dump() for usage in trace.extra_usage],
+            "diagnostics": to_jsonable_python(
+                trace.info.get("scoring_diagnostics", {}),
+                fallback=str,
+                bytes_mode="base64",
+            ),
+            "judge_calls": to_jsonable_python(
+                trace.info.get("judge_calls", []), fallback=str, bytes_mode="base64"
+            ),
+            "usage": [usage.model_dump(mode="json") for usage in trace.extra_usage],
         }
     except RequiresRerun as exc:
         return {**row, "status": "requires_rerun", "reason": str(exc)}

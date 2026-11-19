@@ -36,6 +36,8 @@ MAX_ARTIFACT_BYTES = 32 * 1024 * 1024
 """Default ceiling per collection. Sized for a delta, not a tree: the grading box boots from the
 agent's image, so the repo is already there and only its output has to travel."""
 
+MAX_MANIFEST_BYTES = 1024 * 1024
+
 
 class Artifact(BaseModel):
     """One path to restore at the same location in another runtime."""
@@ -250,7 +252,7 @@ def save_artifacts(
     workdir: str = "/",
     service_workdirs: Mapping[str, str] | None = None,
 ) -> str:
-    """Save collected files at their declared destinations, with a manifest.
+    """Save canonical archives and preview files, with a manifest identifying both.
 
     Unpack each validated archive in isolation before moving its files into the
     saved tree. Failed or conflicting entries are recorded without losing the
@@ -287,6 +289,14 @@ def save_artifacts(
             manifest.append(entry)
             try:
                 _validate_restore(source, archive)
+                if archive is not None:
+                    canonical = _rebuild(archive)
+                    digest = hashlib.sha256(canonical).hexdigest()
+                    archive_path = f".archives/{digest}.tar"
+                    (saved / archive_path).write_bytes(canonical)
+                    entry.update(
+                        archive=archive_path, sha256=digest, size=len(canonical)
+                    )
                 Artifact.validate_destination(destination)
                 target = PurePosixPath(destination)
                 entry["destination"] = str(target)
@@ -338,17 +348,12 @@ def save_artifacts(
                                 (Path(unpacked) / member.name).replace(path)
                     claims.append((target, artifact.destination is not None))
                     entry["status"] = "ok"
-                    canonical = _rebuild(archive)
-                    digest = hashlib.sha256(canonical).hexdigest()
-                    archive_path = f".archives/{digest}.tar"
-                    (saved / archive_path).write_bytes(canonical)
-                    entry.update(
-                        archive=archive_path, sha256=digest, size=len(canonical)
-                    )
             except (OSError, ValueError, RuntimeError, tarfile.TarError) as exc:
                 entry.update(status="failed", error=str(exc))
                 logger.warning("Failed to save artifact %s - %s", source, exc)
         manifest_bytes = (json.dumps(manifest, indent=2) + "\n").encode()
+        if len(manifest_bytes) > MAX_MANIFEST_BYTES:
+            raise ValueError("artifact manifest exceeds the byte limit")
         (saved / "manifest.json").write_bytes(manifest_bytes)
         if directory.is_symlink():
             raise ValueError(f"artifact directory must not be a symlink: {directory}")
@@ -385,7 +390,7 @@ def load_artifacts(
     original canonical archives. Older manifests without archives cannot establish
     a complete submission and are rejected rather than silently reconstructed.
     """
-    manifest_bytes = _read_saved_file(directory, "manifest.json", 1024 * 1024)
+    manifest_bytes = _read_saved_file(directory, "manifest.json", MAX_MANIFEST_BYTES)
     if (
         expected_manifest_sha256 is not None
         and hashlib.sha256(manifest_bytes).hexdigest() != expected_manifest_sha256
@@ -403,15 +408,12 @@ def load_artifacts(
         if source in collected:
             raise ValueError(f"duplicate artifact root {source!r}")
         _validate_restore(source, None)
-        if entry.get("status") == "empty":
+        if entry.get("status") == "empty" and "archive" not in entry:
             collected[source] = None
             continue
         digest = entry.get("sha256")
-        if (
-            entry.get("status") != "ok"
-            or not isinstance(digest, str)
-            or not re.fullmatch(r"[0-9a-f]{64}", digest)
-        ):
+        # Preview failures do not affect a complete, verified archive.
+        if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
             raise ValueError(f"artifact {source!r} has no complete saved archive")
         relative = f".archives/{digest}.tar"
         if entry.get("archive") != relative:

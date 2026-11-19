@@ -6,16 +6,18 @@ import re
 import time
 import uuid
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
+from verifiers.v1.agent import resolve_rollout_timeouts
 from verifiers.v1.configs.scoring import ScoringConfig, resolve_scoring
-from verifiers.v1.grading import grade_task, verifier_runtime
+from verifiers.v1.grading import grade_task, scoring_skip_reason, verifier_runtime
+from verifiers.v1.rollout import RolloutTimeouts
 from verifiers.v1.runtimes import RuntimeConfig
 from verifiers.v1.runtimes.deployment import Deployment
 from verifiers.v1.state import state_cls
-from verifiers.v1.task import Task, TaskData, TaskTimeout, task_key
+from verifiers.v1.task import Task, TaskData, task_key
 from verifiers.v1.trace import Trace, TraceTask
 from verifiers.v1.utils.artifacts import ARTIFACTS_DIR, artifact_source, load_artifacts
 from verifiers.v1.utils.compile import resolve_runtime_config
@@ -135,7 +137,7 @@ class VerifierReplay:
     grader: Task
     runtime: RuntimeConfig
     scoring: ScoringConfig
-    timeouts: TaskTimeout
+    timeouts: RolloutTimeouts
 
     async def run(
         self, *, setup_timeout: float | None = None, total_timeout: float | None = None
@@ -144,12 +146,12 @@ class VerifierReplay:
         trace.timing.scoring.start, trace.timing.scoring.end = time.time(), 0.0
         artifacts = dict(trace.state.artifacts)
         try:
-            if self.scoring.skip_on_truncated and trace.is_truncated:
-                trace.info["scoring_diagnostics"] = {"scoring_skipped": "truncated"}
+            if reason := scoring_skip_reason(trace, self.scoring):
+                trace.info["scoring_skipped"] = reason
                 return
             timeouts = self.timeouts
             if setup_timeout is not None:
-                timeouts = timeouts.model_copy(update={"setup": setup_timeout})
+                timeouts = replace(timeouts, setup=setup_timeout)
             deployment = Deployment()
             try:
                 async with asyncio.timeout(total_timeout):
@@ -163,7 +165,9 @@ class VerifierReplay:
                     )
             finally:
                 await deployment.close()
-            if not trace.rewards and not trace.is_dropped:
+            if not trace.is_dropped and all(
+                reward is None for reward in trace.rewards.values()
+            ):
                 raise ValueError("Verifier produced no rewards")
         except TimeoutError:
             trace.record_timeout("scoring")
@@ -256,4 +260,5 @@ def prepare_replay(
         "source_trace_id": saved.id,
         "source_attempt": saved.attempt,
     }
-    return VerifierReplay(trace, grader, config, policy, task.data.timeout)
+    timeouts = resolve_rollout_timeouts(saved.agent.config.timeout, task)
+    return VerifierReplay(trace, grader, config, policy, timeouts)
