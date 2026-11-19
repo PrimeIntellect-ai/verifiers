@@ -19,7 +19,10 @@ IMAGE = "public.ecr.aws/docker/library/python@sha256:b701198cb708b68d9413ca67d63
 COMPOSE = f"""\
 services:
   main:
-    build: .
+    build:
+      context: .
+      args:
+        BUILD_FLAVOR: '${{BUILD_FLAVOR:-solver}}'
     working_dir: /app
     environment:
       LITERAL_TOKEN: 'a$$VALUE'
@@ -62,6 +65,12 @@ class ComposeVMHarness(vf.Harness):
 
 
 class ComposeVMTask(HarborTask):
+    def grading_task(self, runtime, *, scoring):
+        task = super().grading_task(runtime, scoring=scoring)
+        if scoring.mode == "isolated":
+            return task.with_data(env={"BUILD_FLAVOR": "grader"})
+        return task
+
     async def setup(self, runtime, deployment=None):
         await super().setup(runtime, deployment)
         if deployment is not None:
@@ -84,6 +93,24 @@ class ComposeVMTask(HarborTask):
             payload = await runtime.read("/payload")
             await runtime.write("/app/copied", payload)
             assert await runtime.read("/app/copied") == payload
+            if len(payload) > 10 * 1024**2:
+                size = 11 * 1024**2
+                output = await runtime.run(
+                    [
+                        "python",
+                        "-c",
+                        (
+                            f"import os; os.write(1, b'out' + b'a' * {size}); "
+                            f"os.write(2, b'err' + b'b' * {size})"
+                        ),
+                    ],
+                    {},
+                )
+                assert output.exit_code == 0
+                assert len(output.stdout) == len(output.stderr) == size + 3
+                assert output.stdout.startswith("out") and output.stderr.startswith(
+                    "err"
+                )
             await runtime.write("/app/probe", b"workspace")
             process = await runtime.exec(
                 ["python", "-m", "http.server", "8000", "--directory", "/app"], {}
@@ -128,14 +155,20 @@ async def test_compose_vm(tmp_path, scoring_mode, monkeypatch):
         (environment / "services.yaml").write_text(COMPOSE)
     else:
         (environment / "docker-compose.yaml").write_text(COMPOSE)
-    (environment / "Dockerfile").write_text(f"FROM {IMAGE}\nWORKDIR /app\n")
+    (environment / "Dockerfile").write_text(
+        f"FROM {IMAGE}\nWORKDIR /app\nARG BUILD_FLAVOR\n"
+        'RUN printf "%s" "$BUILD_FLAVOR" > /app/build-flavor\n'
+    )
     tests = tmp_path / "tests"
     tests.mkdir()
     (tests / "test.sh").write_text(
         "set -eu\n"
         'test "$(cat /app/answer)" = 43\n'
+        'test "$(cat /app/build-flavor)" = solver\n'
         + (
-            'test "$(cat /evidence/answer)" = 43\ntest ! -e /app/solver-only\n'
+            'test "$(cat /evidence/answer)" = 43\n'
+            'test "$BUILD_FLAVOR" = grader\n'
+            "test ! -e /app/solver-only\n"
             if scoring_mode == "isolated"
             else ""
         )
