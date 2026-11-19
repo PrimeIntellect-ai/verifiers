@@ -110,6 +110,17 @@ def bind_scoring_env(runtime: Runtime, policy: ScoringConfig) -> Runtime:
     return runtime.with_env({**runtime.env, **resolve_env(policy.env or {})})
 
 
+def scoring_skip_reason(trace: Trace, policy: ScoringConfig) -> str | None:
+    """Explain why this scoring policy skips the trace."""
+    if trace.is_format_violation:
+        return "format_violation"
+    if policy.skip_on_truncated and trace.is_truncated:
+        return "truncated"
+    if policy.skip_on_timeout and trace.is_timeout:
+        return "timeout"
+    return None
+
+
 async def stage_verifier(task: Task, trace: Trace, runtime: Runtime) -> None:
     artifacts = dict(trace.state.artifacts)
     task.validate_artifacts(artifacts)
@@ -241,6 +252,9 @@ async def grade_submission(
     policy = scoring if scoring is not None else task.scoring
     if policy.mode != "isolated":
         raise ValueError("grade_submission requires isolated scoring")
+    if reason := scoring_skip_reason(trace, policy):
+        trace.info["scoring_skipped"] = reason
+        return
     grader = task.grading_task(runtime, scoring=policy)
     config = verifier_runtime(grader, runtime, trace.agent.config.runtime, policy)
     deployment = Deployment(

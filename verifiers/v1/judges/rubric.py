@@ -129,10 +129,14 @@ CRITERIA_ADAPTER = TypeAdapter(list[Criterion])
 
 
 def load_criteria(
-    path: Path, weights: dict[str, CriterionWeight] | None = None
+    path: Path,
+    weights: dict[str, CriterionWeight] | None = None,
+    *,
+    text: str | None = None,
 ) -> list[Criterion]:
-    """Load a JSON or TOML rubric and apply validated config overrides."""
-    text = path.read_text(encoding="utf-8")
+    """Load a JSON or TOML rubric, optionally from a caller's snapshot."""
+    if text is None:
+        text = path.read_text(encoding="utf-8")
     data = tomllib.loads(text) if path.suffix.lower() == ".toml" else json.loads(text)
     items = data.get("criteria", []) if isinstance(data, dict) else data
     criteria = CRITERIA_ADAPTER.validate_python(items)
