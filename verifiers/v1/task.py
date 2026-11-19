@@ -14,9 +14,9 @@ import hashlib
 import inspect
 import json
 from collections.abc import Awaitable, Callable, Mapping
-from typing import TYPE_CHECKING, Any, ClassVar, Generic, Self
+from typing import TYPE_CHECKING, Annotated, Any, ClassVar, Generic, Self
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, SerializeAsAny
 from typing_extensions import TypeVar
 
 from verifiers.v1.configs.harness import SkillSource
@@ -40,7 +40,7 @@ if TYPE_CHECKING:
     from verifiers.v1.judge import Judge
     from verifiers.v1.judges.agent import AgentJudgeRequest
     from verifiers.v1.mcp import Toolset
-    from verifiers.v1.runtimes import Runtime, RuntimeInfo
+    from verifiers.v1.runtimes import Runtime, RuntimeConfig
     from verifiers.v1.runtimes.compose import ComposeSpec
     from verifiers.v1.runtimes.deployment import Deployment, ServicesSpec
     from verifiers.v1.trace import Trace
@@ -144,10 +144,26 @@ class TaskData(BaseModel):
         return "\n\n".join(text for text in texts if text)
 
 
+class _WireArtifact(Artifact):
+    model_config = ConfigDict(extra="allow")
+
+
 class WireTaskData(TaskData):
     """Wire form that preserves task-specific fields without importing the task class."""
 
     model_config = ConfigDict(extra="allow")
+    artifacts: list[
+        Annotated[
+            SerializeAsAny[Artifact],
+            BeforeValidator(
+                lambda entry: (
+                    _WireArtifact.model_validate(entry)
+                    if isinstance(entry, dict)
+                    else entry
+                )
+            ),
+        ]
+    ] = Field(default_factory=list)
 
 
 DataT = TypeVar("DataT", bound=TaskData)
@@ -211,7 +227,7 @@ class Task(Generic[DataT, StateT, ConfigT]):
         return self.data.scoring
 
     def grading_task(
-        self, runtime: Runtime | RuntimeInfo, *, scoring: ScoringConfig
+        self, runtime: Runtime | RuntimeConfig, *, scoring: ScoringConfig
     ) -> Self:
         """Adapt scoring inputs to the resolved policy without changing the solver task."""
         return self
@@ -232,6 +248,10 @@ class Task(Generic[DataT, StateT, ConfigT]):
         """Prepare trusted verifier-only inputs after artifacts are restored."""
         return
 
+    def validate_artifacts(self, artifacts: Mapping[str, bytes | None]) -> None:
+        """Reject task-specific artifact roots before the verifier is modified."""
+        return
+
     async def validate(self, runtime: Runtime) -> bool | None:
         """Check the ground truth, or return None when no model-free check exists.
 
@@ -240,45 +260,15 @@ class Task(Generic[DataT, StateT, ConfigT]):
         as a rollout would."""
         return None
 
-    async def rescore(
-        self, trace: Trace, *, scoring: ScoringConfig | None = None
-    ) -> None:
-        """Clear grading results and score a finished trace again.
-
-        Without a policy, run signals that need only the trace. An isolated policy
-        restores captured artifacts into fresh verifiers with the ordinary retries.
-        Grading failures propagate without changing the original rollout's status.
-        """
+    async def rescore(self, trace: Trace) -> None:
+        """Score a finished trace again, offline: clear its rewards, metrics, judge
+        calls and drop, then run this task's signals that need only the trace."""
         if trace.has_error:
             raise ValueError("the rollout errored: its transcript is incomplete")
-        for key in ("judge_calls", "scoring_diagnostics", "scoring_skipped"):
-            trace.info.pop(key, None)
+        trace.info.pop("judge_calls", None)
         trace.rewards, trace.metrics, trace.extra_usage = {}, {}, []
         trace.dropped = None
-        if scoring is None:
-            await self.score(trace)
-        else:
-            from verifiers.v1.grading import grade_submission
-
-            status = (
-                trace.ok,
-                trace.is_completed,
-                trace.stop_condition,
-                trace.is_timeout,
-                list(trace.errors),
-            )
-            try:
-                await grade_submission(self, trace, scoring=scoring)
-            finally:
-                # A failed grader does not make the saved solver transcript
-                # incomplete. Keep it eligible for a later rescore attempt.
-                (
-                    trace.ok,
-                    trace.is_completed,
-                    trace.stop_condition,
-                    trace.is_timeout,
-                    trace.errors,
-                ) = status
+        await self.score(trace)
 
     def defer_scoring(self) -> Self:
         """An independent copy whose task signals are deferred.

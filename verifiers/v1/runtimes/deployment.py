@@ -93,7 +93,6 @@ class Deployment:
         self.borrowed_runtime = borrowed_runtime
         from verifiers.v1.runtimes.strategies import _deployment_strategy
 
-        # Saved submissions need only verifier ownership, with no solver to start.
         self._strategy = (
             _deployment_strategy(self.config, backend, spec, self.tool_vms)
             if backend is not None

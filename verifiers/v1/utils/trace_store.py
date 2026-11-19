@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import Iterable
 from functools import cache
 from pathlib import Path
 
@@ -14,7 +15,7 @@ from verifiers.v1.state import StateT
 from verifiers.v1.task import DataT
 from verifiers.v1.trace import AgentConfigT, Trace
 from verifiers.v1.utils.aio import run_shielded
-from verifiers.v1.utils.artifacts import load_artifacts, save_artifacts
+from verifiers.v1.utils.artifacts import save_artifacts
 
 TRACES_FILE = "traces.jsonl"
 type_adapter = cache(TypeAdapter)
@@ -25,66 +26,45 @@ def write_episode(
 ) -> None:
     """Serialize and append one rollout episode in the worker thread."""
     # Preserve fields declared by typed Trace subclasses nested in the episode.
-    data = type_adapter(type(episode)).dump_json(episode, exclude_none=True)
     for trace in episode.traces:
         if trace.state.artifacts:
             if trace.id == ".." or Path(trace.id).parts != (trace.id,):
                 raise ValueError(
                     f"trace ID must be a single path component: {trace.id!r}"
                 )
-            save_artifacts(
+            trace.info["artifact_manifest_sha256"] = save_artifacts(
                 results_dir / "artifacts" / trace.id,
                 trace.state.artifacts,
                 trace.task.data.artifacts,
                 workdir=getattr(trace.agent.runtime, "workdir", None) or "/",
+                service_workdirs=trace.info.get("harbor_artifact_workdirs"),
             )
+    data = type_adapter(type(episode)).dump_json(episode, exclude_none=True)
     with (results_dir / TRACES_FILE).open("ab") as f:
         f.write(data + b"\n")
 
 
-def read_episodes(
-    results_dir: Path, trace_type: type, *, with_artifacts: bool = False
-) -> list[WireEpisode]:
+def read_episodes(results_dir: Path, trace_type: type) -> list[WireEpisode]:
     """Load a run's saved rollouts from `traces.jsonl` with traces typed as
     `trace_type` (`Trace[WireTaskData, ...]` reads any taskset's file without
-    importing it). ``with_artifacts`` restores exact archives into trace state for
-    isolated regrading; it never extracts them onto the host.
-    """
+    importing it)."""
+    with (results_dir / TRACES_FILE).open(encoding="utf-8") as f:
+        return parse_episodes(f, trace_type)
+
+
+def parse_episodes(lines: Iterable[str], trace_type: type) -> list[WireEpisode]:
+    """Parse saved episodes from JSONL lines, including bounded in-memory snapshots."""
     trace_adapter = type_adapter(trace_type)
     episodes: list[WireEpisode] = []
-    with (results_dir / TRACES_FILE).open(encoding="utf-8") as f:
-        for line in f:
-            if not line.strip():
-                continue
-            row = json.loads(line)
-            record = WireEpisode.model_validate({**row, "traces": []})
-            record.traces = [
-                trace_adapter.validate_python(trace) for trace in row["traces"]
-            ]
-            if with_artifacts:
-                for trace in record.traces:
-                    if trace.id == ".." or Path(trace.id).parts != (trace.id,):
-                        raise ValueError(f"invalid saved trace ID: {trace.id!r}")
-                    directory = results_dir / "artifacts" / trace.id
-                    if (
-                        trace.ok
-                        and trace.is_completed
-                        and not directory.exists()
-                        and any(
-                            artifact.required for artifact in trace.task.data.artifacts
-                        )
-                    ):
-                        raise ValueError(
-                            f"required submission artifacts were not saved for trace {trace.id!r}"
-                        )
-                    trace.state.artifacts = (
-                        load_artifacts(
-                            directory, max_bytes=trace.task.data.artifact_max_bytes
-                        )
-                        if directory.exists()
-                        else {}
-                    )
-            episodes.append(record)
+    for line in lines:
+        if not line.strip():
+            continue
+        row = json.loads(line)
+        record = WireEpisode.model_validate({**row, "traces": []})
+        record.traces = [
+            trace_adapter.validate_python(trace) for trace in row["traces"]
+        ]
+        episodes.append(record)
     return episodes
 
 
