@@ -75,7 +75,7 @@ async def prime_verifier_user(runtime: Runtime, user: str | None) -> str | None:
 
     uid_spec, _, gid_spec = user.partition(":")
     uid_spec = uid_spec or "0"
-    passwd = (await runtime.read("/etc/passwd")).decode().splitlines()
+    passwd = (await runtime.read("/etc/passwd")).decode(errors="replace").splitlines()
     accounts = [row for line in passwd if len(row := line.split(":")) == 7]
     if uid_spec.isdecimal():
         uid = str(int(uid_spec))
@@ -91,7 +91,7 @@ async def prime_verifier_user(runtime: Runtime, user: str | None) -> str | None:
     if gid_spec.isdecimal():
         gid = str(int(gid_spec))
     elif gid_spec:
-        group = (await runtime.read("/etc/group")).decode().splitlines()
+        group = (await runtime.read("/etc/group")).decode(errors="replace").splitlines()
         groups = [row for line in group if len(row := line.split(":")) == 4]
         match = next((row for row in groups if row[0] == gid_spec), None)
         if match is None:
