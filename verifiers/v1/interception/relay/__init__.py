@@ -20,7 +20,7 @@ import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from verifiers.v1.errors import RelayError, SandboxError, TunnelError
+from verifiers.v1.errors import RelayError
 
 if TYPE_CHECKING:
     from verifiers.v1.runtimes.runtime import Runtime
@@ -103,7 +103,7 @@ class Relay:
                 self.url = f"http://127.0.0.1:{port}"
                 return
             if time.monotonic() > deadline:
-                raise SandboxError(
+                raise RelayError(
                     f"the relay did not start within {RELAY_START_SECONDS}s"
                 )
             await asyncio.sleep(0.1)
@@ -135,7 +135,7 @@ class Relay:
         """Wait until `connect` finished; raise if the relay did not start."""
         await self._connected.wait()
         if not self.upstream:
-            raise TunnelError("the relay did not start")
+            raise RelayError("the relay did not start")
 
     async def reroute(
         self, upstream: str, tokens: dict[str, str] | None = None
@@ -153,7 +153,7 @@ class Relay:
         reload = f'mv {shlex.quote(staged)} {config} && kill -HUP "$(cat {pid})"'
         result = await self.runtime.run(["sh", "-c", reload], {})
         if result.exit_code:
-            raise SandboxError(
+            raise RelayError(
                 f"the relay did not reload: {result.stderr.strip()[-500:]}"
             )
         self.upstream, self.tokens = upstream, tokens
