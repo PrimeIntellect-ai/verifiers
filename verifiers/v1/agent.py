@@ -676,14 +676,25 @@ class Agent:
         self.trainable: bool = True
         self._entered = False
         self._server: InterceptionServer | None = None
+        self._harness_pool = None
+        self._harness_pool_token = None
         self._warned_resources: set[tuple[str, str]] = set()
 
     async def __aenter__(self) -> Self:
+        from verifiers.v1.runtimes.harness_pool import (
+            HarnessPool,
+            _current_pool,
+            current_harness_pool,
+        )
+
         if self._entered:
             raise RuntimeError("Agent is already entered; enter it once and share it")
         if self._closed:
             raise RuntimeError("Agent is closed; create a new agent")
         self._entered = True
+        if current_harness_pool() is None:
+            self._harness_pool = HarnessPool()
+            self._harness_pool_token = _current_pool.set(self._harness_pool)
         if self.interception is None:
             # Sized to the runtime policy (remote needs the tunnel); runs the
             # server can't serve fall back per run.
@@ -696,14 +707,30 @@ class Agent:
                 # A failed __aenter__ gets no __aexit__ from `async with`: unwind
                 # here, or the agent stays "already entered" forever.
                 self._entered, self._server = False, None
+                if self._harness_pool_token is not None:
+                    _current_pool.reset(self._harness_pool_token)
+                    self._harness_pool_token = None
+                if self._harness_pool is not None:
+                    pool, self._harness_pool = self._harness_pool, None
+                    await pool.aclose()
                 raise
         return self
 
     async def __aexit__(self, *exc) -> None:
+        from verifiers.v1.runtimes.harness_pool import _current_pool
+
         self._entered = False
         server, self._server = self._server, None
-        if server is not None:
-            await server.__aexit__(*exc)
+        token, self._harness_pool_token = self._harness_pool_token, None
+        pool, self._harness_pool = self._harness_pool, None
+        if token is not None:
+            _current_pool.reset(token)
+        try:
+            if pool is not None:
+                await pool.aclose()
+        finally:
+            if server is not None:
+                await server.__aexit__(*exc)
 
     def _interception_for(
         self, run_is_local: bool, task: Task, shared_tools: Mapping

@@ -411,12 +411,50 @@ class Rollout:
                         warmup_task = asyncio.create_task(
                             warmup_runtime_packages(*(type(t) for t in toolsets))
                         )
+                    interception_task: asyncio.Task | None = None
+                    if self._interception is None and not runtime.is_local:
+                        from verifiers.v1.interception import (
+                            InterceptionServer,
+                            requires_tunnel,
+                        )
+
+                        async def warm_interception() -> InterceptionServer:
+                            server = InterceptionServer(
+                                requires_tunnel=requires_tunnel(
+                                    runtime.is_local,
+                                    [server.config for server in toolsets],
+                                    self._shared_tools.values(),
+                                ),
+                                state_service_secrets=tuple(
+                                    tool.state_secret
+                                    for tool in self._shared_tools.values()
+                                    if tool.state_secret
+                                ),
+                            )
+                            await server.__aenter__()
+                            return server
+
+                        interception_task = asyncio.create_task(warm_interception())
+                    started_ok = False
                     try:
                         await self.deployment.start()
+                        started_ok = True
                     finally:
                         if warmup_task is not None:
                             with contextlib.suppress(Exception):
                                 await warmup_task
+                        if interception_task is not None:
+                            if not started_ok and not interception_task.done():
+                                interception_task.cancel()
+                            with contextlib.suppress(BaseException):
+                                warmed_server = await interception_task
+                                if started_ok:
+                                    self._stack.push_async_callback(
+                                        warmed_server.__aexit__, None, None, None
+                                    )
+                                    self._interception = warmed_server
+                                else:
+                                    await warmed_server.__aexit__(None, None, None)
                     self._deployment_started = True
                     runtime = self.runtime = self.deployment.workspace
                     if self.deployment.split:
@@ -640,9 +678,17 @@ class Rollout:
                     if self._session.stopped:
                         return
                     async with boundary(HarnessError, "opening harness session"):
+                        local_gate_url = (
+                            self._session.remote_tool_handler.local_gate_url
+                            if isinstance(
+                                self._session.remote_tool_handler, SandboxTools
+                            )
+                            else None
+                        )
                         session_kwargs = (
                             {
-                                "tool_interception_url": self._agent_runtime.host_url(
+                                "tool_interception_url": local_gate_url
+                                or self._agent_runtime.host_url(
                                     f"{base_url.rstrip('/')}/tool"
                                 )
                             }
@@ -693,6 +739,9 @@ class Rollout:
                                         f"{base_url.rstrip('/')}/execution"
                                     ),
                                     model_secret,
+                                    interception_url=self._agent_runtime.host_url(
+                                        f"{base_url.rstrip('/')}/tool"
+                                    ),
                                 )
                             )
                         group.create_task(open_session())
@@ -860,6 +909,8 @@ class Rollout:
         return self.ok and trace.num_turns > turns_before
 
     def _abandon_workers(self) -> None:
+        from verifiers.v1.acp import ACPHarness, ACPHarnessSession
+
         target = self._agent_runtime or self.runtime
         if (
             self._borrowed_runtime is not None
@@ -871,8 +922,20 @@ class Rollout:
             self._session.execution_bridge, "_abandon_on_close"
         ):
             self._session.execution_bridge._abandon_on_close = True
+        reused_harness = bool(getattr(self.deployment, "_reused_harness", False))
         if isinstance(self._session.remote_tool_handler, SandboxTools):
-            self._session.remote_tool_handler._abandon_on_close = True
+            if reused_harness:
+                self._session.remote_tool_handler._fast_kill_on_close = True
+            else:
+                self._session.remote_tool_handler._abandon_on_close = True
+        if (
+            isinstance(self._harness_session, ACPHarnessSession)
+            and type(self.harness).acp_close_result is ACPHarness.acp_close_result
+        ):
+            if reused_harness:
+                self._harness_session._fast_kill_on_close = True
+            else:
+                self._harness_session._abandon_on_close = True
 
     async def _cleanup_harness(
         self, runtime: Runtime, *, runtime_stopping: bool = False
@@ -883,6 +946,7 @@ class Rollout:
         if (
             runtime_stopping
             and self._borrowed_runtime is None
+            and not getattr(self.deployment, "_reused_harness", False)
             and target.type in ("prime", "docker")
         ):
             self._harness_cleaned = True
@@ -947,6 +1011,27 @@ class Rollout:
         Generation has already completed, so a teardown failure is logged rather than
         raised: it must not discard an otherwise scoreable (or already scored)
         trajectory."""
+        from verifiers.v1.acp import ACPHarness, ACPHarnessSession
+
+        target = self._agent_runtime or self.runtime
+        on_owned_prime = (
+            self._borrowed_runtime is None
+            and target is not None
+            and target.type == "prime"
+        )
+        if (
+            on_owned_prime
+            and isinstance(self._harness_session, ACPHarnessSession)
+            and type(self.harness).acp_close_result is ACPHarness.acp_close_result
+            and not self._harness_session._abandon_on_close
+        ):
+            self._harness_session._fast_kill_on_close = True
+        if (
+            on_owned_prime
+            and isinstance(self._session.remote_tool_handler, SandboxTools)
+            and not self._session.remote_tool_handler._abandon_on_close
+        ):
+            self._session.remote_tool_handler._fast_kill_on_close = True
         if self._harness_session is not None:
             try:
                 await self._harness_session.close()

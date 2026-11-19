@@ -84,6 +84,8 @@ async def private_network(
     harness: RuntimeBackend | None = None,
     start_harness: Callable[[], Awaitable[object]] | None = None,
     harness_peers: Collection[str] = (),
+    own_harness: bool = True,
+    network_state: dict | None = None,
 ) -> AsyncIterator[dict[str, RuntimeBackend]]:
     """Boot the workspace's VM and one VM per member together, each joining a LAN
     network of the rollout's own as it boots. A split deployment's `harness` VM joins
@@ -149,16 +151,32 @@ async def private_network(
                 LanRule(from_="tag:vf-controller", to=f"tag:{HARNESS_TAG}"),
             ]
 
+        deleted = False
+        delete_lock = asyncio.Lock()
+
         async def delete_network(network_id: str) -> None:
-            try:
-                if job:
-                    await job.launcher.call("delete_network", network_id=network_id)
-                else:
-                    await client.delete_lan_network(network_id)
-            except Exception:
-                logger.warning(
-                    "LAN network %s deletion failed", network_id, exc_info=True
-                )
+            nonlocal deleted
+            async with delete_lock:
+                if deleted:
+                    return
+                for attempt in range(2):
+                    try:
+                        if job:
+                            await job.launcher.call(
+                                "delete_network", network_id=network_id
+                            )
+                        else:
+                            await client.delete_lan_network(network_id)
+                        deleted = True
+                        return
+                    except Exception:
+                        if attempt == 0:
+                            await asyncio.sleep(0.3)
+                            continue
+                        deleted = True
+                        logger.warning(
+                            "LAN network %s deletion failed", network_id, exc_info=True
+                        )
 
         async def create_and_own() -> str:
             if job:
@@ -171,9 +189,24 @@ async def private_network(
             else:
                 network_id = (await client.create_lan_network(name, rules=rules)).id
             stack.push_async_callback(lambda: run_shielded(delete_network(network_id)))
+            if network_state is not None:
+                network_state["id"] = network_id
+                network_state["delete"] = lambda: run_shielded(
+                    delete_network(network_id)
+                )
             return network_id
 
-        network_id = await run_shielded(create_and_own())
+        network_task = asyncio.create_task(create_and_own())
+        await asyncio.sleep(0)
+        if network_task.done() and network_task.exception() is not None:
+            await network_task
+
+        def assign_lan(backend: PrimeBackend, member_tags: list[str]) -> None:
+            if network_task.done():
+                backend.lan = (network_task.result(), member_tags)
+            else:
+                backend._lan_pending = (network_task, member_tags)
+
         started_vms: list[RuntimeBackend] = [workspace]
 
         async def stop_all_vms() -> None:
@@ -193,10 +226,10 @@ async def private_network(
         async def provision(name: str, config: PrimeConfig) -> None:
             backend = make_backend(config, f"{workspace.name}-{tags[name]}")
             assert isinstance(backend, PrimeBackend)
-            backend.lan = (network_id, memberships[name])
+            assign_lan(backend, memberships[name])
             # Registered before `start()`: a failed start may already hold a paid sandbox.
             started_vms.append(backend)
-            await backend.start()  # running, and joined to the network
+            await backend.start()
             backends[name] = backend
             # LAN traffic is not activity to the platform, and a server's VM sees no
             # commands of its own: keep it inside its idle timeout until it is released.
@@ -218,12 +251,15 @@ async def private_network(
                     ),
                 )
 
-        workspace.lan = (network_id, memberships["main"])
+        assign_lan(workspace, memberships["main"])
         if harness is not None:
-            harness.lan = (network_id, [HARNESS_TAG])
-            started_vms.append(harness)
+            assert isinstance(harness, PrimeBackend)
+            assign_lan(harness, [HARNESS_TAG])
+            if own_harness:
+                started_vms.append(harness)
         try:
             async with asyncio.TaskGroup() as group:
+                group.create_task(run_shielded(network_task))
                 group.create_task(provision_workspace())
                 if start_harness is not None:
                     group.create_task(start_harness())
@@ -231,6 +267,7 @@ async def private_network(
                     group.create_task(provision(name, config))
         except ExceptionGroup as failed:
             raise failed.exceptions[0]  # one VM's failure, typed for retries
+        network_id = network_task.result()
         logger.debug(
             "Joined LAN network %s from %s to %s",
             network_id,

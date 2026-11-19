@@ -413,7 +413,9 @@ class Env(ABC, Generic[ConfigT]):
     async def serving(self, interception: Interception | None = None):
         """Hold the env-level serving resources for the duration of an eval; plan and
         run slots inside. Torn down on exit (`teardown()`, then the framework's)."""
-        async with self.shared_tools() as shared:
+        from verifiers.v1.runtimes.harness_pool import harness_pool_scope
+
+        async with harness_pool_scope(), self.shared_tools() as shared:
             resource = (
                 contextlib.nullcontext(interception)
                 if interception is not None

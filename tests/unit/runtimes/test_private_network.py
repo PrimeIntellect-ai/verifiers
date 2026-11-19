@@ -253,3 +253,102 @@ def test_an_explicit_service_needs_a_task_service_spec(monkeypatch, service):
 def test_a_restricted_runtime_without_a_private_network_is_refused(monkeypatch):
     with pytest.raises(ToolsetError, match="joins the rollout's private network"):
         served_url(monkeypatch, toolset("forth", runtime=FORTH))
+
+
+def test_reuse_harness_pools_across_rollouts_and_detaches_each_lan(monkeypatch):
+    from verifiers.v1.runtimes.harness_pool import harness_pool_scope
+
+    events = []
+    net_seq = 0
+    sb_seq = 0
+
+    class PoolLanClient:
+        async def create_lan_network(self, name, rules):
+            nonlocal net_seq
+            net_seq += 1
+            return SimpleNamespace(id=f"net{net_seq}")
+
+        async def remove_lan_member(self, network_id, sandbox_id):
+            events.append(("detach", network_id, sandbox_id))
+
+        async def delete_lan_network(self, network_id):
+            events.append(("delete_net", network_id))
+
+    @asynccontextmanager
+    async def leased_client():
+        yield PoolLanClient()
+
+    async def start(self):
+        nonlocal sb_seq
+        sb_seq += 1
+        self.info.id = f"sb-{self.name}-{sb_seq}"
+        self._client = PoolLanClient()
+        self._created_workdirs.add(self.config.workdir)
+        events.append(("start", self.name, self.info.id))
+
+    async def teardown(self):
+        if self._client is not None:
+            self._client = None
+            events.append(("stop", self.name, self.info.id))
+
+    monkeypatch.setattr(private_network, "leased_client", leased_client)
+    monkeypatch.setattr(prime, "ensure_prime_auth", lambda: None)
+    monkeypatch.setattr(PrimeBackend, "start", start)
+    monkeypatch.setattr(PrimeBackend, "teardown", teardown)
+    monkeypatch.setattr(
+        prime,
+        "_resolve_and_join_lan",
+        lambda backend: asyncio.sleep(0),
+    )
+
+    cfg = vf.DeploymentConfig(mode="split", reuse_harness=True)
+
+    async def run_two():
+        async with harness_pool_scope():
+            for idx in (1, 2):
+                ws = PrimeBackend(PrimeConfig(), name=f"ws{idx}")
+                dep = ws.deploy(config=cfg)
+                await dep.start()
+                h_id = dep.harness_backend.info.id
+                await dep.close()
+                events.append(("rollout_done", idx, h_id))
+
+    asyncio.run(run_two())
+    harness_starts = [e for e in events if e[0] == "start" and "harness" in e[1]]
+    assert len(harness_starts) == 1
+    harness_id = harness_starts[0][2]
+    assert ("rollout_done", 1, harness_id) in events
+    assert ("rollout_done", 2, harness_id) in events
+    assert ("detach", "net1", harness_id) in events
+    assert ("detach", "net2", harness_id) in events
+    assert events[-1] == ("stop", "ws1-harness", harness_id)
+
+
+def test_set_network_skips_open_reset_when_only_control_hosts_are_blocked():
+    calls = []
+
+    class FakeBackend:
+        name = "ws"
+        network_restricted = True
+
+        def __init__(self, block, control_hosts):
+            self.config = PrimeConfig(allow=["*"], block=block)
+            self._control_blocked_hosts = frozenset(control_hosts)
+
+        async def prepare_execution(self, routes, network=None):
+            calls.append((routes, network))
+
+    open_ws = vf.Runtime(
+        FakeBackend(["t-0.tunnel.pinfra.io"], ["t-0.tunnel.pinfra.io"])
+    )
+    asyncio.run(open_ws.set_network(vf.NetworkPolicyConfig()))
+    assert calls == []
+
+    restricted_ws = vf.Runtime(
+        FakeBackend(
+            ["t-0.tunnel.pinfra.io", "pypi.org"],
+            ["t-0.tunnel.pinfra.io"],
+        )
+    )
+    asyncio.run(restricted_ws.set_network(vf.NetworkPolicyConfig()))
+    assert calls == [(None, None)]

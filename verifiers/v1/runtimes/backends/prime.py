@@ -85,16 +85,34 @@ async def _join_lan_fast(
         lease.release()
 
 
+async def _resolve_and_join_lan(backend: PrimeBackend) -> None:
+    if backend.lan is None and backend._lan_pending is not None:
+        network_task, tags = backend._lan_pending
+        network_id = await asyncio.shield(network_task)
+        backend.lan = (network_id, tags)
+        backend._lan_pending = None
+    if backend.lan is None or backend.info.id is None:
+        return
+    network_id, tags = backend.lan
+    if backend._launcher is not None:
+        await backend._launcher.call(
+            "join_network",
+            network_id=network_id,
+            sandbox_id=backend.info.id,
+            tags=tags,
+        )
+    else:
+        await _join_lan_fast(backend._client, network_id, backend.info.id, tags)
+
+
 async def _wait_and_init_sandbox(
-    client: Any,
-    sandbox_id: str,
+    backend: PrimeBackend,
     init_cmd: str,
-    lan: tuple[str, list[str]] | None,
     *,
     max_attempts: int = 900,
     image_build_timeout_seconds: int = 3000,
-) -> Any:
-    """Wait for `sandbox_id` to reach RUNNING, enroll LAN, and run `init_cmd` in one pass."""
+) -> tuple[Any, asyncio.Task[None] | None]:
+    """Wait for `backend` to reach RUNNING, start LAN enrollment, and run `init_cmd`."""
     from prime_sandboxes.sandbox import (
         _creation_timeout_seconds,
         _is_retryable_reachability_error,
@@ -103,6 +121,9 @@ async def _wait_and_init_sandbox(
         _reachability_timeout_error,
     )
 
+    client = backend._client
+    sandbox_id = backend.info.id
+    assert sandbox_id is not None
     timeout_seconds = _creation_timeout_seconds(max_attempts)
     deadline = time.monotonic() + timeout_seconds
     image_build_deadline: float | None = None
@@ -119,10 +140,8 @@ async def _wait_and_init_sandbox(
                     reachability_phase = True
                     deadline = time.monotonic() + timeout_seconds
                     poll_index = 0
-                    if lan is not None:
-                        lan_task = asyncio.create_task(
-                            _join_lan_fast(client, lan[0], sandbox_id, lan[1])
-                        )
+                    if backend.lan is not None or backend._lan_pending is not None:
+                        lan_task = asyncio.create_task(_resolve_and_join_lan(backend))
                 elif sandbox.status in ("ERROR", "TERMINATED", "TIMEOUT"):
                     _raise_not_running_error(
                         sandbox.sandbox_id,
@@ -167,9 +186,7 @@ async def _wait_and_init_sandbox(
                     response = await client.execute_command(
                         sandbox_id, init_cmd, timeout=30
                     )
-                    if lan_task is not None:
-                        await lan_task
-                    return response
+                    return response, lan_task
                 finally:
                     lease.release()
             except Exception as error:
@@ -311,11 +328,22 @@ class PrimeBackend(RuntimeBackend):
         # A LAN network (id, tags) to join as the sandbox boots: prime-sandboxes joins it
         # once it is running, within `wait_for_creation` on the creating client.
         self.lan: tuple[str, list[str]] | None = None
+        self._lan_pending: tuple[asyncio.Task[str], list[str]] | None = None
+        self._lan_sync_task: asyncio.Task[None] | None = None
+        self._egress_enforced: bool = False
+        self._created_workdirs: set[str] = set()
         # Exposure state: a LAN network created on the first `expose`, separate from
         # `lan`, and the ports its `internet` rule publishes.
         self._expose_network_id: str | None = None
         self._exposed_ports: list[int] = []
         self._expose_lock = asyncio.Lock()
+
+    async def wait_lan_ready(self) -> None:
+        if self._lan_sync_task is not None:
+            try:
+                await asyncio.shield(self._lan_sync_task)
+            except Exception as e:
+                raise SandboxError(f"prime LAN enrollment failed: {e}") from e
 
     @property
     def published_port(self) -> int:
@@ -343,7 +371,12 @@ class PrimeBackend(RuntimeBackend):
                     lan=self.lan,
                 )
                 self.info.id, self.info.image_cached = info["id"], info["image_cached"]
+                self._created_workdirs.add(self.config.workdir)
                 self._client = _lease_client()
+                if self.lan is None and self._lan_pending is not None:
+                    self._lan_sync_task = asyncio.create_task(
+                        _resolve_and_join_lan(self)
+                    )
                 if auth := info.get("gateway_auth"):
                     await self._client._auth_cache.set(self.info.id, auth)
                 if arch := info.get("arch"):
@@ -452,9 +485,10 @@ class PrimeBackend(RuntimeBackend):
                 '"$(uname -m)" "$(command -v python3 || command -v python || true)" && '
                 + load_prepared_command(prepared_root)
             )
-            init_response = await _wait_and_init_sandbox(
-                self._client, self.info.id, init_cmd, self.lan, max_attempts=900
+            init_response, self._lan_sync_task = await _wait_and_init_sandbox(
+                self, init_cmd, max_attempts=900
             )
+            self._created_workdirs.add(self.config.workdir)
             self._prepared_json = ""
             if init_response.exit_code == 0:
                 header, _, prepared_out = init_response.stdout.partition(
@@ -525,7 +559,9 @@ class PrimeBackend(RuntimeBackend):
     ) -> None:
         """Apply the host policy, or `network`, after setup and wait until the platform
         enforces it."""
-        if not self.network_restricted:
+        if not self.network_restricted and not (
+            routes is None and self._egress_enforced
+        ):
             return
         config = network or self.config
         try:
@@ -538,7 +574,9 @@ class PrimeBackend(RuntimeBackend):
                     )
                 )
                 if config.allow == ["*"]:
-                    policy = {"deny": config.block}
+                    policy = (
+                        {"deny": config.block} if config.block else {"allow": ["*"]}
+                    )
                 else:
                     entries = list(dict.fromkeys([*hosts, *config.allow]))
                     validate_egress_lists(entries, None)
@@ -560,6 +598,7 @@ class PrimeBackend(RuntimeBackend):
             raise
         except Exception as e:
             raise SandboxError(f"prime egress policy failed: {e}") from e
+        self._egress_enforced = routes is not None
         logger.debug(
             "Applied egress policy to prime runtime %s allow=%s block=%s",
             self.info.id,
@@ -774,6 +813,10 @@ class PrimeBackend(RuntimeBackend):
     async def teardown(self) -> None:
         # Best-effort, idempotent teardown: delete the sandbox (the costly resource). Runs via
         # `stop`, shielded from cancellation, so it fires on success, error, and Ctrl-C.
+        if self._lan_sync_task is not None and not self._lan_sync_task.done():
+            self._lan_sync_task.cancel()
+            await asyncio.gather(self._lan_sync_task, return_exceptions=True)
+        self._lan_sync_task = None
         client, self._client = self._client, None  # `_client` is the idempotency guard
         if client is None:
             return

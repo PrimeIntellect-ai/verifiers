@@ -147,6 +147,7 @@ class PrimeController:
                     stack.push_async_callback(backend.stop)
                     try:
                         await backend.start()
+                        await backend.wait_lan_ready()
                     except BaseException:
                         await backend.stop()
                         raise
@@ -206,6 +207,19 @@ class PrimeController:
                     except BaseException:
                         await run_shielded(release_network(network.id))
                         raise
+                elif operation == "join_network":
+                    from verifiers.v1.runtimes.backends.prime import _join_lan_fast
+
+                    await _join_lan_fast(
+                        client,
+                        message["network_id"],
+                        message["sandbox_id"],
+                        message["tags"],
+                    )
+                elif operation == "leave_network":
+                    await client.remove_lan_member(
+                        message["network_id"], message["sandbox_id"]
+                    )
                 elif operation == "delete_network":
                     await release_network(message["network_id"])
                 elif operation == "result":

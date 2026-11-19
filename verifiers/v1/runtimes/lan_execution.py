@@ -560,6 +560,10 @@ class LanExecution:
     ) -> LanProcess:
         if self._closed:
             raise SandboxError("LAN execution transport is closed")
+        if self.direct:
+            for backend in (self.harness.backend, runtime.backend):
+                if wait_lan := getattr(backend, "wait_lan_ready", None):
+                    await wait_lan()
         python = self._python or await runtime.resolve_python()
         process_id = uuid.uuid4().hex
         owner = await runtime.backend.exec(
@@ -606,6 +610,9 @@ class LanExecution:
         exclude: tuple[str, ...] = (),
     ) -> None:
         """Stream a directory from `source_runtime` (A) to `target_runtime` (B) over LAN."""
+        for backend in (source_runtime.backend, target_runtime.backend):
+            if wait_lan := getattr(backend, "wait_lan_ready", None):
+                await wait_lan()
         target_python = self._python or await target_runtime.resolve_python()
         source_python = self._harness_python or await source_runtime.resolve_python()
         secret = secrets.token_urlsafe(32)
