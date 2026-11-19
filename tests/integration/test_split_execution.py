@@ -14,8 +14,12 @@ SPLIT = {
 
 
 @pytest.mark.parametrize("entrypoint", ["run", "interaction"])
-async def test_split_preflight_before_rollout(monkeypatch, entrypoint):
-    """Both public execution paths reject an unsupported harness before any boot."""
+@pytest.mark.parametrize("harness_id,skills", [("bash", False), ("codex", True)])
+async def test_split_preflight_before_rollout(
+    monkeypatch, tmp_path, entrypoint, harness_id, skills
+):
+    """Both public execution paths reject an unsupported harness or capability before
+    any boot."""
 
     async def unexpected_open(self):
         pytest.fail("unsupported split configuration reached rollout provisioning")
@@ -24,13 +28,14 @@ async def test_split_preflight_before_rollout(monkeypatch, entrypoint):
     agent = vf.Agent(
         vf.AgentConfig(
             model="unused",
-            harness={"id": "bash"},
+            harness={"id": harness_id},
             runtime={"type": "prime"},
             deployment={"mode": "split"},
         )
     )
-    task = vf.Task(vf.TaskData(prompt="unused"))
-    with pytest.raises(ValueError, match="does not support split deployment"):
+    task = vf.Task(vf.TaskData(prompt="unused", skills=[tmp_path] if skills else []))
+    message = "custom skills" if skills else "does not support split deployment"
+    with pytest.raises(ValueError, match=message):
         if entrypoint == "run":
             await agent.run(task)
         else:
