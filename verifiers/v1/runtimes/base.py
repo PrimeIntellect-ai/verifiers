@@ -291,7 +291,13 @@ class RuntimeBackend(ABC):
         is held."""
         return contextlib.nullcontext()
 
-    async def attach(self, runtime: Runtime, job: dict[str, Any]) -> ProgramResult:
+    async def attach(
+        self,
+        runtime: Runtime,
+        job: dict[str, Any],
+        *,
+        program: Program | None = None,
+    ) -> ProgramResult:
         """Wait for a program that a box started before the memory snapshot this box
         booted from (`Program.job`), and return its result like `run`."""
         raise NotImplementedError(

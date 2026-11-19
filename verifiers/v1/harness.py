@@ -416,7 +416,7 @@ class HarnessSession:
         self._attached = state
 
     async def _continue(self, state: dict[str, Any]) -> ProgramResult:
-        return await self.runtime.attach(state["job"])
+        return await self.runtime.attach(state["job"], program=self.program)
 
     async def _run(self, messages: Messages | None) -> ProgramResult:
         if messages is None:

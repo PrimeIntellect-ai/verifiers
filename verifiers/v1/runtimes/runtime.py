@@ -123,10 +123,13 @@ class Runtime:
             return await self.backend.run(self, argv, env, program=program)
         return await self.backend.run(self, argv, env)
 
-    async def attach(self, job: dict[str, Any]) -> ProgramResult:
+    async def attach(
+        self, job: dict[str, Any], *, program: Program | None = None
+    ) -> ProgramResult:
         """Wait for the job a box started before the memory snapshot this box booted
-        from, and return its result like `run`."""
-        return await self.backend.attach(self, job)
+        from, and return its result like `run`. `program` records the job while it
+        runs, as `run` does, so the restored box can be snapshotted again."""
+        return await self.backend.attach(self, job, program=program)
 
     async def exec(self, argv: list[str], env: dict[str, str]) -> RuntimeProcess:
         """Start `argv` and return a handle that streams its stdio."""

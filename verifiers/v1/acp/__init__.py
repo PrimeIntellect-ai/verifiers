@@ -358,12 +358,18 @@ class ACPHarnessSession(HarnessSession):
         # is still to collect.
         self._detached = list(state["runner"])
         async with self._lock:
+            self._prompt = {
+                "reply": state["reply"],
+                "calls_before": state["calls_before"],
+            }
             try:
-                result = await self.runtime.attach(state["job"])
+                result = await self.runtime.attach(state["job"], program=self.program)
                 response = await self._reply(result, state["reply"])
             except BaseException:
                 await run_shielded(self._stop(graceful=False))
                 raise
+            finally:
+                self._prompt = None
         return self._finish(response, state["calls_before"])
 
     async def _request(self, operation: str, **payload: Any) -> JsonObject:

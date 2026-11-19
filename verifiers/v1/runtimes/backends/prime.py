@@ -66,6 +66,8 @@ _EXPOSE_TAG = "vf-exposed"
 BASE_LABELS: list[str] = []
 
 
+# TODO: remove this poller once the SDK has an atomic snapshot call. A pause and a
+# resume then need no status polls.
 class _StatusPoller:
     """Batched status lookups for the boxes that wait for a pause or a resume to take
     effect: one request serves up to 100 boxes, so a save of every rollout of a run
@@ -618,13 +620,25 @@ class PrimeBackend(RuntimeBackend):
             if program is not None:
                 program.job = None
 
-    async def attach(self, runtime: Runtime, job: dict[str, Any]) -> ProgramResult:
+    async def attach(
+        self,
+        runtime: Runtime,
+        job: dict[str, Any],
+        *,
+        program: Program | None = None,
+    ) -> ProgramResult:
         try:
             # The session and its process came with the snapshot; only the box is new.
             process = await self._client.attach_process(self.info.id, job["session"])
         except Exception as e:
             raise SandboxError(f"prime attach failed: {e}") from e
-        return await self._collect(process)
+        if program is not None:
+            program.job = dict(job)
+        try:
+            return await self._collect(process)
+        finally:
+            if program is not None:
+                program.job = None
 
     async def _collect(self, process: Any) -> ProgramResult:
         """Wait for `process` and keep the tail of each output stream. A memory
