@@ -63,7 +63,6 @@ RUNTIME_FEATURES = {
     "container": "task images",
     "user": "running as another user",
     "network": "network policies",
-    "expose": "port exposure",
     "compose": "Compose services",
     "services": "native service VMs",
 }
@@ -143,7 +142,6 @@ def supports(runtime: str, feature: str) -> bool:
     flag = {
         "container": "SUPPORTS_TASK_IMAGES",
         "user": "SUPPORTS_USER_SWITCHING",
-        "expose": "SUPPORTS_PORT_EXPOSURE",
         "compose": "SUPPORTS_COMPOSE",
     }[feature]
     return getattr(runtime_cls(runtime), flag)
@@ -286,7 +284,7 @@ def placements(
     service VM beside the harness (`service`), or in its own runtime
     (on Prime beside a Prime harness, a VM on the rollout's private network). A
     `subprocess` tool runtime is a server on the host, reached from the sandbox through
-    the tunnel. A `shared` server runs once per eval, so it joins no rollout's network."""
+    an authenticated tunnel. A shared Prime server runs once per eval on its own LAN."""
     cells = []
     for harness_runtime in harness_runtimes:
         for tool_runtime in tool_runtimes:
@@ -294,9 +292,8 @@ def placements(
             reason = None
             if tool_runtime == "service":
                 reason = unsupported("null", harness_runtime, ("services",))
-            # Beside a Prime harness, a rollout's Prime server joins its private network.
-            elif shared or tool_runtime != "prime" or harness_runtime != "prime":
-                reason = unsupported("null", tool_runtime, ("expose",))
+            elif tool_runtime == "prime" and harness_runtime != "prime":
+                reason = "a Prime tool server requires a Prime consumer"
             if reason:
                 marks.append(pytest.mark.skip(reason=reason))
             cells.append(

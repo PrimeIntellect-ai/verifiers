@@ -36,25 +36,15 @@ def test_tool_servers_on_prime_runtimes_beside_a_prime_workspace_get_vms():
         toolset("search"),  # the evaluator
         toolset("remote", url="https://tools.example/mcp"),
         toolset("gym", service="tools"),  # a named task service
-        toolset("local", runtime=DockerConfig()),  # a published port
+        toolset("local", runtime=DockerConfig()),  # a host-loopback port
     ]
     vms = private_network.tool_vms
-    assert vms(toolsets, PrimeConfig(), composed=False, borrowed=False) == {
-        "atlas": ATLAS
-    }
-    # Without a Prime workspace of the rollout's own, servers keep their published port.
-    for workspace, composed, borrowed in [
-        (DockerConfig(), False, False),
-        (PrimeConfig(), True, False),
-        (PrimeConfig(), False, True),
-    ]:
-        assert vms(toolsets, workspace, composed=composed, borrowed=borrowed) == {}
+    assert vms(toolsets, PrimeConfig()) == {"atlas": ATLAS}
+    assert vms(toolsets, DockerConfig()) == {}
     with pytest.raises(ValueError, match="cannot be named 'main'"):
         vms(
             [toolset("main", runtime=ATLAS)],
             PrimeConfig(),
-            composed=False,
-            borrowed=False,
         )
 
 
@@ -72,11 +62,22 @@ def test_the_deployment_joins_tool_vms_over_a_private_network():
     )
 
 
+def test_native_services_deployment_rejects_borrowed_workspace():
+    deployment = SimpleNamespace(
+        borrowed_runtime=object(), spec=vf.ServicesSpec({"atlas": ATLAS})
+    )
+    with pytest.raises(ValueError, match="cannot borrow a single target"):
+        asyncio.run(_PrivateNetworkDeployment().start(deployment))
+
+
 def test_the_private_network_needs_a_prime_workspace():
     workspace = SimpleNamespace(config=DockerConfig())
 
+    async def start():
+        pass
+
     async def enter():
-        async with private_network.private_network(workspace, {"atlas": ATLAS}, None):
+        async with private_network.private_network(workspace, {"atlas": ATLAS}, start):
             pass
 
     with pytest.raises(TypeError, match="needs the workspace on Prime, not docker"):
@@ -189,8 +190,11 @@ def test_the_workspace_stops_before_tool_evidence_and_is_released_regardless():
         raise RuntimeError("network deletion failed")
 
     strategy = _PrivateNetworkDeployment()
+    strategy._stop_main = stop
     strategy._services = SimpleNamespace(aclose=aclose)
-    deployment = SimpleNamespace(execution_backend=SimpleNamespace(stop=stop))
+    deployment = SimpleNamespace(
+        execution_backend=SimpleNamespace(stop=stop), borrowed_runtime=None
+    )
 
     # As Compose stops its workspace, before finalize_services reads the targets.
     asyncio.run(strategy.stop_execution(deployment))

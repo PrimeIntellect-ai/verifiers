@@ -211,7 +211,6 @@ class DockerBackend(RuntimeBackend):
     SUPPORTS_USER_SWITCHING: ClassVar[bool] = True
     SUPPORTS_STOP_CONFIRMATION: ClassVar[bool] = True
     SUPPORTS_MEMORY_LIMIT: ClassVar[bool] = True
-    SUPPORTS_PORT_EXPOSURE: ClassVar[bool] = True
     SUPPORTS_COMPOSE: ClassVar[bool] = True
     is_local = True
 
@@ -446,7 +445,7 @@ class DockerBackend(RuntimeBackend):
             return url
         return self._proxy.callback_url(url, self._proxy_host)
 
-    async def expose(self, port: int) -> str:
+    def local_service_url(self, port: int) -> str:
         if port != SERVICE_PORT or self._service_url is None:
             raise SandboxError(f"docker publishes only port {SERVICE_PORT}, not {port}")
         return self._service_url

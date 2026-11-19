@@ -3,7 +3,7 @@
 The interception server runs on the host. Local runtimes use a host-local URL directly or
 through their runtime translation; remote runtimes need the port published outward. A
 `Tunnel` supplies the bind address and exposes that host port as a public URL. It is the
-host-side counterpart to `Runtime.expose`, which publishes a port inside a sandbox.
+host-side bridge for services consumed by remote runtimes.
 """
 
 import contextlib

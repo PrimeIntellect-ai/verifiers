@@ -205,6 +205,7 @@ class OpenClawHarness(ACPHarness[OpenClawHarnessConfig]):
             # OpenClaw's chat completions default for them rewrites replayed turns.
             provider_config["api"] = "openai-responses"
             provider_config["models"] = [{"id": model_id, "name": model_id}]
+        mcp_headers = self.config.resolve_mcp_headers(mcp_urls)
         config = {
             "gateway": {
                 "mode": "local",
@@ -238,6 +239,7 @@ class OpenClawHarness(ACPHarness[OpenClawHarnessConfig]):
                 "servers": {
                     name: {
                         "url": url,
+                        "headers": mcp_headers.get(name, {}),
                         "transport": "streamable-http",
                         "connectionTimeoutMs": 60_000,
                         "requestTimeoutMs": int(self.config.tool_timeout * 1000),

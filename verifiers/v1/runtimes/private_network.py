@@ -11,6 +11,7 @@ workspace. The harness reaches a server at its VM's LAN name,
 
 import asyncio
 import contextlib
+import logging
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import AsyncExitStack, asynccontextmanager
@@ -23,23 +24,18 @@ from verifiers.v1.runtimes import (
 )
 from verifiers.v1.runtimes.backends.prime import leased_client
 from verifiers.v1.utils.aio import run_shielded
-from verifiers.v1.utils.logging import get_logger
+from verifiers.v1.utils.logging import clip, get_logger
 
 logger = get_logger(__name__)
 
 WORKSPACE_TAG = "vf-workspace"
 
 
-def tool_vms(
-    toolsets, workspace, *, composed: bool, borrowed: bool
-) -> dict[str, PrimeConfig]:
-    """The task's tool servers that join the workspace over the rollout's private
-    network, by server name: those on Prime runtimes of their own beside a Prime
-    workspace of the rollout's own, without a task service spec. Any other server keeps its
-    runtime's published port, which takes no network policy."""
+def tool_vms(toolsets, workspace) -> dict[str, PrimeConfig]:
+    """Prime tool VMs that join a Prime workspace over a rollout's private LAN."""
     from verifiers.v1.mcp.toolset import ToolsetConfig
 
-    if composed or borrowed or not isinstance(workspace, PrimeConfig):
+    if not isinstance(workspace, PrimeConfig):
         return {}
     vms = {
         toolset.server_name: toolset.config.runtime
@@ -72,16 +68,96 @@ async def _keepalive(runtime, every: float) -> None:
 
 
 @asynccontextmanager
+async def _lan_network(rules):
+    """Own a LAN and its client until all of its VMs have been released."""
+    async with leased_client() as client:
+        network = await client.create_lan_network(
+            f"vf-{uuid.uuid4().hex[:16]}", rules=rules
+        )
+
+        async def delete_network() -> None:
+            try:
+                await client.delete_lan_network(network.id)
+            except Exception as exc:
+                logger.warning(
+                    "Failed to delete LAN network %s - %s: %s",
+                    network.id,
+                    type(exc).__name__,
+                    clip(str(exc)),
+                    exc_info=logger.isEnabledFor(logging.DEBUG),
+                )
+
+        try:
+            yield client, network.id
+        finally:
+            await run_shielded(delete_network())
+
+
+@asynccontextmanager
+async def _tool_vm(
+    config: PrimeConfig,
+    network_id: str,
+    tags: list[str],
+    name: str | None = None,
+) -> AsyncIterator[PrimeBackend]:
+    """Provision a LAN member and keep it alive until its owner releases it."""
+    async with AsyncExitStack() as stack:
+        backend = make_backend(config, name)
+        assert isinstance(backend, PrimeBackend)
+        backend.lan = (network_id, tags)
+        # A failed start may already hold a paid sandbox.
+        stack.push_async_callback(backend.stop)
+        await backend.start()
+        # LAN traffic does not count as activity toward the platform's idle timeout.
+        if config.idle_timeout is not None:
+            every = max(10.0, config.idle_timeout / 3)
+
+            async def stop_keepalive(task: asyncio.Task) -> None:
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+
+            stack.push_async_callback(
+                stop_keepalive, asyncio.create_task(_keepalive(backend.bind(), every))
+            )
+        yield backend
+
+
+@asynccontextmanager
+async def shared_tool_network(
+    config: PrimeConfig,
+) -> AsyncIterator[tuple[RuntimeBackend, str]]:
+    """Run one eval-wide tool VM on a LAN that Prime consumers may join."""
+    from prime_sandboxes import LanRule
+
+    rules = [LanRule(from_="tag:consumer", to="tag:tool")]
+    async with (
+        _lan_network(rules) as (_, network_id),
+        _tool_vm(config, network_id, ["tool"]) as backend,
+    ):
+        yield backend, network_id
+
+
+async def join_shared_tool_network(network_id: str, consumer: RuntimeBackend) -> None:
+    """Give a Prime consumer private access to an eval-wide tool VM."""
+    if not isinstance(consumer, PrimeBackend):
+        raise TypeError("a shared Prime tool server requires a Prime consumer")
+    async with leased_client() as client:
+        await client._join_lan(network_id, consumer.info.id, ["consumer"])
+
+
+@asynccontextmanager
 async def private_network(
     workspace: RuntimeBackend,
     members: Mapping[str, PrimeConfig],
-    start_workspace: Callable[[], Awaitable[object]],
+    start_workspace: Callable[[], Awaitable[object]] | None,
     *,
     interconnect: bool = False,
     networks: Mapping[str, list[str]] | None = None,
-) -> AsyncIterator[dict[str, RuntimeBackend]]:
-    """Boot the workspace's VM and one VM per member together, each joining a LAN
-    network of the rollout's own as it boots."""
+    tool_names: frozenset[str] = frozenset(),
+) -> AsyncIterator[tuple[dict[str, RuntimeBackend], Callable[[], Awaitable[None]]]]:
+    """Join the workspace and service VMs to a rollout LAN, yielding services and
+    a callback that ends the workspace's access before evidence collection.
+    A missing `start_workspace` borrows an already running workspace."""
     if not isinstance(workspace, PrimeBackend):
         raise TypeError(
             "tool servers on Prime runtimes of their own join the workspace over a "
@@ -95,76 +171,89 @@ async def private_network(
         "main": [WORKSPACE_TAG],
         **{name: [tag] for name, tag in tags.items()},
     }
-    rules = (
-        [LanRule(from_="*", to="*")]
-        if interconnect
-        else [
-            LanRule(from_=f"tag:{WORKSPACE_TAG}", to=f"tag:{tag}")
-            for tag in tags.values()
-        ]
-    )
+    rules = []
     if networks is not None:
-        rules = []
         for index, names in enumerate(networks.values()):
             tag = f"vf-network-{index}"
             rules.append(LanRule(from_=f"tag:{tag}", to=f"tag:{tag}"))
             for name in names:
                 memberships[name].append(tag)
-    async with AsyncExitStack() as stack:
-        client = await stack.enter_async_context(leased_client())
-        # Install connectivity before boot: Compose peers must share a network;
-        # independent tool servers accept only workspace connections.
-        network = await client.create_lan_network(
-            f"vf-{uuid.uuid4().hex[:16]}",
-            rules=rules,
-        )
-
-        async def delete_network() -> None:
-            try:
-                await client.delete_lan_network(network.id)
-            except Exception:
-                logger.warning(
-                    "LAN network %s deletion failed", network.id, exc_info=True
-                )
-
-        stack.push_async_callback(lambda: run_shielded(delete_network()))
+    elif interconnect:
+        for name, member_tags in memberships.items():
+            if name not in tool_names:
+                member_tags.append("vf-service")
+        rules.append(LanRule(from_="tag:vf-service", to="tag:vf-service"))
+    else:
+        tool_names = frozenset(members)
+    rules.extend(
+        LanRule(from_=f"tag:{WORKSPACE_TAG}", to=f"tag:{tag}")
+        for name, tag in tags.items()
+        if name in tool_names
+    )
+    # Install connectivity before boot, and release the VMs before their LAN.
+    async with (
+        _lan_network(rules) as (client, network_id),
+        AsyncExitStack() as stack,
+    ):
         # Failed startup unwinds this stack before the deployment's workspace owner.
-        stack.push_async_callback(workspace.stop)
+        if start_workspace is not None:
+            stack.push_async_callback(workspace.stop)
 
         backends: dict[str, RuntimeBackend] = {}
 
-        async def stop(task: asyncio.Task) -> None:
-            task.cancel()
-            await asyncio.gather(task, return_exceptions=True)
-
         async def provision(name: str, config: PrimeConfig) -> None:
-            backend = make_backend(config, f"{workspace.name}-{tags[name]}")
-            assert isinstance(backend, PrimeBackend)
-            backend.lan = (network.id, memberships[name])
-            # Pushed before `start()`: a failed start may already hold a paid sandbox.
-            stack.push_async_callback(backend.stop)
-            await backend.start()  # running, and joined to the network
-            backends[name] = backend
-            # LAN traffic is not activity to the platform, and a server's VM sees no
-            # commands of its own: keep it inside its idle timeout until it is released.
-            if config.idle_timeout is not None:
-                every = max(10.0, config.idle_timeout / 3)
-                stack.push_async_callback(
-                    stop, asyncio.create_task(_keepalive(backend.bind(), every))
+            backends[name] = await stack.enter_async_context(
+                _tool_vm(
+                    config,
+                    network_id,
+                    memberships[name],
+                    name=f"{workspace.name}-{tags[name]}",
                 )
+            )
 
-        workspace.lan = (network.id, memberships["main"])
+        async def stop_workspace() -> None:
+            if start_workspace is not None:
+                await workspace.stop()
+            else:
+                # Every rule on this LAN requires tags. Clear this membership's
+                # tags and wait for the VM layer to apply them before collecting
+                # service evidence; an API acknowledgement alone is not a barrier.
+                await client._join_lan(network_id, workspace.info.id, [])
+
+        if start_workspace is None:
+
+            async def leave_workspace() -> None:
+                try:
+                    await run_shielded(
+                        client.remove_lan_member(network_id, workspace.info.id)
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to remove borrowed workspace %s from LAN network %s - %s: %s",
+                        workspace.info.id,
+                        network_id,
+                        type(exc).__name__,
+                        clip(str(exc)),
+                        exc_info=logger.isEnabledFor(logging.DEBUG),
+                    )
+
+            # Joining may attach the borrowed VM before failing or being cancelled.
+            stack.push_async_callback(leave_workspace)
+            await client._join_lan(network_id, workspace.info.id, memberships["main"])
+        else:
+            workspace.lan = (network_id, memberships["main"])
         try:
             async with asyncio.TaskGroup() as group:
-                group.create_task(start_workspace())
+                if start_workspace is not None:
+                    group.create_task(start_workspace())
                 for name, config in members.items():
                     group.create_task(provision(name, config))
         except ExceptionGroup as failed:
             raise failed.exceptions[0]  # one VM's failure, typed for retries
         logger.debug(
             "Joined LAN network %s from %s to %s",
-            network.id,
+            network_id,
             workspace.info.id,
             {name: backend.info.id for name, backend in backends.items()},
         )
-        yield backends
+        yield backends, stop_workspace
