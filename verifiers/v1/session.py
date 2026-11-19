@@ -39,6 +39,7 @@ from verifiers.v1.types import (
     Messages,
     Request,
     Response,
+    Tool,
     ToolCall,
     ToolMessage,
     UserMessage,
@@ -220,6 +221,8 @@ class RolloutSession:
     """Wire dialect of each issuing node, used when its harness asks the tool gate."""
     tool_issuers: dict[tuple[str, str], set[int]] = field(default_factory=dict)
     """Sampled nodes that issued a call ID under a replay-equivalent prefix."""
+    tool_catalogs: dict[int, str] = field(default_factory=dict)
+    """The harness's tool catalog when it requested each issuing turn, before mediation."""
     prepared_users: Counter[str] = field(default_factory=Counter)
     last_request: tuple[list, Messages] = ((), [])
     """The last chat request's raw messages (copied: the server rewrites a body in place) and
@@ -253,16 +256,32 @@ class RolloutSession:
         prefix = hashlib.blake2b(digest_size=16)
         calls: dict[str, ToolResultKey] = {}
         keys: dict[int, ToolResultKey] = {}
-        history: Messages = []
+        catalog = None
         for position, message in enumerate(request.messages):
             if isinstance(message, ToolMessage) and message.tool_call_id in calls:
                 key = calls[message.tool_call_id]
+                issuer, call_id = key
+                if isinstance(issuer, str) and (
+                    candidates := self.tool_issuers.get((issuer, call_id))
+                ):
+                    if len(candidates) > 1:
+                        if catalog is None:
+                            catalog = graph.tool_catalog_hash(request.tools)
+                        candidates = {
+                            node
+                            for node in candidates
+                            if self.tool_catalogs[node] == catalog
+                        }
+                    if len(candidates) != 1:
+                        raise HarnessError(
+                            f"Ambiguous issuing turn for tool call {call_id!r}"
+                        )
+                    key = (next(iter(candidates)), call_id)
                 keys[position] = key
                 message = self.pinned_tool_results.get(key, message)
             prefix.update(
                 graph.replay_message_hash(self.trace, message, dialect).encode()
             )
-            history.append(message)
             if isinstance(message, AssistantMessage) and message.tool_calls:
                 prefix_hash = prefix.hexdigest()
                 for call in message.tool_calls:
@@ -273,24 +292,6 @@ class RolloutSession:
                     ):
                         issuer = known_path[position]
                         self.tool_issuers.setdefault(alias, set()).add(issuer)
-                        calls[call.id] = (issuer, call.id)
-                    elif issuers := self.tool_issuers.get(alias):
-                        if len(issuers) == 1:
-                            issuer = next(iter(issuers))
-                        else:
-                            # Resolve replay-equivalent sibling samples just as the graph
-                            # resolves the incoming model turn, including its root tools.
-                            matched = graph.prepare_turn(
-                                self.trace, history, request.tools, dialect
-                            ).prefix_node_ids
-                            if (
-                                len(matched) != len(history)
-                                or matched[-1] not in issuers
-                            ):
-                                raise HarnessError(
-                                    f"Ambiguous issuing turn for tool call {call.id!r}"
-                                )
-                            issuer = matched[-1]
                         calls[call.id] = (issuer, call.id)
                     else:
                         calls[call.id] = alias
@@ -545,7 +546,10 @@ class RolloutSession:
         return response, records, None
 
     async def gate_tool_calls(
-        self, node: int, dialect: DialectName | None = None
+        self,
+        node: int,
+        dialect: DialectName | None = None,
+        native_tools: list[Tool] | None = None,
     ) -> str | None:
         """Police the tool calls the assistant committed at `node` before the harness sees
         them: the request hooks run over the branch plus an empty result for each call, so a
@@ -559,6 +563,7 @@ class RolloutSession:
             self.tool_dialects[node] = dialect
         if not isinstance(assistant, AssistantMessage) or not assistant.tool_calls:
             return None
+        self.tool_catalogs[node] = graph.tool_catalog_hash(native_tools)
         known_path = graph.path_node_ids(self.trace, node)
         branch = [self.trace.nodes[i].message for i in known_path]
         tools = self.trace.nodes[known_path[0]].tools

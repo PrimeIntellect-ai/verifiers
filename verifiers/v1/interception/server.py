@@ -1013,7 +1013,9 @@ class InterceptionServer(Interception):
                     session.consume_prepared(turn.tail)
                     session.trace.response_rewrites.extend(response_rewrites)
                     if stopped is None:
-                        stopped = await session.gate_tool_calls(node, dialect.name)
+                        stopped = await session.gate_tool_calls(
+                            node, dialect.name, original_request.tools
+                        )
                     if stopped is not None:
                         session.trace.stop(stopped)
                         return _error_response(

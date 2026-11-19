@@ -10,6 +10,7 @@ import verifiers.v1 as vf
 from verifiers.v1 import graph
 from verifiers.v1.agent import Interaction
 from verifiers.v1.clients import EvalClientConfig, ModelContext, ModelRoute
+from verifiers.v1.errors import HarnessError
 from verifiers.v1.graph import MessageNode
 from verifiers.v1.harnesses.utils.replay import drop_blank_text_blocks
 from verifiers.v1.rollout import Rollout, RolloutTimeouts
@@ -38,7 +39,9 @@ def make_trace() -> vf.Trace:
 
 
 async def test_each_sample_keeps_its_tool_result_across_assistant_replays():
-    replacements = iter(["First result", "Second result", "Follow-up result"])
+    replacements = iter(
+        ["First result", "Second result", "Follow-up result", "Third result"]
+    )
 
     def replace_result(request: vf.Request) -> vf.Request | None:
         tool = request.messages[-1]
@@ -75,23 +78,34 @@ async def test_each_sample_keeps_its_tool_result_across_assistant_replays():
             )
         )
 
-    # Two samples from one prompt replay identically and reuse a call ID.
-    for assistant, expected in [(sampled, "First result"), (replay, "Second result")]:
+    # Different harness catalogs can yield the same model-facing root after mediation.
+    catalogs = [[vf.Tool(name=name)] for name in ("filtered_first", "filtered_second")]
+    for assistant, expected, tools in [
+        (sampled, "First result", catalogs[0]),
+        (replay, "Second result", catalogs[1]),
+    ]:
         node = commit(prompt, assistant)
-        await session.gate_tool_calls(node, "anthropic_messages")
+        await session.gate_tool_calls(node, "anthropic_messages", tools)
         assert (await session.decide_tool("call"))["action"] == "deny"
         request = vf.Request(
             messages=[
                 *prompt,
                 replay,
                 vf.ToolMessage(tool_call_id="call", content="Tool unavailable"),
-            ]
+            ],
+            tools=tools,
         )
         rewritten, _, _ = await session.rewrite_request(
             request, dialect="anthropic_messages"
         )
         assert rewritten.messages[-1].content == expected
         commit(rewritten.messages, AssistantMessage(content="done"))
+
+    first_request = request.model_copy(update={"tools": catalogs[0]})
+    earlier, _, _ = await session.rewrite_request(
+        first_request, dialect="anthropic_messages"
+    )
+    assert earlier.messages[-1].content == "First result"
 
     # An unrelated branch adds a tool to the trace-wide catalog. The next gate
     # still knows exactly which sampled ancestors issued its historical calls.
@@ -103,6 +117,14 @@ async def test_each_sample_keeps_its_tool_result_across_assistant_replays():
     await session.gate_tool_calls(node, "anthropic_messages")
     verdict = await session.decide_tool("next")
     assert verdict["message"]["content"] == "Follow-up result"
+
+    # Even the catalog is identical this time. A bare receipt cannot identify which
+    # of two different substitutions belongs to it.
+    node = commit(prompt, sampled)
+    await session.gate_tool_calls(node, "anthropic_messages", catalogs[0])
+    assert (await session.decide_tool("call"))["message"]["content"] == "Third result"
+    with pytest.raises(HarnessError, match="Ambiguous issuing turn"):
+        await session.rewrite_request(first_request, dialect="anthropic_messages")
 
 
 def make_rollout(trace: vf.Trace, session, time_remaining=None):

@@ -408,7 +408,7 @@ def _message_hash(message: Message) -> str:
     return digest.hexdigest()
 
 
-def _tools_hash(tools: list[Tool] | None) -> str:
+def tool_catalog_hash(tools: list[Tool] | None) -> str:
     payload = [tool.model_dump(mode="json", exclude_none=True) for tool in tools or []]
     data = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.blake2b(data, digest_size=16).hexdigest()
@@ -434,7 +434,7 @@ def _node_key(
 ) -> tuple[int | None, str | None, str]:
     return (
         parent,
-        _tools_hash(tools) if parent is None else None,
+        tool_catalog_hash(tools) if parent is None else None,
         replay_message_hash(trace, message, dialect),
     )
 
@@ -723,7 +723,7 @@ def prepare_turn(
     is the request's wire format, whose replay view matches the prompt to stored nodes."""
     idx = _head_index(trace, dialect)
     tools = list(tools or [])
-    tools_hash = _tools_hash(tools)
+    tools_hash = tool_catalog_hash(tools)
     parent: int | None = None
     path_len = 0
     prefix_node_ids: list[int] = []
