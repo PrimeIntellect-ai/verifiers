@@ -1,6 +1,7 @@
 """RLM over ACP, with MCP tools exposed as pre-imported IPython skills."""
 
 import hashlib
+import re
 import secrets
 import shlex
 from typing import Any, Literal
@@ -21,6 +22,7 @@ from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
 from verifiers.v1.runtimes import Runtime
+from verifiers.v1.runtimes.deployment import ExecutionConnection
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
 from verifiers.v1.utils.logging import get_logger
@@ -145,7 +147,9 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
     SUPPORTS_SKILLS = True
+    SUPPORTS_SPLIT_EXECUTION = True
     _skills_install_dir: str | None = None
+    _execution: JsonObject | None = None
 
     async def setup(self, runtime: Runtime) -> None:
         if self.config.skills:
@@ -154,6 +158,10 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
                 f"rlm-skills-{secrets.token_hex(16)}", env=self.config.resolved_env
             )
             await self.install_skills(runtime, f"{self._skills_home()}/skills")
+        await self._install(runtime, self.config.resolved_env)
+        await super().setup(runtime)
+
+    async def _install(self, runtime: Runtime, install_env: dict[str, str]) -> None:
         directory = self._install_dir()
         binary = f"{directory}/bin/rlm"
         checkout = f"{directory}/checkout"
@@ -181,7 +189,7 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
             f"touch {shlex.quote(ready)})"
         )
         logger.debug("Ensuring rlm %s is installed", self.config.version)
-        env = self.config.resolved_env.copy()
+        env = install_env.copy()
         extra_uv_args = env.get("RLM_EXTRA_UV_ARGS", "")
         env["RLM_EXTRA_UV_ARGS"] = f"{extra_uv_args} --with mcp~=1.28".strip()
         await ensure_installed(
@@ -192,7 +200,41 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
             env=env,
             label="rlm",
         )
-        await super().setup(runtime)
+
+    def validate_split_execution(self) -> None:
+        super().validate_split_execution()
+        if self.config.skills:
+            raise ValueError("RLM split deployment supports builtin skills only")
+
+    async def setup_execution(
+        self, runtime: Runtime, workspace: Runtime, connection: ExecutionConnection
+    ) -> None:
+        # The same pinned nano-rlm runs the tools in the workspace; the agent loop and
+        # the model credentials stay on the harness's VM.
+        await self._install(workspace, {})
+        token = secrets.token_urlsafe(32)
+        port = await connection.serve(
+            workspace,
+            [
+                f"{self._install_dir()}/tools/rlm/bin/python",
+                "-m",
+                "rlm.execution",
+                "--listen",
+                "0.0.0.0",
+                "--port",
+                "0",
+            ],
+            {"RLM_EXECUTION_TOKEN": token},
+            re.compile(r"^listening on \S+:(\d+)$", re.MULTILINE),
+            # A session that closes stops what is still attached to its kernel, as it
+            # does colocated; a daemon the agent started outlives the harness.
+            keep_detached=True,
+        )
+        self._execution = {
+            "execution_tcp": {"host": connection.host, "port": port, "token": token},
+            "execution_cwd": workspace.config.workdir,
+            "kernel_env": dict(workspace.env),
+        }
 
     def _runtime_metadata(
         self,
@@ -269,6 +311,8 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
             payload["network_block"] = runtime.config.block
         if self.config.builtin_tools is not None:
             payload["builtin_tools"] = list(self.config.builtin_tools)
+        if self._execution is not None:
+            payload.update(self._execution)
         return {RLM_RUNTIME_METADATA_KEY: payload}
 
     def _network_guidance(self, runtime: Runtime) -> bool | None:

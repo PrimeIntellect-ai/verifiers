@@ -4,7 +4,7 @@ import asyncio
 from contextlib import AsyncExitStack, asynccontextmanager
 from functools import partial
 
-from verifiers.v1.runtimes import PrimeBackend, PrimeConfig
+from verifiers.v1.runtimes import PrimeBackend, PrimeConfig, make_backend
 from verifiers.v1.runtimes.compose import compose_services
 from verifiers.v1.runtimes.deployment import ServicesSpec, _DeploymentStrategy
 from verifiers.v1.runtimes.private_network import lan_host, private_network
@@ -65,6 +65,7 @@ class _ContainerDeployment(_DeploymentStrategy):
 class _PrivateNetworkDeployment(_DeploymentStrategy):
     _networks: dict[str, list[str]] | None = None
     _internal: frozenset[str] = frozenset()
+    _harness = None
 
     async def start(self, d):
         if d.borrowed_runtime is not None:
@@ -75,6 +76,12 @@ class _PrivateNetworkDeployment(_DeploymentStrategy):
         d.backend.env = d.env
         native = isinstance(d.spec, ServicesSpec)
         members = d.spec.services if native else d.tool_vms
+        harness = self._harness = None
+        if d.config.mode == "split":
+            harness = self._harness = make_backend(
+                _harness_config(d.config.harness, d.backend.config),
+                f"{d.backend.name}-harness",
+            )
         self._services = await d.enter(AsyncExitStack())
         vms = await self._services.enter_async_context(
             private_network(
@@ -83,20 +90,25 @@ class _PrivateNetworkDeployment(_DeploymentStrategy):
                 partial(d.own, d.backend),
                 interconnect=native,
                 networks=self._networks,
+                harness=harness,
+                start_harness=harness and partial(d.own, harness),
+                harness_peers=d.tool_services,
             )
         )
         d.target_backends = {"main": d.backend, **vms}
         d.hosts = {name: lan_host(backend) for name, backend in vms.items()}
         if native:
             d.hosts["main"] = lan_host(d.backend)
-        d.execution_backend = d.harness_backend = d.backend
+        d.execution_backend = d.backend
+        d.harness_backend = harness or d.backend
 
     async def prepare_execution(self, d, routes, state_route=None):
         # Each VM enforces its own policy. A tool server's VM keeps only its state
         # channel, reached as the server reaches it; LAN traffic is unaffected by either.
+        # A split harness's VM keeps the routes; the workspace then keeps none.
         def own(name, backend):
             if name == "main":
-                return routes
+                return [] if self._harness else routes
             if name in self._internal:
                 return []
             return [backend.host_url(state_route)] if state_route else []
@@ -106,18 +118,24 @@ class _PrivateNetworkDeployment(_DeploymentStrategy):
                 backend.prepare_execution(own(name, backend))
                 for name, backend in d.target_backends.items()
             ),
+            *([self._harness.prepare_execution(routes)] if self._harness else []),
         )
 
     async def stop_execution(self, d):
         # Nothing the agent left running may reach services while their evidence is
         # collected.
-        await d.execution_backend.stop()
+        await asyncio.gather(
+            d.execution_backend.stop(),
+            *([self._harness.stop()] if self._harness else []),
+        )
 
     async def prepare_verifier(self, deployment):
         # Evidence is collected; release the solver's VMs before the verifier clock
         # starts, the workspace's even if the service VMs' or the network's release
         # fails.
+        harness = [(self._harness.stop, "harness VM")] if self._harness else []
         for release, what in (
+            *harness,
             (deployment.execution_backend.stop, "workspace VM"),
             (self._services.aclose, "service VMs"),
         ):
@@ -196,7 +214,31 @@ class _NativeComposeDeployment(_PrivateNetworkDeployment):
             )
 
 
+def _harness_config(harness: PrimeConfig, workspace: PrimeConfig) -> PrimeConfig:
+    """A split harness's VM: placed and labelled like the workspace unless set, and
+    under the task's network policy, which the harness would share colocated."""
+    return harness.model_copy(
+        update={
+            "labels": list(dict.fromkeys([*workspace.labels, *harness.labels])),
+            "region": harness.region or workspace.region,
+            "creates_per_min": (
+                harness.creates_per_min
+                if harness.creates_per_min is not None
+                else workspace.creates_per_min
+            ),
+            "allow": workspace.allow,
+            "block": workspace.block,
+        }
+    )
+
+
 def _deployment_strategy(config, backend, spec, tool_vms=None):
+    split = config is not None and config.mode == "split"
+    if split and not isinstance(backend, PrimeBackend):
+        raise ValueError(
+            "split deployment places the harness on a Prime VM beside a Prime "
+            f"workspace, not a {backend.type} one"
+        )
     if isinstance(spec, ServicesSpec):
         if not isinstance(backend, PrimeBackend):
             raise TypeError("Native service VMs require a Prime workspace")
@@ -218,6 +260,6 @@ def _deployment_strategy(config, backend, spec, tool_vms=None):
                 "cannot run Compose services; use ServicesSpec on Prime or local Docker"
             )
         return _ContainerDeployment()
-    if tool_vms:
+    if tool_vms or split:
         return _PrivateNetworkDeployment()
     return _ColocatedDeployment()

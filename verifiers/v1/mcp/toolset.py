@@ -65,6 +65,13 @@ class SharedToolsetConfig(BaseToolsetConfig):
 
 
 class Toolset(ServerBase[ConfigT, StateT]):
+    def validate_split_execution(self) -> None:
+        """Check that this transport runs task commands outside the harness sandbox.
+
+        The default transport uses a separate runtime or service. Adapters owning
+        their transport must reject split placement if they require the task runtime.
+        """
+
     @asynccontextmanager
     async def serve(self, runtime: Runtime, **kwargs) -> AsyncIterator[str]:
         """Connect a rollout to this server; task-format adapters own their transport."""
