@@ -7,9 +7,14 @@ from types import SimpleNamespace
 import pytest
 
 import verifiers.v1 as vf
+from verifiers.v1 import graph
 from verifiers.v1.agent import Interaction
+from verifiers.v1.clients import EvalClientConfig, ModelContext, ModelRoute
+from verifiers.v1.errors import HarnessError
 from verifiers.v1.graph import MessageNode
+from verifiers.v1.harnesses.utils.replay import drop_blank_text_blocks
 from verifiers.v1.rollout import Rollout, RolloutTimeouts
+from verifiers.v1.session import RolloutSession
 from verifiers.v1.types import AssistantMessage
 
 
@@ -31,6 +36,109 @@ def make_trace() -> vf.Trace:
             hash="content-digest",
         ),
     )
+
+
+async def test_each_sample_keeps_its_tool_result_across_assistant_replays():
+    replacements = iter(
+        ["First result", "Second result", "Follow-up result", "Third result"]
+    )
+
+    def replace_result(request: vf.Request) -> vf.Request | None:
+        tool = request.messages[-1]
+        if isinstance(tool, vf.ToolMessage) and tool.content == "":
+            tool.content = next(replacements)
+            return request
+        return None
+
+    trace = make_trace()
+    trace._replay_view = lambda message, dialect: (
+        drop_blank_text_blocks(message) if dialect == "anthropic_messages" else message
+    )
+    sampled = AssistantMessage(
+        content="Ready\n",
+        text_block_offsets=[5],
+        tool_calls=[vf.ToolCall(id="call", name="lookup", arguments="{}")],
+    )
+    session = RolloutSession(
+        ModelRoute(ModelContext(model="test", client=EvalClientConfig())),
+        trace,
+        request_interceptors=[replace_result],
+        gates_tools=True,
+    )
+    replay = sampled.model_copy(update={"content": "Ready", "text_block_offsets": None})
+    other = replay.model_copy(update={"content": "Another action"})
+    prompt = [vf.UserMessage(content="go")]
+
+    def commit(messages, assistant, tools=None):
+        turn = graph.prepare_turn(
+            trace, messages, tools=tools, dialect="anthropic_messages"
+        )
+        return turn.commit(
+            vf.Response(
+                id="", created=0, model="test", message=assistant, finish_reason="stop"
+            )
+        )
+
+    # The two samples reuse a call ID, but their replayed messages identify them.
+    catalogs = [[vf.Tool(name=name)] for name in ("filtered_first", "filtered_second")]
+    for assistant, replayed, expected, tools in [
+        (sampled, replay, "First result", catalogs[0]),
+        (other, other, "Second result", catalogs[1]),
+    ]:
+        node = commit(prompt, assistant)
+        await session.gate_tool_calls(node, "anthropic_messages")
+        assert (await session.decide_tool("call"))["action"] == "deny"
+        request = vf.Request(
+            messages=[
+                *prompt,
+                replayed,
+                vf.ToolMessage(tool_call_id="call", content="Tool unavailable"),
+            ],
+            tools=tools,
+        )
+        rewritten, _, _ = await session.rewrite_request(
+            request, dialect="anthropic_messages"
+        )
+        assert rewritten.messages[-1].content == expected
+        if assistant is sampled:
+            first_request = request
+            first_path = graph.path_node_ids(trace, node)
+        commit(rewritten.messages, AssistantMessage(content="done"))
+
+    # The next request can change its available tools independently of its history.
+    changed_catalog = first_request.model_copy(update={"tools": catalogs[1]})
+    earlier, _, _ = await session.rewrite_request(
+        changed_catalog, dialect="anthropic_messages"
+    )
+    assert earlier.messages[-1].content == "First result"
+
+    # An unrelated branch adds a tool to the trace-wide catalog. The next gate
+    # still knows exactly which sampled ancestors issued its historical calls.
+    commit(prompt, AssistantMessage(content="other branch"), [vf.Tool(name="other")])
+    follow_up = AssistantMessage(
+        tool_calls=[vf.ToolCall(id="next", name="lookup", arguments="{}")]
+    )
+    node = commit(rewritten.messages, follow_up)
+    await session.gate_tool_calls(node, "anthropic_messages")
+    verdict = await session.decide_tool("next")
+    assert verdict["message"]["content"] == "Follow-up result"
+
+    # The third sample reuses the first sample's replay and call ID under a new catalog.
+    node = commit(prompt, sampled)
+    await session.gate_tool_calls(node, "anthropic_messages")
+    assert (await session.decide_tool("call"))["message"]["content"] == "Third result"
+    with pytest.raises(HarnessError, match="Ambiguous issuing turn"):
+        await session.rewrite_request(changed_catalog, dialect="anthropic_messages")
+    with pytest.raises(HarnessError, match="Ambiguous issuing turn"):
+        await session.rewrite_request(first_request, dialect="anthropic_messages")
+    with pytest.raises(HarnessError, match="Ambiguous issuing turn"):
+        session.pin_tool_results(
+            first_request.model_copy(update={"tools": None}), "anthropic_messages"
+        )
+    restored = session.pin_tool_results(
+        changed_catalog, "anthropic_messages", first_path
+    )
+    assert restored.messages[-1].content == "First result"
 
 
 def make_rollout(trace: vf.Trace, session, time_remaining=None):

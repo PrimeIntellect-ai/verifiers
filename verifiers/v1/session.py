@@ -19,7 +19,7 @@ import hashlib
 import inspect
 import json
 from collections import Counter
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass, field, replace
 from functools import cached_property
@@ -54,6 +54,7 @@ from verifiers.v1.utils.logging import (
 logger = get_logger(__name__)
 
 MCPProxy = Callable[[str], AbstractAsyncContextManager[str]]
+ToolResultKey = tuple[int | str, str]
 
 
 def hook_boundary(handler: Callable, *, allow_trace: bool) -> type:
@@ -203,20 +204,22 @@ class RolloutSession:
     """Handler tasks currently serving this session. aiohttp does not cancel a handler when
     its client disconnects, so a request whose program died at teardown would keep driving
     the exchange (upstream call, simulator turn) — unregistering cancels these instead."""
-    tool_decisions: dict[tuple[str, str], ToolMessage | None] = field(
+    tool_decisions: dict[ToolResultKey, ToolMessage | None] = field(
         default_factory=dict
     )
     """The pre-execution verdict per proposed call occurrence: None to run it, else the result
     the policy put in its place — that call must not execute."""
-    pinned_tool_results: dict[tuple[str, str], ToolMessage] = field(
-        default_factory=dict
-    )
+    pinned_tool_results: dict[ToolResultKey, ToolMessage] = field(default_factory=dict)
     """The results the model must see, by conversation prefix and call id: rewrites and results it
     substituted for blocked calls. The harness keeps its own copy of each in its history and
     re-sends it forever, so every request has these re-applied before the graph is matched —
     the trace holds the pinned version, and a differing copy would fork it at that node."""
-    gated_tools: set[tuple[str, str]] = field(default_factory=set)
+    gated_tools: set[ToolResultKey] = field(default_factory=set)
     """Calls the harness's gate asked about before executing."""
+    tool_dialects: dict[int, DialectName] = field(default_factory=dict)
+    """Wire dialect of each issuing node, used when its harness asks the tool gate."""
+    tool_issuers: dict[tuple[str, str], set[int]] = field(default_factory=dict)
+    """Sampled nodes that issued a call ID under a replay-equivalent prefix."""
     prepared_users: Counter[str] = field(default_factory=Counter)
     last_request: tuple[list, Messages] = ((), [])
     """The last chat request's raw messages (copied: the server rewrites a body in place) and
@@ -239,32 +242,66 @@ class RolloutSession:
     def stopped(self) -> bool:
         return self.trace.stop_condition is not None
 
-    def tool_result_keys(self, request: Request) -> dict[int, tuple[str, str]]:
-        """Identify results by their issuing conversation prefix and call id. Canonical
-        pinned history gives native and rewritten replays the same occurrence keys."""
+    def tool_result_keys(
+        self,
+        request: Request,
+        dialect: DialectName | None = None,
+        known_path: Sequence[int] = (),
+    ) -> dict[int, ToolResultKey]:
+        """Use the sampled node and call ID for a model-issued tool. A harness-supplied
+        call outside the sampled graph uses its conversation prefix instead."""
         prefix = hashlib.blake2b(digest_size=16)
-        calls: dict[str, tuple[str, str]] = {}
-        keys: dict[int, tuple[str, str]] = {}
+        calls: dict[str, ToolResultKey] = {}
+        keys: dict[int, ToolResultKey] = {}
         for position, message in enumerate(request.messages):
             if isinstance(message, ToolMessage) and message.tool_call_id in calls:
                 key = calls[message.tool_call_id]
+                issuer, call_id = key
+                if isinstance(issuer, str) and (
+                    issuers := self.tool_issuers.get((issuer, call_id))
+                ):
+                    # A follow-up can change tools independently of its conversation.
+                    if len(issuers) != 1:
+                        raise HarnessError(
+                            f"Ambiguous issuing turn for tool call {call_id!r}"
+                        )
+                    key = (next(iter(issuers)), call_id)
                 keys[position] = key
                 message = self.pinned_tool_results.get(key, message)
-            prefix.update(graph.message_hash(message).encode())
-            if isinstance(message, AssistantMessage):
-                calls.update(
-                    (call.id, (prefix.hexdigest(), call.id))
-                    for call in message.tool_calls or []
-                )
+            prefix.update(
+                graph.replay_message_hash(self.trace, message, dialect).encode()
+            )
+            if isinstance(message, AssistantMessage) and message.tool_calls:
+                prefix_hash = prefix.hexdigest()
+                for call in message.tool_calls:
+                    alias = (prefix_hash, call.id)
+                    if (
+                        position < len(known_path)
+                        and self.trace.nodes[known_path[position]].sampled
+                    ):
+                        issuer = known_path[position]
+                        self.tool_issuers.setdefault(alias, set()).add(issuer)
+                        calls[call.id] = (issuer, call.id)
+                    else:
+                        calls[call.id] = alias
         return keys
 
-    def pin_tool_results(self, request: Request) -> Request:
+    def pin_tool_results(
+        self,
+        request: Request,
+        dialect: DialectName | None = None,
+        known_path: Sequence[int] = (),
+    ) -> Request:
         """Re-impose the pinned results on the harness's request. A result for a blocked call
         the harness never gated means the call ran anyway: the transcript would no longer
         describe the sandbox, so that fails the rollout instead of being papered over."""
+        if not self.pinned_tool_results:
+            return request
         messages = list(request.messages)
         changed = False
-        for position, key in self.tool_result_keys(request).items():
+        for position, key in self.tool_result_keys(
+            request, dialect, known_path
+        ).items():
             pinned = self.pinned_tool_results.get(key)
             if pinned is None:
                 continue
@@ -283,14 +320,15 @@ class RolloutSession:
         *,
         run_stops: bool = True,
         dialect: DialectName | None = None,
+        known_path: Sequence[int] = (),
     ) -> tuple[Request, list[InterceptRecord], str | None]:
         """Run typed request interceptors and stops over one canonical request. Only the
         uncommitted tail's user and tool messages may change; a rewritten tool result is
         pinned for the rest of the rollout."""
-        request = self.pin_tool_results(request)
-        tool_keys = self.tool_result_keys(request)
+        request = self.pin_tool_results(request, dialect, known_path)
         if not self.request_interceptors and (not run_stops or not self.request_stops):
             return request, [], None
+        tool_keys = self.tool_result_keys(request, dialect, known_path)
         candidates: set[int] = set()
         tail_start = graph.message_prefix_len(self.trace, request.messages, dialect)
         if self.request_interceptors:
@@ -399,7 +437,7 @@ class RolloutSession:
                 f"request interception failed: {type(error).__name__}: {error}"
             ) from error
         current = request.model_copy(update={"messages": messages})
-        tool_keys = self.tool_result_keys(current)
+        tool_keys = self.tool_result_keys(current, dialect, known_path)
         for position in candidates:
             after = current.messages[position]
             if (
@@ -422,9 +460,16 @@ class RolloutSession:
         self, request: Request
     ) -> tuple[Request, list[InterceptRecord]]:
         """Intercept caller-owned user turns before the harness stores them."""
-        branch = self.trace.messages
+        known_path = (
+            graph.path_node_ids(self.trace, len(self.trace.nodes) - 1)
+            if self.trace.nodes
+            else []
+        )
+        branch = [self.trace.nodes[i].message for i in known_path]
         rewritten, records, _ = await self.rewrite_request(
-            Request(messages=[*branch, *request.messages]), run_stops=False
+            Request(messages=[*branch, *request.messages]),
+            run_stops=False,
+            known_path=known_path,
         )
         tail = rewritten.messages[len(branch) :]
         self.prepared_users.update(
@@ -489,27 +534,37 @@ class RolloutSession:
             ) from error
         return response, records, None
 
-    async def gate_tool_calls(self, node: int) -> str | None:
+    async def gate_tool_calls(
+        self,
+        node: int,
+        dialect: DialectName | None = None,
+    ) -> str | None:
         """Police the tool calls the assistant committed at `node` before the harness sees
         them: the request hooks run over the branch plus an empty result for each call, so a
         `@stop` refuses the whole response and a rewrite becomes that call's verdict — the
         harness's gate denies it and the model sees the rewritten result instead. Returns
         the name of the stop that fired, if any."""
         assistant = self.trace.nodes[node].message
-        if not (self.request_interceptors or self.request_stops) or not (
-            isinstance(assistant, AssistantMessage) and assistant.tool_calls
-        ):
+        if not (self.request_interceptors or self.request_stops):
             return None
-        branch = graph.path(self.trace, node)
+        if dialect is not None:
+            self.tool_dialects[node] = dialect
+        if not isinstance(assistant, AssistantMessage) or not assistant.tool_calls:
+            return None
+        known_path = graph.path_node_ids(self.trace, node)
+        branch = [self.trace.nodes[i].message for i in known_path]
+        tools = self.trace.nodes[known_path[0]].tools
         for call in assistant.tool_calls:
             probe = ToolMessage(tool_call_id=call.id, content="", name=call.name)
-            request = Request(messages=[*branch, probe], tools=self.trace.tools or None)
-            key = self.tool_result_keys(request)[len(branch)]
+            request = Request(messages=[*branch, probe], tools=tools or None)
+            key = (node, call.id)
             if key in self.tool_decisions:
                 raise HarnessError(
                     f"tool call id {call.id!r} was reused in the same assistant turn"
                 )
-            request, records, stopped = await self.rewrite_request(request)
+            request, records, stopped = await self.rewrite_request(
+                request, dialect=dialect, known_path=known_path
+            )
             self.trace.request_rewrites.extend(records)
             if stopped is not None:
                 return stopped
@@ -575,11 +630,7 @@ class RolloutSession:
             ] or matches
         if len(matches) == 1:
             leaf, call = matches[0]
-            branch = graph.path(self.trace, leaf)
-            request = Request(
-                messages=[*branch, ToolMessage(tool_call_id=call.id, content="")]
-            )
-            key = self.tool_result_keys(request)[len(branch)]
+            key = (leaf, call.id)
             self.gated_tools.add(key)
             verdict = self.tool_decisions.get(key)
         elif matches or not name or len(leaves) != 1:
@@ -588,7 +639,8 @@ class RolloutSession:
                 f"{len(matches)} proposed calls"
             )
         else:
-            *branch, assistant = graph.path(self.trace, leaves[0][0])
+            known_path = graph.path_node_ids(self.trace, leaves[0][0])
+            *branch, assistant = [self.trace.nodes[i].message for i in known_path]
             assert isinstance(assistant, AssistantMessage)
             call = ToolCall(id=tool_call_id, name=name, arguments=json.dumps(arguments))
             assistant = assistant.model_copy(
@@ -597,8 +649,11 @@ class RolloutSession:
             probe = ToolMessage(tool_call_id=call.id, content="", name=name)
             request, records, stopped = await self.rewrite_request(
                 Request(
-                    messages=[*branch, assistant, probe], tools=self.trace.tools or None
-                )
+                    messages=[*branch, assistant, probe],
+                    tools=self.trace.nodes[known_path[0]].tools or None,
+                ),
+                dialect=self.tool_dialects.get(leaves[0][0]),
+                known_path=known_path[:-1],
             )
             self.trace.request_rewrites.extend(records)
             if stopped is not None:
