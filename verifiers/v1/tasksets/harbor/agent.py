@@ -4,14 +4,26 @@ import json
 
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.configs.sampling import SamplingConfig
+from verifiers.v1.configs.task import TaskConfig
 from verifiers.v1.envs.agentic_judge.env import TRACE_FILE, VERDICT_FILE, JudgeTask
 from verifiers.v1.errors import TaskError
 from verifiers.v1.grading import scoring_network
 from verifiers.v1.judges.agent import AgentJudgeRequest
 from verifiers.v1.task import TaskData, TaskTimeout
+from verifiers.v1.tasksets.harbor.toolset import HarborMCPAdapter, HarborMCPConfig
 from verifiers.v1.types import SystemMessage, UserMessage
 
 from .judge import HarborJudgeConfig
+
+
+class HarborAgentJudgeConfig(TaskConfig):
+    mcp_servers: list[HarborMCPConfig]
+
+
+class HarborAgentJudgeTask(JudgeTask[HarborAgentJudgeConfig]):
+    @classmethod
+    def toolsets(cls, config: HarborAgentJudgeConfig):
+        return [HarborMCPAdapter(server) for server in config.mcp_servers]
 
 
 async def prepare_agent_judge(task, runtime, trace, reward, authored, workspace):
@@ -27,8 +39,6 @@ async def prepare_agent_judge(task, runtime, trace, reward, authored, workspace)
         != HarborJudgeConfig()
     ):
         raise TaskError("Configure agent judge overrides on env.judge")
-    if authored.mcp_servers:
-        raise TaskError("Authored MCP tools require native judge toolsets")
     exclude = {"provider_state"}
     if not (task.config.judge and task.config.judge.include_hidden_reasoning):
         exclude.add("reasoning_content")
@@ -46,7 +56,7 @@ async def prepare_agent_judge(task, runtime, trace, reward, authored, workspace)
     async def call(prompt, schema):
         # RewardKit constructs criterion prompts and validates the returned JSON.
         # VF owns only execution and the trusted evidence/verdict file locations.
-        judge_task = JudgeTask(
+        judge_task = HarborAgentJudgeTask(
             TaskData(
                 idx=trace.task.data.idx,
                 prompt=[
@@ -65,6 +75,13 @@ async def prepare_agent_judge(task, runtime, trace, reward, authored, workspace)
             parse_verdict=str,
             workspace=workspace,
             env=dict(runtime.env),
+            config=HarborAgentJudgeConfig(
+                # Authored commands and task-local URLs belong to this attempt's box.
+                mcp_servers=[
+                    HarborMCPConfig(server=server.model_dump(mode="json"))
+                    for server in reward.judge.mcp_servers
+                ]
+            ),
         )
         verdict = await task.judge_executor(
             AgentJudgeRequest(

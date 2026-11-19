@@ -52,6 +52,26 @@ class Runtime:
     def with_user(self, user: str | None, home: str | None = None) -> Self:
         return replace(self, user=user, home=home if user is not None else None)
 
+    async def resolve_user(self, user: str, home: str | None = None) -> Self:
+        """Bind an existing account and verify its identity, without requiring a home."""
+        view = self.with_user(user)
+        probe = await view.run(
+            [
+                "sh",
+                "-c",
+                "id -un; awk -F: -v u=\"$1\" '$1 == u { print $6 }' /etc/passwd",
+                "sh",
+                user,
+            ],
+            {},
+        )
+        effective, *homes = probe.stdout.splitlines() or [""]
+        if probe.exit_code or effective != user:
+            raise SandboxError(
+                f"the {self.type} runtime ran as {effective!r} instead of {user!r}"
+            )
+        return view.with_user(user, home=home or (homes[0] if homes else None))
+
     def process_env(self, env: dict[str, str]) -> dict[str, str]:
         home = {} if self.home is None else {"HOME": self.home}
         return {**self.env, **home, **env}

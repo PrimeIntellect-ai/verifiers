@@ -12,14 +12,13 @@ from mcp.client.streamable_http import streamable_http_client
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import CallToolResult, Tool
-from pydantic_config import BaseConfig
 
-from verifiers.v1.mcp import Toolset
+from verifiers.v1.mcp import Toolset, ToolsetConfig
 from verifiers.v1.mcp.launch import serve_in_runtime
 from verifiers.v1.runtimes import Runtime
 
 
-class HarborMCPConfig(BaseConfig):
+class HarborMCPConfig(ToolsetConfig):
     server: dict[str, Any]
     """One declaration already validated by Harbor's task parser."""
 
@@ -31,10 +30,14 @@ class HarborMCPAdapter(Toolset[HarborMCPConfig]):
 
     @asynccontextmanager
     async def serve(self, runtime: Runtime, **kwargs) -> AsyncIterator[str]:
-        # Harbor commands and task-local URLs belong to the task environment.
-        port = await serve_in_runtime(self, runtime, exposed=False)
-        host = "localhost" if runtime.network_restricted else "127.0.0.1"
-        yield f"http://{host}:{port}/mcp"
+        if self.config.model_fields_set & {"runtime", "service", "url"}:
+            async with super().serve(runtime, **kwargs) as url:
+                yield url
+            return
+        # Harbor commands and task-local URLs belong to the task environment by default.
+        async with serve_in_runtime(self, runtime, exposed=False) as port:
+            host = "localhost" if runtime.network_restricted else "127.0.0.1"
+            yield f"http://{host}:{port}/mcp"
 
     async def setup(self) -> None:
         spec = self.config.server
@@ -84,6 +87,13 @@ class HarborMCPAdapter(Toolset[HarborMCPConfig]):
             tools.extend(page.tools)
             cursor = page.next_cursor
             if cursor is None:
+                if allowed := self.config.server.get("allowed_tools"):
+                    missing = set(allowed) - {tool.name for tool in tools}
+                    if missing:
+                        raise ValueError(
+                            f"Unknown allowed MCP tools: {sorted(missing)}"
+                        )
+                    tools = [tool for tool in tools if tool.name in allowed]
                 return tools
             if cursor in seen_cursors:
                 raise ValueError("MCP tools pagination returned a repeated cursor")
