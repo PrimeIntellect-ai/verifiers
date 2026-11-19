@@ -20,6 +20,8 @@ ACP_VERSION = "0.99.1"
 CLAUDE_BIN = f"{PACKAGES_DIR}/node_modules/.bin/claude"
 ACP_BIN = f"{PACKAGES_DIR}/node_modules/.bin/claude-agent-acp"
 CLAUDE_CONFIG_ROOT = ".vf-claude"
+# Manual mode routes tool approvals to ACP. Auto needs a separate classifier.
+CLAUDE_PERMISSIONS = {"defaultMode": "default"}
 ACP_INSTALL = r"""
 set -e
 export PATH="/var/tmp/vf-node/bin:$PATH"
@@ -83,6 +85,10 @@ class ClaudeCodeHarness(ACPHarness[ClaudeCodeHarnessConfig]):
     ) -> ACPConfig:
         system_prompt, prompt = self.resolve_prompt(data)
         config_dir = self.config_dir(trace)
+        await runtime.write(
+            f"{config_dir}/settings.json",
+            json.dumps({"permissions": CLAUDE_PERMISSIONS}).encode(),
+        )
         await self.install_skills(runtime, f"{config_dir}/skills")
         versions = {"version": self.config.version, "acp_version": ACP_VERSION}
         session_meta = {
@@ -126,7 +132,7 @@ class ClaudeCodeHarness(ACPHarness[ClaudeCodeHarnessConfig]):
         # `CLAUDE_CONFIG_DIR` holds the user settings, which the adapter loads by default.
         await runtime.write(
             f"{config.env['CLAUDE_CONFIG_DIR']}/settings.json",
-            json.dumps({"permissions": {"ask": ["*"]}}).encode(),
+            json.dumps({"permissions": {**CLAUDE_PERMISSIONS, "ask": ["*"]}}).encode(),
         )
 
     async def cleanup(self, trace: Trace, runtime: Runtime) -> None:
