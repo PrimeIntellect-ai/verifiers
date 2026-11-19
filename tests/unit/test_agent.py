@@ -38,7 +38,7 @@ def make_trace() -> vf.Trace:
 
 
 async def test_each_sample_keeps_its_tool_result_across_assistant_replays():
-    replacements = iter(["First result", "Second result"])
+    replacements = iter(["First result", "Second result", "Follow-up result"])
 
     def replace_result(request: vf.Request) -> vf.Request | None:
         tool = request.messages[-1]
@@ -65,8 +65,10 @@ async def test_each_sample_keeps_its_tool_result_across_assistant_replays():
     replay = sampled.model_copy(update={"content": "Ready", "text_block_offsets": None})
     prompt = [vf.UserMessage(content="go")]
 
-    def commit(messages, assistant):
-        turn = graph.prepare_turn(trace, messages, dialect="anthropic_messages")
+    def commit(messages, assistant, tools=None):
+        turn = graph.prepare_turn(
+            trace, messages, tools=tools, dialect="anthropic_messages"
+        )
         return turn.commit(
             vf.Response(
                 id="", created=0, model="test", message=assistant, finish_reason="stop"
@@ -90,6 +92,17 @@ async def test_each_sample_keeps_its_tool_result_across_assistant_replays():
         )
         assert rewritten.messages[-1].content == expected
         commit(rewritten.messages, AssistantMessage(content="done"))
+
+    # An unrelated branch adds a tool to the trace-wide catalog. The next gate
+    # still knows exactly which sampled ancestors issued its historical calls.
+    commit(prompt, AssistantMessage(content="other branch"), [vf.Tool(name="other")])
+    follow_up = AssistantMessage(
+        tool_calls=[vf.ToolCall(id="next", name="lookup", arguments="{}")]
+    )
+    node = commit(rewritten.messages, follow_up)
+    await session.gate_tool_calls(node, "anthropic_messages")
+    verdict = await session.decide_tool("next")
+    assert verdict["message"]["content"] == "Follow-up result"
 
 
 def make_rollout(trace: vf.Trace, session, time_remaining=None):

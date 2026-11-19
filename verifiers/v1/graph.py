@@ -1142,12 +1142,17 @@ def leaves(trace: Trace) -> list[int]:
     return [i for i in range(len(trace.nodes)) if i not in has_child]
 
 
-def path(trace: Trace, node: int) -> list[Message]:
-    """The conversation ending at `node`: its root-to-node messages."""
-    messages: list[Message] = []
+def path_node_ids(trace: Trace, node: int) -> list[int]:
+    """The physical ancestry from the root through the given node."""
+    nodes: list[int] = []
     current: int | None = node
     while current is not None:
-        messages.append(trace.nodes[current].message)
+        nodes.append(current)
         current = trace.nodes[current].parent
-    messages.reverse()
-    return messages
+    nodes.reverse()
+    return nodes
+
+
+def path(trace: Trace, node: int) -> list[Message]:
+    """The conversation ending at `node`: its root-to-node messages."""
+    return [trace.nodes[i].message for i in path_node_ids(trace, node)]
