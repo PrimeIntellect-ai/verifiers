@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 import verifiers.v1 as vf
+from verifiers.v1 import graph
 from verifiers.v1.agent import Interaction
 from verifiers.v1.clients import EvalClientConfig, ModelContext, ModelRoute
 from verifiers.v1.graph import MessageNode
@@ -36,11 +37,13 @@ def make_trace() -> vf.Trace:
     )
 
 
-async def test_blocked_tool_result_survives_an_assistant_replay():
+async def test_each_sample_keeps_its_tool_result_across_assistant_replays():
+    replacements = iter(["First result", "Second result"])
+
     def replace_result(request: vf.Request) -> vf.Request | None:
         tool = request.messages[-1]
         if isinstance(tool, vf.ToolMessage) and tool.content == "":
-            tool.content = "Replacement result"
+            tool.content = next(replacements)
             return request
         return None
 
@@ -53,26 +56,40 @@ async def test_blocked_tool_result_survives_an_assistant_replay():
         text_block_offsets=[5],
         tool_calls=[vf.ToolCall(id="call", name="lookup", arguments="{}")],
     )
-    trace.nodes.append(MessageNode(message=sampled, sampled=True))
     session = RolloutSession(
         ModelRoute(ModelContext(model="test", client=EvalClientConfig())),
         trace,
         request_interceptors=[replace_result],
         gates_tools=True,
     )
-    await session.gate_tool_calls(0, "anthropic_messages")
-    assert (await session.decide_tool("call"))["action"] == "deny"
     replay = sampled.model_copy(update={"content": "Ready", "text_block_offsets": None})
-    request = vf.Request(
-        messages=[
-            replay,
-            vf.ToolMessage(tool_call_id="call", content="Tool unavailable"),
-        ]
-    )
-    rewritten, _, _ = await session.rewrite_request(
-        request, dialect="anthropic_messages"
-    )
-    assert rewritten.messages[-1].content == "Replacement result"
+    prompt = [vf.UserMessage(content="go")]
+
+    def commit(messages, assistant):
+        turn = graph.prepare_turn(trace, messages, dialect="anthropic_messages")
+        return turn.commit(
+            vf.Response(
+                id="", created=0, model="test", message=assistant, finish_reason="stop"
+            )
+        )
+
+    # Two samples from one prompt replay identically and reuse a call ID.
+    for assistant, expected in [(sampled, "First result"), (replay, "Second result")]:
+        node = commit(prompt, assistant)
+        await session.gate_tool_calls(node, "anthropic_messages")
+        assert (await session.decide_tool("call"))["action"] == "deny"
+        request = vf.Request(
+            messages=[
+                *prompt,
+                replay,
+                vf.ToolMessage(tool_call_id="call", content="Tool unavailable"),
+            ]
+        )
+        rewritten, _, _ = await session.rewrite_request(
+            request, dialect="anthropic_messages"
+        )
+        assert rewritten.messages[-1].content == expected
+        commit(rewritten.messages, AssistantMessage(content="done"))
 
 
 def make_rollout(trace: vf.Trace, session, time_remaining=None):
