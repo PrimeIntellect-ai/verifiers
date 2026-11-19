@@ -193,13 +193,33 @@ The **workspace** (`deployment.workspace`) is the `Runtime` where task commands 
 
 Setting `agent.deployment.mode = "split"` on Docker or Prime provisions a separate sandbox for the harness. All built-in harnesses support core split execution. Task setup, tools, finalization, artifacts, and scoring use the workspace; the model loop and interception credential stay in the harness sandbox. The workspace keeps the task's network rules with framework control endpoints excluded. Traces record both `agent.runtime` and `agent.harness_runtime`.
 
-On Prime, the harness VM joins the rollout's private LAN alongside the workspace, Compose or `ServicesSpec` services, and separate tool VMs. It can initiate connections to the workspace and tool servers; task VMs cannot initiate connections to it. Configure its image and resources with `agent.deployment.harness` (1 CPU and 2 GB by default). Tool execution uses the same connection and process contract on Prime and Docker. The evaluator mediates native worker streams and runs tool adapters against the workspace. Workers receive no model or evaluator credential. Request interceptors check calls before execution without changing the transport. Closing RLM's execution session stops attached jobs while detached jobs remain available for grading through its workspace-local listener.
+On Prime, the harness VM joins the rollout's private LAN alongside the workspace, Compose or `ServicesSpec` services, and separate tool VMs. It can initiate connections to the workspace and tool servers; task VMs cannot initiate connections to it. Configure its image and resources with `agent.deployment.harness` (1 CPU and 2 GB by default). Tool execution uses the same connection and process contract on Prime and Docker, with native workers or harness-specific adapters. The connection automatically selects LAN on Prime and the host relay on Docker. Native clients and tool adapters both run in the harness VM, register through the evaluator, and then carry workspace commands and process I/O directly over LAN. The evaluator authorizes adapter calls and pins their returned results; it does not execute adapter logic or relay their workspace I/O. Each endpoint is limited to one registered process and receives no model or evaluator credential. Interception stays on the evaluator, and request policies do not select a different transport. Closing RLM's execution session stops attached jobs while detached jobs remain available for grading; its workspace-local listener remains available until workspace teardown.
 
 ```toml
 [env.agent.deployment]
 mode = "split"
 harness = { cpu = 2, memory = 4 }
 ```
+
+To place the evaluator on the same Prime LAN, pass a trusted, packaged async function to `vf.prime_controller`. The launcher provisions the VMs and delivers the credentials you supply over the controller process's stdin. The controller owns the live trace, callbacks and model client. It dispatches approved tools to the harness over a persistent LAN connection. Each job gets its own process and each rollout gets a private LAN. Reuse the context to share the installed controller VM across jobs.
+
+```python
+# evaluate lives in an importable evaluator package.
+async def evaluate(payload, interception):
+    async with vf.Agent(
+        vf.AgentConfig.model_validate(payload["agent"]), interception=interception
+    ) as agent:
+        trace = await agent.run(make_task(payload["sample"]))
+        return json.loads(trace.to_json())
+
+
+async with vf.prime_controller(evaluate, vf.PrimeConfig(cpu=2, memory=4)) as controller:
+    result = await controller.run(
+        payload, credentials={"PRIME_API_KEY": os.environ["PRIME_API_KEY"]}
+    )
+```
+
+Use a Prime split deployment in the agent config. An environment can borrow the same server with `env.serving(interception=interception)`. The program and its dependencies run with evaluator privileges. Keep its package, image and checkpoints under the evaluator operator's control.
 
 Docker uses the evaluator's configured image for the harness, without task environment or mounts, and a host bridge for native workers. Docker split deployments require a single workspace without bind mounts or separate tool VMs. Split deployments cannot borrow runtimes or colocate task MCP servers. See [split harness execution](harnesses.md#split-execution) for harness-specific limits.
 

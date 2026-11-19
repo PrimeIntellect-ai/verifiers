@@ -12,6 +12,7 @@ from verifiers.v1.harnesses.utils.launch import (
     compaction_args,
     launch_chat_program,
 )
+from verifiers.v1.harnesses.utils.sandbox_tools import RemoteToolsSpec
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
@@ -61,7 +62,7 @@ class BashHarness(Harness[BashHarnessConfig]):
 
         if self.config.search:
             raise ValueError("split Bash does not support search")
-        return BashRemoteTools(runtime, self.config.edit)
+        return RemoteToolsSpec(BashRemoteTools, {"edit": self.config.edit})
 
     async def setup(self, runtime: Runtime) -> None:
         await runtime.prepare_uv_script(CHAT_PROGRAM_SOURCE, self.config.resolved_env)

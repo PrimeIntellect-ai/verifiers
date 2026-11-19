@@ -1,5 +1,5 @@
 from collections.abc import AsyncIterator, Iterable
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 from typing import TYPE_CHECKING
 
 from pydantic_config import BaseConfig
@@ -77,6 +77,27 @@ async def serve_interception(
     """A slot on the shared interception when one was injected (its owner keeps the
     lifecycle), else on a per-rollout `InterceptionServer` owned — brought up and torn
     down — by the caller's context."""
+    session.state_service_secrets = frozenset(
+        tool.state_secret for tool in shared_tools.values() if tool.state_secret
+    )
+    if isinstance(interception, InterceptionServer) and interception.lan_host:
+        # The split harness can reach the private listener. A remote state
+        # consumer outside the attempt LAN needs a separately reachable URL.
+        if runtime.type != "prime" or not runtime._remote_tools_only:
+            interception = None
+        else:
+            from verifiers.v1.interception.tunnel import PrimeTunnel
+
+            async with AsyncExitStack() as stack:
+                session.state_base_url = f"http://127.0.0.1:{interception.port}"
+                if requires_tunnel(
+                    True, [s.config for s in servers], shared_tools.values()
+                ) or any(getattr(s.config, "service", None) for s in servers):
+                    session.state_base_url = await stack.enter_async_context(
+                        PrimeTunnel().expose(interception.port)
+                    )
+                yield await stack.enter_async_context(interception.acquire(session))
+            return
     if interception is not None:
         async with interception.acquire(session) as slot:
             yield slot

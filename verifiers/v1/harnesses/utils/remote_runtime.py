@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.runtimes.base import RuntimeProcess
+from verifiers.v1.runtimes.lan_stream import CLIENT_SOURCE
 from verifiers.v1.types import ToolCall, ToolMessage
 
 # Embedded in Python harness programs so their native environment adapters use
@@ -162,10 +163,9 @@ def remote_shell_tools(runtime: Runtime, *, persistent: bool = False):
     return execute
 
 
-REMOTE_RUNTIME_SOURCE = r"""# /// script
-# requires-python = ">=3.10"
-# dependencies = []
-# ///
+REMOTE_RUNTIME_SOURCE = (
+    CLIENT_SOURCE
+    + r"""
 import argparse
 import base64
 import json
@@ -184,8 +184,27 @@ parser.add_argument("--secret", required=True)
 parser.add_argument("--worker", required=True)
 parser.add_argument("--protocol", choices=("raw", "rlm", "prime", "codex"), default="raw")
 parser.add_argument("--tool-url", default="")
+parser.add_argument("--endpoint-file", default="")
 args = parser.parse_args()
 process_id = uuid.uuid4().hex
+execution_url, execution_secret = args.url, args.secret
+execution_opener = urllib.request.build_opener()
+execution_client = None
+handed_off = False
+if args.endpoint_file:
+    claimed = f"{args.endpoint_file}.{os.getpid()}.claim"
+    try:
+        os.replace(args.endpoint_file, claimed)
+        try:
+            with open(claimed, "rb") as handle:
+                transport = json.load(handle)
+        finally:
+            os.remove(claimed)
+        handed_off = True
+        execution_client = LanStream(transport)
+        process_id = transport["process_id"]
+    except FileNotFoundError:
+        pass
 failed = threading.Event()
 stdout_lock = threading.Lock()
 history_receipts = {}
@@ -299,22 +318,36 @@ def rlm_input(packet):
     return None
 
 def rpc(operation, **values):
-    body = json.dumps({"operation": operation, "process_id": process_id,
-                       "request_id": uuid.uuid4().hex, **values}).encode()
+    global execution_client, process_id, handed_off
+    message = {"operation": operation, "process_id": process_id,
+               "request_id": uuid.uuid4().hex, **values}
+    if execution_client is not None:
+        return execution_client.request(message)
+    body = json.dumps(message).encode()
     for attempt in range(3):
-        request = urllib.request.Request(args.url, data=body, headers={
-            "Authorization": "Bearer " + args.secret,
+        request = urllib.request.Request(execution_url, data=body, headers={
+            "Authorization": "Bearer " + execution_secret,
             "Content-Type": "application/json",
         })
         try:
-            with urllib.request.urlopen(request, timeout=3600) as response:
-                return json.load(response)
+            with execution_opener.open(request, timeout=3600) as response:
+                result = json.load(response)
+            break
         except urllib.error.HTTPError as error:
             raise RuntimeError(f"execution bridge returned HTTP {error.code}") from error
         except (OSError, urllib.error.URLError):
             if attempt == 2:
                 raise
             time.sleep(0.2 * (attempt + 1))
+
+    if operation == "open" and (transport := result.get("transport")):
+        if handed_off:
+            raise RuntimeError("Only the host registry may select the execution transport")
+        handed_off = True
+        execution_client = LanStream(transport)
+        process_id = transport["process_id"]
+        return rpc("open", **values)
+    return result
 
 def copy_input():
     try:
@@ -399,8 +432,11 @@ finally:
         rpc("kill")
     except Exception:
         pass
+    if execution_client is not None:
+        execution_client.close()
 raise SystemExit(code)
 """
+)
 
 
 async def prepare_remote_bridge(
@@ -412,13 +448,36 @@ async def prepare_remote_bridge(
     protocol: str = "raw",
     tool_url: str = "",
 ) -> list[str]:
-    """Install a stdio bridge in A; only its host registry can choose B's command."""
-    program = await runtime.prepare_uv_script(REMOTE_RUNTIME_SOURCE, {})
-    return [
-        *program,
+    """Configure the stdlib execution client in A; only its host registry chooses B's command.
+
+    Registration selects the deployment's process transport. Policy calls retain
+    their evaluator URL and capability even when process traffic uses the LAN.
+    """
+    import uuid as _uuid
+
+    python_task = asyncio.create_task(runtime.resolve_python())
+    endpoint_file = ""
+    bridge = getattr(runtime, "_execution_bridge", None)
+    if bridge is not None and worker in bridge.commands:
+        endpoint = await bridge.prewarm(worker)
+        if endpoint is not None:
+            endpoint_file = runtime.temp_path(
+                f"vf-lan-{worker}-{_uuid.uuid4().hex}.json"
+            )
+            await runtime.write(endpoint_file, json.dumps(endpoint).encode())
+    python = await python_task
+    args = [
+        python,
+        "-I",
+        "-u",
+        "-c",
+        REMOTE_RUNTIME_SOURCE,
         f"--url={url}",
         f"--secret={secret}",
         f"--worker={worker}",
         f"--protocol={protocol}",
         f"--tool-url={tool_url}",
     ]
+    if endpoint_file:
+        args.append(f"--endpoint-file={endpoint_file}")
+    return args

@@ -97,6 +97,8 @@ async def private_network(
         )
     from prime_sandboxes import LanRule
 
+    from verifiers.v1.runtimes.controller import current_job
+
     tags = {name: _tag(index) for index, name in enumerate(members)}
     memberships = {
         "main": [WORKSPACE_TAG],
@@ -134,22 +136,53 @@ async def private_network(
         client = await stack.enter_async_context(leased_client())
         # Install connectivity before boot: Compose peers must share a network;
         # independent tool servers accept only workspace connections.
-        network = await client.create_lan_network(
-            f"vf-{uuid.uuid4().hex[:16]}",
-            rules=rules,
-        )
+        name = f"vf-{uuid.uuid4().hex[:16]}"
+        job = current_job.get()
+        if job and harness is not None:
+            # B and task services have no route into C. Only A can reach the session port.
+            rules += [
+                LanRule(
+                    from_=f"tag:{HARNESS_TAG}",
+                    to="tag:vf-controller",
+                    ports=[job.server.port],
+                ),
+                LanRule(from_="tag:vf-controller", to=f"tag:{HARNESS_TAG}"),
+            ]
 
-        async def delete_network() -> None:
+        async def delete_network(network_id: str) -> None:
             try:
-                await client.delete_lan_network(network.id)
+                if job:
+                    await job.launcher.call("delete_network", network_id=network_id)
+                else:
+                    await client.delete_lan_network(network_id)
             except Exception:
                 logger.warning(
-                    "LAN network %s deletion failed", network.id, exc_info=True
+                    "LAN network %s deletion failed", network_id, exc_info=True
                 )
 
-        stack.push_async_callback(lambda: run_shielded(delete_network()))
-        # Failed startup unwinds this stack before the deployment's workspace owner.
-        stack.push_async_callback(workspace.stop)
+        async def create_and_own() -> str:
+            if job:
+                network_id = await job.launcher.call(
+                    "network",
+                    join_controller=harness is not None,
+                    name=name,
+                    rules=[rule.model_dump(by_alias=True) for rule in rules],
+                )
+            else:
+                network_id = (await client.create_lan_network(name, rules=rules)).id
+            stack.push_async_callback(lambda: run_shielded(delete_network(network_id)))
+            return network_id
+
+        network_id = await run_shielded(create_and_own())
+        started_vms: list[RuntimeBackend] = [workspace]
+
+        async def stop_all_vms() -> None:
+            await asyncio.gather(
+                *(vm.stop() for vm in started_vms), return_exceptions=True
+            )
+
+        # Failed startup unwinds VMs concurrently before deleting the network.
+        stack.push_async_callback(stop_all_vms)
 
         backends: dict[str, RuntimeBackend] = {}
 
@@ -160,9 +193,9 @@ async def private_network(
         async def provision(name: str, config: PrimeConfig) -> None:
             backend = make_backend(config, f"{workspace.name}-{tags[name]}")
             assert isinstance(backend, PrimeBackend)
-            backend.lan = (network.id, memberships[name])
-            # Pushed before `start()`: a failed start may already hold a paid sandbox.
-            stack.push_async_callback(backend.stop)
+            backend.lan = (network_id, memberships[name])
+            # Registered before `start()`: a failed start may already hold a paid sandbox.
+            started_vms.append(backend)
             await backend.start()  # running, and joined to the network
             backends[name] = backend
             # LAN traffic is not activity to the platform, and a server's VM sees no
@@ -185,10 +218,10 @@ async def private_network(
                     ),
                 )
 
-        workspace.lan = (network.id, memberships["main"])
+        workspace.lan = (network_id, memberships["main"])
         if harness is not None:
-            harness.lan = (network.id, [HARNESS_TAG])
-            stack.push_async_callback(harness.stop)
+            harness.lan = (network_id, [HARNESS_TAG])
+            started_vms.append(harness)
         try:
             async with asyncio.TaskGroup() as group:
                 group.create_task(provision_workspace())
@@ -200,7 +233,7 @@ async def private_network(
             raise failed.exceptions[0]  # one VM's failure, typed for retries
         logger.debug(
             "Joined LAN network %s from %s to %s",
-            network.id,
+            network_id,
             workspace.info.id,
             {name: backend.info.id for name, backend in backends.items()},
         )

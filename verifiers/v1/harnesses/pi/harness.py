@@ -16,6 +16,7 @@ from verifiers.v1.harnesses.node import NODE_BIN_DIR, ensure_node
 from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
 from verifiers.v1.harnesses.utils.remote import NativeRemoteTools
 from verifiers.v1.harnesses.utils.replay import drop_blank_text
+from verifiers.v1.harnesses.utils.sandbox_tools import RemoteToolsSpec
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
@@ -77,8 +78,11 @@ class PiHarness(ACPHarness[PiHarnessConfig]):
             return drop_blank_text(message)
         return message
 
-    async def remote_tools(self, runtime: Runtime, data: TaskData) -> NativeRemoteTools:
-        return NativeRemoteTools(runtime, "pi", tuple(self.config.disabled_tools or ()))
+    async def remote_tools(self, runtime: Runtime, data: TaskData) -> RemoteToolsSpec:
+        return RemoteToolsSpec(
+            NativeRemoteTools,
+            {"harness": "pi", "disabled_tools": list(self.config.disabled_tools or ())},
+        )
 
     async def setup(self, runtime: Runtime) -> None:
         await ensure_node(runtime)
@@ -90,6 +94,11 @@ class PiHarness(ACPHarness[PiHarnessConfig]):
         await ensure_installed(
             runtime,
             directory=PI_DIR,
+            ready=(
+                f'[ -x "{ACP_BIN}" ] && '
+                f'[ "$(cat "{PACKAGES_DIR}/.versions" 2>/dev/null)" = '
+                f'"{self.config.version}:{ACP_VERSION}" ]'
+            ),
             install=INSTALL,
             env={
                 "AGENT_PI_VERSION": self.config.version,

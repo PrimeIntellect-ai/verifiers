@@ -10,6 +10,7 @@ from verifiers.v1.configs.harness import DialectName, HarnessConfig, PinnedVersi
 from verifiers.v1.harnesses.hermes_agent.remote import HermesRemoteTools
 from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
 from verifiers.v1.harnesses.utils.replay import strip_text
+from verifiers.v1.harnesses.utils.sandbox_tools import RemoteToolsSpec
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.runtimes.base import _ENSURE_UV
 from verifiers.v1.task import TaskData
@@ -55,7 +56,7 @@ class HermesAgentHarness(ACPHarness[HermesAgentHarnessConfig]):
     SUPPORTS_TOOL_INTERCEPTION = True
     SUPPORTS_SPLIT_EXECUTION = True
 
-    async def remote_tools(self, runtime: Runtime, data: TaskData) -> HermesRemoteTools:
+    async def remote_tools(self, runtime: Runtime, data: TaskData) -> RemoteToolsSpec:
         assert runtime._execution_bridge is not None
         directory = HERMES_DIR.format(version=self.config.version)
         # Install only tool code in B; no model credentials or A configuration.
@@ -73,7 +74,9 @@ class HermesAgentHarness(ACPHarness[HermesAgentHarnessConfig]):
         )
         home = "/tmp/verifiers-hermes-tools"
         await runtime.write(f"{home}/config.yaml", b"{}")
-        return HermesRemoteTools(runtime, f"{directory}/.venv/bin/python", home)
+        return RemoteToolsSpec(
+            HermesRemoteTools, {"python": f"{directory}/.venv/bin/python", "home": home}
+        )
 
     async def gate_tools(
         self, config: ACPConfig, runtime: Runtime, url: str, secret: str

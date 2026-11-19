@@ -21,6 +21,11 @@ from verifiers.v1.runtimes.base import (
     RuntimeBackend,
     RuntimeProcess,
 )
+from verifiers.v1.runtimes.prepared import (
+    load_prepared,
+    record_arguments,
+    script_directory,
+)
 
 if TYPE_CHECKING:
     from verifiers.v1.runtimes.bridge import ExecutionBridge
@@ -161,6 +166,54 @@ class Runtime:
             return default
         return str(PurePosixPath(directory or "/tmp").joinpath(*parts))
 
+    async def resolve_python(self) -> str:
+        """Locate a Python 3 interpreter in this runtime without bootstrapping `uv`."""
+        if self.backend.cache.system_python:
+            return self.backend.cache.system_python
+        async with self.backend.cache.setup_lock:
+            if self.backend.cache.system_python:
+                return self.backend.cache.system_python
+            probe = await self.with_user(None).run(
+                [
+                    "sh",
+                    "-c",
+                    (
+                        'printf "%s\\n%s\\n" "$(uname -m)" '
+                        '"$(command -v python3 || command -v python || true)"'
+                    ),
+                ],
+                {},
+            )
+            lines = probe.stdout.splitlines()
+            if lines and lines[0].strip() and not self.backend.cache.arch:
+                self.backend.cache.arch = lines[0].strip()
+            python = lines[1].strip() if len(lines) > 1 else ""
+            if not python:
+                install = await self.with_user(None).run(
+                    [
+                        "sh",
+                        "-c",
+                        (
+                            "(command -v apk >/dev/null 2>&1 && apk add --no-cache python3 >/dev/null) || "
+                            "(command -v apt-get >/dev/null 2>&1 && apt-get update -qq && apt-get install -y -qq python3 >/dev/null) || "
+                            "(command -v dnf >/dev/null 2>&1 && dnf install -y -q python3 >/dev/null); "
+                            "command -v python3 || command -v python"
+                        ),
+                    ],
+                    {},
+                )
+                python = (
+                    install.stdout.strip().splitlines()[-1]
+                    if install.exit_code == 0 and install.stdout.strip()
+                    else ""
+                )
+            if not python:
+                raise SandboxError(
+                    f"no Python 3 interpreter available in runtime {self.name!r}"
+                )
+            self.backend.cache.system_python = python
+            return python
+
     async def prepare_uv_script(
         self,
         script: str | bytes,
@@ -173,17 +226,17 @@ class Runtime:
         ``activate=False`` invokes the resolved script interpreter directly, keeping
         its environment variables out of child processes spawned by the script.
         """
+        await load_prepared(self)
         data = script.encode() if isinstance(script, str) else script
         digest = hashlib.sha256(data).hexdigest()
         # Each user needs its own writable script dir and uv environment.
-        directory = (
-            self.backend.scripts_dir
-            if self.user is None
-            else f"{self.backend.scripts_dir}-{self.user}"
-        )
+        directory = script_directory(self)
         path = f"{directory}/{digest}.py"
         if path not in self.backend.cache.uv_interpreters:
-            async with self.backend.cache.uv_locks.setdefault(path, asyncio.Lock()):
+            async with (
+                self.backend.cache.setup_lock,
+                self.backend.cache.uv_locks.setdefault(path, asyncio.Lock()),
+            ):
                 if self.user is not None and not self.backend.cache.curl_ready:
                     # Only root can install a downloader for the user's uv bootstrap.
                     curl = await self.with_user(None).run(
@@ -193,11 +246,14 @@ class Runtime:
                 if path not in self.backend.cache.uv_interpreters:
                     tmp = f"{path}.{uuid.uuid4().hex}.tmp"
                     await self.write(tmp, data)
+                    record = shlex.join(record_arguments(self, path, {"script": path}))
                     command = (
                         f"mv -f {shlex.quote(tmp)} {shlex.quote(path)} "
                         f"&& {{ {_ENSURE_UV}; }} "
                         f"&& uv sync --script {shlex.quote(path)} -q --no-config "
-                        f"&& uv python find --script {shlex.quote(path)} --no-config"
+                        f"&& python=$(uv python find --script {shlex.quote(path)} --no-config) "
+                        f'&& "$python" {record} '
+                        '&& printf "%s\\n" "$python"'
                     )
                     # Bootstrap dependencies before task networking is restricted;
                     # keep task offline settings on the returned program's processes.

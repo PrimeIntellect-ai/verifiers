@@ -95,9 +95,9 @@ async def _prepare_split_workspace(d):
         raise SandboxError("split workspace has no valid control-plane routes")
     policy = d.execution_network
     hosts = {
-        urlsplit(route).hostname
+        host
         for route in d.control_routes
-        if urlsplit(route).hostname
+        if (host := urlsplit(route).hostname) and not host.endswith(".sandbox.internal")
     }
     for route in d.control_routes:
         parsed = urlsplit(route)
@@ -107,14 +107,19 @@ async def _prepare_split_workspace(d):
             parsed.port or (443 if parsed.scheme == "https" else 80),
         ):
             raise SandboxError("task network allowlist includes a framework endpoint")
-    if policy.allow == ["*"]:
+    if policy.allow == ["*"] and hosts:
         policy = type(policy).model_validate(
             {
                 **policy.model_dump(),
                 "block": list(dict.fromkeys([*policy.block, *sorted(hosts)])),
             }
         )
-    await d.execution_backend.prepare_execution([], policy)
+    if (
+        policy.network_restricted
+        or not isinstance(d.execution_backend, PrimeBackend)
+        or d.execution_backend._setup_claimed
+    ):
+        await d.execution_backend.prepare_execution([], policy)
     d.execution_backend.config = d.execution_backend.config.model_copy(
         update={"allow": policy.allow, "block": policy.block}
     )
@@ -219,6 +224,21 @@ class _PrivateNetworkDeployment(_DeploymentStrategy):
             *([self._harness.stop()] if self._harness else []),
         )
 
+    async def close(self, deployment):
+        vms = [
+            *([self._harness] if self._harness else []),
+            *(
+                [deployment.execution_backend]
+                if deployment.execution_backend is not None
+                else []
+            ),
+            *deployment.target_backends.values(),
+        ]
+        seen = set()
+        unique = [vm for vm in vms if not (id(vm) in seen or seen.add(id(vm)))]
+        if unique:
+            await asyncio.gather(*(vm.stop() for vm in unique), return_exceptions=True)
+
     async def prepare_verifier(self, deployment):
         # Evidence is collected; release the solver's VMs before the verifier clock
         # starts, the workspace's even if the service VMs' or the network's release
@@ -294,7 +314,10 @@ class _NativeComposeDeployment(_PrivateNetworkDeployment):
         await super().stop_execution(d)
 
     async def prepare_verifier(self, deployment):
-        await self.close(deployment)
+        if self._processes is not None:
+            await self._processes.stop(
+                deployment, reversed(list(self._processes.processes))
+            )
         await super().prepare_verifier(deployment)
 
     async def close(self, deployment):
@@ -302,6 +325,7 @@ class _NativeComposeDeployment(_PrivateNetworkDeployment):
             await self._processes.stop(
                 deployment, reversed(list(self._processes.processes))
             )
+        await super().close(deployment)
 
 
 def _harness_config(harness: PrimeConfig, workspace: PrimeConfig) -> PrimeConfig:

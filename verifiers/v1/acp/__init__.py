@@ -290,6 +290,11 @@ class ACPHarnessSession(HarnessSession):
             if not future.done():
                 future.cancel()
 
+    async def warm(self) -> None:
+        async with self._lock:
+            if not self._closed and self._process is None:
+                await self._start()
+
     async def steer(self, message: str, *, message_id: str | None = None) -> dict:
         if self._closed:
             raise RuntimeError("ACP session is closed")

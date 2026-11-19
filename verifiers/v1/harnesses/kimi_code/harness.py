@@ -11,6 +11,7 @@ from verifiers.v1.harnesses.node import NODE_BIN_DIR, ensure_node
 from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
 from verifiers.v1.harnesses.utils.remote import NativeRemoteTools
 from verifiers.v1.harnesses.utils.replay import drop_blank_text
+from verifiers.v1.harnesses.utils.sandbox_tools import RemoteToolsSpec
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
@@ -58,9 +59,13 @@ class KimiCodeHarness(ACPHarness[KimiCodeHarnessConfig]):
     def replay_view(self, message: Message, dialect: DialectName | None) -> Message:
         return drop_blank_text(message)
 
-    async def remote_tools(self, runtime: Runtime, data: TaskData) -> NativeRemoteTools:
-        return NativeRemoteTools(
-            runtime, "kimi_code", tuple(self.config.disabled_tools or ())
+    async def remote_tools(self, runtime: Runtime, data: TaskData) -> RemoteToolsSpec:
+        return RemoteToolsSpec(
+            NativeRemoteTools,
+            {
+                "harness": "kimi_code",
+                "disabled_tools": list(self.config.disabled_tools or ()),
+            },
         )
 
     async def setup(self, runtime: Runtime) -> None:
@@ -69,6 +74,11 @@ class KimiCodeHarness(ACPHarness[KimiCodeHarnessConfig]):
         await ensure_installed(
             runtime,
             directory=KIMI_DIR,
+            ready=(
+                f'[ -x "{KIMI_BIN}" ] && '
+                f'[ "$(cat "{KIMI_DIR}/.version" 2>/dev/null)" = '
+                f'"{self.config.version}" ]'
+            ),
             install=INSTALL,
             env={"AGENT_KIMI_VERSION": self.config.version},
             label="Kimi Code",

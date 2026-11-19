@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 from abc import ABC, abstractmethod
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, ClassVar, Generic, TypeVar
 
 from verifiers.v1.clients import ModelContext
@@ -17,7 +17,7 @@ from verifiers.v1.errors import (
 )
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.task import TaskData
-from verifiers.v1.types import Message, Messages, ToolCall, ToolMessage
+from verifiers.v1.types import Message, Messages, ToolCall
 from verifiers.v1.utils.decorators import (
     discover_decorated,
     invoke_all,
@@ -27,6 +27,8 @@ from verifiers.v1.utils.decorators import (
 from verifiers.v1.utils.logging import get_logger
 
 if TYPE_CHECKING:
+    from verifiers.v1.harnesses.utils.sandbox_tools import RemoteToolsSpec
+
     # Annotation-only: `Trace` appears in signatures only, so this module stays
     # importable below the trace record.
     from verifiers.v1.runtimes.deployment import ExecutionConnection
@@ -130,8 +132,8 @@ class Harness(ABC, Generic[ConfigT]):
 
     async def remote_tools(
         self, runtime: Runtime, data: TaskData
-    ) -> Callable[[ToolCall], Awaitable[ToolMessage]] | None:
-        """Bind a host adapter to B. Native workers return None and register
+    ) -> RemoteToolsSpec | None:
+        """Prepare an adapter to run in A against B. Native workers return None and register
         their workspace commands with the connection in setup_execution()."""
         self.validate_split_execution()
         return None
@@ -403,6 +405,9 @@ class HarnessSession:
         self.data = data
         self.tool_interception_url = tool_interception_url
         self._closed = False
+
+    async def warm(self) -> None:
+        """Pre-start any rollout-scoped runner process while policy setup completes."""
 
     async def steer(self, message: str, *, message_id: str | None = None) -> dict:
         """Deliver a user message during a running turn, if supported by the harness."""

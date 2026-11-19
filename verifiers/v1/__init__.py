@@ -110,6 +110,7 @@ if TYPE_CHECKING:
         RuntimeProcess,
     )
     from verifiers.v1.runtimes.compose import ComposeSpec
+    from verifiers.v1.runtimes.controller import prime_controller
     from verifiers.v1.runtimes.deployment import (
         Deployment,
         ExecutionConnection,
@@ -238,6 +239,7 @@ _NAME_TO_MODULE = {
     "DecisionJudgeConfig": "verifiers.v1.judges",
     "DecoratedFunctionConfig": "verifiers.v1.configs.task",
     "Deployment": "verifiers.v1.runtimes.deployment",
+    "prime_controller": "verifiers.v1.runtimes.controller",
     "DeploymentConfig": "verifiers.v1.configs.deployment",
     "DockerConfig": "verifiers.v1.configs.runtime",
     "Env": "verifiers.v1.env",
@@ -592,6 +594,7 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     # deployment and scoring
     "ComposeSpec",
     "Deployment",
+    "prime_controller",
     "DeploymentConfig",
     "ExecutionConnection",
     "ServicesSpec",

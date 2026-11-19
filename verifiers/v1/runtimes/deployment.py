@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from verifiers.v1.configs.deployment import DeploymentConfig
 from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes import (
+    PrimeBackend,
     PrimeConfig,
     Runtime,
     RuntimeBackend,
@@ -25,6 +26,7 @@ from verifiers.v1.runtimes.base import (
 )
 from verifiers.v1.runtimes.bridge import ExecutionBridge
 from verifiers.v1.runtimes.compose import ComposeSpec
+from verifiers.v1.runtimes.lan_execution import LanExecution
 from verifiers.v1.utils.aio import run_shielded
 from verifiers.v1.utils.logging import clip, get_logger
 
@@ -94,66 +96,21 @@ group: the processes there whose environment holds the marker `$1`, as the worke
 user."""
 
 
-class ExecutionConnection(ExecutionBridge):
-    """One execution connection and lifecycle for a split workspace.
+class WorkerGroup:
+    """Reap marked workers and their descendants, including detached children."""
 
-    Native workers register their stdio commands; host adapters execute against
-    the same workspace `runtime`. The evaluator mediates the connection.
-    Workspace-local listeners can outlive a session for grading.
-    """
-
-    def __init__(self, runtime: Runtime, *, setup_runtime: Runtime) -> None:
-        super().__init__(runtime, setup_runtime=setup_runtime)
+    def __init__(self):
         self._listeners: list[tuple[Runtime, str, bool]] = []
 
-    async def serve(
-        self,
-        runtime: Runtime,
-        argv: list[str],
-        env: dict[str, str],
-        announce: re.Pattern[str],
-        *,
-        keep_detached: bool = False,
-    ) -> int:
-        """Start `argv` through `runtime`, a workspace view, and return the port it
-        listens on. The worker binds a port the kernel picks and prints it in a line
-        that `announce` matches, with the port as its first group.
-
-        `close` stops the worker and every process its tools started, detached or not;
-        with `keep_detached`, for a worker that stops what is still attached to a
-        session as the session closes, only the worker and its own process group, so
-        a daemon its tools started keeps running, as after a colocated harness exits.
-        """
+    def mark(self, runtime: Runtime, *, keep_detached: bool = False) -> dict[str, str]:
         worker = uuid.uuid4().hex
-        log = runtime.temp_path(f"vf-exec-{worker}.log")
         self._listeners.append((runtime, f"{_MARK}={worker}", keep_detached))
-        await runtime.run_background(
-            ["sh", "-c", _WRAPPER, "sh", *argv],
-            {**env, _MARK: worker},
-            log,
-        )
-        output = ""
-        with contextlib.suppress(TimeoutError):
-            async with asyncio.timeout(60):
-                while True:
-                    with contextlib.suppress(SandboxError):  # not written yet
-                        output = (await runtime.read(log)).decode(errors="replace")
-                    # A worker that crashed right after announcing has both lines.
-                    if _EXITED in output:
-                        break
-                    if found := announce.search(output):
-                        return int(found.group(1))
-                    await asyncio.sleep(0.2)
-        raise SandboxError(f"execution worker did not start: {output[-2000:]}")
+        return {_MARK: worker}
 
-    async def close(self) -> None:
-        """Stop every worker, with the processes their tools started that `serve` says
-        to stop."""
-        if self.closed:
-            return
-        await super().close()
+    async def close(self):
         workers, self._listeners = self._listeners, []
-        for runtime, marker, keep_detached in workers:
+
+        async def reap_one(runtime: Runtime, marker: str, keep_detached: bool) -> None:
             # Cleanup is trusted control code. Do not source task BASH_ENV or use
             # task PATH while reaping the worker under its original Unix user.
             runtime = runtime.with_env({})
@@ -184,6 +141,100 @@ class ExecutionConnection(ExecutionBridge):
                     clip(str(error)),
                     exc_info=logger.isEnabledFor(logging.DEBUG),
                 )
+
+        if workers:
+            await asyncio.gather(
+                *(
+                    reap_one(runtime, marker, keep_detached)
+                    for runtime, marker, keep_detached in workers
+                )
+            )
+
+
+class ExecutionConnection(ExecutionBridge):
+    """One execution connection and lifecycle for a split workspace.
+
+    Native workers and the adapter workspace worker register their stdio commands
+    against the same workspace `runtime`. The deployment selects LAN or host stdio.
+    Workspace-local listeners can outlive a session for grading.
+    """
+
+    def __init__(self, runtime: Runtime, *, setup_runtime: Runtime) -> None:
+        super().__init__(runtime, setup_runtime=setup_runtime)
+        self._workers = WorkerGroup()
+        self.transport: LanExecution | None = None
+        self._abandon_on_close = False
+
+    async def start(self) -> None:
+        if self.transport is not None:
+            await self.transport.start(self.runtime)
+        logger.debug(
+            "Started execution connection transport=%s",
+            "lan" if self.transport is not None else "host",
+        )
+
+    async def _exec(self, argv: list[str], env: dict[str, str]):
+        # Track descendants independently of worker process groups, so failed
+        # startup or forced worker termination still gets reaped before grading.
+        env = {**env, **self._workers.mark(self.runtime)}
+        if self.transport is not None:
+            return await self.transport.exec(self.runtime, argv, env)
+        return await super()._exec(argv, env)
+
+    async def serve(
+        self,
+        runtime: Runtime,
+        argv: list[str],
+        env: dict[str, str],
+        announce: re.Pattern[str],
+        *,
+        keep_detached: bool = False,
+    ) -> int:
+        """Start `argv` through `runtime`, a workspace view, and return the port it
+        listens on. The worker binds a port the kernel picks and prints it in a line
+        that `announce` matches, with the port as its first group.
+
+        `close` stops the worker and every process its tools started, detached or not;
+        with `keep_detached`, for a worker that stops what is still attached to a
+        session as the session closes, only the worker and its own process group, so
+        a daemon its tools started keeps running, as after a colocated harness exits.
+        """
+        marker = self._workers.mark(runtime, keep_detached=keep_detached)
+        log = runtime.temp_path(f"vf-exec-{marker[_MARK]}.log")
+        await runtime.run_background(
+            ["sh", "-c", _WRAPPER, "sh", *argv],
+            {**env, **marker},
+            log,
+        )
+        output = ""
+        with contextlib.suppress(TimeoutError):
+            async with asyncio.timeout(60):
+                while True:
+                    with contextlib.suppress(SandboxError):  # not written yet
+                        output = (await runtime.read(log)).decode(errors="replace")
+                    # A worker that crashed right after announcing has both lines.
+                    if _EXITED in output:
+                        break
+                    if found := announce.search(output):
+                        return int(found.group(1))
+                    await asyncio.sleep(0.2)
+        raise SandboxError(f"execution worker did not start: {output[-2000:]}")
+
+    async def close(self) -> None:
+        """Stop every worker, with the processes their tools started that `serve` says
+        to stop."""
+        if self.closed:
+            return
+        if self._abandon_on_close:
+            await self.abandon()
+            if self.transport is not None:
+                await self.transport.abandon()
+            self._workers._listeners.clear()
+            return
+        await super().close()
+        if self.transport is not None:
+            await self.transport.close()
+        await self._workers.close()
 
 
 class _DeploymentStrategy:
@@ -304,6 +355,12 @@ class Deployment:
         if not self.split:
             raise ValueError("only a split deployment connects its harness's tools")
         connection = ExecutionConnection(workspace, setup_runtime=self.workspace)
+        if isinstance(self.execution_backend, PrimeBackend):
+            from verifiers.v1.runtimes.private_network import lan_host
+
+            connection.transport = LanExecution(
+                self._harness_runtime, lan_host(self.execution_backend)
+            )
         return connection
 
     @property

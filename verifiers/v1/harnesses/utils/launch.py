@@ -1,3 +1,4 @@
+import asyncio
 import inspect
 import json
 import logging
@@ -12,7 +13,6 @@ from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig
 from verifiers.v1.dialects.chat import message_to_wire
 from verifiers.v1.harnesses.utils import compaction, core, mcp
-from verifiers.v1.harnesses.utils.install import remove_dir
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.trace import Trace
 from verifiers.v1.types import Messages
@@ -106,14 +106,8 @@ async def launch_chat_program(
         *extra_args,
     ]
     process_env = env if env is not None else {**config.resolved_env}
-    prompt_files = []
+    prompt_files: list[str] = []
     try:
-        if system_prompt:
-            path = await stage_text(
-                runtime, trace, "system-prompt.txt", system_prompt, env=process_env
-            )
-            prompt_files.append(path)
-            args.append(f"--system-prompt-file={path}")
         if mcp_urls:
             mcp_headers = config.resolve_mcp_headers(mcp_urls)
             args.append(
@@ -135,24 +129,43 @@ async def launch_chat_program(
             initial = [{"role": "user", "content": prompt}] if prompt else []
         else:
             initial = [message_to_wire(message) for message in prompt or []]
-        if initial:
-            path = await stage_text(
-                runtime,
-                trace,
-                "initial-messages.json",
-                json.dumps(initial),
-                env=process_env,
+        prep_tasks = [
+            runtime.prepare_uv_script(source, config.resolved_env, activate=activate)
+        ]
+        if system_prompt:
+            prep_tasks.append(
+                stage_text(
+                    runtime, trace, "system-prompt.txt", system_prompt, env=process_env
+                )
             )
+        if initial:
+            prep_tasks.append(
+                stage_text(
+                    runtime,
+                    trace,
+                    "initial-messages.json",
+                    json.dumps(initial),
+                    env=process_env,
+                )
+            )
+        program, *staged_paths = await asyncio.gather(*prep_tasks)
+        idx = 0
+        if system_prompt:
+            path = staged_paths[idx]
+            idx += 1
+            prompt_files.append(path)
+            args.append(f"--system-prompt-file={path}")
+        if initial:
+            path = staged_paths[idx]
             prompt_files.append(path)
             args.append(f"--initial-messages-file={path}")
-        program = await runtime.prepare_uv_script(
-            source, config.resolved_env, activate=activate
-        )
         return await runtime.run([*program, *args], process_env)
     finally:
-        for path in prompt_files:
+        if prompt_files:
             try:
-                await remove_dir(runtime, path, "prompt file")
+                result = await runtime.run(["rm", "-rf", *prompt_files], {})
+                if result.exit_code != 0:
+                    raise RuntimeError(result.stderr.strip()[-500:])
             except Exception as error:
                 # Teardown is the backstop if the runtime is gone or the agent
                 # changed permissions. Preserve the result or original failure.

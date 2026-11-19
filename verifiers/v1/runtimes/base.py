@@ -87,6 +87,8 @@ class RuntimeProcess(ABC):
 
     stdout: AsyncIterator[bytes]
     stderr: AsyncIterator[bytes]
+    execution_endpoint: dict | None = None
+    """Optional process-scoped LAN endpoint, using the execution bridge protocol."""
 
     @abstractmethod
     async def write(self, data: bytes) -> None:
@@ -107,6 +109,24 @@ class RuntimeProcess(ABC):
     @abstractmethod
     async def kill(self) -> None:
         pass
+
+    async def abandon(self) -> None:
+        """Release local client resources without remote signals when the VM is stopping."""
+
+
+async def collect_process(process: RuntimeProcess) -> ProgramResult:
+    """Drain both streams and reap a process, including on cancellation."""
+    try:
+        stdout, stderr, exit_code = await asyncio.gather(
+            _drain(process.stdout), _drain(process.stderr), process.wait()
+        )
+    except BaseException:
+        with contextlib.suppress(Exception):
+            await run_shielded(process.kill())
+        raise
+    return ProgramResult(
+        exit_code, stdout.decode(errors="replace"), stderr.decode(errors="replace")
+    )
 
 
 def parse_gpu(gpu: str | None) -> tuple[str | None, int]:
@@ -169,6 +189,13 @@ class RuntimeCache:
     curl_ready: bool = False
     mcp_sources: set[str] = field(default_factory=set)
     mcp_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    prepared: dict[str, dict] = field(default_factory=dict)
+    prepared_loaded: set[str] = field(default_factory=set)
+    prepared_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    setup_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    system_python: str | None = None
+    arch: str | None = None
+    installed: set[str] = field(default_factory=set)
 
 
 class RuntimeBackend(ABC):
@@ -208,7 +235,8 @@ class RuntimeBackend(ABC):
     SUPPORTS_COMPOSE: ClassVar[bool] = False
     """Whether the runtime can run a task's Docker Compose services."""
 
-    scripts_dir: ClassVar[str] = "/tmp/vf-scripts"
+    # Prime mounts /tmp separately, so image-baked scripts must live on the rootfs.
+    scripts_dir: ClassVar[str] = "/var/tmp/vf-scripts"
     """Digest-keyed PEP 723 scripts inside the runtime. Sandboxes own their `/tmp`;
     the host subprocess runtime overrides this with its per-user cache."""
 
@@ -308,17 +336,7 @@ class RuntimeBackend(ABC):
         process = await self.exec(
             runtime, ["sh", "-c", 'exec "$@" < /dev/null', "sh", *argv], env
         )
-        try:
-            stdout, stderr, exit_code = await asyncio.gather(
-                _drain(process.stdout), _drain(process.stderr), process.wait()
-            )
-        except BaseException:
-            with contextlib.suppress(Exception):
-                await run_shielded(process.kill())
-            raise
-        return ProgramResult(
-            exit_code, stdout.decode(errors="replace"), stderr.decode(errors="replace")
-        )
+        return await collect_process(process)
 
     async def run_background(
         self, runtime: Runtime, argv: list[str], env: dict[str, str], log: str
