@@ -100,7 +100,7 @@ A snapshot holds the box's files and its memory. The restored box continues ever
 A rollout takes snapshots only when all of these hold. Otherwise a retry starts over, with a warning once per harness and runtime:
 
 - The runtime takes memory snapshots (`SUPPORTS_MEMORY_SNAPSHOTS`: prime).
-- The harness runs detached from the host (`SUPPORTS_MEMORY_RESTORE`: null, bash and the ACP harnesses).
+- The harness runs detached from the host (`SUPPORTS_MEMORY_RESTORE`: every built-in harness but browser-use).
 - The rollout runs in a box of its own, not in a borrowed one.
 - The rollout has no tool servers, no shared tools and no services of its own. They reach the host at an address that does not follow the box to its restore.
 

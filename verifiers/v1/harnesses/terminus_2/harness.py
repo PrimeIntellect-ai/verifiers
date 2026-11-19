@@ -6,6 +6,7 @@ from verifiers.v1.configs.harness import HarnessConfig, PinnedVersion
 from verifiers.v1.harness import Harness
 from verifiers.v1.harnesses.utils.launch import stage_text
 from verifiers.v1.runtimes import ProgramResult, Runtime
+from verifiers.v1.runtimes.base import current_program
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
 from verifiers.v1.utils.logging import get_logger
@@ -22,6 +23,7 @@ class Terminus2HarnessConfig(HarnessConfig):
 
 class Terminus2Harness(Harness[Terminus2HarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
+    SUPPORTS_MEMORY_RESTORE = True
     SUPPORTS_MCP = False
     # Beyond the usual host leaks, Terminus drives tmux: on the host its tmux server —
     # and the `tmux kill-server` cleanup in `launch` — would share the user's own.
@@ -71,7 +73,9 @@ class Terminus2Harness(Harness[Terminus2HarnessConfig]):
         try:
             source = PROGRAM_SOURCE.replace("{version}", self.config.version)
             program = await runtime.prepare_uv_script(source, self.config.resolved_env)
-            return await runtime.run([*program, *args], env)
+            return await runtime.run(
+                [*program, *args], env, program=current_program.get()
+            )
         finally:
             # Harbor normally destroys its whole sandbox; this adapter borrows the
             # Verifiers runtime, so clean up Terminus's detached tmux server ourselves.

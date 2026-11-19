@@ -6,6 +6,7 @@ from verifiers.v1.configs.harness import HarnessConfig, PinnedVersion
 from verifiers.v1.harness import Harness
 from verifiers.v1.harnesses.utils.launch import stage_text
 from verifiers.v1.runtimes import ProgramResult, Runtime
+from verifiers.v1.runtimes.base import current_program
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
 
@@ -21,6 +22,7 @@ class MiniSWEAgentHarnessConfig(HarnessConfig):
 class MiniSWEAgentHarness(Harness[MiniSWEAgentHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = False
     SUPPORTS_MCP = False
+    SUPPORTS_MEMORY_RESTORE = True
 
     async def setup(self, runtime: Runtime) -> None:
         source = PROGRAM_SOURCE.replace("{version}", self.config.version)
@@ -77,4 +79,4 @@ class MiniSWEAgentHarness(Harness[MiniSWEAgentHarnessConfig]):
             "MSWEA_SILENT_STARTUP": "true",
         }
         program = await runtime.prepare_uv_script(source, self.config.resolved_env)
-        return await runtime.run([*program, *args], env)
+        return await runtime.run([*program, *args], env, program=current_program.get())
