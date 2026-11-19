@@ -440,7 +440,11 @@ async def prepare_native(config: PrimeConfig, spec: ComposeSpec, env: dict[str, 
             user = metadata.get("User") or None
             if user == "0":
                 user = "root"
-            if user and not re.fullmatch(r"[a-z_][a-z0-9_-]*[$]?", user):
+            if (
+                spec.file is not None
+                and user
+                and not re.fullmatch(r"[a-z_][a-z0-9_-]*[$]?", user)
+            ):
                 raise SandboxError(
                     f"Native Compose service {name!r} requires a named user without a group override"
                 )

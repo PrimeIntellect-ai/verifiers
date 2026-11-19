@@ -42,7 +42,8 @@ async def test_verifier_build(tmp_path, runtime):
     (tests / "test.sh").write_text("exit 41\n")
     (tests / "baked.sh").write_text(
         "set -eu\n"
-        'test "$(id -un)" = grader\n'
+        'test "$(id -u)" = 10001\n'
+        'test "$(id -g)" = "$EXPECTED_GID"\n'
         'test "$(pwd)" = /app\n'
         "test \"$BUILD_TOKEN\" = 'a$b'\n"
         'test "$(cat /tests/marker)" = "$EXPECTED"\n'
@@ -60,11 +61,12 @@ async def test_verifier_build(tmp_path, runtime):
     )
     dockerfile = (
         f"FROM {IMAGE}\n"
-        "RUN useradd -m grader && mkdir /app /tests && chown grader /app /tests\n"
+        "RUN groupadd -g 10001 grader && groupadd -g 10002 verifier "
+        "&& useradd -u 10001 -g grader -m grader "
+        "&& mkdir /app /tests && chown grader /app /tests\n"
         "COPY baked.sh /tests/test.sh\n"
         "COPY marker /tests/marker\n"
         "ENV BUILD_TOKEN=a\\$b\n"
-        "USER grader\n"
         'ENTRYPOINT ["sh", "-c", "exit 42"]\n'
     )
     config = vf.AgentConfig(
@@ -79,10 +81,14 @@ async def test_verifier_build(tmp_path, runtime):
     )
     for marker in ("first", "changed"):
         (tests / "marker").write_text(marker)
+        user = "grader:verifier" if marker == "changed" else "10001"
+        gid = "10002" if marker == "changed" else "10001"
         # Missing WORKDIR uses the standalone /app default; an image declaration
         # retains it on the rebuilt grader, with the same relative artifact.
         (tests / "Dockerfile").write_text(
-            dockerfile + ("WORKDIR /app\n" if marker == "changed" else "")
+            dockerfile
+            + f"USER {user}\n"
+            + ("WORKDIR /app\n" if marker == "changed" else "")
         )
         task = HarborTask(
             HarborData(
@@ -91,7 +97,7 @@ async def test_verifier_build(tmp_path, runtime):
                 image=IMAGE,
                 verifier=VerifierConfig(),
                 verifier_build=str(tests),
-                verifier_env={"EXPECTED": marker},
+                verifier_env={"EXPECTED": marker, "EXPECTED_GID": gid},
                 artifacts=[HarborArtifact(source="answer")],
             )
         )
