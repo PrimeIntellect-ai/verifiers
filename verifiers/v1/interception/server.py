@@ -381,6 +381,9 @@ class InterceptionServer(Interception):
         self._replacing: asyncio.Task | None = None
         self._lost_again = False
         """A tunnel was lost while a replacement was under way: replace it once more."""
+        self._tunnel_stack: contextlib.AsyncExitStack | None = None
+        """Holds the current tunnel open, apart from the server's stack so that a
+        replacement closes the tunnel it replaces."""
         if self.tunnel is not None:
             self.tunnel.on_gone = self._handle_tunnel_gone
         self.host = "127.0.0.1"
@@ -425,9 +428,7 @@ class InterceptionServer(Interception):
         rollout that does not move fails as on a lost tunnel."""
         assert self.tunnel is not None
         try:
-            base_url = await self.stack.enter_async_context(
-                self.tunnel.expose(self.port)
-            )
+            base_url = await self._expose()
         except TunnelError as error:
             logger.error("interception tunnel replacement failed: %s", error)
             base_url = None
@@ -696,9 +697,23 @@ class InterceptionServer(Interception):
         if self.tunnel is None:
             self.base_url = f"http://127.0.0.1:{self.port}"
         else:
-            self.base_url = await self.stack.enter_async_context(
-                self.tunnel.expose(self.port)
-            )
+            self.stack.push_async_callback(self._close_tunnel)
+            self.base_url = await self._expose()
+
+    async def _expose(self) -> str:
+        """Open a tunnel to this server. The tunnel it replaces is closed first: a lost
+        tunnel's frpc would otherwise run until the server stops."""
+        assert self.tunnel is not None
+        await self._close_tunnel()
+        stack = contextlib.AsyncExitStack()
+        url = await stack.enter_async_context(self.tunnel.expose(self.port))
+        self._tunnel_stack = stack
+        return url
+
+    async def _close_tunnel(self) -> None:
+        stack, self._tunnel_stack = self._tunnel_stack, None
+        if stack is not None:
+            await stack.aclose()
 
     def _fail(
         self,

@@ -113,18 +113,25 @@ def test_gone_tunnel_fails_the_servers_rollouts_and_refuses_new_ones():
 
 
 class ReplacingTunnel:
-    """Exposes the server at a new URL each time; `fail` makes the next expose fail."""
+    """Exposes the server at a new URL each time and records which URLs are open;
+    `fail` makes the next expose fail."""
 
     def __init__(self) -> None:
         self.on_gone = None
         self.urls = iter(["https://first.example", "https://second.example"])
         self.fail = False
+        self.open: list[str] = []
 
     @asynccontextmanager
     async def expose(self, port):
         if self.fail:
             raise TunnelError("no tunnel")
-        yield next(self.urls)
+        url = next(self.urls)
+        self.open.append(url)
+        try:
+            yield url
+        finally:
+            self.open.remove(url)
 
 
 def movable_session(trace_id: str, moved: list) -> SimpleNamespace:
@@ -141,7 +148,7 @@ def movable_session(trace_id: str, moved: list) -> SimpleNamespace:
 async def test_gone_tunnel_moves_movable_rollouts_to_a_new_tunnel():
     server = InterceptionServer()
     server.tunnel = ReplacingTunnel()
-    server.base_url = await server.stack.enter_async_context(server.tunnel.expose(0))
+    server.base_url = await server._expose()
     moved: list = []
     movable = movable_session("movable", moved)
     stuck = SimpleNamespace(
@@ -155,6 +162,8 @@ async def test_gone_tunnel_moves_movable_rollouts_to_a_new_tunnel():
 
     assert moved == [("movable", "https://second.example")]
     assert server.base_url == "https://second.example"
+    # The lost tunnel is closed, not held until the server stops.
+    assert server.tunnel.open == ["https://second.example"]
     assert movable.error is None and not movable.released
     assert isinstance(stuck.error, TunnelError) and stuck.released
     # The server still takes no new rollouts; the pools retire it once these leave.
@@ -168,7 +177,7 @@ async def test_tunnel_lost_during_a_replacement_is_replaced_again():
     server.tunnel.urls = iter(
         ["https://first.example", "https://second.example", "https://third.example"]
     )
-    server.base_url = await server.stack.enter_async_context(server.tunnel.expose(0))
+    server.base_url = await server._expose()
     moved: list = []
 
     async def reroute(url: str) -> None:
@@ -188,6 +197,7 @@ async def test_tunnel_lost_during_a_replacement_is_replaced_again():
 
     assert moved == ["https://second.example", "https://third.example"]
     assert server.base_url == "https://third.example"
+    assert server.tunnel.open == ["https://third.example"]
     assert session.error is None
     await server.stop()
 
