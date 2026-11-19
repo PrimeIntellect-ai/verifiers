@@ -98,7 +98,7 @@ def _archive_directory(directory: Path) -> bytes:
 
 @dataclass(frozen=True)
 class ComposeModel:
-    """Resolved solver definition, before binding rollout-only environment values."""
+    """Solver topology and build inputs captured before workspace execution."""
 
     definition: dict
     implicit_build: bool
@@ -200,9 +200,7 @@ async def compose_project(
             task_dir / compose_file
         ).resolve().is_relative_to(task_dir):
             raise SandboxError("Native Compose files must be inside the task")
-        if model is not None:
-            authored = model.definition
-        elif spec.file is not None:
+        if spec.file is not None:
             authored = yaml.safe_load((task_dir / spec.file).read_text())
         else:
             authored = {"services": {spec.workspace: {}}}
@@ -268,9 +266,7 @@ async def compose_project(
                 raise SandboxError("Native Compose .env must be inside the task")
             compose_argv += [
                 "--env-file",
-                f"{project_dir}/.env"
-                if model is None and env_file.exists()
-                else "/dev/null",
+                f"{project_dir}/.env" if env_file.exists() else "/dev/null",
             ]
         compose_env.update(
             (key, value)
@@ -295,13 +291,7 @@ async def compose_project(
             compose_env["MEMORY"] = f"{round(config.memory * 1024)}M"
 
         authored_file = f"task/{spec.file}" if spec.file else None
-        if host_backend is not None and model is not None:
-            authored_file = "model.json"
-            await host_backend.bind().write(
-                f"{root}/{authored_file}",
-                json.dumps(model.definition).encode(),
-            )
-        elif host_backend is not None and authored.get("include"):
+        if host_backend is not None and authored.get("include"):
             # Includes own their resources: resolve them before merging workspace
             # defaults and overrides, or Compose rejects duplicate service names.
             compose_argv += ["-f", f"{root}/{authored_file}"]
@@ -364,8 +354,7 @@ async def compose_project(
                 await host_backend.bind().write(
                     f"{root}/{file}", json.dumps(definition).encode()
                 )
-        if model is None:
-            compose_argv += ["-f", f"{root}/base.json"]
+        compose_argv += ["-f", f"{root}/base.json"]
         if authored_file is not None:
             compose_argv += ["-f", f"{root}/{authored_file}"]
         if host_backend is None:
@@ -382,11 +371,30 @@ async def compose_project(
                         raise SandboxError(
                             "Native Compose env_file must be inside the task"
                         )
-        if model is None:
-            model = ComposeModel(
-                json.loads(await compose("config", "--format", "json")),
-                "build" in base["services"][spec.workspace],
+        resolved = json.loads(await compose("config", "--format", "json"))
+        implicit_build = "build" in base["services"][spec.workspace]
+        if model is not None:
+            assert host_backend is not None
+            # Resolve the verifier's authored service env in its own phase.
+            # Only those env values replace fields in the solver's resolved model.
+            phase_services = resolved["services"]
+            resolved = {
+                **model.definition,
+                "services": {
+                    name: {
+                        **service,
+                        "environment": phase_services.get(name, service).get(
+                            "environment", {}
+                        ),
+                    }
+                    for name, service in model.definition["services"].items()
+                },
+            }
+            implicit_build = model.implicit_build
+            await host_backend.bind().write(
+                f"{root}/model.json", json.dumps(resolved).encode()
             )
+            compose_argv[compose_argv.index("-f") :] = ["-f", f"{root}/model.json"]
         if host_backend is not None:
             # The grader reuses the solver's resolved topology but receives its own env.
             compose_argv += ["-f", f"{root}/env.json"]
@@ -394,9 +402,9 @@ async def compose_project(
             directory,
             compose_argv,
             compose_env,
-            model.definition,
+            resolved,
             compose,
-            model.implicit_build,
+            implicit_build,
             root,
         )
     finally:
