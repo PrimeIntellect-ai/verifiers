@@ -14,7 +14,7 @@ import tarfile
 import tempfile
 import time
 import uuid
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 
@@ -65,6 +65,20 @@ class Artifact(BaseModel):
                 "backslashes, outside reserved manifest.json and .archives paths"
             )
         return str(path)
+
+
+def artifact_source(
+    artifact: Artifact, workdir: str, service_workdirs: Mapping[str, str]
+) -> str:
+    """Resolve a declaration against the runtime that captured it."""
+    path = PurePosixPath(artifact.source)
+    if path.is_absolute():
+        return posixpath.normpath(str(path))
+    service = getattr(artifact, "service", "main")
+    directory = service_workdirs.get(service, workdir if service == "main" else None)
+    if not isinstance(directory, str) or not PurePosixPath(directory).is_absolute():
+        raise ValueError(f"No saved artifact workdir for service {service!r}")
+    return posixpath.normpath(str(PurePosixPath(directory) / path))
 
 
 def validate_artifact_mounts(config: RuntimeConfig, sources: Iterable[str]) -> None:
@@ -234,6 +248,7 @@ def save_artifacts(
     artifacts: list[Artifact],
     *,
     workdir: str = "/",
+    service_workdirs: Mapping[str, str] | None = None,
 ) -> str:
     """Save collected files at their declared destinations, with a manifest.
 
@@ -242,7 +257,13 @@ def save_artifacts(
     completed trace. Source-mirrored directories may merge: collection splits
     nested declarations out of the implicit convention sweep.
     """
-    declared = {str(PurePosixPath(workdir) / a.source): a for a in artifacts}
+    workdirs = service_workdirs or {}
+    declared = {
+        artifact_source(a, workdir, workdirs): a
+        for a in artifacts
+        if PurePosixPath(a.source).is_absolute()
+        or getattr(a, "service", "main") in {"main", *workdirs}
+    }
     manifest: list[dict] = []
     claims: list[tuple[PurePosixPath, bool]] = []
     directory.parent.mkdir(parents=True, exist_ok=True)
@@ -253,10 +274,13 @@ def save_artifacts(
         (saved / ".archives").mkdir()
         for source, archive in collected.items():
             artifact = declared.get(source, Artifact(source=source))
-            destination = artifact.destination or artifact.source.lstrip("/")
+            service = getattr(artifact, "service", "main")
+            destination = artifact.destination or (
+                source if service != "main" else artifact.source
+            ).lstrip("/")
             entry = {
                 "source": source,
-                "service": getattr(artifact, "service", "main"),
+                "service": service,
                 "destination": destination,
                 "status": "empty",
             }
