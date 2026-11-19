@@ -330,29 +330,77 @@ class PrimeBackend(RuntimeBackend):
         )
 
     async def run(
-        self, runtime: Runtime, argv: list[str], env: dict[str, str]
+        self,
+        runtime: Runtime,
+        argv: list[str],
+        env: dict[str, str],
+        *,
+        max_output_bytes: int | None = _OUTPUT_TAIL_BYTES,
     ) -> ProgramResult:
+        code, stdout, stderr = await self.communicate(
+            runtime, argv, env, max_output_bytes=max_output_bytes
+        )
+        return ProgramResult(
+            code, stdout.decode(errors="replace"), stderr.decode(errors="replace")
+        )
+
+    async def communicate(
+        self,
+        runtime: Runtime,
+        argv: list[str],
+        env: dict[str, str],
+        *,
+        input: bytes | None = None,
+        max_output_bytes: int | None = None,
+    ) -> tuple[int, bytes, bytes]:
+        """Capture a host command's byte streams without staging any files."""
+
         async def collect(stream: AsyncIterator[bytes]) -> bytes:
             tail = bytearray()
             async for chunk in stream:
-                tail.extend(chunk[-_OUTPUT_TAIL_BYTES:])
-                del tail[:-_OUTPUT_TAIL_BYTES]
+                if max_output_bytes is None:
+                    tail.extend(chunk)
+                else:
+                    tail.extend(chunk[-max_output_bytes:])
+                    del tail[:-max_output_bytes]
             return bytes(tail)
 
+        async def feed(process) -> None:
+            if input is not None:
+                chunk_bytes = 1024 * 1024
+                for offset in range(0, len(input), chunk_bytes):
+                    await process.write_stdin(input[offset : offset + chunk_bytes])
+
+        if not input:
+            command = ["sh", "-c", 'exec "$@" < /dev/null', "sh", *argv]
+        else:
+            # Prime's process API has no stdin EOF. The bounded pipe closes when
+            # it has read the complete payload.
+            command = [
+                "bash",
+                "-o",
+                "pipefail",
+                "-c",
+                'head -c "$1" | "${@:2}"',
+                "bash",
+                str(len(input)),
+                *argv,
+            ]
         try:
             # Command sessions survive task cleanup of shared scratch directories.
-            # Close stdin explicitly: the live-process API keeps it open by default.
             process = await self._client.open_process(
                 self.info.id,
-                "exec "
-                + shlex.join(["sh", "-c", 'exec "$@" < /dev/null', "sh", *argv]),
+                "exec " + shlex.join(command),
                 working_dir=self.config.workdir,
                 env=runtime.process_env(env),
                 user=runtime.user,
             )
             try:
-                stdout, stderr, exit_code = await asyncio.gather(
-                    collect(process.stdout), collect(process.stderr), process.wait()
+                stdout, stderr, exit_code, _ = await asyncio.gather(
+                    collect(process.stdout),
+                    collect(process.stderr),
+                    process.wait(),
+                    feed(process),
                 )
             finally:
                 # Closing signals and reaps a running process, then releases its stream.
@@ -361,11 +409,7 @@ class PrimeBackend(RuntimeBackend):
             Exception
         ) as e:  # a sandbox/API failure is one rollout's problem, not the eval's
             raise SandboxError(f"prime exec failed: {e}") from e
-        return ProgramResult(
-            exit_code=exit_code,
-            stdout=stdout.decode(errors="replace"),
-            stderr=stderr.decode(errors="replace"),
-        )
+        return exit_code, stdout, stderr
 
     async def exec(
         self, runtime: Runtime, argv: list[str], env: dict[str, str]

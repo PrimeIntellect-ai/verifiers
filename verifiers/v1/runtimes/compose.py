@@ -21,8 +21,8 @@ from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes import (
     DockerBackend,
     DockerConfig,
+    PrimeBackend,
     PrimeConfig,
-    RuntimeBackend,
     provision_backend,
 )
 from verifiers.v1.runtimes.backends.docker import cli
@@ -89,13 +89,29 @@ def _harbor_volume(name: str) -> str:
     return "harbor-" + name.lower().replace("_", "-")
 
 
+def _archive_directory(directory: Path) -> bytes:
+    with io.BytesIO() as buffer:
+        with tarfile.open(fileobj=buffer, mode="w:gz") as archive:
+            archive.add(directory, arcname=".")
+        return buffer.getvalue()
+
+
+@dataclass(frozen=True)
+class ComposeModel:
+    """Resolved solver definition, before binding rollout-only environment values."""
+
+    definition: dict
+    implicit_build: bool
+
+
 @asynccontextmanager
 async def compose_project(
     config: DockerConfig | PrimeConfig,
     spec: ComposeSpec,
     environment: dict[str, str],
     *,
-    host_backend: RuntimeBackend | None = None,
+    host_backend: PrimeBackend | None = None,
+    model: ComposeModel | None = None,
 ) -> AsyncIterator["ComposeProject"]:
     """Resolve a private copy of a task and own any local preparation containers."""
     if config.mounts:
@@ -150,7 +166,12 @@ async def compose_project(
             result = (
                 await cli(*compose_argv, *args, env=compose_env)
                 if host_backend is None
-                else await host_backend.bind().run([*compose_argv, *args], compose_env)
+                else await host_backend.run(
+                    host_backend.bind(),
+                    [*compose_argv, *args],
+                    compose_env,
+                    max_output_bytes=None,
+                )
             )
         if result.exit_code:
             raise SandboxError(
@@ -179,11 +200,12 @@ async def compose_project(
             task_dir / compose_file
         ).resolve().is_relative_to(task_dir):
             raise SandboxError("Native Compose files must be inside the task")
-        authored = (
-            yaml.safe_load((task_dir / spec.file).read_text())
-            if spec.file is not None
-            else {"services": {spec.workspace: {}}}
-        )
+        if model is not None:
+            authored = model.definition
+        elif spec.file is not None:
+            authored = yaml.safe_load((task_dir / spec.file).read_text())
+        else:
+            authored = {"services": {spec.workspace: {}}}
         if (
             isinstance(config, PrimeConfig)
             and host_backend is None
@@ -213,10 +235,8 @@ async def compose_project(
         root = str(directory)
         if host_backend is not None:
             root = "/vf-deployment"
-            buffer = io.BytesIO()
-            with tarfile.open(fileobj=buffer, mode="w:gz") as archive:
-                archive.add(directory, arcname=".")
-            await host_backend.bind().write("/vf-deployment.tar.gz", buffer.getvalue())
+            archive = await asyncio.to_thread(_archive_directory, directory)
+            await host_backend.bind().write("/vf-deployment.tar.gz", archive)
             staged = await host_backend.bind().run(
                 [
                     "sh",
@@ -248,7 +268,9 @@ async def compose_project(
                 raise SandboxError("Native Compose .env must be inside the task")
             compose_argv += [
                 "--env-file",
-                f"{project_dir}/.env" if env_file.exists() else "/dev/null",
+                f"{project_dir}/.env"
+                if model is None and env_file.exists()
+                else "/dev/null",
             ]
         compose_env.update(
             (key, value)
@@ -273,7 +295,13 @@ async def compose_project(
             compose_env["MEMORY"] = f"{round(config.memory * 1024)}M"
 
         authored_file = f"task/{spec.file}" if spec.file else None
-        if host_backend is not None and authored.get("include"):
+        if host_backend is not None and model is not None:
+            authored_file = "model.json"
+            await host_backend.bind().write(
+                f"{root}/{authored_file}",
+                json.dumps(model.definition).encode(),
+            )
+        elif host_backend is not None and authored.get("include"):
             # Includes own their resources: resolve them before merging workspace
             # defaults and overrides, or Compose rejects duplicate service names.
             compose_argv += ["-f", f"{root}/{authored_file}"]
@@ -336,12 +364,12 @@ async def compose_project(
                 await host_backend.bind().write(
                     f"{root}/{file}", json.dumps(definition).encode()
                 )
-        for file in [
-            "base.json",
-            *([authored_file] if authored_file else []),
-            "env.json",
-        ]:
-            compose_argv += ["-f", f"{root}/{file}"]
+        if model is None:
+            compose_argv += ["-f", f"{root}/base.json"]
+        if authored_file is not None:
+            compose_argv += ["-f", f"{root}/{authored_file}"]
+        if host_backend is None:
+            compose_argv += ["-f", f"{root}/env.json"]
 
         if isinstance(config, PrimeConfig) and host_backend is None:
             # Resolve filenames without loading them: task env files cannot read host secrets.
@@ -354,14 +382,21 @@ async def compose_project(
                         raise SandboxError(
                             "Native Compose env_file must be inside the task"
                         )
-        resolved = json.loads(await compose("config", "--format", "json"))
+        if model is None:
+            model = ComposeModel(
+                json.loads(await compose("config", "--format", "json")),
+                "build" in base["services"][spec.workspace],
+            )
+        if host_backend is not None:
+            # The grader reuses the solver's resolved topology but receives its own env.
+            compose_argv += ["-f", f"{root}/env.json"]
         yield ComposeProject(
             directory,
             compose_argv,
             compose_env,
-            resolved,
+            model.definition,
             compose,
-            "build" in base["services"][spec.workspace],
+            model.implicit_build,
             root,
         )
     finally:
@@ -387,7 +422,10 @@ async def compose_services(
     *,
     trust_compose: bool = False,
     setup_timeout: float | None = None,
-) -> AsyncIterator[tuple[dict[str, DockerBackend], Callable[[], Awaitable[str]]]]:
+    model: ComposeModel | None = None,
+) -> AsyncIterator[
+    tuple[dict[str, DockerBackend], Callable[[], Awaitable[str]], ComposeModel | None]
+]:
     """Own one Compose attempt and lend its services until the context exits."""
     local = isinstance(config, DockerConfig)
     if config.mounts:
@@ -414,7 +452,9 @@ async def compose_services(
                 else await stack.enter_async_context(provision_vm_host(config, spec))
             )
             project = await stack.enter_async_context(
-                compose_project(config, spec, environment, host_backend=host)
+                compose_project(
+                    config, spec, environment, host_backend=host, model=model
+                )
             )
             compose = project.run
             directory, compose_argv = project.directory, project.argv
@@ -537,6 +577,9 @@ async def compose_services(
         yield (
             backends,
             partial(compose, "stop", spec.workspace, timeout=60),
+            ComposeModel(project.config, project.implicit_build)
+            if host is not None
+            else None,
         )
     finally:
         await run_shielded(stack.aclose())
@@ -545,12 +588,13 @@ async def compose_services(
 @asynccontextmanager
 async def provision_vm_host(
     config: PrimeConfig, spec: ComposeSpec
-) -> AsyncIterator[RuntimeBackend]:
+) -> AsyncIterator[PrimeBackend]:
     """Own a fresh Docker host, including partial bootstrap and cancelled setup."""
     host_config = config.model_copy(
         update={"image": spec.host_image or VM_HOST_IMAGE, "workdir": "/"}
     )
     async with provision_backend(host_config) as host:
+        assert isinstance(host, PrimeBackend)
         runtime = host.bind()
         install = await runtime.run(["sh", "-c", INSTALL_DOCKER], {})
         if install.exit_code:

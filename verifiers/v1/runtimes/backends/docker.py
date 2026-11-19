@@ -55,7 +55,7 @@ from verifiers.v1.utils.scope import run_scope
 logger = get_logger(__name__)
 
 if TYPE_CHECKING:
-    from verifiers.v1.runtimes.backends.prime import PrimeConfig
+    from verifiers.v1.runtimes.backends.prime import PrimeBackend, PrimeConfig
 
 _LINUX = sys.platform == "linux"
 _HOST_ALIAS = "host.docker.internal"
@@ -224,7 +224,7 @@ class DockerBackend(RuntimeBackend):
         config: DockerConfig | PrimeConfig,
         name: str | None = None,
         *,
-        host_backend: RuntimeBackend | None = None,
+        host_backend: PrimeBackend | None = None,
     ) -> None:
         super().__init__(name)
         self.config = config
@@ -252,7 +252,7 @@ class DockerBackend(RuntimeBackend):
         config: DockerConfig | PrimeConfig,
         container: str,
         *,
-        host_backend: RuntimeBackend | None = None,
+        host_backend: PrimeBackend | None = None,
         service_url: str | None = None,
         host_service_port: int | None = None,
     ) -> AsyncIterator[DockerBackend]:
@@ -742,29 +742,18 @@ class DockerBackend(RuntimeBackend):
     async def _run_host(self, *argv: str) -> ProgramResult:
         if self._host_backend is None:
             return await cli(*argv)
-        return await self._host_backend.bind().run(list(argv), {})
+        return await self._host_backend.run(
+            self._host_backend.bind(), list(argv), {}, max_output_bytes=None
+        )
 
     async def _communicate_host(
         self, *argv: str, input: bytes | None = None
     ) -> tuple[int, bytes, bytes]:
         if self._host_backend is None:
             return await _communicate(*argv, input=input)
-        # Stage bytes through the provider filesystem, never its text command logs.
-        temporary = f"/vf-deployment/.io-{uuid.uuid4().hex}"
-        command = f"{shlex.join(argv)} > {temporary}.out"
-        try:
-            if input is not None:
-                await self._host_backend.bind().write(f"{temporary}.in", input)
-                command += f" < {temporary}.in"
-            result = await self._run_host("sh", "-c", command)
-            data = await self._host_backend.bind().read(f"{temporary}.out")
-            return result.exit_code, data, result.stderr.encode()
-        finally:
-            # Temporary-file cleanup is best-effort after command completion/failure.
-            with contextlib.suppress(Exception):
-                await run_shielded(
-                    self._run_host("rm", "-f", f"{temporary}.in", f"{temporary}.out")
-                )
+        return await self._host_backend.communicate(
+            self._host_backend.bind(), list(argv), {}, input=input
+        )
 
     async def run(
         self, runtime: Runtime, argv: list[str], env: dict[str, str]

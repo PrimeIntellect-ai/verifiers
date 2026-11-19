@@ -56,7 +56,11 @@ class _ContainerDeployment(_DeploymentStrategy):
             *d.compose_selection.values(),
         )
         self._services = await d.enter(AsyncExitStack())
-        services, self._stop_main = await self._services.enter_async_context(
+        (
+            services,
+            self._stop_main,
+            self._solver_model,
+        ) = await self._services.enter_async_context(
             compose_services(
                 config, d.spec, d.env, trust_compose=d.config.trust_compose
             )
@@ -75,7 +79,9 @@ class _ContainerDeployment(_DeploymentStrategy):
             # Local tags and baked-in images belong to the Compose host. Recreate
             # from trusted task inputs on a fresh host, never the solver's filesystem.
             config = config.model_copy(update={"image": self._vm_config.image})
-            async with compose_services(config, deployment.spec, env) as (services, _):
+            async with compose_services(
+                config, deployment.spec, env, model=self._solver_model
+            ) as (services, _, _):
                 yield services[deployment.spec.workspace]
         else:
             async with super().verifier(deployment, config, env) as backend:
