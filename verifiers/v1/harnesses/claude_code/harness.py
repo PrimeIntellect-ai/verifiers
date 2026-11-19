@@ -8,7 +8,7 @@ from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import DialectName, HarnessConfig, PinnedVersion
 from verifiers.v1.harnesses.node import NODE_BIN_DIR, ensure_node
 from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
-from verifiers.v1.harnesses.utils.replay import drop_blank_text
+from verifiers.v1.harnesses.utils.replay import drop_blank_text_blocks
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
@@ -16,25 +16,27 @@ from verifiers.v1.types import Message
 
 CLAUDE_ACP_DIR = "/var/tmp/vf-claude-agent-acp-{version}-{acp_version}"
 PACKAGES_DIR = f"{CLAUDE_ACP_DIR}/packages"
-ACP_VERSION = "0.99.1"
+ACP_VERSION = "0.108.1"
 CLAUDE_BIN = f"{PACKAGES_DIR}/node_modules/.bin/claude"
 ACP_BIN = f"{PACKAGES_DIR}/node_modules/.bin/claude-agent-acp"
 CLAUDE_CONFIG_ROOT = ".vf-claude"
+# Manual mode routes tool approvals to ACP. Auto needs a separate classifier.
+CLAUDE_PERMISSIONS = {"defaultMode": "default"}
 ACP_INSTALL = r"""
 set -e
 export PATH="/var/tmp/vf-node/bin:$PATH"
 rm -f {ready}
 npm install --prefix {packages} --no-audit --no-fund \
     --omit=dev \
-    "@anthropic-ai/claude-code@$VF_CLAUDE_CODE_VERSION" \
-    "@agentclientprotocol/claude-agent-acp@$VF_CLAUDE_ACP_VERSION" >/dev/null
+    "@anthropic-ai/claude-code@$AGENT_CLAUDE_CODE_VERSION" \
+    "@agentclientprotocol/claude-agent-acp@$AGENT_CLAUDE_ACP_VERSION" >/dev/null
 touch {ready}
 """
 
 
 class ClaudeCodeHarnessConfig(HarnessConfig):
     dialect: Literal["anthropic_messages"] = "anthropic_messages"
-    version: PinnedVersion = "2.1.314"
+    version: PinnedVersion = "2.1.327"
     """Claude Code release to install, pinned for reproducibility."""
 
 
@@ -44,10 +46,9 @@ class ClaudeCodeHarness(ACPHarness[ClaudeCodeHarnessConfig]):
     SUPPORTS_SKILLS = True
     SUPPORTS_TOOL_INTERCEPTION = True
 
-    # Claude Code drops whitespace-only text blocks on replay. Closed source: observed
-    # with 2.1.314, recheck on version bumps.
+    # Claude Code 2.1.327 filters each whitespace-only text block on replay.
     def replay_view(self, message: Message, dialect: DialectName | None) -> Message:
-        return drop_blank_text(message)
+        return drop_blank_text_blocks(message)
 
     async def setup(self, runtime: Runtime) -> None:
         await ensure_node(runtime)
@@ -65,8 +66,8 @@ class ClaudeCodeHarness(ACPHarness[ClaudeCodeHarnessConfig]):
             install=script,
             env={
                 **self.config.resolved_env,
-                "VF_CLAUDE_CODE_VERSION": self.config.version,
-                "VF_CLAUDE_ACP_VERSION": ACP_VERSION,
+                "AGENT_CLAUDE_CODE_VERSION": self.config.version,
+                "AGENT_CLAUDE_ACP_VERSION": ACP_VERSION,
             },
             label="Claude Agent ACP",
         )
@@ -84,6 +85,10 @@ class ClaudeCodeHarness(ACPHarness[ClaudeCodeHarnessConfig]):
     ) -> ACPConfig:
         system_prompt, prompt = self.resolve_prompt(data)
         config_dir = self.config_dir(trace)
+        await runtime.write(
+            f"{config_dir}/settings.json",
+            json.dumps({"permissions": CLAUDE_PERMISSIONS}).encode(),
+        )
         await self.install_skills(runtime, f"{config_dir}/skills")
         versions = {"version": self.config.version, "acp_version": ACP_VERSION}
         session_meta = {
@@ -127,7 +132,7 @@ class ClaudeCodeHarness(ACPHarness[ClaudeCodeHarnessConfig]):
         # `CLAUDE_CONFIG_DIR` holds the user settings, which the adapter loads by default.
         await runtime.write(
             f"{config.env['CLAUDE_CONFIG_DIR']}/settings.json",
-            json.dumps({"permissions": {"ask": ["*"]}}).encode(),
+            json.dumps({"permissions": {**CLAUDE_PERMISSIONS, "ask": ["*"]}}).encode(),
         )
 
     async def cleanup(self, trace: Trace, runtime: Runtime) -> None:

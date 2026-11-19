@@ -27,6 +27,7 @@ from verifiers.v1.dialects.base import (
     append_user_notice,
     parse_sse_event,
 )
+from verifiers.v1.errors import ProviderError
 from verifiers.v1.types import (
     AssistantMessage,
     FinishReason,
@@ -292,6 +293,15 @@ class ChatStreamParser(StreamParser):
         chunk = parse_sse_event(raw)
         if chunk is None:
             return
+        # A provider fails a stream mid-way with a chunk carrying `error` (which the OpenAI
+        # SDK raises on) and/or finishing with "error": fail the turn, not a partial reply.
+        error = chunk.get("error")
+        if error or any(
+            choice.get("finish_reason") == "error"
+            for choice in chunk.get("choices") or []
+        ):
+            message = error.get("message") if isinstance(error, dict) else error
+            raise ProviderError(f"upstream stream failed: {message or 'unknown error'}")
         if self.head is None:
             self.head = chunk
         self.usage = chunk.get("usage") or self.usage
@@ -422,7 +432,7 @@ class ChatDialect(Dialect[ChatCompletion]):
             "extra_body",
         }
     )
-    routes = ("/v1/chat/completions",)
+    routes = ("/v1/chat/completions", "/chat/completions")
     upstream_path = "/chat/completions"
     response_type = ModdedChatCompletion
 
@@ -509,12 +519,25 @@ class ChatDialect(Dialect[ChatCompletion]):
             )
         return mediated, capabilities
 
-    def parse_request(self, body: RawRequest) -> Request:
+    def parse_request(
+        self, body: RawRequest, last: tuple[list, Messages] = ((), [])
+    ) -> Request:
+        """`last`: an earlier request's raw messages and their parse; the messages this one
+        begins with that are equal to its, as sent, are taken from it."""
         if body.get("n", 1) != 1:
             raise ValueError("chat completions require n=1")
         messages: Messages = []
         tool_names: dict[str, str] = {}
-        for raw in body.get("messages", []):
+        before, parsed = last
+        for index, raw in enumerate(body.get("messages", [])):
+            if index < len(before) and raw == before[index]:
+                message = parsed[index]
+                messages.append(message)
+                if isinstance(message, AssistantMessage):
+                    for call in message.tool_calls or []:
+                        tool_names[call.id] = call.name
+                continue
+            before = ()
             message = parse_message(raw)
             if isinstance(message, ToolMessage) and message.name is None:
                 name = tool_names.get(message.tool_call_id)

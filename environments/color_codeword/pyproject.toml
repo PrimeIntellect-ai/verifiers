@@ -1,7 +1,7 @@
 [project]
 name = "color-codeword"
 version = "0.1.0"
-description = "color-codeword — a multi-turn VLM codeword-decoding task, driven by a colocated user simulator."
+description = "color-codeword — a multi-turn VLM codeword-decoding task, driven by a scripted user simulator."
 requires-python = ">=3.11"
 dependencies = ["verifiers", "pillow>=11.0.0"]
 

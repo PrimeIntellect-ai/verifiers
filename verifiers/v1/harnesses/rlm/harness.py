@@ -1,7 +1,6 @@
 """RLM over ACP, with MCP tools exposed as pre-imported IPython skills."""
 
 import hashlib
-import logging
 import secrets
 import shlex
 from typing import Any, Literal
@@ -24,8 +23,9 @@ from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
+from verifiers.v1.utils.logging import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 BuiltinSkill = Literal["bash", "edit", "fetch", "search"]
 BuiltinTool = Literal["bash", "edit", "fetch", "ipython"]
@@ -71,7 +71,7 @@ class CompactionConfig(BaseConfig):
 class RLMHarnessConfig(HarnessConfig):
     dialect: Literal["chat_completions"] = "chat_completions"
     version: str = Field(
-        default="ae1cc01f8293987d18b09286b34d93c0dfbf8dac", min_length=1
+        default="8ca926cdd64fd7725b78cf95a4e1667315d3b1f6", min_length=1
     )
     """Git ref (branch, tag, or commit) of nano-rlm to install. Must know every
     field this harness puts on the wire, i.e. be at least the default ref."""
@@ -101,6 +101,9 @@ class RLMHarnessConfig(HarnessConfig):
     exec_timeout: PositiveInt | None = None
     """IPython/native tool execution timeout in seconds; `None` uses nano-rlm's
     default (300). Separate from `tool_timeout`, which controls MCP calls."""
+    provider_max_retries: NonNegativeInt | None = None
+    """SDK retries per model call (429, 5xx, connection errors); `None` uses nano-rlm's
+    default (5). Raise it so long rollouts ride out extended rate-limit bursts."""
     allow_git: bool | None = None
     """Allow unrestricted Git history queries (e.g. `git log --all`); `None` uses
     nano-rlm's default (false). Ordinary Git commands remain allowed either way;
@@ -147,7 +150,9 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
     async def setup(self, runtime: Runtime) -> None:
         if self.config.skills:
             # Editable skill packages and uv's tool environment must belong to this run.
-            self._skills_install_dir = f"{RLM_CACHE_DIR}-skills-{secrets.token_hex(16)}"
+            self._skills_install_dir = runtime.temp_path(
+                f"rlm-skills-{secrets.token_hex(16)}", env=self.config.resolved_env
+            )
             await self.install_skills(runtime, f"{self._skills_home()}/skills")
         directory = self._install_dir()
         binary = f"{directory}/bin/rlm"
@@ -155,30 +160,34 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
         ready = f"{directory}/.ready"
         # install.sh installs the Python skill packages under $RLM_HOME/skills.
         home = self._skills_home()
-        home_env = f"RLM_HOME={home} " if home else ""
+        home_env = f"RLM_HOME={shlex.quote(home)} " if home else ""
         # install.sh fetches curl/uv itself; add git only when the image lacks it.
         install = (
-            f"rm -f {ready} && "
+            f"rm -f {shlex.quote(ready)} && "
             "(command -v git >/dev/null 2>&1 || "
-            "{ apt-get update -qq && apt-get install -y -qq git; } && "
-            f"rm -rf {checkout} && git clone https://{RLM_REPO} {checkout} && "
-            f"git -C {checkout} checkout {shlex.quote(self.config.version)} && "
+            "{ apt-get update -qq && apt-get install -y -qq git; } || dnf install -y -q git || apk add --no-cache git && "
+            f"rm -rf {shlex.quote(checkout)} && git clone https://{RLM_REPO} {shlex.quote(checkout)} && "
+            f"git -C {shlex.quote(checkout)} checkout {shlex.quote(self.config.version)} && "
             # The editable install needs the files, not the history; agents searching
             # their workspace for a repository must not find the harness's own.
-            f"rm -rf {checkout}/.git && "
-            f"{home_env}UV_INSTALL_DIR={directory}/bin UV_TOOL_BIN_DIR={directory}/bin "
-            f"UV_TOOL_DIR={directory}/tools "
-            f"RLM_CHECKOUT_PATH={checkout} bash {checkout}/install.sh && "
-            f"touch {ready})"
+            f"rm -rf {shlex.quote(checkout + '/.git')} && "
+            # Unmanaged: install.sh's uv installer then writes no receipt under root's
+            # $HOME/.config/uv, which a task image can point at the agent's workspace.
+            f"{home_env}UV_INSTALL_DIR={shlex.quote(directory + '/bin')} "
+            f"UV_UNMANAGED_INSTALL={shlex.quote(directory + '/bin')} "
+            f"UV_TOOL_BIN_DIR={shlex.quote(directory + '/bin')} "
+            f"UV_TOOL_DIR={shlex.quote(directory + '/tools')} "
+            f"RLM_CHECKOUT_PATH={shlex.quote(checkout)} bash {shlex.quote(checkout + '/install.sh')} && "
+            f"touch {shlex.quote(ready)})"
         )
-        logger.info("rlm: ensuring rlm is installed (version=%s)", self.config.version)
+        logger.debug("Ensuring rlm %s is installed", self.config.version)
         env = self.config.resolved_env.copy()
         extra_uv_args = env.get("RLM_EXTRA_UV_ARGS", "")
         env["RLM_EXTRA_UV_ARGS"] = f"{extra_uv_args} --with mcp~=1.28".strip()
         await ensure_installed(
             runtime,
             directory=directory,
-            ready=f"[ -f {ready} ] && [ -x {binary} ]",
+            ready=f"[ -f {shlex.quote(ready)} ] && [ -x {shlex.quote(binary)} ]",
             install=install,
             env=env,
             label="rlm",
@@ -225,6 +234,11 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
             "provider": {
                 "base_url": endpoint,
                 "api_key": secret,
+                **(
+                    {"max_retries": self.config.provider_max_retries}
+                    if self.config.provider_max_retries is not None
+                    else {}
+                ),
             },
             # None = passthrough: the key stays off the wire and nano-rlm's own
             # default applies.

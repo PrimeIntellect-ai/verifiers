@@ -17,7 +17,6 @@ import contextlib
 import csv
 import io
 import json
-import logging
 import os
 import re
 import shlex
@@ -26,6 +25,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import time
 import uuid
 from collections.abc import AsyncIterator
 from pathlib import PurePosixPath
@@ -47,9 +47,11 @@ from verifiers.v1.runtimes.egress import EgressProxy, NetworkPolicy, is_loopback
 from verifiers.v1.runtimes.runtime import Runtime
 from verifiers.v1.utils.aio import run_shielded
 from verifiers.v1.utils.artifacts import validate_runtime_mounts
+from verifiers.v1.utils.format import format_time
+from verifiers.v1.utils.logging import get_logger
 from verifiers.v1.utils.scope import run_scope
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 _LINUX = sys.platform == "linux"
 _HOST_ALIAS = "host.docker.internal"
@@ -147,7 +149,7 @@ class ContainerProcess(RuntimeProcess):
                 "sh",
                 "-c",
                 'kill -"$1" "-$2" 2>/dev/null || kill -"$1" "$2" 2>/dev/null',
-                "vf-signal",
+                "process-signal",
                 signal,
                 str(self._pid),
             ],
@@ -182,7 +184,7 @@ async def _abort_process_startup(
                         "sh",
                         "-c",
                         cleanup,
-                        "vf-process-cleanup",
+                        "process-cleanup",
                         pidfile,
                     ],
                     {},
@@ -207,6 +209,8 @@ class DockerBackend(RuntimeBackend):
 
     SUPPORTS_TASK_IMAGES: ClassVar[bool] = True
     SUPPORTS_USER_SWITCHING: ClassVar[bool] = True
+    SUPPORTS_STOP_CONFIRMATION: ClassVar[bool] = True
+    SUPPORTS_MEMORY_LIMIT: ClassVar[bool] = True
     SUPPORTS_PORT_EXPOSURE: ClassVar[bool] = True
     SUPPORTS_COMPOSE: ClassVar[bool] = True
     is_local = True
@@ -282,6 +286,7 @@ class DockerBackend(RuntimeBackend):
         return SERVICE_PORT
 
     async def start(self) -> None:
+        started = time.perf_counter()
         # Compose keeps its authored workdir; only standalone containers default to /app.
         self.config = self.config.model_copy(
             update={"workdir": self.config.workdir or "/app"}
@@ -408,7 +413,7 @@ class DockerBackend(RuntimeBackend):
             "sh",
             "-c",
             'if [ ! -d "$1" ]; then mkdir -p "$1" && chown "$2" "$1"; fi',
-            "vf-workdir",
+            "workspace-directory",
             self.config.workdir,
             container["User"] or "0",
         )
@@ -429,9 +434,10 @@ class DockerBackend(RuntimeBackend):
             if self._restricted
             else NetworkPolicy(NetworkPolicyConfig(allow=[]), [])
         )
-        logger.info(
-            "docker: started container %s (image=%s)",
+        logger.debug(
+            "Started docker runtime %s in %s image=%s",
             self._container,
+            format_time(time.perf_counter() - started),
             self.config.image,
         )
 
@@ -620,6 +626,22 @@ class DockerBackend(RuntimeBackend):
             await self._proxy.stop()
         await super().teardown()
 
+    async def verify_stopped(self) -> None:
+        if not self.stopped or self.info.borrowed:
+            raise SandboxError(
+                "cannot confirm termination of a live or borrowed container"
+            )
+        if self._container is None:
+            return
+        async with asyncio.timeout(60):
+            result = await cli("docker", "container", "inspect", self._container)
+        if result.exit_code and any(
+            message in result.stderr
+            for message in ("No such container:", "No such object:")
+        ):
+            return
+        raise SandboxError("could not confirm Docker container removal")
+
     def _exec_argv(
         self, env: dict[str, str], *, stdin: bool = False, user: str | None = None
     ) -> list[str]:
@@ -677,7 +699,6 @@ class DockerBackend(RuntimeBackend):
         self._stopped = (
             True  # idempotency guard; keep `_container` so the name still shows
         )
-        logger.debug("docker: removing container %s", self._container)
         with contextlib.suppress(Exception):
             subprocess.run(
                 ["docker", "rm", "--force", self._container],
@@ -697,7 +718,7 @@ class DockerBackend(RuntimeBackend):
     async def exec(
         self, runtime: Runtime, argv: list[str], env: dict[str, str]
     ) -> RuntimeProcess:
-        pidfile = f"/tmp/vf-process-{uuid.uuid4().hex}.pid"
+        pidfile = f"/tmp/runtime-process-{uuid.uuid4().hex}.pid"
         # Give the target its own process group when `setsid -w` is available so
         # terminate()/kill() reap its descendants while the CLI client remains
         # attached if setsid needs to fork. The inner shell records the
@@ -705,7 +726,7 @@ class DockerBackend(RuntimeBackend):
         wrapper = (
             "if setsid -w true >/dev/null 2>&1; then "
             'exec setsid -w sh -c \'echo $$ > "$1"; shift; exec "$@"\' '
-            'vf-process "$@"; '
+            'runtime-process "$@"; '
             'fi; echo $$ > "$1"; shift; exec "$@"'
         )
         command = [
@@ -713,7 +734,7 @@ class DockerBackend(RuntimeBackend):
             "sh",
             "-c",
             wrapper,
-            "vf-process",
+            "runtime-process",
             pidfile,
             *argv,
         ]

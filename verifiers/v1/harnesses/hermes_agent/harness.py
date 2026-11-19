@@ -21,19 +21,19 @@ INSTALL = f"""
 set -e
 {_ENSURE_UV}
 command -v curl >/dev/null || (apt-get update -qq && apt-get install -y -qq curl ca-certificates >/dev/null)
-curl -fsSL "https://github.com/NousResearch/hermes-agent/archive/refs/tags/$VF_HERMES_VERSION.tar.gz" \\
-    | tar -xz --strip-components=1 -C "$VF_HERMES_DIR"
+curl -fsSL "https://github.com/NousResearch/hermes-agent/archive/refs/tags/$AGENT_HERMES_VERSION.tar.gz" \\
+    | tar -xz --strip-components=1 -C "$AGENT_HERMES_DIR"
 # Replay one reasoning key: strict providers reject Hermes' duplicated aliases on custom routes.
-# Recheck: https://github.com/NousResearch/hermes-agent/blob/v0.22.5/agent/message_sanitization.py#L660
+# Recheck: https://github.com/NousResearch/hermes-agent/blob/v0.23.2/agent/message_sanitization.py#L733
 sed -i '/^_REASONING_CARRIER_ROUTES: tuple = (/a\\
-    (_DEFAULT_CARRIERS, frozenset({{"custom"}}), ()),' "$VF_HERMES_DIR/agent/message_sanitization.py"
-uv sync --project "$VF_HERMES_DIR" --python 3.14 --locked --no-dev --extra acp --extra mcp --extra anthropic
-touch "$VF_HERMES_DIR/.ready"
+    (_DEFAULT_CARRIERS, frozenset({{"custom"}}), ()),' "$AGENT_HERMES_DIR/agent/message_sanitization.py"
+uv sync --project "$AGENT_HERMES_DIR" --python 3.14 --locked --no-dev --extra acp --extra mcp --extra anthropic
+touch "$AGENT_HERMES_DIR/.ready"
 """
 
 
 class HermesAgentHarnessConfig(HarnessConfig):
-    version: PinnedVersion = "v0.22.5"
+    version: PinnedVersion = "v0.23.2"
     """Hermes Agent Git release tag to install, pinned for reproducibility."""
     use_bundled_skill: bool = False
     """Enable optional bundled skills; Hermes always includes its own operating manual."""
@@ -50,8 +50,8 @@ class HermesAgentHarness(ACPHarness[HermesAgentHarnessConfig]):
 
     # Hermes strips stored assistant text and pads missing reasoning with " " on
     # routes requiring reasoning replay. Recheck on version bumps:
-    # https://github.com/NousResearch/hermes-agent/blob/v0.22.5/agent/chat_completion_helpers.py#L1583
-    # https://github.com/NousResearch/hermes-agent/blob/v0.22.5/agent/message_sanitization.py#L867
+    # https://github.com/NousResearch/hermes-agent/blob/v0.23.2/agent/chat_completion_helpers.py#L1563
+    # https://github.com/NousResearch/hermes-agent/blob/v0.23.2/agent/message_sanitization.py#L1007
     def replay_view(self, message: Message, dialect: DialectName | None) -> Message:
         return strip_text(message)
 
@@ -65,8 +65,8 @@ class HermesAgentHarness(ACPHarness[HermesAgentHarnessConfig]):
             install=INSTALL,
             env={
                 **self.config.resolved_env,
-                "VF_HERMES_DIR": directory,
-                "VF_HERMES_VERSION": self.config.version,
+                "AGENT_HERMES_DIR": directory,
+                "AGENT_HERMES_VERSION": self.config.version,
             },
             label="Hermes Agent",
             shell=("bash", "-o", "pipefail", "-c"),

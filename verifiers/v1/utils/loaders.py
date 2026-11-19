@@ -197,7 +197,7 @@ def environment_class(taskset_id: str, env_id: str = "") -> type[Env]:
 
 
 def load_environment(config: EnvConfig) -> Env:
-    """Construct the env for `config`. Every construction site (eval, serve, gepa)
+    """Construct the env for `config`. Every construction site (eval, serve)
     goes through here so subclass envs load everywhere."""
     return environment_class(config.taskset.id, config.id)(config)
 

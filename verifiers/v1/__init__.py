@@ -13,8 +13,21 @@ if TYPE_CHECKING:
     from pydantic_config import BaseConfig
 
     from verifiers.v1.acp import ACPConfig, ACPHarness, ACPTurn
-    from verifiers.v1.agent import Agent, Agents, Interaction, Segment, make_agent
-    from verifiers.v1.clients import Client, ModelContext, resolve_client
+    from verifiers.v1.agent import (
+        Agent,
+        AgentRun,
+        Agents,
+        Interaction,
+        Segment,
+        make_agent,
+    )
+    from verifiers.v1.clients import (
+        Client,
+        ModelContext,
+        ModelRoute,
+        RouteRejected,
+        resolve_client,
+    )
     from verifiers.v1.configs.agent import AgentConfig
     from verifiers.v1.configs.cli.env import narrowed_env_annotation, resolve_env_field
     from verifiers.v1.configs.client import (
@@ -106,6 +119,7 @@ if TYPE_CHECKING:
         SemanticEdgeSet,
     )
     from verifiers.v1.state import State, StateT
+    from verifiers.v1.submission import run_submission
     from verifiers.v1.task import (
         Task,
         TaskData,
@@ -149,13 +163,12 @@ if TYPE_CHECKING:
         Messages,
         Request,
         Response,
-        SamplingMask,
+        SamplerSupport,
         SystemMessage,
         TextContentPart,
         Tool,
         ToolCall,
         ToolMessage,
-        TopLogprobs,
         TurnTokens,
         Usage,
         UserMessage,
@@ -192,6 +205,7 @@ if TYPE_CHECKING:
     )
 
 _NAME_TO_MODULE = {
+    "run_submission": "verifiers.v1.submission",
     "ACPConfig": "verifiers.v1.acp",
     "ACPHarness": "verifiers.v1.acp",
     "ACPInfo": "verifiers.v1.semantic",
@@ -199,6 +213,7 @@ _NAME_TO_MODULE = {
     "ACP_SEMANTIC_EDGES_METADATA_KEY": "verifiers.v1.semantic",
     "ARTIFACTS_DIR": "verifiers.v1.utils.artifacts",
     "Agent": "verifiers.v1.agent",
+    "AgentRun": "verifiers.v1.agent",
     "AgentConfig": "verifiers.v1.configs.agent",
     "AgentInfo": "verifiers.v1.trace",
     "AgentSpan": "verifiers.v1.trace",
@@ -252,6 +267,8 @@ _NAME_TO_MODULE = {
     "Messages": "verifiers.v1.types",
     "ModelCall": "verifiers.v1.trace",
     "ModelContext": "verifiers.v1.clients",
+    "ModelRoute": "verifiers.v1.clients",
+    "RouteRejected": "verifiers.v1.clients",
     "NetworkPolicyConfig": "verifiers.v1.configs.runtime",
     "PATCH_CAP_BYTES": "verifiers.v1.utils.git",
     "ParentLink": "verifiers.v1.semantic",
@@ -279,7 +296,7 @@ _NAME_TO_MODULE = {
     "RuntimeProcess": "verifiers.v1.runtimes",
     "Sampling": "verifiers.v1.configs.sampling",
     "SamplingConfig": "verifiers.v1.configs.sampling",
-    "SamplingMask": "verifiers.v1.types",
+    "SamplerSupport": "verifiers.v1.types",
     "SandboxError": "verifiers.v1.errors",
     "ScoringConfig": "verifiers.v1.configs.scoring",
     "ServicesSpec": "verifiers.v1.runtimes.deployment",
@@ -319,7 +336,6 @@ _NAME_TO_MODULE = {
     "ToolsetConfig": "verifiers.v1.mcp",
     "ToolsetTimeoutConfig": "verifiers.v1.mcp",
     "ToolsetError": "verifiers.v1.errors",
-    "TopLogprobs": "verifiers.v1.types",
     "Trace": "verifiers.v1.trace",
     "TraceTask": "verifiers.v1.trace",
     "TrainClientConfig": "verifiers.v1.configs.client",
@@ -431,8 +447,7 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "MessageNode",
     "Branch",
     "TurnTokens",
-    "SamplingMask",
-    "TopLogprobs",
+    "SamplerSupport",
     "Timing",
     "TimeSpan",
     "TimeSplit",
@@ -482,6 +497,8 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "ACPHarness",
     "ACPTurn",
     "ModelContext",
+    "ModelRoute",
+    "RouteRejected",
     "Runtime",
     "RuntimeProcess",
     "RuntimeConfig",
@@ -508,6 +525,7 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "RetryRule",
     # agent
     "Agent",
+    "AgentRun",
     "Agents",
     "make_agent",
     # loaders
@@ -545,6 +563,7 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "capture_patch",
     "resolve_head",
     "grade_submission",
+    "run_submission",
     # grading artifacts
     "ARTIFACTS_DIR",
     "Artifact",

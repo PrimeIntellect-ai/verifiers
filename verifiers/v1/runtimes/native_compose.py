@@ -6,7 +6,6 @@ import hashlib
 import io
 import ipaddress
 import json
-import logging
 import math
 import re
 import shlex
@@ -28,9 +27,10 @@ from verifiers.v1.runtimes.base import RuntimeBackend, RuntimeProcess
 from verifiers.v1.runtimes.compose import ComposeSpec, compose_project
 from verifiers.v1.runtimes.private_network import lan_host
 from verifiers.v1.utils.aio import run_shielded
+from verifiers.v1.utils.logging import get_logger
 from verifiers.v1.utils.paths import CACHE_DIR
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 # Reject unsupported Compose fields before building images or provisioning VMs.
 _SERVICE_FIELDS = {
