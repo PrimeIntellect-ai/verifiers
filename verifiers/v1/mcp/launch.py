@@ -86,6 +86,7 @@ while True:
 _BACKGROUND = """
 import contextlib, os, pathlib, signal, subprocess, sys, time
 control = pathlib.Path(sys.argv[1])
+control.with_suffix('.started').touch()
 process = None
 try:
     if not control.exists():
@@ -111,6 +112,11 @@ _STOP_BACKGROUND = """
 import pathlib, sys, time
 control = pathlib.Path(sys.argv[1])
 control.touch()
+started = control.with_suffix('.started')
+# An unacknowledged launch may never arrive. Leave the stop marker so a
+# supervisor that arrives later will exit before starting its child.
+if sys.argv[2] == 'unacknowledged' and not started.exists():
+    sys.exit(0)
 done = control.with_suffix('.done')
 deadline = time.monotonic() + 10
 while not done.exists():
@@ -118,6 +124,7 @@ while not done.exists():
         raise TimeoutError('tool server did not stop')
     time.sleep(0.1)
 done.unlink()
+started.unlink(missing_ok=True)
 control.unlink(missing_ok=True)
 """
 
@@ -455,12 +462,14 @@ async def serve_in_runtime(
     timeout = timeouts.startup
     deadline = loop.time() + (math.inf if timeout is None else timeout)
     control = runtime.temp_path(f"tool-process-{uuid.uuid4().hex}", env=env)
+    launch_acknowledged = False
     try:
         await run_shielded(
             runtime.run_background(
                 [python, "-c", _BACKGROUND, control, *command], env, log
             )
         )
+        launch_acknowledged = True
         if fixed is not None:
             port = fixed
         else:
@@ -489,7 +498,17 @@ async def serve_in_runtime(
         try:
             result = await run_shielded(
                 asyncio.wait_for(
-                    runtime.run([python, "-c", _STOP_BACKGROUND, control], {}), 15
+                    runtime.run(
+                        [
+                            python,
+                            "-c",
+                            _STOP_BACKGROUND,
+                            control,
+                            "acknowledged" if launch_acknowledged else "unacknowledged",
+                        ],
+                        {},
+                    ),
+                    15,
                 )
             )
             if result.exit_code:

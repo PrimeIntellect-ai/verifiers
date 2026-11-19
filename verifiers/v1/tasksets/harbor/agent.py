@@ -76,11 +76,9 @@ async def prepare_agent_judge(task, runtime, trace, reward, authored, workspace)
             workspace=workspace,
             env=dict(runtime.env),
             config=HarborAgentJudgeConfig(
+                # Authored commands and task-local URLs belong to this attempt's box.
                 mcp_servers=[
-                    HarborMCPConfig(
-                        **task.config.mcp.model_dump(exclude_unset=True),
-                        server=server.model_dump(mode="json"),
-                    )
+                    HarborMCPConfig(server=server.model_dump(mode="json"))
                     for server in reward.judge.mcp_servers
                 ]
             ),
