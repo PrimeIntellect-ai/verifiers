@@ -10,6 +10,8 @@ import verifiers.v1 as vf
 from verifiers.v1 import graph
 from verifiers.v1.agent import Interaction
 from verifiers.v1.clients import EvalClientConfig, ModelContext, ModelRoute
+from verifiers.v1.configs.runtime import NetworkPolicyConfig
+from verifiers.v1.dialects.anthropic import AnthropicDialect
 from verifiers.v1.errors import HarnessError
 from verifiers.v1.graph import MessageNode
 from verifiers.v1.harnesses.utils.replay import drop_blank_text_blocks
@@ -68,6 +70,21 @@ async def test_each_sample_keeps_its_tool_result_across_assistant_replays():
     replay = sampled.model_copy(update={"content": "Ready", "text_block_offsets": None})
     other = replay.model_copy(update={"content": "Another action"})
     prompt = [vf.UserMessage(content="go")]
+    dialect = AnthropicDialect()
+
+    def restrict(provider_tool: str):
+        body = {
+            "messages": [{"role": "user", "content": "go"}],
+            "tools": [
+                {"name": "lookup", "input_schema": {"type": "object"}},
+                {"name": provider_tool.rsplit("_", 1)[0], "type": provider_tool},
+            ],
+        }
+        native = dialect.parse_request(body)
+        filtered, _ = dialect.mediate_external_capabilities(
+            body, NetworkPolicyConfig(allow=[])
+        )
+        return native, dialect.parse_request(filtered)
 
     def commit(messages, assistant, tools=None):
         turn = graph.prepare_turn(
@@ -79,14 +96,18 @@ async def test_each_sample_keeps_its_tool_result_across_assistant_replays():
             )
         )
 
-    # The two samples reuse a call ID, but their replayed messages identify them.
-    catalogs = [[vf.Tool(name=name)] for name in ("filtered_first", "filtered_second")]
-    for assistant, replayed, expected, tools in [
-        (sampled, replay, "First result", catalogs[0]),
-        (other, other, "Second result", catalogs[1]),
+    # Removing a provider tool also adds a notice to the model-facing prompt.
+    first_native, filtered = restrict("web_search_20250305")
+    second_native, second_filtered = restrict("web_fetch_20250910")
+    assert filtered == second_filtered
+    assert [tool.name for tool in filtered.tools or []] == ["lookup"]
+    assert filtered.messages != prompt
+    for assistant, replayed, expected, native in [
+        (sampled, replay, "First result", first_native),
+        (other, other, "Second result", second_native),
     ]:
-        node = commit(prompt, assistant)
-        await session.gate_tool_calls(node, "anthropic_messages")
+        node = commit(filtered.messages, assistant, filtered.tools)
+        await session.gate_tool_calls(node, "anthropic_messages", native.messages)
         assert (await session.decide_tool("call"))["action"] == "deny"
         request = vf.Request(
             messages=[
@@ -94,7 +115,7 @@ async def test_each_sample_keeps_its_tool_result_across_assistant_replays():
                 replayed,
                 vf.ToolMessage(tool_call_id="call", content="Tool unavailable"),
             ],
-            tools=tools,
+            tools=native.tools,
         )
         rewritten, _, _ = await session.rewrite_request(
             request, dialect="anthropic_messages"
@@ -103,10 +124,19 @@ async def test_each_sample_keeps_its_tool_result_across_assistant_replays():
         if assistant is sampled:
             first_request = request
             first_path = graph.path_node_ids(trace, node)
-        commit(rewritten.messages, AssistantMessage(content="done"))
+        model_history = [*filtered.messages, *rewritten.messages[len(prompt) :]]
+        model_receipt = vf.Request(
+            messages=[*filtered.messages, replayed, request.messages[-1]],
+            tools=filtered.tools,
+        )
+        restored = session.pin_tool_results(model_receipt, "anthropic_messages")
+        assert restored.messages[-1].content == expected
+        if native is first_native:
+            first_model_receipt = model_receipt
+        commit(model_history, AssistantMessage(content="done"), filtered.tools)
 
     # The next request can change its available tools independently of its history.
-    changed_catalog = first_request.model_copy(update={"tools": catalogs[1]})
+    changed_catalog = first_request.model_copy(update={"tools": second_native.tools})
     earlier, _, _ = await session.rewrite_request(
         changed_catalog, dialect="anthropic_messages"
     )
@@ -118,14 +148,28 @@ async def test_each_sample_keeps_its_tool_result_across_assistant_replays():
     follow_up = AssistantMessage(
         tool_calls=[vf.ToolCall(id="next", name="lookup", arguments="{}")]
     )
-    node = commit(rewritten.messages, follow_up)
-    await session.gate_tool_calls(node, "anthropic_messages")
+    node = commit(model_history, follow_up, filtered.tools)
+    await session.gate_tool_calls(node, "anthropic_messages", rewritten.messages)
     verdict = await session.decide_tool("next")
     assert verdict["message"]["content"] == "Follow-up result"
+    continued = request.model_copy(
+        update={
+            "messages": [
+                *request.messages,
+                follow_up,
+                vf.ToolMessage(tool_call_id="next", content="Tool unavailable"),
+            ]
+        }
+    )
+    final, _, _ = await session.rewrite_request(continued, dialect="anthropic_messages")
+    assert [m.content for m in final.messages if isinstance(m, vf.ToolMessage)] == [
+        "Second result",
+        "Follow-up result",
+    ]
 
     # The third sample reuses the first sample's replay and call ID under a new catalog.
-    node = commit(prompt, sampled)
-    await session.gate_tool_calls(node, "anthropic_messages")
+    node = commit(filtered.messages, sampled, filtered.tools)
+    await session.gate_tool_calls(node, "anthropic_messages", second_native.messages)
     assert (await session.decide_tool("call"))["message"]["content"] == "Third result"
     with pytest.raises(HarnessError, match="Ambiguous issuing turn"):
         await session.rewrite_request(changed_catalog, dialect="anthropic_messages")
@@ -135,6 +179,8 @@ async def test_each_sample_keeps_its_tool_result_across_assistant_replays():
         session.pin_tool_results(
             first_request.model_copy(update={"tools": None}), "anthropic_messages"
         )
+    with pytest.raises(HarnessError, match="Ambiguous issuing turn"):
+        session.pin_tool_results(first_model_receipt, "anthropic_messages")
     restored = session.pin_tool_results(
         changed_catalog, "anthropic_messages", first_path
     )
