@@ -33,10 +33,17 @@ class ReadImageTask(vf.Task):
             "data:image/png;base64," + base64.b64encode(swatches(colors)).decode()
             for colors in PAGES.values()
         ]
+        ipython_calls = {
+            call.id
+            for message in trace.assistant_messages
+            for call in message.tool_calls or []
+            if call.name == "ipython"
+        }
         shown = [
             part.image_url.url
-            for message in trace.messages
-            if isinstance(message.content, list)
+            for message in trace.tool_messages
+            if message.tool_call_id in ipython_calls
+            and isinstance(message.content, list)
             for part in message.content
             if part.type == "image_url"
         ]

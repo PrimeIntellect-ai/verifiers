@@ -25,7 +25,7 @@ async def test_rlm_reads_workspace_image(run):
         "read-image",
         harness=RLMHarnessConfig(
             id="rlm",
-            version="f6193accde159d223ab344c41a296c9c600cf084",
+            version="8192d3430dd77e9eaea70c6a007a0277563d8a7b",
             vision=True,
         ),
         runtime={"type": "prime"},
