@@ -15,6 +15,7 @@ or the graph.
 """
 
 import asyncio
+import copy
 import hashlib
 import inspect
 import json
@@ -86,6 +87,15 @@ def same_arguments(call: ToolCall, arguments: object) -> bool:
         )
     except (json.JSONDecodeError, TypeError):
         return call.arguments == arguments
+
+
+def hook_copy(response: Response) -> Response:
+    """A deep copy of `response` for a hook that shares its routed-experts buffer: the renderer
+    client keeps that payload as a zero-copy memoryview, which cannot be copied, and no hook
+    edits it."""
+    routed = response.tokens.routed_experts if response.tokens is not None else None
+    memo = {id(routed["data"]): routed["data"]} if routed is not None else {}
+    return copy.deepcopy(response, memo)
 
 
 @dataclass(frozen=True)
@@ -426,7 +436,7 @@ class RolloutSession:
         records: list[InterceptRecord] = []
         try:
             for handler in self.response_interceptors:
-                candidate = response.model_copy(deep=True)
+                candidate = hook_copy(response)
                 result = await call_hook(
                     handler, {Response: candidate, Trace: self.trace}
                 )
@@ -458,7 +468,7 @@ class RolloutSession:
                 records.append(InterceptRecord(handler=handler.__name__))
 
             for stop in self.response_stops:
-                candidate = response.model_copy(deep=True)
+                candidate = hook_copy(response)
                 result = await call_hook(stop, {Response: candidate, Trace: self.trace})
                 if not isinstance(result, bool):
                     raise TypeError(
