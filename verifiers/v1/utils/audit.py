@@ -24,7 +24,9 @@ SECRET_KEY = re.compile(
     re.IGNORECASE,
 )
 ASSIGNMENT = re.compile(
-    r"""(?<![\w.-])(?P<prefix>["']?(?P<key>[A-Za-z_][\w.-]*)["']?\s*\]?\s*[:=]\s*)"""
+    r"""(?<![\w.-])(?P<target>["']?(?P<key>[A-Za-z_][\w.-]*)["']?[ \t]*\]?[ \t]*)"""
+    r"""(?P<separator>:(?P<annotation>[ \t]*(?=[A-Za-z_"'])"""
+    r"""(?:[\w.\[\], \t|]|"(?:\\.|[^"\\\r\n])*"|'(?:\\.|[^'\\\r\n])*')+?)=|[:=])\s*"""
     r'''(?P<value>(?:[rRuU])?(?:"""(?:\\.|(?!""")[^\\])*"""|'''
     r"'''(?:\\.|(?!''')[^\\])*'''|"
     r""""(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')|[^\s,;#}\]"']+)""",
@@ -32,6 +34,10 @@ ASSIGNMENT = re.compile(
 )
 URL = re.compile(r"https?://[^\s<>\"']+")
 AUTHORIZATION = re.compile(r"\b(?:Bearer|Basic)\s+([^\s\"']+)", re.IGNORECASE)
+AUTH_HEADER = re.compile(
+    r"(?P<prefix>\b(?:Proxy-)?Authorization[ \t]*:[ \t]*)(?P<value>[^\r\n]+)",
+    re.IGNORECASE,
+)
 
 
 def _source_configs(item):
@@ -165,6 +171,8 @@ def redact(value):
         return bool(SECRET_KEY.search(key)) and not key.endswith("_var")
 
     def strings(item):
+        if isinstance(item, (int, float)) and not isinstance(item, bool):
+            item = str(item)
         if isinstance(item, str) and len(item) >= 4:
             secrets.add(item)
             secrets.add(json.dumps(item, ensure_ascii=False)[1:-1])
@@ -195,11 +203,18 @@ def redact(value):
             for child in item:
                 discover(child)
         elif isinstance(item, str):
+            for header in AUTH_HEADER.finditer(item):
+                strings(header["value"])
+                for param in ASSIGNMENT.finditer(header["value"]):
+                    if param["key"].lower() == "response":
+                        strings(assignment_value(param["value"]))
             for match in ASSIGNMENT.finditer(item):
                 raw = match["value"]
                 decoded = assignment_value(raw)
                 if sensitive(match["key"]):
                     strings(decoded)
+                    if annotation := match["annotation"]:
+                        strings(annotation.strip())
                 elif isinstance(decoded, str) and decoded != raw:
                     # A harmless outer key can hold commands or config text with
                     # its own credential assignments, including escaped quotes.
@@ -241,32 +256,49 @@ def redact(value):
 
     def scrub_assignment(match):
         if sensitive(match["key"]):
-            return match["prefix"] + '"[redacted]"'
+            separator = ":" if match["annotation"] else match["separator"]
+            return match["target"] + separator + ' "[redacted]"'
         raw = match["value"]
         decoded = assignment_value(raw)
         if isinstance(decoded, str) and decoded != raw:
             cleaned = scrub(decoded)
             if cleaned != decoded:
-                return match["prefix"] + json.dumps(cleaned, ensure_ascii=False)
+                prefix = match.string[match.start() : match.start("value")]
+                return prefix + json.dumps(cleaned, ensure_ascii=False)
         return match[0]
+
+    def scrub_echoes(text: str) -> str:
+        for secret in replacements:
+            text = text.replace(secret, "[redacted]")
+        return text
 
     def scrub(item):
         if isinstance(item, dict):
-            return {
-                key: ("[redacted]" if sensitive(key) else scrub(child))
-                for key, child in item.items()
-            }
+            cleaned = {}
+            suffixes: dict[str, int] = {}
+            for key, child in item.items():
+                safe = scrub_echoes(key) if isinstance(key, str) else scrub(key)
+                unique = safe
+                if unique in cleaned:
+                    base = str(safe)
+                    suffix = suffixes.get(base, 2)
+                    while (unique := f"{base} [{suffix}]") in cleaned:
+                        suffix += 1
+                    suffixes[base] = suffix + 1
+                cleaned[unique] = "[redacted]" if sensitive(key) else scrub(child)
+            return cleaned
         if isinstance(item, list):
             return [scrub(child) for child in item]
         if isinstance(item, str):
+            item = AUTH_HEADER.sub(lambda match: match["prefix"] + '"[redacted]"', item)
             item = ASSIGNMENT.sub(scrub_assignment, item)
             item = URL.sub(url, item)
             item = AUTHORIZATION.sub(
                 lambda match: match[0].split()[0] + " [redacted]", item
             )
-            for secret in replacements:
-                item = item.replace(secret, "[redacted]")
-            return item
+            return scrub_echoes(item)
+        if isinstance(item, (int, float)) and str(item) in secrets:
+            return "[redacted]"
         return item
 
     return scrub(value)

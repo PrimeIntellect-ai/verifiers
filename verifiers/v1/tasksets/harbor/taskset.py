@@ -910,7 +910,7 @@ def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborD
         ).hexdigest(),
         verifier_digest=hashlib.sha256(
             (
-                source_digest(task_dir / "tests")
+                source_digest(task_dir / "tests", task_dir=task_dir)
                 + parsed.verifier.model_dump_json()
                 + (
                     definition.config if definition is not None else environment
