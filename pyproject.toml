@@ -45,7 +45,7 @@ dependencies = [
     "prime-pydantic-config[toml]>=0.4.3",
     "loguru>=0.7.0",
     "tomli-w>=1.0.0",
-    "renderers[multimodal]>=0.2.1.dev9",
+    "renderers[multimodal]>=0.2.1.dev12",
     "typing_extensions>=4.12.2",
     "mcp==2.2.0",
 ]
@@ -111,7 +111,7 @@ default = true
 
 [tool.uv.sources]
 # Temporary, until a release has `attach_process` (PrimeIntellect-ai/prime#1147).
-prime-sandboxes = { git = "https://github.com/PrimeIntellect-ai/prime", rev = "fae6d0bc91717b95ff1b109d93d58a22e3408df2", subdirectory = "packages/prime-sandboxes" }
+prime-sandboxes = { git = "https://github.com/PrimeIntellect-ai/prime", rev = "8f796bdbf63d7facc0f4bef5a7c03cbb8217b6b9", subdirectory = "packages/prime-sandboxes" }
 compact = { path = "environments/compact", editable = true }
 glossary = { path = "environments/glossary", editable = true }
 deepwiki = { path = "environments/deepwiki", editable = true }
@@ -221,7 +221,6 @@ markers = [
     "subprocess: integration cells touching the subprocess (host) runtime",
     "docker: integration cells touching the docker runtime",
     "prime: integration cells touching the prime runtime (real sandbox + tunnel)",
-    "colocated: integration cells with a tool server colocated in the harness runtime",
     "service: integration cells with a tool server in a Compose service beside the harness",
     "null: integration cells on the null harness",
     "bash: integration cells on the bash harness",

@@ -1,5 +1,5 @@
 version = 1
-revision = 4
+revision = 5
 requires-python = ">=3.11, <3.15"
 resolution-markers = [
     "python_full_version >= '3.14' and sys_platform == 'win32'",
@@ -32,11 +32,7 @@ ruff = "2026-07-28T00:00:00Z"
 ty = "2026-07-28T00:00:00Z"
 
 [manifest]
-constraints = [
-    { name = "brotli", specifier = ">=1.2.1" },
-    { name = "brotlicffi", specifier = ">=1.2.1.0" },
-]
-overrides = [{ name = "pillow", specifier = ">=13.0.0" }]
+overrides = [{ name = "pillow", specifier = ">=13" }]
 
 [[package]]
 name = "aiofile"
@@ -3276,8 +3272,8 @@ toml = [
 
 [[package]]
 name = "prime-sandboxes"
-version = "0.5.11"
-source = { git = "https://github.com/PrimeIntellect-ai/prime?subdirectory=packages%2Fprime-sandboxes&rev=fae6d0bc91717b95ff1b109d93d58a22e3408df2#fae6d0bc91717b95ff1b109d93d58a22e3408df2" }
+version = "0.5.12"
+source = { git = "https://github.com/PrimeIntellect-ai/prime?subdirectory=packages%2Fprime-sandboxes&rev=8f796bdbf63d7facc0f4bef5a7c03cbb8217b6b9#8f796bdbf63d7facc0f4bef5a7c03cbb8217b6b9" }
 dependencies = [
     { name = "aiofiles" },
     { name = "certifi" },
@@ -3288,6 +3284,23 @@ dependencies = [
     { name = "pyqwest" },
     { name = "tenacity" },
 ]
+
+[package.metadata]
+requires-dist = [
+    { name = "aiofiles", specifier = ">=23" },
+    { name = "certifi" },
+    { name = "connectrpc", specifier = ">=0.11.1,<0.12" },
+    { name = "httpx", specifier = ">=0.25" },
+    { name = "protobuf", specifier = ">=6.31.1" },
+    { name = "pydantic", specifier = ">=2" },
+    { name = "pyqwest", specifier = ">=0.6" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=7" },
+    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23" },
+    { name = "pytest-xdist", marker = "extra == 'dev'", specifier = ">=3" },
+    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.13.1" },
+    { name = "tenacity", specifier = ">=8" },
+]
+provides-extras = ["dev"]
 
 [[package]]
 name = "prime-tunnel"
@@ -3442,7 +3455,7 @@ name = "protobuf-py"
 version = "0.1.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "protobuf-py-ext", marker = "(platform_machine == 'arm64' and platform_python_implementation == 'CPython' and sys_platform == 'darwin') or (platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (platform_machine == 'x86_64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (platform_machine == 'AMD64' and platform_python_implementation == 'CPython' and sys_platform == 'win32') or (platform_machine == 'ARM64' and platform_python_implementation == 'CPython' and sys_platform == 'win32')" },
+    { name = "protobuf-py-ext", marker = "platform_machine == 'arm64' and platform_python_implementation == 'CPython' and sys_platform == 'darwin' or (platform_machine == 'aarch64' or platform_machine == 'x86_64') and platform_python_implementation == 'CPython' and sys_platform == 'linux' or (platform_machine == 'AMD64' or platform_machine == 'ARM64') and platform_python_implementation == 'CPython' and sys_platform == 'win32'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/72/ed/02fd902d9c51b7ff53dfc9a745eb11490722edfd30073af889e171f07b8e/protobuf_py-0.1.1.tar.gz", hash = "sha256:6bd08ac4d8f1661965bbe2685429d79043704cdd1ee720a7a89617331742240b", size = 133525, upload-time = "2026-06-24T19:02:15.271Z" }
 wheels = [
@@ -4245,7 +4258,7 @@ wheels = [
 
 [[package]]
 name = "renderers"
-version = "0.2.1.dev9"
+version = "0.2.1.dev12"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "jinja2" },
@@ -4256,9 +4269,9 @@ dependencies = [
     { name = "prime-pydantic-config" },
     { name = "tiktoken" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/4b/cf/eca4b03049d353cfeab59fd5fefbef3f489907f76254321d0d988fcb0ca7/renderers-0.2.1.dev9.tar.gz", hash = "sha256:9c8120703fb96146018a321270215e9f5cb2e45cb65576179696402d29628502", size = 470340, upload-time = "2026-11-10T00:07:09.634Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/d5/c3/18b9b0ef3d3da02b14fdc2a82d7d97bed3a9190a492eeb97f55dba06e177/renderers-0.2.1.dev12.tar.gz", hash = "sha256:1c5d880335c1f011acb5811e6904eb3c043b8e25f70969f5e0489fac5c34f56c", size = 472304, upload-time = "2026-11-16T17:53:40.95Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/fb/43/0a0ed0f28cd71e0466ce41b29778a50aceb4d2f853062802a39e0e28ca74/renderers-0.2.1.dev9-py3-none-any.whl", hash = "sha256:21d53ee374df527b207d905fd7c3b1ca1d12f279e5237a07eff6237714de74e6", size = 267638, upload-time = "2026-11-10T00:07:08.125Z" },
+    { url = "https://files.pythonhosted.org/packages/8c/4e/b9de33d7e9768b2741974137e93aef87cc5bfd2b4f09d66a1213a892fd97/renderers-0.2.1.dev12-py3-none-any.whl", hash = "sha256:3271c4450248535873e982b5edd0368d7b41f6974dc315a83c27b33f44b071b0", size = 268688, upload-time = "2026-11-16T17:53:39.295Z" },
 ]
 
 [package.optional-dependencies]
@@ -5067,6 +5080,7 @@ wheels = [
 [[package]]
 name = "verifiers"
 source = { editable = "." }
+default-groups = ["dev", "examples"]
 dependencies = [
     { name = "aiohttp" },
     { name = "anthropic" },

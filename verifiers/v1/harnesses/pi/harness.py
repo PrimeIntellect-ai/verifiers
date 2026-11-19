@@ -40,11 +40,11 @@ set -e
 packages=/var/tmp/vf-pi/mcp
 export PATH="/var/tmp/vf-node/bin:$PATH"
 
-versions="$VF_PI_VERSION:$VF_PI_ACP_VERSION"
+versions="$AGENT_PI_VERSION:$AGENT_PI_ACP_VERSION"
 if [ "$(cat "$packages/.versions" 2>/dev/null)" != "$versions" ]; then
     npm install --prefix "$packages" --ignore-scripts --no-audit --no-fund --omit=dev \
-        "@earendil-works/pi-coding-agent@$VF_PI_VERSION" \
-        "pi-acp@$VF_PI_ACP_VERSION" >/dev/null
+        "@earendil-works/pi-coding-agent@$AGENT_PI_VERSION" \
+        "pi-acp@$AGENT_PI_ACP_VERSION" >/dev/null
     printf %s "$versions" > "$packages/.versions"
 fi
 """
@@ -87,8 +87,8 @@ class PiHarness(ACPHarness[PiHarnessConfig]):
             directory=PI_DIR,
             install=INSTALL,
             env={
-                "VF_PI_VERSION": self.config.version,
-                "VF_PI_ACP_VERSION": ACP_VERSION,
+                "AGENT_PI_VERSION": self.config.version,
+                "AGENT_PI_ACP_VERSION": ACP_VERSION,
             },
             label="pi",
         )
