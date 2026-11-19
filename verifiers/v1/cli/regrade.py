@@ -1,15 +1,11 @@
 """Regrade saved submissions without rerunning their solver agents."""
 
 import asyncio
-import copy
 import json
 import logging
 import os
-import posixpath
-import re
 import sys
 from collections import Counter
-from pathlib import Path
 from typing import Any
 
 from pydantic_config import cli
@@ -23,15 +19,15 @@ from verifiers.v1.cli.resolve import (
     with_positional_taskset,
 )
 from verifiers.v1.configs.cli.regrade import RegradeConfig
-from verifiers.v1.configs.scoring import resolve_scoring
-from verifiers.v1.grading import grade_task, verifier_runtime
-from verifiers.v1.runtimes import RuntimeConfig, backend_cls, make_backend
-from verifiers.v1.runtimes.deployment import Deployment
-from verifiers.v1.state import state_cls
+from verifiers.v1.regrading import (
+    RequiresRerun,
+    load_saved_artifacts,
+    prepare_replay,
+    revision,
+)
+from verifiers.v1.runtimes import backend_cls
 from verifiers.v1.task import Task, TaskData, task_key
-from verifiers.v1.trace import Trace, TraceTask, WireTrace
-from verifiers.v1.utils.artifacts import ARTIFACTS_DIR, load_artifacts
-from verifiers.v1.utils.compile import resolve_runtime_config
+from verifiers.v1.trace import Trace, WireTrace
 from verifiers.v1.utils.interrupt import install_interrupt
 from verifiers.v1.utils.loaders import load_taskset
 from verifiers.v1.utils.logging import clip, get_logger, setup_logging
@@ -41,103 +37,12 @@ logger = get_logger(__name__)
 USAGE = "usage: uv run vf-regrade <taskset-id> --source <run-dir> [--runtime.type docker|prime] [-o <output-dir>] [options]"
 
 
-class RequiresRerun(ValueError):
-    """The saved submission cannot be graded against the selected task."""
-
-
 def identity(data: TaskData) -> tuple[str, str] | None:
     if data.id is not None:
         return "id", data.id
     if data.name is not None:
         return "name", data.name
     return None
-
-
-def revision(data: TaskData) -> dict[str, Any]:
-    return {
-        field: getattr(data, field, None)
-        for field in (
-            "task_version",
-            "source_digest",
-            "solver_digest",
-            "verifier_digest",
-        )
-    }
-
-
-def _major(version: str | None) -> int | None:
-    match = re.fullmatch(
-        r"(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:[-+].+)?", version or ""
-    )
-    return int(match[1]) if match else None
-
-
-def validate_solver(saved: Trace, task: Task) -> None:
-    """Refuse to apply a new task to a solver that received a different problem."""
-    old, new = saved.task.data, task.data
-    before, after = revision(old), revision(new)
-    old_major, new_major = _major(before["task_version"]), _major(after["task_version"])
-    if old_major is not None and new_major is not None and old_major != new_major:
-        raise RequiresRerun("Task major version changed")
-    for field in (
-        "prompt",
-        "system_prompt",
-        "image",
-        "workdir",
-        "agent_user",
-        "agent_home",
-        "network",
-        "skills",
-        "filesystem",
-    ):
-        if getattr(old, field, None) != getattr(new, field, None):
-            raise RequiresRerun(f"Solver input changed: {field}")
-    if not before["solver_digest"] or before["solver_digest"] != after["solver_digest"]:
-        raise RequiresRerun("Solver source identity changed or is unavailable")
-    if task.scoring.mode != "isolated":
-        raise RequiresRerun("Current task requires shared runtime state")
-    if resolve_scoring(old.scoring, saved.agent.config.scoring).mode != "isolated":
-        raise RequiresRerun("Original task was scored with shared runtime state")
-    if (
-        not saved.is_completed
-        or not saved.ok
-        or saved.errors
-        or saved.is_format_violation
-        or saved.stop_condition not in {None, "agent_completed", "scoring_timeout"}
-        or (saved.is_timeout and saved.stop_condition != "scoring_timeout")
-    ):
-        raise RequiresRerun("Original solver did not complete")
-
-
-def solver_runtime_config(
-    saved: Trace, task: Task, base: RuntimeConfig
-) -> RuntimeConfig:
-    """Reconstruct the workspace's image and cwd without starting its runtime."""
-    original = saved.agent.runtime
-    if original is None:
-        # An explicit task image can be resolved without runtime metadata. An
-        # implicit image may have come from Compose or another workspace instead.
-        if saved.task.data.image is None:
-            raise ValueError("Saved submission has no resolved workspace image")
-        original = resolve_runtime_config(
-            saved.agent.config.runtime, Task(saved.task.data)
-        )
-    if original.type != base.type or getattr(original, "import_path", None) != getattr(
-        base, "import_path", None
-    ):
-        raise ValueError(
-            "Selected runtime is incompatible with the saved workspace runtime"
-        )
-    image = getattr(original, "image", None)
-    if not image:
-        raise ValueError("Saved submission has no resolved workspace image")
-    workdir = getattr(original, "workdir", None) or saved.task.data.workdir or "/app"
-    # Resolve current task policy with the native precedence, then supply the
-    # recorded execution workspace to grading_task/verifier_runtime. A dedicated
-    # current verifier image still takes precedence there.
-    return resolve_runtime_config(base, task).model_copy(
-        update={"image": image, "workdir": workdir}
-    )
 
 
 def _scores(trace: Trace) -> dict[str, Any]:
@@ -158,83 +63,12 @@ async def regrade_trace(
         "old": _scores(saved),
     }
     try:
-        validate_solver(saved, task)
-        if not saved.id or Path(saved.id).parts != (saved.id,) or saved.id == "..":
-            raise ValueError("Trace id must be a single path component")
-        digest = saved.info.get("artifact_manifest_sha256")
-        if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
-            raise RequiresRerun("Trace has no verified artifact manifest identity")
-        try:
-            artifacts = load_artifacts(
-                config.source / "artifacts" / saved.id,
-                max_bytes=task.data.artifact_max_bytes,
-                expected_manifest_sha256=digest,
-            )
-        except (OSError, TypeError, ValueError, RuntimeError) as exc:
-            raise RequiresRerun(
-                f"Cannot reconstruct saved submission - {type(exc).__name__}: {exc}"
-            ) from exc
-        try:
-            solver_config = solver_runtime_config(saved, task, config.runtime)
-        except ValueError as exc:
-            raise RequiresRerun(str(exc)) from exc
-        workdir = solver_config.workdir
-        declared = [
-            (posixpath.normpath(posixpath.join(workdir, entry.source)), entry.required)
-            for entry in task.data.artifacts
-        ]
-        expected_roots = {root for root, _ in declared} | {ARTIFACTS_DIR}
-        if missing := expected_roots - artifacts.keys():
-            raise RequiresRerun(
-                f"Saved submission is missing declared artifact roots: {sorted(missing)}"
-            )
-        absent = {
-            root for root, required in declared if required and artifacts[root] is None
-        }
-        if absent:
-            raise RequiresRerun(
-                f"Required artifact roots were absent from the saved submission: {sorted(absent)}"
-            )
-        task.validate_artifacts(artifacts)
-
-        policy = task.scoring
-        trace = copy.deepcopy(saved)
-        trace.task = TraceTask(
-            type=type(task).__name__, data=task.data, key=task.key, hash=task.hash
+        artifacts = load_saved_artifacts(config.source, saved)
+        replay = prepare_replay(saved, task, config.runtime, artifacts)
+        await replay.run(
+            setup_timeout=config.timeout.setup, total_timeout=config.timeout.total
         )
-        trace.state = state_cls(type(task))(artifacts=artifacts)
-        trace.rewards, trace.metrics, trace.extra_usage = {}, {}, []
-        trace.errors, trace.dropped = [], None
-        trace.is_timeout = False
-        if trace.stop_condition == "scoring_timeout":
-            trace.stop_condition = "agent_completed"
-        trace.info.pop("judge_calls", None)
-        trace.info.pop("scoring_diagnostics", None)
-        trace.info.pop("scoring_skipped", None)
-        if policy.skip_on_truncated and trace.is_truncated:
-            # Like Rollout.close, policy-skipped scoring keeps no rewards. The
-            # completed submission has already passed provenance/artifact checks.
-            trace.info["scoring_diagnostics"] = {"scoring_skipped": "truncated"}
-        else:
-            # Borrow only the solver's config; provision just the fresh verifier.
-            backend = make_backend(solver_config)
-            solver = backend.bind()
-            grader = task.grading_task(solver, scoring=policy)
-            grading_config = verifier_runtime(grader, solver, config.runtime, policy)
-            timeouts = task.data.timeout
-            if config.timeout.setup is not None:
-                timeouts = timeouts.model_copy(update={"setup": config.timeout.setup})
-            deployment = Deployment(backend, borrowed_runtime=solver)
-            await deployment.start()
-            try:
-                async with asyncio.timeout(config.timeout.total):
-                    await grade_task(
-                        grader, trace, grading_config, timeouts, policy, deployment
-                    )
-            finally:
-                await deployment.close()
-            if not trace.rewards:
-                raise ValueError("Verifier produced no rewards")
+        trace = replay.trace
         return {
             **row,
             "status": "regraded",
