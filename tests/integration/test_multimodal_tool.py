@@ -16,3 +16,21 @@ async def test_multimodal_tool(run):
     assert trace.ok
     assert trace.num_turns >= 2  # tool call + answer
     assert trace.reward == 1.0
+
+
+async def test_rlm_reads_workspace_image(run):
+    from verifiers.v1.harnesses.rlm.harness import RLMHarnessConfig
+
+    (episode,) = await run(
+        "read-image",
+        harness=RLMHarnessConfig(
+            id="rlm",
+            version="bd5b007fcd863fa3262daec2de71ecc794d45346",
+            vision=True,
+        ),
+        runtime={"type": "prime"},
+        max_turns=6,
+    )
+    (trace,) = episode.traces
+    assert trace.ok
+    assert trace.reward == 1.0

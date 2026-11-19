@@ -16,6 +16,17 @@ compaction = { summarize_at_tokens = 100000 }
 
 Web search is disabled by default; setting `search = true` enables it and requires `SERPER_API_KEY` on the evaluator host.
 
+## View images with RLM
+
+For a vision-capable model, select a nano-rlm version that supports image attachments and enable vision. The model can then call `attach(path)` in IPython to view a rendered page or consume image blocks returned by MCP tools.
+
+```toml
+[env.agent.harness]
+id = "rlm"
+version = "bd5b007fcd863fa3262daec2de71ecc794d45346"
+vision = true
+```
+
 ## A minimal harness implementation
 
 If you want to integrate a custom agent loop or another third-party CLI harness, subclass `Harness` and `HarnessConfig`:
