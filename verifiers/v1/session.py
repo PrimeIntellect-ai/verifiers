@@ -280,7 +280,6 @@ class RolloutSession:
                         and self.trace.nodes[known_path[position]].sampled
                     ):
                         issuer = known_path[position]
-                        self.tool_issuers.setdefault(alias, set()).add(issuer)
                         calls[call.id] = (issuer, call.id)
                     else:
                         calls[call.id] = alias
@@ -538,6 +537,7 @@ class RolloutSession:
         self,
         node: int,
         dialect: DialectName | None = None,
+        harness_history: Messages | None = None,
     ) -> str | None:
         """Police the tool calls the assistant committed at `node` before the harness sees
         them: the request hooks run over the branch plus an empty result for each call, so a
@@ -554,6 +554,20 @@ class RolloutSession:
         known_path = graph.path_node_ids(self.trace, node)
         branch = [self.trace.nodes[i].message for i in known_path]
         tools = self.trace.nodes[known_path[0]].tools
+        # Live harnesses replay their own input. A resumed harness may replay the
+        # model-facing transcript, including any policy notices or rewritten user turns.
+        histories = [branch]
+        if harness_history is not None and harness_history != branch[:-1]:
+            histories.append([*harness_history, assistant])
+        for history in histories:
+            prefix = hashlib.blake2b(digest_size=16)
+            for message in history:
+                prefix.update(
+                    graph.replay_message_hash(self.trace, message, dialect).encode()
+                )
+            prefix_hash = prefix.hexdigest()
+            for call in assistant.tool_calls:
+                self.tool_issuers.setdefault((prefix_hash, call.id), set()).add(node)
         for call in assistant.tool_calls:
             probe = ToolMessage(tool_call_id=call.id, content="", name=call.name)
             request = Request(messages=[*branch, probe], tools=tools or None)
