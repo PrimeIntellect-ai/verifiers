@@ -10,8 +10,9 @@ import shlex
 import tempfile
 import time
 import uuid
+import weakref
 from collections.abc import AsyncIterator, Mapping
-from contextlib import AbstractAsyncContextManager, asynccontextmanager
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, ClassVar
@@ -46,6 +47,14 @@ EFFECTIVELY_UNBOUNDED_SECONDS = 30 * 24 * 60 * 60
 """Safety deadline for APIs that require a finite bound. Normal execution remains
 bounded by idle detection or rollout cancellation; 30 days is above any real run."""
 _CHECKPOINT_DURABLE_SECONDS = 300
+_SNAPSHOTS_IN_FLIGHT = 250
+"""Memory snapshots one process takes at once. With 1,000 boxes paused together
+(2026-11-19), 250 in flight finished fastest: 21 boxes per second at 10 s each. Without
+a cap the pause requests waited over 20 s for one of the client's 100 connections,
+close to its 30 s pool timeout, and the whole batch ran at 9.5 boxes per second."""
+_snapshot_slots: weakref.WeakKeyDictionary[
+    asyncio.AbstractEventLoop, asyncio.Semaphore
+] = weakref.WeakKeyDictionary()
 _PAUSE_SETTLE_SECONDS = 120
 """How long a pause or a resume gets to take effect; they take seconds."""
 _DEAD_STATUSES = frozenset({"ERROR", "TERMINATED", "TIMEOUT"})
@@ -421,15 +430,20 @@ class PrimeBackend(RuntimeBackend):
         except Exception as e:
             raise SandboxError(f"prime checkpoint failed: {e}") from e
 
-    def snapshot_pace(self) -> AbstractAsyncContextManager[Any]:
-        return (
-            creation_limiter(
-                (self.config.snapshots_per_min or 0) / 60,
-                "prime-snapshot",
-                run_scope(),
-            )
-            or contextlib.nullcontext()
+    @asynccontextmanager
+    async def snapshot_pace(self) -> AsyncIterator[None]:
+        limiter = creation_limiter(
+            (self.config.snapshots_per_min or 0) / 60, "prime-snapshot", run_scope()
         )
+        if limiter is not None:
+            async with limiter:
+                pass
+        loop = asyncio.get_running_loop()
+        slots = _snapshot_slots.get(loop)
+        if slots is None:
+            slots = _snapshot_slots[loop] = asyncio.Semaphore(_SNAPSHOTS_IN_FLIGHT)
+        async with slots:
+            yield
 
     async def _resume(self) -> None:
         """Resume the paused box. The pause freed its memory on its node, which another
