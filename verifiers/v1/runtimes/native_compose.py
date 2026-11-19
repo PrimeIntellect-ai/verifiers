@@ -438,7 +438,7 @@ async def prepare_native(config: PrimeConfig, spec: ComposeSpec, env: dict[str, 
             item = inspected[name]
             metadata = item["Config"]
             user = metadata.get("User") or None
-            if user == "0":
+            if spec.file is not None and user == "0":
                 user = "root"
             if (
                 spec.file is not None
