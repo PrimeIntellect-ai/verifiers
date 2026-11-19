@@ -6,7 +6,7 @@ import asyncio
 import hashlib
 import shlex
 import uuid
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import PurePosixPath
 from types import MappingProxyType
@@ -44,8 +44,10 @@ class Runtime:
     env: Mapping[str, str] = field(default_factory=dict)
     user: str | None = None
     home: str | None = None
+    workdir: str | None = None
     _remote_tools_only: bool = False
     _execution_bridge: ExecutionBridge | None = None
+    _lan_waiter: Callable[[], Awaitable[None]] | None = None
 
     def __post_init__(self) -> None:
         if self.user is not None and not self.backend.SUPPORTS_USER_SWITCHING:
@@ -62,6 +64,16 @@ class Runtime:
     def with_user(self, user: str | None, home: str | None = None) -> Self:
         return replace(self, user=user, home=home if user is not None else None)
 
+    def with_workdir(self, workdir: str | None) -> Self:
+        return replace(self, workdir=workdir)
+
+    async def wait_lan_ready(self) -> None:
+        if self._lan_waiter is not None:
+            await self._lan_waiter()
+            return
+        if wait_lan := getattr(self.backend, "wait_lan_ready", None):
+            await wait_lan()
+
     def process_env(self, env: dict[str, str]) -> dict[str, str]:
         home = {} if self.home is None else {"HOME": self.home}
         return {**self.env, **home, **env}
@@ -72,7 +84,13 @@ class Runtime:
 
     @property
     def info(self):
-        return self.backend.info
+        info = self.backend.info
+        if (
+            self.workdir is not None
+            and getattr(info, "workdir", self.workdir) != self.workdir
+        ):
+            return info.model_copy(update={"workdir": self.workdir})
+        return info
 
     @property
     def name(self) -> str:

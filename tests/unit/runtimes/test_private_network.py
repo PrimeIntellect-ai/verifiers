@@ -297,8 +297,8 @@ def test_reuse_harness_pools_across_rollouts_and_detaches_each_lan(monkeypatch):
     monkeypatch.setattr(PrimeBackend, "teardown", teardown)
     monkeypatch.setattr(
         prime,
-        "_resolve_and_join_lan",
-        lambda backend: asyncio.sleep(0),
+        "join_lan",
+        lambda backend, network_id, tags: asyncio.sleep(0),
     )
 
     cfg = vf.DeploymentConfig(mode="split", reuse_harness=True)
@@ -352,3 +352,100 @@ def test_set_network_skips_open_reset_when_only_control_hosts_are_blocked():
     )
     asyncio.run(restricted_ws.set_network(vf.NetworkPolicyConfig()))
     assert calls == [(None, None)]
+
+
+def test_multiplex_shares_harness_vm_across_concurrent_rollouts_with_isolated_workdirs(
+    monkeypatch,
+):
+    from verifiers.v1.runtimes.harness_pool import harness_pool_scope
+
+    events = []
+    net_seq = 0
+    sb_seq = 0
+
+    class MuxLanClient:
+        async def create_lan_network(self, name, rules):
+            nonlocal net_seq
+            net_seq += 1
+            return SimpleNamespace(id=f"net{net_seq}")
+
+        async def remove_lan_member(self, network_id, sandbox_id):
+            events.append(("detach", network_id, sandbox_id))
+
+        async def delete_lan_network(self, network_id):
+            events.append(("delete_net", network_id))
+
+    @asynccontextmanager
+    async def leased_client():
+        yield MuxLanClient()
+
+    async def start(self):
+        nonlocal sb_seq
+        sb_seq += 1
+        await asyncio.sleep(0.01)
+        self.info.id = f"sb-{self.name}-{sb_seq}"
+        self._client = MuxLanClient()
+        self._created_workdirs.add(self.config.workdir)
+        events.append(("start", self.name, self.info.id))
+
+    async def run_cmd(self, runtime, argv, env):
+        events.append(("mkdir", self.info.id, runtime.workdir or self.config.workdir))
+        return vf.ProgramResult(exit_code=0, stdout="", stderr="")
+
+    async def teardown(self):
+        if self._client is not None:
+            self._client = None
+            events.append(("stop", self.name, self.info.id))
+
+    monkeypatch.setattr(private_network, "leased_client", leased_client)
+    monkeypatch.setattr(prime, "ensure_prime_auth", lambda: None)
+    monkeypatch.setattr(PrimeBackend, "start", start)
+    monkeypatch.setattr(PrimeBackend, "run", run_cmd)
+    monkeypatch.setattr(PrimeBackend, "teardown", teardown)
+    monkeypatch.setattr(
+        prime,
+        "join_lan",
+        lambda backend, network_id, tags: asyncio.sleep(0),
+    )
+
+    cfg = vf.DeploymentConfig(mode="split", reuse_harness=True, multiplex=2)
+    barrier = None
+
+    async def one_rollout(idx: int, workdir: str):
+        ws = PrimeBackend(PrimeConfig(workdir=workdir), name=f"ws{idx}")
+        dep = ws.deploy(config=cfg)
+        await dep.start()
+        assert dep._harness_runtime.info.workdir == workdir
+        assert dep.harness_backend.config.workdir == "/app"
+        await barrier.wait()
+        h_id = dep.harness_backend.info.id
+        await dep.close()
+        return h_id
+
+    async def run_four_concurrent():
+        nonlocal barrier
+        barrier = asyncio.Barrier(4)
+        async with harness_pool_scope():
+            ids = await asyncio.gather(
+                one_rollout(1, "/app"),
+                one_rollout(2, "/workspace"),
+                one_rollout(3, "/srv/task"),
+                one_rollout(4, "/app"),
+            )
+            # While pool scope is still open, neither shared harness VM was stopped yet.
+            harness_stops_mid = [
+                e for e in events if e[0] == "stop" and "harness" in e[1]
+            ]
+            assert harness_stops_mid == []
+            return ids
+
+    assigned = asyncio.run(run_four_concurrent())
+    # 4 concurrent rollouts with multiplex=2 pack onto exactly 2 harness VMs (2 slots each).
+    harness_starts = [e for e in events if e[0] == "start" and "harness" in e[1]]
+    assert len(harness_starts) == 2
+    assert len(set(assigned)) == 2
+    for hid in set(assigned):
+        assert assigned.count(hid) == 2
+    # Both pooled harness VMs stop cleanly on scope exit.
+    harness_stops = [e for e in events if e[0] == "stop" and "harness" in e[1]]
+    assert len(harness_stops) == 2

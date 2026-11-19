@@ -2,6 +2,7 @@
 
 from typing import Literal
 
+from pydantic import Field
 from pydantic_config import BaseConfig
 
 from verifiers.v1.configs.runtime import PrimeConfig
@@ -16,5 +17,9 @@ class DeploymentConfig(BaseConfig):
     Docker uses the evaluator's runtime configuration for its harness container."""
     reuse_harness: bool = False
     """Pool and reuse split Prime harness VMs across rollouts in the same eval."""
+    multiplex: int = Field(8, ge=1)
+    """Concurrent rollouts that share one pooled Prime harness VM when `reuse_harness`
+    is enabled. N concurrent rollouts use ~N/multiplex harness VMs; 1 = exclusive per
+    active rollout."""
     trust_compose: bool = False
     """Permit task-authored Compose privileges and bind mounts on local Docker."""

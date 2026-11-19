@@ -85,15 +85,9 @@ async def _join_lan_fast(
         lease.release()
 
 
-async def _resolve_and_join_lan(backend: PrimeBackend) -> None:
-    if backend.lan is None and backend._lan_pending is not None:
-        network_task, tags = backend._lan_pending
-        network_id = await asyncio.shield(network_task)
-        backend.lan = (network_id, tags)
-        backend._lan_pending = None
-    if backend.lan is None or backend.info.id is None:
+async def join_lan(backend: PrimeBackend, network_id: str, tags: list[str]) -> None:
+    if backend.info.id is None:
         return
-    network_id, tags = backend.lan
     if backend._launcher is not None:
         await backend._launcher.call(
             "join_network",
@@ -103,6 +97,18 @@ async def _resolve_and_join_lan(backend: PrimeBackend) -> None:
         )
     else:
         await _join_lan_fast(backend._client, network_id, backend.info.id, tags)
+
+
+async def _resolve_and_join_lan(backend: PrimeBackend) -> None:
+    if backend.lan is None and backend._lan_pending is not None:
+        network_task, tags = backend._lan_pending
+        network_id = await asyncio.shield(network_task)
+        backend.lan = (network_id, tags)
+        backend._lan_pending = None
+    if backend.lan is None or backend.info.id is None:
+        return
+    network_id, tags = backend.lan
+    await join_lan(backend, network_id, tags)
 
 
 async def _wait_and_init_sandbox(
@@ -606,6 +612,9 @@ class PrimeBackend(RuntimeBackend):
             policy.get("deny"),
         )
 
+    def _workdir_for(self, runtime: Runtime) -> str:
+        return runtime.workdir or self.config.workdir
+
     async def run(
         self, runtime: Runtime, argv: list[str], env: dict[str, str]
     ) -> ProgramResult:
@@ -623,7 +632,7 @@ class PrimeBackend(RuntimeBackend):
                 self.info.id,
                 "exec "
                 + shlex.join(["sh", "-c", 'exec "$@" < /dev/null', "sh", *argv]),
-                working_dir=self.config.workdir,
+                working_dir=self._workdir_for(runtime),
                 env=runtime.process_env(env),
                 user=runtime.user,
             )
@@ -651,7 +660,7 @@ class PrimeBackend(RuntimeBackend):
             process = await self._client.open_process(
                 self.info.id,
                 shlex.join(argv),
-                working_dir=self.config.workdir,
+                working_dir=self._workdir_for(runtime),
                 env=runtime.process_env(env),
                 user=runtime.user,
             )
@@ -709,7 +718,7 @@ class PrimeBackend(RuntimeBackend):
             await self._client.start_background_job(
                 self.info.id,
                 command,
-                working_dir=self.config.workdir,
+                working_dir=self._workdir_for(runtime),
                 env=runtime.process_env(env),
                 user=runtime.user,
             )
@@ -728,7 +737,7 @@ class PrimeBackend(RuntimeBackend):
                 process = await self._client.open_process(
                     self.info.id,
                     f"{reader} -- {shlex.quote(path)}",
-                    working_dir=self.config.workdir,
+                    working_dir=self._workdir_for(runtime),
                     env=runtime.process_env({}),
                     user=runtime.user,
                 )
@@ -753,11 +762,8 @@ class PrimeBackend(RuntimeBackend):
                 raise SandboxError(f"read {path!r}: {exc}") from exc
         # Avoid background-job log limits and base64 overhead by downloading binary data directly.
         # The temporary file is removed on every exit, and its byte read stays off the event loop.
-        target = (
-            path
-            if path.startswith("/")
-            else f"{self.config.workdir.rstrip('/')}/{path}"
-        )
+        workdir = self._workdir_for(runtime)
+        target = path if path.startswith("/") else f"{workdir.rstrip('/')}/{path}"
         try:
             with tempfile.TemporaryDirectory() as directory:
                 download = Path(directory) / "download"
@@ -769,11 +775,8 @@ class PrimeBackend(RuntimeBackend):
     async def write(self, runtime: Runtime, path: str, data: bytes) -> None:
         # The gateway creates missing parents and uploads binary data without command-line
         # limits. Resolve relative paths here because uploads do not use this runtime's workdir.
-        target = (
-            path
-            if path.startswith("/")
-            else f"{self.config.workdir.rstrip('/')}/{path}"
-        )
+        workdir = self._workdir_for(runtime)
+        target = path if path.startswith("/") else f"{workdir.rstrip('/')}/{path}"
         if runtime.user is None:
             try:
                 await self._client.upload_bytes(
