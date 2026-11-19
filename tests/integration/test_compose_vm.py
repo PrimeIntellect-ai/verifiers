@@ -27,6 +27,7 @@ services:
     environment:
       LITERAL_TOKEN: 'a$$VALUE'
       EXPANDED_TOKEN: '${{TOKEN_VALUE}}'
+      AUTHORED_PHASE: '${{BUILD_FLAVOR:-solver}}'
     env_file: values.env
     network_mode: service:world
     volumes: [world_logs:/logs/world:ro, ../payload:/payload:ro]
@@ -168,6 +169,7 @@ async def test_compose_vm(tmp_path, scoring_mode, monkeypatch):
         + (
             'test "$(cat /evidence/answer)" = 43\n'
             'test "$BUILD_FLAVOR" = grader\n'
+            'test "$AUTHORED_PHASE" = grader\n'
             "test ! -e /app/solver-only\n"
             if scoring_mode == "isolated"
             else ""
