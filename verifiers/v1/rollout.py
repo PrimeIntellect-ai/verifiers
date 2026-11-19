@@ -25,6 +25,7 @@ from verifiers.v1.grading import (
     bind_scoring_env,
     grade_task,
     scoring_network,
+    scoring_skip_reason,
     scoring_transaction,
     verifier_runtime,
 )
@@ -768,12 +769,8 @@ class Rollout:
     def _scoring_skip_reason(self) -> str | None:
         """Why the resolved scoring policy, or the `skip_scoring` stop that ended this trace,
         skips task scoring for it, if either does."""
-        if self.trace.is_format_violation:
-            return "format_violation"
-        if self._scoring_policy.skip_on_truncated and self.trace.is_truncated:
-            return "truncated"
-        if self._scoring_policy.skip_on_timeout and self.trace.is_timeout:
-            return "timeout"
+        if reason := scoring_skip_reason(self.trace, self._scoring_policy):
+            return reason
         if self.trace.stop_condition in self._skip_scoring_stops:
             return self.trace.stop_condition
         return None
