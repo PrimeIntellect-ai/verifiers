@@ -67,7 +67,7 @@ from verifiers.v1.interception.tunnel.base import HEALTH_PATH
 from verifiers.v1.semantic import ACPInfo, extract_acp_info, routing_session_id
 from verifiers.v1.session import IdempotentRequest, ReplayResponse, RolloutSession
 from verifiers.v1.trace import Error, ModelCall, PolicyEvent, TimeSpan
-from verifiers.v1.types import FinishReason, Response, Usage
+from verifiers.v1.types import FinishReason, Response, ToolMessage, Usage
 from verifiers.v1.utils.aio import run_shielded
 from verifiers.v1.utils.format import format_time
 from verifiers.v1.utils.logging import clip, get_logger, isolated
@@ -758,11 +758,16 @@ class InterceptionServer(Interception):
             body = from_json(raw)
         except ValueError:
             body = json.loads(raw)
-        body = dialect.apply_overrides(body, session.ctx.model, session.ctx.sampling)
+        # One context for the whole request: a route updated while it is in flight applies
+        # from the next request, never to half of this one.
+        ctx = session.ctx
+        session.route.dialect = dialect
+        session.client = client = self._client(ctx.client)
+        body = dialect.apply_overrides(body, ctx.model, ctx.sampling)
         streaming = dialect.streaming(body)
         # A streamed request is served whole once its turn commits: the eval client's
         # provider stream is read to the end, and the train client generates the response.
-        relay = streaming and not isinstance(session.ctx.client, TrainClientConfig)
+        relay = streaming and not isinstance(ctx.client, TrainClientConfig)
         req_hash = await _request_digest(raw)
         # Keep `read()` for aiohttp's size guard, then release its cache and our local
         # alias after parsing so the wire body does not survive model inference.
@@ -876,6 +881,7 @@ class InterceptionServer(Interception):
                     dialect, f"rollout stopped: {refused}", status=400
                 )
             original_request = model_request
+            harness_history = original_request.messages
             model_request, request_rewrites, stopped = await session.rewrite_request(
                 model_request, dialect=dialect.name
             )
@@ -883,6 +889,14 @@ class InterceptionServer(Interception):
             # A pinned tool result changes the request without a fresh record.
             if stopped is None and model_request != original_request:
                 dialect.rewrite_request(body, original_request, model_request)
+                # Match future receipts against the prompt the harness will replay.
+                # It retains its own user messages. We reapply pinned tool results.
+                harness_history = [
+                    after if isinstance(after, ToolMessage) else before
+                    for before, after in zip(
+                        original_request.messages, model_request.messages, strict=True
+                    )
+                ]
         except RolloutError as error:
             return self._fail(session, dialect, error)
         except Exception as error:  # noqa: BLE001 - surface task hook failures
@@ -951,7 +965,7 @@ class InterceptionServer(Interception):
                     # What actually goes upstream: the native body with the rollout's model +
                     # sampling imposed — recorded raw on the trace, per call.
                     if relay:
-                        reply = await session.client.relay(
+                        reply = await client.relay(
                             dialect,
                             body,
                             headers=upstream_headers,
@@ -959,10 +973,10 @@ class InterceptionServer(Interception):
                         )
                         call_response, events = await _collect_stream(dialect, reply)
                     else:
-                        call_response = await session.client.get_response(
+                        call_response = await client.get_response(
                             dialect,
                             body,
-                            session.ctx.sampling,
+                            ctx.sampling,
                             headers=upstream_headers,
                             session_id=upstream_session_id,
                             turn=turn,
@@ -1008,7 +1022,9 @@ class InterceptionServer(Interception):
                     session.consume_prepared(turn.tail)
                     session.trace.response_rewrites.extend(response_rewrites)
                     if stopped is None:
-                        stopped = await session.gate_tool_calls(node)
+                        stopped = await session.gate_tool_calls(
+                            node, dialect.name, harness_history
+                        )
                     if stopped is not None:
                         session.trace.stop(stopped)
                         return _error_response(
@@ -1073,9 +1089,10 @@ class InterceptionServer(Interception):
         logger.debug("Received %s request", route)
         try:
             body = await request.json()
-            body["model"] = session.ctx.model
+            ctx = session.ctx
+            body["model"] = ctx.model
             body = self.mediate_capabilities(session, dialect, body)[0]
-            result = await session.client.relay_aux(
+            result = await self._client(ctx.client).relay_aux(
                 dialect, route, body, headers=request.headers
             )
         except RolloutError as e:

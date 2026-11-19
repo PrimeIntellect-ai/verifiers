@@ -136,6 +136,10 @@ class ToolCall(BaseModel):
 class AssistantMessage(BaseModel):
     role: Literal["assistant"] = "assistant"
     content: str | None = None
+    text_block_offsets: list[int] | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
+    """Character offsets between native text blocks concatenated into content."""
     reasoning_content: str | None = None
     tool_calls: list[ToolCall] | None = None
     provider_state: list[dict[str, Any]] | None = None

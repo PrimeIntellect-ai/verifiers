@@ -71,7 +71,7 @@ class CompactionConfig(BaseConfig):
 class RLMHarnessConfig(HarnessConfig):
     dialect: Literal["chat_completions"] = "chat_completions"
     version: str = Field(
-        default="695ac48461fbd154859093eaa14589b21f63c22e", min_length=1
+        default="8ca926cdd64fd7725b78cf95a4e1667315d3b1f6", min_length=1
     )
     """Git ref (branch, tag, or commit) of nano-rlm to install. Must know every
     field this harness puts on the wire, i.e. be at least the default ref."""
@@ -150,7 +150,9 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
     async def setup(self, runtime: Runtime) -> None:
         if self.config.skills:
             # Editable skill packages and uv's tool environment must belong to this run.
-            self._skills_install_dir = f"{RLM_CACHE_DIR}-skills-{secrets.token_hex(16)}"
+            self._skills_install_dir = runtime.temp_path(
+                f"rlm-skills-{secrets.token_hex(16)}", env=self.config.resolved_env
+            )
             await self.install_skills(runtime, f"{self._skills_home()}/skills")
         directory = self._install_dir()
         binary = f"{directory}/bin/rlm"
@@ -158,21 +160,25 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
         ready = f"{directory}/.ready"
         # install.sh installs the Python skill packages under $RLM_HOME/skills.
         home = self._skills_home()
-        home_env = f"RLM_HOME={home} " if home else ""
+        home_env = f"RLM_HOME={shlex.quote(home)} " if home else ""
         # install.sh fetches curl/uv itself; add git only when the image lacks it.
         install = (
-            f"rm -f {ready} && "
+            f"rm -f {shlex.quote(ready)} && "
             "(command -v git >/dev/null 2>&1 || "
             "{ apt-get update -qq && apt-get install -y -qq git; } || dnf install -y -q git || apk add --no-cache git && "
-            f"rm -rf {checkout} && git clone https://{RLM_REPO} {checkout} && "
-            f"git -C {checkout} checkout {shlex.quote(self.config.version)} && "
+            f"rm -rf {shlex.quote(checkout)} && git clone https://{RLM_REPO} {shlex.quote(checkout)} && "
+            f"git -C {shlex.quote(checkout)} checkout {shlex.quote(self.config.version)} && "
             # The editable install needs the files, not the history; agents searching
             # their workspace for a repository must not find the harness's own.
-            f"rm -rf {checkout}/.git && "
-            f"{home_env}UV_INSTALL_DIR={directory}/bin UV_TOOL_BIN_DIR={directory}/bin "
-            f"UV_TOOL_DIR={directory}/tools "
-            f"RLM_CHECKOUT_PATH={checkout} bash {checkout}/install.sh && "
-            f"touch {ready})"
+            f"rm -rf {shlex.quote(checkout + '/.git')} && "
+            # Unmanaged: install.sh's uv installer then writes no receipt under root's
+            # $HOME/.config/uv, which a task image can point at the agent's workspace.
+            f"{home_env}UV_INSTALL_DIR={shlex.quote(directory + '/bin')} "
+            f"UV_UNMANAGED_INSTALL={shlex.quote(directory + '/bin')} "
+            f"UV_TOOL_BIN_DIR={shlex.quote(directory + '/bin')} "
+            f"UV_TOOL_DIR={shlex.quote(directory + '/tools')} "
+            f"RLM_CHECKOUT_PATH={shlex.quote(checkout)} bash {shlex.quote(checkout + '/install.sh')} && "
+            f"touch {shlex.quote(ready)})"
         )
         logger.debug("Ensuring rlm %s is installed", self.config.version)
         env = self.config.resolved_env.copy()
@@ -181,7 +187,7 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
         await ensure_installed(
             runtime,
             directory=directory,
-            ready=f"[ -f {ready} ] && [ -x {binary} ]",
+            ready=f"[ -f {shlex.quote(ready)} ] && [ -x {shlex.quote(binary)} ]",
             install=install,
             env=env,
             label="rlm",

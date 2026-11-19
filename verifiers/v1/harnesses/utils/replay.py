@@ -2,6 +2,8 @@
 `Harness.replay_view` overrides. Each function is idempotent and only normalizes
 whitespace, so the replayed and the sampled form of a turn map to the same view."""
 
+from itertools import pairwise
+
 from verifiers.v1.types import AssistantMessage, Message
 
 
@@ -15,6 +17,23 @@ def drop_blank_text(message: Message) -> Message:
     ):
         return message.model_copy(update={"content": None})
     return message
+
+
+def drop_blank_text_blocks(message: Message) -> Message:
+    """Drop independently blank blocks while preserving whitespace inside other blocks."""
+    if not isinstance(message, AssistantMessage) or not message.text_block_offsets:
+        return drop_blank_text(message)
+    text = message.content or ""
+    offsets = (0, *message.text_block_offsets, len(text))
+    if any(start > end for start, end in pairwise(offsets)):
+        return drop_blank_text(message)
+    blocks = (text[start:end] for start, end in pairwise(offsets))
+    return message.model_copy(
+        update={
+            "content": "".join(block for block in blocks if block.strip()) or None,
+            "text_block_offsets": None,
+        }
+    )
 
 
 def strip_text(message: Message) -> Message:

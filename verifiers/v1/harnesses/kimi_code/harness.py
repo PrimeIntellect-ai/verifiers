@@ -29,16 +29,16 @@ INSTALL = r"""
 set -e
 packages=/var/tmp/vf-kimi-code
 export PATH="/var/tmp/vf-node/bin:$PATH"
-if [ "$(cat "$packages/.version" 2>/dev/null)" != "$VF_KIMI_VERSION" ]; then
+if [ "$(cat "$packages/.version" 2>/dev/null)" != "$AGENT_KIMI_VERSION" ]; then
     npm install --prefix "$packages" --ignore-scripts --no-audit --no-fund --omit=dev \
-        "@moonshot-ai/kimi-code@$VF_KIMI_VERSION" >/dev/null
-    printf %s "$VF_KIMI_VERSION" > "$packages/.version"
+        "@moonshot-ai/kimi-code@$AGENT_KIMI_VERSION" >/dev/null
+    printf %s "$AGENT_KIMI_VERSION" > "$packages/.version"
 fi
 """
 
 
 class KimiCodeHarnessConfig(HarnessConfig):
-    version: PinnedVersion = "2.4.1"
+    version: PinnedVersion = "2.6.3"
     """Kimi Code release to install, pinned for reproducibility."""
     dialect: DialectName = "chat_completions"
 
@@ -51,8 +51,8 @@ class KimiCodeHarness(ACPHarness[KimiCodeHarnessConfig]):
 
     # Kimi Code drops whitespace-only assistant text when it stores a step, so every
     # transport replays it without. Recheck on version bumps:
-    # https://github.com/MoonshotAI/kimi-code/blob/@moonshot-ai/kimi-code@2.4.1/packages/agent-core-v2/src/agent/loop/loopService.ts#L1819
-    # https://github.com/MoonshotAI/kimi-code/blob/@moonshot-ai/kimi-code@2.4.1/packages/agent-core-v2/src/agent/contextMemory/vacuousContent.ts#L6
+    # https://github.com/MoonshotAI/kimi-code/blob/@moonshot-ai/kimi-code@2.6.3/packages/agent-core-v2/src/human/llm/policy/settle.ts#L26
+    # https://github.com/MoonshotAI/kimi-code/blob/@moonshot-ai/kimi-code@2.6.3/packages/agent-core-v2/src/human/llm/message.ts#L162-L169
     def replay_view(self, message: Message, dialect: DialectName | None) -> Message:
         return drop_blank_text(message)
 
@@ -63,7 +63,7 @@ class KimiCodeHarness(ACPHarness[KimiCodeHarnessConfig]):
             runtime,
             directory=KIMI_DIR,
             install=INSTALL,
-            env={"VF_KIMI_VERSION": self.config.version},
+            env={"AGENT_KIMI_VERSION": self.config.version},
             label="Kimi Code",
         )
         await super().setup(runtime)
@@ -101,7 +101,7 @@ class KimiCodeHarness(ACPHarness[KimiCodeHarnessConfig]):
                                 "decision": "deny",
                                 "scope": "user",
                                 "pattern": tool,
-                                "reason": "Disabled by Verifiers harness configuration.",
+                                "reason": "Disabled by the current configuration.",
                             }
                             for tool in self.config.disabled_tools
                         ]

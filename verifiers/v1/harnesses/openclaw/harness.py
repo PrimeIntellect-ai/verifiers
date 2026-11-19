@@ -22,11 +22,11 @@ set -e
 if [ ! -x "$VF_OPENCLAW_BIN" ]; then
     command -v curl >/dev/null || (apt-get update -qq && apt-get install -y -qq curl ca-certificates >/dev/null)
     curl -fsSL --proto '=https' --tlsv1.2 https://openclaw.ai/install-cli.sh \
-        | bash -s -- --prefix "$VF_OPENCLAW_DIR" --version "$VF_OPENCLAW_VERSION" --no-onboard
+        | bash -s -- --prefix "$AGENT_OPENCLAW_DIR" --version "$AGENT_OPENCLAW_VERSION" --no-onboard
 fi
-set -- $(find "$VF_OPENCLAW_DIR/tools" -type f -path '*/openclaw/dist/session-accessor.sqlite-transcript-store-*.mjs')
+set -- $(find "$AGENT_OPENCLAW_DIR/tools" -type f -path '*/openclaw/dist/session-accessor.sqlite-transcript-store-*.mjs')
 [ "$#" -eq 1 ] || { echo "could not locate OpenClaw's transcript sanitizer for replay patch" >&2; exit 1; }
-"$VF_OPENCLAW_DIR/tools/node/bin/node" - "$1" <<'NODE'
+"$AGENT_OPENCLAW_DIR/tools/node/bin/node" - "$1" <<'NODE'
 const fs = require("node:fs");
 const file = process.argv[2];
 const stat = fs.statSync(file);
@@ -34,12 +34,15 @@ if (stat.size > 1_000_000) {
     throw new Error("OpenClaw's transcript sanitizer exceeds the replay patch size limit");
 }
 const source = fs.readFileSync(file, "utf8");
+// The published bundle can rename the local that holds the validated reasoning item.
+const item = source.match(/(\w+)\.summary !== void 0 && !Array\.isArray\(\1\.summary\)/)?.[1];
+if (!item) throw new Error("could not locate OpenClaw's reasoning summary validation");
 const patches = [
     [
         "const OPAQUE_REPLAY_TOKEN_RE = /^[A-Za-z0-9+/_-]+={0,2}$/;",
         "const OPAQUE_REPLAY_TOKEN_RE = /^[A-Za-z0-9+/_-]+={0,2}(?:[.][A-Za-z0-9+/_-]+={0,2})*$/;",
     ],
-    ["\t\tsummary: [],", "\t\tsummary: parsed.summary ?? [],"],
+    ['type: "reasoning",\n\t\tsummary: [],', `type: "reasoning",\n\t\tsummary: ${item}.summary ?? [],`],
 ];
 let patched = source;
 for (const [before, after] of patches) {
@@ -125,7 +128,7 @@ wait "$acp_pid"
 
 
 class OpenClawHarnessConfig(HarnessConfig):
-    version: PinnedVersion = "2026.10.9"
+    version: PinnedVersion = "2026.11.5"
     """OpenClaw release to install, pinned for reproducibility."""
     dialect: Literal["auto"] = "auto"
     """OpenClaw takes the transport from its model catalog."""
@@ -155,8 +158,8 @@ class OpenClawHarness(ACPHarness[OpenClawHarnessConfig]):
             env={
                 **self.config.resolved_env,
                 "VF_OPENCLAW_BIN": binary,
-                "VF_OPENCLAW_DIR": directory,
-                "VF_OPENCLAW_VERSION": self.config.version,
+                "AGENT_OPENCLAW_DIR": directory,
+                "AGENT_OPENCLAW_VERSION": self.config.version,
             },
             label="OpenClaw",
             shell=("bash", "-o", "pipefail", "-c"),
@@ -219,7 +222,6 @@ class OpenClawHarness(ACPHarness[OpenClawHarnessConfig]):
                 "defaults": {
                     "workspace": ".",
                     "skipBootstrap": True,
-                    "heartbeat": {"every": "0m"},
                     "sandbox": {"mode": "off"},
                     "model": {"primary": ctx.model},
                     "utilityModel": "",  # Disable background recap model calls.

@@ -22,17 +22,22 @@ logger = get_logger(__name__)
 
 CODEX_DIR = "/var/tmp/vf-codex-{version}-{acp_version}"
 PACKAGES_DIR = f"{CODEX_DIR}/acp"
-ACP_VERSION = "2.5.0"
+ACP_VERSION = "2.7.0"
 CODEX_BIN = f"{PACKAGES_DIR}/node_modules/.bin/codex"
 ACP_BIN = f"{PACKAGES_DIR}/node_modules/.bin/codex-acp"
 INSTALL = r"""
 set -e
 export PATH="/var/tmp/vf-node/bin:$PATH"
 rm -f {ready}
-npm install --prefix {packages} --ignore-scripts --no-audit --no-fund \
+# Resolve the adapter's bundled CLI to the harness pin, including across minor releases.
+mkdir -p {packages}
+cd {packages}
+printf '{"overrides":{"@agentclientprotocol/codex-acp":{"@openai/codex":"%s"}}}\n' \
+    "$AGENT_CODEX_VERSION" > package.json
+npm install --ignore-scripts --no-audit --no-fund \
     --omit=dev \
-    "@agentclientprotocol/codex-acp@$VF_CODEX_ACP_VERSION" \
-    "@openai/codex@$VF_CODEX_VERSION" >/dev/null
+    "@agentclientprotocol/codex-acp@$AGENT_CODEX_ACP_VERSION" \
+    "@openai/codex@$AGENT_CODEX_VERSION" >/dev/null
 touch {ready}
 """
 
@@ -40,7 +45,7 @@ touch {ready}
 GATE_HOOK = (Path(__file__).resolve().parent / "gate.mjs").read_text()
 GATE_HANDLER = {
     "type": "command",
-    "command": f'{NODE_BIN_DIR}/node "$CODEX_HOME/vf-gate.mjs"',
+    "command": f'{NODE_BIN_DIR}/node "$CODEX_HOME/tool-gate.mjs"',
     "timeout": 120,
     "async": False,
 }
@@ -48,9 +53,9 @@ GATE_HANDLER = {
 
 class CodexHarnessConfig(HarnessConfig):
     # Codex accepts no other wire API:
-    # https://github.com/openai/codex/blob/rust-v0.166.0/codex-rs/model-provider-info/src/lib.rs#L115
+    # https://github.com/openai/codex/blob/rust-v0.170.0/codex-rs/model-provider-info/src/lib.rs#L119
     dialect: Literal["responses"] = "responses"
-    version: PinnedVersion = "0.166.0"
+    version: PinnedVersion = "0.170.0"
     """Codex release to install, pinned for reproducibility."""
     code_mode: bool = False
     """Enable Code Mode when the model's metadata does not select its tool mode."""
@@ -96,8 +101,8 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
             install=script,
             env={
                 **self.config.resolved_env,
-                "VF_CODEX_VERSION": self.config.version,
-                "VF_CODEX_ACP_VERSION": ACP_VERSION,
+                "AGENT_CODEX_VERSION": self.config.version,
+                "AGENT_CODEX_ACP_VERSION": ACP_VERSION,
             },
             label="codex",
         )
@@ -128,10 +133,15 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
             # Codex reads MCP servers from the config written by build_env().
             mcp_urls={},
             system_prompt=system_prompt,
+            # An untitled session starts a separate model turn to generate a UI title.
+            session_title=f"Verifiers rollout {trace.id}",
             client_capabilities={
                 "_meta": {
                     "jetbrains": {
-                        "air": {"version": 1, "capabilities": ["sessionFailure"]}
+                        "air": {
+                            "version": 1,
+                            "capabilities": ["sessionFailure", "sessionIndex"],
+                        }
                     }
                 }
             },
@@ -143,14 +153,14 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
         # Codex asks its ACP client only when a command escapes the sandbox, and never in
         # full access, so the gate is a PreToolUse hook instead.
         await runtime.write(
-            f"{config.env['CODEX_HOME']}/vf-gate.mjs",
+            f"{config.env['CODEX_HOME']}/tool-gate.mjs",
             GATE_HOOK.replace("__URL__", json.dumps(url))
             .replace("__SECRET__", json.dumps(secret))
             .encode(),
         )
         # Codex keys hook trust by the config's canonical path, resolving symlinks.
         home = await runtime.run(
-            ["sh", "-c", 'cd "$1" && pwd -P', "vf-gate", config.env["CODEX_HOME"]],
+            ["sh", "-c", 'cd "$1" && pwd -P', "tool-gate", config.env["CODEX_HOME"]],
             {},
         )
         if home.exit_code:
@@ -187,20 +197,31 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
     ) -> dict[str, str]:
         home = self.trace_home(trace)
         await self.install_skills(runtime, f"{home}/skills")
-        mcp_config = "features={mcp_2026_07_28=true}\n" + (
-            "mcp_servers={"
-            + ",".join(
-                f"{json.dumps(name, ensure_ascii=False)}="
-                f"{{url={json.dumps(url, ensure_ascii=False)},required=true,"
-                'omit_tools_from=["deferred","code_mode"],'
-                f"startup_timeout_sec=60.0,tool_timeout_sec={self.config.tool_timeout}}}"
+        # The app server and its ACP sessions must start with the same provider.
+        settings = {
+            "model_provider": "custom-gateway",
+            "model_providers": {
+                "custom-gateway": {
+                    "name": "Verifiers",
+                    "base_url": endpoint,
+                    "wire_api": "responses",
+                    "env_key": "CODEX_INTERCEPT_KEY",
+                    "http_headers": {"X-Client-Feature-ID": "codex"},
+                }
+            },
+            "features": {"mcp_2026_07_28": True},
+            "mcp_servers": {
+                name: {
+                    "url": url,
+                    "required": True,
+                    "omit_tools_from": ["deferred", "code_mode"],
+                    "startup_timeout_sec": 60.0,
+                    "tool_timeout_sec": self.config.tool_timeout,
+                }
                 for name, url in mcp_urls.items()
-            )
-            + "}"
-            if mcp_urls
-            else ""
-        )
-        await runtime.write(f"{home}/config.toml", mcp_config.encode())
+            },
+        }
+        await runtime.write(f"{home}/config.toml", tomli_w.dumps(settings).encode())
 
         features: dict[str, object] = {
             "apps": False,
@@ -216,20 +237,11 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
         }
         return {
             **self.config.resolved_env,
+            # A rollout has no interactive composer that needs suggested follow-ups.
+            "CODEX_ACP_PROMPT_SUGGESTIONS": "false",
             "CODEX_CONFIG": json.dumps(config),
             "CODEX_HOME": home,
-            "DEFAULT_AUTH_REQUEST": json.dumps(
-                {
-                    "methodId": "gateway",
-                    "_meta": {
-                        "gateway": {
-                            "baseUrl": endpoint,
-                            "headers": {"Authorization": f"Bearer {secret}"},
-                            "providerName": "Verifiers",
-                        }
-                    },
-                }
-            ),
+            "CODEX_INTERCEPT_KEY": secret,
             "INITIAL_AGENT_MODE": "agent-full-access",
             "NO_BROWSER": "1",
         }

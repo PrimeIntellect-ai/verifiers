@@ -742,12 +742,7 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         }
         branches: list[Branch] = []
         for i, leaf in enumerate(graph.leaves(self)):
-            path: list[int] = []
-            nid: int | None = leaf
-            while nid is not None:
-                path.append(nid)
-                nid = self.nodes[nid].parent
-            path.reverse()
+            path = graph.path_node_ids(self, leaf)
             is_compaction_attempt = any(
                 link.type == "compaction_attempt"
                 for link in self.nodes[leaf].semantic_parents

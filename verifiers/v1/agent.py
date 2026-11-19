@@ -9,11 +9,12 @@ server; un-entered, each run brings its own."""
 
 import asyncio
 import uuid
-from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Mapping
 from contextlib import asynccontextmanager, nullcontext
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from typing import Generic, Literal, Self, cast
+from functools import partial
+from typing import Any, Generic, Literal, Self, cast
 from weakref import WeakValueDictionary
 
 from typing_extensions import TypeVar
@@ -21,6 +22,7 @@ from typing_extensions import TypeVar
 from verifiers.v1.clients import (
     EvalClientConfig,
     ModelContext,
+    ModelRoute,
 )
 from verifiers.v1.configs.agent import (
     AgentConfig,
@@ -198,6 +200,63 @@ class _PendingMessage:
     receipt: dict | None = None
     error: BaseException | None = None
     done: asyncio.Event = field(default_factory=asyncio.Event)
+
+
+class AgentRun:
+    """One execution scheduled by Agent.start(), including its retry attempts."""
+
+    def __init__(self, execute: Callable[[Self], Coroutine[Any, Any, Trace]]) -> None:
+        self._active: Rollout | None = None
+        self._taken: dict[str, tuple[str, dict]] = {}
+        self._lock = asyncio.Lock()
+        self._deliveries: set[asyncio.Task[dict]] = set()
+        self._task = asyncio.create_task(execute(self))
+
+    async def wait(self) -> Trace:
+        """Wait for the final trace. Cancelling this wait also cancels the run."""
+        return await self._task
+
+    async def steer(self, message: str, *, message_id: str | None = None) -> dict:
+        """Send input to the current attempt. Accepted receipts identify the attempt."""
+        if not isinstance(message, str) or not message.strip():
+            raise ValueError("delivery requires a nonempty user message")
+        # Capture the attempt before waiting for other deliveries.
+        delivery = asyncio.create_task(self._deliver(self._active, message, message_id))
+        self._deliveries.add(delivery)
+        delivery.add_done_callback(self._delivery_done)
+        return dict(await asyncio.shield(delivery))
+
+    def _delivery_done(self, delivery: asyncio.Task[dict]) -> None:
+        self._deliveries.discard(delivery)
+        if not delivery.cancelled():
+            delivery.exception()  # The caller may have cancelled its wait for this receipt.
+
+    async def _deliver(
+        self, run: Rollout | None, message: str, message_id: str | None
+    ) -> dict:
+        async with self._lock:
+            if message_id is not None and message_id in self._taken:
+                previous, receipt = self._taken[message_id]
+                if previous != message:
+                    raise ValueError(
+                        "steering message ID reused with different content"
+                    )
+                return receipt
+            if run is None or run is not self._active:
+                return {"outcome": "promptRequired", "reason": "noRunningTurn"}
+            try:
+                receipt = await run.steer(message, message_id=message_id)
+            except NotImplementedError:
+                raise
+            except RuntimeError:
+                if run.closed or not run.ok:
+                    return {"outcome": "promptRequired", "reason": "noRunningTurn"}
+                raise
+            if receipt.get("outcome") == "injected":
+                receipt = {**receipt, "attempt": run.trace.attempt}
+                if message_id is not None:
+                    self._taken[message_id] = (message, receipt)
+            return receipt
 
 
 class Interaction:
@@ -685,6 +744,7 @@ class Agent:
         on_trace: Callable[[Trace], None] | None = None,
         collect_artifacts: bool = False,
         on_score: Callable[[Trace, Runtime], Awaitable[None]] | None = None,
+        route: ModelRoute | None = None,
     ) -> Trace:
         """Run this agent on `task` once and return the trace: one segment — the
         program runs on the task's prompt until it exits (a multi-turn exchange
@@ -697,9 +757,61 @@ class Agent:
         (`config.retries`) — never into a borrowed box; every attempt's trace keeps
         the run's id with its own `attempt`, and the final trace keeps earlier
         attempts' errors. `on_score(trace, runtime)` runs after task scoring in
-        the selected verifier workspace, inside its timeout and retry boundary."""
+        the selected verifier workspace, inside its timeout and retry boundary.
+        `route` is where its model turns go, from the agent's model, client and
+        sampling unless given; the caller may change it while the rollout runs
+        (`ModelRoute.update`), and a retry takes it as it is then."""
+        return await self._run(
+            None,
+            task,
+            runtime=runtime,
+            tools=tools,
+            on_trace=on_trace,
+            collect_artifacts=collect_artifacts,
+            on_score=on_score,
+            route=route,
+        )
+
+    def start(
+        self,
+        task: Task,
+        *,
+        runtime: Runtime | None = None,
+        tools: Mapping[str, SharedToolServer] | None = None,
+        on_trace: Callable[[Trace], None] | None = None,
+        collect_artifacts: bool = False,
+        on_score: Callable[[Trace, Runtime], Awaitable[None]] | None = None,
+        route: ModelRoute | None = None,
+    ) -> AgentRun:
+        """Schedule a rollout and return the object used to steer it and await its trace."""
+        return AgentRun(
+            partial(
+                self._run,
+                task=task,
+                runtime=runtime,
+                tools=tools,
+                on_trace=on_trace,
+                collect_artifacts=collect_artifacts,
+                on_score=on_score,
+                route=route,
+            )
+        )
+
+    async def _run(
+        self,
+        handle: AgentRun | None,
+        task: Task,
+        *,
+        runtime: Runtime | None = None,
+        tools: Mapping[str, SharedToolServer] | None = None,
+        on_trace: Callable[[Trace], None] | None = None,
+        collect_artifacts: bool = False,
+        on_score: Callable[[Trace, Runtime], Awaitable[None]] | None = None,
+        route: ModelRoute | None = None,
+    ) -> Trace:
         if self._closed:
             raise RuntimeError("Agent is closed; create a new agent")
+        route = route or ModelRoute(self.ctx)
         retry = self.config.retries
         retry_state = RetryState(retry)
         history: list = []
@@ -713,6 +825,8 @@ class Agent:
                     on_trace,
                     collect_artifacts,
                     on_score,
+                    route,
+                    handle,
                     trace_id=trace_id,
                     attempt=attempt + 1,
                 )
@@ -752,11 +866,13 @@ class Agent:
         on_trace: Callable[[Trace], None] | None,
         collect_artifacts: bool,
         on_score: Callable[[Trace, Runtime], Awaitable[None]] | None,
+        route: ModelRoute,
+        handle: AgentRun | None,
         *,
         trace_id: str,
         attempt: int,
     ) -> Trace:
-        params = self._rollout_params(task, runtime, dict(shared_tools or {}))
+        params = self._rollout_params(task, runtime, dict(shared_tools or {}), route)
         if collect_artifacts:
             _check_artifact_runtime(params["runtime_config"])
         run = Rollout(
@@ -770,7 +886,13 @@ class Agent:
         )
         try:
             if await run.open():
-                await run.step()
+                if handle is not None:
+                    handle._active = run
+                try:
+                    await run.step()
+                finally:
+                    if handle is not None:
+                        handle._active = None
                 if run.ok:
                     run.trace.stop("agent_completed")
             trace = await run.close()
@@ -791,6 +913,7 @@ class Agent:
         tools: Mapping[str, SharedToolServer] | None = None,
         on_trace: Callable[[Trace], None] | None = None,
         collect_artifacts: bool = False,
+        route: ModelRoute | None = None,
     ) -> AsyncIterator[Interaction]:
         """Interact with this agent turn-by-turn: a full rollout of `task` where
         the CALLER is the run's user — the one exchange surface. Yields an
@@ -817,13 +940,15 @@ class Agent:
         included. A failure while opening the rollout raises before the context
         is entered (the failed trace is still completed and reported through
         `on_trace`). An exchange is caller-driven, so `config.retries` does not
-        apply here."""
+        apply here. `route` is where its model turns go, as for `run()`."""
         if self._closed:
             raise RuntimeError("Agent is closed; create a new agent")
         self._check_resume_support()
         trace_id = uuid.uuid4().hex
         with scope(trace=short_id(trace_id), agent=self._log_name):
-            params = self._rollout_params(task, runtime, dict(tools or {}))
+            params = self._rollout_params(
+                task, runtime, dict(tools or {}), route or ModelRoute(self.ctx)
+            )
             if collect_artifacts:
                 _check_artifact_runtime(params["runtime_config"])
             run = Rollout(
@@ -857,7 +982,11 @@ class Agent:
                     trace.agent.runtime.borrowed = runtime is not None
 
     def _rollout_params(
-        self, task: Task, runtime: Runtime | None, shared_tools: dict
+        self,
+        task: Task,
+        runtime: Runtime | None,
+        shared_tools: dict,
+        route: ModelRoute,
     ) -> dict:
         """Resolve one run's runtime config, pairing checks, timeouts,
         interception — shared by `run` and `interaction`."""
@@ -887,7 +1016,7 @@ class Agent:
         return {
             "agent_config": self.config,
             "harness": harness,
-            "ctx": self.ctx,
+            "route": route,
             "runtime_config": runtime_config,
             "timeouts": timeouts,
             "limits": self.limits,
@@ -1009,8 +1138,9 @@ class _EpisodeAgent(Agent):
 
         return score
 
-    async def run(
+    async def _run(
         self,
+        handle: AgentRun | None,
         task: Task,
         *,
         runtime: Runtime | None = None,
@@ -1018,15 +1148,18 @@ class _EpisodeAgent(Agent):
         on_trace: Callable[[Trace], None] | None = None,
         collect_artifacts: bool = False,
         on_score: Callable[[Trace, Runtime], Awaitable[None]] | None = None,
+        route: ModelRoute | None = None,
     ) -> Trace:
         async with self._gate or nullcontext():
-            trace = await super().run(
+            trace = await super()._run(
+                handle,
                 task,
                 runtime=runtime,
                 tools=tools if tools is not None else self._shared_for(task),
                 on_trace=self._watch(on_trace),
                 collect_artifacts=collect_artifacts,
                 on_score=self._scoring_callback(on_score),
+                route=route,
             )
         self._completed.append(trace)
         return trace
@@ -1040,6 +1173,7 @@ class _EpisodeAgent(Agent):
         tools: Mapping[str, SharedToolServer] | None = None,
         on_trace: Callable[[Trace], None] | None = None,
         collect_artifacts: bool = False,
+        route: ModelRoute | None = None,
     ) -> AsyncIterator[Interaction]:
         """The agent's `interaction`, with every trace stamped with its standing
         at mint and captured in `completed` at close — an interaction driven from
@@ -1062,6 +1196,7 @@ class _EpisodeAgent(Agent):
                 tools=tools if tools is not None else self._shared_for(task),
                 on_trace=self._watch(remember),
                 collect_artifacts=collect_artifacts,
+                route=route,
             ) as interaction:
                 yield interaction
         finally:
