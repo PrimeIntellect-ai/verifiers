@@ -795,6 +795,7 @@ class Rollout:
             _execution_bridge=bridge,
         )
 
+        lease = getattr(self._agent_runtime, "_lease", None)
         try:
             async with asyncio.TaskGroup() as group:
                 group.create_task(self.harness.setup(self._agent_runtime))
@@ -806,8 +807,12 @@ class Rollout:
                 )
                 if adapter is not None:
                     group.create_task(handler.prepare())
+                elif lease is not None:
+                    group.create_task(lease.ensure_daemon())
         except ExceptionGroup as failed:
             raise failed.exceptions[0]
+        if lease is not None:
+            lease.notify_setup_complete()
 
     async def steer(self, message: str, *, message_id: str | None = None) -> dict:
         if self._closed or not self.ok:

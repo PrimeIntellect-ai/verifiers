@@ -313,6 +313,7 @@ class Deployment:
         self._reused_harness: bool = False
         self._harness_workdir: str | None = None
         self._harness_lan_waiter: Callable[[], Awaitable[None]] | None = None
+        self._harness_lease: object | None = None
 
     async def own(self, backend: RuntimeBackend) -> RuntimeBackend:
         """Acquire a target; register cleanup before startup can partially fail."""
@@ -394,8 +395,12 @@ class Deployment:
         view = self.harness_backend.bind(env={})
         if self._harness_workdir is not None:
             view = view.with_workdir(self._harness_workdir)
-        if self._harness_lan_waiter is not None:
-            view = replace(view, _lan_waiter=self._harness_lan_waiter)
+        if self._harness_lan_waiter is not None or self._harness_lease is not None:
+            view = replace(
+                view,
+                _lan_waiter=self._harness_lan_waiter,
+                _lease=self._harness_lease,
+            )
         return view
 
     def target(self, name: str) -> Runtime:

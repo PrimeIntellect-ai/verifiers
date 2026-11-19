@@ -411,22 +411,30 @@ class PrimeBackend(RuntimeBackend):
             if self.config.idle_timeout is not None
             else None
         )
-        options = {
-            "cpu_cores": self.config.cpu,
-            "memory_gb": self.config.memory,
-            "gpu_count": gpu_count,
+        options: dict[str, Any] = {
             "timeout_minutes": -1,
             "idle_timeout_minutes": idle_minutes,
-            "gpu_type": gpu_type,
             "region": self.config.region,
         }
+        if not (self.config.checkpoint and self.config.restore_memory):
+            options.update(
+                {
+                    "cpu_cores": self.config.cpu,
+                    "memory_gb": self.config.memory,
+                    "gpu_count": gpu_count,
+                    "gpu_type": gpu_type,
+                }
+            )
         if self.config.mounts:
             options["volumes"] = [
                 {"mount_path": target, **mount.model_dump()}
                 for target, mount in self.config.mounts.items()
             ]
         if self.config.checkpoint:
-            source = {"checkpoint_id": self.config.checkpoint}
+            source: dict[str, Any] = {
+                "checkpoint_id": self.config.checkpoint,
+                **({"restore_memory": True} if self.config.restore_memory else {}),
+            }
         else:
             source = {
                 "docker_image": self.config.image,
@@ -456,12 +464,17 @@ class PrimeBackend(RuntimeBackend):
                 # mid-flight leaves the platform creating a sandbox this side
                 # never learned the id of — teardown() then cannot delete it
                 async def create_and_capture_id():
+                    env_kw = (
+                        {}
+                        if self.config.restore_memory and not self.env
+                        else {"environment_vars": self.env}
+                    )
                     sandbox = await self._client.create(
                         CreateSandboxRequest(
                             name=self.name,
                             labels=list(dict.fromkeys(labels)),
                             **source,
-                            environment_vars=self.env,
+                            **env_kw,
                             **{k: v for k, v in options.items() if v is not None},
                         )
                     )
