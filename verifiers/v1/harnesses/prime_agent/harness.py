@@ -37,6 +37,7 @@ INSTALL = (
     + _ENSURE_UV
     + r"""
 prefix="$AGENT_PRIME_AGENT_DIR/$PRIME_AGENT_COMMIT"
+rm -f "$prefix/.ready"
 if [ ! -x "$prefix/bin/prime-agent" ]; then
     case "$(uname -s)-$(uname -m)" in
         Linux-x86_64) platform=linux-x64; sha=09659961dfde201cc39f1e69b607385d708da3e591f267a4fea04970afb8b005 ;;
@@ -71,6 +72,7 @@ for pyproject in "$prefix/bin/skills/"*/pyproject.toml; do
     set -- "$@" --editable "${pyproject%/pyproject.toml}"
 done
 uv pip install --python "$PRIME_AGENT_KERNEL_VENV/bin/python" "$@"
+touch "$prefix/.ready"
 """
 )
 
@@ -154,9 +156,17 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
 
     async def setup(self, runtime: Runtime) -> None:
         logger.debug("Ensuring prime-agent %s is installed", self.config.commit)
+        ready = f"{PRIME_AGENT_DIR}/{self.config.commit}/.ready"
         await ensure_installed(
             runtime,
             directory=PRIME_AGENT_DIR,
+            # A finished install skips the script: its skills install resolves against
+            # the package index on every run, which a runtime reused after its network
+            # is restricted can no longer reach.
+            ready=(
+                f"[ -f {ready} ] && [ -x {self._bin()} ] "
+                f"&& [ -x {self._kernel_venv()}/bin/python ]"
+            ),
             install=INSTALL,
             env={
                 **self.config.resolved_env,
