@@ -128,7 +128,7 @@ wait "$acp_pid"
 
 
 class OpenClawHarnessConfig(HarnessConfig):
-    version: PinnedVersion = "2026.10.9"
+    version: PinnedVersion = "2026.11.5"
     """OpenClaw release to install, pinned for reproducibility."""
     dialect: Literal["auto"] = "auto"
     """OpenClaw takes the transport from its model catalog."""
