@@ -29,7 +29,7 @@ async def test_rlm_reads_workspace_image(run):
             vision=True,
         ),
         runtime={"type": "prime"},
-        max_turns=6,
+        max_turns=2,
     )
     (trace,) = episode.traces
     assert trace.ok

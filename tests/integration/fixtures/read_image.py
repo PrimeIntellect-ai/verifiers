@@ -48,8 +48,10 @@ class ReadImageTaskset(vf.Taskset[ReadImageTask, vf.TasksetConfig]):
                 vf.TaskData(
                     idx=0,
                     prompt=(
-                        f"Use IPython attach('{PATH}') to view the image. Reply with "
-                        "the four colors from left to right, separated by spaces."
+                        f"Call IPython once with attach('{PATH}'). Read the image "
+                        "visually and reply immediately with only the four colors "
+                        "left to right, separated by spaces. Do not decode the file "
+                        "in code or make any further tool calls."
                     ),
                 ),
                 self.config.task,
