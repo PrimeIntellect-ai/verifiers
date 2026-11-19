@@ -222,7 +222,6 @@ class OpenClawHarness(ACPHarness[OpenClawHarnessConfig]):
                 "defaults": {
                     "workspace": ".",
                     "skipBootstrap": True,
-                    "heartbeat": {"every": "0m"},
                     "sandbox": {"mode": "off"},
                     "model": {"primary": ctx.model},
                     "utilityModel": "",  # Disable background recap model calls.
