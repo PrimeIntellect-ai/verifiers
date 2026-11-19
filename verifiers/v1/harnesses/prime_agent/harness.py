@@ -81,6 +81,10 @@ class PrimeAgentHarnessConfig(HarnessConfig):
 
     autonomous: bool = False
     """Enable Prime Agent's autonomous continuation loop."""
+    api: str | None = None
+    """The API Prime Agent speaks to the model's provider, e.g. `openai-completions` for an
+    OpenAI-compatible endpoint that serves only chat completions. Unset, Prime Agent picks the
+    provider's native API (Responses for `openai`)."""
     dialect: Literal["auto"] = "auto"
 
 
@@ -217,6 +221,7 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
                     # The native provider owns its API path, including any version prefix.
                     "baseUrl": endpoint.removesuffix("/v1"),
                     "apiKey": KEY_VAR,
+                    **({"api": self.config.api} if self.config.api else {}),
                     "models": [
                         {
                             "id": model,
