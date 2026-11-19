@@ -361,7 +361,7 @@ def test_unsupported_checkpointing_warns_once(caplog, monkeypatch):
     monkeypatch.setattr(agent_module, "_checkpointing_warned", set())
     for _ in range(2):
         assert gated("bash", vf.SubprocessConfig())._checkpointing() is None
-        assert gated("terminus-2", vf.PrimeConfig())._checkpointing() is None
+        assert gated("browser-use", vf.PrimeConfig())._checkpointing() is None
     warnings = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
     assert warnings == [
         (
@@ -369,7 +369,7 @@ def test_unsupported_checkpointing_warns_once(caplog, monkeypatch):
             "snapshots; a failed rollout retries from the start"
         ),
         (
-            "rollout checkpointing is off: harness 'terminus-2' cannot continue from "
+            "rollout checkpointing is off: harness 'browser-use' cannot continue from "
             "a memory snapshot; a failed rollout retries from the start"
         ),
     ]
