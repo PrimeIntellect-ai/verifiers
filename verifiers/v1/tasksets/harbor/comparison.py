@@ -2,19 +2,16 @@
 
 import copy
 import logging
-import time
-import uuid
 from collections.abc import Mapping
-from pathlib import PurePosixPath
+from pathlib import Path
 
 from pydantic import BaseModel, SerializeAsAny
 
 from verifiers.v1.configs.scoring import ScoringConfig, resolve_scoring
 from verifiers.v1.episode import Episode
-from verifiers.v1.grading import verifier_runtime
 from verifiers.v1.judges.agent import collect_judge_traces
-from verifiers.v1.trace import Trace, TraceTask
-from verifiers.v1.utils.artifacts import ARTIFACTS_DIR
+from verifiers.v1.regrading import RequiresRerun, load_saved_artifacts, prepare_replay
+from verifiers.v1.trace import Trace
 from verifiers.v1.utils.logging import clip, get_logger
 
 from .taskset import HarborTask
@@ -65,93 +62,45 @@ async def compare_verifiers(
     verifiers: Mapping[str, HarborTask],
     *,
     scoring: ScoringConfig | None = None,
+    source: Path | None = None,
 ) -> VerifierComparison:
-    """Regrade a saved submission with named Harbor tasks in independent runtimes.
+    """Regrade a submission with named Harbor tasks in independent runtimes.
 
-    Load with ``read_episodes(path, Trace[HarborData], with_artifacts=True)``.
-    Agent judges need a bound native executor. Every returned episode can be saved
-    with ``write_episode``; judge attempts retain their own evidence and usage.
-    ``table`` uses RewardKit's formatter; ``scores`` retains all named metrics.
+    For a trace loaded with ``read_episodes``, pass its run directory as ``source``
+    to verify and read the captured archives. A live trace can supply its own
+    capture. Agent judges need a bound native executor. Each result episode
+    contains the regraded submission and its native judge attempts.
     """
     from rewardkit.compare import format_comparison
 
     if not verifiers or "original" in verifiers or any(not name for name in verifiers):
         raise ValueError("provide named verifiers; 'original' is reserved")
-    if not trace.is_completed or trace.has_error or trace.is_timeout:
-        raise ValueError("comparison requires a completed, non-errored submission")
-    solver = trace.agent.runtime
-    if solver is None:
-        raise ValueError("saved submission has no solver runtime metadata")
-    if ARTIFACTS_DIR not in trace.state.artifacts:
-        raise ValueError(
-            "The captured /logs/artifacts entry is unavailable; load with "
-            "with_artifacts=True and ensure the saved artifact directory exists "
-            "and its manifest includes the implicit artifact collection"
-        )
+    artifacts = (
+        load_saved_artifacts(source, trace)
+        if source is not None
+        else trace.state.artifacts
+    )
     comparison = VerifierComparison(original=copy.deepcopy(trace), episodes={})
-    workdir = PurePosixPath(getattr(solver, "workdir", None) or "/")
+    comparison.original.state.artifacts = dict(artifacts)
     prepared = {}
-    # Check every variant's inputs before provisioning or making model calls.
-    for label, definition in verifiers.items():
-        task = copy.deepcopy(definition)
-        task.scoring_deferred = False
+    for label, task in verifiers.items():
         policy = resolve_scoring(task.scoring, trace.agent.config.scoring)
-        policy = resolve_scoring(policy, scoring or ScoringConfig()).model_copy(
-            update={"mode": "isolated"}
-        )
-        artifacts = {}
-        declared = [*trace.task.data.artifacts, *task.data.artifacts]
-        for artifact in declared:
-            source = PurePosixPath(artifact.source)
-            if not source.is_absolute():
-                service = getattr(artifact, "service", "main")
-                directory = (
-                    workdir
-                    if service == "main"
-                    else trace.info.get("harbor_artifact_workdirs", {}).get(service)
-                )
-                if directory is None:
-                    raise ValueError(
-                        f"No saved artifact workdir for service {service!r}"
-                    )
-                source = PurePosixPath(directory) / source
-            artifacts[str(source)] = artifact.model_copy(update={"source": str(source)})
-        if missing := artifacts.keys() - trace.state.artifacts.keys():
-            raise ValueError(f"{label}: submission artifacts were not saved: {missing}")
-        if any(
-            artifact.required and trace.state.artifacts[source] is None
-            for source, artifact in artifacts.items()
-        ):
-            raise ValueError(f"{label}: a required submission artifact is absent")
-        # Check main-service relative paths before resolving them to absolute
-        # archive keys. Sidecar paths use their own saved workdirs, not the solver's.
-        config = verifier_runtime(
-            task.with_data(
-                artifacts=[a for a in declared if a.service == "main"]
-            ).grading_task(solver, scoring=policy),
-            solver,
-            trace.agent.config.runtime,
-            policy,
-        )
-        if any(not mount.read_only for mount in getattr(config, "mounts", {}).values()):
-            raise ValueError("comparison verifiers cannot share writable mounts")
-        task = task.with_data(artifacts=list(artifacts.values()))
-        prepared[label] = task, policy
-    for label, (task, policy) in prepared.items():
-        result = copy.deepcopy(comparison.original)
-        result.id, result.attempt, result.run = uuid.uuid4().hex, 1, None
-        result.task = TraceTask(
-            type=type(task).__name__, data=task.data, key=task.key, hash=task.hash
-        )
-        result.info["regrading"] = {
-            "source_trace_id": trace.id,
-            "source_attempt": trace.attempt,
-            "label": label,
-        }
-        result.timing.scoring.start, result.timing.scoring.end = time.time(), 0.0
-        with collect_judge_traces(task) as judges:
+        if scoring is not None:
+            policy = resolve_scoring(policy, scoring)
+        policy = policy.model_copy(update={"mode": "isolated"})
+        try:
+            prepared[label] = prepare_replay(
+                trace, task, trace.agent.config.runtime, artifacts, scoring=policy
+            )
+        except RequiresRerun as error:
+            raise RequiresRerun(f"{label}: {error}") from error
+
+    for label, replay in prepared.items():
+        result = replay.trace
+        result.info["regrading"]["label"] = label
+        with collect_judge_traces(replay.grader) as judges:
             try:
-                await task.rescore(result, scoring=policy)
+                await replay.run()
             except Exception as error:
                 logger.warning(
                     "Failed comparison verifier label=%s - %s: %s",
@@ -160,15 +109,10 @@ async def compare_verifiers(
                     clip(str(error)),
                     exc_info=logger.isEnabledFor(logging.DEBUG),
                 )
-                if isinstance(error, TimeoutError):
-                    result.record_timeout("scoring")
-                elif result.ok and not result.is_timeout:
-                    result.record_error(error)
-            finally:
-                result.timing.scoring.end = time.time()
-        result.state.artifacts = dict(comparison.original.state.artifacts)
         comparison.episodes[label] = Episode(
-            task=result.task, traces=[result, *judges], ok=result.ok
+            task=result.task,
+            traces=[result, *judges],
+            ok=result.ok and not result.is_timeout,
         )
     comparison.table = format_comparison(comparison.scores)
     return comparison

@@ -13,7 +13,6 @@ from verifiers.v1.runtimes import (
     PrimeConfig,
     Runtime,
     RuntimeConfig,
-    RuntimeInfo,
     backend_cls,
 )
 from verifiers.v1.task import Task
@@ -49,7 +48,7 @@ def scoring_transaction(trace: Trace):
 
 def verifier_runtime(
     task: Task,
-    solver_runtime: Runtime | RuntimeInfo,
+    solver_runtime: Runtime | RuntimeConfig,
     base: RuntimeConfig,
     policy: ScoringConfig,
 ) -> RuntimeConfig:
@@ -113,6 +112,7 @@ def bind_scoring_env(runtime: Runtime, policy: ScoringConfig) -> Runtime:
 
 async def stage_verifier(task: Task, trace: Trace, runtime: Runtime) -> None:
     artifacts = dict(trace.state.artifacts)
+    task.validate_artifacts(artifacts)
     async with boundary(TaskError, "verifier task setup"):
         await invoke(task.setup, {"trace": trace, "runtime": runtime})
     await restore(runtime, artifacts)
@@ -224,51 +224,29 @@ async def grade_task(
 async def grade_submission(
     task: Task,
     trace: Trace,
-    runtime: Runtime | None = None,
+    runtime: Runtime,
     *,
     scoring: ScoringConfig | None = None,
 ) -> None:
-    """Grade captured artifacts in a fresh verifier, optionally borrowing a live solver.
+    """Grade captured artifacts in a fresh verifier, leaving the borrowed solver alive.
 
     The caller finalizes the submission and collects artifacts into the trace first.
     Uses the task's grader, scoring policy, and timeouts, including retry behavior.
     As in a rollout, the verifier derives from the agent's runtime config on the trace
     (`trace.agent.config.runtime`), not from the solver's resolved one, so the solver
     task's requirements, such as its network policy, don't carry over.
-    Without a live runtime, use the saved solver metadata; no solver is provisioned.
-    Load saved artifacts with ``read_episodes(..., with_artifacts=True)`` first.
     """
     from verifiers.v1.runtimes.deployment import Deployment
 
     policy = scoring if scoring is not None else task.scoring
     if policy.mode != "isolated":
         raise ValueError("grade_submission requires isolated scoring")
-    if policy.skip_on_truncated and trace.is_truncated:
-        trace.info["scoring_skipped"] = "truncated"
-        return
-    if policy.skip_on_timeout and trace.is_timeout:
-        trace.info["scoring_skipped"] = "timeout"
-        return
-    if runtime is None and not trace.state.artifacts:
-        # A captured empty submission still has the implicit /logs/artifacts key
-        # with a None value. An empty mapping means collection/loading never
-        # happened, or its saved directory is missing.
-        raise ValueError(
-            "No captured submission artifacts are available; load with "
-            "with_artifacts=True and ensure the saved artifact directory exists"
-        )
-    solver = runtime if runtime is not None else trace.agent.runtime
-    if solver is None:
-        raise ValueError("saved submission has no solver runtime metadata")
-    grader = task.grading_task(solver, scoring=policy)
-    config = verifier_runtime(grader, solver, trace.agent.config.runtime, policy)
+    grader = task.grading_task(runtime, scoring=policy)
+    config = verifier_runtime(grader, runtime, trace.agent.config.runtime, policy)
     deployment = Deployment(
-        runtime.backend if runtime is not None else None,
-        borrowed_runtime=runtime,
-        env=dict(runtime.env) if runtime is not None else {},
+        runtime.backend, borrowed_runtime=runtime, env=dict(runtime.env)
     )
-    if runtime is not None:
-        await deployment.start()
+    await deployment.start()
     try:
         await grade_task(grader, trace, config, task.data.timeout, policy, deployment)
     except TimeoutError:
