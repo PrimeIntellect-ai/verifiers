@@ -173,7 +173,8 @@ async def restored_trace(
 async def saved_rollout(config, ctx, ready=lambda trace: trace.num_turns >= 1):
     """Run the config's one rollout until `ready(trace)`, checkpoint it with `save_all`,
     and cancel it with everything it holds. Returns its slot and its restore point. By
-    default the rollout is past its first turn: the box holds work the trace recorded."""
+    default the rollout is past its first turn: the box holds work the trace recorded.
+    `save_all` returns nothing until the harness program runs, so it is asked again."""
     env = load_environment(config.env)
     (task,) = list(env.taskset)
     async with env.serving():
@@ -181,10 +182,14 @@ async def saved_rollout(config, ctx, ready=lambda trace: trace.num_turns >= 1):
         running = asyncio.ensure_future(env.run_slot(slot, ctx))
         try:
             async with asyncio.timeout(600):
-                while not (slot.traces and ready(slot.traces[0])):
+                while True:
                     assert not running.done(), "the rollout ended before the save"
+                    if slot.traces and ready(slot.traces[0]):
+                        points = await save_all()
+                        if points:
+                            break
                     await asyncio.sleep(0.2)
-            (point,) = await save_all()
+            (point,) = points
         finally:
             running.cancel()
             await asyncio.gather(running, return_exceptions=True)
@@ -210,15 +215,15 @@ async def test_retry_restores_checkpoint(run, taken, harness, harness_runtime):
     await assert_no_leaks(taken)
 
 
-@pytest.mark.parametrize(
-    "harness,harness_runtime", grid(SHELLS, needs=NEEDS), indirect=True
-)
+@pytest.mark.parametrize("harness,harness_runtime", grid(needs=NEEDS), indirect=True)
 async def test_another_owner_continues_a_saved_rollout(taken, harness, harness_runtime):
     """`save_all` checkpoints a running rollout for its owner. The rollout is then
     cancelled with everything it holds, and its restore point goes through a pickle. A
     second env, with a server, a tunnel and secrets of its own, continues the rollout
     from the point: in a new box, with the harness program and the task's process
-    still running."""
+    still running. A harness with a shell is saved after its first command and takes
+    more turns in the new box; one without has a single turn and is saved during it."""
+    shell = harness_class(harness.id).EXECUTES_CODE
     config = _eval_config(
         "memory-restore-v1",
         harness=harness,
@@ -231,7 +236,9 @@ async def test_another_owner_continues_a_saved_rollout(taken, harness, harness_r
         client=config.client, model=config.model, sampling=config.sampling
     )
 
-    slot, point = await saved_rollout(config, ctx)
+    slot, point = await saved_rollout(
+        config, ctx, ready=(lambda trace: trace.num_turns >= 1) if shell else bool
+    )
     turns_saved = len([node for node in point["nodes"] if node["sampled"]])
     point = pickle.loads(pickle.dumps(point))
 
@@ -243,12 +250,17 @@ async def test_another_owner_continues_a_saved_rollout(taken, harness, harness_r
     assert trace.ok, [error.message for error in trace.errors]
     assert trace.id == point["id"]
     assert trace.reward == 1.0
-    assert trace.metrics["copied"] == 1.0, [
-        (n.message.role, n.sampled, str(n.message.model_dump(exclude_none=True))[:600])
-        for n in trace.nodes
-    ]
+    if shell:
+        assert trace.metrics["copied"] == 1.0, [
+            (
+                n.message.role,
+                n.sampled,
+                str(n.message.model_dump(exclude_none=True))[:600],
+            )
+            for n in trace.nodes
+        ]
+        assert trace.num_turns > turns_saved >= 1
     assert trace.has_restored and trace.attempt == 2
-    assert trace.num_turns > turns_saved >= 1
     assert sum(node.parent is None for node in trace.nodes) == 1
     # The owner holds the snapshot: no rollout deleted it.
     (snapshot_id,) = [c.id for c in trace.checkpoints if c.pinned]
