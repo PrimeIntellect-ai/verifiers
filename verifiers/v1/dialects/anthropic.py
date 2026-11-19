@@ -10,6 +10,7 @@ import json
 import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
+from itertools import accumulate
 
 from anthropic.types import Message as AnthropicMessage
 from anthropic.types import Usage as AnthropicUsage
@@ -241,6 +242,10 @@ def content_to_wire(content) -> str | list[dict]:
     return blocks
 
 
+def _text_block_offsets(blocks: list[str]) -> list[int] | None:
+    return list(accumulate(map(len, blocks[:-1]))) or None
+
+
 def parse_messages(body: dict) -> Messages:
     """The request's top-level `system` + `messages` -> typed messages. Assistant turns fold
     their blocks into one message (thinking -> reasoning, tool_use -> tool calls); a user turn's
@@ -260,7 +265,7 @@ def parse_messages(body: dict) -> Messages:
                 block for block in blocks if block["type"] not in ("text", "tool_use")
             ]
             state.sort(key=lambda block: THINKING_ORDER.get(block["type"], 2))
-            text = "".join(b.get("text", "") for b in blocks if b.get("type") == "text")
+            text = [b.get("text", "") for b in blocks if b.get("type") == "text"]
             reasoning = "".join(
                 b.get("thinking", "") for b in blocks if b.get("type") == "thinking"
             )
@@ -276,7 +281,8 @@ def parse_messages(body: dict) -> Messages:
             ]
             prompt.append(
                 AssistantMessage(
-                    content=text or None,
+                    content="".join(text) or None,
+                    text_block_offsets=_text_block_offsets(text),
                     reasoning_content=reasoning or None,
                     tool_calls=calls or None,
                     provider_state=state or None,
@@ -351,6 +357,7 @@ def response_from_wire(message: AnthropicMessage) -> Response:
         model=message.model,
         message=AssistantMessage(
             content="".join(content) or None,
+            text_block_offsets=_text_block_offsets(content),
             reasoning_content="".join(reasoning) or None,
             tool_calls=calls or None,
             provider_state=state or None,
