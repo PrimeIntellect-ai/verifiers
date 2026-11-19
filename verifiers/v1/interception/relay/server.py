@@ -88,7 +88,7 @@ REQUEST_DROPPED = HOP_BY_HOP | {"host", "content-length", "expect"}
 # Not terminated by a blank line, like the interception server's own keepalives: some
 # SSE clients try to decode the empty event a blank line would dispatch.
 KEEPALIVE = b": relay keepalive\n"
-STATUS_CHANGED = "relay: upstream changed status on retry"
+STATUS_CHANGED = "upstream changed status on retry"
 # certifi's roots, as the harness's own HTTP clients use: a task image may have no system
 # CA store (no `ca-certificates`), and the stdlib then trusts no certificate at all.
 SSL_CONTEXT = ssl.create_default_context(cafile=certifi.where())
@@ -343,6 +343,9 @@ class Handler(BaseHTTPRequestHandler):
         self.sent_length: int | None = None
         self.chunked = False
         self.scanner = Scanner()
+        self.gave_up = False
+        """Whether the relay gave up on this request (`fail`, `abandon`): it then never
+        counts as one that went through."""
         self.write_lock = threading.Lock()
         relay = self.server.relay
         try:
@@ -361,13 +364,16 @@ class Handler(BaseHTTPRequestHandler):
                     relay.end(upstream)
                     connection.close()
                 if done:
-                    relay.record_success()
-                    retried = f" after {self.retries} retries" if self.retries else ""
-                    log(f"{self.command} {self.label} {self.sent_status}{retried}")
+                    if not self.gave_up:
+                        relay.record_success()
+                        retried = (
+                            f" after {self.retries} retries" if self.retries else ""
+                        )
+                        log(f"{self.command} {self.label} {self.sent_status}{retried}")
                     return
                 if self.scanner.data:
                     log(f"{self.command} {self.label}: aborted after data, closing")
-                    self.reset()
+                    self.abandon("upstream changed after the response started")
                     return
                 if upstream.aborted:
                     self.retries += 1
@@ -513,14 +519,10 @@ class Handler(BaseHTTPRequestHandler):
                 f"{self.command} {self.label}: retry answered {response.status}, "
                 f"sent {self.sent_status}"
             )
-            if self.scanner.sse:
-                self.send(self.scanner.line_break() + error_event(STATUS_CHANGED))
-                self.finish_body()
-            else:
-                self.reset()
+            self.fail(STATUS_CHANGED)
             return True
         elif self.sent_length is not None and response.length != self.sent_length:
-            self.reset()
+            self.abandon("retry answered a body of another length")
             return True
         else:
             self.send(self.scanner.line_break())
@@ -534,7 +536,7 @@ class Handler(BaseHTTPRequestHandler):
                 if not self.scanner.data:
                     # No body data went out: the retry can still answer.
                     return False
-                self.reset()
+                self.abandon(f"upstream broke mid-body: {error!r}")
                 return True
             # Data read after the abort is dropped: the retry sends it again.
             if upstream.aborted:
@@ -545,7 +547,7 @@ class Handler(BaseHTTPRequestHandler):
                     log(f"{self.command} {self.label}: upstream body cut short")
                     if not self.scanner.data:
                         return False
-                    self.reset()
+                    self.abandon("upstream body cut short")
                     return True
                 self.finish_body()
                 return True
@@ -613,6 +615,7 @@ class Handler(BaseHTTPRequestHandler):
                     raise ClientGone from error
 
     def fail(self, message: str) -> None:
+        self.gave_up = True
         self.server.relay.record_failure(message)
         if self.sent_status is None:
             body = json.dumps({"error": f"relay: {message}"}).encode()
@@ -630,6 +633,12 @@ class Handler(BaseHTTPRequestHandler):
             self.finish_body()
         else:
             self.reset()
+
+    def abandon(self, message: str) -> None:
+        """Give up on a response the client already has part of."""
+        self.gave_up = True
+        self.server.relay.record_failure(message)
+        self.reset()
 
     def reset(self) -> None:
         """Break the client's connection so it cannot take a cut body for a whole one."""

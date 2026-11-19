@@ -556,6 +556,36 @@ def test_body_cut_short_is_retried(upstreams, make_relay):
     assert len(attempts) == 2
 
 
+def test_body_cut_short_after_data_is_a_relay_failure(upstreams, make_relay):
+    """An upstream that ends mid-body after the harness got data cannot be retried: the
+    relay breaks the client's connection and records the failure, so the rollout
+    blames the relay and not the harness."""
+    a, _ = upstreams
+
+    def respond(handler) -> None:
+        handler.send_response(200)
+        handler.send_header("Content-Type", "application/json")
+        handler.send_header("Content-Length", "100")
+        handler.end_headers()
+        handler.wfile.write(b'{"answer": "')
+        handler.wfile.flush()
+        handler.close_connection = True
+
+    a.respond = respond
+    relay = make_relay(a.url)
+    connection = relay.connect()
+    connection.request("POST", "/v1/chat/completions", b"{}", {})
+    response = connection.getresponse()
+    with pytest.raises((http.client.HTTPException, OSError)):
+        response.read()
+    assert wait_for(
+        lambda: (
+            relay.failures.exists()
+            and "cut short" in relay.failures.read_text().splitlines()[-1]
+        )
+    )
+
+
 class FakeRuntime:
     """Answers the relay's failure check with a fixed stdout."""
 
