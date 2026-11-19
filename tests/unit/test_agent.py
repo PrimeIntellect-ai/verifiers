@@ -10,6 +10,8 @@ import verifiers.v1 as vf
 from verifiers.v1 import graph
 from verifiers.v1.agent import Interaction
 from verifiers.v1.clients import EvalClientConfig, ModelContext, ModelRoute
+from verifiers.v1.configs.runtime import NetworkPolicyConfig
+from verifiers.v1.dialects.anthropic import AnthropicDialect
 from verifiers.v1.errors import HarnessError
 from verifiers.v1.graph import MessageNode
 from verifiers.v1.harnesses.utils.replay import drop_blank_text_blocks
@@ -67,6 +69,21 @@ async def test_each_sample_keeps_its_tool_result_across_assistant_replays():
     )
     replay = sampled.model_copy(update={"content": "Ready", "text_block_offsets": None})
     prompt = [vf.UserMessage(content="go")]
+    dialect = AnthropicDialect()
+
+    def restrict(provider_tool: str):
+        body = {
+            "messages": [{"role": "user", "content": "go"}],
+            "tools": [
+                {"name": "lookup", "input_schema": {"type": "object"}},
+                {"name": provider_tool.rsplit("_", 1)[0], "type": provider_tool},
+            ],
+        }
+        native = dialect.parse_request(body)
+        filtered, _ = dialect.mediate_external_capabilities(
+            body, NetworkPolicyConfig(allow=[])
+        )
+        return native, dialect.parse_request(filtered)
 
     def commit(messages, assistant, tools=None):
         turn = graph.prepare_turn(
@@ -78,14 +95,18 @@ async def test_each_sample_keeps_its_tool_result_across_assistant_replays():
             )
         )
 
-    # Different harness catalogs can yield the same model-facing root after mediation.
-    catalogs = [[vf.Tool(name=name)] for name in ("filtered_first", "filtered_second")]
-    for assistant, expected, tools in [
-        (sampled, "First result", catalogs[0]),
-        (replay, "Second result", catalogs[1]),
+    # Removing a provider tool also adds a notice to the model-facing prompt.
+    first_native, filtered = restrict("web_search_20250305")
+    second_native, second_filtered = restrict("web_fetch_20250910")
+    assert filtered == second_filtered
+    assert [tool.name for tool in filtered.tools or []] == ["lookup"]
+    assert filtered.messages != prompt
+    for assistant, expected, native in [
+        (sampled, "First result", first_native),
+        (replay, "Second result", second_native),
     ]:
-        node = commit(prompt, assistant)
-        await session.gate_tool_calls(node, "anthropic_messages", tools)
+        node = commit(filtered.messages, assistant, filtered.tools)
+        await session.gate_tool_calls(node, "anthropic_messages", native)
         assert (await session.decide_tool("call"))["action"] == "deny"
         request = vf.Request(
             messages=[
@@ -93,15 +114,16 @@ async def test_each_sample_keeps_its_tool_result_across_assistant_replays():
                 replay,
                 vf.ToolMessage(tool_call_id="call", content="Tool unavailable"),
             ],
-            tools=tools,
+            tools=native.tools,
         )
         rewritten, _, _ = await session.rewrite_request(
             request, dialect="anthropic_messages"
         )
         assert rewritten.messages[-1].content == expected
-        commit(rewritten.messages, AssistantMessage(content="done"))
+        model_history = [*filtered.messages, *rewritten.messages[len(prompt) :]]
+        commit(model_history, AssistantMessage(content="done"), filtered.tools)
 
-    first_request = request.model_copy(update={"tools": catalogs[0]})
+    first_request = request.model_copy(update={"tools": first_native.tools})
     earlier, _, _ = await session.rewrite_request(
         first_request, dialect="anthropic_messages"
     )
@@ -113,15 +135,29 @@ async def test_each_sample_keeps_its_tool_result_across_assistant_replays():
     follow_up = AssistantMessage(
         tool_calls=[vf.ToolCall(id="next", name="lookup", arguments="{}")]
     )
-    node = commit(rewritten.messages, follow_up)
-    await session.gate_tool_calls(node, "anthropic_messages")
+    node = commit(model_history, follow_up, filtered.tools)
+    await session.gate_tool_calls(node, "anthropic_messages", rewritten)
     verdict = await session.decide_tool("next")
     assert verdict["message"]["content"] == "Follow-up result"
+    continued = request.model_copy(
+        update={
+            "messages": [
+                *request.messages,
+                follow_up,
+                vf.ToolMessage(tool_call_id="next", content="Tool unavailable"),
+            ]
+        }
+    )
+    final, _, _ = await session.rewrite_request(continued, dialect="anthropic_messages")
+    assert [m.content for m in final.messages if isinstance(m, vf.ToolMessage)] == [
+        "Second result",
+        "Follow-up result",
+    ]
 
     # Even the catalog is identical this time. A bare receipt cannot identify which
     # of two different substitutions belongs to it.
-    node = commit(prompt, sampled)
-    await session.gate_tool_calls(node, "anthropic_messages", catalogs[0])
+    node = commit(filtered.messages, sampled, filtered.tools)
+    await session.gate_tool_calls(node, "anthropic_messages", first_native)
     assert (await session.decide_tool("call"))["message"]["content"] == "Third result"
     with pytest.raises(HarnessError, match="Ambiguous issuing turn"):
         await session.rewrite_request(first_request, dialect="anthropic_messages")

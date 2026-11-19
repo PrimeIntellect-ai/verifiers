@@ -39,7 +39,6 @@ from verifiers.v1.types import (
     Messages,
     Request,
     Response,
-    Tool,
     ToolCall,
     ToolMessage,
     UserMessage,
@@ -291,7 +290,6 @@ class RolloutSession:
                         and self.trace.nodes[known_path[position]].sampled
                     ):
                         issuer = known_path[position]
-                        self.tool_issuers.setdefault(alias, set()).add(issuer)
                         calls[call.id] = (issuer, call.id)
                     else:
                         calls[call.id] = alias
@@ -549,7 +547,7 @@ class RolloutSession:
         self,
         node: int,
         dialect: DialectName | None = None,
-        native_tools: list[Tool] | None = None,
+        harness_history: Request | None = None,
     ) -> str | None:
         """Police the tool calls the assistant committed at `node` before the harness sees
         them: the request hooks run over the branch plus an empty result for each call, so a
@@ -563,11 +561,20 @@ class RolloutSession:
             self.tool_dialects[node] = dialect
         if not isinstance(assistant, AssistantMessage) or not assistant.tool_calls:
             return None
-        self.tool_catalogs[node] = graph.tool_catalog_hash(native_tools)
         known_path = graph.path_node_ids(self.trace, node)
         branch = [self.trace.nodes[i].message for i in known_path]
         tools = self.trace.nodes[known_path[0]].tools
+        if harness_history is None:
+            harness_history = Request(messages=branch[:-1], tools=tools)
+        self.tool_catalogs[node] = graph.tool_catalog_hash(harness_history.tools)
+        prefix = hashlib.blake2b(digest_size=16)
+        for message in [*harness_history.messages, assistant]:
+            prefix.update(
+                graph.replay_message_hash(self.trace, message, dialect).encode()
+            )
+        prefix_hash = prefix.hexdigest()
         for call in assistant.tool_calls:
+            self.tool_issuers.setdefault((prefix_hash, call.id), set()).add(node)
             probe = ToolMessage(tool_call_id=call.id, content="", name=call.name)
             request = Request(messages=[*branch, probe], tools=tools or None)
             key = (node, call.id)
