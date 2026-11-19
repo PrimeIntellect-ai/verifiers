@@ -2,7 +2,6 @@
 
 import asyncio
 import contextlib
-import copy
 import logging
 import time
 import uuid
@@ -46,7 +45,6 @@ from verifiers.v1.runtimes import (
 )
 from verifiers.v1.runtimes.private_network import tool_vms
 from verifiers.v1.session import (
-    IdempotentRequest,
     RolloutLimits,
     RolloutSession,
     hook_boundary,
@@ -88,9 +86,6 @@ class RolloutTimeouts:
 
 HOLD_SECONDS = 120
 """How long a saved rollout waits for its owner's `release` before it goes on by itself."""
-REPLAY_SECONDS = 30
-"""A memory checkpoint keeps the replies the server sent this recently: one of them may
-not have reached the box when the snapshot stopped it."""
 
 _HOME_PROBE = (
     "home=$(awk -F: -v u=\"$1\" '$1 == u { print $6 }' /etc/passwd); "
@@ -190,6 +185,10 @@ class Rollout:
         self._has_user = has_user
         self._timeouts = timeouts
         self._agent_time_remaining = self._timeouts.agent
+        self._agent_time_spent = 0.0
+        """Seconds of the agent's time budget the finished segments spent."""
+        self._segment_start: float | None = None
+        """When the running segment began (loop time), or None between segments."""
         self._shared_tools = shared_tools or {}
         self._interception = interception
         self.runtime = runtime
@@ -217,13 +216,12 @@ class Rollout:
         if restore is not None:
             self.trace, self._restore = restore
             self.trace.attempt = attempt
-            started = self.trace.timing.agent.start
-            if self._agent_time_remaining is not None and started:
-                # The agent's time budget is the rollout's, not the attempt's: what
-                # ran before the snapshot is spent.
+            # The agent's time budget is the rollout's, not the attempt's: what ran
+            # before the snapshot is spent.
+            self._agent_time_spent = self._restore.agent_time
+            if self._agent_time_remaining is not None:
                 self._agent_time_remaining = max(
-                    0.0,
-                    self._agent_time_remaining - (self._restore.captured - started),
+                    0.0, self._agent_time_remaining - self._agent_time_spent
                 )
             self.rewound_snapshots = self.trace.rewind(self._restore)
             self.restored_turns = self.trace.num_turns
@@ -293,17 +291,8 @@ class Rollout:
         self._unheld.set()
         self._capturing = asyncio.Lock()
         if self._restore is not None:
-            # Set before the box boots: its relay repeats the requests that waited as
-            # soon as it reaches this session.
-            self._session.pinned_tool_results.update(self._restore.pins)
-            self._session.tool_decisions.update(self._restore.decisions)
-            self._session.gated_tools.update(self._restore.gated)
-            self._session.prepared_users.update(self._restore.prepared)
-            now = time.monotonic()
-            for key, (binding, response) in self._restore.replays.items():
-                self._session.idempotent_requests[key] = IdempotentRequest(
-                    binding=binding, response=response, completed_at=now
-                )
+            assert self._restore.session is not None
+            self._session.restore(self._restore.session)
         self._stack = AsyncExitStack()
         self._failed = False
         self._failure: Exception | None = None
@@ -511,7 +500,7 @@ class Rollout:
                         self._relay = Relay(
                             runtime,
                             self.trace.id,
-                            running=self._restore.live["relay"] if restored else None,
+                            running=self._live("relay") if restored else None,
                         )
                         self._stack.push_async_callback(self._relay.stop)
                         await self._relay.installed()
@@ -576,9 +565,7 @@ class Rollout:
                 harness_base = runtime.host_url(base_url.rstrip("/")).rstrip("/")
                 # A harness restored from memory still sends the secret it got at its
                 # launch; the relay swaps it for this session's.
-                self._secret = (
-                    self._restore.live["secret"] if restored else model_secret
-                )
+                self._secret = self._live("secret") if restored else model_secret
                 if self._relay is not None:
                     # The harness holds the model secret anyway; the relay gets
                     # nothing more, so reading its config grants no capability.
@@ -816,7 +803,7 @@ class Rollout:
         root_reply_before = trace.root_reply
         trace.root_reply = None
         loop = asyncio.get_running_loop()
-        segment_start = loop.time()
+        segment_start = self._segment_start = loop.time()
         self.deadline_at = (
             None
             if self._agent_time_remaining is None
@@ -873,6 +860,8 @@ class Rollout:
             self._session.on_turn_input = None
             if trace.num_turns == turns_before:
                 trace.root_reply = root_reply_before
+            self._segment_start = None
+            self._agent_time_spent += loop.time() - segment_start
             if self._agent_time_remaining is not None:
                 self._agent_time_remaining = max(
                     0.0, self._agent_time_remaining - (loop.time() - segment_start)
@@ -919,8 +908,13 @@ class Rollout:
         (`HarnessSession.reattach`) instead of starting one."""
         checkpoint = self._restore
         assert checkpoint is not None and self._harness_session is not None
-        self._harness_session.reattach(checkpoint.live["program"])
+        self._harness_session.reattach(self._live("program"))
         return await self.step()
+
+    def _live(self, key: str) -> Any:
+        """What continues the restored box (`Checkpoint.session`'s `live`)."""
+        assert self._restore is not None and self._restore.session is not None
+        return self._restore.session["live"][key]
 
     async def _checkpoint(self) -> Checkpoint | None:
         if self._closed:
@@ -1065,26 +1059,11 @@ class Rollout:
                 if program is None:
                     return None
                 node = self._last_node()
-                state = copy.deepcopy(self.trace.state)
-                info = copy.deepcopy(self.trace.info)
-                pins = dict(session.pinned_tool_results)
-                decisions = dict(session.tool_decisions)
-                gated = set(session.gated_tools)
-                prepared = {k: n for k, n in session.prepared_users.items() if n > 0}
-                rewrites = (
-                    len(self.trace.request_rewrites),
-                    len(self.trace.response_rewrites),
-                )
-                now = time.monotonic()
-                replays = {
-                    key: (request.binding, request.response)
-                    for key, request in session.idempotent_requests.items()
-                    if request.response is not None
-                    and request.completed_at is not None
-                    # One that still waits for the box, or that may be on its way.
-                    and (
-                        not request.sent or now - request.completed_at <= REPLAY_SECONDS
-                    )
+                data = session.checkpoint()
+                data["live"] = {
+                    "program": program,
+                    "relay": self._relay.state,
+                    "secret": self._secret,
                 }
                 started = time.time()
                 try:
@@ -1097,6 +1076,11 @@ class Rollout:
                     )
                     return None
                 captured = time.time()
+                agent_time = self._agent_time_spent
+                if self._segment_start is not None:
+                    agent_time += (
+                        asyncio.get_running_loop().time() - self._segment_start
+                    )
                 # The box's connections to the server did not survive the stop: its
                 # relay opens new ones and repeats the requests that wait.
                 try:
@@ -1113,19 +1097,8 @@ class Rollout:
         checkpoint = Checkpoint(
             id=snapshot.id,
             node=node,
-            state=state,
-            info=info,
-            pins=pins,
-            decisions=decisions,
-            gated=gated,
-            prepared=prepared,
-            rewrites=rewrites,
-            replays=replays,
-            live={
-                "program": program,
-                "relay": self._relay.state,
-                "secret": self._secret,
-            },
+            session=data,
+            agent_time=agent_time,
             snapshot=snapshot,
             time=TimeSpan(start=started),
             captured=captured,

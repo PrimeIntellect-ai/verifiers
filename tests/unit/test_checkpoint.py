@@ -14,8 +14,10 @@ from verifiers.v1.clients import ModelContext, ModelRoute
 from verifiers.v1.configs.agent import RolloutCheckpointConfig
 from verifiers.v1.configs.client import EvalClientConfig
 from verifiers.v1.graph import MessageNode
-from verifiers.v1.restore import open_restore, restore_entry, unsaveable
+from verifiers.v1.restore import open_restore, restorable, restore_entry, unsaveable
 from verifiers.v1.rollout import Rollout, kept
+from verifiers.v1.runtimes.backends.prime import PrimeBackend
+from verifiers.v1.runtimes.base import Program
 from verifiers.v1.session import IdempotentRequest, ReplayResponse, RolloutSession
 from verifiers.v1.trace import (
     Checkpoint,
@@ -52,10 +54,23 @@ def make_trace() -> vf.Trace:
     return trace
 
 
+def held(trace: vf.Trace, **fields) -> dict:
+    """A checkpoint's session data (`RolloutSession.checkpoint`) for `trace` as is."""
+    return {
+        "state": trace.state.model_dump(mode="json"),
+        "info": dict(trace.info),
+        "rewrites": (len(trace.request_rewrites), len(trace.response_rewrites)),
+        **fields,
+    }
+
+
 def test_rewind_restores_info_with_state():
     trace = make_trace()
     checkpoint = Checkpoint(
-        id="ck", snapshot=vf.Snapshot(id="ck"), node=1, info={"setup": "nonce"}
+        id="ck",
+        snapshot=vf.Snapshot(id="ck"),
+        node=1,
+        session=held(trace, info={"setup": "nonce"}),
     )
     trace.checkpoints.append(checkpoint)
     trace.info = {"setup": "nonce", "scoring_skipped": "stale"}
@@ -76,7 +91,7 @@ def test_rewind_drops_the_rewrite_records_of_the_turns_it_cuts():
     trace = make_trace()
     trace.request_rewrites.append(InterceptRecord(handler="before"))
     checkpoint = Checkpoint(
-        id="ck1", snapshot=vf.Snapshot(id="ck1"), node=1, rewrites=(1, 0)
+        id="ck1", snapshot=vf.Snapshot(id="ck1"), node=1, session=held(trace)
     )
     trace.checkpoints.append(checkpoint)
     trace.request_rewrites.append(InterceptRecord(handler="after"))
@@ -205,6 +220,8 @@ def make_rollout(
     run._unheld = asyncio.Event()
     run._unheld.set()
     run._captured_turn = 0
+    run._agent_time_spent = 0.0
+    run._segment_start = None
     run._capturing = asyncio.Lock()
     run._pruning = asyncio.Lock()
     run.deleted_snapshots = set()
@@ -386,13 +403,14 @@ async def test_a_snapshot_holds_every_reply_until_the_box_runs_again():
     assert run._relay.rerouted == ["https://tunnel.example"]
     assert checkpoint.snapshot == vf.Snapshot(id="ck1")
     assert checkpoint.node == len(run.trace.nodes) - 1
-    assert checkpoint.live == {
+    assert checkpoint.session is not None
+    assert checkpoint.session["live"] == {
         "program": {"job": {"job_id": "j1"}},
         "relay": run._relay.state,
         "secret": "box-secret",
     }
     # Only a reply the box may not have received yet is kept for its restore.
-    assert list(checkpoint.replays) == ["retry:/v1/chat/completions:aa"]
+    assert list(checkpoint.session["replays"]) == ["retry:/v1/chat/completions:aa"]
     assert not checkpoint.pinned
 
 
@@ -429,28 +447,37 @@ async def test_save_returns_a_trace_another_process_can_continue():
     assert saved is not None
     (checkpoint,) = run.trace.checkpoints
     assert checkpoint.pinned
-    # The running rollout's own trace does not carry the saved fields.
-    assert checkpoint.restore is None
-    assert "restore" not in run.trace.model_dump()["checkpoints"][0]
+    # The running rollout's own trace does not carry the session data.
+    assert "session" not in run.trace.model_dump()["checkpoints"][0]
 
-    saved = pickle.loads(pickle.dumps(saved))
+    run.trace.request_rewrites.append(InterceptRecord(handler="after"))
+    saved = pickle.loads(pickle.dumps(restorable(run.trace, checkpoint)))
     assert saved["id"] == run.trace.id
     assert restore_entry(saved)["snapshot"] == {"id": "ck1"}
     task = vf.Task(vf.TaskData(idx=0, prompt="q"))
     trace, restored = open_restore(saved, task)
-    assert restored.restore is None
     assert trace.id == run.trace.id and trace.num_turns == run.trace.num_turns
     assert restored is trace.checkpoints[0] and restored.pinned
-    assert restored.info == {"nonce": "n"}
-    assert restored.pins == session.pinned_tool_results
-    assert restored.decisions == {("prefix", "c1"): None, ("prefix", "c2"): denied}
-    assert restored.gated == {("prefix", "c1")}
-    assert restored.prepared == {"user-key": 1}
+    assert restored.agent_time == checkpoint.agent_time
     # The owner offers it, so a later retry of the restored run can pick it again.
     assert restored.time.end
-    assert restored.live == checkpoint.live
-    # The restored trace rewinds to the point like a retry's.
+    assert restored.session is not None and checkpoint.session is not None
+    assert restored.session["live"] == checkpoint.session["live"]
+    fresh = RolloutSession(
+        route=ModelRoute(ModelContext(model="m", client=EvalClientConfig())),
+        trace=trace,
+    )
+    fresh.restore(restored.session)
+    assert fresh.pinned_tool_results == session.pinned_tool_results
+    assert fresh.tool_decisions == {("prefix", "c1"): None, ("prefix", "c2"): denied}
+    assert fresh.gated_tools == {("prefix", "c1")}
+    assert fresh.prepared_users == {"user-key": 1}
+    # The restored trace rewinds to the point like a retry's: the rewrite record
+    # made after the save goes, the info comes back.
+    trace.info = {}
     assert trace.rewind(restored) == []
+    assert trace.info == {"nonce": "n"}
+    assert trace.request_rewrites == []
 
 
 async def test_save_returns_before_the_snapshot_is_durable():
@@ -527,8 +554,9 @@ async def test_a_snapshot_waits_for_a_turn_that_is_committing():
     checkpoint = await capture
     assert checkpoint is not None and checkpoint.node == 2
     # The reply was committed long ago by the clock and never sent: it is kept.
-    assert checkpoint.replays == {
-        "k": (binding, ReplayResponse(200, b"{}", "application/json"))
+    assert checkpoint.session is not None
+    assert checkpoint.session["replays"] == {
+        "k": (*binding, 200, b"{}", "application/json")
     }
 
 
@@ -643,3 +671,35 @@ async def test_an_owners_snapshot_outlives_the_rollout():
     assert backend.deleted == []
     assert kept(run.trace.checkpoints, "last") == {newest.id}
     assert not pinned.deleted
+
+
+async def test_a_snapshot_records_the_agent_time_spent():
+    run, _, _ = make_rollout()
+    run._agent_time_spent = 30.0
+    run._segment_start = asyncio.get_running_loop().time() - 5.0
+    checkpoint = await run._checkpoint()
+    assert checkpoint is not None
+    # The finished segments and the running one up to the snapshot.
+    assert 35.0 <= checkpoint.agent_time < 40.0
+
+
+async def test_an_attached_program_can_be_snapshotted_again():
+    """A box restored from a snapshot runs the program the host attaches to: it is the
+    segment's program, so the restored rollout can be saved again."""
+    backend = PrimeBackend.__new__(PrimeBackend)
+    backend.info = SimpleNamespace(id="sb")  # type: ignore[assignment]
+
+    async def attach_process(sandbox_id: str, session: str) -> str:
+        return session
+
+    backend._client = SimpleNamespace(attach_process=attach_process)  # type: ignore[assignment]
+    program = Program()
+    seen = []
+
+    async def collect(process: str) -> None:
+        seen.append(program.job)
+
+    backend._collect = collect  # type: ignore[method-assign]
+    await backend.attach(None, {"session": "s1"}, program=program)  # type: ignore[arg-type]
+    assert seen == [{"session": "s1"}]
+    assert program.job is None

@@ -16,15 +16,17 @@ or the graph.
 
 import asyncio
 import contextlib
+import copy
 import hashlib
 import inspect
 import json
+import time
 from collections import Counter
 from collections.abc import Awaitable, Callable, Iterator
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass, field, replace
 from functools import cached_property
-from typing import get_origin, get_type_hints
+from typing import Any, get_origin, get_type_hints
 
 from pydantic import TypeAdapter
 
@@ -162,6 +164,11 @@ class ReplayResponse:
     content_type: str
 
 
+REPLAY_SECONDS = 30
+"""A memory checkpoint keeps the replies the server sent this recently: one of them may
+not have reached the box when the snapshot stopped it."""
+
+
 @dataclass
 class RolloutSession:
     route: ModelRoute
@@ -271,6 +278,76 @@ class RolloutSession:
 
     def resume(self) -> None:
         self.flowing.set()
+
+    def checkpoint(self) -> dict[str, Any]:
+        """What a box restored from a snapshot taken now needs beside the trace, as plain
+        data that survives a pickle or a msgpack round trip (`Checkpoint.session`).
+        `Trace.rewind` takes the trace's part and `restore` the session's."""
+        now = time.monotonic()
+        return {
+            "state": TypeAdapter(type(self.trace.state)).dump_python(
+                self.trace.state, mode="json"
+            ),
+            "info": copy.deepcopy(self.trace.info),
+            "rewrites": (
+                len(self.trace.request_rewrites),
+                len(self.trace.response_rewrites),
+            ),
+            "pins": [
+                (prefix, call_id, message.model_dump(mode="json"))
+                for (prefix, call_id), message in self.pinned_tool_results.items()
+            ],
+            "decisions": [
+                (
+                    prefix,
+                    call_id,
+                    None if verdict is None else verdict.model_dump(mode="json"),
+                )
+                for (prefix, call_id), verdict in self.tool_decisions.items()
+            ],
+            "gated": sorted(self.gated_tools),
+            "prepared": {k: n for k, n in self.prepared_users.items() if n > 0},
+            "replays": {
+                key: (
+                    *request.binding,
+                    request.response.status,
+                    request.response.body,
+                    request.response.content_type,
+                )
+                for key, request in self.idempotent_requests.items()
+                if request.response is not None
+                and request.completed_at is not None
+                # One that still waits for the box, or that may be on its way.
+                and (not request.sent or now - request.completed_at <= REPLAY_SECONDS)
+            },
+        }
+
+    def restore(self, data: dict[str, Any]) -> None:
+        """Take the session's part of a checkpoint (`checkpoint`), before the restored
+        box reaches this session: its relay repeats the requests that waited."""
+        self.pinned_tool_results.update(
+            {
+                (prefix, call_id): ToolMessage.model_validate(message)
+                for prefix, call_id, message in data["pins"]
+            }
+        )
+        self.tool_decisions.update(
+            {
+                (prefix, call_id): (
+                    None if verdict is None else ToolMessage.model_validate(verdict)
+                )
+                for prefix, call_id, verdict in data["decisions"]
+            }
+        )
+        self.gated_tools.update((prefix, call_id) for prefix, call_id in data["gated"])
+        self.prepared_users.update(data["prepared"])
+        now = time.monotonic()
+        for key, (path, digest, status, body, content_type) in data["replays"].items():
+            self.idempotent_requests[key] = IdempotentRequest(
+                binding=(path, digest),
+                response=ReplayResponse(status, body, content_type),
+                completed_at=now,
+            )
 
     @property
     def ctx(self) -> ModelContext:

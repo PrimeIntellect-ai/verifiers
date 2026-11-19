@@ -387,41 +387,16 @@ class Checkpoint(BaseModel):
     node: int | None = None
     """The last committed node when the snapshot was taken; None before the first
     turn. The restored box asks again for whatever was open after it."""
-    state: Any = Field(None, exclude=True)
-    """The trace's typed state as the snapshot was taken (tool servers write it over
-    `/state`), restored with the box so a retry sees one consistent world. Live-only."""
-    info: dict[str, Any] | None = Field(None, exclude=True)
-    """`Trace.info` as the snapshot was taken, restored with `state`. Live-only."""
-    pins: dict[tuple[str, str], ToolMessage] = Field(default_factory=dict, exclude=True)
-    """The rollout's pinned tool results as the snapshot was taken
-    (`RolloutSession.pinned_tool_results`): the restored box re-sends its own copies,
-    which must be pinned again to match the trace. Live-only."""
-    decisions: dict[tuple[str, str], ToolMessage | None] = Field(
-        default_factory=dict, exclude=True
-    )
-    """The verdicts on proposed tool calls as the snapshot was taken
-    (`RolloutSession.tool_decisions`): a call that was denied stays denied in the
-    restored box. Live-only."""
-    gated: set[tuple[str, str]] = Field(default_factory=set, exclude=True)
-    """The calls the harness had asked about (`RolloutSession.gated_tools`). Live-only."""
-    prepared: dict[str, int] = Field(default_factory=dict, exclude=True)
-    """The user messages that request hooks had prepared and no turn had used yet
-    (`RolloutSession.prepared_users`): the hooks do not run on them again. Live-only."""
-    rewrites: tuple[int, int] | None = Field(None, exclude=True)
-    """How many request and response rewrites the trace held, for `Trace.rewind`.
-    Live-only."""
-    live: dict[str, Any] = Field(default_factory=dict, exclude=True)
-    """What continues the restored box: the harness program's job
-    (`HarnessSession.memory_state`), the box's relay and the secret the harness holds.
-    Live-only."""
-    replays: dict[str, Any] = Field(default_factory=dict, exclude=True)
-    """The replies the server had just sent when the snapshot stopped the box
-    (`RolloutSession.idempotent_requests`): the restored box asks again for one that had
-    not arrived, and gets the reply the trace already holds. Live-only."""
-    restore: dict[str, Any] | None = Field(None, exclude_if=lambda value: value is None)
-    """The live-only fields above as plain data, on a trace saved for another process
-    to continue (`verifiers.v1.restore.restorable`); None on a running rollout's
-    checkpoint, which holds them live."""
+    session: dict[str, Any] | None = Field(None, exclude=True)
+    """What the host held beside the trace when the snapshot was taken, as plain data
+    (`RolloutSession.checkpoint`): the trace's state, `info` and rewrite counts, the
+    pinned tool results, tool verdicts, prepared user messages, the replies not yet in
+    the box, and under `live` what continues the restored box (its program, relay and
+    the harness's secret). A trace saved for another process carries it on the
+    checkpoint it continues from (`verifiers.v1.restore.restorable`)."""
+    agent_time: float = 0.0
+    """Seconds of the agent's time budget the rollout had spent when the snapshot was
+    taken; a restore gets the rest."""
     time: TimeSpan = Field(default_factory=TimeSpan)
     """From the snapshot request until it was durable (restorable); `end` stays 0 while
     it is not."""
@@ -1069,13 +1044,6 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         self.is_timeout = True
         self.stop(f"{stage}_timeout", override=True)
 
-    def rewind_state(self, checkpoint: Checkpoint) -> None:
-        """Set the typed state and `info` back to `checkpoint`'s."""
-        if checkpoint.state is not None:
-            self.state = copy.deepcopy(checkpoint.state)
-        if checkpoint.info is not None:
-            self.info = copy.deepcopy(checkpoint.info)
-
     def rewind(self, checkpoint: Checkpoint) -> list[Snapshot]:
         """Roll the graph back to `checkpoint` — the nodes committed after it go, its own
         conversation stays sampled — and reopen the trace for another attempt: the outcome
@@ -1099,10 +1067,13 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         for call in self.calls:
             if call.node is not None and call.node >= keep:
                 call.node = None
-        self.rewind_state(checkpoint)
-        if checkpoint.rewrites is not None:
-            del self.request_rewrites[checkpoint.rewrites[0] :]
-            del self.response_rewrites[checkpoint.rewrites[1] :]
+        session = checkpoint.session
+        if session is not None:
+            self.state = TypeAdapter(type(self.state)).validate_python(session["state"])
+            self.info = copy.deepcopy(session["info"])
+            requests, responses = session["rewrites"]
+            del self.request_rewrites[requests:]
+            del self.response_rewrites[responses:]
         # The restored rollout re-stamps every stage span; the run's start stays.
         self.timing = Timing(start=self.timing.start)
         # Checkpoints are in the order they were taken: the ones after `checkpoint` hold

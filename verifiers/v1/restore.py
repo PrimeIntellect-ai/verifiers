@@ -20,12 +20,8 @@ import weakref
 from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any
 
-from pydantic import TypeAdapter
-
-from verifiers.v1.session import ReplayResponse
 from verifiers.v1.state import state_cls
 from verifiers.v1.trace import Checkpoint, Trace
-from verifiers.v1.types import ToolMessage
 from verifiers.v1.utils.logging import get_logger
 
 if TYPE_CHECKING:
@@ -48,36 +44,12 @@ list its first agent run takes it out of."""
 
 def restorable(trace: Trace, checkpoint: Checkpoint) -> dict[str, Any]:
     """`trace` as plain data that any process can continue from `checkpoint`: its dump
-    with token arrays, and on the checkpoint's entry what the checkpoint holds only
-    while its rollout lives (`Checkpoint.restore`). Every value survives a pickle or a
-    msgpack round trip with raw bytes and numpy arrays."""
+    with token arrays, and on the checkpoint's entry what the host held beside the trace
+    (`Checkpoint.session`). Every value survives a pickle or a msgpack round trip with
+    raw bytes and numpy arrays."""
     data = trace.model_dump(context={"token_arrays": True})
     entry = next(c for c in data["checkpoints"] if c["id"] == checkpoint.id)
-    entry["restore"] = {
-        "state": TypeAdapter(type(checkpoint.state)).dump_python(
-            checkpoint.state, mode="json"
-        ),
-        "info": dict(checkpoint.info or {}),
-        "pins": [
-            (prefix, call_id, message.model_dump(mode="json"))
-            for (prefix, call_id), message in checkpoint.pins.items()
-        ],
-        "replays": {
-            key: (path, digest, reply.status, reply.body, reply.content_type)
-            for key, ((path, digest), reply) in checkpoint.replays.items()
-        },
-        "decisions": [
-            (
-                prefix,
-                call_id,
-                None if verdict is None else verdict.model_dump(mode="json"),
-            )
-            for (prefix, call_id), verdict in checkpoint.decisions.items()
-        ],
-        "gated": sorted(checkpoint.gated),
-        "prepared": dict(checkpoint.prepared),
-        "live": checkpoint.live,
-    }
+    entry["session"] = checkpoint.session
     return data
 
 
@@ -85,37 +57,18 @@ def restore_entry(trace: dict[str, Any]) -> dict[str, Any]:
     """The checkpoint entry a saved trace continues from: the newest one that holds
     what a restore needs."""
     for entry in reversed(trace.get("checkpoints") or []):
-        if entry.get("restore") is not None:
+        if entry.get("session") is not None:
             return entry
     raise ValueError(f"trace {trace.get('id')} holds no checkpoint to continue from")
 
 
 def open_restore(data: dict[str, Any], task: Task) -> tuple[Trace, Checkpoint]:
-    """The trace and its live checkpoint, for `task`'s rollout to restore."""
+    """The trace and its checkpoint, for `task`'s rollout to restore."""
     saved = restore_entry(data)
     trace = Trace.model_validate(data)
     checkpoint = next(c for c in trace.checkpoints if c.id == saved["id"])
-    held, checkpoint.restore = saved["restore"], None
-    trace.state = state_cls(type(task)).model_validate(held["state"])
-    checkpoint.state = trace.state.model_copy(deep=True)
-    checkpoint.info = dict(held["info"])
-    checkpoint.pins = {
-        (prefix, call_id): ToolMessage.model_validate(message)
-        for prefix, call_id, message in held["pins"]
-    }
-    checkpoint.replays = {
-        key: ((path, digest), ReplayResponse(status, body, content_type))
-        for key, (path, digest, status, body, content_type) in held["replays"].items()
-    }
-    checkpoint.decisions = {
-        (prefix, call_id): (
-            None if verdict is None else ToolMessage.model_validate(verdict)
-        )
-        for prefix, call_id, verdict in held.get("decisions", ())
-    }
-    checkpoint.gated = {(prefix, call_id) for prefix, call_id in held.get("gated", ())}
-    checkpoint.prepared = dict(held.get("prepared", {}))
-    checkpoint.live = held["live"]
+    assert checkpoint.session is not None
+    trace.state = state_cls(type(task)).model_validate(checkpoint.session["state"])
     # The owner saved it and offers it: it is restorable, also for a later retry.
     checkpoint.time.end = checkpoint.time.end or checkpoint.captured
     return trace, checkpoint
