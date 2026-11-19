@@ -17,7 +17,7 @@ from pydantic_config import cli
 
 from verifiers.v1.configs.agent import AgentConfig
 from verifiers.v1.configs.cli.audit import AuditConfig
-from verifiers.v1.judges.rubric import RubricJudge, RubricJudgeConfig
+from verifiers.v1.judges.rubric import RubricJudge, RubricJudgeConfig, load_criteria
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import AgentInfo, Trace, TraceTask, WireTrace
 from verifiers.v1.types import SystemMessage, UserMessage
@@ -91,7 +91,7 @@ async def run_audit(config: AuditConfig) -> tuple[Path, int]:
         raise FileExistsError(f"output already exists: {output}")
     source_sha256, records = load_evidence(config)
     # Validate the rubric before any model call and preserve the exact criteria used.
-    read_regular(config.rubric, MAX_REVIEW_BYTES)
+    rubric = read_regular(config.rubric, MAX_REVIEW_BYTES).decode("utf-8")
     judge = AuditJudge(
         RubricJudgeConfig(
             **config.judge.model_dump(exclude={"name"}),
@@ -100,6 +100,7 @@ async def run_audit(config: AuditConfig) -> tuple[Path, int]:
             view="last_reply",
         )
     )
+    judge.criteria = load_criteria(config.rubric, judge.config.weights, text=rubric)
     criteria = [criterion.model_dump(mode="json") for criterion in judge.criteria]
     source = source_evidence(config.source) if config.source is not None else None
     # Discover credentials before scrubbing any record, including echoes in the
@@ -128,11 +129,11 @@ async def run_audit(config: AuditConfig) -> tuple[Path, int]:
         scratch = Trace(
             task=TraceTask(type="Audit", data=question),
             agent=AgentInfo(config=AgentConfig()),
-            root_reply=json.dumps(content, ensure_ascii=False),
         )
-        encoded = scratch.last_reply.encode()
-        result["evidence_sha256"] = hashlib.sha256(encoded).hexdigest()
         try:
+            scratch.root_reply = json.dumps(content)
+            encoded = scratch.last_reply.encode()
+            result["evidence_sha256"] = hashlib.sha256(encoded).hexdigest()
             if len(encoded) > MAX_REVIEW_BYTES:
                 raise ValueError(f"review evidence exceeds {MAX_REVIEW_BYTES} bytes")
             result["analysis_score"] = await judge.score(question, scratch)
@@ -171,7 +172,7 @@ async def run_audit(config: AuditConfig) -> tuple[Path, int]:
     # Never replace a run, previous review, or a symlink target.
     output.parent.mkdir(parents=True, exist_ok=True)
     with output.open("x", encoding="utf-8") as stream:
-        stream.write(json.dumps(report, ensure_ascii=False, indent=2) + "\n")
+        stream.write(json.dumps(report, indent=2) + "\n")
     return output, sum(item["status"] == "error" for item in results)
 
 
