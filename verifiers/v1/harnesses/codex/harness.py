@@ -133,10 +133,15 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
             # Codex reads MCP servers from the config written by build_env().
             mcp_urls={},
             system_prompt=system_prompt,
+            # An untitled session starts a separate model turn to generate a UI title.
+            session_title=f"Verifiers rollout {trace.id}",
             client_capabilities={
                 "_meta": {
                     "jetbrains": {
-                        "air": {"version": 1, "capabilities": ["sessionFailure"]}
+                        "air": {
+                            "version": 1,
+                            "capabilities": ["sessionFailure", "sessionIndex"],
+                        }
                     }
                 }
             },
@@ -232,6 +237,8 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
         }
         return {
             **self.config.resolved_env,
+            # A rollout has no interactive composer that needs suggested follow-ups.
+            "CODEX_ACP_PROMPT_SUGGESTIONS": "false",
             "CODEX_CONFIG": json.dumps(config),
             "CODEX_HOME": home,
             "CODEX_INTERCEPT_KEY": secret,
