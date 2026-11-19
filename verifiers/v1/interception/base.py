@@ -15,7 +15,7 @@ from contextlib import AbstractAsyncContextManager, AsyncExitStack
 from typing import TYPE_CHECKING, Self
 
 if TYPE_CHECKING:
-    from verifiers.v1.session import RolloutSession
+    from verifiers.v1.session import InferenceSession
 
 
 # (base_url, model_secret, state_secret): model inference and task state deliberately use
@@ -32,6 +32,11 @@ class Interception(ABC):
 
     def __init__(self) -> None:
         self.stack = AsyncExitStack()
+
+    @property
+    def is_local(self) -> bool:
+        """Whether callers must be on the evaluator's local network."""
+        return False
 
     @abstractmethod
     async def start(self) -> None:
@@ -53,6 +58,6 @@ class Interception(ABC):
         await self.stop()
 
     @abstractmethod
-    def acquire(self, session: RolloutSession) -> AbstractAsyncContextManager[Slot]:
+    def acquire(self, session: InferenceSession) -> AbstractAsyncContextManager[Slot]:
         """Register `session` on a server (bringing one up if needed) and yield its `Slot`;
         free it on exit."""
