@@ -211,6 +211,7 @@ class _PrivateNetworkDeployment(_DeploymentStrategy):
                 harness = self._harness = lease.backend
                 d._reused_harness = True
                 d._harness_lan_waiter = lease.wait_lan_ready
+                d._harness_lease = lease
                 own_harness = False
                 assign_harness_lan = False
                 d._stack.push_async_callback(

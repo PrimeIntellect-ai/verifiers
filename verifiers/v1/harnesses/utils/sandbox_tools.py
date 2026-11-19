@@ -12,6 +12,7 @@ import inspect
 import json
 import sys
 import time
+import uuid
 from collections.abc import Callable
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
@@ -44,6 +45,8 @@ class SandboxTools:
         self._python = ""
         self._endpoint: dict | None = None
         self._rpc: ProcessRPC | None = None
+        self._daemon = None
+        self._slot_id = uuid.uuid4().hex
         self._configured = False
         self._abandon_on_close = False
         self._fast_kill_on_close = False
@@ -94,12 +97,18 @@ class SandboxTools:
 
         source = bundle_program(inspect.getsource(workspace_worker), rpc_wire)
         has_lan = getattr(self.connection, "transport", None) is not None
+        lease = getattr(self.runtime, "_lease", None)
 
-        async def install_and_spawn() -> tuple[ProcessRPC, dict]:
+        async def install_and_spawn() -> tuple[ProcessRPC | None, dict, object]:
+            if lease is not None:
+                daemon = await lease.ensure_daemon()
+                if daemon is not None:
+                    return None, {}, daemon
             self._python = await install_in_runtime(
                 self.spec.factory, self.runtime, label="harness tool adapter"
             )
-            return await self._spawn_rpc()
+            rpc, info = await self._spawn_rpc()
+            return rpc, info, None
 
         async def register_and_prewarm() -> dict | None:
             worker_python = await self.connection.runtime.resolve_python()
@@ -116,9 +125,12 @@ class SandboxTools:
                 prewarmed = group.create_task(register_and_prewarm())
         except ExceptionGroup as failed:
             raise failed.exceptions[0]
-        self._rpc, ready_info = adapter_rpc.result()
+        self._rpc, ready_info, self._daemon = adapter_rpc.result()
         self._endpoint = prewarmed.result()
-        if self.uses_local_gate and ready_info.get("gate_port"):
+        if self._daemon is not None:
+            if self.uses_local_gate:
+                self.local_gate_url = self._daemon.local_gate_url
+        elif self.uses_local_gate and ready_info.get("gate_port"):
             self.local_gate_url = f"http://127.0.0.1:{ready_info['gate_port']}/tool"
 
     async def connect(
@@ -130,14 +142,42 @@ class SandboxTools:
     ) -> None:
         if self._configured:
             return
-        if self._rpc is None:
+        if (
+            self._daemon is None
+            and (lease := getattr(self.runtime, "_lease", None)) is not None
+        ):
+            self._daemon = await lease.ensure_daemon()
+            if self._daemon is not None and self.uses_local_gate:
+                self.local_gate_url = self._daemon.local_gate_url
+        if self._daemon is None and self._rpc is None:
             self._rpc, ready_info = await self._spawn_rpc()
             if self.uses_local_gate and ready_info.get("gate_port"):
                 self.local_gate_url = f"http://127.0.0.1:{ready_info['gate_port']}/tool"
         for rt in (self.runtime, self.connection.runtime):
             await rt.wait_lan_ready()
         gate_target = interception_url if self.uses_local_gate else None
-        if self._endpoint is not None:
+        command: list[str] | None = None
+        if self._endpoint is None:
+            from verifiers.v1.harnesses.utils.remote_runtime import (
+                prepare_remote_bridge,
+            )
+
+            command = await prepare_remote_bridge(
+                self.runtime, url, secret, "tool-adapter"
+            )
+        if self._daemon is not None:
+            await self._daemon.register_tool_slot(
+                slot_id=self._slot_id,
+                module=self.spec.factory.__module__,
+                factory=self.spec.factory.__qualname__,
+                kwargs=self.spec.kwargs,
+                endpoint=self._endpoint,
+                command=command,
+                interception_url=gate_target,
+                secret=secret,
+            )
+        elif self._endpoint is not None:
+            assert self._rpc is not None
             await self._rpc.call(
                 "configure",
                 module=self.spec.factory.__module__,
@@ -148,13 +188,7 @@ class SandboxTools:
                 secret=secret,
             )
         else:
-            from verifiers.v1.harnesses.utils.remote_runtime import (
-                prepare_remote_bridge,
-            )
-
-            command = await prepare_remote_bridge(
-                self.runtime, url, secret, "tool-adapter"
-            )
+            assert self._rpc is not None and command is not None
             await self._rpc.call(
                 "configure",
                 module=self.spec.factory.__module__,
@@ -167,14 +201,24 @@ class SandboxTools:
         self._configured = True
 
     async def __call__(self, call: ToolCall) -> ToolMessage:
-        if self._rpc is None or not self._configured:
+        if not self._configured:
+            raise HarnessError("sandbox tool adapter is not connected")
+        if self._daemon is not None:
+            result = await self._daemon.execute_tool_slot(
+                self._slot_id, call.model_dump()
+            )
+            return ToolMessage.model_validate(result)
+        if self._rpc is None:
             raise HarnessError("sandbox tool adapter is not connected")
         result = await self._rpc.call("execute", call=call.model_dump())
         return ToolMessage.model_validate(result)
 
     async def aclose(self) -> None:
         try:
-            if self._rpc is not None:
+            if self._daemon is not None:
+                await self._daemon.unregister_tool_slot(self._slot_id)
+                self._daemon = None
+            elif self._rpc is not None:
                 if self._abandon_on_close:
                     await self._rpc.process.abandon()
                     await super(ProcessRPC, self._rpc).close()

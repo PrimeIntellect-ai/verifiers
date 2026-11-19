@@ -90,9 +90,14 @@ class LanStream:
             self.disconnect(connection)
 
     def _connect(self):
-        sock = socket.create_connection(
-            (self.endpoint["host"], int(self.endpoint["port"])), timeout=10
+        host = self.endpoint["host"]
+        port = int(self.endpoint["port"])
+        target = (
+            socket.getaddrinfo(host, port, socket.AF_INET, socket.SOCK_STREAM)[0][4][:2]
+            if isinstance(host, str) and host.endswith(".sandbox.internal")
+            else (host, port)
         )
+        sock = socket.create_connection(target, timeout=10)
         try:
             sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
             _send_frame(sock, {"secret": self.endpoint["secret"]})
@@ -214,9 +219,14 @@ class AsyncLanStream:
             if self._writer is not None and not self._writer.is_closing():
                 return self._writer
             async with asyncio.timeout(10):
-                reader, writer = await asyncio.open_connection(
-                    self.endpoint["host"], int(self.endpoint["port"])
+                host = self.endpoint["host"]
+                port = int(self.endpoint["port"])
+                fam = (
+                    socket.AF_INET
+                    if isinstance(host, str) and host.endswith(".sandbox.internal")
+                    else 0
                 )
+                reader, writer = await asyncio.open_connection(host, port, family=fam)
                 try:
                     if sock := writer.get_extra_info("socket"):
                         sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)

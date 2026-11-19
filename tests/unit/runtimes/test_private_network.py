@@ -449,3 +449,91 @@ def test_multiplex_shares_harness_vm_across_concurrent_rollouts_with_isolated_wo
     # Both pooled harness VMs stop cleanly on scope exit.
     harness_stops = [e for e in events if e[0] == "stop" and "harness" in e[1]]
     assert len(harness_stops) == 2
+
+
+def test_harness_pool_auto_checkpoints_first_vm_for_scale_out_and_cleans_up(
+    monkeypatch,
+):
+    from verifiers.v1.runtimes.harness_pool import harness_pool_scope
+
+    events = []
+    sb_seq = 0
+
+    class AutoCpClient:
+        async def create_lan_network(self, name, rules):
+            return SimpleNamespace(id="net1")
+
+        async def remove_lan_member(self, network_id, sandbox_id):
+            pass
+
+        async def delete_lan_network(self, network_id):
+            pass
+
+        async def checkpoint(self, sandbox_id, ttl_seconds=None):
+            events.append(("checkpoint", sandbox_id))
+            return SimpleNamespace(id=f"auto-cp-{sandbox_id}")
+
+        async def wait_for_checkpoint(self, checkpoint_id, timeout_seconds=300):
+            events.append(("wait_cp", checkpoint_id))
+
+        async def delete_checkpoint(self, checkpoint_id):
+            events.append(("delete_cp", checkpoint_id))
+
+    @asynccontextmanager
+    async def leased_client():
+        yield AutoCpClient()
+
+    async def start(self):
+        nonlocal sb_seq
+        sb_seq += 1
+        self.info.id = f"sb-{sb_seq}"
+        self._client = AutoCpClient()
+        self._created_workdirs.add(self.config.workdir)
+        events.append(("start", self.name, self.info.id, self.config.checkpoint))
+
+    async def teardown(self):
+        if self._client is not None:
+            self._client = None
+            events.append(("stop", self.info.id))
+
+    monkeypatch.setattr(private_network, "leased_client", leased_client)
+    monkeypatch.setattr(prime, "leased_client", leased_client)
+    monkeypatch.setattr(prime, "ensure_prime_auth", lambda: None)
+    monkeypatch.setattr(PrimeBackend, "start", start)
+    monkeypatch.setattr(PrimeBackend, "teardown", teardown)
+    monkeypatch.setattr(
+        prime,
+        "join_lan",
+        lambda backend, network_id, tags: asyncio.sleep(0),
+    )
+
+    cfg = vf.DeploymentConfig(mode="split", reuse_harness=True, multiplex=1)
+
+    async def run_scale_out():
+        async with harness_pool_scope() as pool:
+            ws1 = PrimeBackend(PrimeConfig(), name="ws1")
+            dep1 = ws1.deploy(config=cfg)
+            await dep1.start()
+            dep1._harness_lease.notify_setup_complete()
+            while pool._auto_checkpoint_tasks:
+                await asyncio.sleep(0.01)
+
+            # While dep1 still holds VM A #1 (multiplex=1), dep2 scales out to VM A #2
+            # using the auto-minted checkpoint from VM A #1!
+            ws2 = PrimeBackend(PrimeConfig(), name="ws2")
+            dep2 = ws2.deploy(config=cfg)
+            await dep2.start()
+            await dep1.close()
+            await dep2.close()
+
+    asyncio.run(run_scale_out())
+    harness_starts = [
+        (sid, cp)
+        for kind, name, sid, cp in (e for e in events if e[0] == "start")
+        if "harness" in name
+    ]
+    assert harness_starts == [
+        ("sb-1", None),
+        ("sb-3", "auto-cp-sb-1"),
+    ]
+    assert ("delete_cp", "auto-cp-sb-1") in events

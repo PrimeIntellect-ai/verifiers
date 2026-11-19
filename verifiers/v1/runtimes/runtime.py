@@ -10,7 +10,7 @@ from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import PurePosixPath
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Self
+from typing import TYPE_CHECKING, Any, Self
 
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.errors import SandboxError
@@ -48,6 +48,7 @@ class Runtime:
     _remote_tools_only: bool = False
     _execution_bridge: ExecutionBridge | None = None
     _lan_waiter: Callable[[], Awaitable[None]] | None = None
+    _lease: Any = None
 
     def __post_init__(self) -> None:
         if self.user is not None and not self.backend.SUPPORTS_USER_SWITCHING:
@@ -164,6 +165,21 @@ class Runtime:
         await self.backend.run_background(self, argv, env, log)
 
     async def write(self, path: str, data: bytes) -> None:
+        if (
+            self.user is None
+            and len(data) <= 512 * 1024
+            and self._lease is not None
+            and (daemon := getattr(self._lease.entry, "daemon", None)) is not None
+            and daemon.alive
+        ):
+            base_dir = (
+                self.workdir
+                or getattr(self.backend.config, "workdir", "/app")
+                or "/app"
+            )
+            target = path if path.startswith("/") else f"{base_dir.rstrip('/')}/{path}"
+            await daemon.write_file(target, data)
+            return
         await self.backend.write(self, path, data)
 
     async def alive(self) -> bool:

@@ -243,11 +243,25 @@ class ACPHarnessSession(HarnessSession):
         self._responses: dict[int, asyncio.Future] = {}
         self._request_id = 0
         self._response_task: asyncio.Task | None = None
+        self._daemon = None
+        self._daemon_key = f"{trace.id}:{id(self)}"
         self._abandon_on_close = False
         self._fast_kill_on_close = False
 
     async def _start(self) -> None:
         self._stderr_tail.clear()
+        if (lease := getattr(self.runtime, "_lease", None)) is not None:
+            daemon = await lease.ensure_daemon()
+            if daemon is not None:
+                self._daemon = daemon
+                await daemon.acp_warm(
+                    session_key=self._daemon_key,
+                    env=self.config.env,
+                    command=self.config.command,
+                    cwd=self.config.cwd or self.runtime.workdir,
+                    client_capabilities=self.config.client_capabilities,
+                )
+                return
         program = await self.runtime.prepare_uv_script(
             ACP_SOURCE,
             {**self.config.env, "UV_FROZEN": "false"},
@@ -294,7 +308,7 @@ class ACPHarnessSession(HarnessSession):
 
     async def warm(self) -> None:
         async with self._lock:
-            if not self._closed and self._process is None:
+            if not self._closed and self._process is None and self._daemon is None:
                 await self._start()
 
     async def steer(self, message: str, *, message_id: str | None = None) -> dict:
@@ -302,6 +316,13 @@ class ACPHarnessSession(HarnessSession):
             raise RuntimeError("ACP session is closed")
         if not isinstance(message, str) or not message.strip():
             raise ValueError("steering requires a nonempty user message")
+        if self._daemon is not None:
+            result = await self._daemon.acp_steer(
+                self._daemon_key, message, message_id=message_id
+            )
+            if not isinstance(result, dict):
+                raise TypeError("invalid ACP steering receipt")
+            return result
         if self._process is None:
             return {"outcome": "promptRequired", "reason": "noRunningTurn"}
         response = await self._request("steer", message=message, message_id=message_id)
@@ -339,7 +360,7 @@ class ACPHarnessSession(HarnessSession):
         )
         config = {
             "command": self.config.command,
-            "cwd": self.config.cwd,
+            "cwd": self.config.cwd or self.runtime.workdir,
             "ready_file": self.config.ready_file,
             "user_contents": user_contents,
             "mcp_urls": self.mcp_urls,
@@ -360,13 +381,21 @@ class ACPHarnessSession(HarnessSession):
                 raise HarnessError(
                     f"harness {self.harness.config.id!r} session is already closed"
                 )
-            if self._process is None:
+            if self._process is None and self._daemon is None:
                 await self._start()
-            assert self._process is not None
-            assert self._reader is not None
             calls_before = len(self.trace.calls)
             try:
-                response = await self._request("prompt", config=config)
+                if self._daemon is not None:
+                    response = await self._daemon.acp_prompt(
+                        session_key=self._daemon_key,
+                        env=self.config.env,
+                        config=config,
+                        secret=self.secret,
+                    )
+                else:
+                    assert self._process is not None
+                    assert self._reader is not None
+                    response = await self._request("prompt", config=config)
             except BaseException:
                 await run_shielded(self._stop(graceful=False))
                 raise
@@ -394,6 +423,15 @@ class ACPHarnessSession(HarnessSession):
         return result
 
     async def _stop(self, *, graceful: bool) -> dict[str, Any]:
+        if self._daemon is not None:
+            daemon, self._daemon = self._daemon, None
+            res = await daemon.acp_close(
+                self._daemon_key,
+                graceful=graceful
+                and not (self._abandon_on_close or self._fast_kill_on_close),
+            )
+            meta = res.get("response_metadata") if isinstance(res, dict) else None
+            return meta if isinstance(meta, dict) else {}
         process = self._process
         response_task = self._response_task
         stderr_task, self._stderr_task = self._stderr_task, None
