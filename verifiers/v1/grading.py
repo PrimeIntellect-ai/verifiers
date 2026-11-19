@@ -47,8 +47,14 @@ def scoring_transaction(trace: Trace):
 
 
 def verifier_runtime(
-    task: Task, solver_runtime: Runtime, base: RuntimeConfig, policy: ScoringConfig
+    task: Task,
+    solver_runtime: Runtime | RuntimeConfig,
+    base: RuntimeConfig,
+    policy: ScoringConfig,
 ) -> RuntimeConfig:
+    solver = (
+        solver_runtime.config if isinstance(solver_runtime, Runtime) else solver_runtime
+    )
     source = policy.runtime or base
     if isinstance(source, PrimeConfig):
         if policy.runtime is not None and source.checkpoint:
@@ -57,8 +63,8 @@ def verifier_runtime(
     # A task without its own image/workdir inherits the actual workspace's values,
     # including a Compose image or split execution configuration.
     task = task.with_data(
-        image=task.data.image or getattr(solver_runtime.config, "image", None),
-        workdir=task.data.workdir or getattr(solver_runtime.config, "workdir", None),
+        image=task.data.image or getattr(solver, "image", None),
+        workdir=task.data.workdir or getattr(solver, "workdir", None),
     )
     if policy.network is not None:
         task = task.with_data(network=policy.network)
@@ -75,7 +81,7 @@ def verifier_runtime(
         for a in task.data.artifacts
         if not PurePosixPath(a.source).is_absolute()
     ]
-    solver_dir = PurePosixPath(getattr(solver_runtime.config, "workdir", "/") or "/app")
+    solver_dir = PurePosixPath(getattr(solver, "workdir", "/") or "/app")
     grader_dir = PurePosixPath(getattr(config, "workdir", "/") or "/app")
     if relative and solver_dir != grader_dir:
         raise TaskError(

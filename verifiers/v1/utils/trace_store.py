@@ -37,6 +37,7 @@ def write_episode(
                 trace.state.artifacts,
                 trace.task.data.artifacts,
                 workdir=getattr(trace.agent.runtime, "workdir", None) or "/",
+                service_workdirs=trace.info.get("harbor_artifact_workdirs"),
             )
     data = type_adapter(type(episode)).dump_json(episode, exclude_none=True)
     with (results_dir / TRACES_FILE).open("ab") as f:
