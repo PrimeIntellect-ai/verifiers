@@ -62,6 +62,11 @@ included. A response with an edge status and without it never reached the server
 BACKOFF_SECONDS = 0.5
 BACKOFF_CAP_SECONDS = 10.0
 CONNECT_TIMEOUT_SECONDS = 10.0
+SILENT_UPSTREAM_SECONDS = 90.0
+"""How long a retry may wait for its response while the relay keeps the client alive.
+The client's own idle timeout cannot fire then, and the interception server answers a
+streamed request within a minute (headers, then a keepalive every few seconds), so a
+longer silence is a dead connection, not a slow model call."""
 CHUNK_BYTES = 64 * 1024
 RETRY_COUNT_HEADER = "x-stainless-retry-count"
 HOP_BY_HOP = frozenset(
@@ -422,9 +427,11 @@ class Handler(BaseHTTPRequestHandler):
                 connection.connect()
                 assert connection.sock is not None
                 upstream.attach(connection.sock)
-                # Only the connect is bounded: a model call may wait long for its first
-                # byte.
-                connection.sock.settimeout(None)
+                # Otherwise only the connect is bounded: a model call may wait long for
+                # its first byte, and the client's own timeout covers a dead upstream.
+                connection.sock.settimeout(
+                    SILENT_UPSTREAM_SECONDS if self.keeps_client_alive else None
+                )
                 connection.request(
                     self.command,
                     config.prefix + self.target,
@@ -467,11 +474,17 @@ class Handler(BaseHTTPRequestHandler):
         self.server.relay.wait(config, self.delay)
         self.delay = min(self.delay * 2, BACKOFF_CAP_SECONDS)
 
+    @property
+    def keeps_client_alive(self) -> bool:
+        """Whether the relay sends the client keepalives while it waits for a retry: an
+        SSE response it already started."""
+        return self.sent_status is not None and self.scanner.sse
+
     @contextlib.contextmanager
     def keepalive(self) -> Iterator[None]:
         """Keep an SSE client's idle timer from firing while its request waits for a
         retry."""
-        if self.sent_status is None or not self.scanner.sse:
+        if not self.keeps_client_alive:
             yield
             return
         stop = threading.Event()

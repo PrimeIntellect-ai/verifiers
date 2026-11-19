@@ -309,6 +309,33 @@ def test_sighup_keeps_client_alive_until_new_upstream_is_up(upstreams, make_rela
         b.close()
 
 
+def test_silent_retry_is_given_up_while_the_client_is_kept_alive(upstreams, make_relay):
+    """A retry whose upstream accepts the request and never answers (a half-open
+    tunnel) is abandoned and retried: the relay's keepalives would otherwise keep the
+    client waiting for good."""
+    a, b = upstreams
+    a.respond = keepalives(a)
+    attempts = []
+
+    def respond(handler) -> None:
+        attempts.append(True)
+        if len(attempts) == 1:
+            b.stop.wait(4 * TIMEOUT)
+            return
+        events(b"data: from-b\n\n")(handler)
+
+    b.respond = respond
+    source = RELAY_SOURCE.replace(
+        "KEEPALIVE_SECONDS = 10.0", "KEEPALIVE_SECONDS = 0.05"
+    ).replace("SILENT_UPSTREAM_SECONDS = 90.0", "SILENT_UPSTREAM_SECONDS = 0.5")
+    relay = make_relay(a.url, source=source)
+    response = sse_post(relay)
+    read_until(response, b": keepalive\n")
+    relay.reload(b.url, {})
+    assert response.read().endswith(b"data: from-b\n\n")
+    assert len(attempts) == 2
+
+
 def test_sighup_retry_with_other_status_sends_error_event(upstreams, make_relay):
     a, b = upstreams
     a.respond = keepalives(a)
