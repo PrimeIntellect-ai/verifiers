@@ -10,6 +10,7 @@ import json
 import os
 import stat
 import tarfile
+from collections.abc import Iterator
 from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -83,18 +84,32 @@ class TaskFiles:
                 f"Required task input is excluded by .harborignore: {path}"
             )
 
+    def inputs(self, directory: Path, *, include_rules: bool = False) -> Iterator[Path]:
+        """Walk selected inputs in archive order, pruning excluded directories."""
+        for path in sorted(directory.iterdir()):
+            if self.excluded(path) and not (
+                include_rules and path.name == ".harborignore"
+            ):
+                continue
+            yield path
+            if path.is_dir() and not path.is_symlink():
+                yield from self.inputs(path, include_rules=include_rules)
 
-def source_digest(directory: Path) -> str:
-    """Hash names, types, permissions, bytes and in-tree hardlinks without following links."""
+
+def source_digest(directory: Path, *, task_dir: Path | None = None) -> str:
+    """Hash selected names, types, permissions, bytes, links and ignore rules."""
+    selected = TaskFiles(task_dir if task_dir is not None else directory)
     digest = hashlib.sha256()
+    if not directory.is_dir():
+        return digest.hexdigest()
     hardlinks: dict[tuple[int, int], str] = {}
-    for path in sorted(directory.rglob("*")):
+    for path in selected.inputs(directory, include_rules=True):
         metadata = path.lstat()
         mode = metadata.st_mode
         relative = path.relative_to(directory).as_posix()
         link = None
         if stat.S_ISLNK(mode):
-            content = os.readlink(path).encode()
+            content = os.fsencode(os.readlink(path))
         elif stat.S_ISREG(mode):
             link = hardlinks.setdefault((metadata.st_dev, metadata.st_ino), relative)
             with path.open("rb") as stream:
@@ -117,7 +132,7 @@ def source_digest(directory: Path) -> str:
 def make_tar(directory: Path) -> bytes:
     # Include rule changes in the cache key, and never serve stale task content.
     directory = directory.parent.resolve() / directory.name
-    return _make_tar(directory, source_digest(directory.parent))
+    return _make_tar(directory, source_digest(directory, task_dir=directory.parent))
 
 
 @lru_cache(maxsize=2)
@@ -136,22 +151,13 @@ def _make_tar(directory: Path, digest: str) -> bytes:
         return member
 
     with tarfile.open(fileobj=buffer, mode="w:gz") as archive:
-
-        def add(path: Path) -> None:
-            # TarFile.gettarinfo remembers hard-link inodes before calling its
-            # filter. Excluded paths must never enter that inode table.
-            if selected.excluded(path):
-                return
+        # TarFile.gettarinfo remembers hard-link inodes before calling its
+        # filter, so only selected paths enter the archive.
+        for path in selected.inputs(directory):
             archive.add(
                 path,
                 arcname=str(path.relative_to(directory)),
                 recursive=False,
                 filter=include,
             )
-            if path.is_dir() and not path.is_symlink():
-                for child in sorted(path.iterdir()):
-                    add(child)
-
-        for item in sorted(directory.iterdir()):
-            add(item)
     return buffer.getvalue()
