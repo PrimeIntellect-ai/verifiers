@@ -8,6 +8,9 @@ on:
       - '!v*dev*'
   workflow_dispatch:
 
+# The dispatch authenticates with DOCS_SYNC_PAT; GITHUB_TOKEN needs no scopes.
+permissions: {}
+
 jobs:
   trigger-docs-sync:
     runs-on: ubuntu-latest
