@@ -64,7 +64,7 @@ ResultRow = dict[str, Any]
 USAGE = (
     "usage: uv run vf-validate [<taskset-id>] [--only-setup | --only-gold | --only-noop] "
     "[-o <output-dir>] [--runtime.type subprocess] [options] [@ file.toml]\n"
-    "       uv run vf-validate @ <run-dir>/configs/validate.json --resume   (re-run missing/errored/timed-out tasks)\n"
+    "       uv run vf-validate @ <run-dir>/configs/resolved/validate.json --resume   (re-run missing/errored/timed-out tasks)\n"
     "       runs persisted gold and noop (untouched scoring) checks per task (no agent)"
 )
 

@@ -612,8 +612,8 @@ class Agent:
     """A configured harness + model + runtime policy, runnable on any task.
 
     Built from an `AgentConfig` alone; `interception=` injects a live resource to
-    borrow — its owner keeps the lifecycle. The endpoint stays config: each rollout
-    builds and closes its own `Client`, so an agent holds no transport. The config's
+    borrow — its owner keeps the lifecycle. The endpoint stays config: the interception
+    server owns the `Client`, so an agent holds no transport. The config's
     `runtime` is a *policy*: each `run` provisions a fresh box from it, resolved
     per task; `run(runtime=...)` places the run into an existing box instead
     (borrowed boxes are never started or torn down by the run)."""
