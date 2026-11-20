@@ -186,9 +186,6 @@ class Task(Generic[DataT, StateT, ConfigT]):
         clone.data = self.data.model_copy(update=update)
         return clone
 
-    def with_system_prompt(self, system_prompt: str) -> Self:
-        return self.with_data(system_prompt=system_prompt)
-
     def runtime_env(self) -> dict[str, str]:
         """Live-only process environment; unlike TaskData, it is not traced."""
         return {}

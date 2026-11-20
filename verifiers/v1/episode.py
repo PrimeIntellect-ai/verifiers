@@ -110,14 +110,6 @@ class Episode(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         """Sampled turns, summed across traces."""
         return sum(t.num_turns for t in self.traces)
 
-    @property
-    def by_agent(self) -> dict[str, list[Trace[DataT, StateT, AgentConfigT]]]:
-        """Traces grouped by agent name (e.g. n solvers), in completion order."""
-        grouped: dict[str, list[Trace[DataT, StateT, AgentConfigT]]] = {}
-        for trace in self.traces:
-            grouped.setdefault(trace.agent.name, []).append(trace)
-        return grouped
-
     def to_record(
         self,
         float_decimals: int | None = RECORD_FLOAT_DECIMALS,

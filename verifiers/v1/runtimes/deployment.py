@@ -135,17 +135,6 @@ class Deployment:
             raise
 
     @property
-    def execution_name(self) -> str:
-        return next(
-            (
-                name
-                for name, target_backend in self.target_backends.items()
-                if target_backend is self.execution_backend
-            ),
-            "main",
-        )
-
-    @property
     def workspace(self) -> Runtime:
         """Runtime view where task commands execute and task files live.
 
