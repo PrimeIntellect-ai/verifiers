@@ -11,8 +11,8 @@ from verifiers.v1._task import TaskData
 from verifiers.v1._trace import Trace
 from verifiers.v1._types import Message
 from verifiers.v1.harnesses._utils.install import ensure_installed, remove_dir
+from verifiers.v1.harnesses._utils.node import NODE_BIN_DIR, ensure_node
 from verifiers.v1.harnesses._utils.replay import drop_blank_text_blocks
-from verifiers.v1.harnesses.node import NODE_BIN_DIR, ensure_node
 
 CLAUDE_ACP_DIR = "/var/tmp/vf-claude-agent-acp-{version}-{acp_version}"
 PACKAGES_DIR = f"{CLAUDE_ACP_DIR}/packages"

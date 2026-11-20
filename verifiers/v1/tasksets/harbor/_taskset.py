@@ -772,6 +772,7 @@ def resolve_image(
 
 
 def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborData:
+    """Read the Harbor task at `task_dir` into the data of task `idx`."""
     # Harbor is optional, so imports stay deferred until a Harbor task loads.
     from harbor.environments.definition import should_upload_environment_dir
     from harbor.models.task.task import Task as HarborModelTask
@@ -1007,6 +1008,7 @@ def parse_verifier_environment(
 # and tests to bound memory while reusing both archives across rollouts.
 @lru_cache(maxsize=2)
 def make_tar(directory: Path) -> bytes:
+    """The contents of `directory` as a gzipped tar archive."""
     buffer = io.BytesIO()
     with tarfile.open(fileobj=buffer, mode="w:gz") as tar:
         for item in sorted(directory.iterdir()):

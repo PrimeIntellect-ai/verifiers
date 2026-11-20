@@ -21,7 +21,7 @@ from verifiers.v1._configs.retries import RetryConfig
 from verifiers.v1._configs.taskset import SharedTasksetConfig, TasksetConfig
 
 
-class TimeoutConfig(BaseConfig):
+class EnvTimeoutConfig(BaseConfig):
     """Wall-clock timeouts for the env's own `run()`/`finalize()` hooks, in seconds
     (None = no limit); per-run stage timeouts are each agent's (`--env.<agent>.timeout.*`)."""
 
@@ -43,7 +43,7 @@ class SharedEnvConfig(BaseConfig):
 
     taskset: SharedTasksetConfig = SharedTasksetConfig()
     """The taskset knobs every taskset has."""
-    timeout: TimeoutConfig = TimeoutConfig()
+    timeout: EnvTimeoutConfig = EnvTimeoutConfig()
     retries: RetryConfig = RetryConfig()
     """Whole-EPISODE retries — the coarse fallback for faults no agent owns; a
     retried episode reruns whole (a half-played sibling context isn't reproducible)."""

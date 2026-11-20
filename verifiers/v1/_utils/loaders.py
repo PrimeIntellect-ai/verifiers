@@ -54,6 +54,10 @@ def narrow_plugin_field(
     resolve: Callable[[str], type],
     default_id: str | None = None,
 ) -> None:
+    """Validate raw `data[field]` as the config class that `resolve` returns for its `id`.
+
+    Call it in a `mode="before"` validator of a config whose field holds a plugin config,
+    such as a judge: the field then keeps the fields of the concrete config class."""
     raw = data.get(field)
     if isinstance(raw, BaseConfig):
         # Unset fields take the concrete type's defaults, which may narrow the base's.

@@ -44,3 +44,4 @@ A trace records the message graph, rewards, metrics, errors, and one per-call re
 - [Harnesses](harnesses.md) — How to build custom harnesses
 - [Agent](agent.md) — How to run standalone agents
 - [Env](env.md) — How to build multi-agent environments
+- [API reference](api.md) — The public API and what counts as public

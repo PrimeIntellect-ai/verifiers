@@ -8,7 +8,7 @@ import pytest
 from conftest import CI_RETRIES
 
 import verifiers.v1 as vf
-from verifiers.v1._configs.agent import TimeoutConfig
+from verifiers.v1._configs.agent import AgentTimeoutConfig
 from verifiers.v1.tasksets.harbor._taskset import (
     CollectHook,
     HarborArtifact,
@@ -146,7 +146,7 @@ async def test_service_scoring(tmp_path, mode, collect_fails, scoring_timeout):
             env={"EXPECT_SIDECAR": "1" if mode == "isolated" else "0"},
             retries=vf.RetryConfig(max_retries=0),
         ),
-        timeout=TimeoutConfig(
+        timeout=AgentTimeoutConfig(
             setup=600, finalize=60, scoring=1 if scoring_timeout else 120
         ),
     )

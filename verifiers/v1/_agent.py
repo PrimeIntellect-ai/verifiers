@@ -26,7 +26,7 @@ from verifiers.v1._clients import (
 )
 from verifiers.v1._configs.agent import (
     AgentConfig,
-    TimeoutConfig,
+    AgentTimeoutConfig,
     agent_config_fields,
     resolve_agent,
 )
@@ -67,7 +67,7 @@ from verifiers.v1._utils.logging import (
 )
 from verifiers.v1._utils.retries import RetryState, backoff
 
-__all__ = ["Agent", "AgentConfig", "Agents", "TimeoutConfig", "make_agent"]
+__all__ = ["Agent", "AgentConfig", "AgentTimeoutConfig", "Agents", "make_agent"]
 
 logger = get_logger(__name__)
 
@@ -77,7 +77,9 @@ _scoring_runs: ContextVar[list[tuple["_EpisodeAgent", Trace]] | None] = ContextV
 )
 
 
-def resolve_rollout_timeouts(timeout: TimeoutConfig, task: Task) -> RolloutTimeouts:
+def resolve_rollout_timeouts(
+    timeout: AgentTimeoutConfig, task: Task
+) -> RolloutTimeouts:
     """Apply an agent's stage-timeout precedence to one task."""
     return RolloutTimeouts(
         setup=timeout.setup if timeout.setup is not None else task.data.timeout.setup,

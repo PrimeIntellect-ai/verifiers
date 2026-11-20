@@ -10,7 +10,7 @@ from conftest import CI_RETRIES
 from fetch_tool import FetchToolTask, FetchToolTaskConfig
 
 import verifiers.v1 as vf
-from verifiers.v1._configs.agent import TimeoutConfig
+from verifiers.v1._configs.agent import AgentTimeoutConfig
 
 pytestmark = pytest.mark.skipif(
     not os.environ.get("PRIME_API_KEY"), reason="needs PRIME_API_KEY"
@@ -79,7 +79,7 @@ async def test_a_tool_vm_keeps_its_own_egress_beside_a_restricted_workspace(
         model="unused",
         runtime=vf.PrimeConfig(labels=["vf-integration"]),
         retries=CI_RETRIES,
-        timeout=TimeoutConfig(setup=900, finalize=120, scoring=60),
+        timeout=AgentTimeoutConfig(setup=900, finalize=120, scoring=60),
     )
     async with vf.Agent(config) as agent:
         agent.harness = ProbeHarness(vf.HarnessConfig())

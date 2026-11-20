@@ -10,7 +10,7 @@ import pytest
 
 import verifiers.v1 as vf
 from verifiers.v1._cli.validate import _run_check
-from verifiers.v1._configs.agent import TimeoutConfig
+from verifiers.v1._configs.agent import AgentTimeoutConfig
 from verifiers.v1._configs.cli.validate import ValidateConfig
 from verifiers.v1.tasksets.harbor._taskset import HarborData, HarborTask
 
@@ -54,7 +54,7 @@ async def run(task) -> vf.Trace:
     config = vf.AgentConfig(
         model="unused",
         runtime=vf.DockerConfig(),
-        timeout=TimeoutConfig(setup=180, finalize=30, scoring=120),
+        timeout=AgentTimeoutConfig(setup=180, finalize=30, scoring=120),
     )
     async with vf.Agent(config) as agent:
         agent.harness = IdleHarness(vf.HarnessConfig())

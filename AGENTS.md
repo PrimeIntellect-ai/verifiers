@@ -6,6 +6,12 @@
 - **Minimal config surface**: expose as few knobs as possible, but as many as needed.
 - **Keep tasksets small**: a basic taskset fits in a few dozen idiomatic lines — typed data/task/config classes, `load()`, and decorated scoring on the task. Don't override `Taskset.__init__` (implement `load()`); don't override `Harness.__init__` (use `setup()`).
 
+## Public API
+
+- **Mark internals with an underscore**: give each new module, name or member that users must not use a leading underscore (PEP 8). Names inside an underscore module are internal already.
+- **Export public names explicitly**: add each public name to `__all__` of `verifiers.v1` or of its plugin package, and add a row to `docs/api.md`. `tests/unit/test_api.py` checks that both lists match and that public signatures use only public types.
+- **Import from the public namespace in docs and examples**: use `import verifiers.v1 as vf`, never a path with an underscore.
+
 ## Logging
 
 - **Module loggers**: create them with `get_logger(__name__)` from `verifiers.v1._utils.logging`. It prefixes every line with its scope: `[<episode>]` inside an episode, `[<episode>/<trace> <agent>]` inside an agent run, `[<trace>]` for an agent run outside an episode. Never put a trace or episode id in the message itself.

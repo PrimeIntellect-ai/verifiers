@@ -1,7 +1,6 @@
 from pydantic import SerializeAsAny, model_validator
 
 import verifiers.v1 as vf
-from verifiers.v1._utils.loaders import judge_config_type, narrow_plugin_field
 
 
 class InterceptionTaskConfig(vf.TaskConfig):
@@ -11,7 +10,7 @@ class InterceptionTaskConfig(vf.TaskConfig):
     @classmethod
     def resolve_judge(cls, data):
         if isinstance(data, dict):
-            narrow_plugin_field(data, "judge", judge_config_type)
+            vf.narrow_plugin_field(data, "judge", vf.judge_config_type)
         return data
 
 

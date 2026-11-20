@@ -169,8 +169,8 @@ async def test_an_array_in_info_survives_a_grading_copy():
 class EveryTrace(DeltaStreamer):
     """Diffs every watched trace at each flush, as the streamer did before it kept marks."""
 
-    def diff(self, everything: bool = False):
-        return super().diff(everything=True)
+    def _diff(self, everything: bool = False):
+        return super()._diff(everything=True)
 
 
 async def three_traces(streamer: DeltaStreamer, traces: list[vf.Trace]) -> None:
@@ -238,14 +238,14 @@ async def test_a_flush_diffs_only_the_traces_that_notified():
         await settle()
         sent.clear()
         diffed: list[str] = []
-        dump_trace = streamer.diff
+        dump_trace = streamer._diff
 
         def diff(everything: bool = False):
             deltas = dump_trace(everything)
             diffed.extend(trace_id for trace_id, _, _ in deltas)
             return deltas
 
-        streamer.diff = diff
+        streamer._diff = diff
         second.info["note"] = "no notify yet"
         add_turn(first, "a1")
         await settle()

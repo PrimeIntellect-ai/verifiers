@@ -11,7 +11,7 @@ from verifiers.v1._runtimes import Runtime
 from verifiers.v1._task import TaskData
 from verifiers.v1._trace import Trace
 from verifiers.v1.harnesses._utils.install import ensure_installed, remove_dir
-from verifiers.v1.harnesses.node import NODE_BIN_DIR, ensure_node
+from verifiers.v1.harnesses._utils.node import NODE_BIN_DIR, ensure_node
 
 DEEPSEEK_DIR = "/var/tmp/vf-deepseek-{version}"
 USAGE_COMPAT = (Path(__file__).parent / "usage.mjs").read_bytes()

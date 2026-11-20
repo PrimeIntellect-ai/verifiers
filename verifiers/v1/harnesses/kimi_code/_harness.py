@@ -13,8 +13,8 @@ from verifiers.v1._trace import Trace
 from verifiers.v1._types import Message
 from verifiers.v1._utils.logging import get_logger
 from verifiers.v1.harnesses._utils.install import ensure_installed, remove_dir
+from verifiers.v1.harnesses._utils.node import NODE_BIN_DIR, ensure_node
 from verifiers.v1.harnesses._utils.replay import drop_blank_text
-from verifiers.v1.harnesses.node import NODE_BIN_DIR, ensure_node
 
 logger = get_logger(__name__)
 

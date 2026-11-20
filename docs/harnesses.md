@@ -21,15 +21,15 @@ Web search is disabled by default; setting `search = true` enables it and requir
 If you want to integrate a custom agent loop or another third-party CLI harness, subclass `Harness` and `HarnessConfig`:
 
 ```python
-from verifiers.v1._clients import ModelContext
-from verifiers.v1._configs.harness import HarnessConfig
-from verifiers.v1._harness import Harness
-from verifiers.v1._runtimes import (
+from verifiers.v1 import (
+    Harness,
+    HarnessConfig,
+    ModelContext,
     ProgramResult,
     Runtime,
+    TaskData,
+    Trace,
 )
-from verifiers.v1._task import TaskData
-from verifiers.v1._trace import Trace
 
 
 class MyHarnessConfig(HarnessConfig):

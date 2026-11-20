@@ -120,7 +120,7 @@ Scoring methods are decorated with `@vf.metric` or `@vf.reward(weight=...)`:
 
 Both decorators accept `trace`, `runtime`, or `task` by parameter name (where `task` is the `TaskData` instance and `self` is the `Task`), and each method can return either a single `float` or a `dict[str, float]` of named scores. During `Task.score`, metrics run first, followed by rewards, followed by configured judges. If an external service or judge fails during scoring, let the exception propagate instead of returning `0.0`, which would record an infrastructure failure as a wrong answer by the model.
 
-For software engineering tasks, call `await vf.capture_patch(trace, runtime, base_commit=...)` in `finalize` so the agent's git diff is saved to `trace.info["patch"]` before your grading script modifies the working tree or checks out test files. Pass a dataset base commit (or record `await vf.resolve_head(runtime)` during `setup`) so commits created by the agent are included in the diff. If the container image already has untracked files before the agent starts, snapshot them in `setup` with `verifiers.v1._utils.git.snapshot_untracked(runtime)` and pass that list as `ignore=...` so they aren't swept into the agent's patch.
+For software engineering tasks, call `await vf.capture_patch(trace, runtime, base_commit=...)` in `finalize` so the agent's git diff is saved to `trace.info["patch"]` before your grading script modifies the working tree or checks out test files. Pass a dataset base commit (or record `await vf.resolve_head(runtime)` during `setup`) so commits created by the agent are included in the diff. If the container image already has untracked files before the agent starts, snapshot them in `setup` with `await vf.snapshot_untracked(runtime)` and pass that list as `ignore=...` so they aren't swept into the agent's patch.
 
 When a task has a known reference solution or gold check that can be verified without calling a model, implement `async def validate(self, runtime: vf.Runtime) -> bool | None` on the task; see [Debugging](debugging.md) for running validation checks from the CLI.
 
@@ -163,7 +163,7 @@ When using [isolated verification](agent.md#verification-placement), `finalize` 
 `TaskData.prompt` accepts a plain string, a list of typed messages (`vf.Messages`), or `None` when an external caller opens the conversation. To include images in a prompt, pass content parts on a `vf.UserMessage`:
 
 ```python
-from verifiers.v1._utils.image import image_data_url
+from verifiers.v1 import image_data_url
 
 data = vf.TaskData(
     prompt=[

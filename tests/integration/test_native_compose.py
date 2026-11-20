@@ -8,7 +8,7 @@ import pytest
 from conftest import CI_RETRIES
 
 import verifiers.v1 as vf
-from verifiers.v1._configs.agent import TimeoutConfig
+from verifiers.v1._configs.agent import AgentTimeoutConfig
 from verifiers.v1.tasksets.harbor._taskset import HarborArtifact, HarborData, HarborTask
 
 # Pinned so the imported VM image stays cached across CI runs.
@@ -122,7 +122,7 @@ async def test_native_compose(tmp_path, mode):
         retries=CI_RETRIES,
         scoring=vf.ScoringConfig(mode=mode, retries=vf.RetryConfig(max_retries=0)),
         # A cold run builds and imports the VM image during setup.
-        timeout=TimeoutConfig(setup=1200, finalize=60, scoring=300),
+        timeout=AgentTimeoutConfig(setup=1200, finalize=60, scoring=300),
     )
     async with vf.Agent(config) as agent:
         agent.harness = ComposeHarness(vf.HarnessConfig())

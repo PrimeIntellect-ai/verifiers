@@ -11,8 +11,8 @@ from verifiers.v1._task import TaskData
 from verifiers.v1._trace import Trace
 from verifiers.v1._types import Message
 from verifiers.v1.harnesses._utils.install import ensure_installed, remove_dir
+from verifiers.v1.harnesses._utils.node import ensure_node
 from verifiers.v1.harnesses._utils.replay import drop_blank_text
-from verifiers.v1.harnesses.node import ensure_node
 
 OPENCODE_DIR = "/var/tmp/vf-opencode"
 STATE_ROOT = "/tmp/vf-opencode-runs"

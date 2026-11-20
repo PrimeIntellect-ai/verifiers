@@ -22,7 +22,7 @@ from verifiers.v1._configs.scoring import ScoringConfig
 from verifiers.v1._utils.generic import merge_defaults
 
 
-class TimeoutConfig(BaseConfig):
+class AgentTimeoutConfig(BaseConfig):
     """Timeout (in seconds) for different phases of an agent's run. Each unset
     stage takes the task's own timeout for it, else runs with no limit."""
 
@@ -73,7 +73,7 @@ class AgentConfig(BaseConfig):
     and stops the run once a response hits it. `sampling.max_tokens` alone caps each
     response without stopping the run."""
 
-    timeout: TimeoutConfig = TimeoutConfig()
+    timeout: AgentTimeoutConfig = AgentTimeoutConfig()
     retries: RetryConfig = RetryConfig()
 
     network_notice: bool = True

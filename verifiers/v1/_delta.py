@@ -95,7 +95,7 @@ class DeltaStreamer:
     ) -> None:
         self.traces = traces
         self.send = send
-        self.cursors: dict[str, TraceCursor] = {}
+        self._cursors: dict[str, TraceCursor] = {}
         self._dirty: dict[str, int] = {}
         """Trace id -> the change that last marked it. A sent delta clears the mark only if no
         change came in while it was being sent."""
@@ -143,7 +143,7 @@ class DeltaStreamer:
         change no `notify` announced."""
         async with self._lock:  # deltas must leave in diff order
             marks = dict(self._dirty)
-            for trace_id, delta, cursor in self.diff(everything):
+            for trace_id, delta, cursor in self._diff(everything):
                 # The cursor stays put on failure: the next flush resends it.
                 try:
                     await self.send(delta)
@@ -156,13 +156,13 @@ class DeltaStreamer:
                     )
                     continue
                 if cursor is None:
-                    self.cursors.pop(trace_id, None)
+                    self._cursors.pop(trace_id, None)
                 else:
-                    self.cursors[trace_id] = cursor
+                    self._cursors[trace_id] = cursor
                 if trace_id in marks and self._dirty.get(trace_id) == marks[trace_id]:
                     del self._dirty[trace_id]
 
-    def diff(
+    def _diff(
         self, everything: bool = False
     ) -> list[tuple[str, dict, TraceCursor | None]]:
         """Each notified trace's delta (`everything`: each trace's), with its cursor as it stands
@@ -173,15 +173,15 @@ class DeltaStreamer:
         # A trace that left the live set (a retried attempt) is discarded on the other side too.
         deltas = [
             (gone, {"trace": gone, "discard": True}, None)
-            for gone in self.cursors
+            for gone in self._cursors
             if gone not in live
         ]
         for gone in [gone for gone in self._dirty if gone not in live]:
-            if gone not in self.cursors:  # never sent, or its discard already went
+            if gone not in self._cursors:  # never sent, or its discard already went
                 del self._dirty[gone]
         for trace in traces:
             delta: dict[str, Any] = {"trace": trace.id}
-            sent = self.cursors.get(trace.id)
+            sent = self._cursors.get(trace.id)
             if sent is not None and sent.attempt != trace.attempt:
                 sent = None  # a retry's fresh trace under the same id: reopen it from scratch
             if sent is not None and not everything and trace.id not in self._dirty:
