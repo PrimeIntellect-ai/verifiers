@@ -19,6 +19,7 @@ import copy
 import hashlib
 import inspect
 import json
+import weakref
 from collections import Counter
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager
@@ -116,6 +117,29 @@ def _tool_call(calls: dict[str, ToolCall], message: Message) -> ToolCall | None:
     )
 
 
+_POSITIONS: dict[int, tuple[weakref.ref[InterceptRecord], int]] = {}
+
+
+def _bind_pos(rec: InterceptRecord, pos: int) -> None:
+    key = id(rec)
+
+    def forget(ref: weakref.ref[InterceptRecord]) -> None:
+        if (entry := _POSITIONS.get(key)) is not None and entry[0] is ref:
+            del _POSITIONS[key]
+
+    _POSITIONS[key] = weakref.ref(rec, forget), pos
+
+
+def _get_pos(rec: InterceptRecord) -> int | None:
+    entry = _POSITIONS.get(id(rec))
+    return entry[1] if entry is not None and entry[0]() is rec else None
+
+
+def _pop_pos(rec: InterceptRecord) -> int | None:
+    entry = _POSITIONS.pop(id(rec), None)
+    return entry[1] if entry is not None and entry[0]() is rec else None
+
+
 def _make_record(
     handler: Callable,
     node: int | None,
@@ -131,7 +155,7 @@ def _make_record(
         info=copy.deepcopy(info),
     )
     if node is None:
-        rec._pos = pos
+        _bind_pos(rec, pos)
     return rec
 
 
@@ -591,16 +615,16 @@ class RolloutSession:
                 item for item in self.pinned_rewrites if item[0] not in replaced
             ]
             for rec in records:
-                if rec._pos in pinned_positions:
-                    self.pinned_rewrites.append((pinned_positions[rec._pos], rec))
-                    rec._pos = None
+                if (pos := _get_pos(rec)) in pinned_positions:
+                    _pop_pos(rec)
+                    self.pinned_rewrites.append((pinned_positions[pos], rec))
         return current, records, None
 
     def stage_rewrites(
         self, replay_key: str, records: Iterable[InterceptRecord]
     ) -> None:
         """Hold unpinned in-request rewrites in case the model call fails before commit."""
-        unpinned = [rec for rec in records if rec._pos is not None]
+        unpinned = [rec for rec in records if _get_pos(rec) is not None]
         if unpinned:
             self.inflight_rewrites[replay_key] = unpinned
         else:
@@ -636,10 +660,9 @@ class RolloutSession:
         in_turn: list[tuple[int, InterceptRecord]] = []
         in_turn_nodes: set[int] = set()
         for rec in request_rewrites:
-            if rec._pos is None:
+            if (pos := _pop_pos(rec)) is None:
                 continue
-            nid = node_by_pos.get(rec._pos)
-            rec._pos = None
+            nid = node_by_pos.get(pos)
             rec.node = nid
             if nid is not None:
                 in_turn_nodes.add(nid)
@@ -700,7 +723,7 @@ class RolloutSession:
         self.trace.request_rewrites.extend(rec for _, rec in self.pinned_rewrites)
         self.pinned_rewrites.clear()
         for rec in chain.from_iterable(self.inflight_rewrites.values()):
-            rec._pos = None
+            _pop_pos(rec)
             self.trace.request_rewrites.append(rec)
         self.inflight_rewrites.clear()
 
@@ -727,9 +750,9 @@ class RolloutSession:
                 user_slots[len(branch) + offset] = self._prepared_user_count
                 self._prepared_user_count += 1
         for rec in records:
-            if rec._pos in user_slots:
-                self.prepared_rewrites.append((user_slots[rec._pos], rec))
-                rec._pos = None
+            if (pos := _get_pos(rec)) in user_slots:
+                _pop_pos(rec)
+                self.prepared_rewrites.append((user_slots[pos], rec))
         return Request(messages=tail), records
 
     async def rewrite_response(

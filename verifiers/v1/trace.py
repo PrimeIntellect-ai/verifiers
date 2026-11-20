@@ -338,7 +338,6 @@ class InterceptRecord(BaseModel):
     """The tool call whose execution or output was intercepted, when applicable."""
     info: dict[str, Any] = Field(default_factory=dict)
     """Hook-supplied metadata (for example matched rule or reason)."""
-    _pos: int | None = PrivateAttr(default=None)
 
 
 class Reward(BaseModel):
