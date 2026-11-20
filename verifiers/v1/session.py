@@ -661,6 +661,9 @@ class RolloutSession:
         uses_local_gate = bool(
             getattr(self.remote_tool_handler, "uses_local_gate", False)
         )
+        native_tools: frozenset[str] | None = getattr(
+            self.remote_tool_handler, "native_tools", None
+        )
         queued: list[dict] = []
         pending_entries: list[tuple[ToolResultKey, ToolCall]] = []
         for call in assistant.tool_calls:
@@ -684,6 +687,7 @@ class RolloutSession:
                 return stopped
             verdict = request.messages[-1]
             assert isinstance(verdict, ToolMessage)
+            is_native = native_tools is None or call.name in native_tools
             if verdict == probe:
                 self.tool_decisions[key] = None
                 denied = None
@@ -695,7 +699,7 @@ class RolloutSession:
                     return records[-1].handler
                 self.tool_decisions[key] = verdict
                 denied = verdict.model_dump(exclude_none=True)
-            if uses_local_gate:
+            if uses_local_gate and (is_native or denied is not None):
                 queued.append(
                     {
                         "key": list(key),
@@ -862,11 +866,15 @@ class RolloutSession:
             key: ToolResultKey = (leaf, call.id)
             self.gated_tools.add(key)
             verdict = self.tool_decisions.get(key)
+            native_tools: frozenset[str] | None = getattr(
+                self.remote_tool_handler, "native_tools", None
+            )
+            is_native = native_tools is None or call.name in native_tools
             if deferred and verdict is None:
                 return await self._decide_native_tool(
                     leaf, tool_call_id, name or call.name, arguments
                 )
-            if self.remote_tool_handler is not None and verdict is None:
+            if self.remote_tool_handler is not None and verdict is None and is_native:
                 if key not in self.tool_decisions:
                     raise HarnessError("split tool gate has no policy decision")
                 verdict = self._pin_tool_verdict(

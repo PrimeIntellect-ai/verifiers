@@ -277,12 +277,14 @@ class ACPSession:
     async def start(self, config: dict) -> None:
         command = config["command"]
         proc_env = {**os.environ, **(self._env or {})}
+        cwd = config.get("cwd") or os.getcwd()
         try:
             agent_process = await self.stack.enter_async_context(
                 spawn_agent_process(
                     self.client,
                     command[0],
                     *command[1:],
+                    cwd=cwd,
                     env=proc_env,
                     transport_kwargs={"stderr": None},
                 )

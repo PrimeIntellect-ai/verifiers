@@ -85,17 +85,12 @@ def validate_pairing(
     runtime_config: RuntimeConfig,
     *,
     tools: Collection = (),
-    split: bool = False,
 ) -> None:
     """Reject an impossible harness/task/runtime combination before any work happens.
     A failure holds for every row the task class can carry. For `tools` only
     emptiness matters — task-declared and shared servers alike mean MCP is in play.
     (Hosting a user is interaction-scoped, not task-scoped — `Agent.interaction`
     checks the harness can resume an exchange.)"""
-    if split and tools and not harness.SUPPORTS_SPLIT_MCP:
-        raise ValueError(
-            f"Harness {harness.config.id!r} does not support MCP tools in split deployment"
-        )
     if not harness.SUPPORTS_MCP and tools:
         raise ValueError(
             f"Harness {harness.config.id!r} does not support MCP tools, but the run "

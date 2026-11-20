@@ -28,6 +28,8 @@ class RemoteToolsSpec:
     kwargs: dict = field(default_factory=dict)
     defer_until_gate: bool = False
 
+    native_tools: frozenset[str] | None = None
+
 
 class SandboxTools:
     def __init__(
@@ -35,6 +37,7 @@ class SandboxTools:
     ):
         self.runtime, self.connection, self.spec = runtime, connection, spec
         self.defer_until_gate = spec.defer_until_gate
+        self.native_tools = spec.native_tools
         self.uses_local_gate = not spec.defer_until_gate
         self.local_gate_url: str | None = None
         self._endpoint: dict | None = None

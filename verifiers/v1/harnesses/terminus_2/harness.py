@@ -12,6 +12,7 @@ from verifiers.v1.harnesses.utils.remote_runtime import (
 )
 from verifiers.v1.harnesses.utils.sandbox_tools import RemoteToolsSpec
 from verifiers.v1.runtimes import ProgramResult, Runtime
+from verifiers.v1.runtimes.deployment import ExecutionConnection
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
 from verifiers.v1.utils.logging import get_logger
@@ -29,8 +30,7 @@ class Terminus2HarnessConfig(HarnessConfig):
 class Terminus2Harness(Harness[Terminus2HarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = False
-    SUPPORTS_SPLIT_EXECUTION = True
-    SUPPORTS_SPLIT_TOOL_INTERCEPTION = True
+    SUPPORTS_TOOL_INTERCEPTION = True
     # Beyond the usual host leaks, Terminus drives tmux: on the host its tmux server —
     # and the `tmux kill-server` cleanup in `launch` — would share the user's own.
 
@@ -45,27 +45,29 @@ class Terminus2Harness(Harness[Terminus2HarnessConfig]):
             remote_shell_tools, {"persistent": True}, defer_until_gate=True
         )
 
+    async def setup_execution(
+        self, runtime: Runtime, workspace: Runtime, connection: ExecutionConnection
+    ) -> None:
+        # Harbor installs tmux during agent.setup(), after the execution
+        # network is locked. Provision the system tool in trusted setup.
+        await ensure_installed(
+            connection.setup_runtime,
+            directory="/var/tmp/agent-tools/terminus-2",
+            ready="command -v tmux >/dev/null 2>&1",
+            install=(
+                "if command -v apt-get >/dev/null; then "
+                "apt-get update -qq && apt-get install -y -qq tmux; "
+                "elif command -v dnf >/dev/null; then dnf install -y -q tmux; "
+                "elif command -v apk >/dev/null; then apk add --no-cache tmux; "
+                "else echo 'Terminus 2 requires tmux in the execution image' >&2; exit 1; fi"
+            ),
+            env={},
+            label="Terminus 2 tmux",
+        )
+
     async def setup(self, runtime: Runtime) -> None:
         source = self._source()
         await runtime.prepare_uv_script(source, self.config.resolved_env)
-        if runtime._remote_tools_only:
-            assert runtime._execution_bridge is not None
-            # Harbor installs tmux during agent.setup(), after the execution
-            # network is locked. Provision the system tool in trusted setup.
-            await ensure_installed(
-                runtime._execution_bridge.setup_runtime,
-                directory="/var/tmp/agent-tools/terminus-2",
-                ready="command -v tmux >/dev/null 2>&1",
-                install=(
-                    "if command -v apt-get >/dev/null; then "
-                    "apt-get update -qq && apt-get install -y -qq tmux; "
-                    "elif command -v dnf >/dev/null; then dnf install -y -q tmux; "
-                    "elif command -v apk >/dev/null; then apk add --no-cache tmux; "
-                    "else echo 'Terminus 2 requires tmux in the execution image' >&2; exit 1; fi"
-                ),
-                env={},
-                label="Terminus 2 tmux",
-            )
 
     async def launch(
         self,

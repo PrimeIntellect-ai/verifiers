@@ -285,7 +285,7 @@ async def main() -> None:
                     if decision["action"] == "deny":
                         messages.append(decision["message"])
                         continue
-                    if args.remote_tools_only:
+                    if args.remote_tools_only and name not in dispatch:
                         raise RuntimeError(
                             "split browser tool gate allowed local execution"
                         )

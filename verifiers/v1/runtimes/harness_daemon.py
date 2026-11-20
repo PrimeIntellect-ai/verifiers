@@ -106,34 +106,6 @@ def match_queued_item(
     return matches
 
 
-async def _read_http_request(
-    reader: asyncio.StreamReader,
-) -> tuple[dict[str, str], bytes] | None:
-    head = await reader.readuntil(b"\r\n\r\n")
-    lines = head[:-4].decode("latin-1").split("\r\n")
-    if not lines or not lines[0]:
-        return None
-    headers: dict[str, str] = {}
-    for line in lines[1:]:
-        if ":" in line:
-            k, v = line.split(":", 1)
-            headers[k.strip().lower()] = v.strip()
-    if headers.get("transfer-encoding", "").lower() == "chunked":
-        chunks = bytearray()
-        while True:
-            size_line = await reader.readuntil(b"\r\n")
-            size = int(size_line[:-2].split(b";", 1)[0], 16)
-            if size == 0:
-                await reader.readuntil(b"\r\n")
-                break
-            chunks.extend(await reader.readexactly(size))
-            await reader.readexactly(2)
-        return headers, bytes(chunks)
-    length = int(headers.get("content-length", "0"))
-    body = await reader.readexactly(length) if length > 0 else b""
-    return headers, body
-
-
 async def ensure_daemon_python(
     runtime: Runtime, extra_cls: Callable | None = None
 ) -> str:
@@ -370,6 +342,7 @@ async def ensure_backend_daemon(
 
 async def main() -> None:
     import httpx
+    from aiohttp import web
 
     from verifiers.v1.runtimes.remote_backend import RemoteBackend
     from verifiers.v1.runtimes.rpc_wire import encode, serve
@@ -515,46 +488,21 @@ async def main() -> None:
             )
             return 200, {"action": "deny", "message": verdict_dict}
 
-    async def handle_gate_conn(
-        reader: asyncio.StreamReader, writer: asyncio.StreamWriter
-    ) -> None:
+    async def handle_gate_http(request: web.Request) -> web.Response:
+        secret = request.headers.get("Authorization", "").removeprefix("Bearer ")
         try:
-            while not closing:
-                try:
-                    parsed = await _read_http_request(reader)
-                except (asyncio.IncompleteReadError, ConnectionError, ValueError):
-                    break
-                if parsed is None:
-                    break
-                headers, raw_body = parsed
-                secret = headers.get("authorization", "").removeprefix("Bearer ")
-                try:
-                    status, payload = await decide_gate(
-                        secret, json.loads(raw_body or b"{}")
-                    )
-                except Exception as error:  # noqa: BLE001
-                    status, payload = 400, {"error": str(error)}
-                encoded = json.dumps(payload).encode()
-                reason = "OK" if status == 200 else "Error"
-                close_conn = headers.get("connection", "").lower() == "close"
-                conn_hdr = "close" if close_conn else "keep-alive"
-                writer.write(
-                    f"HTTP/1.1 {status} {reason}\r\n"
-                    "Content-Type: application/json\r\n"
-                    f"Content-Length: {len(encoded)}\r\n"
-                    f"Connection: {conn_hdr}\r\n\r\n".encode("latin-1")
-                    + encoded
-                )
-                await writer.drain()
-                if close_conn:
-                    break
-        finally:
-            writer.close()
-            with suppress(Exception):
-                await writer.wait_closed()
+            status, payload = await decide_gate(secret, await request.json())
+        except Exception as error:  # noqa: BLE001
+            status, payload = 400, {"error": str(error)}
+        return web.json_response(payload, status=status)
 
-    gate_server = await asyncio.start_server(handle_gate_conn, "127.0.0.1", 0)
-    gate_port = gate_server.sockets[0].getsockname()[1]
+    gate_app = web.Application(client_max_size=64 * 1024 * 1024)
+    gate_app.router.add_post("/tool", handle_gate_http)
+    gate_runner = web.AppRunner(gate_app, access_log=None)
+    await gate_runner.setup()
+    gate_site = web.TCPSite(gate_runner, "127.0.0.1", 0)
+    await gate_site.start()
+    gate_port = gate_site._server.sockets[0].getsockname()[1]
 
     async def close_acp_session(session_key: str, graceful: bool) -> dict[str, Any]:
         rec = acp_sessions.pop(session_key, None)
@@ -718,9 +666,7 @@ async def main() -> None:
         for sid in list(tool_slots_by_id):
             with suppress(Exception):
                 await handle_rpc({"operation": "unregister_tool_slot", "slot_id": sid})
-        gate_server.close()
-        with suppress(Exception):
-            await gate_server.wait_closed()
+        await gate_runner.cleanup()
         await http.aclose()
 
 

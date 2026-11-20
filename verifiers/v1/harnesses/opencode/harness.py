@@ -8,7 +8,7 @@ from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import DialectName, HarnessConfig, PinnedVersion
 from verifiers.v1.harnesses.node import ensure_node
 from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
-from verifiers.v1.harnesses.utils.remote import NativeRemoteTools
+from verifiers.v1.harnesses.utils.remote import NativeRemoteTools, native_tool_names
 from verifiers.v1.harnesses.utils.replay import drop_blank_text
 from verifiers.v1.harnesses.utils.sandbox_tools import RemoteToolsSpec
 from verifiers.v1.runtimes import Runtime
@@ -43,7 +43,6 @@ class OpenCodeHarness(ACPHarness[OpenCodeHarnessConfig]):
     SUPPORTS_MCP = True
     SUPPORTS_SKILLS = True
     SUPPORTS_TOOL_INTERCEPTION = True
-    SUPPORTS_SPLIT_EXECUTION = True
 
     async def remote_tools(self, runtime: Runtime, data: TaskData) -> RemoteToolsSpec:
         return RemoteToolsSpec(
@@ -52,6 +51,7 @@ class OpenCodeHarness(ACPHarness[OpenCodeHarnessConfig]):
                 "harness": "opencode",
                 "disabled_tools": list(self.config.disabled_tools or ()),
             },
+            native_tools=native_tool_names("opencode"),
         )
 
     def can_gate_tool(self, call: ToolCall) -> bool:
@@ -79,6 +79,7 @@ class OpenCodeHarness(ACPHarness[OpenCodeHarnessConfig]):
                     "url": url,
                     "secret": secret,
                     "remote": runtime._remote_tools_only,
+                    "nativeTools": sorted(native_tool_names("opencode")),
                     "readyFile": config.ready_file,
                 },
             }

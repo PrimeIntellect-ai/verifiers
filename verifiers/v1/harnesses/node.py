@@ -19,7 +19,8 @@ install_node() {
     # Finish downloading, extracting and validating before replacing the shared installation.
     download_dir=$(mktemp -d "$node.XXXXXX")
     trap 'rm -rf "$download_dir"' EXIT
-    curl -fsSL --retry 5 --retry-all-errors "https://nodejs.org/dist/v$AGENT_NODE_VERSION/node-v$AGENT_NODE_VERSION-$1.tar.gz" \
+    curl -fsSL --connect-timeout 15 --retry 5 --retry-all-errors --retry-delay 2 \
+        "https://nodejs.org/dist/v$AGENT_NODE_VERSION/node-v$AGENT_NODE_VERSION-$1.tar.gz" \
         -o "$download_dir/node.tar.gz"
     mkdir "$download_dir/node"
     tar -xzf "$download_dir/node.tar.gz" -C "$download_dir/node" --strip-components=1

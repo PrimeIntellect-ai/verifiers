@@ -144,7 +144,19 @@ class Rollout:
         self._grader = None
         self.deployment = None
         self._deployment_config = agent_config.deployment
-        self._split_execution = agent_config.deployment.mode == "split"
+        spec = task.deployment_spec()
+        self._split_execution = (
+            runtime is None
+            and harness.uses_split_sandbox
+            and runtime_config.type == "prime"
+            or (
+                runtime is None
+                and harness.uses_split_sandbox
+                and runtime_config.type == "docker"
+                and spec is None
+                and not getattr(runtime_config, "mounts", None)
+            )
+        )
         self._lost: RuntimeLoss | None = None
         self._has_user = has_user
         self._timeouts = timeouts
@@ -198,8 +210,7 @@ class Rollout:
             ],
             request_stops=[fn for boundary, fn in stops if boundary is Request],
             response_stops=[fn for boundary, fn in stops if boundary is Response],
-            gates_tools=harness.SUPPORTS_TOOL_INTERCEPTION
-            or (self._split_execution and harness.SUPPORTS_SPLIT_TOOL_INTERCEPTION),
+            gates_tools=harness.SUPPORTS_TOOL_INTERCEPTION,
             tool_gate_can_deny=harness.can_gate_tool,
             check_tool_call=harness.check_tool_call,
         )
@@ -369,7 +380,6 @@ class Rollout:
                     toolsets = self.task.toolsets(self.task.config)
                 spec = self.task.deployment_spec()
                 if self._split_execution:
-                    self.harness.validate_split_execution()
                     if self._borrowed_runtime is not None:
                         raise HarnessError("split deployment cannot borrow a runtime")
                     for toolset in toolsets:
@@ -397,6 +407,7 @@ class Rollout:
                     execution_network=self.runtime_config
                     if self._split_execution
                     else None,
+                    split=self._split_execution,
                 )
                 try:
                     warmup_task: asyncio.Task[None] | None = None
@@ -677,13 +688,7 @@ class Rollout:
                                     f"{base_url.rstrip('/')}/tool"
                                 )
                             }
-                            if (
-                                self.harness.SUPPORTS_TOOL_INTERCEPTION
-                                or (
-                                    self._split_execution
-                                    and self.harness.SUPPORTS_SPLIT_TOOL_INTERCEPTION
-                                )
-                            )
+                            if self.harness.SUPPORTS_TOOL_INTERCEPTION
                             and (
                                 self._session.request_interceptors
                                 or self._session.request_stops

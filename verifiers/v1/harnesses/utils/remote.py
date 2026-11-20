@@ -140,50 +140,60 @@ class _Job:
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
 
-_NATIVE_NAMES = {
-    "claude_code": {
-        "Bash",
-        "Read",
-        "Write",
-        "Edit",
-        "Glob",
-        "Grep",
-        "TaskOutput",
-        "TaskStop",
-        "TaskList",
-        "KillShell",
-        "TodoWrite",
-        "TodoRead",
-        "EnterPlanMode",
-        "ExitPlanMode",
-    },
-    "kimi_code": {
-        "Bash",
-        "Read",
-        "Write",
-        "Edit",
-        "Glob",
-        "Grep",
-        "ReadMediaFile",
-        "TaskOutput",
-        "TaskStop",
-        "TaskList",
-        "WaitFor",
-    },
-    "pi": {"bash", "read", "write", "edit", "grep", "find", "ls"},
-    "deepseek": {"bash", "read_image", "working_directory"},
-    "opencode": {
-        "shell",
-        "read",
-        "write",
-        "edit",
-        "glob",
-        "grep",
-        "patch",
-        "todowrite",
-    },
-    "openclaw": {"read", "write", "edit", "apply_patch"},
+_NATIVE_NAMES: dict[str, frozenset[str]] = {
+    "claude_code": frozenset(
+        {
+            "Bash",
+            "Read",
+            "Write",
+            "Edit",
+            "Glob",
+            "Grep",
+            "TaskOutput",
+            "TaskStop",
+            "TaskList",
+            "KillShell",
+            "TodoWrite",
+            "TodoRead",
+            "EnterPlanMode",
+            "ExitPlanMode",
+        }
+    ),
+    "kimi_code": frozenset(
+        {
+            "Bash",
+            "Read",
+            "Write",
+            "Edit",
+            "Glob",
+            "Grep",
+            "ReadMediaFile",
+            "TaskOutput",
+            "TaskStop",
+            "TaskList",
+            "WaitFor",
+        }
+    ),
+    "pi": frozenset({"bash", "read", "write", "edit", "grep", "find", "ls"}),
+    "deepseek": frozenset({"bash", "read_image", "working_directory"}),
+    "opencode": frozenset(
+        {
+            "shell",
+            "read",
+            "write",
+            "edit",
+            "glob",
+            "grep",
+            "patch",
+            "todowrite",
+        }
+    ),
+    "openclaw": frozenset({"read", "write", "edit", "apply_patch"}),
 }
+
+
+def native_tool_names(harness: str) -> frozenset[str]:
+    return _NATIVE_NAMES[harness]
 
 
 # The worker receives validated JSON as an argv element, never shell source. It

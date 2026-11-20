@@ -9,6 +9,7 @@ from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig, PinnedVersion
 from verifiers.v1.harnesses.openclaw.remote import OpenClawRemoteTools
 from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
+from verifiers.v1.harnesses.utils.remote import native_tool_names
 from verifiers.v1.harnesses.utils.sandbox_tools import RemoteToolsSpec
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import TaskData
@@ -158,11 +159,12 @@ class OpenClawHarness(ACPHarness[OpenClawHarnessConfig]):
     SUPPORTS_MCP = True
     SUPPORTS_SKILLS = True
     SUPPORTS_TOOL_INTERCEPTION = True
-    SUPPORTS_SPLIT_EXECUTION = True
 
     async def remote_tools(self, runtime: Runtime, data: TaskData) -> RemoteToolsSpec:
         return RemoteToolsSpec(
-            OpenClawRemoteTools, {"disabled_tools": self.config.disabled_tools or []}
+            OpenClawRemoteTools,
+            {"disabled_tools": self.config.disabled_tools or []},
+            native_tools=native_tool_names("openclaw") | {"exec", "process"},
         )
 
     def __init__(self, config: OpenClawHarnessConfig) -> None:
@@ -195,11 +197,13 @@ class OpenClawHarness(ACPHarness[OpenClawHarnessConfig]):
     ) -> None:
         directory = f"{config.env['OPENCLAW_STATE_DIR']}/execution-gate"
         ready = f"{directory}/ready"
+        native = sorted(native_tool_names("openclaw") | {"exec", "process"})
         await runtime.write(
             f"{directory}/index.mjs",
             GATE_SOURCE.replace("__URL__", json.dumps(url))
             .replace("__SECRET__", json.dumps(secret))
             .replace("__REMOTE_ONLY__", json.dumps(runtime._remote_tools_only))
+            .replace("__NATIVE_TOOLS__", json.dumps(native))
             .replace("__READY__", json.dumps(ready))
             .encode(),
         )
@@ -260,7 +264,7 @@ class OpenClawHarness(ACPHarness[OpenClawHarnessConfig]):
     ) -> ACPConfig:
         system_prompt, prompt = self.resolve_prompt(data)
         provider, _, model_id = ctx.model.partition("/")
-        state_dir = f".vf-openclaw/{trace.id}"
+        state_dir = f"/tmp/vf-openclaw/{trace.id}"
         config_path = f"{state_dir}/openclaw.json"
         skills_dir = f"{state_dir}/skills"
         provider_config = {
@@ -357,5 +361,5 @@ class OpenClawHarness(ACPHarness[OpenClawHarnessConfig]):
         )
 
     async def cleanup(self, trace: Trace, runtime: Runtime) -> None:
-        state_dir = f".vf-openclaw/{trace.id}"
+        state_dir = f"/tmp/vf-openclaw/{trace.id}"
         await remove_dir(runtime, state_dir, "OpenClaw state")

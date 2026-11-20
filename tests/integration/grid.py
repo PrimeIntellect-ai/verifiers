@@ -11,7 +11,7 @@ the code.
 
 A harness without a capability the behavior needs is collected as a skip with its
 reason (`Harness.EXECUTES_CODE`, `SUPPORTS_MCP`, `SUPPORTS_SKILLS`,
-`SUPPORTS_SPLIT_EXECUTION`, resume support via `SUPPORTS_RESUME` or a native session).
+resume support via `SUPPORTS_RESUME` or a native session).
 
 A runtime without a feature the behavior needs (`RuntimeBackend.SUPPORTS_*`, or a
 `NetworkPolicyConfig` for a network policy) skips the cell the same way. That a runtime
@@ -190,14 +190,10 @@ def unsupported(
         return f"{name} gives the model no shell"
     if "mcp" in needs and not cls.SUPPORTS_MCP:
         return f"{name} does not support MCP tools"
-    if "mcp" in needs and "split" in needs and not cls.SUPPORTS_SPLIT_MCP:
-        return f"{name} does not support MCP in split deployment"
     if "skills" in needs and not cls.SUPPORTS_SKILLS:
         return f"{name} has no native skill support"
     if "resume" in needs and not resumes(cls):
         return f"{name} cannot resume an exchange"
-    if "split" in needs and not cls.SUPPORTS_SPLIT_EXECUTION:
-        return f"{name} does not support split deployment"
     runtime_needs = (*(("container",) if cls.NEEDS_CONTAINER else ()), *needs)
     for feature in runtime_needs:
         if feature in RUNTIME_FEATURES and not supports(runtime, feature):

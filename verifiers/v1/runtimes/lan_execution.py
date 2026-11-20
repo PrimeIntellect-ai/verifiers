@@ -16,7 +16,7 @@ import uuid
 
 from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes.base import RuntimeProcess
-from verifiers.v1.runtimes.lan_stream import CLIENT_SOURCE, WIRE_SOURCE, AsyncLanStream
+from verifiers.v1.runtimes.lan_stream import WIRE_SOURCE, AsyncLanStream
 from verifiers.v1.runtimes.runtime import Runtime
 from verifiers.v1.utils.logging import clip, get_logger
 
@@ -207,154 +207,34 @@ finally:
 """
 )
 
-# Trusted evaluator setup and lifecycle calls can reach LAN endpoints through A.
-# Harness clients and adapters connect directly from A for workspace I/O.
-_RELAY = (
-    CLIENT_SOURCE
-    + r"""
-import sys
-config = json.loads(sys.stdin.readline())
-lock = threading.Lock()
-client = LanStream(config)
-
-def relay(message):
-    result = {"id": message["id"]}
-    try:
-        result["result"] = client.request(message["body"])
-    except Exception as error:
-        result["error"] = str(error)
-    with lock:
-        print(json.dumps(result), flush=True)
-
-with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
-    try:
-        for line in sys.stdin:
-            message = json.loads(line)
-            if message["body"].get("operation") in ("kill", "terminate", "poll"):
-                relay(message)
-            else:
-                pool.submit(relay, message)
-    finally:
-        client.close()
-"""
-)
-
 
 class LanProcess(RuntimeProcess):
-    def __init__(
-        self,
-        owner: RuntimeProcess | None,
-        harness: Runtime | None,
-        python: str,
-        endpoint: dict,
-        *,
-        direct: bool = False,
-    ) -> None:
+    def __init__(self, owner: RuntimeProcess | None, endpoint: dict) -> None:
         self.owner = owner
-        self.harness = harness
-        self.python = python
         self.execution_endpoint = endpoint
-        self._direct = AsyncLanStream(endpoint) if direct else None
-        self._relay: RuntimeProcess | None = None
-        self._lock = asyncio.Lock()
+        self._direct = AsyncLanStream(endpoint)
         self._stdin_lock = asyncio.Lock()
-        self._pending: dict[str, asyncio.Future] = {}
-        self._tasks: list[asyncio.Task] = []
         self._closed = False
         self._finished: set[str] = set()
         self._exit_code: int | None = None
         self.stdout = self._stream("stdout")
         self.stderr = self._stream("stderr")
 
-    async def _receive(self) -> None:
-        assert self._relay is not None
-        buffer = b""
-        try:
-            async for chunk in self._relay.stdout:
-                buffer += chunk
-                while b"\n" in buffer:
-                    line, buffer = buffer.split(b"\n", 1)
-                    response = json.loads(line)
-                    future = self._pending.get(response["id"])
-                    if future is not None and not future.done():
-                        if "error" in response:
-                            future.set_exception(SandboxError(response["error"]))
-                        else:
-                            future.set_result(response["result"])
-        finally:
-            for future in self._pending.values():
-                if not future.done():
-                    future.set_exception(SandboxError("LAN execution relay closed"))
-
     async def _rpc(self, operation: str, **values) -> dict:
         if self._closed:
             raise SandboxError("LAN execution process is closed")
-        if self._direct is not None:
-            try:
-                result = await self._direct.request(operation, **values)
-            except Exception as error:
-                raise SandboxError(str(error)) from error
-            if operation == "wait":
-                self._exit_code = result["exit_code"]
-                self._finished.add("wait")
-            elif operation == "read" and result.get("eof"):
-                self._finished.add(values["stream"])
-            if len(self._finished) == 3:
-                await self.aclose()
-            return result
-        assert self.harness is not None
-        async with self._lock:
-            if self._relay is None:
-                python = self.python or await self.harness.resolve_python()
-                relay = await self.harness.exec([python, "-I", "-u", "-c", _RELAY], {})
-                try:
-                    await relay.write(
-                        (json.dumps(self.execution_endpoint) + "\n").encode()
-                    )
-                    if self._closed:
-                        raise SandboxError("LAN execution process is closed")
-                except BaseException:
-                    with contextlib.suppress(Exception):
-                        await relay.kill()
-                    raise
-                self._relay = relay
-                self._tasks.append(asyncio.create_task(self._receive()))
-
-                async def drain() -> None:
-                    assert self._relay is not None
-                    async for _ in self._relay.stderr:
-                        pass
-
-                self._tasks.append(asyncio.create_task(drain()))
-            request_id = uuid.uuid4().hex
-            future = asyncio.get_running_loop().create_future()
-            self._pending[request_id] = future
-            body = {
-                "operation": operation,
-                "process_id": self.execution_endpoint["process_id"],
-                "request_id": request_id,
-                **values,
-            }
-            try:
-                await self._relay.write(
-                    (json.dumps({"id": request_id, "body": body}) + "\n").encode()
-                )
-            except BaseException:
-                self._pending.pop(request_id, None)
-                future.cancel()
-                raise
         try:
-            result = await future
-            if operation == "wait":
-                self._exit_code = result["exit_code"]
-                self._finished.add("wait")
-            elif operation == "read" and result.get("eof"):
-                self._finished.add(values["stream"])
-            if len(self._finished) == 3:
-                await self.aclose()
-            return result
-        finally:
-            self._pending.pop(request_id, None)
+            result = await self._direct.request(operation, **values)
+        except Exception as error:
+            raise SandboxError(str(error)) from error
+        if operation == "wait":
+            self._exit_code = result["exit_code"]
+            self._finished.add("wait")
+        elif operation == "read" and result.get("eof"):
+            self._finished.add(values["stream"])
+        if len(self._finished) == 3:
+            await self.aclose()
+        return result
 
     async def _stream(self, name: str):
         while True:
@@ -383,37 +263,28 @@ class LanProcess(RuntimeProcess):
         return (await self._rpc("poll"))["exit_code"]
 
     async def terminate(self) -> None:
-        if self._closed:
-            return
-        await self._rpc("terminate")
+        if not self._closed:
+            await self._rpc("terminate")
 
     async def kill(self) -> None:
-        if self._closed:
-            return
-        await self._rpc("kill")
+        if not self._closed:
+            await self._rpc("kill")
 
     async def abandon(self) -> None:
         """Drop local streams without remote RPCs when the owning VM is stopping."""
         if self._closed:
             return
         self._closed = True
-        if self._direct is not None:
-            await self._direct.aclose()
+        await self._direct.aclose()
         if self.owner is not None:
             await self.owner.abandon()
-        if self._relay is not None:
-            await self._relay.abandon()
-        for task in self._tasks:
-            task.cancel()
-        await asyncio.gather(*self._tasks, return_exceptions=True)
 
     async def aclose(self) -> None:
         if self._closed:
             return
         self._closed = True
         try:
-            if self._direct is not None:
-                await self._direct.aclose()
+            await self._direct.aclose()
             if self.owner is not None:
                 await self.owner.write(b"close\n")
                 async with asyncio.timeout(5):
@@ -422,12 +293,6 @@ class LanProcess(RuntimeProcess):
             if self.owner is not None:
                 with contextlib.suppress(Exception):
                     await self.owner.kill()
-            if self._relay is not None:
-                with contextlib.suppress(Exception):
-                    await self._relay.kill()
-            for task in self._tasks:
-                task.cancel()
-            await asyncio.gather(*self._tasks, return_exceptions=True)
 
 
 class LanExecution:
@@ -438,19 +303,11 @@ class LanExecution:
         self.host = host
         self.direct = direct
         self._python = ""
-        self._harness_python = ""
         self._processes: list[LanProcess] = []
         self._closed = False
 
     async def start(self, workspace: Runtime) -> None:
-        if self.direct:
-            self._python = await workspace.resolve_python()
-            self._harness_python = ""
-            return
-        self._python, self._harness_python = await asyncio.gather(
-            workspace.resolve_python(),
-            self.harness.resolve_python(),
-        )
+        self._python = await workspace.resolve_python()
 
     async def exec(
         self, runtime: Runtime, argv: list[str], env: dict[str, str]
@@ -478,8 +335,6 @@ class LanExecution:
                 raise SandboxError("LAN execution transport closed during startup")
             process = LanProcess(
                 owner,
-                self.harness,
-                self._harness_python,
                 {
                     "url": f"tcp://{self.host}:{port}",
                     "host": self.host,
@@ -487,7 +342,6 @@ class LanExecution:
                     "secret": secret,
                     "process_id": process_id,
                 },
-                direct=self.direct,
             )
             self._processes.append(process)
             return process

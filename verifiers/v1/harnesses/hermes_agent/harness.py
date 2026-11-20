@@ -7,6 +7,7 @@ from typing import Literal
 from verifiers.v1.acp import ACPConfig, ACPHarness
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import DialectName, HarnessConfig, PinnedVersion
+from verifiers.v1.harnesses.hermes_agent.remote import _TOOLS as _HERMES_TOOLS
 from verifiers.v1.harnesses.hermes_agent.remote import HermesRemoteTools
 from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
 from verifiers.v1.harnesses.utils.replay import strip_text
@@ -54,7 +55,6 @@ class HermesAgentHarness(ACPHarness[HermesAgentHarnessConfig]):
     SUPPORTS_MCP = True
     SUPPORTS_SKILLS = True
     SUPPORTS_TOOL_INTERCEPTION = True
-    SUPPORTS_SPLIT_EXECUTION = True
 
     async def remote_tools(self, runtime: Runtime, data: TaskData) -> RemoteToolsSpec:
         assert runtime._execution_bridge is not None
@@ -75,7 +75,9 @@ class HermesAgentHarness(ACPHarness[HermesAgentHarnessConfig]):
         home = "/tmp/verifiers-hermes-tools"
         await runtime.write(f"{home}/config.yaml", b"{}")
         return RemoteToolsSpec(
-            HermesRemoteTools, {"python": f"{directory}/.venv/bin/python", "home": home}
+            HermesRemoteTools,
+            {"python": f"{directory}/.venv/bin/python", "home": home},
+            native_tools=_HERMES_TOOLS,
         )
 
     async def gate_tools(
@@ -84,6 +86,7 @@ class HermesAgentHarness(ACPHarness[HermesAgentHarnessConfig]):
         config.env["VF_TOOL_GATE_URL"] = url
         config.env["VF_TOOL_GATE_SECRET"] = secret
         config.env["VF_REMOTE_TOOLS_ONLY"] = "1" if runtime._remote_tools_only else "0"
+        config.env["VF_NATIVE_TOOLS"] = json.dumps(sorted(_HERMES_TOOLS))
 
     # Hermes strips stored assistant text and pads missing reasoning with " " on
     # routes requiring reasoning replay. Recheck on version bumps:

@@ -9,7 +9,7 @@ from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import DialectName, HarnessConfig, PinnedVersion
 from verifiers.v1.harnesses.node import NODE_BIN_DIR, ensure_node
 from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
-from verifiers.v1.harnesses.utils.remote import NativeRemoteTools
+from verifiers.v1.harnesses.utils.remote import NativeRemoteTools, native_tool_names
 from verifiers.v1.harnesses.utils.replay import drop_blank_text
 from verifiers.v1.harnesses.utils.sandbox_tools import RemoteToolsSpec
 from verifiers.v1.runtimes import Runtime
@@ -22,7 +22,7 @@ logger = get_logger(__name__)
 
 KIMI_DIR = "/var/tmp/vf-kimi-code"
 KIMI_BIN = f"{KIMI_DIR}/node_modules/.bin/kimi"
-KIMI_HOME = ".vf-kimi-code"
+KIMI_HOME = "/tmp/vf-kimi-code"
 ACP_COMMAND = [f"{NODE_BIN_DIR}/node", KIMI_BIN, "acp"]
 
 # From npm rather than Kimi's installer: code.kimi.com sits behind a WAF that drops
@@ -50,7 +50,6 @@ class KimiCodeHarness(ACPHarness[KimiCodeHarnessConfig]):
     SUPPORTS_MCP = True
     SUPPORTS_SKILLS = True
     SUPPORTS_TOOL_INTERCEPTION = True
-    SUPPORTS_SPLIT_EXECUTION = True
 
     # Kimi Code drops whitespace-only assistant text when it stores a step, so every
     # transport replays it without. Recheck on version bumps:
@@ -66,6 +65,7 @@ class KimiCodeHarness(ACPHarness[KimiCodeHarnessConfig]):
                 "harness": "kimi_code",
                 "disabled_tools": list(self.config.disabled_tools or ()),
             },
+            native_tools=native_tool_names("kimi_code"),
         )
 
     async def setup(self, runtime: Runtime) -> None:

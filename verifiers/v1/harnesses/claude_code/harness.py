@@ -8,7 +8,7 @@ from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import DialectName, HarnessConfig, PinnedVersion
 from verifiers.v1.harnesses.node import NODE_BIN_DIR, ensure_node
 from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
-from verifiers.v1.harnesses.utils.remote import NativeRemoteTools
+from verifiers.v1.harnesses.utils.remote import NativeRemoteTools, native_tool_names
 from verifiers.v1.harnesses.utils.replay import drop_blank_text_blocks
 from verifiers.v1.harnesses.utils.sandbox_tools import RemoteToolsSpec
 from verifiers.v1.runtimes import Runtime
@@ -21,7 +21,7 @@ PACKAGES_DIR = f"{CLAUDE_ACP_DIR}/packages"
 ACP_VERSION = "0.108.1"
 CLAUDE_BIN = f"{PACKAGES_DIR}/node_modules/.bin/claude"
 ACP_BIN = f"{PACKAGES_DIR}/node_modules/.bin/claude-agent-acp"
-CLAUDE_CONFIG_ROOT = ".vf-claude"
+CLAUDE_CONFIG_ROOT = "/tmp/vf-claude"
 # Manual mode routes tool approvals to ACP. Auto needs a separate classifier.
 CLAUDE_PERMISSIONS = {"defaultMode": "default"}
 ACP_INSTALL = r"""
@@ -47,7 +47,6 @@ class ClaudeCodeHarness(ACPHarness[ClaudeCodeHarnessConfig]):
     SUPPORTS_MCP = True
     SUPPORTS_SKILLS = True
     SUPPORTS_TOOL_INTERCEPTION = True
-    SUPPORTS_SPLIT_EXECUTION = True
 
     # Claude Code 2.1.327 filters each whitespace-only text block on replay.
     def replay_view(self, message: Message, dialect: DialectName | None) -> Message:
@@ -60,6 +59,7 @@ class ClaudeCodeHarness(ACPHarness[ClaudeCodeHarnessConfig]):
                 "harness": "claude_code",
                 "disabled_tools": list(self.config.disabled_tools or ()),
             },
+            native_tools=native_tool_names("claude_code"),
         )
 
     async def setup(self, runtime: Runtime) -> None:

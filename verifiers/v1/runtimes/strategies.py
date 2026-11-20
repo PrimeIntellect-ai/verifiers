@@ -205,7 +205,7 @@ class _PrivateNetworkDeployment(_DeploymentStrategy):
         self._owned_pool = None
         self._harness_released = False
         self._net = PrivateNetworkGroup()
-        if d.config.mode == "split":
+        if d._split_requested:
             d._harness_workdir = d.backend.config.workdir
             h_cfg = _harness_config(
                 d.config.harness, d.execution_network or d.backend.config
@@ -420,12 +420,7 @@ def _harness_config(harness: PrimeConfig, workspace: PrimeConfig) -> PrimeConfig
     )
 
 
-def _deployment_strategy(config, backend, spec, tool_vms=None):
-    split = config is not None and config.mode == "split"
-    if split and backend.type == "docker":
-        return _SplitDeployment()
-    if split and not isinstance(backend, PrimeBackend):
-        raise ValueError("split deployment requires Docker or Prime")
+def _deployment_strategy(config, backend, spec, tool_vms=None, *, split: bool = False):
     if isinstance(spec, ServicesSpec):
         if not isinstance(backend, PrimeBackend):
             raise TypeError("Native service VMs require a Prime workspace")
@@ -447,6 +442,10 @@ def _deployment_strategy(config, backend, spec, tool_vms=None):
                 "cannot run Compose services; use ServicesSpec on Prime or local Docker"
             )
         return _ContainerDeployment()
+    if split and backend.type == "docker":
+        return _SplitDeployment()
+    if split and not isinstance(backend, PrimeBackend):
+        raise ValueError("split deployment requires Docker or Prime")
     if tool_vms or split:
         return _PrivateNetworkDeployment()
     return _ColocatedDeployment()

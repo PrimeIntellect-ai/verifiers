@@ -73,7 +73,7 @@ class RemoteBackend(RuntimeBackend):
         if self.endpoint is not None:
             from verifiers.v1.runtimes.lan_execution import LanProcess
 
-            lan = LanProcess(None, None, "", self.endpoint, direct=True)
+            lan = LanProcess(None, self.endpoint)
             try:
                 await lan._rpc("open")
             except BaseException:

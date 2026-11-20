@@ -14,6 +14,7 @@ from verifiers.v1.harnesses.utils.remote_runtime import (
     prepare_remote_bridge,
 )
 from verifiers.v1.runtimes import Runtime
+from verifiers.v1.runtimes.deployment import ExecutionConnection
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
 
@@ -38,8 +39,7 @@ class StirrupHarness(ACPHarness[StirrupHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
     SUPPORTS_SKILLS = True
-    SUPPORTS_SPLIT_EXECUTION = True
-    SUPPORTS_SPLIT_TOOL_INTERCEPTION = True
+    SUPPORTS_TOOL_INTERCEPTION = True
 
     def _source(self) -> str:
         return PROGRAM_SOURCE.replace("{version}", self.config.version).replace(
@@ -49,13 +49,13 @@ class StirrupHarness(ACPHarness[StirrupHarnessConfig]):
     async def remote_tools(self, runtime: Runtime, data: TaskData):
         return None
 
+    async def setup_execution(
+        self, runtime: Runtime, workspace: Runtime, connection: ExecutionConnection
+    ) -> None:
+        await connection.setup_runtime.prepare_uv_script(self._source(), {})
+
     async def setup(self, runtime: Runtime) -> None:
         await runtime.prepare_uv_script(self._source(), self.config.resolved_env)
-        if runtime._remote_tools_only:
-            assert runtime._execution_bridge is not None
-            await runtime._execution_bridge.setup_runtime.prepare_uv_script(
-                self._source(), {}
-            )
         await super().setup(runtime)
 
     async def prepare_acp(

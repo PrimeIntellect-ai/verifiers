@@ -476,9 +476,9 @@ async def run_chat_loop(
                         str(denied.get("content", ""))
                     )
                     continue
-                if args.remote_tools_only:
+                if args.remote_tools_only and name not in dispatch:
                     raise RuntimeError("split tool gate allowed local execution")
-            elif args.remote_tools_only:
+            elif args.remote_tools_only and name not in dispatch:
                 raise RuntimeError("split tool call has no gate")
             try:
                 tool_args = json.loads(call.function.arguments or "{}")

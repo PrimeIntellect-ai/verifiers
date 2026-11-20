@@ -649,11 +649,7 @@ class Agent:
         # The name in this agent's log prefix; an episode names it after its role.
         self._log_name: str | None = None
         self.runtime_config: RuntimeConfig = config.runtime
-        if (
-            interception is None
-            and config.deployment.mode == "split"
-            and self.runtime_config.type == "prime"
-        ):
+        if interception is None and self.runtime_config.type == "prime":
             from verifiers.v1.runtimes.controller import current_job
 
             if job := current_job.get():
@@ -1028,22 +1024,6 @@ class Agent:
         interception — shared by `run` and `interaction`."""
         harness = self.harness
         skills = [*task.data.skills, *harness.config.skills]
-        split = self.config.deployment.mode == "split"
-        if skills or split:
-            # Skill installations and split execution workers hold run-specific state,
-            # such as RLM's package environment.
-            harness = type(harness)(
-                harness.config.model_copy(update={"skills": skills})
-            )
-        if split:
-            harness.validate_split_execution()
-            if runtime is not None:
-                raise ValueError(
-                    "split deployment provisions the harness's VM per rollout; it "
-                    "cannot run in a borrowed runtime"
-                )
-            for toolset in task.toolsets(task.config):
-                toolset.validate_split_execution()
         if runtime is not None:
             _check_borrowed_placement(task, runtime, self.runtime_config)
             runtime_config = runtime.config
@@ -1053,12 +1033,33 @@ class Agent:
                 self.runtime_config, task, self._warned_resources
             )
             run_is_local = runtime_is_local(runtime_config)
+        spec = task.deployment_spec()
+        split = (
+            runtime is None
+            and harness.uses_split_sandbox
+            and runtime_config.type == "prime"
+            or (
+                runtime is None
+                and harness.uses_split_sandbox
+                and runtime_config.type == "docker"
+                and spec is None
+                and not getattr(runtime_config, "mounts", None)
+            )
+        )
+        if skills or split:
+            # Skill installations and split execution workers hold run-specific state,
+            # such as RLM's package environment.
+            harness = type(harness)(
+                harness.config.model_copy(update={"skills": skills})
+            )
+        if split:
+            for toolset in task.toolsets(task.config):
+                toolset.validate_split_execution()
         validate_pairing(
             harness,
             type(task),
             runtime_config,
             tools=[*task.toolsets(task.config), *shared_tools.values()],
-            split=split,
         )
         timeouts = resolve_rollout_timeouts(self.timeout, task)
         return {
@@ -1077,8 +1078,6 @@ class Agent:
     async def provision(self, task: Task | None = None) -> AsyncIterator[Runtime]:
         """Provision (and on exit tear down) a box from this agent's runtime
         policy, resolved for `task` when given; share it via `run(..., runtime=runtime)`."""
-        if self.config.deployment.mode == "split":
-            raise ValueError("split deployment cannot borrow a provisioned runtime")
         config = (
             resolve_runtime_config(self.runtime_config, task, self._warned_resources)
             if task is not None

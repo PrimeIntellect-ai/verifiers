@@ -138,8 +138,6 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
     SUPPORTS_MCP = True
     SUPPORTS_SKILLS = True
     SUPPORTS_TOOL_INTERCEPTION = True
-    SUPPORTS_SPLIT_EXECUTION = True
-    SUPPORTS_SPLIT_MCP = True
     _executor_cwd: str | None = None
     _staged_configs: dict[str, dict] | None = None
 
@@ -198,11 +196,6 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
             label="codex",
         )
         await super().setup(runtime)
-
-    def validate_split_execution(self) -> None:
-        super().validate_split_execution()
-        if self.config.skills:
-            raise ValueError("Codex split deployment does not support custom skills")
 
     async def setup_execution(
         self, runtime: Runtime, workspace: Runtime, connection: ExecutionConnection
@@ -362,6 +355,10 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
     ) -> dict[str, str]:
         home = self.trace_home(trace)
         await self.install_skills(runtime, f"{home}/skills")
+        if self.config.skills and runtime._execution_bridge is not None:
+            await self.install_skills(
+                runtime._execution_bridge.setup_runtime, f"{home}/skills"
+            )
         writes = []
         if runtime._execution_bridge is not None:
             command = await prepare_remote_bridge(

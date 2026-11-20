@@ -1,41 +1,44 @@
-"""Split deployment: the harness on a Prime VM of its own, its tools in the workspace,
-for every harness that declares `SUPPORTS_SPLIT_EXECUTION`."""
+"""Split deployment: the harness on a Prime VM of its own, its tools in the workspace."""
 
 import pytest
 from grid import grid
 
 import verifiers.v1 as vf
 from verifiers.v1.rollout import Rollout
+from verifiers.v1.tasksets.harbor.toolset import HarborMCPAdapter, HarborMCPConfig
 
 SPLIT = {
-    "deployment": {"mode": "split", "harness": {"cpu": 2, "memory": 4}},
+    "deployment": {"harness": {"cpu": 2, "memory": 4}},
     "timeout": {"setup": 900, "rollout": 300, "scoring": 60},
 }
 
 
 @pytest.mark.parametrize("entrypoint", ["run", "interaction"])
-@pytest.mark.parametrize("harness_id,skills", [("rlm", True), ("codex", True)])
-async def test_split_preflight_before_rollout(
-    monkeypatch, tmp_path, entrypoint, harness_id, skills
-):
-    """Both public execution paths reject an unsupported harness or capability before
-    any boot."""
+async def test_split_preflight_before_rollout(monkeypatch, entrypoint):
+    """Both public execution paths reject an unsupported split toolset before boot."""
+
+    class HarborTask(vf.Task):
+        @classmethod
+        def toolsets(cls, config):
+            return [
+                HarborMCPAdapter(
+                    HarborMCPConfig(
+                        server={
+                            "name": "local",
+                            "transport": "stdio",
+                            "command": "true",
+                        }
+                    )
+                )
+            ]
 
     async def unexpected_open(self):
         pytest.fail("unsupported split configuration reached rollout provisioning")
 
     monkeypatch.setattr(Rollout, "open", unexpected_open)
-    agent = vf.Agent(
-        vf.AgentConfig(
-            model="unused",
-            harness={"id": harness_id},
-            runtime={"type": "prime"},
-            deployment={"mode": "split"},
-        )
-    )
-    task = vf.Task(vf.TaskData(prompt="unused", skills=[tmp_path] if skills else []))
-    message = "builtin skills" if harness_id == "rlm" else "custom skills"
-    with pytest.raises(ValueError, match=message):
+    agent = vf.Agent(vf.AgentConfig(model="unused", runtime={"type": "prime"}))
+    task = HarborTask(vf.TaskData(prompt="unused"))
+    with pytest.raises(ValueError, match="Harbor task-local MCP"):
         if entrypoint == "run":
             await agent.run(task)
         else:

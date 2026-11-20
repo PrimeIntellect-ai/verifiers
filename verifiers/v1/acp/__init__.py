@@ -78,6 +78,8 @@ class ACPHarness(Harness[ConfigT]):
     """Harness backed by one live ACP process and native session per rollout."""
 
     async def setup(self, runtime: Runtime) -> None:
+        if runtime._remote_tools_only and runtime.user is None:
+            return
         await runtime.prepare_uv_script(
             ACP_SOURCE, {**self.config.resolved_env, "UV_FROZEN": "false"}
         )

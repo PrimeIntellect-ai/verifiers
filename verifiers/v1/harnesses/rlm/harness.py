@@ -186,17 +186,17 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
     SUPPORTS_SKILLS = True
-    SUPPORTS_SPLIT_EXECUTION = True
-    SUPPORTS_SPLIT_MCP = True
-    SUPPORTS_SPLIT_TOOL_INTERCEPTION = True
+    SUPPORTS_TOOL_INTERCEPTION = True
     _skills_install_dir: str | None = None
 
-    async def setup(self, runtime: Runtime) -> None:
-        if self.config.skills:
-            # Editable skill packages and uv's tool environment must belong to this run.
+    def _ensure_skills_dir(self, runtime: Runtime) -> None:
+        if self.config.skills and self._skills_install_dir is None:
             self._skills_install_dir = runtime.temp_path(
                 f"rlm-skills-{secrets.token_hex(16)}", env=self.config.resolved_env
             )
+
+    async def setup(self, runtime: Runtime) -> None:
+        self._ensure_skills_dir(runtime)
         await self._install(runtime, self.config.resolved_env)
         await super().setup(runtime)
 
@@ -246,20 +246,17 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
             label="rlm",
         )
 
-    def validate_split_execution(self) -> None:
-        super().validate_split_execution()
-        if self.config.skills:
-            raise ValueError("RLM split deployment supports builtin skills only")
-
     async def setup_execution(
         self, runtime: Runtime, workspace: Runtime, connection: ExecutionConnection
     ) -> None:
         # The native listener lives only inside B. A always uses the gated execution
         # connection; keeping the listener apart from that session lets detached
         # jobs survive until grading on every runtime.
+        self._ensure_skills_dir(runtime)
         await self._install(connection.setup_runtime, {})
         token = secrets.token_urlsafe(32)
         python = f"{self._install_dir()}/tools/rlm/bin/python"
+        home = self._skills_home()
         port = await connection.serve(
             workspace,
             [
@@ -271,7 +268,7 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
                 "--port",
                 "0",
             ],
-            {"RLM_EXECUTION_TOKEN": token},
+            {"RLM_EXECUTION_TOKEN": token, **({"RLM_HOME": home} if home else {})},
             re.compile(r"^listening on \S+:(\d+)$", re.MULTILINE),
             # A session that closes stops what is still attached to its kernel, as it
             # does colocated; a daemon the agent started outlives the harness.

@@ -159,8 +159,8 @@ class ExecutionConnection(ExecutionBridge):
     Workspace-local listeners can outlive a session for grading.
     """
 
-    def __init__(self, runtime: Runtime, *, setup_runtime: Runtime) -> None:
-        super().__init__(runtime, setup_runtime=setup_runtime)
+    def __init__(self, runtime: Runtime) -> None:
+        super().__init__(runtime)
         self._workers = WorkerGroup()
         self.transport: LanExecution | None = None
         self._abandon_on_close = False
@@ -285,6 +285,7 @@ class Deployment:
         borrowed_runtime: Runtime | None = None,
         harness_config: RuntimeConfig | None = None,
         execution_network: RuntimeConfig | None = None,
+        split: bool = False,
     ):
         self.backend = backend
         self.spec = spec
@@ -298,10 +299,13 @@ class Deployment:
         self.borrowed_runtime = borrowed_runtime
         self.harness_config = harness_config
         self.execution_network = execution_network or backend.config
+        self._split_requested = split
         self.control_routes: list[str] = []
         from verifiers.v1.runtimes.strategies import _deployment_strategy
 
-        self._strategy = _deployment_strategy(self.config, backend, spec, self.tool_vms)
+        self._strategy = _deployment_strategy(
+            self.config, backend, spec, self.tool_vms, split=split
+        )
         self.target_backends: dict[str, RuntimeBackend] = {}
         self.hosts: dict[str, str] = {}
         """LAN hostnames of native services or tool servers on their own VMs."""
@@ -356,7 +360,7 @@ class Deployment:
         """Bind split execution to one connection, independent of the runtime backend."""
         if not self.split:
             raise ValueError("only a split deployment connects its harness's tools")
-        connection = ExecutionConnection(workspace, setup_runtime=self.workspace)
+        connection = ExecutionConnection(workspace)
         if isinstance(self.execution_backend, PrimeBackend):
             from verifiers.v1.runtimes.private_network import lan_host
 

@@ -51,11 +51,7 @@ async def test_split_harness_workspace(run, harness, harness_runtime, monkeypatc
         "echo" if harness.id == "null" else "echo-agentic",
         harness=harness,
         runtime=harness_runtime,
-        env={
-            "agent": {
-                "deployment": {"mode": "split", "harness": {"cpu": 2, "memory": 4}}
-            }
-        },
+        env={"agent": {"deployment": {"harness": {"cpu": 2, "memory": 4}}}},
         max_turns=10,
         max_tokens=8192,
         rollout_timeout=300,
@@ -69,7 +65,6 @@ async def test_split_harness_workspace(run, harness, harness_runtime, monkeypatc
         assert (
             deployment.harness_backend.info.id != deployment.execution_backend.info.id
         )
-        await deployment.harness_backend.verify_stopped()
         await deployment.execution_backend.verify_stopped()
 
 
@@ -263,7 +258,6 @@ async def test_split_bash_boundary(tmp_path, monkeypatch, provider):
                 id="bash", env={"VF_SPLIT_ENV_SENTINEL": env_sentinel}
             ),
             runtime={"type": provider},
-            env={"agent": {"deployment": {"mode": "split"}}},
             client={"base_url": f"http://127.0.0.1:{port}/v1"},
             max_turns=6,
         )

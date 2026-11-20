@@ -93,15 +93,6 @@ class AgentConfig(BaseConfig):
         # resolve_agent fills every field before the config is recorded on a trace.
         return sampling.model_dump(exclude_unset=True) if sampling is not None else None
 
-    @model_validator(mode="after")
-    def _validate_deployment(self):
-        if self.deployment.mode == "split" and self.runtime.type not in (
-            "prime",
-            "docker",
-        ):
-            raise ValueError("split deployment requires Docker or Prime")
-        return self
-
     @model_validator(mode="before")
     @classmethod
     def _resolve_harness(cls, data):

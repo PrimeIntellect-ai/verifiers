@@ -4,6 +4,7 @@ export default {
   id: "execution-gate",
   name: "Execution gate",
   register(api) {
+    const native = new Set(__NATIVE_TOOLS__);
     api.on("before_tool_call", async (event) => {
       try {
         const response = await fetch(__URL__, {
@@ -21,7 +22,9 @@ export default {
         if (!response.ok) throw new Error(`tool gate returned HTTP ${response.status}`);
         const decision = await response.json();
         if (decision.action === "allow") {
-          if (__REMOTE_ONLY__) throw new Error("split execution returned a local allow");
+          if (__REMOTE_ONLY__ && native.has(event.toolName)) {
+            throw new Error("split execution returned a local allow");
+          }
           return;
         }
         if (decision.action !== "deny" && decision.action !== "stop") {

@@ -61,7 +61,6 @@ class BrowserUseHarness(Harness[BrowserUseHarnessConfig]):
     SUPPORTS_MCP = True
     SUPPORTS_RESUME = True
     SUPPORTS_TOOL_INTERCEPTION = True
-    SUPPORTS_SPLIT_EXECUTION = True
     # The browser tool executes model-authored Python through a third-party daemon.
     NEEDS_CONTAINER = True
 
@@ -76,7 +75,11 @@ class BrowserUseHarness(Harness[BrowserUseHarnessConfig]):
         state = f"/tmp/browser-session-{secrets.token_hex(16)}"
         args = await self._browser_args(runtime, state)
 
-        return RemoteToolsSpec(BrowserRemoteTools, {"program": [*program, *args]})
+        return RemoteToolsSpec(
+            BrowserRemoteTools,
+            {"program": [*program, *args]},
+            native_tools=frozenset({"browser"}),
+        )
 
     async def _browser_args(self, runtime: Runtime, state: str) -> list[str]:
         args = [f"--browser={self.config.browser}", f"--state-dir={state}"]

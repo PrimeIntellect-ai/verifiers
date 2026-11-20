@@ -27,8 +27,6 @@ class NullHarness(Harness[NullHarnessConfig]):
     SUPPORTS_MCP = True
     SUPPORTS_RESUME = True
     SUPPORTS_TOOL_INTERCEPTION = True
-    SUPPORTS_SPLIT_EXECUTION = True
-    SUPPORTS_SPLIT_MCP = True
     EXECUTES_CODE = False
     NEEDS_CONTAINER = False
 

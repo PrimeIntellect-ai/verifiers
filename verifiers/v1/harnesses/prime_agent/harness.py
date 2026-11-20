@@ -13,6 +13,7 @@ from verifiers.v1.harnesses.utils.remote_runtime import prepare_remote_bridge
 from verifiers.v1.harnesses.utils.replay import drop_blank_text
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.runtimes.base import _ENSURE_UV
+from verifiers.v1.runtimes.deployment import ExecutionConnection
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
 from verifiers.v1.types import Message
@@ -96,7 +97,6 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
     SUPPORTS_SKILLS = True
-    SUPPORTS_SPLIT_EXECUTION = True
 
     async def remote_tools(self, runtime: Runtime, data: TaskData) -> None:
         return None
@@ -160,15 +160,18 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
             lifecycle[LIFECYCLE_META_NAMESPACE] = statuses
         statuses.append(status)
 
+    async def setup_execution(
+        self, runtime: Runtime, workspace: Runtime, connection: ExecutionConnection
+    ) -> None:
+        await self._install(connection.setup_runtime, {})
+        connection.register(
+            "prime_agent",
+            [f"{self._kernel_venv()}/bin/python", "-m", "rlm.repl"],
+            {},
+        )
+
     async def setup(self, runtime: Runtime) -> None:
         await self._install(runtime, self.config.resolved_env)
-        if bridge := runtime._execution_bridge:
-            await self._install(bridge.setup_runtime, {})
-            bridge.register(
-                "prime_agent",
-                [f"{self._kernel_venv()}/bin/python", "-m", "rlm.repl"],
-                {},
-            )
         await super().setup(runtime)
 
     async def _install(self, runtime: Runtime, env: dict[str, str]) -> None:
@@ -328,10 +331,7 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
                 'if [ "$#" -eq 2 ] && [ "$1" = "-m" ] && [ "$2" = "rlm.repl" ]; then\n'
                 f"  exec {shlex.join(command)}\n"
                 "fi\n"
-                'if [ "$#" -eq 2 ] && [ "$1" = "-c" ]; then\n'
-                f'  exec {shlex.quote(self._kernel_venv() + "/bin/python")} "$@"\n'
-                "fi\n"
-                'echo "unsupported Prime Agent interpreter invocation" >&2\nexit 1\n'
+                f'exec {shlex.quote(self._kernel_venv() + "/bin/python")} "$@"\n'
             )
             await runtime.write(wrapper, source.encode())
             result = await runtime.run(["chmod", "700", wrapper], {})

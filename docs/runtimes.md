@@ -47,7 +47,7 @@ Timeouts and token budgets can be tuned at evaluation time under `env.agent`:
 
 ## Execution users
 
-On `docker` and `prime`, you can set `TaskData.agent_user` to run the agent under an existing non-root user account in the container image (with a writable home directory). Task `setup` still runs as the container's default user, after which a colocated harness and its tools execute as `agent_user`. In split mode, tools execute as `agent_user` in the workspace while the harness runs separately. Once the agent finishes, `finalize`, scoring, and artifact collection switch back to the default user.
+On `docker` and `prime`, you can set `TaskData.agent_user` to run the agent's tools under an existing non-root user account in the container image (with a writable home directory). Task `setup` runs as the container's default user, tools execute as `agent_user` in the workspace while the harness runs in its own sandbox, and `finalize`, scoring, and artifact collection switch back to the default user.
 
 Calling `runtime.with_user(...)` or `runtime.with_env(...)` returns an independent view over the same underlying resource without mutating existing views. Under the hood, a `RuntimeBackend` (such as `DockerBackend` or `PrimeBackend`) owns the provider lifecycle, including container startup, network policy, and teardown; `backend.bind()` creates a `Runtime` view without provisioning a new resource, and `runtime.backend` exposes the backend when explicit infrastructure operations are needed. `Agent.provision()` lends a runtime whose cleanup remains owned by the caller's context.
 
@@ -189,15 +189,15 @@ expect `sh` and Python 3 in the runtime's default image.
 
 A `Deployment` coordinates all execution resources for a single rollout attempt: provisioning, placement, connectivity, and cleanup of the harness environment, the task workspace, supporting sidecar services, and fresh verification targets.
 
-The **workspace** (`deployment.workspace`) is the `Runtime` where task commands run and task files live; setting `agent.deployment.mode = "colocated"` places the harness inside that same workspace. Toolsets run in their own runtimes or named task services.
+The **workspace** (`deployment.workspace`) is the `Runtime` where task commands run and task files live. Toolsets run in their own runtimes or named task services.
 
-Setting `agent.deployment.mode = "split"` on Docker or Prime provisions a separate sandbox for the harness. All built-in harnesses support core split execution. Task setup, tools, finalization, artifacts, and scoring use the workspace; the model loop and interception credential stay in the harness sandbox. The workspace keeps the task's network rules with framework control endpoints excluded. Traces record both `agent.runtime` and `agent.harness_runtime`.
+On Docker and Prime, rollouts automatically provision a separate sandbox for the harness alongside the workspace. Task setup, tools, finalization, artifacts, and scoring use the workspace; the model loop and interception credential stay in the harness sandbox. The workspace keeps the task's network rules with framework control endpoints excluded. Traces record both `agent.runtime` and `agent.harness_runtime`.
 
-On Prime, the harness VM joins the rollout's private LAN alongside the workspace, Compose or `ServicesSpec` services, and separate tool VMs. It can initiate connections to the workspace and tool servers; task VMs cannot initiate connections to it. Configure its image and resources with `agent.deployment.harness` (1 CPU and 2 GB by default). Tool execution uses the same connection and process contract on Prime and Docker, with native workers or harness-specific adapters. The connection automatically selects LAN on Prime and the host relay on Docker. Native clients and tool adapters both run in the harness VM, register through the evaluator, and then carry workspace commands and process I/O directly over LAN. The evaluator authorizes adapter calls and pins their returned results; it does not execute adapter logic or relay their workspace I/O. Each endpoint is limited to one registered process and receives no model or evaluator credential. Interception stays on the evaluator, and request policies do not select a different transport. Closing RLM's execution session stops attached jobs while detached jobs remain available for grading; its workspace-local listener remains available until workspace teardown.
+On Prime, pooled harness VMs are shared across up to `agent.deployment.multiplex` concurrent rollouts (default 8, up to 32) and join each rollout's private LAN alongside the workspace, Compose or `ServicesSpec` services, and separate tool VMs. A harness VM can initiate connections to the workspace and tool servers; task VMs cannot initiate connections to it. Configure its image and resources with `agent.deployment.harness` (2 CPU and 4 GB by default). Tool execution uses the same connection and process contract on Prime and Docker, with native workers or harness-specific adapters. The connection automatically selects LAN on Prime and the host relay on Docker. Native clients and tool adapters both run in the harness VM, register through the evaluator, and then carry workspace commands and process I/O directly over LAN. The evaluator authorizes adapter calls and pins their returned results; it does not execute adapter logic or relay their workspace I/O. Each endpoint is limited to one registered process and receives no model or evaluator credential. Interception stays on the evaluator, and request policies do not select a different transport. Closing RLM's execution session stops attached jobs while detached jobs remain available for grading; its workspace-local listener remains available until workspace teardown.
 
 ```toml
 [env.agent.deployment]
-mode = "split"
+multiplex = 8
 harness = { cpu = 2, memory = 4 }
 ```
 
@@ -219,9 +219,9 @@ async with vf.prime_controller(evaluate, vf.PrimeConfig(cpu=2, memory=4)) as con
     )
 ```
 
-Use a Prime split deployment in the agent config. An environment can borrow the same server with `env.serving(interception=interception)`. The program and its dependencies run with evaluator privileges. Keep its package, image and checkpoints under the evaluator operator's control.
+An environment can borrow the same server with `env.serving(interception=interception)`. The program and its dependencies run with evaluator privileges. Keep its package, image and checkpoints under the evaluator operator's control.
 
-Docker uses the evaluator's configured image for the harness, without task environment or mounts, and a host bridge for native workers. Docker split deployments require a single workspace without bind mounts or separate tool VMs. Split deployments cannot borrow runtimes or colocate task MCP servers. See [split harness execution](harnesses.md#split-execution) for harness-specific limits.
+Docker uses the evaluator's configured image for the harness, without task environment or mounts, and a host bridge for native workers. Borrowed runtimes (`agent.run(task, runtime=...)`) and local Docker Compose or bind-mount tasks execute directly in their target container. See [split harness execution](harnesses.md#split-execution) for harness-specific details.
 
 On Prime, return a `ServicesSpec` from `deployment_spec()` to provision one native VM per named service beside the task's `main` workspace. Each service has its own image, resources, filesystem, and egress policy. The VMs join a private LAN for the rollout; they can call each other and the workspace through the names in `deployment.hosts`. Services bind to `0.0.0.0`, since each VM has its own loopback interface. No Docker daemon runs inside these VMs.
 

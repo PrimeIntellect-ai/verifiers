@@ -53,13 +53,6 @@ class Harness(ABC, Generic[ConfigT]):
     `tool_interception_url`) before executing each tool call, so a request hook can
     deny a call and the model sees the policy's result in its place. Without the gate
     a pre-execution rewrite can only end the rollout."""
-    SUPPORTS_SPLIT_EXECUTION: ClassVar[bool] = False
-    """Whether model-controlled tools run in B through remote tool results or a
-    native worker transport, with no local execution fallback in A."""
-    SUPPORTS_SPLIT_TOOL_INTERCEPTION: ClassVar[bool] = False
-    """Whether split mode supplies a tool gate absent from colocated execution."""
-    SUPPORTS_SPLIT_MCP: ClassVar[bool] = False
-    """Whether split execution preserves the harness's native MCP client."""
     SUPPORTS_RESUME: ClassVar[bool] = False
     """Whether the default `resume()` can relaunch this harness from the
     accumulated Messages transcript."""
@@ -127,6 +120,15 @@ class Harness(ABC, Generic[ConfigT]):
             )
         return system, prompt
 
+    @property
+    def uses_split_sandbox(self) -> bool:
+        """Whether this harness runs in a dedicated split sandbox on Docker/Prime."""
+        return (
+            not self.EXECUTES_CODE
+            or type(self).remote_tools is not Harness.remote_tools
+            or type(self).setup_execution is not Harness.setup_execution
+        )
+
     async def setup(self, runtime: Runtime) -> None:
         """Provision this harness through `runtime` before its execution timeout starts."""
 
@@ -135,22 +137,14 @@ class Harness(ABC, Generic[ConfigT]):
     ) -> RemoteToolsSpec | None:
         """Prepare an adapter to run in A against B. Native workers return None and register
         their workspace commands with the connection in setup_execution()."""
-        self.validate_split_execution()
         return None
 
     def can_gate_tool(self, call: ToolCall) -> bool:
         """Whether this native call can consume a policy replacement at its gate."""
-        return self.SUPPORTS_TOOL_INTERCEPTION or self.SUPPORTS_SPLIT_TOOL_INTERCEPTION
+        return self.SUPPORTS_TOOL_INTERCEPTION
 
     def check_tool_call(self, call: ToolCall, *, intercepted: bool) -> None:
         """Refuse native modes whose execution cannot satisfy the active policy."""
-
-    def validate_split_execution(self) -> None:
-        """Reject a split deployment this harness cannot run before provisioning."""
-        if not self.SUPPORTS_SPLIT_EXECUTION:
-            raise ValueError(
-                f"harness {self.config.id!r} does not support split deployment"
-            )
 
     async def setup_execution(
         self, runtime: Runtime, workspace: Runtime, connection: ExecutionConnection
@@ -162,10 +156,49 @@ class Harness(ABC, Generic[ConfigT]):
 
     async def install_skills(self, runtime: Runtime, dest: str) -> None:
         """Install `config.skills` in the program's discovery directory.
-        Runtime roots are copied in place; host skill folders are uploaded."""
+        Runtime roots are copied in place (or bridged from the split workspace);
+        host skill folders are uploaded."""
+        bridge = getattr(runtime, "_execution_bridge", None)
         for skill in self.config.skills:
             target_dir = skill_destination(skill, dest)
             if isinstance(skill, dict):
+                if bridge is not None:
+                    archived = await bridge.runtime.run(
+                        [
+                            "sh",
+                            "-e",
+                            "-c",
+                            '[ -d "$1" ] && tar -C "$1" -cf - . | base64',
+                            "vf-skills",
+                            skill["runtime"],
+                        ],
+                        {},
+                    )
+                    if archived.exit_code:
+                        raise RuntimeError(
+                            f"installing runtime skills from {skill['runtime']!r} failed: {archived.stderr}"
+                        )
+                    archive_path = runtime.temp_path(
+                        f"vf-skills-{os.urandom(8).hex()}.tar.b64"
+                    )
+                    await runtime.write(archive_path, archived.stdout.encode())
+                    extracted = await runtime.run(
+                        [
+                            "sh",
+                            "-e",
+                            "-c",
+                            'mkdir -p -- "$2" && base64 -d < "$1" | tar -xpf - -C "$2"; rm -f -- "$1"',
+                            "vf-skills",
+                            archive_path,
+                            target_dir,
+                        ],
+                        {},
+                    )
+                    if extracted.exit_code:
+                        raise RuntimeError(
+                            f"installing runtime skills from {skill['runtime']!r} failed: {extracted.stderr}"
+                        )
+                    continue
                 result = await runtime.run(
                     [
                         "sh",
@@ -332,7 +365,6 @@ copy_failed=$(
         kwargs = (
             {"tool_interception_url": tool_interception_url}
             if self.SUPPORTS_TOOL_INTERCEPTION
-            or (runtime._remote_tools_only and self.SUPPORTS_SPLIT_TOOL_INTERCEPTION)
             else {}
         )
         return await self.launch(
@@ -430,10 +462,6 @@ class HarnessSession:
             kwargs = (
                 {"tool_interception_url": self.tool_interception_url}
                 if self.harness.SUPPORTS_TOOL_INTERCEPTION
-                or (
-                    self.runtime._remote_tools_only
-                    and self.harness.SUPPORTS_SPLIT_TOOL_INTERCEPTION
-                )
                 else {}
             )
             return await self.harness.launch(

@@ -34,9 +34,9 @@ class ExecutionBridge:
     the rollout capability. Request receipts retain destructive reads across retries.
     """
 
-    def __init__(self, runtime: Runtime, *, setup_runtime: Runtime | None = None):
+    def __init__(self, runtime: Runtime):
         self.runtime = runtime
-        self.setup_runtime = setup_runtime or runtime
+        self.setup_runtime = runtime.with_user(None)
         self.commands: dict[str, tuple[list[str], dict[str, str]]] = {}
         self.workers: dict[str, _Worker] = {}
         self._prewarmed: dict[str, list[RuntimeProcess]] = {}

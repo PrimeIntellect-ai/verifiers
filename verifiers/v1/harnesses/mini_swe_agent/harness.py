@@ -26,8 +26,7 @@ class MiniSWEAgentHarnessConfig(HarnessConfig):
 class MiniSWEAgentHarness(Harness[MiniSWEAgentHarnessConfig]):
     APPENDS_SYSTEM_PROMPT = False
     SUPPORTS_MCP = False
-    SUPPORTS_SPLIT_EXECUTION = True
-    SUPPORTS_SPLIT_TOOL_INTERCEPTION = True
+    SUPPORTS_TOOL_INTERCEPTION = True
 
     def _source(self) -> str:
         return PROGRAM_SOURCE.replace("{version}", self.config.version).replace(

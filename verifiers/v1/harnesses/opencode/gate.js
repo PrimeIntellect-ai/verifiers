@@ -38,11 +38,20 @@ export default {
       request.on("error", reject);
       request.end(JSON.stringify({ tool_call_id: id, name, arguments: input }));
     })).pipe(Effect.orDie);
+    const native = new Set(ctx.options.nativeTools ?? []);
     if (ctx.options.remote) {
       // Hooks also cover executors added or overwritten by later plugins. A
       // denial is a normal native tool error; verifiers pins the actual remote
       // ToolMessage when the transcript crosses the next model boundary.
       yield* ctx.tool.hook("execute.before", Effect.fn(function* (event) {
+        if (native.size > 0 && !native.has(event.tool)) {
+          const verdict = yield* gate(event.id, event.tool, event.input);
+          if (verdict.action === "allow") return;
+          const content = verdict.message?.content;
+          return yield* Effect.fail(new ToolError({
+            message: typeof content === "string" ? content : JSON.stringify(content),
+          }));
+        }
         const verdict = yield* gate(event.id, event.tool, event.input);
         if (verdict.action !== "deny") {
           return yield* Effect.die(new Error("Split tool gate did not return a remote result"));
@@ -67,7 +76,7 @@ export default {
               }
               return { content };
             }
-            if (verdict.action !== "allow" || ctx.options.remote) {
+            if (verdict.action !== "allow" || (ctx.options.remote && native.has(registered.id))) {
               return yield* Effect.die(new Error("Split tool gate did not return a remote result"));
             }
             return yield* execute(input, context);
