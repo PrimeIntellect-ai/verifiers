@@ -14,6 +14,7 @@ import certifi
 import httpx
 from openai import (
     APIConnectionError,
+    APIError,
     APIStatusError,
     AsyncOpenAI,
     DefaultAsyncHttpxClient,
@@ -24,7 +25,7 @@ from pydantic import AnyHttpUrl, ValidationError
 from tenacity import (
     AsyncRetrying,
     before_sleep_log,
-    retry_if_exception_type,
+    retry_if_exception,
     stop_after_attempt,
     wait_random_exponential,
 )
@@ -278,6 +279,15 @@ def _accumulate_streamed_message(accumulated: dict, delta: dict) -> None:
             reasoning_details.append(dict(detail))
 
 
+def _retryable_stream_error(error: BaseException) -> bool:
+    if isinstance(error, (APIConnectionError, httpx.TransportError)):
+        return True
+    if isinstance(error, APIError) and isinstance(error.body, dict):
+        status = error.body.get("code")
+        return isinstance(status, int) and (status == 429 or status >= 500)
+    return False
+
+
 async def chat(
     client: AsyncOpenAI,
     model: str,
@@ -293,7 +303,7 @@ async def chat(
         kwargs["tool_choice"] = tool_choice
     try:
         async for attempt in AsyncRetrying(
-            retry=retry_if_exception_type((APIConnectionError, httpx.TransportError)),
+            retry=retry_if_exception(_retryable_stream_error),
             stop=stop_after_attempt(client.max_retries + 1),
             wait=wait_random_exponential(multiplier=0.5, max=8.0),
             before_sleep=before_sleep_log(logging.getLogger(__name__), logging.WARNING),
@@ -313,7 +323,9 @@ async def chat(
             # The SDK retries request setup; only stream consumption is retried here.
             with attempt:
                 return await _read_chat_completion(raw_stream)
-    except (APIConnectionError, httpx.TransportError) as error:
+    except (APIError, httpx.TransportError) as error:
+        if not _retryable_stream_error(error):
+            raise
         # Preserve the original transport error in stderr for the host's diagnostic.
         traceback.print_exc()
         raise SystemExit(MODEL_TRANSPORT_ERROR_EXIT_CODE) from error
