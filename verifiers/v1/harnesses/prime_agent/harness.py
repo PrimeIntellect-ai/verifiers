@@ -34,6 +34,46 @@ LIFECYCLE_META_NAMESPACE = "ai.primeintellect.prime-agent"
 KEY_VAR = "PRIME_AGENT_INTERCEPT_KEY"
 ENV_AGENT_DIR = "PRIME_AGENT_CODING_AGENT_DIR"
 
+_SPLIT_KERNEL_SHIM = r"""
+import rlm, rlm.mcp as _mcp, rlm.repl as _repl
+
+async def _list_tools(server: str):
+    return (await rlm.host_request("mcp.tools", {"server": server}))["tools"]
+
+async def _call_tool(server: str, tool: str, arguments=None):
+    return (await rlm.host_request("mcp.call", {"server": server, "tool": tool, "arguments": arguments or {}}))["value"]
+
+async def _describe_tool(connection_id: str, tool: str):
+    for item in await _list_tools(connection_id):
+        if item.get("name") == tool:
+            return item
+    raise KeyError(f"MCP server '{connection_id}' has no tool '{tool}'")
+
+async def _search_tools(query: str, connection_id=None, limit: int = 20):
+    q = query.strip().lower()
+    conns = [connection_id] if connection_id else [c["connectionId"] for c in await _mcp.list_connections()]
+    found, searched, unavailable = [], [], []
+    for cid in conns:
+        try:
+            items = await _list_tools(cid)
+        except Exception as exc:
+            if connection_id:
+                raise
+            unavailable.append({"connectionId": cid, "error": str(exc)})
+            continue
+        searched.append(cid)
+        for t in items:
+            if q in t.get("name", "").lower() or q in t.get("description", "").lower():
+                found.append({"connectionId": cid, "name": t.get("name"), "description": t.get("description", "")})
+    return {"tools": found[:limit], "searched": searched, "unavailable": unavailable, "truncated": len(found) > limit}
+
+_mcp.list_tools = _list_tools
+_mcp.call_tool = _call_tool
+_mcp.describe_tool = _describe_tool
+_mcp.search_tools = _search_tools
+_repl.main()
+"""
+
 
 INSTALL = (
     "set -e\n"
@@ -67,7 +107,9 @@ with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tf:
     mv "$download_dir/bin" "$prefix/bin"
 fi
 # Let the released binary validate the kernel cache and prepare its Python runtime.
-"$prefix/bin/prime-agent" --prime-agent-bootstrap
+# Set HOME inside the shared install dir so uv's managed Python (when bootstrap clears
+# UV_PYTHON_INSTALL_DIR) lands under $AGENT_PRIME_AGENT_DIR instead of /root (0700).
+HOME="$AGENT_PRIME_AGENT_DIR/home" "$prefix/bin/prime-agent" --prime-agent-bootstrap
 # Bootstrap installs only the runtime; sessions also import the bundled Python skills.
 set --
 for pyproject in "$prefix/bin/skills/"*/pyproject.toml; do
@@ -166,7 +208,14 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
         await self._install(connection.runtime, {})
         connection.register(
             "prime_agent",
-            [f"{self._kernel_venv()}/bin/python", "-m", "rlm.repl"],
+            [
+                f"{self._kernel_venv()}/bin/python",
+                "-P",
+                "-s",
+                "-u",
+                "-c",
+                _SPLIT_KERNEL_SHIM,
+            ],
             {},
         )
 
@@ -235,6 +284,9 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
                 f"prime-agent state directory failed: {created.stderr.strip()[-500:]}"
             )
         await self.install_skills(runtime, skills_dir)
+        if runtime._execution_bridge is not None and self.config.skills:
+            # Prime Agent puts skill file paths in its system prompt for the kernel to read.
+            await self.install_skills(runtime._execution_bridge.runtime, skills_dir)
         reasoning = ctx.sampling.reasoning_effort not in (
             None,
             "none",
@@ -308,6 +360,7 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
 
         env = self._env(trace, secret)
         cwd = None
+        bridge_mcp_urls = mcp_urls
         if runtime._execution_bridge is not None:
             cwd = runtime._execution_bridge.runtime.info.workdir
             # The supervisor launches its interpreter with the session cwd.
@@ -315,12 +368,28 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
             created = await runtime.run(["mkdir", "-p", cwd], {})
             if created.exit_code:
                 raise RuntimeError("could not prepare Prime Agent supervisor cwd")
+            mcp_configs = None
+            if mcp_urls:
+                mcp_headers = self.config.resolve_mcp_headers(mcp_urls)
+                mcp_configs = {
+                    name: {
+                        "type": "http",
+                        "url": str(url),
+                        "headers": mcp_headers.get(name, {}),
+                        "credentialSource": "acp",
+                    }
+                    for name, url in mcp_urls.items()
+                }
+                # Forward MCP configs directly to the split bridge in A instead of B.
+                bridge_mcp_urls = {}
             command = await prepare_remote_bridge(
                 runtime,
                 f"{endpoint.removesuffix('/v1')}/execution",
                 secret,
                 "prime_agent",
                 protocol="prime",
+                mcp_configs=mcp_configs,
+                python=f"{self._kernel_venv()}/bin/python",
             )
             # The pinned supervisor uses this interpreter for trusted import
             # probes and starts every user cell with `-m rlm.repl`.
@@ -355,6 +424,7 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
                 *args,
             ],
             prompt=prompt,
+            mcp_urls=bridge_mcp_urls,
         )
 
     async def cleanup(self, trace: Trace, runtime: Runtime) -> None:

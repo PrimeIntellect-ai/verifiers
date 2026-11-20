@@ -167,6 +167,7 @@ REMOTE_RUNTIME_SOURCE = (
     CLIENT_SOURCE
     + r"""
 import argparse
+import asyncio
 import base64
 import json
 import os
@@ -184,8 +185,10 @@ parser.add_argument("--secret", required=True)
 parser.add_argument("--worker", required=True)
 parser.add_argument("--protocol", choices=("raw", "rlm", "prime", "codex"), default="raw")
 parser.add_argument("--tool-url", default="")
+parser.add_argument("--mcp-configs", default="")
 parser.add_argument("--endpoint-file", default="")
 args = parser.parse_args()
+mcp_configs = json.loads(args.mcp_configs) if args.mcp_configs else {}
 process_id = uuid.uuid4().hex
 execution_url, execution_secret = args.url, args.secret
 execution_opener = urllib.request.build_opener()
@@ -230,6 +233,130 @@ def frames(buffer):
         del buffer[:size + 4]
         yield packet
 
+class _PrimeMCPBridge:
+    # Supervisor-side MCP client for split Prime Agent sessions (runs inside A).
+
+    def __init__(self, configs):
+        self._configs = configs
+        self._lock = threading.Lock()
+        self._loop = None
+        self._sessions = {}
+
+    def _ensure_loop(self):
+        with self._lock:
+            if self._loop is None:
+                loop = asyncio.new_event_loop()
+                threading.Thread(target=loop.run_forever, daemon=True).start()
+                self._loop = loop
+            return self._loop
+
+    async def _session(self, server):
+        if server in self._sessions:
+            return self._sessions[server]
+        cfg = self._configs.get(server)
+        if not cfg:
+            raise KeyError(f"MCP server '{server}' is not declared in user settings")
+        import contextlib
+        import inspect
+        from mcp import ClientSession
+        from rlm.mcp_base import _resolve_streamable_http
+
+        stack = contextlib.AsyncExitStack()
+        try:
+            transport = _resolve_streamable_http()
+            headers = dict(cfg.get("headers") or {})
+            url = cfg["url"]
+            if "headers" in inspect.signature(transport).parameters:
+                streams = await stack.enter_async_context(transport(url, headers=headers))
+            else:
+                import httpx2
+
+                hc = await stack.enter_async_context(
+                    httpx2.AsyncClient(
+                        headers=headers,
+                        timeout=httpx2.Timeout(30.0, read=600.0),
+                        follow_redirects=False,
+                    )
+                )
+                streams = await stack.enter_async_context(transport(url, http_client=hc))
+            session = await stack.enter_async_context(
+                ClientSession(streams[0], streams[1], read_timeout_seconds=600.0)
+            )
+            await session.initialize()
+            tools = {}
+            cursor = None
+            while True:
+                if cursor is None:
+                    resp = await session.list_tools()
+                else:
+                    from mcp.types import PaginatedRequestParams
+
+                    resp = await session.list_tools(params=PaginatedRequestParams(cursor=cursor))
+                for tool in getattr(resp, "tools", None) or ():
+                    name = getattr(tool, "name", None)
+                    if isinstance(name, str):
+                        schema = getattr(tool, "input_schema", None)
+                        if schema is None:
+                            schema = getattr(tool, "inputSchema", None)
+                        tools[name] = {
+                            "name": name,
+                            "description": getattr(tool, "description", "") or "",
+                            "inputSchema": schema if isinstance(schema, dict) else {},
+                        }
+                cursor = getattr(resp, "next_cursor", None) or getattr(resp, "nextCursor", None)
+                if not cursor:
+                    break
+            entry = (stack, session, tools)
+            self._sessions[server] = entry
+            return entry
+        except BaseException:
+            await stack.aclose()
+            raise
+
+    async def _handle(self, req_type, req_data):
+        if req_type == "mcp.list_connections":
+            return {
+                "connections": [
+                    {"connectionId": n, "label": n, "service": n, "status": "connected"}
+                    for n in self._configs
+                ]
+            }
+        if req_type in ("mcp.list_plugins", "mcp.search_plugins"):
+            return {"plugins": [], "nextCursor": None}
+        server = req_data.get("server")
+        if not isinstance(server, str) or not server:
+            raise ValueError("MCP request requires server")
+        _, session, tools = await self._session(server)
+        if req_type == "mcp.tools":
+            return {"tools": list(tools.values())}
+        if req_type == "mcp.call":
+            from rlm.mcp_base import _parse_result
+
+            tool = req_data.get("tool")
+            if tool not in tools:
+                raise KeyError(f"MCP server '{server}' has no tool '{tool}'")
+            res = await session.call_tool(tool, req_data.get("arguments") or {})
+            return {"value": _parse_result(res)}
+        raise RuntimeError("Supervisor callbacks are unavailable in split execution")
+
+    def dispatch(self, req_id, req_type, req_data):
+        def run():
+            try:
+                fut = asyncio.run_coroutine_threadsafe(
+                    self._handle(req_type, req_data), self._ensure_loop()
+                )
+                reply_data = {"status": "ok", "result": fut.result(timeout=630)}
+            except Exception as exc:
+                reply_data = {"status": "error", "error": f"{type(exc).__name__}: {exc}"}
+            reply = {"type": "host_reply", "id": req_id, "data": reply_data}
+            rpc("write", data=base64.b64encode((json.dumps(reply) + "\n").encode()).decode())
+
+        threading.Thread(target=run, daemon=True).start()
+
+
+prime_mcp = _PrimeMCPBridge(mcp_configs) if mcp_configs else None
+
+
 def prime_output(buffer):
     while b"\n" in buffer:
         at = buffer.index(b"\n")
@@ -237,10 +364,27 @@ def prime_output(buffer):
         del buffer[:at + 1]
         message = json.loads(packet)
         if message.get("event") == "host_request":
+            req_data = message.get("data") or {}
+            req_type = req_data.get("type", "")
+            if prime_mcp is not None and req_type in (
+                "mcp.tools",
+                "mcp.call",
+                "mcp.list_connections",
+                "mcp.list_plugins",
+                "mcp.search_plugins",
+            ):
+                prime_mcp.dispatch(message["id"], req_type, req_data)
+                continue
             # The kernel is arbitrary task code. It cannot drive the supervisor's
-            # model, filesystem, harness-state, MCP, or delegation callbacks.
-            reply = {"type": "host_reply", "id": message["id"], "data": {
-                "status": "error", "error": "Supervisor callbacks are unavailable in split execution"}}
+            # model, filesystem, harness-state, or delegation callbacks.
+            reply = {
+                "type": "host_reply",
+                "id": message["id"],
+                "data": {
+                    "status": "error",
+                    "error": "Supervisor callbacks are unavailable in split execution",
+                },
+            }
             rpc("write", data=base64.b64encode((json.dumps(reply) + "\n").encode()).decode())
             continue
         if message.get("event") == "display":
@@ -447,6 +591,8 @@ async def prepare_remote_bridge(
     *,
     protocol: str = "raw",
     tool_url: str = "",
+    mcp_configs: dict[str, dict] | None = None,
+    python: str | None = None,
 ) -> list[str]:
     """Configure the stdlib execution client in A; only its host registry chooses B's command.
 
@@ -455,7 +601,9 @@ async def prepare_remote_bridge(
     """
     import uuid as _uuid
 
-    python_task = asyncio.create_task(runtime.resolve_python())
+    python_task = (
+        None if python is not None else asyncio.create_task(runtime.resolve_python())
+    )
     endpoint_file = ""
     bridge = getattr(runtime, "_execution_bridge", None)
     if bridge is not None and worker in bridge.commands:
@@ -465,10 +613,12 @@ async def prepare_remote_bridge(
                 f"vf-lan-{worker}-{_uuid.uuid4().hex}.json"
             )
             await runtime.write(endpoint_file, json.dumps(endpoint).encode())
-    python = await python_task
+    resolved_python = python if python is not None else await python_task
+    assert resolved_python is not None
     args = [
-        python,
-        "-I",
+        resolved_python,
+        "-P",
+        "-s",
         "-u",
         "-c",
         REMOTE_RUNTIME_SOURCE,
@@ -478,6 +628,8 @@ async def prepare_remote_bridge(
         f"--protocol={protocol}",
         f"--tool-url={tool_url}",
     ]
+    if mcp_configs:
+        args.append(f"--mcp-configs={json.dumps(mcp_configs)}")
     if endpoint_file:
         args.append(f"--endpoint-file={endpoint_file}")
     return args

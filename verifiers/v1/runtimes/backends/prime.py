@@ -574,19 +574,23 @@ class PrimeBackend(RuntimeBackend):
                     entries = list(dict.fromkeys([*hosts, *config.allow]))
                     validate_egress_lists(entries, None)
                     policy = {"allow": entries} if entries else {"deny": ["*"]}
-            status = await self._client.set_network(self.info.id, **policy)
-            try:
-                async with asyncio.timeout(60):
-                    delay = 0.1
-                    while not status.applied:
-                        await asyncio.sleep(delay)
-                        delay = min(delay * 1.5, 0.75)
-                        status = await self._client.get_network(self.info.id)
-            except TimeoutError as e:
-                raise SandboxError(
-                    "prime egress policy was not applied within 60s on sandbox "
-                    f"{self.info.id}; refusing to start the agent unrestricted"
-                ) from e
+            for attempt in range(2):
+                status = await self._client.set_network(self.info.id, **policy)
+                try:
+                    async with asyncio.timeout(45):
+                        delay = 0.1
+                        while not status.applied:
+                            await asyncio.sleep(delay)
+                            delay = min(delay * 1.5, 0.75)
+                            status = await self._client.get_network(self.info.id)
+                    break
+                except TimeoutError as e:
+                    if attempt == 0:
+                        continue
+                    raise SandboxError(
+                        "prime egress policy was not applied within 90s on sandbox "
+                        f"{self.info.id}; refusing to start the agent unrestricted"
+                    ) from e
         except SandboxError:
             raise
         except Exception as e:
