@@ -26,6 +26,8 @@ touch "$AGENT_DEEPSEEK_DIR/.ready"
 
 
 class DeepSeekHarnessConfig(HarnessConfig):
+    """Config for the DeepSeek harness."""
+
     # The `deepseek-official` route speaks Anthropic messages:
     # https://github.com/deepseek-ai/deepseek-harness/blob/dsh-v0.2.2-rc.1/packages/llm/llm-deepseek/src/messages-api.ts#L14-L17
     dialect: Literal["anthropic_messages"] = "anthropic_messages"
@@ -34,6 +36,8 @@ class DeepSeekHarnessConfig(HarnessConfig):
 
 
 class DeepSeekHarness(ACPHarness[DeepSeekHarnessConfig]):
+    """Run DeepSeek's coding agent through its ACP bridge."""
+
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
     SUPPORTS_TOOL_INTERCEPTION = True

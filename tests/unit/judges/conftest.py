@@ -55,7 +55,7 @@ def fake_judge_model(monkeypatch):
             kwargs = {"model": self.config.model, "messages": wire}
             kwargs.update(sampling)
             trace.record_judge_call(
-                name=self.reward_name,
+                name=self._reward_name,
                 request={"model": kwargs["model"], "messages": kwargs["messages"]},
                 response=response,
             )

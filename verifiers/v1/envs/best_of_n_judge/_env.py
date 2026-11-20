@@ -123,15 +123,17 @@ class RankTask(vf.Task):
     def __init__(self, data: vf.TaskData, labels: dict[str, vf.Trace]) -> None:
         super().__init__(data)
         self.labels = labels
+        """Each attempt's trace, keyed by its shuffled label."""
 
     @staticmethod
-    def record(attempt: vf.Trace) -> bytes:
+    def _record(attempt: vf.Trace) -> bytes:
         # This snapshot is evidence for verification, not its final outcome.
         return attempt.to_json(
             exclude={"ok": True, "nodes": {"__all__": {"message": HIDDEN_REASONING}}}
         )
 
     async def setup(self, trace: vf.Trace, runtime: vf.Runtime) -> None:
+        """Upload every attempt's record and artifacts under its label."""
         # Archive bytes are the attempts': confine every member to its declared
         # root before anything lands in the judge's box.
         for attempt in self.labels.values():
@@ -140,7 +142,7 @@ class RankTask(vf.Task):
         await runtime.run(["rm", "-rf", ATTEMPTS_DIR, VERDICT_FILE], env={})
         for label, attempt in self.labels.items():
             root = f"{ATTEMPTS_DIR}/{label}"
-            await runtime.write(f"{root}/trace.json", self.record(attempt))
+            await runtime.write(f"{root}/trace.json", self._record(attempt))
             for source, archive in attempt.state.artifacts.items():
                 if archive is None:
                     continue
@@ -193,30 +195,33 @@ class RankTaskConfig(vf.BaseConfig):
     """Optional hints, with the same inline/file forms as `prompt`, injected as
     their own section."""
 
-    def build_policy(self) -> str:
+    def _build_policy(self) -> str:
         if self.prompt is None:
             return RANK_PROMPT
         return JudgeTaskConfig._resolve(self.prompt)
 
-    def build_hint(self) -> str | None:
+    def _build_hint(self) -> str | None:
         return JudgeTaskConfig._resolve(self.hint) if self.hint is not None else None
 
     def build_prompt(self, task: vf.TaskData, labels: list[str]) -> str:
+        """Return the judge's prompt for ranking the labelled attempts."""
         statement = "\n\n".join(
             text for text in (task.system_prompt, task.prompt_text) if text
         )
-        template = self.build_policy()
+        template = self._build_policy()
         body = template.replace("{prompt}", statement)
         if "{prompt}" not in template:
             # A policy that doesn't place the task statement itself still needs it.
             body += "\n\n## The task the attempts were given\n\n" + statement
         sections = [body, _verdict_section(labels), WORKSPACE_NOTE]
-        if (hint := self.build_hint()) is not None:
+        if (hint := self._build_hint()) is not None:
             sections.insert(1, HINT_SECTION.replace("{hint}", hint))
         return "\n\n".join(sections)
 
 
 class BestOfNJudgeEnvConfig(BestOfNEnvConfig):
+    """Config for the best-of-n-judge env."""
+
     n: int = Field(4, ge=2)
     """Independent attempts per episode, ranked against each other."""
     judge: vf.AgentConfig = vf.AgentConfig()
@@ -224,17 +229,22 @@ class BestOfNJudgeEnvConfig(BestOfNEnvConfig):
     judges: int = Field(1, ge=1)
     """Independent judges per episode (the ensemble); each ranks its own shuffle."""
     task: RankTaskConfig = RankTaskConfig()
+    """The judges' task: ranking policy and hints."""
     score: ScoreConfig = ScoreConfig()
+    """How the judge score combines with the taskset's own rewards."""
 
 
 class BestOfNJudgeEnv(BestOfNEnv, vf.Env[BestOfNJudgeEnvConfig]):
+    """Run n attempts and rank them with agentic judges."""
+
     config: BestOfNJudgeEnvConfig
+    """The env's config."""
 
     def __init__(self, config: BestOfNJudgeEnvConfig) -> None:
         super().__init__(config)
         # A missing policy file fails here, not mid-episode.
-        config.task.build_policy()
-        config.task.build_hint()
+        config.task._build_policy()
+        config.task._build_hint()
         # Refuse an impossible judge at construction, not after n attempts ran.
         judge = self._harnesses["judge"]
         if not judge.EXECUTES_CODE:

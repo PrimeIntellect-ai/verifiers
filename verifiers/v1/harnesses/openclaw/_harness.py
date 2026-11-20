@@ -128,6 +128,8 @@ wait "$acp_pid"
 
 
 class OpenClawHarnessConfig(HarnessConfig):
+    """Config for the OpenClaw harness."""
+
     version: PinnedVersion = "2026.11.5"
     """OpenClaw release to install, pinned for reproducibility."""
     dialect: Literal["auto"] = "auto"
@@ -137,6 +139,8 @@ class OpenClawHarnessConfig(HarnessConfig):
 
 
 class OpenClawHarness(ACPHarness[OpenClawHarnessConfig]):
+    """Run OpenClaw through its ACP agent."""
+
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
     SUPPORTS_SKILLS = True

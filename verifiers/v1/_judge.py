@@ -78,9 +78,14 @@ ParsedT = TypeVar("ParsedT")
 
 
 class JudgeResponse(BaseModel, Generic[ParsedT]):
+    """A judge call's reply."""
+
     text: str
+    """Raw reply text."""
     parsed: ParsedT | None = None
+    """Parsed verdict, if any."""
     usage: Usage | None = None
+    """Tokens and cost of the call."""
 
 
 JudgeView = Literal["last_reply", "full_trace"]
@@ -120,23 +125,28 @@ def judge_config_cls(cls: type) -> type[JudgeConfig]:
 
 
 class Judge(Generic[ParsedT, ConfigT]):
+    """LLM judge that prompts a model and parses its verdict."""
+
     prompt: str | None = None
     """Default prompt template, overridden by a config `prompt` file."""
     schema: type[BaseModel] | None = None
+    """Pydantic model for structured output; None for plain text."""
 
     def __init__(self, config: ConfigT | None = None) -> None:
         self.config = cast(ConfigT, config or judge_config_cls(type(self))())
+        """The judge's config."""
         if self.config.prompt is not None:
             self.prompt = self.config.prompt.read_text()
 
     @property
-    def reward_name(self) -> str:
+    def _reward_name(self) -> str:
         fallback = re.sub(
             r"(?<!^)(?=[A-Z])", "_", type(self).__name__.removesuffix("Judge")
         ).lower()
         return judge_key(self.config) or fallback or "judge"
 
     def build_messages(self, **fields: Any) -> str | Messages:
+        """Render the judge prompt from the given fields."""
         template = self.prompt
         if template is None:
             raise ValueError(
@@ -153,6 +163,7 @@ class Judge(Generic[ParsedT, ConfigT]):
         return pattern.sub(lambda m: str(fields[m.group(1)]), template)
 
     async def score(self, task: TaskData, trace: Trace) -> float | Mapping[str, float]:
+        """Score a trace when the judge is plugged into a task."""
         raise NotImplementedError(
             f"{type(self).__name__} implements no `score`, so it can't be plugged via "
             "`taskset.task.judges`; implement `score` (see verifiers.v1.judges for examples) or "
@@ -160,6 +171,7 @@ class Judge(Generic[ParsedT, ConfigT]):
         )
 
     def parse(self, response: JudgeResponse[ParsedT]) -> ParsedT:
+        """Parse the judge's reply into a verdict."""
         if self.schema is not None:
             return cast(ParsedT, response.parsed)
         return cast(ParsedT, response.text)
@@ -232,7 +244,7 @@ class Judge(Generic[ParsedT, ConfigT]):
         finally:
             if trace is not None and response is not None:
                 trace.record_judge_call(
-                    name=self.reward_name,
+                    name=self._reward_name,
                     request={
                         "model": kwargs["model"],
                         "messages": kwargs["messages"],
@@ -243,6 +255,7 @@ class Judge(Generic[ParsedT, ConfigT]):
     async def evaluate(
         self, *, trace: Trace | None = None, **fields: Any
     ) -> JudgeResponse[ParsedT]:
+        """Build the prompt, call the judge, and parse the reply."""
         messages = self.build_messages(**fields)
         return await self.complete(
             messages, trace=trace, schema=self.schema, parse=self.parse

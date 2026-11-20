@@ -282,7 +282,7 @@ async def test_port_exposure(runtime, monkeypatch) -> None:
                 pass
         return
     async with provisioned(runtime) as view:
-        port = view.published_port
+        port = view._published_port
         if port is None:
             with socket.socket() as probe:
                 probe.bind(("127.0.0.1", 0))
@@ -291,7 +291,7 @@ async def test_port_exposure(runtime, monkeypatch) -> None:
         await view.run_background(
             [*PYTHON, "-m", "http.server", str(port), "-d", "vf-www"], {}, "http.log"
         )
-        url = await view.expose(port)
+        url = await view._expose(port)
 
         async def serving() -> bool:
             with contextlib.suppress(aiohttp.ClientError):

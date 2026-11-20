@@ -31,6 +31,8 @@ class RelayReply:
 
 
 class Client(ABC):
+    """A connection to a model endpoint."""
+
     @abstractmethod
     async def get_response(
         self,
@@ -70,10 +72,11 @@ class Client(ABC):
         raise NotImplementedError(f"{type(self).__name__} does not relay aux routes")
 
     async def close(self) -> None:
-        pass
+        """Release the client's connections."""
 
 
 def resolve_client(config: BaseClientConfig) -> Client:
+    """Build the client for `config`: a train or eval client."""
     if isinstance(config, TrainClientConfig):
         from verifiers.v1._clients.train import TrainClient
 
@@ -88,8 +91,11 @@ class ModelContext:
     """Model, endpoint config, and sampling for one rollout."""
 
     model: str
+    """Model id."""
     client: ClientConfig
+    """Endpoint config."""
     sampling: SamplingConfig = field(default_factory=SamplingConfig)
+    """Sampling values for each request."""
 
 
 class RouteRejected(Exception):
@@ -116,6 +122,7 @@ class ModelRoute:
 
     def __init__(self, ctx: ModelContext) -> None:
         self.ctx = ctx
+        """The rollout's current model context."""
         self._updating = asyncio.Lock()
         self.dialect: Dialect | None = None
         """The wire format the rollout's harness speaks, set by the interception server

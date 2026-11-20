@@ -82,7 +82,7 @@ async def serve_interception(
             yield slot
         return
     tunneled = requires_tunnel(
-        runtime.is_local,
+        runtime._is_local,
         [server.config for server in servers],
         shared_tools.values(),
     )

@@ -40,6 +40,7 @@ class GroupInfo(BaseModel):
     """The consumer-defined rollout group this episode belongs to."""
 
     id: str
+    """ID of the rollout group."""
 
 
 class Episode(BaseModel, Generic[DataT, StateT, AgentConfigT]):

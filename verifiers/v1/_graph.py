@@ -216,7 +216,7 @@ class MessageNode(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     @property
-    def logical_ids(self) -> np.ndarray:
+    def _logical_ids(self) -> np.ndarray:
         return (
             self.token_ids
             if self.renderer_token_ids is None
@@ -244,7 +244,7 @@ class MessageNode(BaseModel):
         return streams
 
     @field_serializer("token_ids", "mask", "is_content", *ROUNDED_STREAMS)
-    def serialize_token_stream(
+    def _serialize_token_stream(
         self, values: list | np.ndarray | None, info: FieldSerializationInfo
     ) -> list | dict | None:
         if values is None:
@@ -252,7 +252,7 @@ class MessageNode(BaseModel):
         return _serialize_stream(values, info, info.field_name in ROUNDED_STREAMS)
 
     @field_serializer("loss_weights")
-    def serialize_loss_weights(
+    def _serialize_loss_weights(
         self, streams: dict[str, list | np.ndarray] | None, info: FieldSerializationInfo
     ) -> dict | None:
         if streams is None:
@@ -263,13 +263,13 @@ class MessageNode(BaseModel):
         }
 
     @field_serializer("routed_experts")
-    def serialize_ndarray_field(self, arr: np.ndarray | None) -> dict | None:
+    def _serialize_ndarray_field(self, arr: np.ndarray | None) -> dict | None:
         """Integer array -> raw-bytes `__nd__` dict so it rides the wire (numpy can't JSON)."""
         return None if arr is None else encode_ndarray(arr)
 
     @field_validator("routed_experts", mode="before")
     @classmethod
-    def deserialize_ndarray_field(cls, value: Any) -> np.ndarray | None:
+    def _deserialize_ndarray_field(cls, value: Any) -> np.ndarray | None:
         if value is None or isinstance(value, np.ndarray):
             return value
         if isinstance(value, dict) and value.get("__nd__"):
@@ -277,7 +277,7 @@ class MessageNode(BaseModel):
         raise TypeError(f"cannot build ndarray field from {type(value).__name__}")
 
     @field_serializer("sampler_support")
-    def serialize_sampler_support(self, support: SamplerSupport | None) -> dict | None:
+    def _serialize_sampler_support(self, support: SamplerSupport | None) -> dict | None:
         if support is None:
             return None
         return {
@@ -288,7 +288,7 @@ class MessageNode(BaseModel):
 
     @field_validator("sampler_support", mode="before")
     @classmethod
-    def deserialize_sampler_support(cls, value: Any) -> SamplerSupport | None:
+    def _deserialize_sampler_support(cls, value: Any) -> SamplerSupport | None:
         if value is None or isinstance(value, SamplerSupport):
             return value
         if isinstance(value, dict):
@@ -512,7 +512,7 @@ def _matching_node(
         )
         and (
             renderer_token_ids is None
-            or same_tokens(trace.nodes[indexed].logical_ids, renderer_token_ids)
+            or same_tokens(trace.nodes[indexed]._logical_ids, renderer_token_ids)
         )
     ):
         return indexed
@@ -526,7 +526,7 @@ def _matching_node(
             (token_ids is None or same_tokens(node.token_ids, token_ids))
             and (
                 renderer_token_ids is None
-                or same_tokens(node.logical_ids, renderer_token_ids)
+                or same_tokens(node._logical_ids, renderer_token_ids)
             )
             and _node_key(trace, node.parent, node.message, node.tools, dialect=dialect)
             == key
@@ -582,12 +582,12 @@ def _matching_prefix_node(
             prompt_ids[start : start + len(trace.nodes[node_id].token_ids)],
             trace.nodes[node_id].token_ids,
         )
-        and renderer_start + len(trace.nodes[node_id].logical_ids) <= renderer_stop
+        and renderer_start + len(trace.nodes[node_id]._logical_ids) <= renderer_stop
         and same_tokens(
             renderer_prompt_ids[
-                renderer_start : renderer_start + len(trace.nodes[node_id].logical_ids)
+                renderer_start : renderer_start + len(trace.nodes[node_id]._logical_ids)
             ],
-            trace.nodes[node_id].logical_ids,
+            trace.nodes[node_id]._logical_ids,
         )
     ]
     return max(
@@ -637,7 +637,7 @@ class PendingTurn:
 
         # The renderer bridges over lists, so the stream converts once here.
         ids = np.concatenate(
-            [self.trace.nodes[nid].logical_ids for nid in self.prefix_node_ids]
+            [self.trace.nodes[nid]._logical_ids for nid in self.prefix_node_ids]
         )
         if len(ids) <= num_sampled:
             return None
@@ -663,7 +663,7 @@ class PendingTurn:
     @property
     def renderer_path_len(self) -> int:
         return sum(
-            len(self.trace.nodes[nid].logical_ids) for nid in self.prefix_node_ids
+            len(self.trace.nodes[nid]._logical_ids) for nid in self.prefix_node_ids
         )
 
     def commit(self, response: Response) -> int:
@@ -922,7 +922,7 @@ def _commit_turn(turn: PendingTurn, response: Response) -> int:
         trace.mm_token_type_id_map = tokens.mm_token_type_id_map
     prompt_ids = np.asarray(tokens.prompt_ids if tokens else (), dtype=np.int32)
     # Logical renderer ids differ from `prompt_ids` only after multimodal expansion; otherwise
-    # the nodes keep none and read `token_ids` (`MessageNode.logical_ids`).
+    # the nodes keep none and read `token_ids` (`MessageNode._logical_ids`).
     renderer_prompt_ids = (
         np.asarray(tokens.renderer_prompt_ids, dtype=np.int32)
         if tokens and tokens.renderer_prompt_ids is not None
@@ -946,7 +946,7 @@ def _commit_turn(turn: PendingTurn, response: Response) -> int:
         renderer_off = 0
         for nid in prefix:
             node = trace.nodes[nid]
-            node_renderer_ids = node.logical_ids
+            node_renderer_ids = node._logical_ids
             if not same_tokens(
                 prompt_ids[off : off + len(node.token_ids)], node.token_ids
             ) or not same_tokens(
@@ -1025,7 +1025,7 @@ def _commit_turn(turn: PendingTurn, response: Response) -> int:
             )
             if existing is not None:
                 end += len(trace.nodes[existing].token_ids)
-                renderer_end += len(trace.nodes[existing].logical_ids)
+                renderer_end += len(trace.nodes[existing]._logical_ids)
         else:
             node_tokens = prompt_ids[path_len:end]
             renderer_node_tokens = renderer_prompt_ids[renderer_path_len:renderer_end]

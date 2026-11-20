@@ -32,6 +32,8 @@ SEARCH_PROMPT = (
 
 
 class BashHarnessConfig(HarnessConfig):
+    """Config for the bash harness."""
+
     dialect: Literal["chat_completions"] = "chat_completions"
     edit: bool = True
     """Offer the local `edit` tool (single-occurrence string replacement in a file) alongside
@@ -49,6 +51,8 @@ class BashHarnessConfig(HarnessConfig):
 
 
 class BashHarness(Harness[BashHarnessConfig]):
+    """Chat agent with bash, edit, and optional web search tools."""
+
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
     SUPPORTS_RESUME = True

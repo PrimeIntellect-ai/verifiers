@@ -8,8 +8,10 @@
 
 ## Public API
 
-- **Mark internals with an underscore**: give each new module, name or member that users must not use a leading underscore (PEP 8). Names inside an underscore module are internal already.
-- **Export public names explicitly**: add each public name to `__all__` of `verifiers.v1` or of its plugin package, and add a row to `docs/api.md`. `tests/unit/test_api.py` checks that both lists match and that public signatures use only public types.
+- **Mark internals with an underscore**: give each new module, name or member that users must not use a leading underscore (PEP 8). Names inside an underscore module are internal already, and so are the members of an internal class.
+- **Decide each member of a public class by one question**: will code outside verifiers (a taskset, harness, env, judge or toolset, or a program that runs vf) touch it? If yes, it plays one role: **read** (state outside code reads), **call** (an action outside code performs) or **override** (a hook vf calls and a subclass replaces). If no, or if you are unsure, give it an underscore. A call from another vf module or a test does not make a member public. Pydantic validators and serializers are always private.
+- **Document every public name and member**: one short line that says what it is or does for the user. If you can only describe it as framework plumbing, it is internal.
+- **Export public names explicitly**: add each public name to `__all__` of `verifiers.v1` or of its plugin package, and add a row to `docs/api.md`. `tests/unit/test_api.py` checks that both lists match, that public signatures use only public types, that every public name and member has a docstring, and that validators are private.
 - **Import from the public namespace in docs and examples**: use `import verifiers.v1 as vf`, never a path with an underscore.
 
 ## Logging

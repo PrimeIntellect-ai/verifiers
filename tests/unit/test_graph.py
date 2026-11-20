@@ -637,11 +637,11 @@ def test_expanded_prompt_is_attributed_while_bridge_uses_logical_tokens():
     )
     user = vf.UserMessage(content="image")
     assistant = vf.AssistantMessage(content="looked")
-    assert graph.MessageNode(message=user, token_ids=[9]).logical_ids.tolist() == [9]
+    assert graph.MessageNode(message=user, token_ids=[9])._logical_ids.tolist() == [9]
     assert (
         graph.MessageNode(
             message=user, token_ids=[9], renderer_token_ids=[]
-        ).logical_ids.tolist()
+        )._logical_ids.tolist()
         == []
     )
     graph.prepare_turn(trace, [user]).commit(

@@ -21,6 +21,7 @@ class BindMount(BaseConfig):
     source: str = Field(pattern=r"^/[^\x00]*$")
     """Absolute host path. The runtime never creates or removes the source."""
     read_only: bool = True
+    """Mount the source read-only."""
 
 
 Mount = TypeVar("Mount", bound=BaseConfig)
@@ -87,7 +88,7 @@ class NetworkPolicyConfig(BaseConfig):
     domain, and any `*` makes the policy framework-only."""
 
     @model_validator(mode="after")
-    def validate_network_policy(self) -> Self:
+    def _validate_network_policy(self) -> Self:
         if not self.allow or "*" in self.block:
             # Empty allowlists and wildcard blocks both mean framework-only access.
             self.allow = []
@@ -100,6 +101,7 @@ class NetworkPolicyConfig(BaseConfig):
 
     @property
     def network_restricted(self) -> bool:
+        """Whether the policy limits network access."""
         return "*" not in self.allow or bool(self.block)
 
     def permits(self, scheme: str, host: str, port: int) -> bool:
@@ -109,7 +111,7 @@ class NetworkPolicyConfig(BaseConfig):
             for rule in self.block
         ) and any(network_rule_matches(rule, scheme, host, port) for rule in self.allow)
 
-    def with_task_network_policy(self, network: "NetworkPolicyConfig") -> Self:
+    def _with_task_network_policy(self, network: "NetworkPolicyConfig") -> Self:
         values = self.model_dump()
         # Intersection must not erase syntax the runtime cannot enforce.
         task = type(self).model_validate(
@@ -153,12 +155,17 @@ class NetworkPolicyConfig(BaseConfig):
 
 
 class SubprocessConfig(BaseConfig):
+    """Run the program as a subprocess on the host."""
+
     type: Literal["subprocess"] = "subprocess"
 
 
 class DockerConfig(NetworkPolicyConfig):
+    """Run the program in a local Docker container."""
+
     type: Literal["docker"] = "docker"
     image: str = "python:3.11-slim"
+    """Docker image to run."""
     workdir: str | None = None
     """Working directory override; None uses the task's workdir, or /app."""
     # TaskData.resources uses these units; non-default runtime config values take precedence.
@@ -186,10 +193,14 @@ class PrimeVolume(BaseConfig):
     """A named volume, created if missing in the SDK client's personal or team scope."""
 
     name: str = Field(min_length=1)
+    """Volume name."""
     read_only: bool = True
+    """Mount the volume read-only."""
 
 
 class PrimeConfig(NetworkPolicyConfig):
+    """Run the program in a Prime sandbox."""
+
     type: Literal["prime"] = "prime"
     image: str = "python:3.11-slim"
     """Docker image to run. Any pullable ref works: on the first use of an image, the
@@ -247,6 +258,8 @@ class PrimeConfig(NetworkPolicyConfig):
 
 
 class CustomRuntimeConfig(BaseConfig):
+    """Run the program on a user-provided runtime backend."""
+
     type: Literal["custom"] = "custom"
     import_path: str
     """Dotted path to a `RuntimeBackend` subclass, e.g. `my_package.runtime.MyBackend`."""

@@ -43,7 +43,7 @@ class DebugConfig(BaseConfig):
 
     @property
     def name(self) -> str:
-        return self.taskset.name
+        return self.taskset._name
 
     @model_validator(mode="before")
     @classmethod

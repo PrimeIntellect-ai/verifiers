@@ -27,6 +27,7 @@ class CustomRuntimeInfo(BaseRuntimeInfo):
     model_config = ConfigDict(extra="allow")
     type: Literal["custom"] = "custom"
     import_path: str
+    """Import path of the runtime class."""
 
 
 def import_backend(import_path: str) -> type[RuntimeBackend]:

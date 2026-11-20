@@ -27,6 +27,7 @@ class ACPInfo(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     request_id: str = Field(pattern=ACP_REQUEST_ID_PATTERN)
+    """ID of the intercepted model request."""
     agent_session_id: str | None = Field(default=None, pattern=ACP_REQUEST_ID_PATTERN)
     """The calling agent's session in a recursive harness tree; the root's is the
     rollout's."""
@@ -42,11 +43,14 @@ class SemanticEdge(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     source_request_id: str = Field(pattern=ACP_REQUEST_ID_PATTERN)
+    """Request ID of the turn the edge starts from."""
     target_request_id: str = Field(pattern=ACP_REQUEST_ID_PATTERN)
+    """Request ID of the turn the edge points to."""
     type: str = Field(pattern=EDGE_TYPE_PATTERN)
+    """Label of the relationship, such as "subagent_call"."""
 
     @model_validator(mode="after")
-    def reject_self_edge(self) -> SemanticEdge:
+    def _reject_self_edge(self) -> SemanticEdge:
         if self.source_request_id == self.target_request_id:
             raise ValueError("semantic edge cannot link a request to itself")
         return self
@@ -62,7 +66,9 @@ class ParentLink(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     node: int = Field(ge=0)
+    """Index of the parent node in the trace."""
     type: str = Field(pattern=EDGE_TYPE_PATTERN)
+    """Label of the relationship to the parent."""
 
 
 class SemanticEdgeSet(BaseModel):
@@ -79,9 +85,10 @@ class SemanticEdgeSet(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     edges: list[SemanticEdge]
+    """Edges between request IDs."""
 
     @model_validator(mode="after")
-    def validate_edges(self) -> SemanticEdgeSet:
+    def _validate_edges(self) -> SemanticEdgeSet:
         identities: set[tuple[str, str, str]] = set()
         for edge in self.edges:
             identity = (

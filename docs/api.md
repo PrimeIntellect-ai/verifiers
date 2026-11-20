@@ -8,7 +8,15 @@ verifiers follows the Python conventions for public and internal interfaces in [
 
 - **Public namespaces**: `verifiers.v1` (imported as `vf`) and the plugin packages below it, `verifiers.v1.harnesses.*`, `verifiers.v1.tasksets.*`, `verifiers.v1.envs.*` and `verifiers.v1.judges.*`. Each one declares its public names in `__all__`.
 - **Internal modules**: every module or package whose name starts with an underscore, for example `verifiers.v1._trace` or `verifiers.v1.harnesses.bash._harness`. A name inside an internal module is internal, even when it has no underscore. Import it from its public namespace instead.
-- **Internal names and members**: every name, method or attribute that starts with an underscore. On a public class, every member without an underscore is public.
+- **Internal names and members**: every name, method or attribute that starts with an underscore. On a public class, every member without an underscore is public and has a docstring.
+- **Public members**: each public member plays one of three roles.
+
+  | Role | Meaning | Examples |
+  | --- | --- | --- |
+  | Read | State that your code reads from an object it receives | `trace.reward`, `trace.messages`, config fields |
+  | Call | An action that your code performs | `runtime.run()`, `trace.record_metric()` |
+  | Override | A hook that verifiers calls and your subclass replaces | `Task.setup()`, `Taskset.load()` |
+
 - **Config fields**: the fields of a public config class are public. They are also the TOML and CLI surface.
 - **Framework-built objects**: verifiers constructs `Agent`, `AgentRun`, `Interaction`, `HarnessSession`, `Runtime`, `Deployment`, `Trace` and `Episode` and gives them to your code. Their constructors are internal. Use their public members.
 - **Subclassing**: subclass `Taskset`, `Task`, `TaskData`, `Harness`, `ACPHarness`, `Env`, `Judge`, `Toolset`, `RuntimeBackend` and the config classes. Override only the hooks they document. Do not subclass `Client` yet: its request types are internal.
@@ -287,10 +295,6 @@ Import the namespace as `import verifiers.v1 as vf`.
 
 | Name | Description |
 | --- | --- |
-| `import_taskset` | Import the package of a taskset id. |
-| `import_harness` | Import the package of a harness id. |
-| `import_judge` | Import the module of a judge id. |
-| `import_environment` | Import the package of an environment id. |
 | `taskset_class` | The `Taskset` class of a taskset id. |
 | `harness_class` | The `Harness` class of a harness id. |
 | `judge_class` | The `Judge` class of a judge id. |
@@ -306,7 +310,6 @@ Import the namespace as `import verifiers.v1 as vf`.
 | `load_environment` | Make the environment for an environment config. |
 | `resolve_env_config` | Validate raw environment config data as its concrete config class. |
 | `narrow_plugin_field` | Validate a config field that holds a plugin config as the concrete config class of its `id`. |
-| `default_harness_id` | The harness id that a taskset uses by default. |
 
 ### Trainer streaming
 
@@ -538,3 +541,6 @@ Each built-in judge is a module that a judge `id` names.
 | `criterion_metrics` | The metrics of the criterion verdicts. |
 | `drop_reason` | The reason to drop a trace, from its criterion verdicts. |
 | `weighted_score` | The weighted score of the criterion verdicts. |
+| `score_verdicts` | Score the criterion verdicts against the rubric. |
+| `first_verdicts_object` | Find the first JSON object with a `verdicts` key in a reply. |
+| `RUBRIC_PROMPT`, `JSON_SUFFIX` | The rubric judge's prompt, and the suffix that asks for JSON. |

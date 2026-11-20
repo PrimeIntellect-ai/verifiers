@@ -29,6 +29,8 @@ def skill_destination(skill: SkillSource, dest: str) -> str:
 
 
 class HarnessConfig(BaseConfig):
+    """A harness's config: which program plays a seat, and its knobs."""
+
     id: ID = "bash"
     """Installed harness package, set through the seat's
     `--env.<role>.harness.id` (`--env.agent.harness.id` on the single-agent env)."""
@@ -40,6 +42,7 @@ class HarnessConfig(BaseConfig):
     """ACP MCP headers by server name: header values are read from host env vars."""
 
     def resolve_mcp_headers(self, servers: dict[str, str]) -> dict[str, dict[str, str]]:
+        """Return the MCP headers for `servers`, read from host env vars."""
         resolved = {}
         for name, headers in self.mcp_header_env.items():
             if name not in servers:
@@ -57,6 +60,7 @@ class HarnessConfig(BaseConfig):
     tool_timeout: FiniteFloat = Field(600.0, gt=0)
     """Seconds a single MCP tool call may take; raise it for tools that boot a VM."""
     disabled_tools: list[str] | None = None
+    """Names of tools the program must not offer the model."""
     dialect: DialectName | Literal["auto"] = "auto"
     """Model API wire format the program speaks. `auto` lets the program pick, e.g. from
     the model. Each harness narrows this to the formats it can select."""
@@ -66,11 +70,12 @@ class HarnessConfig(BaseConfig):
     Only harnesses with native skill support (`SUPPORTS_SKILLS`) accept them."""
 
     @property
-    def name(self) -> str:
+    def _name(self) -> str:
         return self.id
 
     @property
     def resolved_env(self) -> dict[str, str]:
+        """Program variables: forwarded host variables plus `env`."""
         forwarded = {k: os.environ[k] for k in self.forward_env if k in os.environ}
         return {**forwarded, **self.env}
 

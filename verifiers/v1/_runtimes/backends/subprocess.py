@@ -33,7 +33,7 @@ _BACKGROUND_STOP_TIMEOUT = 5
 
 
 class SubprocessRuntimeInfo(SubprocessConfig, BaseRuntimeInfo):
-    pass
+    """Facts about a provisioned subprocess runtime."""
 
 
 async def read_stream(reader: asyncio.StreamReader) -> AsyncIterator[bytes]:
@@ -92,8 +92,8 @@ class SubprocessBackend(RuntimeBackend):
 
     def __init__(self, config: SubprocessConfig, name: str | None = None) -> None:
         super().__init__(name)
-        self.cache.uv_interpreters = _UV_INTERPRETERS
-        self.cache.uv_locks = _UV_LOCKS
+        self._cache.uv_interpreters = _UV_INTERPRETERS
+        self._cache.uv_locks = _UV_LOCKS
         self.config = config
         self.info = SubprocessRuntimeInfo(**config.model_dump())
         self.workdir: Path | None = None

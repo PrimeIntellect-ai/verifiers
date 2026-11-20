@@ -69,6 +69,8 @@ class CompactionConfig(BaseConfig):
 
 
 class RLMHarnessConfig(HarnessConfig):
+    """Config for the RLM harness."""
+
     dialect: Literal["chat_completions"] = "chat_completions"
     version: str = Field(
         default="8ca926cdd64fd7725b78cf95a4e1667315d3b1f6", min_length=1
@@ -132,7 +134,7 @@ class RLMHarnessConfig(HarnessConfig):
     """Append for depth-capped leaf engines; unset falls back to the sub-agent append."""
 
     @model_validator(mode="after")
-    def reject_disabled_tools(self) -> "RLMHarnessConfig":
+    def _reject_disabled_tools(self) -> "RLMHarnessConfig":
         if self.disabled_tools:
             raise ValueError(
                 "the rlm harness does not support `disabled_tools`; select the tool "
@@ -142,6 +144,8 @@ class RLMHarnessConfig(HarnessConfig):
 
 
 class RLMHarness(ACPHarness[RLMHarnessConfig]):
+    """Run the RLM agent over ACP, with MCP tools as IPython skills."""
+
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
     SUPPORTS_SKILLS = True

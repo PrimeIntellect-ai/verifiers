@@ -85,7 +85,7 @@ def test_rlm_leaves_provider_max_retries_to_nano_rlm_by_default():
     "runtime_config",
     [
         DockerConfig(allow=[]),
-        DockerConfig().with_task_network_policy(NetworkPolicyConfig(allow=[])),
+        DockerConfig()._with_task_network_policy(NetworkPolicyConfig(allow=[])),
     ],
 )
 def test_rlm_drops_network_guidance_for_boxes_with_no_network(runtime_config):

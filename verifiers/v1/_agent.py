@@ -181,8 +181,11 @@ class Segment:
     """
 
     messages: Messages
+    """Assistant messages and tool results the segment produced."""
     root_reply: str | None = None
+    """Root agent's response, when the trace has descendant branches."""
     terminated: bool = False
+    """Whether the exchange is over."""
 
     @property
     def last_reply(self) -> str:
@@ -293,6 +296,7 @@ class Interaction:
 
     @property
     def trace(self) -> Trace:
+        """Live trace of the whole exchange."""
         return self._run.trace
 
     async def send(
@@ -641,8 +645,10 @@ class Agent:
             )
         config = resolve_agent(config)
         self.config = config
+        """Resolved config of the agent."""
         self.harness = load_harness(config.harness)
-        self.ctx = ModelContext(
+        """Harness the agent runs."""
+        self._ctx = ModelContext(
             model=config.model,
             client=config.client or EvalClientConfig(),
             sampling=config.sampling,
@@ -651,15 +657,16 @@ class Agent:
         # The name in this agent's log prefix; an episode names it after its role.
         self._log_name: str | None = None
         self.runtime_config: RuntimeConfig = config.runtime
-        self.interception = interception
-        self.limits = RolloutLimits(
+        """Runtime policy each run provisions a fresh box from."""
+        self._interception = interception
+        self._limits = RolloutLimits(
             max_turns=config.max_turns,
             max_input_tokens=config.max_input_tokens,
             max_output_tokens=config.max_output_tokens,
             max_total_tokens=config.max_total_tokens,
             max_turn_tokens=config.max_turn_tokens,
         )
-        self.timeout = config.timeout
+        self._timeout = config.timeout
         # Env episode agents replace this with the episode's agent semaphore
         # (`--env.max-concurrent-agents`). Interactions acquire it only around active
         # lifecycle work, never while awaiting the caller between segments.
@@ -667,6 +674,7 @@ class Agent:
         # Env-owned standing, not config: `Env.setup` marks fixed agents
         # untrainable and traces are stamped from here; inert outside an env.
         self.trainable: bool = True
+        """Whether the agent's traces are used for training."""
         self._entered = False
         self._server: InterceptionServer | None = None
         self._warned_resources: set[tuple[str, str]] = set()
@@ -677,7 +685,7 @@ class Agent:
         if self._closed:
             raise RuntimeError("Agent is closed; create a new agent")
         self._entered = True
-        if self.interception is None:
+        if self._interception is None:
             # Sized to the runtime policy (remote needs the tunnel); runs the
             # server can't serve fall back per run.
             self._server = InterceptionServer(
@@ -706,8 +714,8 @@ class Agent:
         the run's consumers — when it tunnels, else for a local run with no tool
         servers in play (such servers may sit in a remote runtime and must reach
         `/state`). Otherwise `None`: a per-run server sized to the task."""
-        if self.interception is not None:
-            return self.interception
+        if self._interception is not None:
+            return self._interception
         if self._server is None:
             return None
         if any(tool.state_secret for tool in shared_tools.values()):
@@ -813,7 +821,7 @@ class Agent:
     ) -> Trace:
         if self._closed:
             raise RuntimeError("Agent is closed; create a new agent")
-        route = route or ModelRoute(self.ctx)
+        route = route or ModelRoute(self._ctx)
         retry = self.config.retries
         retry_state = RetryState(retry)
         history: list = []
@@ -949,7 +957,7 @@ class Agent:
         trace_id = uuid.uuid4().hex
         with scope(trace=short_id(trace_id), agent=self._log_name):
             params = self._rollout_params(
-                task, runtime, dict(tools or {}), route or ModelRoute(self.ctx)
+                task, runtime, dict(tools or {}), route or ModelRoute(self._ctx)
             )
             if collect_artifacts:
                 _check_artifact_runtime(params["runtime_config"])
@@ -1002,7 +1010,7 @@ class Agent:
         if runtime is not None:
             _check_borrowed_placement(task, runtime, self.runtime_config)
             runtime_config = runtime.config
-            run_is_local = runtime.is_local
+            run_is_local = runtime._is_local
         else:
             runtime_config = resolve_runtime_config(
                 self.runtime_config, task, self._warned_resources
@@ -1014,14 +1022,14 @@ class Agent:
             runtime_config,
             tools=[*task.toolsets(task.config), *shared_tools.values()],
         )
-        timeouts = resolve_rollout_timeouts(self.timeout, task)
+        timeouts = resolve_rollout_timeouts(self._timeout, task)
         return {
             "agent_config": self.config,
             "harness": harness,
             "route": route,
             "runtime_config": runtime_config,
             "timeouts": timeouts,
-            "limits": self.limits,
+            "limits": self._limits,
             "shared_tools": shared_tools,
             "interception": self._interception_for(run_is_local, task, shared_tools),
             "runtime": runtime,

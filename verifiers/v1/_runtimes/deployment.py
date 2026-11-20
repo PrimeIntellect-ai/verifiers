@@ -35,6 +35,7 @@ class ServicesSpec:
     """
 
     services: dict[str, PrimeConfig]
+    """Config of each service VM, by service name."""
 
 
 class _DeploymentStrategy:
@@ -83,17 +84,19 @@ class Deployment:
         config: DeploymentConfig | None = None,
         borrowed_runtime: Runtime | None = None,
     ):
-        self.backend = backend
-        self.spec = spec
+        self._backend = backend
+        self._spec = spec
         self.tool_vms = dict(tool_vms or {})
         """Tool servers on Prime runtimes of their own, by server name, which join the
         workspace over the rollout's private network."""
-        self.env = dict(env or {})
-        self.config = config or DeploymentConfig()
+        self._env = dict(env or {})
+        self._config = config or DeploymentConfig()
         self._borrowed_runtime = borrowed_runtime
         from verifiers.v1._runtimes.strategies import _deployment_strategy
 
-        self._strategy = _deployment_strategy(self.config, backend, spec, self.tool_vms)
+        self._strategy = _deployment_strategy(
+            self._config, backend, spec, self.tool_vms
+        )
         self._target_backends: dict[str, RuntimeBackend] = {}
         self.hosts: dict[str, str] = {}
         """LAN hostnames of native services or tool servers on their own VMs."""
@@ -118,6 +121,7 @@ class Deployment:
         return await self._stack.enter_async_context(resource)
 
     async def start(self) -> None:
+        """Provision and connect every resource of the deployment."""
         try:
             await self._strategy.start(self)
             if self._harness_backend is None or self._execution_backend is None:
@@ -147,8 +151,8 @@ class Deployment:
         service; it names an execution role rather than a separate resource type.
         """
         if self._borrowed_runtime is not None:
-            return self._borrowed_runtime.with_env(self.env)
-        return self._execution_backend.bind(env=self.env)
+            return self._borrowed_runtime.with_env(self._env)
+        return self._execution_backend.bind(env=self._env)
 
     def target(self, name: str) -> Runtime:
         """Access a named service or workspace through an execution view."""
@@ -159,7 +163,7 @@ class Deployment:
         )
 
     @asynccontextmanager
-    async def verifier(
+    async def _verifier(
         self, config: RuntimeConfig, env: dict[str, str]
     ) -> AsyncIterator[Runtime]:
         # Parent ownership is registered before acquisition, including cancellation.
@@ -189,6 +193,8 @@ class Deployment:
         await self._strategy.prepare_execution(self, routes, state_route)
 
     async def close(self) -> None:
+        """Release every resource the deployment acquired."""
+
         async def release():
             try:
                 await self._strategy.close(self)

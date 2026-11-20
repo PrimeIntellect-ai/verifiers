@@ -176,10 +176,12 @@ class PolicySpan(BaseModel):
     """Live policy versions spanned while generating an episode."""
 
     start: int
+    """Policy version when generation started."""
     end: int
+    """Policy version when generation ended."""
 
     @model_validator(mode="after")
-    def ordered(self) -> Self:
+    def _ordered(self) -> Self:
         if self.end < self.start:
             raise ValueError("policy span end must be at least its start")
         return self
@@ -187,10 +189,13 @@ class PolicySpan(BaseModel):
     @computed_field
     @property
     def drift(self) -> int:
+        """Policy versions that passed during generation."""
         return self.end - self.start
 
 
 class TrainWorkInfo(BaseModel):
+    """Training work that an episode performed for a run."""
+
     type: Literal["train"] = "train"
     step: int
     """The training step at which the episode was dispatched."""
@@ -199,6 +204,8 @@ class TrainWorkInfo(BaseModel):
 
 
 class EvalWorkInfo(BaseModel):
+    """Evaluation work that an episode performed for a training run."""
+
     type: Literal["eval"] = "eval"
     step: int
     """The training step at which the episode was dispatched."""
@@ -214,8 +221,11 @@ class TrainRunInfo(BaseModel):
 
     type: Literal["train"] = "train"
     id: str
+    """Unique ID of the run."""
     name: str | None = None
+    """Human-readable name of the run."""
     work: WorkInfo
+    """The work this episode performed for the run."""
 
 
 class EvalRunInfo(BaseModel):
@@ -223,7 +233,9 @@ class EvalRunInfo(BaseModel):
 
     type: Literal["eval"] = "eval"
     id: str
+    """Unique ID of the run."""
     name: str | None = None
+    """Human-readable name of the run."""
 
 
 RunInfo = Annotated[TrainRunInfo | EvalRunInfo, Field(discriminator="type")]
@@ -233,11 +245,14 @@ class TimeSpan(BaseModel):
     """Wall-clock timestamps, with their duration in seconds."""
 
     start: float = 0.0
+    """Start time, in seconds since the epoch."""
     end: float = 0.0
+    """End time, in seconds since the epoch; 0 while running."""
 
     @computed_field
     @property
     def duration(self) -> float:
+        """Seconds between start and end; 0 while running."""
         return max(0.0, self.end - self.start) if self.end else 0.0
 
 
@@ -245,27 +260,46 @@ class TimeSplit(BaseModel):
     """Records a measured duration in seconds."""
 
     duration: float = 0.0
+    """Measured duration in seconds."""
 
 
 class AgentSpan(TimeSpan):
+    """The agent stage, split into model and harness time."""
+
     model: TimeSplit = Field(default_factory=TimeSplit)
+    """Time spent in model calls."""
     harness: TimeSplit = Field(default_factory=TimeSplit)
+    """Agent time outside model calls."""
 
 
 class Timing(BaseModel):
+    """Wall-clock timing of each rollout stage."""
+
     start: float = Field(default_factory=time.time)
+    """Time the rollout started, in seconds since the epoch."""
     boot: TimeSpan = Field(default_factory=TimeSpan)
+    """Runtime provisioning stage."""
     setup: TimeSpan = Field(default_factory=TimeSpan)
+    """Task setup stage."""
     agent: AgentSpan = Field(default_factory=AgentSpan)
+    """Agent stage."""
     finalize: TimeSpan = Field(default_factory=TimeSpan)
+    """Task finalize stage."""
     scoring: TimeSpan = Field(default_factory=TimeSpan)
+    """Scoring stage."""
 
 
 class Error(BaseModel):
+    """An error captured during a rollout."""
+
     type: str
+    """Class name of the exception."""
     message: str
+    """Error message."""
     status_code: int | None = None
+    """HTTP status code, for provider errors."""
     traceback: str | None = None
+    """Formatted traceback; None for provider errors."""
 
     @classmethod
     def from_exception(cls, error: BaseException) -> Self:
@@ -283,8 +317,12 @@ class Error(BaseModel):
 
 
 class VersionInfo(BaseModel):
+    """A verifiers build."""
+
     version: str
+    """Package version."""
     commit: str | None = None
+    """Git commit, when known."""
 
 
 def _current_build() -> VersionInfo:
@@ -299,6 +337,8 @@ AgentConfigT = TypeVar("AgentConfigT", bound=AgentConfig, default=AgentConfig)
 
 
 class AgentInfo(BaseModel, Generic[AgentConfigT]):
+    """The agent that produced a trace."""
+
     config: AgentConfigT
     """The resolved config that rebuilds the agent (`Agent(trace.agent.config)`)."""
     runtime: RuntimeInfo | None = None
@@ -322,22 +362,30 @@ class TraceTask(BaseModel, Generic[DataT]):
     """Content hash of ``data`` (``Task.hash``)."""
 
     @classmethod
-    def from_task(cls, task: Task) -> Self:
+    def _from_task(cls, task: Task) -> Self:
         return cls(
             type=type(task).__name__, data=task.data, key=task.key, hash=task.hash
         )
 
 
 class InterceptRecord(BaseModel):
+    """One change that an `@intercept` handler made."""
+
     handler: str
+    """Name of the handler."""
 
 
 class Reward(BaseModel):
+    """A named reward's score and weight."""
+
     score: float
+    """Unweighted reward score."""
     weight: float = 1.0
+    """Weight of the reward in the trace's total."""
 
     @property
     def value(self) -> float:
+        """Weighted score."""
         return self.score * self.weight
 
 
@@ -400,8 +448,11 @@ class Branch(BaseModel):
     """A root-to-leaf message-graph path; each branch becomes one training sample."""
 
     index: int
+    """Position of the branch in the trace."""
     nodes: list[MessageNode]
+    """Message nodes on the path, root first."""
     calls: list[ModelCall] = Field(default_factory=list)
+    """Model calls that committed nodes on the path."""
     trainable: bool = True
     """Whether this physical path contributes a training sample."""
     mm_token_type_id_map: dict[int, int] = Field(default_factory=dict)
@@ -409,10 +460,12 @@ class Branch(BaseModel):
 
     @property
     def messages(self) -> Messages:
+        """Messages on the path."""
         return [n.message for n in self.nodes]
 
     @property
     def tools(self) -> list[Tool]:
+        """Tools offered at the start of the path."""
         return self.nodes[0].tools if self.nodes else []
 
     @property
@@ -555,10 +608,11 @@ class Branch(BaseModel):
 
     @property
     def usage(self) -> Usage | None:
+        """Token usage summed over the branch's model calls."""
         return Usage.aggregate(c.usage for c in self.calls if c.usage is not None)
 
     @property
-    def last_usage(self) -> Usage | None:
+    def _last_usage(self) -> Usage | None:
         return next(
             (c.usage for c in reversed(self.calls) if c.usage is not None), None
         )
@@ -566,12 +620,14 @@ class Branch(BaseModel):
     @computed_field
     @property
     def num_total_tokens(self) -> int:
-        last = self.last_usage
+        """Total tokens of the branch's last model call."""
+        last = self._last_usage
         return last.total_tokens if last is not None else 0
 
     @computed_field
     @property
     def num_output_tokens(self) -> int:
+        """Model-generated tokens on the branch."""
         usage = self.usage
         return usage.completion_tokens if usage is not None else 0
 
@@ -584,6 +640,8 @@ class Branch(BaseModel):
 
 
 class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
+    """The record of one agent run on one task."""
+
     version: int = TRACE_VERSION
     """The trace schema this trace serializes as."""
     id: str = Field(default_factory=lambda: uuid.uuid4().hex)
@@ -644,6 +702,7 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     """Why consumers leave this trace out of reward means and training batches; `None`
     keeps it. Independent of `ok`: a trace that completed cleanly can be dropped."""
     timing: Timing = Field(default_factory=Timing)
+    """Wall-clock timing of each rollout stage."""
 
     _head_index: dict = PrivateAttr(default_factory=dict)
     """Dialect -> physical node key -> node id for the graph builder."""
@@ -681,7 +740,9 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         self._pending.pop(id(key), None)
 
     @field_serializer("mm_token_type_id_map")
-    def serialize_mm_token_type_id_map(self, mapping: dict[int, int]) -> dict[str, int]:
+    def _serialize_mm_token_type_id_map(
+        self, mapping: dict[int, int]
+    ) -> dict[str, int]:
         """Binary wire formats forbid int map keys (msgpack's `strict_map_key`) —
         dump str keys; validation coerces them back to int."""
         return {str(k): v for k, v in mapping.items()}
@@ -689,6 +750,7 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     @computed_field
     @property
     def reward(self) -> float:
+        """Total weighted reward."""
         return sum(r.value for r in self.rewards.values() if r is not None)
 
     @computed_field
@@ -704,10 +766,12 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     @computed_field
     @property
     def has_error(self) -> bool:
+        """Whether the trace did not complete successfully."""
         return not self.ok
 
     @property
     def is_dropped(self) -> bool:
+        """Whether the trace is dropped."""
         return self.dropped is not None
 
     @computed_field
@@ -845,11 +909,13 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     @computed_field
     @property
     def num_branches(self) -> int:
+        """Number of branches in the message graph."""
         return len(graph.leaves(self))
 
     @computed_field
     @property
     def num_turns(self) -> int:
+        """Number of model responses."""
         return sum(1 for n in self.nodes if n.sampled)
 
     @computed_field
@@ -921,9 +987,11 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         return "\n\n".join(blocks)
 
     def record_metric(self, name: str, value: float) -> None:
+        """Record a metric value."""
         self.metrics[name] = float(value)
 
     def record_metrics(self, values: Mapping[str, float]) -> None:
+        """Record several metric values."""
         for name, value in values.items():
             self.record_metric(name, value)
 

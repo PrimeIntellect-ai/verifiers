@@ -13,13 +13,18 @@ from verifiers.v1._configs.sampling import SamplingConfig
 
 
 class JudgeConfig(BaseClientConfig):
+    """An LLM judge: its endpoint, model, prompt, and reward weight."""
+
     id: ID = ""
     """Plugin id; empty for a judge called directly by task code."""
     name: str = ""
     """Reward key override for a plugged judge."""
     weight: FiniteFloat = 1.0
+    """Weight of the judge's reward."""
     model: str = "openai/gpt-6-luna"
+    """Judge model id."""
     sampling: SamplingConfig = SamplingConfig()
+    """Sampling values for judge requests."""
     prompt: Path | None = None
     """File whose text overrides the judge's default prompt template."""
 

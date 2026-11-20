@@ -38,6 +38,8 @@ def _latest_feedback(observation: str) -> str:
 
 
 class TextArenaConfig(vf.TasksetConfig):
+    """Config for the TextArena taskset."""
+
     game: Literal[
         "Wordle-v0",
         "Wordle-v0-long",
@@ -45,22 +47,30 @@ class TextArenaConfig(vf.TasksetConfig):
         "WordLadder-v0",
         "WordSearch-v0",
     ]
+    """The TextArena game to play."""
 
 
 class TextArenaData(vf.TaskData):
+    """Data for one seeded TextArena game."""
+
     info: dict
     """The game id and RNG seed the env reproduces the episode from."""
 
 
 class TextArenaTask(vf.Task[TextArenaData, vf.State, vf.TaskConfig]):
-    pass
+    """One seeded TextArena game."""
 
 
 class TextArenaEnvConfig(vf.EnvConfig):
+    """Config for the TextArena env."""
+
     player: vf.AgentConfig = vf.AgentConfig()
+    """The agent that plays the game."""
 
 
 class TextArenaEnv(vf.Env[TextArenaEnvConfig]):
+    """Play a TextArena game, with the engine as the user."""
+
     async def run(self, task, agents):
         # TextArena uses Python's process-global RNG during reset; seed + make + reset
         # run with no await between them, so concurrent rollouts can't interleave.
@@ -87,6 +97,8 @@ class TextArenaEnv(vf.Env[TextArenaEnvConfig]):
 
 
 class TextArenaTaskset(vf.Taskset[TextArenaTask, TextArenaConfig]):
+    """Endless seeded games of one TextArena game."""
+
     INFINITE = True
 
     def load(self) -> Iterator[TextArenaTask]:

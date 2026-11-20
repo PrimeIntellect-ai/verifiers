@@ -65,7 +65,7 @@ class ValidateConfig(BaseConfig):
 
     @property
     def name(self) -> str:
-        return self.taskset.name
+        return self.taskset._name
 
     @model_validator(mode="after")
     def auto_setup_run_name(self):

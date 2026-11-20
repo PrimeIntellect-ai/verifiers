@@ -26,7 +26,7 @@ class RetryRule(BaseConfig):
 
     @field_validator("message")
     @classmethod
-    def validate_message(cls, value: str | None) -> str | None:
+    def _validate_message(cls, value: str | None) -> str | None:
         if value is not None:
             try:
                 re.compile(value)

@@ -51,6 +51,8 @@ fi
 
 
 class PiHarnessConfig(HarnessConfig):
+    """Config for the Pi harness."""
+
     version: PinnedVersion = "1.5.2"
     """Pi release to install, pinned for reproducibility."""
     dialect: DialectName = "chat_completions"
@@ -59,6 +61,8 @@ class PiHarnessConfig(HarnessConfig):
 
 
 class PiHarness(ACPHarness[PiHarnessConfig]):
+    """Run Pi through the pi-acp adapter."""
+
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
     SUPPORTS_TOOL_INTERCEPTION = True

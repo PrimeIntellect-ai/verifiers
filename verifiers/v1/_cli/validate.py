@@ -321,7 +321,7 @@ async def _run_check(task: Task, config: ValidateConfig, mode: str) -> ResultRow
             config=config.deployment,
         )
         trace = Trace(
-            task=TraceTask.from_task(task),
+            task=TraceTask._from_task(task),
             state=state_cls(type(task))(),
             # No agent runs here — the info only records the runtime policy.
             agent=vf.AgentInfo(

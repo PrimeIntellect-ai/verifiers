@@ -51,7 +51,7 @@ def _narrow(argv: list[str]) -> type[DebugConfig]:
 def output_path(config: DebugConfig) -> Path:
     if config.output_dir is not None:
         return config.output_dir
-    return Path("outputs") / f"{config.taskset.name}--debug" / config.uuid
+    return Path("outputs") / f"{config.taskset._name}--debug" / config.uuid
 
 
 def task_info(task) -> dict[str, Any]:
@@ -188,7 +188,7 @@ async def run_action(runtime: Runtime, config: DebugConfig) -> dict[str, Any]:
 
 async def debug_task(task: Task, config: DebugConfig) -> tuple[Trace, bool]:
     trace = Trace(
-        task=TraceTask.from_task(task),
+        task=TraceTask._from_task(task),
         state=state_cls(type(task))(),
         # No agent plays here (no model, no harness): the seat records the
         # runtime policy, and the provisioned box lands on it below (id, resolved

@@ -27,6 +27,7 @@ def build_async_httpx(config: BaseClientConfig) -> httpx.AsyncClient:
 
 
 def build_async_openai(config: BaseClientConfig) -> AsyncOpenAI:
+    """Build an `AsyncOpenAI` client for the endpoint in `config`."""
     # The SDK adopts the http client's timeout, so it is configured in one place.
     return AsyncOpenAI(
         base_url=config.base_url,

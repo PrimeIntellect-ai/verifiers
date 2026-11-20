@@ -70,6 +70,8 @@ REWARD_SCALAR_ADAPTER = TypeAdapter(
 
 
 class HarborTaskConfig(TaskConfig):
+    """Per-task settings for Harbor tasks."""
+
     reward_key: str = Field("reward", min_length=1)
     """Named verifier value used as the training reward; other values remain metrics."""
     mcp_servers: list[dict] = Field(default_factory=list)
@@ -77,6 +79,8 @@ class HarborTaskConfig(TaskConfig):
 
 
 class HarborConfig(TasksetConfig):
+    """Config for a Harbor taskset."""
+
     artifact_max_bytes: int = Field(MAX_ARTIFACT_BYTES, gt=0)
     """Total archive bytes collected from one solver, across all its services."""
     task: HarborTaskConfig = HarborTaskConfig()
@@ -120,19 +124,28 @@ class HarborConfig(TasksetConfig):
 
 
 class Author(BaseModel):
+    """An author of a Harbor task."""
+
     name: str | None = None
+    """Author's name."""
     email: str | None = None
+    """Author's email address."""
 
 
 class CollectHook(BaseModel):
     """One `[[verifier.collect]]` command, run in its service by `finalize`."""
 
     command: str
+    """Shell command to run."""
     timeout_sec: float = 600.0
+    """Seconds before the command times out."""
     service: str = "main"
+    """The Compose service to run the command in."""
 
 
 class HarborArtifact(Artifact):
+    """A file or directory to collect from a Harbor task's service."""
+
     service: str = "main"
     """The Compose service to collect from; the grader restores at the same path."""
 
@@ -144,9 +157,13 @@ class VerifierConfig(BaseModel):
     Harbor's default and every task that says nothing."""
 
     resources: TaskResources = TaskResources()
+    """Resources for the verifier's box."""
     workdir: str | None = None
+    """Working directory in the verifier's box."""
     env: dict[str, str] = Field(default_factory=dict)
+    """Raw environment variable templates for the verifier's box."""
     healthcheck: dict | None = None
+    """Harbor healthcheck to pass before grading."""
     fresh_copy: bool = False
     """Whether this came from Harbor's fresh copy of `[environment]` rather than a
     declared `[verifier.environment]`. A fresh copy inherits the agent box's resolved
@@ -165,10 +182,15 @@ class HarborData(TaskData):
     """
 
     keywords: list[str] = Field(default_factory=list)
+    """Task keywords."""
     authors: list[Author] = Field(default_factory=list)
+    """Task authors."""
     difficulty: str | None = None
+    """Task difficulty label."""
     category: str | None = None
+    """Task category."""
     tags: list[str] = Field(default_factory=list)
+    """Task tags."""
     task_dir: str = ""
     """Host path to the task dir; used to stage tests/ to verify."""
     upload_environment: bool = False
@@ -176,6 +198,7 @@ class HarborData(TaskData):
     env: dict[str, str] = Field(default_factory=dict)
     """Raw `[environment.env]` templates, resolved only when the runtime starts."""
     healthcheck: dict | None = None
+    """Harbor healthcheck to pass before the agent starts."""
     mcp_servers: list[dict] = Field(default_factory=list)
     """Task-declared MCP servers, preserved for served-task reconstruction."""
     compose_build_dockerfile: bool = False
@@ -199,12 +222,13 @@ class HarborData(TaskData):
 class HarborTask(Task[HarborData, State, HarborTaskConfig]):
     """Stage and run Harbor's verifier inside the task's live runtime."""
 
-    verifier_staged: bool = False
+    _verifier_staged: bool = False
 
     def __init__(self, data: HarborData, config: HarborTaskConfig | None = None):
         super().__init__(data, config)
         # Each reconstructed row gets its own connections without mutating worker config.
         self.config = self.config.model_copy(update={"mcp_servers": data.mcp_servers})
+        """The task config, bound to this task's MCP servers."""
 
     @classmethod
     def toolsets(cls, config: HarborTaskConfig):
@@ -267,6 +291,7 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
     async def setup(
         self, runtime: Runtime, deployment: Deployment | None = None
     ) -> None:
+        """Stage the task's environment and wait until it is healthy."""
         if deployment is not None:
             declared = {
                 entry.service for entry in (*self.data.collect, *self.data.artifacts)
@@ -295,6 +320,7 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
             await self.wait_for_health(runtime, self.data.healthcheck)
 
     async def wait_for_health(self, runtime: Runtime, healthcheck: dict) -> None:
+        """Wait until a Harbor healthcheck passes in `runtime`."""
         from harbor.environments.base import HealthcheckError
         from harbor.models.task.config import HealthcheckConfig
 
@@ -389,7 +415,7 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
         ):
             raise TaskError("Harbor artifacts cannot restore into /tests")
         await self.stage_tests(runtime, wipe=self.data.verifier is not None)
-        self.verifier_staged = True
+        self._verifier_staged = True
 
     async def stage_tests(self, runtime: Runtime, wipe: bool = False) -> None:
         """Use a dedicated verifier image's tests, or stage the task package's tests.
@@ -445,8 +471,9 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
 
     @reward(weight=1.0)
     async def solved(self, runtime: Runtime, trace: Trace) -> float | dict[str, float]:
+        """Return the Harbor verifier's reward."""
         if self.data.verifier is not None:
-            if not self.verifier_staged:
+            if not self._verifier_staged:
                 raise TaskError(
                     f"task {self.data.name!r} declares a separate verifier "
                     '([verifier].environment_mode = "separate"); grade it through '
@@ -459,13 +486,14 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
             # test scripts install their tools).
             if self.scoring.network is None:
                 await runtime.set_network(NetworkPolicyConfig())
-            if not self.verifier_staged:
+            if not self._verifier_staged:
                 await self.stage_tests(runtime)
         return await self.run_verifier(runtime, trace)
 
     async def run_verifier(
         self, runtime: Runtime, trace: Trace
     ) -> float | dict[str, float]:
+        """Run the staged tests and return the reward they write."""
         # By absolute path, in the runtime's configured workdir: Harbor execs the
         # script the same way, and scripts do grade the agent's work at `$PWD`.
         # The reward file is authoritative even when the script exits nonzero.
@@ -1017,6 +1045,8 @@ def make_tar(directory: Path) -> bytes:
 
 
 class HarborTaskset(Taskset[HarborTask, HarborConfig]):
+    """Tasks from a Harbor dataset."""
+
     def load(self) -> Iterator[HarborTask]:
         root = dataset_dir(self.config)
         task_dirs = [

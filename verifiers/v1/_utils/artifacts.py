@@ -38,15 +38,17 @@ class Artifact(BaseModel):
     """One path to restore at the same location in another runtime."""
 
     source: str
+    """Path to collect in the source runtime."""
     destination: str | None = None
     """Saved path relative to the trace's artifact directory; grading uses `source`."""
     exclude: list[str] = Field(default_factory=list)
     """`tar --exclude` patterns, applied when `source` is a directory."""
     required: bool = True
+    """Whether a missing `source` fails the rollout."""
 
     @field_validator("destination")
     @classmethod
-    def validate_destination(cls, value: str | None) -> str | None:
+    def _validate_destination(cls, value: str | None) -> str | None:
         if not value:
             return None
         path = PurePosixPath(value)
@@ -259,7 +261,7 @@ def save_artifacts(
             manifest.append(entry)
             try:
                 _validate_restore(source, archive)
-                Artifact.validate_destination(artifact.destination)
+                Artifact._validate_destination(artifact.destination)
                 target = PurePosixPath(destination)
                 entry["destination"] = str(target)
                 if archive is None:

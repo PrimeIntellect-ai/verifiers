@@ -36,7 +36,10 @@ DONE = "###DONE###"
 
 
 class UserSimEnvConfig(vf.EnvConfig):
+    """Config for the user-sim env."""
+
     assistant: vf.AgentConfig = vf.AgentConfig()
+    """The assistant under evaluation."""
     user: vf.AgentConfig = vf.AgentConfig(harness={"id": "null"}, max_turns=8)
     """The modeled user; its `max_turns` is the conversation cap — the user's own
     turn limit ends a run-away exchange cleanly (`--env.user.max-turns`)."""
@@ -49,6 +52,8 @@ class UserSimEnvConfig(vf.EnvConfig):
 
 
 class UserSimEnv(vf.Env[UserSimEnvConfig]):
+    """Let a modeled user converse with the assistant."""
+
     async def setup(self, agents):
         # The user models the world the policy is evaluated against; its tokens
         # are never training data.

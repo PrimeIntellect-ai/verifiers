@@ -26,7 +26,9 @@ class EnvTimeoutConfig(BaseConfig):
     (None = no limit); per-run stage timeouts are each agent's (`--env.<agent>.timeout.*`)."""
 
     episode: float | None = None
+    """Timeout for the env's `run()`."""
     finalize: float | None = None
+    """Timeout for the env's `finalize()`."""
 
 
 def _mentions_agent_config(annotation) -> bool:
@@ -44,6 +46,7 @@ class SharedEnvConfig(BaseConfig):
     taskset: SharedTasksetConfig = SharedTasksetConfig()
     """The taskset knobs every taskset has."""
     timeout: EnvTimeoutConfig = EnvTimeoutConfig()
+    """Timeouts for the env's own hooks."""
     retries: RetryConfig = RetryConfig()
     """Whole-EPISODE retries — the coarse fallback for faults no agent owns; a
     retried episode reruns whole (a half-played sibling context isn't reproducible)."""

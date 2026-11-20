@@ -14,9 +14,12 @@ import verifiers.v1 as vf
 
 
 class BestOfNEnvConfig(vf.EnvConfig):
+    """Config for the best-of-n env."""
+
     # A single-role env keeps the single-agent seat name: `--env.id best-of-n`
     # composes with a plain run's `--env.agent.*` flags unchanged.
     agent: vf.AgentConfig = vf.AgentConfig()
+    """The agent that attempts the task."""
     n: int = Field(4, ge=1)
     """Independent attempts per episode, scored against each other."""
     threshold: float = 1.0
@@ -24,6 +27,8 @@ class BestOfNEnvConfig(vf.EnvConfig):
 
 
 class BestOfNEnv(vf.Env[BestOfNEnvConfig]):
+    """Run n independent attempts and score them against each other."""
+
     async def run(self, task: vf.Task, agents: vf.Agents) -> None:
         # TaskGroup: a raising attempt cancels and awaits its siblings, so no
         # straggler keeps burning tokens past the episode.

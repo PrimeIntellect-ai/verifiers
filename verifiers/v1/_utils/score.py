@@ -20,6 +20,7 @@ PYTEST_OUTCOMES = ("PASSED", "FAILED", "ERROR", "SKIPPED", "XFAIL", "XPASS")
 
 
 def extract_boxed_answer(text: str, strict: bool = False) -> str:
+    """Return the last `\\boxed{...}` content, or `text` (`""` if strict)."""
     start = text.rfind(BOXED_START)
     if start == -1:
         return "" if strict else text
@@ -41,6 +42,7 @@ def extract_boxed_answer(text: str, strict: bool = False) -> str:
 async def read_answer_file_or_last_reply(
     runtime: Runtime, path: str, trace: Trace
 ) -> str:
+    """Return the answer file's text, or the trace's last reply."""
     try:
         answer = (await runtime.read(path)).decode(errors="replace").strip()
     except (FileNotFoundError, OSError, SandboxError):
@@ -51,6 +53,7 @@ async def read_answer_file_or_last_reply(
 def parse_judge_choice(
     content: str | None, choices: Sequence[str] = ("A", "B", "C")
 ) -> str | None:
+    """Return the choice a judge reply settles on, or None."""
     if not content or ("<think>" in content and "</think>" not in content):
         return None
 
@@ -89,6 +92,7 @@ def parse_judge_choice(
 def verify_boxed_math_answer(
     response: str | None, answer: str, *, timeout_seconds: int = 5
 ) -> float:
+    """Return 1.0 if the boxed answer in `response` matches `answer`."""
     if not response or ("<think>" in response and "</think>" not in response):
         return 0.0
 
@@ -119,6 +123,7 @@ def verify_boxed_math_answer(
 def compare_stdout_results(
     exec_stdout: str, expected: str, *, tolerance: float = 1e-3
 ) -> bool:
+    """Check stdout against expected output, allowing numeric tolerance."""
     if exec_stdout.strip() == expected.strip():
         return True
 
@@ -151,6 +156,7 @@ def compare_stdout_results(
 
 
 def parse_pytest_outcomes(output: str | None) -> dict[str, str]:
+    """Map each test id in pytest output to its outcome, e.g. `PASSED`."""
     outcomes: dict[str, str] = {}
     for raw_line in ANSI_RE.sub("", output or "").splitlines():
         parts = raw_line.strip().split(maxsplit=1)

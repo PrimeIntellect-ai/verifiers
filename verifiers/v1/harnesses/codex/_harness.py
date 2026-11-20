@@ -52,6 +52,8 @@ GATE_HANDLER = {
 
 
 class CodexHarnessConfig(HarnessConfig):
+    """Config for the Codex harness."""
+
     # Codex accepts no other wire API:
     # https://github.com/openai/codex/blob/rust-v0.170.0/codex-rs/model-provider-info/src/lib.rs#L119
     dialect: Literal["responses"] = "responses"
@@ -64,6 +66,8 @@ class CodexHarnessConfig(HarnessConfig):
 
 
 class CodexHarness(ACPHarness[CodexHarnessConfig]):
+    """Run Codex through its ACP adapter."""
+
     APPENDS_SYSTEM_PROMPT = False  # TODO
     SUPPORTS_MCP = True
     SUPPORTS_SKILLS = True
@@ -122,7 +126,7 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
             system_prompt, prompt = data.system_prompt, data.prompt
         else:
             system_prompt, prompt = self.resolve_prompt(data)
-        env = await self.build_env(ctx, trace, runtime, endpoint, secret, mcp_urls)
+        env = await self._build_env(ctx, trace, runtime, endpoint, secret, mcp_urls)
         return ACPConfig(
             env=env,
             command=[
@@ -130,7 +134,7 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
                 ACP_BIN.format(version=self.config.version, acp_version=ACP_VERSION),
             ],
             prompt=prompt,
-            # Codex reads MCP servers from the config written by build_env().
+            # Codex reads MCP servers from the config written by _build_env().
             mcp_urls={},
             system_prompt=system_prompt,
             # An untitled session starts a separate model turn to generate a UI title.
@@ -180,13 +184,13 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
         await runtime.write(path, tomli_w.dumps(settings).encode())
 
     async def cleanup(self, trace: Trace, runtime: Runtime) -> None:
-        await remove_dir(runtime, self.trace_home(trace), "Codex home")
+        await remove_dir(runtime, self._trace_home(trace), "Codex home")
 
     @staticmethod
-    def trace_home(trace: Trace) -> str:
+    def _trace_home(trace: Trace) -> str:
         return f"/tmp/vf-codex-home-{trace.id}"
 
-    async def build_env(
+    async def _build_env(
         self,
         ctx: ModelContext,
         trace: Trace,
@@ -195,7 +199,7 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
         secret: str,
         mcp_urls: dict[str, str],
     ) -> dict[str, str]:
-        home = self.trace_home(trace)
+        home = self._trace_home(trace)
         await self.install_skills(runtime, f"{home}/skills")
         # The app server and its ACP sessions must start with the same provider.
         settings = {

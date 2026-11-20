@@ -407,9 +407,9 @@ def test_branch_sampler_support_spans_every_token():
 
     head.logprobs = None
     assert Branch.model_construct(nodes=nodes).sampler_support.logprobs is None
-    wire = nodes[2].serialize_sampler_support(head)
+    wire = nodes[2]._serialize_sampler_support(head)
     assert "logprobs" not in wire
-    restored = MessageNode.deserialize_sampler_support(wire)
+    restored = MessageNode._deserialize_sampler_support(wire)
     np.testing.assert_array_equal(restored.ids, [3])
     np.testing.assert_array_equal(restored.replayed, [False])
     assert Branch.model_construct(nodes=nodes[:1]).sampler_support is None

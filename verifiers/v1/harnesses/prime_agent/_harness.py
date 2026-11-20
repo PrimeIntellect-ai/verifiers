@@ -78,6 +78,8 @@ touch "$prefix/.ready"
 
 
 class PrimeAgentHarnessConfig(HarnessConfig):
+    """Config for the Prime Agent harness."""
+
     commit: Literal["033eea1705c5ae953fe7cd7a5e7e7c45317e0dfe"] = PRIME_AGENT_COMMIT
     """Prime Agent release commit to install."""
 
@@ -91,6 +93,8 @@ class PrimeAgentHarnessConfig(HarnessConfig):
 
 
 class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
+    """Run Prime Agent in its ACP mode."""
+
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
     SUPPORTS_SKILLS = True

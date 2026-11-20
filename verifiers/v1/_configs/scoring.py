@@ -11,6 +11,8 @@ from verifiers.v1._utils.generic import merge_defaults
 
 
 class ScoringConfig(BaseConfig):
+    """Where and how a task's scoring runs."""
+
     mode: Literal["shared", "isolated"] = "shared"
     """Score in the workspace or restore into a fresh runtime."""
     runtime: RuntimeConfig | None = None
@@ -32,7 +34,7 @@ class ScoringConfig(BaseConfig):
     (`Trace.is_timeout`): it keeps no rewards, so its reward is 0."""
 
     @field_serializer("runtime")
-    def serialize_runtime(
+    def _serialize_runtime(
         self, runtime: RuntimeConfig | None, info: SerializationInfo
     ) -> dict | None:
         if runtime is None:

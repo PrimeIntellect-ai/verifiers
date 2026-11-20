@@ -18,9 +18,9 @@ class _ColocatedDeployment(_DeploymentStrategy):
         if d._borrowed_runtime is not None:
             d._execution_backend = d._harness_backend = d._borrowed_runtime.backend
         else:
-            d.backend.env = d.env
-            await d._own(d.backend)
-            d._execution_backend = d._harness_backend = d.backend
+            d._backend.env = d._env
+            await d._own(d._backend)
+            d._execution_backend = d._harness_backend = d._backend
         d._target_backends = {"main": d._execution_backend}
 
     async def prepare_verifier(self, deployment):
@@ -42,11 +42,14 @@ class _ContainerDeployment(_DeploymentStrategy):
         self._services = await d._enter(AsyncExitStack())
         services, self._stop_main = await self._services.enter_async_context(
             compose_services(
-                d.backend.config, d.spec, d.env, trust_compose=d.config.trust_compose
+                d._backend.config,
+                d._spec,
+                d._env,
+                trust_compose=d._config.trust_compose,
             )
         )
         d._target_backends = dict(services)
-        d._execution_backend = d._harness_backend = services[d.spec.workspace]
+        d._execution_backend = d._harness_backend = services[d._spec.workspace]
 
     async def stop_execution(self, d):
         await self._stop_main()
@@ -72,24 +75,24 @@ class _PrivateNetworkDeployment(_DeploymentStrategy):
                 "a deployment with services on VMs of their own cannot borrow a "
                 "single target"
             )
-        d.backend.env = d.env
-        native = isinstance(d.spec, ServicesSpec)
-        members = d.spec.services if native else d.tool_vms
+        d._backend.env = d._env
+        native = isinstance(d._spec, ServicesSpec)
+        members = d._spec.services if native else d.tool_vms
         self._services = await d._enter(AsyncExitStack())
         vms = await self._services.enter_async_context(
             private_network(
-                d.backend,
+                d._backend,
                 members,
-                partial(d._own, d.backend),
+                partial(d._own, d._backend),
                 interconnect=native,
                 networks=self._networks,
             )
         )
-        d._target_backends = {"main": d.backend, **vms}
+        d._target_backends = {"main": d._backend, **vms}
         d.hosts = {name: lan_host(backend) for name, backend in vms.items()}
         if native:
-            d.hosts["main"] = lan_host(d.backend)
-        d._execution_backend = d._harness_backend = d.backend
+            d.hosts["main"] = lan_host(d._backend)
+        d._execution_backend = d._harness_backend = d._backend
 
     async def prepare_execution(self, d, routes, state_route=None):
         # Each VM enforces its own policy. A tool server's VM keeps only its state
@@ -151,17 +154,17 @@ class _NativeComposeDeployment(_PrivateNetworkDeployment):
         if d._borrowed_runtime is not None:
             raise ValueError("a composed deployment cannot borrow a single target")
         services = await prepare_native(
-            d.backend.config.model_copy(
-                update={"workdir": d.backend._workdir_override}
+            d._backend.config.model_copy(
+                update={"workdir": d._backend._workdir_override}
             ),
-            d.spec,
-            d.env,
+            d._spec,
+            d._env,
         )
         main = services["main"]
-        d.backend.config = main.config
+        d._backend.config = main.config
         for field, value in main.config.model_dump().items():
-            setattr(d.backend.info, field, value)
-        d.env = main.env
+            setattr(d._backend.info, field, value)
+        d._env = main.env
         self._networks = {}
         for name, service in services.items():
             # Default-bridge peers share IP connectivity without Compose aliases.
@@ -173,7 +176,7 @@ class _NativeComposeDeployment(_PrivateNetworkDeployment):
         self._internal = frozenset(
             name for name, service in services.items() if service.internal
         )
-        d.spec = ServicesSpec(
+        d._spec = ServicesSpec(
             {
                 name: service.config
                 for name, service in services.items()

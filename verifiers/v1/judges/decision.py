@@ -21,8 +21,11 @@ from verifiers.v1._types import Usage
 
 
 class DecisionJudgeConfig(JudgeConfig):
+    """Config for the decision-model judge."""
+
     id: ID = "decision"
     model: str = "cloudflare/clef"
+    """Decision model to grade with."""
     base_url: str = "https://api.pinference.ai/api/v1/evaluations"
     """Full URL to POST evaluation requests to."""
     levels: list[str] = Field(
@@ -35,9 +38,12 @@ class DecisionJudgeConfig(JudgeConfig):
     answer_field: str = ""
     """Optional task field containing a reference answer to include in the state."""
     view: JudgeView = "last_reply"
+    """How much of the rollout the judge grades."""
 
 
 class DecisionJudge(Judge[float, DecisionJudgeConfig]):
+    """Judge that grades a response on weighted levels with a decision model."""
+
     prompt = (
         "Grade how well the response satisfies the task in question. "
         "Use the reference answer when provided; equivalent answers are acceptable."
@@ -46,6 +52,7 @@ class DecisionJudge(Judge[float, DecisionJudgeConfig]):
     async def evaluate(
         self, *, trace: Trace | None = None, **fields: Any
     ) -> JudgeResponse[float]:
+        """Call the decision model and return the normalized score."""
         request = {
             "model": self.config.model,
             "state": fields,
@@ -81,10 +88,11 @@ class DecisionJudge(Judge[float, DecisionJudgeConfig]):
             # The call was billed even if the score could not be parsed.
             if trace is not None:
                 trace.record_judge_call(
-                    name=self.reward_name, request=request, response=response
+                    name=self._reward_name, request=request, response=response
                 )
 
     async def score(self, task: TaskData, trace: Trace) -> float:
+        """Grade the trace's response from 0 to 1."""
         response = judge_response(trace, self.config.view)
         if not response.strip():
             return 0.0

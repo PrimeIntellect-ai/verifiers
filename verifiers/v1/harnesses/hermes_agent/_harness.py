@@ -33,6 +33,8 @@ touch "$AGENT_HERMES_DIR/.ready"
 
 
 class HermesAgentHarnessConfig(HarnessConfig):
+    """Config for the Hermes Agent harness."""
+
     version: PinnedVersion = "v0.23.2"
     """Hermes Agent Git release tag to install, pinned for reproducibility."""
     use_bundled_skill: bool = False
@@ -44,6 +46,8 @@ class HermesAgentHarnessConfig(HarnessConfig):
 
 
 class HermesAgentHarness(ACPHarness[HermesAgentHarnessConfig]):
+    """Run Hermes Agent through its ACP server."""
+
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
     SUPPORTS_SKILLS = True

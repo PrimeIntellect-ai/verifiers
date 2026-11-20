@@ -83,6 +83,8 @@ class TaskTimeout(BaseModel):
 
 
 class TaskData(BaseModel):
+    """Data that initializes a task; recorded on each of its traces."""
+
     model_config = ConfigDict(frozen=True)
 
     idx: int | None = None
@@ -133,10 +135,13 @@ class TaskData(BaseModel):
     """Total byte limit for collected artifact archives, including the convention dir."""
 
     timeout: TaskTimeout = TaskTimeout()
+    """Per-stage timeout overrides."""
     resources: TaskResources = TaskResources()
+    """Resource limits for the task's runtime."""
 
     @property
     def prompt_text(self) -> str:
+        """Text of the prompt, with messages joined by blank lines."""
         if isinstance(self.prompt, str):
             return self.prompt
         texts = [content_text(message.content) for message in self.prompt or []]
@@ -154,12 +159,16 @@ ConfigT = TypeVar("ConfigT", bound=TaskConfig, default=TaskConfig)
 
 
 class Task(Generic[DataT, StateT, ConfigT]):
+    """A task's behavior: runtime setup, tools, and scoring."""
+
     NEEDS_CONTAINER: ClassVar[bool] = False
     """Whether the task needs a containerized environment (isolated filesystem, ...)."""
 
     def __init__(self, data: DataT, config: ConfigT | None = None) -> None:
         self.data = data
+        """The task's data."""
         self.config = config if config is not None else self.config_type()()
+        """The task's config."""
 
     @property
     def hash(self) -> str:
@@ -187,6 +196,7 @@ class Task(Generic[DataT, StateT, ConfigT]):
         return clone
 
     def with_system_prompt(self, system_prompt: str) -> Self:
+        """Return a copy whose data has `system_prompt` set."""
         return self.with_data(system_prompt=system_prompt)
 
     def runtime_env(self) -> dict[str, str]:
@@ -213,10 +223,12 @@ class Task(Generic[DataT, StateT, ConfigT]):
         return
 
     async def setup(self, trace: Trace, runtime: Runtime) -> None:
-        return None
+        """Prepare the runtime before the agent starts."""
+        return
 
     async def finalize(self, trace: Trace, runtime: Runtime) -> None:
-        return None
+        """Inspect the runtime after the agent finishes, before scoring."""
+        return
 
     async def stage_verifier(self, trace: Trace, runtime: Runtime) -> None:
         """Prepare trusted verifier-only inputs after artifacts are restored."""
@@ -253,6 +265,7 @@ class Task(Generic[DataT, StateT, ConfigT]):
         return clone
 
     scoring_deferred: bool = False
+    """Whether the task skips its metrics, rewards, and judges."""
 
     async def score(
         self,
@@ -260,6 +273,7 @@ class Task(Generic[DataT, StateT, ConfigT]):
         runtime: Runtime | None = None,
         deployment: Deployment | None = None,
     ) -> None:
+        """Run the task's metrics, rewards, and judges on the trace."""
         if self.scoring_deferred or trace.is_format_violation:
             return
 
@@ -291,7 +305,7 @@ class Task(Generic[DataT, StateT, ConfigT]):
                     for fn in (*metrics, *rewards)
                     if requires_unavailable_resource(fn)
                 ] + [
-                    judge.reward_name
+                    judge._reward_name
                     for judge in judges
                     if requires_unavailable_resource(judge.score)
                 ]
@@ -315,7 +329,7 @@ class Task(Generic[DataT, StateT, ConfigT]):
 
             seed(trace.metrics, (fn.__name__ for fn in metrics))
             seed(trace.rewards, (fn.__name__ for fn in rewards))
-            seed(trace.rewards, (judge.reward_name for judge in judges))
+            seed(trace.rewards, (judge._reward_name for judge in judges))
 
             metric_results = await invoke_all(metrics, available)
             for fn, result in zip(metrics, metric_results):
@@ -340,20 +354,22 @@ class Task(Generic[DataT, StateT, ConfigT]):
             )
             for judge, result in zip(judges, judge_results):
                 if isinstance(result, Mapping):
-                    unseed(trace.rewards, judge.reward_name)
+                    unseed(trace.rewards, judge._reward_name)
                     items = result.items()
                 else:
-                    items = [(judge.reward_name, result)]
+                    items = [(judge._reward_name, result)]
                 for key, value in items:
                     if value is not None:
                         trace.record_reward(key, value, judge.config.weight)
 
     @classmethod
     def data_type(cls) -> type[TaskData]:
+        """Return the task's data class."""
         return concrete_type(cls, TaskData) or TaskData
 
     @classmethod
     def config_type(cls) -> type[TaskConfig]:
+        """Return the task's config class."""
         return concrete_type(cls, TaskConfig) or TaskConfig
 
     def _plugged_judges(self) -> list[Judge]:

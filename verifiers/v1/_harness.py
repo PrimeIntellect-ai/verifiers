@@ -42,9 +42,12 @@ ConfigT = TypeVar("ConfigT", bound=HarnessConfig)
 
 
 class Harness(ABC, Generic[ConfigT]):
+    """Base class for a program that plays an agent seat in a runtime."""
+
     APPENDS_SYSTEM_PROMPT: ClassVar[bool] = False
     """Emit `TaskData.system_prompt` separately instead of folding it into the user prompt."""
     SUPPORTS_MCP: ClassVar[bool] = False
+    """Whether the program can connect to the task's MCP tool servers."""
     SUPPORTS_TOOL_INTERCEPTION: ClassVar[bool] = False
     """Whether the program asks the rollout's `/tool` gate (handed over as
     `tool_interception_url`) before executing each tool call, so a request hook can
@@ -70,6 +73,7 @@ class Harness(ABC, Generic[ConfigT]):
 
     def __init__(self, config: ConfigT) -> None:
         self.config = config
+        """This harness's config."""
 
     def replay_view(self, message: Message, dialect: DialectName | None) -> Message:
         """`message` as this harness re-sends it on later requests over `dialect` (None
@@ -355,14 +359,23 @@ class HarnessSession:
         tool_interception_url: str | None = None,
     ) -> None:
         self.harness = harness
+        """Harness that runs this session."""
         self.ctx = ctx
+        """Model, client and sampling settings of the agent."""
         self.trace = trace
+        """Trace that this session records into."""
         self.runtime = runtime
+        """Runtime the harness runs in."""
         self.endpoint = endpoint
+        """Model endpoint URL that the harness calls."""
         self.secret = secret
+        """Secret that authenticates the harness to the rollout's servers."""
         self.mcp_urls = mcp_urls
+        """URLs of the task's MCP tool servers."""
         self.data = data
+        """Data of the task being solved."""
         self.tool_interception_url = tool_interception_url
+        """URL that intercepts the harness's tool calls."""
         self._closed = False
 
     async def steer(self, message: str, *, message_id: str | None = None) -> dict:

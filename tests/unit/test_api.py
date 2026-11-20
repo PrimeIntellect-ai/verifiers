@@ -11,6 +11,7 @@ import pkgutil
 import re
 import subprocess
 import sys
+import textwrap
 import typing
 from collections.abc import Iterator
 from pathlib import Path
@@ -195,3 +196,188 @@ def test_api_reference_documents_exactly_the_public_names():
     assert {
         name: set(module.__all__) for name, module in public_namespaces().items()
     } == documented
+
+
+def is_docstring(node: ast.stmt | None) -> bool:
+    return (
+        isinstance(node, ast.Expr)
+        and isinstance(node.value, ast.Constant)
+        and isinstance(node.value.value, str)
+    )
+
+
+def documents_itself(target: ast.AnnAssign) -> bool:
+    """A discriminator field, `type: Literal["docker"] = "docker"`, names itself."""
+    return (
+        isinstance(target.target, ast.Name)
+        and target.target.id == "type"
+        and ast.unparse(target.annotation).startswith("Literal[")
+    )
+
+
+def definition(
+    obj: object,
+) -> ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef | None:
+    try:
+        source = textwrap.dedent(inspect.getsource(obj))  # type: ignore[arg-type]
+    except (OSError, TypeError):
+        return None
+    node = ast.parse(source).body[0]
+    if isinstance(node, ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef):
+        return node
+    return None
+
+
+def own_members(cls: type) -> dict[str, bool]:
+    """The public members a class defines itself, and whether each has a docstring:
+    methods and properties, class attributes and fields, and attributes set in
+    `__init__`."""
+    node = definition(cls)
+    members: dict[str, bool] = {}
+    if not isinstance(node, ast.ClassDef):
+        return members
+
+    def add(name: str, documented: bool) -> None:
+        if not name.startswith("_"):
+            members[name] = members.get(name, False) or documented
+
+    def scan(body: list[ast.stmt], *, in_init: bool) -> None:
+        for i, stmt in enumerate(body):
+            following = body[i + 1] if i + 1 < len(body) else None
+            if isinstance(stmt, ast.FunctionDef | ast.AsyncFunctionDef):
+                if in_init:
+                    continue
+                add(stmt.name, ast.get_docstring(stmt) is not None)
+                if stmt.name == "__init__":
+                    scan(stmt.body, in_init=True)
+                continue
+            if isinstance(stmt, ast.AnnAssign):
+                targets = [stmt.target]
+            elif isinstance(stmt, ast.Assign):
+                targets = stmt.targets
+            else:
+                continue
+            for target in targets:
+                if in_init and not (
+                    isinstance(target, ast.Attribute)
+                    and isinstance(target.value, ast.Name)
+                    and target.value.id == "self"
+                ):
+                    continue
+                if not in_init and not isinstance(target, ast.Name):
+                    continue
+                name = target.attr if in_init else target.id
+                value = getattr(stmt, "value", None)
+                documented = (
+                    is_docstring(following)
+                    or (value is not None and "description=" in ast.unparse(value))
+                    or (isinstance(stmt, ast.AnnAssign) and documents_itself(stmt))
+                )
+                add(name, documented)
+
+    scan(node.body, in_init=False)
+    return members
+
+
+def documented_member(cls: type, name: str) -> bool:
+    """A member is documented by its own docstring or by the one it overrides. Members
+    of non-verifiers bases (pydantic, the standard library) are documented there."""
+    if own_members(cls).get(name):
+        return True
+    for base in cls.__mro__[1:]:
+        if not hasattr(base, name) and name not in getattr(base, "model_fields", {}):
+            continue
+        if not base.__module__.startswith("verifiers."):
+            return True
+        if own_members(base).get(name):
+            return True
+    return False
+
+
+def public_classes() -> dict[int, tuple[str, type]]:
+    classes: dict[int, tuple[str, type]] = {}
+    for path, obj in public_objects().items():
+        if isinstance(obj, type) and obj.__module__.startswith("verifiers."):
+            classes.setdefault(id(obj), (path, obj))
+    return classes
+
+
+def test_public_names_have_docstrings():
+    undocumented = [
+        path
+        for path, obj in public_objects().items()
+        if getattr(obj, "__module__", "").startswith("verifiers.")
+        and callable(obj)
+        and (node := definition(obj)) is not None
+        and ast.get_docstring(node) is None
+    ]
+
+    assert undocumented == []
+
+
+def test_public_members_have_docstrings():
+    """A member without an underscore is public, and public means documented (PEP 8)."""
+    import_every_module()
+    classes = [
+        (path, cls)
+        for path, cls in public_classes().values()
+        # A parametrized generic (`WireTrace`) has the members of its origin.
+        if not (getattr(cls, "__pydantic_generic_metadata__", None) or {}).get("origin")
+    ]
+    unreadable = [path for path, cls in classes if definition(cls) is None]
+    undocumented = [
+        f"{path}.{name}"
+        for path, cls in classes
+        for name in own_members(cls)
+        if not documented_member(cls, name)
+    ]
+
+    assert unreadable == []
+    assert undocumented == []
+
+
+def test_pydantic_validators_are_private():
+    """Pydantic calls validators and serializers; user code never does."""
+    public = []
+    for path, cls in public_classes().values():
+        decorators = getattr(cls, "__pydantic_decorators__", None)
+        if decorators is None:
+            continue
+        for kind in (
+            "validators",
+            "field_validators",
+            "root_validators",
+            "field_serializers",
+            "model_serializers",
+            "model_validators",
+        ):
+            public += [
+                f"{path}.{name}"
+                for name in getattr(decorators, kind)
+                if not name.startswith("_")
+            ]
+
+    assert sorted(set(public)) == []
+
+
+def test_public_modules_export_every_name_they_define():
+    """A name that a public module defines is in its `__all__` or starts with an underscore."""
+    unexported = []
+    for name, module in public_namespaces().items():
+        tree = ast.parse(Path(inspect.getsourcefile(module)).read_text())
+        for node in tree.body:
+            if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+                defined = [node.name]
+            elif isinstance(node, ast.Assign):
+                defined = [t.id for t in node.targets if isinstance(t, ast.Name)]
+            elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+                defined = [node.target.id]
+            else:
+                continue
+            unexported += [
+                f"{name}.{n}"
+                for n in defined
+                if not n.startswith("_") and n not in module.__all__
+            ]
+
+    assert unexported == []

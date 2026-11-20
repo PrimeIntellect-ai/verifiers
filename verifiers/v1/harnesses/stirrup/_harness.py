@@ -16,6 +16,8 @@ PROGRAM_SOURCE = (Path(__file__).resolve().parent / "_program.py").read_text()
 
 
 class StirrupHarnessConfig(HarnessConfig):
+    """Config for the Stirrup harness."""
+
     dialect: Literal["chat_completions"] = "chat_completions"
     version: PinnedVersion = "c092cee80ce09cd1dfb93aef053296a9ecd9dbb6"
     """Stirrup Git revision to install, pinned for reproducibility."""
@@ -23,13 +25,15 @@ class StirrupHarnessConfig(HarnessConfig):
     """Model context capacity used by Stirrup's native history summarization."""
 
     @model_validator(mode="after")
-    def reject_disabled_finish(self) -> "StirrupHarnessConfig":
+    def _reject_disabled_finish(self) -> "StirrupHarnessConfig":
         if "finish" in (self.disabled_tools or []):
             raise ValueError("Stirrup requires its finish tool to terminate the run")
         return self
 
 
 class StirrupHarness(ACPHarness[StirrupHarnessConfig]):
+    """Run the Stirrup agent over ACP."""
+
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
     SUPPORTS_SKILLS = True

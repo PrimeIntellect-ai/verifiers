@@ -16,9 +16,13 @@ class TaskMatchFilesConfig(BaseConfig):
     list, one entry per line. Blank lines are skipped."""
 
     idx: Path | None = None
+    """File of extra `idx` entries."""
     ids: Path | None = None
+    """File of extra `ids` entries."""
     keys: Path | None = None
+    """File of extra `keys` entries."""
     names: Path | None = None
+    """File of extra `names` entries."""
 
 
 class TaskMatchConfig(BaseConfig):
@@ -65,7 +69,7 @@ class TaskMatchConfig(BaseConfig):
         return self
 
     @property
-    def empty(self) -> bool:
+    def _empty(self) -> bool:
         return not (self.idx or self.ids or self.keys or self.names)
 
     def idx_ranges(self) -> list[range]:

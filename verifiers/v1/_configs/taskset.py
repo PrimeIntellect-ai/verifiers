@@ -21,10 +21,12 @@ class SharedTasksetConfig(BaseConfig):
 
 
 class TasksetConfig(SharedTasksetConfig):
+    """A taskset's config: the shared knobs plus its plugin id."""
+
     id: ID = ""
     """Installed taskset package, set with `--env.taskset.id` (or the
     positional `eval <taskset-id>`)."""
 
     @property
-    def name(self) -> str:
+    def _name(self) -> str:
         return self.id

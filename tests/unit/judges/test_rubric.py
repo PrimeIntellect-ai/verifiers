@@ -46,7 +46,7 @@ async def test_rubric_view_full_trace(tmp_path, fake_judge_model, make_full_trac
 
 
 def test_rubric_criteria_toml_and_json(tmp_path):
-    toml = rubric_judge(tmp_path).criteria
+    toml = rubric_judge(tmp_path)._criteria
     assert [c.name for c in toml] == ["mentions_paris", "is_polite"]
     assert [c.weight for c in toml] == [3.0, 1.0]
     # JSON accepts a metadata-bearing object or a bare criteria list.
@@ -56,42 +56,42 @@ def test_rubric_criteria_toml_and_json(tmp_path):
             tmp_path,
             json.dumps({"title": "Safety", "criteria": items}),
             ".json",
-        ).criteria
+        )._criteria
         == toml
     )
-    assert rubric_judge(tmp_path, json.dumps(items), ".json").criteria == toml
+    assert rubric_judge(tmp_path, json.dumps(items), ".json")._criteria == toml
     # the suffix check is case-insensitive: QUALITY.TOML is TOML, not JSON
-    assert rubric_judge(tmp_path, suffix=".TOML").criteria == toml
+    assert rubric_judge(tmp_path, suffix=".TOML")._criteria == toml
 
 
 def test_rubric_config_weight_overrides_file(tmp_path):
     judge = rubric_judge(tmp_path, weights={"mentions_paris": 1.0})
-    assert [c.weight for c in judge.criteria] == [1.0, 1.0]
+    assert [c.weight for c in judge._criteria] == [1.0, 1.0]
 
 
 def test_rubric_rejects_bad_files(tmp_path):
     with pytest.raises(ValueError, match="no criteria"):
-        _ = rubric_judge(tmp_path, "").criteria
+        _ = rubric_judge(tmp_path, "")._criteria
     duplicate = RUBRIC_TOML.replace("is_polite", "mentions_paris")
     with pytest.raises(ValueError, match="duplicate"):
-        _ = rubric_judge(tmp_path, duplicate).criteria
+        _ = rubric_judge(tmp_path, duplicate)._criteria
     with pytest.raises(ValueError, match="name no criterion"):
-        _ = rubric_judge(tmp_path, weights={"typo": 2.0}).criteria
+        _ = rubric_judge(tmp_path, weights={"typo": 2.0})._criteria
     # all-zero weights fail while loading the rubric — before any judge call is paid for
     with pytest.raises(ValueError, match="no positive criterion weight"):
         _ = rubric_judge(
             tmp_path, weights={"mentions_paris": 0.0, "is_polite": 0.0}
-        ).criteria
+        )._criteria
     # negative/NaN/inf weights would invert a criterion or corrupt the weighted mean
     for weight in (-1.0, float("nan"), float("inf")):
         with pytest.raises(
             ValueError, match="greater than or equal to 0|finite number"
         ):
-            _ = rubric_judge(tmp_path, weights={"mentions_paris": weight}).criteria
+            _ = rubric_judge(tmp_path, weights={"mentions_paris": weight})._criteria
     with pytest.raises(ValueError, match="non-finite total"):
         _ = rubric_judge(
             tmp_path, weights={"mentions_paris": 1e308, "is_polite": 1e308}
-        ).criteria
+        )._criteria
 
 
 async def test_rubric_score(tmp_path, fake_judge_model, make_trace):
@@ -148,12 +148,12 @@ def test_rubric_choices_validation(tmp_path):
     with pytest.raises(ValueError, match="at least 2"):
         _ = rubric_judge(
             tmp_path, body='[[criteria]]\nname = "x"\ntext = "t"\nchoices = ["only"]\n'
-        ).criteria
+        )._criteria
     with pytest.raises(ValueError, match="duplicate options"):
         _ = rubric_judge(
             tmp_path,
             body='[[criteria]]\nname = "x"\ntext = "t"\nchoices = ["a", "a"]\n',
-        ).criteria
+        )._criteria
 
 
 async def test_rubric_reference_answer_optional(tmp_path, fake_judge_model, make_trace):
@@ -197,7 +197,7 @@ def test_rubric_drop_validation(tmp_path):
     def criteria(body: str):
         return rubric_judge(
             tmp_path, body='[[criteria]]\nname = "x"\ntext = "t"\n' + body
-        ).criteria
+        )._criteria
 
     with pytest.raises(ValueError, match="finite"):
         criteria("choices = { a = 1.0, b = nan }\n")

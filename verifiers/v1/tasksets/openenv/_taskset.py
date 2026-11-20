@@ -17,14 +17,23 @@ import verifiers.v1 as vf
 
 
 class OpenEnvData(vf.TaskData):
+    """Data for one OpenEnv episode."""
+
     env: str | None
+    """Environment id passed to OpenEnv."""
     base_url: str | None
+    """URL of an existing OpenEnv server, if any."""
     use_docker: bool
+    """Whether to start the environment with Docker instead of UV."""
     provider_kwargs: dict[str, Any]
+    """Extra arguments for OpenEnv's provider."""
     reset: dict[str, Any]
+    """Arguments passed to OpenEnv's `reset`."""
 
 
 class OpenEnvConfig(vf.TasksetConfig):
+    """Config for the OpenEnv taskset."""
+
     env: str | None = None
     """Environment id passed to OpenEnv. Required unless `base_url` is set."""
     base_url: str | None = None
@@ -38,14 +47,14 @@ class OpenEnvConfig(vf.TasksetConfig):
     """One finite task per set of arguments passed to OpenEnv's `reset`."""
 
     @model_validator(mode="after")
-    def validate_config(self) -> Self:
+    def _validate_config(self) -> Self:
         if not self.env and not self.base_url:
             raise ValueError("pass `env` or `base_url`")
         return self
 
 
 class OpenEnvTask(vf.Task[OpenEnvData]):
-    pass
+    """One OpenEnv episode."""
 
 
 def parse_action(message: str, action_schema: dict[str, Any]) -> dict[str, Any]:
@@ -67,10 +76,15 @@ def parse_action(message: str, action_schema: dict[str, Any]) -> dict[str, Any]:
 
 
 class OpenEnvEnvConfig(vf.EnvConfig):
+    """Config for the OpenEnv env."""
+
     player: vf.AgentConfig = vf.AgentConfig()
+    """The agent that acts in the environment."""
 
 
 class OpenEnvEnv(vf.Env[OpenEnvEnvConfig]):
+    """Step an OpenEnv environment, with the engine as the user."""
+
     async def run(self, task, agents):
         from openenv import GenericEnvClient
         from openenv.core import CallToolAction
@@ -135,6 +149,8 @@ class OpenEnvEnv(vf.Env[OpenEnvEnvConfig]):
 
 
 class OpenEnvTaskset(vf.Taskset[OpenEnvTask, OpenEnvConfig]):
+    """One task per configured set of reset arguments."""
+
     def load(self) -> Iterator[OpenEnvTask]:
         config = self.config
         source = config.base_url or config.env

@@ -15,6 +15,8 @@ from verifiers.v1.harnesses._utils.launch import (
 
 
 class NullHarnessConfig(HarnessConfig):
+    """Config for the plain chat harness."""
+
     dialect: Literal["chat_completions"] = "chat_completions"
     compaction: CompactionConfig | None = None
     """Context compaction, off by default. Set it (e.g. an empty `[compaction]` table for
@@ -23,6 +25,8 @@ class NullHarnessConfig(HarnessConfig):
 
 
 class NullHarness(Harness[NullHarnessConfig]):
+    """Plain chat loop with no local tools."""
+
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
     SUPPORTS_RESUME = True

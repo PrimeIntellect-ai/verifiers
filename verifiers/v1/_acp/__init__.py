@@ -49,9 +49,13 @@ class ACPTurn(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     reply: str
+    """The agent's visible reply text."""
     stop_reason: str | None = None
+    """ACP stop reason of the prompt, e.g. `end_turn` or `max_tokens`."""
     response_metadata: dict[str, Any] = Field(default_factory=dict)
+    """Extension metadata on the prompt response."""
     update_metadata: list[dict[str, Any]] = Field(default_factory=list)
+    """Extension metadata from each session update, in order."""
 
 
 @dataclass
@@ -59,13 +63,21 @@ class ACPConfig:
     """One harness's ACP process and initial prompt."""
 
     env: dict[str, str]
+    """Environment variables for the ACP process."""
     command: list[str]
+    """Command that starts the ACP agent."""
     prompt: str | Messages | None
+    """Initial user prompt."""
     mcp_urls: dict[str, str] | None = None
+    """MCP servers to wire in by name (None = the task's servers)."""
     system_prompt: str | None = None
+    """System prompt for the session."""
     session_meta: JsonObject | None = None
+    """Extra fields sent with the `session/new` request."""
     client_capabilities: JsonObject | None = None
+    """ACP client capabilities announced to the agent."""
     session_title: str | None = None
+    """Title to give the session, if the agent supports renaming."""
 
 
 class ACPHarness(Harness[ConfigT]):
@@ -110,7 +122,7 @@ class ACPHarness(Harness[ConfigT]):
         mcp_urls: dict[str, str],
         data: TaskData,
     ) -> ACPConfig:
-        pass
+        """Return the ACP process and initial prompt for one rollout."""
 
     async def session(
         self,

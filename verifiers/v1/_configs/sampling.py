@@ -10,15 +10,19 @@ class SamplingConfig(BaseModel):
 
     model_config = ConfigDict(extra="allow")
     temperature: float | None = None
+    """Sampling temperature."""
     top_p: float | None = None
+    """Nucleus sampling probability mass."""
     reasoning_effort: str | None = None
+    """Reasoning effort, e.g. `low` or `high`."""
     max_tokens: int | None = Field(
         None, validation_alias=AliasChoices("max_tokens", "max_completion_tokens")
     )
+    """Max output tokens per response."""
 
     @model_validator(mode="before")
     @classmethod
-    def normalize(cls, data: Any) -> Any:
+    def _normalize(cls, data: Any) -> Any:
         """Use one key per parameter before merging overrides, retaining null clears."""
         if not isinstance(data, dict):
             return data

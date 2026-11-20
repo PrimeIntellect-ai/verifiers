@@ -28,6 +28,8 @@ npm install --prefix "$AGENT_OPENCODE_DIR" --no-audit --no-fund --omit=dev \
 
 
 class OpenCodeHarnessConfig(HarnessConfig):
+    """Config for the OpenCode harness."""
+
     version: PinnedVersion = "2.3.2"
     """OpenCode 2 release to install, pinned for reproducibility."""
     dialect: DialectName = "chat_completions"
@@ -36,6 +38,8 @@ class OpenCodeHarnessConfig(HarnessConfig):
 
 
 class OpenCodeHarness(ACPHarness[OpenCodeHarnessConfig]):
+    """Run OpenCode 2 through its ACP server."""
+
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
     SUPPORTS_SKILLS = True

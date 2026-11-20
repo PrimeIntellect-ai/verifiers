@@ -61,10 +61,12 @@ class ToolsetConfig(BaseToolsetConfig):
 
 
 class SharedToolsetConfig(BaseToolsetConfig):
-    pass
+    """A tool server shared by every rollout of a run."""
 
 
 class Toolset(ServerBase[ConfigT, StateT]):
+    """An MCP tool server whose `@tool` methods an agent can call."""
+
     @asynccontextmanager
     async def serve(self, runtime: Runtime, **kwargs) -> AsyncIterator[str]:
         """Connect a rollout to this server; task-format adapters own their transport."""

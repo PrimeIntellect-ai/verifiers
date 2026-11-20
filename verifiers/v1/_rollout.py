@@ -151,7 +151,7 @@ class Rollout:
         self.trace: Trace = Trace(
             **({"id": trace_id} if trace_id is not None else {}),
             attempt=attempt,
-            task=TraceTask.from_task(task),
+            task=TraceTask._from_task(task),
             state=state_cls(type(task))(),
             # The seat's resolved config, role overrides included — the agent
             # this trace can be reproduced with.
@@ -400,7 +400,7 @@ class Rollout:
                         name: self.deployment.target(name)
                         for name in self.deployment.target_names
                     }
-                    if self.deployment.spec is not None
+                    if self.deployment._spec is not None
                     else {}
                 )
                 self._urls = await self._stack.enter_async_context(

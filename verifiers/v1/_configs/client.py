@@ -45,16 +45,19 @@ class BaseClientConfig(BaseConfig):
     """An OpenAI-compatible endpoint. The API key is read from an env var."""
 
     base_url: str = DEFAULT_PRIME_INFERENCE_URL
+    """Base URL of the endpoint."""
     api_key_var: str = "PRIME_API_KEY"
+    """Environment variable that holds the API key."""
     headers: dict[str, str] = Field(default_factory=dict)
     """Extra HTTP headers sent on every request."""
     headers_from_env: dict[str, str] = Field(default_factory=dict)
     """Header names mapped to environment variables, resolved when building a client.
     Set environment values override static headers."""
     timeout: ClientTimeoutConfig = ClientTimeoutConfig()
+    """HTTP request timeouts."""
 
     @model_validator(mode="after")
-    def apply_prime_config(self) -> "BaseClientConfig":
+    def _apply_prime_config(self) -> "BaseClientConfig":
         if self.api_key_var != "PRIME_API_KEY":
             return self
         prime_config = load_prime_config()

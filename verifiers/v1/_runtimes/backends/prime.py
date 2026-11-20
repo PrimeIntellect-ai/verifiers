@@ -107,6 +107,8 @@ def set_base_sandbox_labels(labels: list[str]) -> None:
 
 
 class PrimeRuntimeInfo(PrimeConfig, BaseRuntimeInfo):
+    """Facts about a provisioned Prime sandbox."""
+
     image_cached: bool | None = None
     """Whether the platform already had the image at create (None until then). False means
     a first-use auto-build ran while this sandbox waited to start."""

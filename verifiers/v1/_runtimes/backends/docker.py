@@ -68,7 +68,7 @@ control.sendmsg([b"listener"], [(socket.SOL_SOCKET, socket.SCM_RIGHTS, array.arr
 
 
 class DockerRuntimeInfo(DockerConfig, BaseRuntimeInfo):
-    pass
+    """Facts about a provisioned Docker runtime."""
 
 
 async def _communicate(

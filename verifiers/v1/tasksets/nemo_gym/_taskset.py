@@ -23,6 +23,8 @@ from ._toolset import NeMoGymState, NeMoGymToolset
 
 
 class NeMoGymTaskConfig(TaskConfig):
+    """Per-task settings for NeMo Gym server requests."""
+
     resources_url: str | None = None
     """Base URL of an existing server; managed tasksets fill this automatically."""
 
@@ -34,20 +36,28 @@ class NeMoGymTaskConfig(TaskConfig):
 
 
 class NeMoGymConfig(TasksetConfig):
+    """Config for a NeMo Gym taskset."""
+
     dataset: Path
     """JSONL rows containing ``responses_create_params`` and verifier metadata."""
 
     tools: SharedToolsetConfig = SharedToolsetConfig()
+    """Settings for the NeMo Gym toolset."""
     task: NeMoGymTaskConfig = NeMoGymTaskConfig()
 
 
 class NeMoGymData(TaskData):
+    """Data for one NeMo Gym row."""
+
     row: dict[str, Any]
     """The exact source row sent back to ``/seed_session`` and ``/verify``."""
 
 
 class NeMoGymTask(Task[NeMoGymData, NeMoGymState, NeMoGymTaskConfig]):
+    """One NeMo Gym row, seeded and verified by its resource server."""
+
     async def setup(self, trace: Trace, runtime: Runtime) -> None:
+        """Seed the server session for this row."""
         state = trace.state
         if self.config.resources_url is None:
             raise ValueError("set resources_url or use a managed NeMo Gym taskset")
@@ -69,6 +79,7 @@ class NeMoGymTask(Task[NeMoGymData, NeMoGymState, NeMoGymTaskConfig]):
 
     @reward(weight=1.0)
     async def nemo_gym(self, trace: Trace) -> float:
+        """Return the resource server's verified reward."""
         state = trace.state
         params = self.data.row["responses_create_params"]
         response = await state.post(
@@ -88,6 +99,8 @@ class NeMoGymTask(Task[NeMoGymData, NeMoGymState, NeMoGymTaskConfig]):
 
 
 class NeMoGymTaskset(Taskset[NeMoGymTask, NeMoGymConfig]):
+    """Tasks from a NeMo Gym JSONL dataset."""
+
     resource_server: ClassVar[str | None] = None
     """Import reference for a package-provided resource server, if managed."""
 

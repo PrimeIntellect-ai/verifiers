@@ -38,12 +38,16 @@ fi
 
 
 class KimiCodeHarnessConfig(HarnessConfig):
+    """Config for the Kimi Code harness."""
+
     version: PinnedVersion = "2.6.3"
     """Kimi Code release to install, pinned for reproducibility."""
     dialect: DialectName = "chat_completions"
 
 
 class KimiCodeHarness(ACPHarness[KimiCodeHarnessConfig]):
+    """Run Kimi Code through its ACP server."""
+
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
     SUPPORTS_SKILLS = True

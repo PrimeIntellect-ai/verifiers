@@ -90,7 +90,7 @@ def scoring_network(
     """`network` as the task's policy while scoring, combined with the runtime's own
     rules the way `TaskData.network` is."""
     if isinstance(base, NetworkPolicyConfig):
-        return base.with_task_network_policy(network)
+        return base._with_task_network_policy(network)
     if network.network_restricted:
         raise TaskError(
             f"scoring requires a network policy, but the {base.type} runtime does not "
@@ -148,7 +148,7 @@ async def grade_task(
                     boundary(TaskError, "verifier setup"),
                 ):
                     runtime = await stack.enter_async_context(
-                        deployment.verifier(
+                        deployment._verifier(
                             config,
                             env=grader.runtime_env(),
                         )

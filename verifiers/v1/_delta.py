@@ -93,8 +93,8 @@ class DeltaStreamer:
         traces: Callable[[], Iterable[Trace]],
         send: Callable[[dict], Awaitable[None]],
     ) -> None:
-        self.traces = traces
-        self.send = send
+        self._traces = traces
+        self._send = send
         self._cursors: dict[str, TraceCursor] = {}
         self._dirty: dict[str, int] = {}
         """Trace id -> the change that last marked it. A sent delta clears the mark only if no
@@ -121,6 +121,7 @@ class DeltaStreamer:
             await self.flush(everything=True)
 
     def watch(self, trace: Trace) -> None:
+        """Stream the changes of a trace."""
         # A plain function, not the bound method: grading deep-copies traces mid-run, and a
         # bound method would drag this streamer (and its asyncio tasks) into the copy.
         trace.watch(lambda changed: self._changed(changed))
@@ -146,7 +147,7 @@ class DeltaStreamer:
             for trace_id, delta, cursor in self._diff(everything):
                 # The cursor stays put on failure: the next flush resends it.
                 try:
-                    await self.send(delta)
+                    await self._send(delta)
                 except Exception as e:
                     logger.warning(
                         "Failed to send trace delta - %s: %s",
@@ -168,7 +169,7 @@ class DeltaStreamer:
         """Each notified trace's delta (`everything`: each trace's), with its cursor as it stands
         once that delta is sent (None for a discard). Nothing is committed here: `flush` stores
         a cursor only after its send."""
-        traces = list(self.traces())
+        traces = list(self._traces())
         live = {trace.id for trace in traces}
         # A trace that left the live set (a retried attempt) is discarded on the other side too.
         deltas = [
@@ -244,8 +245,10 @@ class EpisodeAssembly:
 
     def __init__(self) -> None:
         self.traces: dict[str, dict] = {}
+        """Assembled raw trace dicts by trace ID."""
 
     def apply(self, delta: dict) -> None:
+        """Fold one trace delta into the assembled traces."""
         trace_id = delta["trace"]
         if delta.get("discard"):
             self.traces.pop(trace_id, None)

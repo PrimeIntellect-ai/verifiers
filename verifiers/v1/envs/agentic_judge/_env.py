@@ -18,9 +18,9 @@ from verifiers.v1._utils.compile import validate_pairing
 from verifiers.v1.judges.rubric import (
     Criterion,
     RubricVerdicts,
+    _load_criteria,
     criterion_metrics,
     drop_reason,
-    load_criteria,
     score_verdicts,
     weighted_score,
 )
@@ -128,7 +128,7 @@ class JudgeTask(vf.Task):
         files: dict[str, bytes],
     ) -> None:
         super().__init__(data)
-        self.files = files
+        self._files = files
 
     @classmethod
     def from_trace(
@@ -153,7 +153,7 @@ class JudgeTask(vf.Task):
             body += "\n\n" + _render(TASK_SECTION, prompt=solved.prompt_text)
         workspace_note = ISOLATED_WORKSPACE_NOTE if isolated else SHARED_WORKSPACE_NOTE
         sections = [body, _verdict_section(config.criteria()), workspace_note]
-        if (hint := config.build_hint()) is not None:
+        if (hint := config._build_hint()) is not None:
             sections.insert(1, _render(HINT_SECTION, hint=hint))
         prompt = "\n\n".join(sections)
         return cls(
@@ -169,12 +169,13 @@ class JudgeTask(vf.Task):
         )
 
     async def setup(self, trace: vf.Trace, runtime: vf.Runtime) -> None:
+        """Upload the trace record and clear any stale verdict."""
         # The solver had this box first: a pre-seeded verdict must never read as
         # the judge's own, and a file (or planted symlink) at an upload path must
         # never survive it — a symlinked TRACE_FILE would redirect the write onto
         # any file the solver chose.
-        await runtime.run(["rm", "-f", VERDICT_FILE, *self.files], env={})
-        for path, content in self.files.items():
+        await runtime.run(["rm", "-f", VERDICT_FILE, *self._files], env={})
+        for path, content in self._files.items():
             await runtime.write(path, content)
 
     async def finalize(self, trace: vf.Trace, runtime: vf.Runtime) -> None:
@@ -195,6 +196,7 @@ class TextFile(vf.BaseConfig):
     """An explicit file-backed text value for config formats without `Path` values."""
 
     path: Path
+    """File to read the text from."""
 
 
 TextSource = str | Path | TextFile
@@ -230,17 +232,19 @@ class JudgeTaskConfig(vf.BaseConfig):
         return path.read_text(encoding="utf-8")
 
     def build_prompt(self) -> str:
+        """Return the grading policy text."""
         if self.prompt is None:
             return GRADE_PROMPT + "\n\n" + TASK_SECTION
         return self._resolve(self.prompt)
 
-    def build_hint(self) -> str | None:
+    def _build_hint(self) -> str | None:
         return self._resolve(self.hint) if self.hint is not None else None
 
     def criteria(self) -> list[Criterion]:
+        """Return the criteria the judge grades against."""
         if self.rubric is None:
             return [SOLVED]
-        return load_criteria(self.rubric)
+        return _load_criteria(self.rubric)
 
 
 class ScoreConfig(vf.BaseConfig):
@@ -254,13 +258,17 @@ class ScoreConfig(vf.BaseConfig):
 
 
 class AgenticJudgeEnvConfig(vf.EnvConfig):
+    """Config for the agentic-judge env."""
+
     solver: vf.AgentConfig = vf.AgentConfig()
     """The solver agent. Its runtime must be a container:
     `--env.solver.runtime.type docker|prime`."""
     judge: vf.AgentConfig = vf.AgentConfig()
     """The judge program; it borrows the workspace selected by solver.scoring."""
     task: JudgeTaskConfig = JudgeTaskConfig()
+    """The judge's task: grading policy, hints, and rubric."""
     score: ScoreConfig = ScoreConfig()
+    """How the verdict combines with the taskset's own rewards."""
 
 
 class AgenticJudgeEnv(vf.Env[AgenticJudgeEnvConfig]):
@@ -271,7 +279,7 @@ class AgenticJudgeEnv(vf.Env[AgenticJudgeEnvConfig]):
         self._check_agents()
         # A missing policy file or a malformed rubric fails here, not mid-episode.
         config.task.build_prompt()
-        config.task.build_hint()
+        config.task._build_hint()
         config.task.criteria()
 
     def _check_agents(self) -> None:

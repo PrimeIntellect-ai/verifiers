@@ -56,17 +56,18 @@ def _as_error(e: Exception) -> Error:
 @dataclass
 class RunSlot:
     """One planned episode, observable while it happens: `traces` collects the
-    current attempt (a retry restarts the list), `episode`/`done` land when final.
-    A runner that can't watch live traces stamps `started`
-    at dispatch so the slot still reads as running."""
+    current attempt (a retry restarts the list), `episode`/`done` land when final."""
 
     task: Task
+    """Task the episode plays."""
     id: str = field(default_factory=lambda: uuid.uuid4().hex)
     """The episode's id. Stable across retries."""
     traces: list[Trace] = field(default_factory=list)
+    """Traces of the current attempt, live as they are minted."""
     episode: Episode | None = None
+    """Final episode, or None until the slot is done."""
     done: bool = False
-    started: float | None = None
+    """Whether the episode is final."""
 
 
 ConfigT = TypeVar("ConfigT", bound=EnvConfig)
@@ -94,6 +95,7 @@ class Env(ABC, Generic[ConfigT]):
                 f"{config_cls.__name__}(...) explicitly"
             )
         self.config: ConfigT = config
+        """Config the env was built from."""
         if not config.taskset.id:
             raise ValueError(
                 f"{type(self).__name__} needs a seed taskset — every rollout starts "
@@ -101,6 +103,7 @@ class Env(ABC, Generic[ConfigT]):
                 "`eval <taskset-id>`)"
             )
         self.taskset = load_taskset(config.taskset)
+        """Seed taskset that every episode starts from."""
         self._default_harness = default_agent_harness(config.taskset.id)
         task_cls = type(self.taskset).task_type()
         self._task_cls: type[Task] = task_cls
@@ -250,7 +253,7 @@ class Env(ABC, Generic[ConfigT]):
             **({"id": episode_id} if episode_id is not None else {}),
             attempt=attempt,
             env=EnvInfo(id=self.config.env_id),
-            task=TraceTask.from_task(task),
+            task=TraceTask._from_task(task),
         )
         agents = self._episode_agents(ctx, episode.traces, on_trace, on_discard)
         try:

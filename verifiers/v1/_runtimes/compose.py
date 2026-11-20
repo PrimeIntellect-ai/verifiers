@@ -54,10 +54,15 @@ class ComposeSpec:
     """
 
     directory: str
+    """Task directory that holds the Compose file and its build inputs."""
     file: str = "environment/docker-compose.yaml"
+    """Path of the Compose file, relative to `directory`."""
     workspace: str = "main"
+    """Service that runs task commands and holds task files."""
     image_override: bool = False
+    """Whether the runtime config's image replaces the workspace's image."""
     build_dockerfile: bool = False
+    """Whether to build the workspace from a Dockerfile next to the file."""
 
 
 def _harbor_volume(name: str) -> str:

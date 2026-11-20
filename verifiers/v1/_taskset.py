@@ -47,6 +47,8 @@ Transform = Callable[[Iterator[Any]], Iterator[Any]]
 
 
 class Taskset(ABC, Generic[TaskT, TasksetConfigT]):
+    """A loader that yields the tasks of one task type."""
+
     INFINITE: bool = False
     """Whether `load()` yields tasks forever. A view can still bound the iteration
     (see `bounded`)."""
@@ -59,8 +61,10 @@ class Taskset(ABC, Generic[TaskT, TasksetConfigT]):
 
     def __init__(self, config: TasksetConfigT) -> None:
         self.config = config
+        """The taskset's config."""
         override = config.system_prompt
         self.system_prompt = override.read_text() if override is not None else None
+        """System prompt from the config that overrides each task's own."""
 
     @abstractmethod
     def load(self) -> Iterable[TaskT]:
@@ -150,9 +154,9 @@ class Taskset(ABC, Generic[TaskT, TasksetConfigT]):
         """The views `config` describes, chained in its fixed order: `include`,
         `exclude`, `shuffle`, `skip`, `take`."""
         view = self
-        if not config.include.empty:
+        if not config.include._empty:
             view = view.include(**config.include.model_dump())
-        if not config.exclude.empty:
+        if not config.exclude._empty:
             view = view.exclude(**config.exclude.model_dump())
         if config.shuffle:
             view = view.shuffle(config.seed)
@@ -174,6 +178,7 @@ class Taskset(ABC, Generic[TaskT, TasksetConfigT]):
 
     @classmethod
     def task_type(cls) -> type[Task]:
+        """Return the task class the taskset yields."""
         return concrete_type(cls, Task, origin=Taskset) or Task
 
     @classmethod

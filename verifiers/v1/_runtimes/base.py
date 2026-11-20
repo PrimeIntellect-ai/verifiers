@@ -67,24 +67,31 @@ SERVICE_PORT = 8000
 
 @dataclass(frozen=True)
 class ProgramResult:
+    """The outcome of a command run to completion."""
+
     exit_code: int
+    """Exit code of the command."""
     stdout: str
+    """Decoded standard output."""
     stderr: str
+    """Decoded standard error."""
 
 
 class RuntimeProcess(ABC):
     """A process whose stdio streams across a runtime boundary."""
 
     stdout: AsyncIterator[bytes]
+    """Stream of the process's standard output."""
     stderr: AsyncIterator[bytes]
+    """Stream of the process's standard error."""
 
     @abstractmethod
     async def write(self, data: bytes) -> None:
-        pass
+        """Write `data` to the process's standard input."""
 
     @abstractmethod
     async def wait(self) -> int:
-        pass
+        """Wait for the process to exit and return its exit code."""
 
     @abstractmethod
     async def poll(self) -> int | None:
@@ -92,11 +99,11 @@ class RuntimeProcess(ABC):
 
     @abstractmethod
     async def terminate(self) -> None:
-        pass
+        """Ask the process to stop."""
 
     @abstractmethod
     async def kill(self) -> None:
-        pass
+        """Force the process to stop."""
 
 
 def parse_gpu(gpu: str | None) -> tuple[str | None, int]:
@@ -143,7 +150,10 @@ def cleanup_at_exit() -> None:
 
 
 class BaseRuntimeInfo(BaseConfig):
+    """Facts about a provisioned runtime, filled in as it starts."""
+
     id: str | None = None
+    """Provider id of the resource, such as a container or sandbox id."""
     borrowed: bool = False
     """Whether the run was placed into a live box owned by someone else
     (`Agent.run(runtime=...)`) rather than provisioning its own."""
@@ -203,13 +213,16 @@ class RuntimeBackend(ABC):
     the host subprocess runtime overrides this with its per-user cache."""
 
     info: BaseRuntimeInfo
+    """Facts about the provisioned resource, such as its id."""
 
     def __init__(self, name: str | None = None) -> None:
         self.name = name or f"vf-{uuid.uuid4().hex[:12]}"
+        """Name of the runtime, unique per run."""
         # Per-run task values live on the runtime rather than its serializable config/info.
         # Explicit process values (model credentials, proxy settings, etc.) override these.
         self.env: dict[str, str] = {}
-        self.cache = RuntimeCache()
+        """Environment variables to set when the runtime is provisioned."""
+        self._cache = RuntimeCache()
         self._setup_claimed = False
         self._background: list[RuntimeProcess] = []
         self.stopped = False
@@ -224,17 +237,19 @@ class RuntimeBackend(ABC):
         return Runtime(self, env=self.env if env is None else env)
 
     def deploy(self, **kwargs):
+        """Return a deployment that runs on this runtime."""
         from verifiers.v1._runtimes.deployment import Deployment
 
         return Deployment(self, **kwargs)
 
     @property
     def type(self) -> str:
+        """Runtime type, such as `docker` or `prime`."""
         return self.config.type
 
     @abstractmethod
     async def start(self) -> None:
-        pass
+        """Provision the resource and fill in `info`."""
 
     async def stop(self) -> None:
         """Free the provisioned resource on the normal path (the owner's `finally`),

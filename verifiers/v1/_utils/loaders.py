@@ -158,14 +158,17 @@ def import_judge(judge_id: str) -> ModuleType:
 
 
 def taskset_class(taskset_id: str) -> type[Taskset]:
+    """Return the `Taskset` class for a taskset id."""
     return _plugin_class(import_taskset(taskset_id), Taskset, "taskset")
 
 
 def harness_class(harness_id: str) -> type[Harness]:
+    """Return the `Harness` class for a harness id."""
     return _plugin_class(import_harness(harness_id), Harness, "harness")
 
 
 def judge_class(judge_id: str) -> type[Judge]:
+    """Return the `Judge` class for a judge id."""
     return _plugin_class(import_judge(judge_id), Judge, "judge")
 
 
@@ -207,14 +210,17 @@ def load_environment(config: EnvConfig) -> Env:
 
 
 def load_taskset(config: TasksetConfig) -> Taskset:
+    """Construct the taskset for `config`."""
     return taskset_class(config.id)(config)
 
 
 def load_harness(config: HarnessConfig) -> Harness:
+    """Construct the harness for `config`."""
     return harness_class(config.id)(config)
 
 
 def load_judge(config: JudgeConfig) -> Judge:
+    """Construct the judge for `config`."""
     return judge_class(config.id)(config)
 
 

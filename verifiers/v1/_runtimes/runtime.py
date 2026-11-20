@@ -33,9 +33,13 @@ class Runtime:
     """
 
     backend: RuntimeBackend
+    """The runtime this view accesses."""
     env: Mapping[str, str] = field(default_factory=dict)
+    """Environment variables for every process this view starts."""
     user: str | None = None
+    """User that runs commands, or None for the runtime's default user."""
     home: str | None = None
+    """Home directory for `user`, set as `HOME` in each process."""
 
     def __post_init__(self) -> None:
         if self.user is not None and not self.backend.SUPPORTS_USER_SWITCHING:
@@ -47,47 +51,56 @@ class Runtime:
         object.__setattr__(self, "env", MappingProxyType(dict(self.env)))
 
     def with_env(self, env: Mapping[str, str]) -> Self:
+        """Return a view with `env` as its environment variables."""
         return replace(self, env=env)
 
     def with_user(self, user: str | None, home: str | None = None) -> Self:
+        """Return a view that runs commands as `user`."""
         return replace(self, user=user, home=home if user is not None else None)
 
     def process_env(self, env: dict[str, str]) -> dict[str, str]:
+        """Return the full environment for a process started with `env`."""
         home = {} if self.home is None else {"HOME": self.home}
         return {**self.env, **home, **env}
 
     @property
     def config(self):
+        """Config the runtime was provisioned from."""
         return self.backend.config
 
     @property
     def info(self):
+        """Facts about the provisioned resource, such as its id."""
         return self.backend.info
 
     @property
     def name(self) -> str:
+        """Name of the runtime."""
         return self.backend.name
 
     @property
     def type(self) -> str:
+        """Runtime type, such as `docker` or `prime`."""
         return self.backend.type
 
     @property
-    def is_local(self) -> bool:
+    def _is_local(self) -> bool:
         return self.backend.is_local
 
     @property
     def network_restricted(self) -> bool:
+        """Whether the agent phase uses filtered networking."""
         return self.backend.network_restricted
 
     @property
-    def published_port(self) -> int | None:
+    def _published_port(self) -> int | None:
         return self.backend.published_port
 
     def host_url(self, url: str) -> str:
+        """Return the URL a program in this runtime uses to reach host `url`."""
         return self.backend.host_url(url)
 
-    async def expose(self, port: int) -> str:
+    async def _expose(self, port: int) -> str:
         return await self.backend.expose(port)
 
     async def set_network(self, network: NetworkPolicyConfig) -> None:
@@ -127,6 +140,7 @@ class Runtime:
         await self.backend.run_background(self, argv, env, log)
 
     async def write(self, path: str, data: bytes) -> None:
+        """Write `data` to `path`, creating parent directories."""
         await self.backend.write(self, path, data)
 
     async def alive(self) -> bool:
@@ -178,15 +192,15 @@ class Runtime:
             else f"{self.backend.scripts_dir}-{self.user}"
         )
         path = f"{directory}/{digest}.py"
-        if path not in self.backend.cache.uv_interpreters:
-            async with self.backend.cache.uv_locks.setdefault(path, asyncio.Lock()):
-                if self.user is not None and not self.backend.cache.curl_ready:
+        if path not in self.backend._cache.uv_interpreters:
+            async with self.backend._cache.uv_locks.setdefault(path, asyncio.Lock()):
+                if self.user is not None and not self.backend._cache.curl_ready:
                     # Only root can install a downloader for the user's uv bootstrap.
                     curl = await self.with_user(None).run(
                         ["sh", "-c", _INSTALL_CURL], {}
                     )
-                    self.backend.cache.curl_ready = curl.exit_code == 0
-                if path not in self.backend.cache.uv_interpreters:
+                    self.backend._cache.curl_ready = curl.exit_code == 0
+                if path not in self.backend._cache.uv_interpreters:
                     tmp = f"{path}.{uuid.uuid4().hex}.tmp"
                     await self.write(tmp, data)
                     command = (
@@ -205,10 +219,10 @@ class Runtime:
                             "failed to prepare uv script: "
                             f"{result.stderr.strip()[-2000:]}"
                         )
-                    self.backend.cache.uv_interpreters[path] = (
+                    self.backend._cache.uv_interpreters[path] = (
                         result.stdout.strip().splitlines()[-1]
                     )
-        interpreter = self.backend.cache.uv_interpreters[path]
+        interpreter = self.backend._cache.uv_interpreters[path]
         if not activate:
             return [interpreter, path]
         venv = str(PurePosixPath(interpreter).parent.parent)

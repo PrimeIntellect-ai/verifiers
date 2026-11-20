@@ -35,12 +35,16 @@ touch {ready}
 
 
 class ClaudeCodeHarnessConfig(HarnessConfig):
+    """Config for the Claude Code harness."""
+
     dialect: Literal["anthropic_messages"] = "anthropic_messages"
     version: PinnedVersion = "2.1.327"
     """Claude Code release to install, pinned for reproducibility."""
 
 
 class ClaudeCodeHarness(ACPHarness[ClaudeCodeHarnessConfig]):
+    """Run Claude Code through its ACP adapter."""
+
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
     SUPPORTS_SKILLS = True
@@ -84,12 +88,12 @@ class ClaudeCodeHarness(ACPHarness[ClaudeCodeHarnessConfig]):
         data: TaskData,
     ) -> ACPConfig:
         system_prompt, prompt = self.resolve_prompt(data)
-        config_dir = self.config_dir(trace)
+        _config_dir = self._config_dir(trace)
         await runtime.write(
-            f"{config_dir}/settings.json",
+            f"{_config_dir}/settings.json",
             json.dumps({"permissions": CLAUDE_PERMISSIONS}).encode(),
         )
-        await self.install_skills(runtime, f"{config_dir}/skills")
+        await self.install_skills(runtime, f"{_config_dir}/skills")
         versions = {"version": self.config.version, "acp_version": ACP_VERSION}
         session_meta = {
             "claudeCode": {
@@ -110,7 +114,7 @@ class ClaudeCodeHarness(ACPHarness[ClaudeCodeHarnessConfig]):
             "ANTHROPIC_API_KEY": secret,
             "ANTHROPIC_MODEL": ctx.model,
             "CLAUDE_CODE_EXECUTABLE": CLAUDE_BIN.format(**versions),
-            "CLAUDE_CONFIG_DIR": config_dir,
+            "CLAUDE_CONFIG_DIR": _config_dir,
             "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
             # Discovering deferred tools changes the tool schema mid-trace.
             "ENABLE_TOOL_SEARCH": "false",
@@ -136,8 +140,8 @@ class ClaudeCodeHarness(ACPHarness[ClaudeCodeHarnessConfig]):
         )
 
     async def cleanup(self, trace: Trace, runtime: Runtime) -> None:
-        await remove_dir(runtime, self.config_dir(trace), "Claude config")
+        await remove_dir(runtime, self._config_dir(trace), "Claude config")
 
     @staticmethod
-    def config_dir(trace: Trace) -> str:
+    def _config_dir(trace: Trace) -> str:
         return f"{CLAUDE_CONFIG_ROOT}/{trace.id}"

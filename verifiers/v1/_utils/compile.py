@@ -56,7 +56,7 @@ def resolve_runtime_config(
                 f"{config.type} runtime does not enforce network policies; use a "
                 "supported runtime"
             )
-        config = config.with_task_network_policy(task.data.network)
+        config = config._with_task_network_policy(task.data.network)
     for resource, value in task.data.resources.model_dump(exclude_none=True).items():
         spec = type(config).model_fields.get(resource)
         if spec is None:

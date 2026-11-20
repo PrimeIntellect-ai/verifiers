@@ -19,13 +19,13 @@ def default_run_name(env: EnvConfig, model: str) -> str:
     descriptive leaf for the run directory `output_dir / run.name`. The short-id
     suffix keeps repeated invocations from colliding."""
     taskset = env.taskset
-    name = taskset.name if taskset.id else "no-taskset"
+    name = taskset._name if taskset.id else "no-taskset"
     if taskset.id and env.id:
         # Same compounding as `EnvConfig.env_id`: a `best-of-n+gsm8k` run must
         # not share a name with a plain `gsm8k` one.
         name = f"{env.id}+{name}"
     # Every seat's resolved harness, distinct, in role order.
-    harness = "+".join(dict.fromkeys(h.name for h in env.agent_harnesses().values()))
+    harness = "+".join(dict.fromkeys(h._name for h in env.agent_harnesses().values()))
     slug = (
         f"{name}--{model.replace('/', '--')}--{harness or 'default'}--{uuid4().hex[:8]}"
     )

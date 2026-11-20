@@ -39,6 +39,8 @@ class AgentTimeoutConfig(BaseConfig):
 
 
 class AgentConfig(BaseConfig):
+    """One agent seat: its harness, runtime, model, and per-run caps."""
+
     harness: SerializeAsAny[HarnessConfig] | None = None
     """The agent's program (None = the taskset's default harness)."""
     runtime: RuntimeConfig = PrimeConfig()
@@ -74,7 +76,9 @@ class AgentConfig(BaseConfig):
     response without stopping the run."""
 
     timeout: AgentTimeoutConfig = AgentTimeoutConfig()
+    """Timeouts for each stage of the agent's run."""
     retries: RetryConfig = RetryConfig()
+    """Retry rules for a failed agent run."""
 
     network_notice: bool = True
     """Include the runtime's network restrictions in the agent's prompt."""

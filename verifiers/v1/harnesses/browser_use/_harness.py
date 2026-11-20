@@ -32,6 +32,8 @@ Finding elements: prefer the accessibility tree over screenshots. cdp("Accessibi
 
 
 class BrowserUseHarnessConfig(HarnessConfig):
+    """Config for the browser automation harness."""
+
     dialect: Literal["chat_completions"] = "chat_completions"
     browser: Literal["chromium", "cdp"] = "chromium"
     """`chromium` launches locally; `cdp` attaches to `cdp_url` without owning it."""
@@ -53,6 +55,8 @@ class BrowserUseHarnessConfig(HarnessConfig):
 
 
 class BrowserUseHarness(Harness[BrowserUseHarnessConfig]):
+    """Chat agent that drives a Chromium browser through Python."""
+
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = True
     SUPPORTS_RESUME = True

@@ -217,7 +217,7 @@ def served_url(monkeypatch, server, **kwargs):
 
 
 def test_a_tool_server_on_its_own_vm_is_reached_by_its_lan_name(monkeypatch):
-    runtime = SimpleNamespace(is_local=False, host_url=lambda url: url)
+    runtime = SimpleNamespace(_is_local=False, host_url=lambda url: url)
     # Its restricted runtime is enforced on its own VM, so it is not refused.
     server = toolset("forth", runtime=FORTH)
     assert (
@@ -239,7 +239,7 @@ def test_a_tool_server_on_its_own_vm_is_reached_by_its_lan_name(monkeypatch):
 @pytest.mark.parametrize("service", ["main", "forth"])
 def test_an_explicit_service_needs_a_task_service_spec(monkeypatch, service):
     # Without a service spec, these are targets for independent tool placement.
-    runtime = SimpleNamespace(is_local=False, host_url=lambda url: url)
+    runtime = SimpleNamespace(_is_local=False, host_url=lambda url: url)
     with pytest.raises(ToolsetError, match="services define it"):
         served_url(
             monkeypatch,

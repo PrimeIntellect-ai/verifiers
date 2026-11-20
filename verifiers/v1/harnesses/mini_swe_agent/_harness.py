@@ -13,12 +13,16 @@ PROGRAM_SOURCE = (Path(__file__).resolve().parent / "_program.py").read_text()
 
 
 class MiniSWEAgentHarnessConfig(HarnessConfig):
+    """Config for the mini-swe-agent harness."""
+
     dialect: Literal["chat_completions"] = "chat_completions"
     version: PinnedVersion = "2.4.6"
     """mini-swe-agent release to install, pinned for reproducibility."""
 
 
 class MiniSWEAgentHarness(Harness[MiniSWEAgentHarnessConfig]):
+    """Run mini-swe-agent."""
+
     APPENDS_SYSTEM_PROMPT = False
     SUPPORTS_MCP = False
 

@@ -267,12 +267,12 @@ async def _install_in_sandbox(server: ServerBase, agent_runtime: Runtime) -> str
     root_q, temp_q, cache_q, venv_q = map(shlex.quote, (root, temp, cache, venv))
     # Servers in the same service install into one physical environment.
     # Serialize its mutations and only remember sources after a successful install.
-    async with runtime.backend.cache.mcp_lock:
+    async with runtime.backend._cache.mcp_lock:
         sources = dict.fromkeys((_package_dir(ServerBase), _package_dir(type(server))))
         pending = [
             source
             for source in sources
-            if source not in runtime.backend.cache.mcp_sources
+            if source not in runtime.backend._cache.mcp_sources
         ]
         if pending:
             setup = (
@@ -282,7 +282,7 @@ async def _install_in_sandbox(server: ServerBase, agent_runtime: Runtime) -> str
             )
             if agent_runtime.user is not None:
                 setup += f"export UV_PYTHON_INSTALL_DIR={shlex.quote(python_dir)}; "
-            if not runtime.backend.cache.mcp_sources:
+            if not runtime.backend._cache.mcp_sources:
                 # Failed installs can leave the venv behind; retain it when retrying.
                 setup += f"{_ENSURE_UV}; uv venv --allow-existing {venv_q}; "
             # Drain remote writes and installs before cancellation releases the lock.
@@ -297,7 +297,7 @@ async def _install_in_sandbox(server: ServerBase, agent_runtime: Runtime) -> str
                     f"server {server.server_name!r} install failed in runtime: "
                     f"{(result.stderr or result.stdout).strip()[-2000:]}"
                 )
-            runtime.backend.cache.mcp_sources.update(pending)
+            runtime.backend._cache.mcp_sources.update(pending)
         if agent_runtime.user is not None:
             # Root's uv lives in its home; copy it into the venv, open to the agent.
             python_q = shlex.quote(python_dir)
@@ -368,9 +368,9 @@ async def serve_in_runtime(
         # Keep provider temp files in the runtime workdir so cleanup removes them.
         assert runtime.info.id is not None
         env["TMPDIR"] = runtime.info.id
-    if listen_all or (exposed and runtime.published_port is not None):
+    if listen_all or (exposed and runtime._published_port is not None):
         env["MCP_HOST"] = "0.0.0.0"
-    fixed = runtime.published_port if exposed else None
+    fixed = runtime._published_port if exposed else None
     port_file = None
     if fixed is not None:
         env["MCP_PORT"] = str(fixed)
@@ -438,8 +438,8 @@ async def reachable_url(
     consumer_is_local: bool,
 ) -> AsyncIterator[str]:
     """Publish a service port, tunneling host-local URLs for remote consumers."""
-    url = await service_runtime.expose(port)
-    if service_runtime.is_local and not consumer_is_local:
+    url = await service_runtime._expose(port)
+    if service_runtime._is_local and not consumer_is_local:
         async with PrimeTunnel().expose(urlsplit(url).port or 80) as public:
             yield public
     else:
@@ -482,7 +482,7 @@ async def _serve(
             else:
                 runtime = services[service]
                 host = (hosts or {}).get(service, service)
-            if runtime.is_local:
+            if runtime._is_local:
                 raise ToolsetError(
                     f"server {server.server_name!r} runs in service {service!r}, "
                     "which needs a native Prime service VM"
@@ -524,12 +524,12 @@ async def _serve(
             return
 
         consumer_is_local = (
-            harness_runtime.is_local
+            harness_runtime._is_local
             if harness_runtime is not None
             else harness_is_local
         )
-        if proxy_mcp is not None and runtime.is_local and not consumer_is_local:
-            backend_url = await runtime.expose(port)
+        if proxy_mcp is not None and runtime._is_local and not consumer_is_local:
+            backend_url = await runtime._expose(port)
             # Revoke and drain the proxy before releasing the runtime.
             url = await stack.enter_async_context(
                 proxy_mcp(f"{backend_url.rstrip('/')}/mcp")
@@ -636,7 +636,7 @@ async def serve_shared(toolsets: list[Toolset], harness_is_local: bool = True):
                 )
                 servers[name] = SharedToolServer(
                     url=served.url,
-                    local=served.runtime.is_local,
+                    local=served.runtime._is_local,
                     runtime=served.runtime,
                     state_secret=state_secret,
                 )

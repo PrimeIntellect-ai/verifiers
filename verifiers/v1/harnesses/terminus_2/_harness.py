@@ -15,12 +15,16 @@ logger = get_logger(__name__)
 
 
 class Terminus2HarnessConfig(HarnessConfig):
+    """Config for the Terminus 2 harness."""
+
     dialect: Literal["chat_completions"] = "chat_completions"
     version: PinnedVersion = "0.26.0"
     """Harbor release to install, pinned for reproducibility."""
 
 
 class Terminus2Harness(Harness[Terminus2HarnessConfig]):
+    """Run Harbor's Terminus 2 agent in tmux."""
+
     APPENDS_SYSTEM_PROMPT = True
     SUPPORTS_MCP = False
     # Beyond the usual host leaks, Terminus drives tmux: on the host its tmux server —
