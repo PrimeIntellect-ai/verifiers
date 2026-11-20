@@ -795,7 +795,6 @@ class Rollout:
         if self._closed:
             return self.trace
         self._closed = True
-        self._session.flush_rewrites()
         trace = self.trace
         skip_reason = self._scoring_skip_reason()
         runtime = self.runtime
@@ -810,6 +809,7 @@ class Rollout:
                 )
             if not self._agent_finished():
                 await self._close_harness()
+            self._session.flush_rewrites()
             trace.notify()
             if not self._failed and self._opened:
                 assert runtime is not None

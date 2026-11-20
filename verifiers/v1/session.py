@@ -395,7 +395,7 @@ class RolloutSession:
         self,
         request: Request,
         dialect: DialectName | None = None,
-        known_path: Sequence[int] = (),
+        known_path: Sequence[int] | Mapping[int, int] = (),
     ) -> dict[int, ToolResultKey]:
         """Use the sampled node and call ID for a model-issued tool. A harness-supplied
         call outside the sampled graph uses its conversation prefix instead."""
@@ -422,14 +422,18 @@ class RolloutSession:
             )
             if isinstance(message, AssistantMessage) and message.tool_calls:
                 prefix_hash = prefix.hexdigest()
+                issuer_node: int | None = (
+                    known_path.get(position)
+                    if isinstance(known_path, Mapping)
+                    else (known_path[position] if position < len(known_path) else None)
+                )
                 for call in message.tool_calls:
                     alias = (prefix_hash, call.id)
                     if (
-                        position < len(known_path)
-                        and self.trace.nodes[known_path[position]].sampled
+                        issuer_node is not None
+                        and self.trace.nodes[issuer_node].sampled
                     ):
-                        issuer = known_path[position]
-                        calls[call.id] = (issuer, call.id)
+                        calls[call.id] = (issuer_node, call.id)
                     else:
                         calls[call.id] = alias
         return keys
@@ -641,13 +645,15 @@ class RolloutSession:
                 in_turn_nodes.add(nid)
             in_turn.append((-1 if nid is None else nid, rec))
         staged: list[tuple[int, InterceptRecord]] = []
+        aligned_nodes = set(node_by_pos.values())
         users = [
             nid
             for nid in tail_nodes
-            if isinstance(self.trace.nodes[nid].message, UserMessage)
+            if nid in aligned_nodes
+            and isinstance(self.trace.nodes[nid].message, UserMessage)
             and nid not in in_turn_nodes
         ]
-        if users:
+        if self._prepared_user_count and users:
             if self.prepared_rewrites:
                 targets = users[-self._prepared_user_count :]
                 for slot, rec in self.prepared_rewrites:
@@ -660,9 +666,18 @@ class RolloutSession:
         if self.pinned_rewrites:
             tool_nodes = {
                 tkey: node_by_pos[pos]
-                for pos, tkey in self.tool_result_keys(base, turn.dialect).items()
+                for pos, tkey in self.tool_result_keys(
+                    base, turn.dialect, node_by_pos
+                ).items()
                 if pos in node_by_pos
             }
+            if any(
+                tkey not in tool_nodes and isinstance(tkey[0], str)
+                for tkey, _ in self.pinned_rewrites
+            ):
+                for pos, tkey in self.tool_result_keys(base, turn.dialect).items():
+                    if pos in node_by_pos:
+                        tool_nodes.setdefault(tkey, node_by_pos[pos])
             remaining: list[tuple[ToolResultKey, InterceptRecord]] = []
             for tkey, rec in self.pinned_rewrites:
                 if (nid := tool_nodes.get(tkey)) is None:
@@ -945,10 +960,10 @@ class RolloutSession:
 
     def release(self) -> None:
         """Seal the session: no further trace mutation, and in-flight handlers cancel."""
-        self.flush_rewrites()
         self.released = True
         for task in list(self.tasks):
             task.cancel()
+        self.flush_rewrites()
 
     async def refused(self) -> str | None:
         """The framework's limits (turns / token budget) and `@stop` checks, run before each
