@@ -406,7 +406,7 @@ class JudgeTraceTaskset(vf.Taskset[JudgedTask, SetConfig]):
 
 ## Plugging hooks via config
 
-Stop conditions, metrics, and rewards can also be plugged into any task from config without touching the taskset's code. Each entry names a function by import path (`pkg.module.function`, `pkg.module:function`, or `path/to/file.py:function`). Like decorated methods, scoring functions declare what they need by parameter name (`task`, `trace`, `runtime`), while a stop function's type annotation determines when it runs (see [stops and interception](#stops-and-interception)):
+Stop conditions, metrics, and rewards can also be plugged into any task from config without touching the taskset's code. Each entry names a function by import path (`pkg.module:function` or `path/to/file.py:function`). Like decorated methods, scoring functions declare what they need by parameter name (`task`, `trace`, `runtime`), while a stop function's type annotation determines when it runs (see [stops and interception](#stops-and-interception)):
 
 ```toml
 [env.taskset.task.stops]

@@ -228,15 +228,12 @@ def file_module(path: str) -> ModuleType:
 
 
 def plugged_fn(path: str) -> Callable[..., Any]:
-    """Resolve a plugged function's import path: `pkg.module.function`,
-    `pkg.module:function`, or `path/to/file.py:function`."""
+    """Resolve a plugged function's import path: `pkg.module:function` or
+    `path/to/file.py:function`."""
     module_path, _, attr = path.rpartition(":")
-    if not module_path:
-        module_path, _, attr = path.rpartition(".")
     if not module_path or not attr:
         raise ValueError(
-            f"fn {path!r} must be `pkg.module.function`, `pkg.module:function`, "
-            "or `path/to/file.py:function`"
+            f"fn {path!r} must be `pkg.module:function` or `path/to/file.py:function`"
         )
     if module_path.endswith(".py"):
         module = file_module(module_path)
