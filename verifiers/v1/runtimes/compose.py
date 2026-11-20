@@ -104,6 +104,67 @@ class ComposeModel:
     implicit_build: bool
 
 
+def _compose_environment_sources(
+    entry: Path, task_dir: Path
+) -> dict[Path, tuple[bytes, bytes]]:
+    """Keep Compose's source layout while removing service topology."""
+    import yaml
+
+    loader = yaml.SafeLoader("")
+
+    def mapping(node):
+        if not isinstance(node, yaml.MappingNode):
+            return {}
+        loader.flatten_mapping(node)
+        return {key.value: value for key, value in node.value}
+
+    sources = {}
+    pending = [(entry, entry.parent)]
+    while pending:
+        path, project_dir = pending.pop()
+        path = path.resolve()
+        if path in sources or not path.is_relative_to(task_dir) or not path.is_file():
+            continue
+        original = path.read_bytes()
+        document = yaml.compose(original)
+        if not isinstance(document, yaml.MappingNode):
+            continue
+        definition = mapping(document)
+        # Leave interpolation, env-file precedence and YAML tags to Compose.
+        includes = definition.get("include")
+        if isinstance(includes, yaml.SequenceNode):
+            for item in includes.value:
+                options = mapping(item)
+                files = options.get("path", item)
+                paths = files.value if isinstance(files, yaml.SequenceNode) else [files]
+                included = [project_dir / file.value for file in paths]
+                if included:
+                    scope = options.get("project_directory")
+                    include_dir = (
+                        project_dir / scope.value if scope else included[0].parent
+                    )
+                    pending.extend((file, include_dir) for file in included)
+        for service in mapping(definition.get("services")).values():
+            if not isinstance(service, yaml.MappingNode):
+                continue
+            fields = mapping(service)
+            extends = mapping(fields.get("extends"))
+            if file := extends.get("file"):
+                pending.append((project_dir / file.value, project_dir))
+            service.value = [
+                (key, value)
+                for key, value in service.value
+                if key.value in {"environment", "env_file", "extends"}
+            ]
+        document.value = [
+            (key, value)
+            for key, value in document.value
+            if key.value in {"services", "include"}
+        ]
+        sources[path] = original, yaml.serialize(document).encode()
+    return sources
+
+
 @asynccontextmanager
 async def compose_project(
     config: DockerConfig | PrimeConfig,
@@ -291,7 +352,7 @@ async def compose_project(
             compose_env["MEMORY"] = f"{round(config.memory * 1024)}M"
 
         authored_file = f"task/{spec.file}" if spec.file else None
-        if host_backend is not None and authored.get("include"):
+        if host_backend is not None and model is None and authored.get("include"):
             # Includes own their resources: resolve them before merging workspace
             # defaults and overrides, or Compose rejects duplicate service names.
             compose_argv += ["-f", f"{root}/{authored_file}"]
@@ -354,7 +415,8 @@ async def compose_project(
                 await host_backend.bind().write(
                     f"{root}/{file}", json.dumps(definition).encode()
                 )
-        compose_argv += ["-f", f"{root}/base.json"]
+        if model is None or authored_file is None:
+            compose_argv += ["-f", f"{root}/base.json"]
         if authored_file is not None:
             compose_argv += ["-f", f"{root}/{authored_file}"]
         if host_backend is None:
@@ -371,19 +433,42 @@ async def compose_project(
                         raise SandboxError(
                             "Native Compose env_file must be inside the task"
                         )
-        resolved = json.loads(await compose("config", "--format", "json"))
         implicit_build = "build" in base["services"][spec.workspace]
-        if model is not None:
+        if model is None:
+            resolved = json.loads(await compose("config", "--format", "json"))
+        else:
             assert host_backend is not None
-            # Resolve the verifier's authored service env in its own phase.
-            # Only those env values replace fields in the solver's resolved model.
-            phase_services = resolved["services"]
+            # The authored project may require solver inputs to resolve fields such
+            # as ports or build arguments. Only its service env is needed here.
+            try:
+                phase_services = json.loads(
+                    await compose("config", "--no-consistency", "--format", "json")
+                )["services"]
+            except SandboxError as exc:
+                if authored_file is None or "error while interpolating " not in str(
+                    exc
+                ):
+                    raise
+                sources = await asyncio.to_thread(
+                    _compose_environment_sources, directory / authored_file, task_dir
+                )
+                # Keep includes, extends and their .env scopes at the original
+                # paths. Restore the files before Compose builds or starts anything.
+                runtime = host_backend.bind()
+                async with AsyncExitStack() as restore:
+                    for path, (original, projection) in sources.items():
+                        target = f"{root}/task/{path.relative_to(task_dir)}"
+                        restore.push_async_callback(runtime.write, target, original)
+                        await runtime.write(target, projection)
+                    phase_services = json.loads(
+                        await compose("config", "--no-consistency", "--format", "json")
+                    ).get("services", {})
             resolved = {
                 **model.definition,
                 "services": {
                     name: {
                         **service,
-                        "environment": phase_services.get(name, service).get(
+                        "environment": phase_services.get(name, {}).get(
                             "environment", {}
                         ),
                     }

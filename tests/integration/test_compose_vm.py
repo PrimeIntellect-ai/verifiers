@@ -26,12 +26,14 @@ services:
     build:
       context: .
       args:
-        BUILD_FLAVOR: '${{BUILD_FLAVOR:-solver}}'
+        BUILD_FLAVOR: '${{SOLVER_BUILD_FLAVOR:?required for the solver build}}'
     working_dir: /app
     environment:
       LITERAL_TOKEN: 'a$$VALUE'
       EXPANDED_TOKEN: '${{TOKEN_VALUE}}'
       AUTHORED_PHASE: '${{BUILD_FLAVOR:-solver}}'
+      INCLUDED_VALUE: '${{INCLUDED_VALUE:-unset}}'
+      SOLVER_BUILD_FLAVOR:
     env_file: values.env
     network_mode: service:world
     volumes: [world_logs:/logs/world:ro, ../payload:/payload:ro]
@@ -157,7 +159,10 @@ async def test_compose_vm(tmp_path, scoring_mode, monkeypatch):
     (environment / ".env").write_text("TOKEN_VALUE='a$VALUE'\nVALUE=expanded\n")
     (environment / "values.env").write_text("FROM_FILE='a$VALUE'\n")
     if scoring_mode == "isolated":
-        (environment / "docker-compose.yaml").write_text("include: [services.yaml]\n")
+        (environment / "docker-compose.yaml").write_text(
+            "include:\n  - path: services.yaml\n    env_file: included.env\n"
+        )
+        (environment / "included.env").write_text("INCLUDED_VALUE=included\n")
         (environment / "services.yaml").write_text(COMPOSE)
     else:
         (environment / "docker-compose.yaml").write_text(COMPOSE)
@@ -175,6 +180,8 @@ async def test_compose_vm(tmp_path, scoring_mode, monkeypatch):
             'test "$(cat /evidence/answer)" = 43\n'
             'test "$BUILD_FLAVOR" = grader\n'
             'test "$AUTHORED_PHASE" = grader\n'
+            'test "$INCLUDED_VALUE" = included\n'
+            'test "${SOLVER_BUILD_FLAVOR+x}" = ""\n'
             "test ! -e /app/solver-only\n"
             if scoring_mode == "isolated"
             else ""
@@ -190,7 +197,9 @@ async def test_compose_vm(tmp_path, scoring_mode, monkeypatch):
         'command = "mkdir -p /evidence && cp /logs/world/answer /evidence/answer"\n'
     )
     harbor = HarborConfig(compose_host_image=VM_HOST_IMAGE)
-    task = ComposeVMTask(parse_task(tmp_path, 0, harbor))
+    task = ComposeVMTask(parse_task(tmp_path, 0, harbor)).with_data(
+        env={"SOLVER_BUILD_FLAVOR": "solver"}
+    )
     assert task.deployment_spec().host_image == VM_HOST_IMAGE
     config = vf.AgentConfig(
         model="unused",
