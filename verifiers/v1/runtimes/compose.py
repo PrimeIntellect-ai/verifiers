@@ -119,12 +119,20 @@ def _compose_environment_sources(
         return {key.value: value for key, value in node.value}
 
     sources = {}
+    visited = set()
     pending = [(entry, entry.parent)]
     while pending:
         path, project_dir = pending.pop()
         path = path.resolve()
-        if path in sources or not path.is_relative_to(task_dir) or not path.is_file():
+        # A file can be both an include override and a base for an extends chain.
+        context = (path, Path(os.path.normpath(project_dir)))
+        if (
+            context in visited
+            or not path.is_relative_to(task_dir)
+            or not path.is_file()
+        ):
             continue
+        visited.add(context)
         original = path.read_bytes()
         document = yaml.compose(original)
         if not isinstance(document, yaml.MappingNode):
@@ -150,7 +158,9 @@ def _compose_environment_sources(
             fields = mapping(service)
             extends = mapping(fields.get("extends"))
             if file := extends.get("file"):
-                pending.append((project_dir / file.value, project_dir))
+                # A chained extends is relative to the referenced file's directory.
+                extended = project_dir / file.value
+                pending.append((extended, extended.parent))
             service.value = [
                 (key, value)
                 for key, value in service.value

@@ -160,10 +160,29 @@ async def test_compose_vm(tmp_path, scoring_mode, monkeypatch):
     (environment / "values.env").write_text("FROM_FILE='a$VALUE'\n")
     if scoring_mode == "isolated":
         (environment / "docker-compose.yaml").write_text(
-            "include:\n  - path: services.yaml\n    env_file: included.env\n"
+            "include:\n"
+            "  - path: [services.yaml, overrides/compose.yaml]\n"
+            "    env_file: included.env\n"
         )
         (environment / "included.env").write_text("INCLUDED_VALUE=included\n")
-        (environment / "services.yaml").write_text(COMPOSE)
+        (environment / "services.yaml").write_text("include: [workspace.yaml]\n")
+        (environment / "workspace.yaml").write_text(COMPOSE)
+        (environment / "overrides").mkdir()
+        (environment / "overrides/compose.yaml").write_text(
+            "services: {main: {extends: {file: templates/base.yaml, service: base}}}\n"
+        )
+        (environment / "templates").mkdir()
+        (environment / "templates/base.yaml").write_text(
+            "services: {base: {extends: {file: leaf.yaml, service: leaf}}}\n"
+        )
+        (environment / "templates/leaf.yaml").write_text(
+            "services:\n"
+            "  leaf:\n"
+            "    labels:\n"
+            "      solver-flavor: '${SOLVER_BUILD_FLAVOR:?required in the solver}'\n"
+            "    environment:\n"
+            "      CHAINED_PHASE: '${BUILD_FLAVOR:-solver}'\n"
+        )
     else:
         (environment / "docker-compose.yaml").write_text(COMPOSE)
     (environment / "Dockerfile").write_text(
@@ -181,6 +200,7 @@ async def test_compose_vm(tmp_path, scoring_mode, monkeypatch):
             'test "$BUILD_FLAVOR" = grader\n'
             'test "$AUTHORED_PHASE" = grader\n'
             'test "$INCLUDED_VALUE" = included\n'
+            'test "$CHAINED_PHASE" = grader\n'
             'test "${SOLVER_BUILD_FLAVOR+x}" = ""\n'
             "test ! -e /app/solver-only\n"
             if scoring_mode == "isolated"
