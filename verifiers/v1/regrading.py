@@ -2,6 +2,7 @@
 
 import asyncio
 import copy
+import logging
 import re
 import time
 import uuid
@@ -21,6 +22,9 @@ from verifiers.v1.task import Task, TaskData, task_key
 from verifiers.v1.trace import Trace, TraceTask
 from verifiers.v1.utils.artifacts import ARTIFACTS_DIR, artifact_source, load_artifacts
 from verifiers.v1.utils.compile import resolve_runtime_config
+from verifiers.v1.utils.logging import clip, get_logger
+
+logger = get_logger(__name__)
 
 
 class RequiresRerun(ValueError):
@@ -164,7 +168,15 @@ class VerifierReplay:
                         deployment,
                     )
             finally:
-                await deployment.close()
+                try:
+                    await deployment.close()
+                except Exception as error:
+                    logger.warning(
+                        "Failed to tear down regrade deployment - %s: %s",
+                        type(error).__name__,
+                        clip(str(error)),
+                        exc_info=logger.isEnabledFor(logging.DEBUG),
+                    )
             if not trace.is_dropped and all(
                 reward is None for reward in trace.rewards.values()
             ):

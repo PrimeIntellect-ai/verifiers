@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import io
 import json
 import os
 import re
 import stat
+import tokenize
 import tomllib
+from collections.abc import Iterator
 from pathlib import Path
 from urllib.parse import parse_qsl, unquote, urlencode, urlsplit, urlunsplit
 
@@ -38,6 +41,38 @@ AUTH_HEADER = re.compile(
     r"(?P<prefix>\b(?:Proxy-)?Authorization[ \t]*:[ \t]*)(?P<value>[^\r\n]+)",
     re.IGNORECASE,
 )
+LEGACY_ENV = re.compile(
+    r"^[ \t]*(?i:ENV)[ \t]+(?P<key>[A-Za-z_][\w.-]*)[ \t]+"
+    r"(?P<value>(?![ \t]*=)(?:\\\r?\n|[^\r\n])+)",
+    re.MULTILINE,
+)
+
+
+def _group_end(text: str, start: int) -> int:
+    """Find the extent of an expression starting with a grouped value."""
+    tail = text[start:]
+    closing = {"(": ")", "[": "]", "{": "}"}
+    stack = []
+    try:
+        for token in tokenize.generate_tokens(io.StringIO(tail).readline):
+            if token.type == tokenize.ERRORTOKEN and token.string.strip():
+                break
+            operator = token.string if token.type == tokenize.OP else None
+            if not stack and (
+                token.type in {tokenize.NEWLINE, tokenize.ENDMARKER, tokenize.COMMENT}
+                or operator in {",", ";", ")", "]", "}"}
+            ):
+                line, column = token.start
+                preceding = tail.split("\n", line - 1)[:-1]
+                return start + sum(len(part) + 1 for part in preceding) + column
+            if operator in closing:
+                stack.append(closing[operator])
+            elif operator in {")", "]", "}"} and stack.pop() != operator:
+                break
+    except (tokenize.TokenError, SyntaxError):
+        pass
+    # An incomplete credential expression has no reliable value boundary.
+    return len(text)
 
 
 def _source_configs(item):
@@ -179,7 +214,7 @@ def redact(value):
         elif isinstance(item, dict):
             for child in item.values():
                 strings(child)
-        elif isinstance(item, list):
+        elif isinstance(item, (list, tuple, set)):
             for child in item:
                 strings(child)
 
@@ -193,6 +228,16 @@ def redact(value):
                 return raw[1:-1]
             return raw
 
+    def assignments(text: str) -> Iterator[tuple[re.Match[str], int]]:
+        end = 0
+        for match in ASSIGNMENT.finditer(text):
+            if match.start() < end:
+                continue
+            start, end = match.span("value")
+            if sensitive(match["key"]) and text[start] in "([{":
+                end = _group_end(text, start)
+            yield match, end
+
     def discover(item):
         if isinstance(item, dict):
             for key, child in item.items():
@@ -203,18 +248,20 @@ def redact(value):
             for child in item:
                 discover(child)
         elif isinstance(item, str):
+            for directive in LEGACY_ENV.finditer(item):
+                if sensitive(directive["key"]):
+                    raw = re.sub(r"\\\r?\n", "", directive["value"]).strip()
+                    strings(assignment_value(raw))
             for header in AUTH_HEADER.finditer(item):
                 strings(header["value"])
                 for param in ASSIGNMENT.finditer(header["value"]):
                     if param["key"].lower() == "response":
                         strings(assignment_value(param["value"]))
-            for match in ASSIGNMENT.finditer(item):
-                raw = match["value"]
+            for match, end in assignments(item):
+                raw = item[match.start("value") : end]
                 decoded = assignment_value(raw)
                 if sensitive(match["key"]):
                     strings(decoded)
-                    if annotation := match["annotation"]:
-                        strings(annotation.strip())
                 elif isinstance(decoded, str) and decoded != raw:
                     # A harmless outer key can hold commands or config text with
                     # its own credential assignments, including escaped quotes.
@@ -254,18 +301,35 @@ def redact(value):
         except ValueError:
             return "[redacted URL]"
 
-    def scrub_assignment(match):
-        if sensitive(match["key"]):
-            separator = ":" if match["annotation"] else match["separator"]
-            return match["target"] + separator + ' "[redacted]"'
-        raw = match["value"]
-        decoded = assignment_value(raw)
-        if isinstance(decoded, str) and decoded != raw:
-            cleaned = scrub(decoded)
-            if cleaned != decoded:
-                prefix = match.string[match.start() : match.start("value")]
-                return prefix + json.dumps(cleaned, ensure_ascii=False)
-        return match[0]
+    def scrub_assignments(text: str) -> str:
+        parts = []
+        cursor = 0
+        for match, end in assignments(text):
+            start = match.start("value")
+            raw = text[start:end]
+            if sensitive(match["key"]):
+                # An annotation-shaped field may also be a credential-bearing
+                # string in a log. Remove it here without treating its type as
+                # an echoed secret in ordinary source elsewhere.
+                separator = ":" if match["annotation"] else match["separator"]
+                parts.extend(
+                    (
+                        text[cursor : match.start()],
+                        match["target"],
+                        separator,
+                        ' "[redacted]"',
+                    )
+                )
+            else:
+                decoded = assignment_value(raw)
+                if isinstance(decoded, str) and decoded != raw:
+                    cleaned = scrub(decoded)
+                    if cleaned != decoded:
+                        raw = json.dumps(cleaned, ensure_ascii=False)
+                parts.extend((text[cursor:start], raw))
+            cursor = end
+        parts.append(text[cursor:])
+        return "".join(parts)
 
     def scrub_echoes(text: str) -> str:
         for secret in replacements:
@@ -291,7 +355,15 @@ def redact(value):
             return [scrub(child) for child in item]
         if isinstance(item, str):
             item = AUTH_HEADER.sub(lambda match: match["prefix"] + '"[redacted]"', item)
-            item = ASSIGNMENT.sub(scrub_assignment, item)
+            item = LEGACY_ENV.sub(
+                lambda match: (
+                    item[match.start() : match.start("value")] + '"[redacted]"'
+                    if sensitive(match["key"])
+                    else match[0]
+                ),
+                item,
+            )
+            item = scrub_assignments(item)
             item = URL.sub(url, item)
             item = AUTHORIZATION.sub(
                 lambda match: match[0].split()[0] + " [redacted]", item
