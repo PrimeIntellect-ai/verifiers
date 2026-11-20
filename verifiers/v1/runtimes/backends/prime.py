@@ -372,6 +372,9 @@ class PrimeBackend(RuntimeBackend):
                         attempts,
                         error,
                     )
+                    # Teardown deletes only the newest id.
+                    with contextlib.suppress(Exception):
+                        await self._client.delete(self.info.id)
             logger.debug(
                 "Started prime runtime %s in %s image=%s%s",
                 self.info.id,
