@@ -18,7 +18,7 @@ __all__ = ["NetworkPolicyTaskset"]
 
 BLOCKED = "example.com"
 ALLOWED = "pypi.org"
-PROBE_PATH = "/tmp/network-probe.py"
+PROBE_PATH = "network-probe.py"
 REPORT = "/tmp/network-probe.json"
 
 # What each task's policy lets through, keyed by task name.
@@ -68,10 +68,11 @@ class NetworkPolicyTaskset(vf.Taskset[NetworkPolicyTask, vf.TasksetConfig]):
             "allow": {"network": vf.NetworkPolicyConfig(allow=[ALLOWED])},
         }
         prompt = (
-            f"Use your shell tool now to run `python3 {PROBE_PATH}` exactly once. "
+            "The working directory contains a task-provided script that checks access "
+            "to the two test endpoints. "
+            f"Use your shell tool to run `python3 ./{PROBE_PATH}` exactly once. "
             "Wait for the command to finish, then reply with exactly what it printed. "
-            "The network policy is already enforced, so do not inspect or change the network or "
-            "firewall, and do not run any other command."
+            "The network policy is already in effect. Leave it in place and run no other command."
         )
         return [
             NetworkPolicyTask(
