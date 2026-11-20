@@ -273,9 +273,13 @@ class DockerBackend(RuntimeBackend):
                     f"Container inspection failed: {stderr.decode(errors='replace')}"
                 )
             info = json.loads(data)
-            backend._image_env = dict(
-                entry.split("=", 1) for entry in info["Env"] or []
-            )
+            for entry in info["Env"] or []:
+                name, separator, value = entry.partition("=")
+                if separator:
+                    backend._image_env[name] = value
+                else:
+                    # Docker represents an explicit unset as a bare name.
+                    backend._image_env.pop(name, None)
             backend.config = config.model_copy(
                 update={"image": info["Image"], "workdir": info["WorkingDir"] or "/"}
             )
