@@ -148,9 +148,9 @@ prime-pydantic-config = false
 renderers = false
 
 [project.scripts]
-vf-run = "verifiers.v1.cli.run:main"
-vf-validate = "verifiers.v1.cli.validate:main"
-vf-debug = "verifiers.v1.cli.debug:main"
+vf-run = "verifiers.v1._cli.run:main"
+vf-validate = "verifiers.v1._cli.validate:main"
+vf-debug = "verifiers.v1._cli.debug:main"
 
 # hatchling configuration
 [tool.hatch.version]

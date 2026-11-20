@@ -7,7 +7,7 @@ reached the trace.
 """
 
 import verifiers.v1 as vf
-from verifiers.v1.types import content_text
+from verifiers.v1._types import content_text
 
 ERROR_TOKEN = "err-5c2"  # only the raised message carries this
 

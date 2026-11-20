@@ -7,14 +7,14 @@ import orjson
 import pytest
 
 import verifiers.v1 as vf
-from verifiers.v1.configs.agent import resolve_agent
-from verifiers.v1.dialects.chat import ChatDialect
-from verifiers.v1.dialects.responses import ResponsesDialect, fold_assistant
-from verifiers.v1.graph import MessageNode, prepare_turn, round_stream
-from verifiers.v1.session import RolloutLimits
-from verifiers.v1.trace import EXCLUDE_FIELDS
-from verifiers.v1.types import AssistantMessage, UserMessage
-from verifiers.v1.utils.trace_store import write_episode
+from verifiers.v1._configs.agent import resolve_agent
+from verifiers.v1._dialects.chat import ChatDialect
+from verifiers.v1._dialects.responses import ResponsesDialect, fold_assistant
+from verifiers.v1._graph import MessageNode, prepare_turn, round_stream
+from verifiers.v1._session import RolloutLimits
+from verifiers.v1._trace import EXCLUDE_FIELDS
+from verifiers.v1._types import AssistantMessage, UserMessage
+from verifiers.v1._utils.trace_store import write_episode
 
 
 class MyTask(vf.TaskData):
@@ -370,9 +370,9 @@ def test_transcript(make_full_trace):
 def test_branch_sampler_support_spans_every_token():
     import numpy as np
 
-    from verifiers.v1.graph import MessageNode
-    from verifiers.v1.trace import Branch
-    from verifiers.v1.types import SamplerSupport
+    from verifiers.v1._graph import MessageNode
+    from verifiers.v1._trace import Branch
+    from verifiers.v1._types import SamplerSupport
 
     def node(token_ids, mask, support=None):
         return MessageNode.model_construct(
@@ -407,9 +407,9 @@ def test_branch_sampler_support_spans_every_token():
 
     head.logprobs = None
     assert Branch.model_construct(nodes=nodes).sampler_support.logprobs is None
-    wire = nodes[2].serialize_sampler_support(head)
+    wire = nodes[2]._serialize_sampler_support(head)
     assert "logprobs" not in wire
-    restored = MessageNode.deserialize_sampler_support(wire)
+    restored = MessageNode._deserialize_sampler_support(wire)
     np.testing.assert_array_equal(restored.ids, [3])
     np.testing.assert_array_equal(restored.replayed, [False])
     assert Branch.model_construct(nodes=nodes[:1]).sampler_support is None

@@ -7,7 +7,7 @@ import httpx
 import pytest
 from openai import AsyncOpenAI
 
-from verifiers.v1.harnesses.utils.core import chat
+from verifiers.v1.harnesses._utils.core import chat
 
 
 def chunk(text: str, finish_reason: str | None = None) -> dict:

@@ -1,0 +1,32 @@
+"""The taskset plugin's config: which rows load, under `--env.taskset.*`."""
+
+from pathlib import Path
+
+from pydantic import SerializeAsAny
+from pydantic_config import BaseConfig
+
+from verifiers.v1._configs.harness import ID
+from verifiers.v1._configs.task import TaskConfig
+
+
+class SharedTasksetConfig(BaseConfig):
+    """The knobs every taskset has, whatever its id — what several tasksets of one run
+    can share."""
+
+    task: SerializeAsAny[TaskConfig] = TaskConfig()
+    """Config passed to each task, under `--env.taskset.task.*`."""
+    system_prompt: Path | None = None
+    """File whose text overrides each task's `TaskData.system_prompt` on
+    iteration."""
+
+
+class TasksetConfig(SharedTasksetConfig):
+    """A taskset's config: the shared knobs plus its plugin id."""
+
+    id: ID = ""
+    """Installed taskset package, set with `--env.taskset.id` (or the
+    positional `eval <taskset-id>`)."""
+
+    @property
+    def _name(self) -> str:
+        return self.id

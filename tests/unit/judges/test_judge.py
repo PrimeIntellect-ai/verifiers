@@ -5,9 +5,9 @@ import pytest
 from pydantic import Field
 
 import verifiers.v1 as vf
+from verifiers.v1._judge import Judge, JudgeResponse
+from verifiers.v1._utils.loaders import judge_class, judge_config_type, load_judge
 from verifiers.v1.envs.agentic_judge import ScoreConfig
-from verifiers.v1.judge import Judge, JudgeResponse
-from verifiers.v1.utils.loaders import judge_class, judge_config_type, load_judge
 
 RUBRIC_TOML = """
 [[criteria]]
@@ -117,14 +117,16 @@ def test_reward_name_fallback():
         prompt = "{x}"
 
     assert (
-        vf.ReferenceJudge().reward_name == "reference"
+        vf.ReferenceJudge()._reward_name == "reference"
     )  # class-name fallback (no id set)
     assert (
-        vf.ReferenceJudge(vf.ReferenceJudgeConfig(id="my-judge")).reward_name
+        vf.ReferenceJudge(vf.ReferenceJudgeConfig(id="my-judge"))._reward_name
         == "my-judge"
     )
-    assert vf.ReferenceJudge(vf.ReferenceJudgeConfig(name="gold")).reward_name == "gold"
-    assert MyQualityJudge().reward_name == "my_quality"
+    assert (
+        vf.ReferenceJudge(vf.ReferenceJudgeConfig(name="gold"))._reward_name == "gold"
+    )
+    assert MyQualityJudge()._reward_name == "my_quality"
 
 
 async def test_base_judge_score_raises(make_trace, qa_data):
@@ -179,7 +181,7 @@ async def test_error_attribution(monkeypatch, tmp_path, make_trace):
         finally:
             if trace is not None:
                 trace.record_judge_call(
-                    name=self.reward_name,
+                    name=self._reward_name,
                     request={
                         "model": self.config.model,
                         "messages": [{"role": "user", "content": messages}],

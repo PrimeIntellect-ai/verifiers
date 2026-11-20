@@ -4,9 +4,9 @@ import pytest
 from pydantic import Field
 
 import verifiers.v1 as vf
-from verifiers.v1.graph import MessageNode
-from verifiers.v1.judge import JudgeResponse
-from verifiers.v1.types import AssistantMessage, UserMessage
+from verifiers.v1._graph import MessageNode
+from verifiers.v1._judge import JudgeResponse
+from verifiers.v1._types import AssistantMessage, UserMessage
 
 
 def test_reference_parse():
@@ -75,8 +75,8 @@ async def test_reference_score(fake_judge_model, make_trace):
 
 async def test_reference_score_messages_prompt(fake_judge_model, qa_data):
     # A Messages-form prompt still reaches the judge as text (via TaskData.prompt_text).
-    from verifiers.v1.types import TextContentPart
-    from verifiers.v1.types import UserMessage as UM
+    from verifiers.v1._types import TextContentPart
+    from verifiers.v1._types import UserMessage as UM
 
     task = qa_data(
         idx=0,

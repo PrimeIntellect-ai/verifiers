@@ -1,3 +1,3 @@
-from verifiers.v1.envs.best_of_n.env import BestOfNEnv, BestOfNEnvConfig
+from verifiers.v1.envs.best_of_n._env import BestOfNEnv, BestOfNEnvConfig
 
 __all__ = ["BestOfNEnv", "BestOfNEnvConfig"]

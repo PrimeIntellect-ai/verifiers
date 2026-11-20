@@ -8,10 +8,10 @@ from unittest.mock import AsyncMock
 import pytest
 from pydantic import ValidationError
 
-from verifiers.v1.clients.eval import EvalClient
-from verifiers.v1.configs.client import EvalClientConfig
-from verifiers.v1.configs.sampling import SamplingConfig
-from verifiers.v1.dialects.chat import ChatDialect
+from verifiers.v1._clients.eval import EvalClient
+from verifiers.v1._configs.client import EvalClientConfig
+from verifiers.v1._configs.sampling import SamplingConfig
+from verifiers.v1._dialects.chat import ChatDialect
 
 BASE_URL = "https://api.pinference.ai/api/v1"
 
@@ -97,7 +97,7 @@ async def test_relay_sends_configured_retention() -> None:
     body = _body()
     original = deepcopy(body)
 
-    await client.relay(ChatDialect(), body, session_id="trace-1")
+    await client._relay(ChatDialect(), body, session_id="trace-1")
 
     sent = client._request.await_args.args[1]
     assert sent["tools"][-1]["cache_control"] == {

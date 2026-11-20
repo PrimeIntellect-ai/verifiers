@@ -8,8 +8,8 @@ import pytest
 from conftest import CI_RETRIES
 
 import verifiers.v1 as vf
-from verifiers.v1.configs.agent import TimeoutConfig
-from verifiers.v1.tasksets.harbor.taskset import HarborArtifact, HarborData, HarborTask
+from verifiers.v1._configs.agent import AgentTimeoutConfig
+from verifiers.v1.tasksets.harbor._taskset import HarborArtifact, HarborData, HarborTask
 
 # Pinned so the imported VM image stays cached across CI runs.
 IMAGE = "python:3.11-slim@sha256:673719e071ecf27434fd2635bbd8d00f49f4fdd81f243143438a42ced8bedf60"
@@ -72,7 +72,7 @@ class ComposeTask(HarborTask):
         await super().setup(runtime, deployment)
         if deployment is None:
             return
-        backends = deployment.target_backends
+        backends = deployment._target_backends
         assert sorted(backends) == ["main", "vault", "web"]
         assert len({backend.info.id for backend in backends.values()}) == 3
         web, vault = deployment.target("web"), deployment.target("vault")
@@ -122,7 +122,7 @@ async def test_native_compose(tmp_path, mode):
         retries=CI_RETRIES,
         scoring=vf.ScoringConfig(mode=mode, retries=vf.RetryConfig(max_retries=0)),
         # A cold run builds and imports the VM image during setup.
-        timeout=TimeoutConfig(setup=1200, finalize=60, scoring=300),
+        timeout=AgentTimeoutConfig(setup=1200, finalize=60, scoring=300),
     )
     async with vf.Agent(config) as agent:
         agent.harness = ComposeHarness(vf.HarnessConfig())

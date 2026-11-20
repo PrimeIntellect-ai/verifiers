@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from verifiers.v1.utils.artifacts import restore
+from verifiers.v1._utils.artifacts import restore
 
 
 class RecordingRuntime:

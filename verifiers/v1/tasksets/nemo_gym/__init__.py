@@ -1,4 +1,4 @@
-from verifiers.v1.tasksets.nemo_gym.taskset import (
+from verifiers.v1.tasksets.nemo_gym._taskset import (
     NeMoGymConfig,
     NeMoGymData,
     NeMoGymEnv,

@@ -1,4 +1,4 @@
-from verifiers.v1.tasksets.textarena.taskset import (
+from verifiers.v1.tasksets.textarena._taskset import (
     TextArenaConfig,
     TextArenaData,
     TextArenaEnv,

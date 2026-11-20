@@ -2,7 +2,7 @@ import os
 
 import pytest
 
-from verifiers.v1.runtimes import limiters
+from verifiers.v1._runtimes import limiters
 
 
 @pytest.fixture

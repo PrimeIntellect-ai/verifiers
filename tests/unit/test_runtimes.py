@@ -33,11 +33,11 @@ import pytest
 from pydantic import TypeAdapter, ValidationError
 
 import verifiers.v1 as vf
-from verifiers.v1.configs.runtime import NetworkPolicyConfig
-from verifiers.v1.errors import SandboxError, ToolsetError
-from verifiers.v1.mcp import launch
-from verifiers.v1.mcp.toolset import ToolsetConfig
-from verifiers.v1.runtimes import (
+from verifiers.v1._configs.runtime import NetworkPolicyConfig
+from verifiers.v1._errors import SandboxError, ToolsetError
+from verifiers.v1._mcp import launch
+from verifiers.v1._mcp.toolset import ToolsetConfig
+from verifiers.v1._runtimes import (
     CustomRuntimeConfig,
     CustomRuntimeInfo,
     Runtime,
@@ -48,10 +48,10 @@ from verifiers.v1.runtimes import (
     make_backend,
     provision_runtime,
 )
-from verifiers.v1.runtimes.backends.subprocess import signal_process
-from verifiers.v1.runtimes.compose import ComposeSpec, compose_services
-from verifiers.v1.runtimes.strategies import _deployment_strategy
-from verifiers.v1.utils.compile import resolve_runtime_config
+from verifiers.v1._runtimes.backends.subprocess import signal_process
+from verifiers.v1._runtimes.compose import ComposeSpec, compose_services
+from verifiers.v1._runtimes.strategies import _deployment_strategy
+from verifiers.v1._utils.compile import resolve_runtime_config
 
 RUNTIMES = ["subprocess", "docker", "prime", "plugin"]
 SUPPORTED = {
@@ -282,7 +282,7 @@ async def test_port_exposure(runtime, monkeypatch) -> None:
                 pass
         return
     async with provisioned(runtime) as view:
-        port = view.published_port
+        port = view._published_port
         if port is None:
             with socket.socket() as probe:
                 probe.bind(("127.0.0.1", 0))
@@ -291,7 +291,7 @@ async def test_port_exposure(runtime, monkeypatch) -> None:
         await view.run_background(
             [*PYTHON, "-m", "http.server", str(port), "-d", "vf-www"], {}, "http.log"
         )
-        url = await view.expose(port)
+        url = await view._expose(port)
 
         async def serving() -> bool:
             with contextlib.suppress(aiohttp.ClientError):
@@ -328,7 +328,7 @@ async def test_compose(runtime, tmp_path) -> None:
     try:
         async with asyncio.timeout(TIMEOUT):
             await deployment.start()
-        services = deployment.target_backends
+        services = deployment._target_backends
         assert set(services) == {"main", "sidecar"}
         resolved = await services["main"].bind().run(["getent", "hosts", "sidecar"], {})
         assert resolved.exit_code == 0, resolved

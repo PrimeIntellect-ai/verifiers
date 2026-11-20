@@ -5,17 +5,17 @@ from types import SimpleNamespace
 import pytest
 
 import verifiers.v1 as vf
-from verifiers.v1.errors import ToolsetError
-from verifiers.v1.mcp import launch
-from verifiers.v1.runtimes import (
+from verifiers.v1._errors import ToolsetError
+from verifiers.v1._mcp import launch
+from verifiers.v1._runtimes import (
     DockerBackend,
     DockerConfig,
     PrimeBackend,
     PrimeConfig,
     private_network,
 )
-from verifiers.v1.runtimes.backends import prime
-from verifiers.v1.runtimes.strategies import (
+from verifiers.v1._runtimes.backends import prime
+from verifiers.v1._runtimes.strategies import (
     _ColocatedDeployment,
     _ContainerDeployment,
     _deployment_strategy,
@@ -163,7 +163,7 @@ def test_a_tool_vm_keeps_only_its_state_channel_and_the_harness_its_routes():
 
     strategy = _PrivateNetworkDeployment()
     deployment = SimpleNamespace(
-        target_backends={"main": backend("main"), "forth": backend("forth")}
+        _target_backends={"main": backend("main"), "forth": backend("forth")}
     )
     # The harness reaches the model and a remote tool server; the tool VM needs neither.
     routes = ["https://tunnel.example/v1", "https://tools.example/mcp"]
@@ -190,7 +190,7 @@ def test_the_workspace_stops_before_tool_evidence_and_is_released_regardless():
 
     strategy = _PrivateNetworkDeployment()
     strategy._services = SimpleNamespace(aclose=aclose)
-    deployment = SimpleNamespace(execution_backend=SimpleNamespace(stop=stop))
+    deployment = SimpleNamespace(_execution_backend=SimpleNamespace(stop=stop))
 
     # As Compose stops its workspace, before finalize_services reads the targets.
     asyncio.run(strategy.stop_execution(deployment))
@@ -217,7 +217,7 @@ def served_url(monkeypatch, server, **kwargs):
 
 
 def test_a_tool_server_on_its_own_vm_is_reached_by_its_lan_name(monkeypatch):
-    runtime = SimpleNamespace(is_local=False, host_url=lambda url: url)
+    runtime = SimpleNamespace(_is_local=False, host_url=lambda url: url)
     # Its restricted runtime is enforced on its own VM, so it is not refused.
     server = toolset("forth", runtime=FORTH)
     assert (
@@ -239,7 +239,7 @@ def test_a_tool_server_on_its_own_vm_is_reached_by_its_lan_name(monkeypatch):
 @pytest.mark.parametrize("service", ["main", "forth"])
 def test_an_explicit_service_needs_a_task_service_spec(monkeypatch, service):
     # Without a service spec, these are targets for independent tool placement.
-    runtime = SimpleNamespace(is_local=False, host_url=lambda url: url)
+    runtime = SimpleNamespace(_is_local=False, host_url=lambda url: url)
     with pytest.raises(ToolsetError, match="services define it"):
         served_url(
             monkeypatch,

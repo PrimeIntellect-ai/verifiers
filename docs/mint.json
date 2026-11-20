@@ -14,7 +14,8 @@
         "harnesses",
         "agent",
         "env",
-        "harbor"
+        "harbor",
+        "api"
       ]
     }
   ],

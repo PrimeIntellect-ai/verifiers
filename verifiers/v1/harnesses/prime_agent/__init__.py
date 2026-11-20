@@ -1,4 +1,4 @@
-from verifiers.v1.harnesses.prime_agent.harness import (
+from verifiers.v1.harnesses.prime_agent._harness import (
     PrimeAgentHarness,
     PrimeAgentHarnessConfig,
 )

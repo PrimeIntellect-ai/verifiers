@@ -4,9 +4,9 @@ import numpy as np
 import pytest
 
 import verifiers.v1 as vf
-from verifiers.v1 import graph
-from verifiers.v1.harnesses.utils.replay import drop_blank_text, strip_text
-from verifiers.v1.types import TurnTokens
+from verifiers.v1 import _graph as graph
+from verifiers.v1._types import TurnTokens
+from verifiers.v1.harnesses._utils.replay import drop_blank_text, strip_text
 
 
 def _response(message: vf.AssistantMessage) -> vf.Response:
@@ -637,11 +637,11 @@ def test_expanded_prompt_is_attributed_while_bridge_uses_logical_tokens():
     )
     user = vf.UserMessage(content="image")
     assistant = vf.AssistantMessage(content="looked")
-    assert graph.MessageNode(message=user, token_ids=[9]).logical_ids.tolist() == [9]
+    assert graph.MessageNode(message=user, token_ids=[9])._logical_ids.tolist() == [9]
     assert (
         graph.MessageNode(
             message=user, token_ids=[9], renderer_token_ids=[]
-        ).logical_ids.tolist()
+        )._logical_ids.tolist()
         == []
     )
     graph.prepare_turn(trace, [user]).commit(

@@ -3,8 +3,8 @@
 import pytest
 
 import verifiers.v1 as vf
-from verifiers.v1.graph import MessageNode
-from verifiers.v1.types import AssistantMessage, UserMessage
+from verifiers.v1._graph import MessageNode
+from verifiers.v1._types import AssistantMessage, UserMessage
 
 PLUGGED_FNS_PY = """
 from verifiers.v1 import Trace
@@ -74,7 +74,7 @@ async def test_config_plugged_fns_merge_and_override(tmp_path) -> None:
     )
 
     # the plugged `single_turn` replaces the decorated one: no stop after one turn
-    no_reply, stop = task.hooks("stop")
+    no_reply, stop = task._hooks("stop")
     assert stop.__name__ == "single_turn"
     assert not await stop(trace)
     assert no_reply.stop_skip_scoring and not stop.stop_skip_scoring
@@ -93,7 +93,7 @@ async def test_config_plugged_fns_merge_and_override(tmp_path) -> None:
     # a fn-less entry must name an existing decorated method
     config = vf.TaskConfig(rewards={"nope": vf.RewardFunctionConfig(weight=1.0)})
     with pytest.raises(ValueError, match="no @vf.reward method named 'nope'"):
-        HookTask(HookData(idx=0, prompt="abc"), config).hooks("reward")
+        HookTask(HookData(idx=0, prompt="abc"), config)._hooks("reward")
 
 
 async def test_defer_scoring_defers_only_task_scoring() -> None:
@@ -129,7 +129,7 @@ def test_plugged_stops_set_skip_scoring(tmp_path) -> None:
         config = vf.TaskConfig(stops=stops)
         return {
             fn.__name__: fn.stop_skip_scoring
-            for fn in HookTask(data, config).hooks("stop")
+            for fn in HookTask(data, config)._hooks("stop")
         }
 
     # a fresh plugged stop scores by default; a fn-less entry keeps or overrides the decorator's
@@ -154,7 +154,7 @@ def test_a_nan_reward_is_an_error() -> None:
 
 
 def test_failed_scoring_rolls_back_its_drop() -> None:
-    from verifiers.v1.grading import scoring_transaction
+    from verifiers.v1._grading import scoring_transaction
 
     trace = vf.Trace(
         agent=vf.AgentInfo(config=vf.AgentConfig()),

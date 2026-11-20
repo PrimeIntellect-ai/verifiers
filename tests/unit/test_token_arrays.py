@@ -2,9 +2,9 @@ import random
 
 import numpy as np
 
-from verifiers.v1.graph import MessageNode
-from verifiers.v1.trace import Branch
-from verifiers.v1.types import AssistantMessage, UserMessage
+from verifiers.v1._graph import MessageNode
+from verifiers.v1._trace import Branch
+from verifiers.v1._types import AssistantMessage, UserMessage
 
 
 def assistant(**fields) -> MessageNode:
@@ -102,8 +102,8 @@ def test_committed_nodes_own_typed_arrays():
     """A rollout builds nodes unvalidated: each still holds typed arrays, owns them (a view
     would retain the turn's full-context prompt) and keeps no copy of identical renderer ids."""
     import verifiers.v1 as vf
-    from verifiers.v1 import graph
-    from verifiers.v1.types import Response, TurnTokens
+    from verifiers.v1 import _graph as graph
+    from verifiers.v1._types import Response, TurnTokens
 
     trace = vf.Trace(
         agent=vf.AgentInfo(config=vf.AgentConfig()),

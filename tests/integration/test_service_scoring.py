@@ -8,8 +8,8 @@ import pytest
 from conftest import CI_RETRIES
 
 import verifiers.v1 as vf
-from verifiers.v1.configs.agent import TimeoutConfig
-from verifiers.v1.tasksets.harbor.taskset import (
+from verifiers.v1._configs.agent import AgentTimeoutConfig
+from verifiers.v1.tasksets.harbor._taskset import (
     CollectHook,
     HarborArtifact,
     HarborData,
@@ -47,7 +47,7 @@ class ServiceTask(HarborTask):
     async def setup(self, trace, runtime, deployment=None):
         await super().setup(runtime)
         if deployment is not None:
-            SOLVERS[trace.id] = list(deployment.target_backends.values())
+            SOLVERS[trace.id] = list(deployment._target_backends.values())
             assert len({backend.info.id for backend in SOLVERS[trace.id]}) == 2
             for name, target in (
                 ("main", runtime),
@@ -146,7 +146,7 @@ async def test_service_scoring(tmp_path, mode, collect_fails, scoring_timeout):
             env={"EXPECT_SIDECAR": "1" if mode == "isolated" else "0"},
             retries=vf.RetryConfig(max_retries=0),
         ),
-        timeout=TimeoutConfig(
+        timeout=AgentTimeoutConfig(
             setup=600, finalize=60, scoring=1 if scoring_timeout else 120
         ),
     )

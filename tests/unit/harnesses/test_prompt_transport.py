@@ -8,8 +8,9 @@ from types import SimpleNamespace
 import pytest
 
 import verifiers.v1 as vf
-from verifiers.v1.acp import ACPHarness, ACPHarnessSession
-from verifiers.v1.clients import EvalClientConfig, ModelContext
+from verifiers.v1._acp import ACPHarness, ACPHarnessSession
+from verifiers.v1._clients import EvalClientConfig, ModelContext
+from verifiers.v1._runtimes import ProgramResult
 from verifiers.v1.harnesses import (
     BashHarness,
     BashHarnessConfig,
@@ -44,7 +45,6 @@ from verifiers.v1.harnesses import (
     Terminus2Harness,
     Terminus2HarnessConfig,
 )
-from verifiers.v1.runtimes import ProgramResult
 
 TASK = "VF_SENTINEL_TASK_7f3a"
 SYSTEM = "VF_SENTINEL_SYS_7f3a"
