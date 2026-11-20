@@ -6,7 +6,6 @@ import os
 import shlex
 import sys
 import time
-import traceback
 import uuid
 from collections.abc import Awaitable
 from pathlib import Path
@@ -107,13 +106,7 @@ def capture_trace_error(trace: Trace, error: BaseException) -> None:
     if isinstance(error, Exception):
         trace.record_error(error)
         return
-    trace.errors.append(
-        Error(
-            type=type(error).__name__,
-            message=str(error),
-            traceback=traceback.format_exc(),
-        )
-    )
+    trace.errors.append(Error.from_exception(error))
     trace.stop("error")
 
 
@@ -195,9 +188,7 @@ async def run_action(runtime: Runtime, config: DebugConfig) -> dict[str, Any]:
 
 async def debug_task(task: Task, config: DebugConfig) -> tuple[Trace, bool]:
     trace = Trace(
-        task=TraceTask(
-            type=type(task).__name__, data=task.data, key=task.key, hash=task.hash
-        ),
+        task=TraceTask.from_task(task),
         state=state_cls(type(task))(),
         # No agent plays here (no model, no harness): the seat records the
         # runtime policy, and the provisioned box lands on it below (id, resolved

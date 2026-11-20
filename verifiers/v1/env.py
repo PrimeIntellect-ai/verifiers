@@ -250,12 +250,7 @@ class Env(ABC, Generic[ConfigT]):
             **({"id": episode_id} if episode_id is not None else {}),
             attempt=attempt,
             env=EnvInfo(id=self.config.env_id),
-            task=TraceTask(
-                type=type(task).__name__,
-                data=task.data,
-                key=task.key,
-                hash=task.hash,
-            ),
+            task=TraceTask.from_task(task),
         )
         agents = self._episode_agents(ctx, episode.traces, on_trace, on_discard)
         try:
