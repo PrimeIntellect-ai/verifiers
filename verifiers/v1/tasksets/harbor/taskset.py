@@ -902,7 +902,7 @@ def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborD
         source_digest=source_digest(task_dir),
         solver_digest=hashlib.sha256(
             (
-                source_digest(task_dir / "environment")
+                source_digest(task_dir / "environment", task_dir=task_dir)
                 + environment.model_dump_json()
                 + parsed.agent.model_dump_json()
                 + harbor_task.instruction.strip()

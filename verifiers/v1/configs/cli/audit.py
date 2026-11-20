@@ -15,7 +15,8 @@ class AuditConfig(BaseConfig):
     path: Path
     """Saved run directory; for `check`, the task source directory."""
     output: Path | None = None
-    """New JSON sidecar. Defaults to a timestamped file in `<path>/audit/`."""
+    """New JSON sidecar. Defaults to `<path>/audit/` for analyze and the sibling
+    `<path>.audit/` directory for check."""
     rubric: Path
     """Explicit JSON/TOML rubric for `analyze` and `check`, using the native criteria format."""
     source: Path | None = None
