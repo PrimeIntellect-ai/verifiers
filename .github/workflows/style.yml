@@ -9,6 +9,9 @@ on:
     # This will trigger the workflow for pull requests to any branch
     types: [opened, synchronize, reopened]
 
+permissions:
+  contents: read
+
 jobs:
   ruff:
     name: Ruff
