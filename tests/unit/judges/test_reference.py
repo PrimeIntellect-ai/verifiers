@@ -46,7 +46,7 @@ async def test_reference_score(fake_judge_model, make_trace):
         "model": "openai/gpt-5.4-nano",
         "messages": request_messages,
     }
-    trace.record_judge_call(
+    trace._record_judge_call(
         name="snapshot",
         request=request,
         response=JudgeResponse(text="yes"),

@@ -94,9 +94,9 @@ def test_semantic_edges_resolve_to_message_nodes_and_round_trip():
     ]
 
     edge_set = _semantic_edge_set()
-    tr.add_semantic_edges(vf.SemanticEdgeSet(edges=edge_set.edges[:2]))
+    tr._add_semantic_edges(vf.SemanticEdgeSet(edges=edge_set.edges[:2]))
     first_semantic_parents = tr.nodes[3].semantic_parents
-    tr.add_semantic_edges(vf.SemanticEdgeSet.model_validate(edge_set.model_dump()))
+    tr._add_semantic_edges(vf.SemanticEdgeSet.model_validate(edge_set.model_dump()))
     expected_parents = [
         [],
         [],
@@ -154,7 +154,7 @@ def test_semantic_edges_resolve_to_message_nodes_and_round_trip():
             error=vf.Error(type="E", message="x"),
         )
     )
-    restored.add_semantic_edges(_semantic_edge_set())
+    restored._add_semantic_edges(_semantic_edge_set())
     assert [node.semantic_parents for node in restored.nodes] == expected_parents
 
 
@@ -181,7 +181,7 @@ def test_semantic_edge_uses_last_committed_retry_node():
         ],
     )
 
-    tr.add_semantic_edges(
+    tr._add_semantic_edges(
         vf.SemanticEdgeSet(
             edges=[
                 vf.SemanticEdge(
@@ -223,10 +223,10 @@ def test_semantic_edge_loops_attach_and_invalid_sets_do_not_partially_mutate():
         source_request_id="first", target_request_id="missing", type="custom"
     )
     with pytest.raises(ValueError, match="has no committed message node"):
-        tr.add_semantic_edges(vf.SemanticEdgeSet(edges=[loop, unknown]))
+        tr._add_semantic_edges(vf.SemanticEdgeSet(edges=[loop, unknown]))
     assert all(not node.semantic_parents for node in tr.nodes)
 
-    tr.add_semantic_edges(vf.SemanticEdgeSet(edges=[loop]))
+    tr._add_semantic_edges(vf.SemanticEdgeSet(edges=[loop]))
     assert tr.nodes[1].semantic_parents == [
         vf.ParentLink(node=3, type="subagent_cancel")
     ]

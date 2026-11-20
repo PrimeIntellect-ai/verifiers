@@ -240,7 +240,7 @@ class Task(Generic[DataT, StateT, ConfigT]):
         trace.dropped = None
         await self.score(trace)
 
-    def defer_scoring(self) -> Self:
+    def _defer_scoring(self) -> Self:
         """An independent copy whose task signals are deferred.
 
         Lifecycle hooks still run normally: in particular, ``finalize`` can prepare
@@ -275,7 +275,7 @@ class Task(Generic[DataT, StateT, ConfigT]):
                 )
             )
 
-        judges = self.plugged_judges()
+        judges = self._plugged_judges()
         available = {"task": self.data, "trace": trace}
         if runtime is not None:
             available["runtime"] = runtime
@@ -283,8 +283,8 @@ class Task(Generic[DataT, StateT, ConfigT]):
             available["deployment"] = deployment
 
         async with boundary(TaskError, f"task {type(self).__name__} scoring"):
-            metrics = self.hooks("metric")
-            rewards = self.hooks("reward")
+            metrics = self._hooks("metric")
+            rewards = self._hooks("reward")
             if runtime is None or deployment is None:
                 skipped = [
                     fn.__name__
@@ -356,12 +356,12 @@ class Task(Generic[DataT, StateT, ConfigT]):
     def config_type(cls) -> type[TaskConfig]:
         return concrete_type(cls, TaskConfig) or TaskConfig
 
-    def plugged_judges(self) -> list[Judge]:
+    def _plugged_judges(self) -> list[Judge]:
         from verifiers.v1._utils.loaders import load_judge
 
         return [load_judge(config) for config in self.config.judges]
 
-    def hooks(self, attr: str) -> list[Callable[..., Any]]:
+    def _hooks(self, attr: str) -> list[Callable[..., Any]]:
         """The task's `@vf.<attr>` methods merged with the config-plugged functions —
         a plugged function replaces a decorated method with the same name (a `fn`-less
         entry only overrides its metadata) — sorted by descending priority then name."""

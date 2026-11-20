@@ -164,7 +164,9 @@ class Rollout:
             (hook_boundary(fn, allow_trace=False), fn)
             for fn in discover_decorated(task, "intercept")
         ]
-        stops = [(hook_boundary(fn, allow_trace=True), fn) for fn in task.hooks("stop")]
+        stops = [
+            (hook_boundary(fn, allow_trace=True), fn) for fn in task._hooks("stop")
+        ]
         self._skip_scoring_stops = {
             fn.__name__ for _, fn in stops if getattr(fn, "stop_skip_scoring", False)
         }
@@ -247,7 +249,7 @@ class Rollout:
         """Record `stage`'s expired deadline as this rollout's outcome: a stop, not
         a failure — no further segments run, but finalize and scoring still do."""
         logger.debug("Hit the %s timeout", stage)
-        self.trace.record_timeout(stage)
+        self.trace._record_timeout(stage)
 
     async def open(self) -> bool:
         """Boot the rollout's world up to the point where segments can run: start
@@ -256,7 +258,7 @@ class Rollout:
         proceed; a setup failure is captured onto the trace."""
         self._opened = True
         self.trace.timing.boot.start = time.time()
-        self.trace.notify()
+        self.trace._notify()
         if self._borrowed_runtime is None:
             self.runtime = make_backend(self.runtime_config, name=self.trace.id).bind()
         elif (
@@ -344,7 +346,7 @@ class Rollout:
                 now = time.time()
                 self.trace.timing.boot.end = now
                 self.trace.timing.setup.start = now
-                self.trace.notify()
+                self.trace._notify()
                 started = time.perf_counter()
                 async with (
                     boundary(TaskError, "task setup"),
@@ -396,7 +398,7 @@ class Rollout:
                 services = (
                     {
                         name: self.deployment.target(name)
-                        for name in self.deployment.target_backends
+                        for name in self.deployment.target_names
                     }
                     if self.deployment.spec is not None
                     else {}
@@ -416,7 +418,7 @@ class Rollout:
                         # `service` names a task-declared service.
                         placements={
                             name: self.deployment.target(name)
-                            for name in self.deployment.tool_vms
+                            for name in self.deployment._tool_vms
                         },
                     )
                 )
@@ -429,7 +431,7 @@ class Rollout:
                 # Service hosts resolve inside the deployment (Compose names, LAN
                 # names), not as egress.
                 internal = {*services, *self.deployment.hosts.values()}
-                await self.deployment.prepare_execution(
+                await self.deployment._prepare_execution(
                     [
                         url
                         for url in [self._endpoint, *self._urls.values()]
@@ -571,7 +573,7 @@ class Rollout:
         now = time.time()
         self.trace.timing.setup.end = now
         self.trace.timing.agent.start = now
-        self.trace.notify()
+        self.trace._notify()
         logger.debug("Starting agent")
         return not self._session.stopped
 
@@ -811,7 +813,7 @@ class Rollout:
                 )
             if not self._agent_finished():
                 await self._close_harness()
-            trace.notify()
+            trace._notify()
             if not self._failed and self._opened:
                 assert runtime is not None
                 assert self.deployment is not None
@@ -868,12 +870,12 @@ class Rollout:
                             boundary(TaskError, "task finalize"),
                         ):
                             await self._cleanup_harness(runtime)
-                            await self.deployment.stop_execution()
+                            await self.deployment._stop_execution()
                             await self.task.finalize_services(
                                 trace,
                                 {
                                     name: self.deployment.target(name)
-                                    for name in self.deployment.target_backends
+                                    for name in self.deployment.target_names
                                 },
                             )
                 except TimeoutError:
@@ -888,7 +890,7 @@ class Rollout:
                 now = time.time()
                 trace.timing.finalize.end = now
                 trace.timing.scoring.start = now
-                trace.notify()
+                trace._notify()
                 logger.debug(
                     "Finalized task in %s", format_time(trace.timing.finalize.duration)
                 )
@@ -973,7 +975,7 @@ class Rollout:
                         await self._close_harness()
                         await self._score_harness(runtime, self._metrics_deadline())
                 trace.timing.scoring.end = time.time()
-                trace.notify()
+                trace._notify()
                 logger.debug(
                     "Scored rollout in %s", format_time(trace.timing.scoring.duration)
                 )
@@ -997,7 +999,7 @@ class Rollout:
             ):
                 if span.start and not span.end:
                     span.end = now
-            trace.split_agent_time()
+            trace._split_agent_time()
             if runtime is not None:
                 await self._cleanup_harness(runtime)
             # Tear down here — the env's `finalize()` (later) needs only the traces,

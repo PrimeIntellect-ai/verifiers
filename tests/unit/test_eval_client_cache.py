@@ -97,7 +97,7 @@ async def test_relay_sends_configured_retention() -> None:
     body = _body()
     original = deepcopy(body)
 
-    await client.relay(ChatDialect(), body, session_id="trace-1")
+    await client._relay(ChatDialect(), body, session_id="trace-1")
 
     sent = client._request.await_args.args[1]
     assert sent["tools"][-1]["cache_control"] == {

@@ -1,6 +1,6 @@
 """Incremental trace deltas, for anything that shows or records a trace while it runs.
 
-A trace announces its own changes (`Trace.notify`, at every phase change and recorded turn).
+A trace announces its own changes (`Trace._notify`, at every phase change and recorded turn).
 `DeltaStreamer` diffs the watched traces against what it has already sent and hands `send` only
 the new part: the header once, then appended nodes / calls / errors, semantic links added to
 earlier nodes, scalar fields whose value changed, and the `pending` preview (messages of the
@@ -80,7 +80,7 @@ class TraceCursor:
 class DeltaStreamer:
     """Sends the current traces' changes as deltas, one flush per burst of changes.
 
-    `watch` subscribes a trace; each `Trace.notify` schedules a flush, and changes landing in the
+    `watch` subscribes a trace; each `Trace._notify` schedules a flush, and changes landing in the
     same loop iteration share it. A flush diffs only the traces that notified since their last
     delta was sent (and those never sent), so its cost follows what changed, not how many traces
     are watched. Use as an async context manager around the run: a clean exit flushes the final

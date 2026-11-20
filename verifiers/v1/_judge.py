@@ -231,7 +231,7 @@ class Judge(Generic[ParsedT, ConfigT]):
             return response
         finally:
             if trace is not None and response is not None:
-                trace.record_judge_call(
+                trace._record_judge_call(
                     name=self.reward_name,
                     request={
                         "model": kwargs["model"],

@@ -719,7 +719,7 @@ class InterceptionServer(Interception):
                 acp=acp,
             )
         )
-        session.trace.notify()
+        session.trace._notify()
 
     async def handle_request(
         self, request: web.Request, dialect: Dialect
@@ -918,7 +918,7 @@ class InterceptionServer(Interception):
             return self._fail(session, dialect, error)
         # The tail is what the harness added since the last turn (tool results, user
         # turns): live watchers see it now rather than with the model's reply.
-        session.trace.preview(turn, turn.tail)
+        session.trace._preview(turn, turn.tail)
         if session.on_turn_input is not None:
             on_input, session.on_turn_input = session.on_turn_input, None
             on_input()
@@ -952,7 +952,7 @@ class InterceptionServer(Interception):
                     # What actually goes upstream: the native body with the rollout's model +
                     # sampling imposed — recorded raw on the trace, per call.
                     if relay:
-                        reply = await client.relay(
+                        reply = await client._relay(
                             dialect,
                             body,
                             headers=upstream_headers,
@@ -1079,7 +1079,7 @@ class InterceptionServer(Interception):
             ctx = session.ctx
             body["model"] = ctx.model
             body = self.mediate_capabilities(session, dialect, body)[0]
-            result = await self._client(ctx.client).relay_aux(
+            result = await self._client(ctx.client)._relay_aux(
                 dialect, route, body, headers=request.headers
             )
         except RolloutError as e:

@@ -595,7 +595,7 @@ async def serve_shared(toolsets: list[Toolset], harness_is_local: bool = True):
     """Start the taskset-scoped (shared) tool servers ONCE for a whole eval, each in its OWN
     `runtime`, and yield `{name: SharedToolServer}` reachable by every rollout's harness.
     Reachability mirrors a per-rollout tool, but there's no single harness runtime to read
-    locality off — the caller (`Env.shared_tools`) passes the harness runtime's
+    locality off — the caller (`Env._serve_shared_tools`) passes the harness runtime's
     `harness_is_local`, so a host tool gets one host bridge (tunnel) when the harness runs
     remotely, and a remote tool runtime publishes its own URL. Torn down when the eval ends.
     A shared server is task-agnostic — the taskset carries no per-row data — so its `setup`

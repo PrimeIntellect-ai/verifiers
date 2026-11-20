@@ -163,7 +163,7 @@ def test_a_tool_vm_keeps_only_its_state_channel_and_the_harness_its_routes():
 
     strategy = _PrivateNetworkDeployment()
     deployment = SimpleNamespace(
-        target_backends={"main": backend("main"), "forth": backend("forth")}
+        _target_backends={"main": backend("main"), "forth": backend("forth")}
     )
     # The harness reaches the model and a remote tool server; the tool VM needs neither.
     routes = ["https://tunnel.example/v1", "https://tools.example/mcp"]
@@ -190,7 +190,7 @@ def test_the_workspace_stops_before_tool_evidence_and_is_released_regardless():
 
     strategy = _PrivateNetworkDeployment()
     strategy._services = SimpleNamespace(aclose=aclose)
-    deployment = SimpleNamespace(execution_backend=SimpleNamespace(stop=stop))
+    deployment = SimpleNamespace(_execution_backend=SimpleNamespace(stop=stop))
 
     # As Compose stops its workspace, before finalize_services reads the targets.
     asyncio.run(strategy.stop_execution(deployment))

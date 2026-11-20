@@ -53,7 +53,7 @@ def add_turn(trace: vf.Trace, reply: str) -> None:
             time=TimeSpan(start=1.0, end=2.0),
         )
     )
-    trace.notify()
+    trace._notify()
 
 
 def recorder(traces: list[vf.Trace], kind: type[DeltaStreamer] = DeltaStreamer):
@@ -82,22 +82,22 @@ async def test_deltas_stream_once_and_reassemble_the_trace():
         traces.append(trace)
         streamer.watch(trace)
         trace.timing.boot.start = 1.0
-        trace.notify()
+        trace._notify()
         await settle()
         assert len(sent) == 1, "the first sight and the boot span share one delta"
         add_turn(trace, "a1")
         trace.nodes[1].routed_experts = np.arange(6, dtype=np.uint8).reshape(3, 2, 1)
         await settle()
-        trace.preview("request", [UserMessage(content="tool output")])
+        trace._preview("request", [UserMessage(content="tool output")])
         await settle()
         pending = assemble(sent).traces[trace.id]["pending"]
         assert [m["content"] for m in pending] == ["tool output"], "the preview streams"
-        trace.clear_preview("request")
+        trace._clear_preview("request")
         add_turn(trace, "a2")
         trace.nodes[0].semantic_parents.append(ParentLink(node=1, type="reply"))
         await settle()
         trace.extra_usage.append(Usage(prompt_tokens=1, completion_tokens=1))
-        trace.notify()
+        trace._notify()
         await asyncio.sleep(0)  # a flush is in flight
         copy.deepcopy(trace)  # isolated grading copies the live trace mid-stream
         await settle()
@@ -142,7 +142,7 @@ async def test_a_retry_under_the_same_id_restarts_the_trace():
         streamer.watch(second)
         add_turn(second, "b1")
         second.errors.append(vf.Error(type="E", message="b"))
-        second.notify()
+        second._notify()
         await settle()
         # the agent prepends the abandoned attempts' errors once the retry finishes
         second.errors = [vf.Error(type="E", message="a")] + second.errors
@@ -162,7 +162,7 @@ async def test_an_array_in_info_survives_a_grading_copy():
         # isolated grading: trace.info = result.info
         trace.info = copy.deepcopy(trace.info)
         trace.info["arr"][0] = 7.0
-        trace.notify()
+        trace._notify()
     assert assemble(sent).traces[trace.id]["info"]["arr"].tolist() == [7.0, 0.0]
 
 
@@ -186,9 +186,9 @@ async def three_traces(streamer: DeltaStreamer, traces: list[vf.Trace]) -> None:
         traces[1].nodes[1].semantic_parents.append(
             ParentLink(node=0, type="compaction")
         )
-        traces[1].notify()
+        traces[1]._notify()
         traces[2].record_reward("match", 1.0)
-        traces[2].notify()
+        traces[2]._notify()
         await settle()
         traces[0].info["late"] = True  # no notify: rides the exit's flush
 
@@ -254,7 +254,7 @@ async def test_a_flush_diffs_only_the_traces_that_notified():
         add_turn(first, "a2")
         await settle()
         fail = False
-        second.notify()
+        second._notify()
         await settle()
         assert sent == [first.id, first.id, second.id]
         sent.clear()

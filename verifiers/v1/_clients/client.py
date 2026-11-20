@@ -47,7 +47,7 @@ class Client(ABC):
         `session_id` is the rollout's trace id (sent as `SESSION_ID_HEADER`); `turn` is the
         graph-resolved prompt prefix, used by train clients for renderer bridging."""
 
-    async def relay(
+    async def _relay(
         self,
         dialect: Dialect,
         body: dict,
@@ -58,7 +58,7 @@ class Client(ABC):
         Only the relay (eval) client supports it; the renderer generates and cannot stream."""
         raise NotImplementedError(f"{type(self).__name__} does not support streaming")
 
-    async def relay_aux(
+    async def _relay_aux(
         self,
         dialect: Dialect,
         route: str,

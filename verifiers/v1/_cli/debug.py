@@ -244,7 +244,7 @@ async def debug_task(task: Task, config: DebugConfig) -> tuple[Trace, bool]:
     except Exception as e:  # noqa: BLE001 - persist any framework failure on the trace
         record_debug_error(trace, debug, e, setup_timeout, config.timeout.total)
     finally:
-        trace.split_agent_time()
+        trace._split_agent_time()
         trace.info["debug"] = debug
         try:
             await backend.stop()

@@ -398,7 +398,7 @@ class Env(ABC, Generic[ConfigT]):
     async def serving(self):
         """Hold the env-level serving resources for the duration of an eval; plan and
         run slots inside. Torn down on exit (`stop()`, then the framework's)."""
-        async with self.shared_tools() as shared:
+        async with self._serve_shared_tools() as shared:
             interception = make_interception(
                 self.config.interception,
                 requires_tunnel=self._requires_tunnel(shared),
@@ -439,7 +439,7 @@ class Env(ABC, Generic[ConfigT]):
         return requires_tunnel(self._runs_local(), configs, shared.values())
 
     @contextlib.asynccontextmanager
-    async def shared_tools(self):
+    async def _serve_shared_tools(self):
         servers = self.taskset.toolsets(self.taskset.config)
         if not servers:
             yield {}

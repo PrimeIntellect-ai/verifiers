@@ -47,7 +47,7 @@ class ServiceTask(HarborTask):
     async def setup(self, trace, runtime, deployment=None):
         await super().setup(runtime)
         if deployment is not None:
-            SOLVERS[trace.id] = list(deployment.target_backends.values())
+            SOLVERS[trace.id] = list(deployment._target_backends.values())
             assert len({backend.info.id for backend in SOLVERS[trace.id]}) == 2
             for name, target in (
                 ("main", runtime),

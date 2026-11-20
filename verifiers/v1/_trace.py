@@ -659,7 +659,7 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         """Have `on_change` called at each of this trace's phase changes and turns."""
         self._on_change = on_change
 
-    def notify(self) -> None:
+    def _notify(self) -> None:
         """The trace just changed shape (a phase span, a committed turn)."""
         if self._on_change is not None:
             self._on_change(self)
@@ -669,14 +669,14 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         """The uncommitted messages of every request in flight, in request order."""
         return [message for messages in self._pending.values() for message in messages]
 
-    def preview(self, key: object, messages: Iterable[Message]) -> None:
+    def _preview(self, key: object, messages: Iterable[Message]) -> None:
         """Show watchers the uncommitted messages of one request in flight. Requests
         run concurrently (parallel agents share a trace), so each previews under its
         own `key` (the request object, held by identity) and only clears its own."""
         self._pending[id(key)] = list(messages)
-        self.notify()
+        self._notify()
 
-    def clear_preview(self, key: object) -> None:
+    def _clear_preview(self, key: object) -> None:
         """The request's previewed messages are committed (or abandoned)."""
         self._pending.pop(id(key), None)
 
@@ -785,7 +785,7 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
             )
         return branches
 
-    def add_semantic_edges(self, edge_set: SemanticEdgeSet) -> None:
+    def _add_semantic_edges(self, edge_set: SemanticEdgeSet) -> None:
         """Add newly advertised ACP edges; cumulative replays are idempotent."""
         node_by_request: dict[str, int] = {}
         for call in self.calls:
@@ -934,7 +934,7 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         reward = Reward(score=float(value), weight=float(weight))
         self.rewards[name] = reward
 
-    def record_judge_call(
+    def _record_judge_call(
         self,
         *,
         name: str,
@@ -970,7 +970,7 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         if self.dropped is None:
             self.dropped = reason
 
-    def split_agent_time(self) -> None:
+    def _split_agent_time(self) -> None:
         """Split the agent span into model and harness time."""
         span = self.timing.agent
         if not span.end:
@@ -979,7 +979,7 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         span.model.duration = min(model, span.duration)
         span.harness.duration = span.duration - span.model.duration
 
-    def record_timeout(self, stage: str) -> None:
+    def _record_timeout(self, stage: str) -> None:
         """Record a stage deadline's expiry, and stop the trace as `<stage>_timeout`.
         The deadline is what ended the trace, so it replaces any earlier stop
         condition (a finalize deadline can expire after `agent_completed`)."""

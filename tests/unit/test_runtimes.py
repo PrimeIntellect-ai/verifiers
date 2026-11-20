@@ -328,7 +328,7 @@ async def test_compose(runtime, tmp_path) -> None:
     try:
         async with asyncio.timeout(TIMEOUT):
             await deployment.start()
-        services = deployment.target_backends
+        services = deployment._target_backends
         assert set(services) == {"main", "sidecar"}
         resolved = await services["main"].bind().run(["getent", "hosts", "sidecar"], {})
         assert resolved.exit_code == 0, resolved

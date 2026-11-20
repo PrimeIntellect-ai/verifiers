@@ -271,10 +271,10 @@ async def _score_untouched(
                 trace.state.artifacts = await collect(
                     runtime, task.data.artifacts, max_bytes=task.data.artifact_max_bytes
                 )
-            await deployment.stop_execution()
+            await deployment._stop_execution()
             await task.finalize_services(
                 trace,
-                {name: deployment.target(name) for name in deployment.target_backends},
+                {name: deployment.target(name) for name in deployment.target_names},
             )
     if isolated:
         timeouts = task.data.timeout

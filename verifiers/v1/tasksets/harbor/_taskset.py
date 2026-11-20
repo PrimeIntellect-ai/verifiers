@@ -271,7 +271,7 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
             declared = {
                 entry.service for entry in (*self.data.collect, *self.data.artifacts)
             }
-            if missing := declared - deployment.target_backends.keys():
+            if missing := declared - set(deployment.target_names):
                 raise TaskError(f"Unknown services: {sorted(missing)}")
         if self.data.upload_environment:
             await runtime.write(

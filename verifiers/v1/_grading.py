@@ -124,7 +124,7 @@ async def grade_task(
     scoring_elapsed: float = 0.0,
     on_score=None,
 ) -> None:
-    await deployment.prepare_verifier()
+    await deployment._prepare_verifier()
     # Provisioning, scoring, and retry backoff share the remaining scoring budget.
     # Setup may have an additional, stricter limit; retries do not reset scoring.
     deadline = (
@@ -241,7 +241,7 @@ async def grade_submission(
     try:
         await grade_task(grader, trace, config, task.data.timeout, policy, deployment)
     except TimeoutError:
-        trace.record_timeout("scoring")
+        trace._record_timeout("scoring")
         raise
     except Exception as error:
         trace.record_error(error)

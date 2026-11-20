@@ -15,20 +15,20 @@ logger = get_logger(__name__)
 
 class _ColocatedDeployment(_DeploymentStrategy):
     async def start(self, d):
-        if d.borrowed_runtime is not None:
-            d.execution_backend = d.harness_backend = d.borrowed_runtime.backend
+        if d._borrowed_runtime is not None:
+            d._execution_backend = d._harness_backend = d._borrowed_runtime.backend
         else:
             d.backend.env = d.env
-            await d.own(d.backend)
-            d.execution_backend = d.harness_backend = d.backend
-        d.target_backends = {"main": d.execution_backend}
+            await d._own(d.backend)
+            d._execution_backend = d._harness_backend = d.backend
+        d._target_backends = {"main": d._execution_backend}
 
     async def prepare_verifier(self, deployment):
         # Borrowed solvers belong to their caller; owned solvers can release their
         # resources now that metrics and submission artifacts have been collected.
-        if deployment.borrowed_runtime is None:
+        if deployment._borrowed_runtime is None:
             try:
-                await deployment.execution_backend.stop()
+                await deployment._execution_backend.stop()
             except Exception:
                 logger.warning(
                     "Failed to tear down the solver before grading", exc_info=True
@@ -37,16 +37,16 @@ class _ColocatedDeployment(_DeploymentStrategy):
 
 class _ContainerDeployment(_DeploymentStrategy):
     async def start(self, d):
-        if d.borrowed_runtime is not None:
+        if d._borrowed_runtime is not None:
             raise ValueError("a composed deployment cannot borrow a single target")
-        self._services = await d.enter(AsyncExitStack())
+        self._services = await d._enter(AsyncExitStack())
         services, self._stop_main = await self._services.enter_async_context(
             compose_services(
                 d.backend.config, d.spec, d.env, trust_compose=d.config.trust_compose
             )
         )
-        d.target_backends = dict(services)
-        d.execution_backend = d.harness_backend = services[d.spec.workspace]
+        d._target_backends = dict(services)
+        d._execution_backend = d._harness_backend = services[d.spec.workspace]
 
     async def stop_execution(self, d):
         await self._stop_main()
@@ -67,29 +67,29 @@ class _PrivateNetworkDeployment(_DeploymentStrategy):
     _internal: frozenset[str] = frozenset()
 
     async def start(self, d):
-        if d.borrowed_runtime is not None:
+        if d._borrowed_runtime is not None:
             raise ValueError(
                 "a deployment with services on VMs of their own cannot borrow a "
                 "single target"
             )
         d.backend.env = d.env
         native = isinstance(d.spec, ServicesSpec)
-        members = d.spec.services if native else d.tool_vms
-        self._services = await d.enter(AsyncExitStack())
+        members = d.spec.services if native else d._tool_vms
+        self._services = await d._enter(AsyncExitStack())
         vms = await self._services.enter_async_context(
             private_network(
                 d.backend,
                 members,
-                partial(d.own, d.backend),
+                partial(d._own, d.backend),
                 interconnect=native,
                 networks=self._networks,
             )
         )
-        d.target_backends = {"main": d.backend, **vms}
+        d._target_backends = {"main": d.backend, **vms}
         d.hosts = {name: lan_host(backend) for name, backend in vms.items()}
         if native:
             d.hosts["main"] = lan_host(d.backend)
-        d.execution_backend = d.harness_backend = d.backend
+        d._execution_backend = d._harness_backend = d.backend
 
     async def prepare_execution(self, d, routes, state_route=None):
         # Each VM enforces its own policy. A tool server's VM keeps only its state
@@ -104,21 +104,21 @@ class _PrivateNetworkDeployment(_DeploymentStrategy):
         await asyncio.gather(
             *(
                 backend.prepare_execution(own(name, backend))
-                for name, backend in d.target_backends.items()
+                for name, backend in d._target_backends.items()
             ),
         )
 
     async def stop_execution(self, d):
         # Nothing the agent left running may reach services while their evidence is
         # collected.
-        await d.execution_backend.stop()
+        await d._execution_backend.stop()
 
     async def prepare_verifier(self, deployment):
         # Evidence is collected; release the solver's VMs before the verifier clock
         # starts, the workspace's even if the service VMs' or the network's release
         # fails.
         for release, what in (
-            (deployment.execution_backend.stop, "workspace VM"),
+            (deployment._execution_backend.stop, "workspace VM"),
             (self._services.aclose, "service VMs"),
         ):
             try:
@@ -148,7 +148,7 @@ class _NativeComposeDeployment(_PrivateNetworkDeployment):
             prepare_native,
         )
 
-        if d.borrowed_runtime is not None:
+        if d._borrowed_runtime is not None:
             raise ValueError("a composed deployment cannot borrow a single target")
         services = await prepare_native(
             d.backend.config.model_copy(

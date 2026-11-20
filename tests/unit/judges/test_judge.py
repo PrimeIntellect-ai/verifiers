@@ -178,7 +178,7 @@ async def test_error_attribution(monkeypatch, tmp_path, make_trace):
             return response
         finally:
             if trace is not None:
-                trace.record_judge_call(
+                trace._record_judge_call(
                     name=self.reward_name,
                     request={
                         "model": self.config.model,

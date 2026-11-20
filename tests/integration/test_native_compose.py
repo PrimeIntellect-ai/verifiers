@@ -72,7 +72,7 @@ class ComposeTask(HarborTask):
         await super().setup(runtime, deployment)
         if deployment is None:
             return
-        backends = deployment.target_backends
+        backends = deployment._target_backends
         assert sorted(backends) == ["main", "vault", "web"]
         assert len({backend.info.id for backend in backends.values()}) == 3
         web, vault = deployment.target("web"), deployment.target("vault")

@@ -173,7 +173,7 @@ class EvalClient(Client):
             f"upstream {response.status_code}: {text}", status_code=response.status_code
         )
 
-    async def relay(
+    async def _relay(
         self,
         dialect: Dialect,
         body: dict,
@@ -212,7 +212,7 @@ class EvalClient(Client):
             close=resp.aclose,
         )
 
-    async def relay_aux(
+    async def _relay_aux(
         self,
         dialect: Dialect,
         route: str,

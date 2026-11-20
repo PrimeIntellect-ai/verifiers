@@ -746,7 +746,7 @@ class NativeProcesses:
     processes: dict[str, RuntimeProcess] = field(default_factory=dict)
 
     async def start(self, deployment) -> None:
-        for name, backend in deployment.target_backends.items():
+        for name, backend in deployment._target_backends.items():
             service = self.services[name]
             runtime = backend.bind().with_user(None).with_env({})
             if service.localhost_forwards:
@@ -756,7 +756,7 @@ class NativeProcesses:
                         [
                             LocalhostForward(
                                 port=port,
-                                sandbox_id=deployment.target_backends[peer].info.id,
+                                sandbox_id=deployment._target_backends[peer].info.id,
                             )
                             for port, peer in service.localhost_forwards.items()
                         ],
@@ -770,7 +770,7 @@ class NativeProcesses:
                 )
             }
             hosts = {
-                lan_host(deployment.target_backends[peer]): peer
+                lan_host(deployment._target_backends[peer]): peer
                 for peer in peers
                 if peer != name
             }
@@ -965,7 +965,7 @@ class NativeProcesses:
     async def stop(self, deployment, names) -> None:
         for name in names:
             process = self.processes.pop(name, None)
-            if process is None or deployment.target_backends[name].stopped:
+            if process is None or deployment._target_backends[name].stopped:
                 continue
             try:
                 async with asyncio.timeout(10):
