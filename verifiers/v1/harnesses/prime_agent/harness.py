@@ -80,6 +80,8 @@ touch "$prefix/.ready"
 class PrimeAgentHarnessConfig(HarnessConfig):
     commit: Literal["033eea1705c5ae953fe7cd7a5e7e7c45317e0dfe"] = PRIME_AGENT_COMMIT
     """Prime Agent release commit to install."""
+    release_version: str = PRIME_AGENT_VERSION
+    """Prime Agent release version to install."""
 
     autonomous: bool = False
     """Enable Prime Agent's autonomous continuation loop."""
@@ -173,7 +175,7 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
                 "AGENT_PRIME_AGENT_DIR": PRIME_AGENT_DIR,
                 "AGENT_PRIME_AGENT_GITHUB_RELEASE_URL": GITHUB_RELEASE_URL,
                 "PRIME_AGENT_COMMIT": self.config.commit,
-                "PRIME_AGENT_RELEASE_VERSION": PRIME_AGENT_VERSION,
+                "PRIME_AGENT_RELEASE_VERSION": self.config.release_version,
                 "PRIME_AGENT_KERNEL_VENV": self._kernel_venv(),
             },
             label="prime-agent",
