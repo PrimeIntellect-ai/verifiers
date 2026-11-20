@@ -33,7 +33,7 @@ from verifiers.v1.graph import RECORD_FLOAT_DECIMALS, MessageNode
 from verifiers.v1.runtimes import RuntimeInfo
 from verifiers.v1.semantic import ACPInfo, ParentLink, SemanticEdgeSet
 from verifiers.v1.state import State, StateT
-from verifiers.v1.task import DataT, WireTaskData
+from verifiers.v1.task import DataT, Task, WireTaskData
 from verifiers.v1.types import (
     AssistantMessage,
     FinishReason,
@@ -267,6 +267,20 @@ class Error(BaseModel):
     status_code: int | None = None
     traceback: str | None = None
 
+    @classmethod
+    def from_exception(cls, error: BaseException) -> Self:
+        """Record `error`. The traceback is formatted from the exception object, so
+        this also works after its handler has exited (e.g. in a `finally`)."""
+        return cls(
+            type=type(error).__name__,
+            message=str(error),
+            status_code=getattr(error, "status_code", None),
+            # Provider errors already carry the actionable upstream diagnostic.
+            traceback=None
+            if isinstance(error, ProviderError)
+            else "".join(traceback.format_exception(error)),
+        )
+
 
 class VersionInfo(BaseModel):
     version: str
@@ -306,6 +320,12 @@ class TraceTask(BaseModel, Generic[DataT]):
     """Stable task identity (``Task.key``); defaults to a hash of data excluding ``idx``."""
     hash: str | None = None
     """Content hash of ``data`` (``Task.hash``)."""
+
+    @classmethod
+    def from_task(cls, task: Task) -> Self:
+        return cls(
+            type=type(task).__name__, data=task.data, key=task.key, hash=task.hash
+        )
 
 
 class InterceptRecord(BaseModel):
@@ -969,18 +989,7 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     def record_error(self, error: Exception) -> None:
         """Record an error, and stop the trace as failed: `<boundary>_error` for a
         typed rollout error (`errors.stop_condition`), `error` for any other."""
-        self.errors.append(
-            Error(
-                type=type(error).__name__,
-                message=str(error),
-                status_code=getattr(error, "status_code", None),
-                # Provider errors already carry the actionable upstream diagnostic.
-                # Keep full tracebacks for every other failure.
-                traceback=None
-                if isinstance(error, ProviderError)
-                else "".join(traceback.format_exception(error)),
-            )
-        )
+        self.errors.append(Error.from_exception(error))
         self.ok = False
         self.stop(stop_condition(error))
 

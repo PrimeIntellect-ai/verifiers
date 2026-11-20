@@ -151,12 +151,7 @@ class Rollout:
         self.trace: Trace = Trace(
             **({"id": trace_id} if trace_id is not None else {}),
             attempt=attempt,
-            task=TraceTask(
-                type=type(task).__name__,
-                data=task.data,
-                key=task.key,
-                hash=task.hash,
-            ),
+            task=TraceTask.from_task(task),
             state=state_cls(type(task))(),
             # The seat's resolved config, role overrides included — the agent
             # this trace can be reproduced with.
