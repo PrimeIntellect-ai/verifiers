@@ -7,11 +7,11 @@ import numpy as np
 import pytest
 
 import verifiers.v1 as vf
-from verifiers.v1.delta import TRAINING_ARRAY_FIELDS, DeltaStreamer, EpisodeAssembly
-from verifiers.v1.graph import MessageNode
-from verifiers.v1.semantic import ParentLink
-from verifiers.v1.trace import ModelCall, TimeSpan, TraceTask
-from verifiers.v1.types import AssistantMessage, Usage, UserMessage
+from verifiers.v1._delta import TRAINING_ARRAY_FIELDS, DeltaStreamer, EpisodeAssembly
+from verifiers.v1._graph import MessageNode
+from verifiers.v1._semantic import ParentLink
+from verifiers.v1._trace import ModelCall, TimeSpan, TraceTask
+from verifiers.v1._types import AssistantMessage, Usage, UserMessage
 
 
 class MyTask(vf.TaskData):

@@ -1,0 +1,50 @@
+"""The Tunnel contract: expose a host interception port to a remote consumer.
+
+The interception server runs on the host. Local runtimes use a host-local URL directly or
+through their runtime translation; remote runtimes need the port published outward. A
+`Tunnel` supplies the bind address and exposes that host port as a public URL. It is the
+host-side counterpart to `Runtime.expose`, which publishes a port inside a sandbox.
+"""
+
+import contextlib
+from abc import ABC, abstractmethod
+from collections.abc import Callable
+from typing import ClassVar, Generic, TypeVar
+
+from verifiers.v1._configs.interception import BaseTunnelConfig
+
+ConfigT = TypeVar("ConfigT", bound=BaseTunnelConfig)
+
+HEALTH_PATH = "/vf/health"
+"""What a tunneled service answers 2xx on, so a tunnel can tell whether requests reach it.
+Not `/healthz`: Prime tunnels answer that themselves, without reaching the service. The
+answer closes its connection, so each probe needs a new one through the tunnel: a probe
+riding a kept-alive connection passes while new connections hang."""
+
+
+class Tunnel(ABC, Generic[ConfigT]):
+    """Exposes a host interception port to a remote consumer. Lightweight and stateless
+    beyond the config it holds (generic over its config type, so `self.config` is typed
+    per subclass)."""
+
+    bind_host: ClassVar[str] = "127.0.0.1"
+    """Interface the interception server binds for this tunnel to reach it. Loopback by
+    default — frpc reaches it over localhost; `CustomTunnel` binds all interfaces so a
+    remote consumer can reach it directly (or via a proxy)."""
+
+    def __init__(self, config: ConfigT | None = None) -> None:
+        self.config = config
+        self.on_gone: Callable[[], None] | None = None
+        """Called if the URL has stopped working and can never work again."""
+
+    @property
+    def bind_port(self) -> int:
+        """Fixed local port the interception server must bind (0 = an ephemeral port)."""
+        return 0
+
+    @abstractmethod
+    def expose(self, port: int) -> contextlib.AbstractAsyncContextManager[str]:
+        """An async context manager yielding a public URL that reaches the host's `port`
+        from a remote runtime. Entered only when a consumer is remote; torn down on exit.
+        A setup failure raises `TunnelError`; an error raised while the URL is held (the
+        caller's body) propagates unchanged."""

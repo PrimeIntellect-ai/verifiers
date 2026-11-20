@@ -8,8 +8,8 @@ import pytest
 from conftest import CI_RETRIES
 
 import verifiers.v1 as vf
-from verifiers.v1.configs.agent import TimeoutConfig
-from verifiers.v1.tasksets.harbor.taskset import HarborArtifact, HarborData, HarborTask
+from verifiers.v1._configs.agent import TimeoutConfig
+from verifiers.v1.tasksets.harbor._taskset import HarborArtifact, HarborData, HarborTask
 
 # Pinned so the imported VM image stays cached across CI runs.
 IMAGE = "python:3.11-slim@sha256:673719e071ecf27434fd2635bbd8d00f49f4fdd81f243143438a42ced8bedf60"

@@ -1,4 +1,4 @@
-from verifiers.v1.envs.best_of_n_judge.env import (
+from verifiers.v1.envs.best_of_n_judge._env import (
     BestOfNJudgeEnv,
     BestOfNJudgeEnvConfig,
     RankTask,

@@ -5,17 +5,17 @@ from types import SimpleNamespace
 import pytest
 
 import verifiers.v1 as vf
-from verifiers.v1.errors import ToolsetError
-from verifiers.v1.mcp import launch
-from verifiers.v1.runtimes import (
+from verifiers.v1._errors import ToolsetError
+from verifiers.v1._mcp import launch
+from verifiers.v1._runtimes import (
     DockerBackend,
     DockerConfig,
     PrimeBackend,
     PrimeConfig,
     private_network,
 )
-from verifiers.v1.runtimes.backends import prime
-from verifiers.v1.runtimes.strategies import (
+from verifiers.v1._runtimes.backends import prime
+from verifiers.v1._runtimes.strategies import (
     _ColocatedDeployment,
     _ContainerDeployment,
     _deployment_strategy,

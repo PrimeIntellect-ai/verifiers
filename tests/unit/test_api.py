@@ -26,8 +26,8 @@ CONFIG_TREE_PACKAGES = {
 
 IMPORT_CONFIG_TREE = """
 import importlib, json, pkgutil, sys
-import verifiers.v1.configs as configs
-for module in pkgutil.walk_packages(configs.__path__, "verifiers.v1.configs."):
+import verifiers.v1._configs as configs
+for module in pkgutil.walk_packages(configs.__path__, "verifiers.v1._configs."):
     importlib.import_module(module.name)
 packages = {name.partition(".")[0] for name in sys.modules if not name.startswith("_")}
 print(json.dumps(sorted(packages - sys.stdlib_module_names)))

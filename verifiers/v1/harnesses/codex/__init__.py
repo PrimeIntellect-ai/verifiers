@@ -1,3 +1,3 @@
-from verifiers.v1.harnesses.codex.harness import CodexHarness, CodexHarnessConfig
+from verifiers.v1.harnesses.codex._harness import CodexHarness, CodexHarnessConfig
 
 __all__ = ["CodexHarness", "CodexHarnessConfig"]

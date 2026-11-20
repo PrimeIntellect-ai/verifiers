@@ -1,0 +1,341 @@
+"""RLM over ACP, with MCP tools exposed as pre-imported IPython skills."""
+
+import hashlib
+import secrets
+import shlex
+from typing import Any, Literal
+
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    NonNegativeInt,
+    PositiveInt,
+    model_validator,
+)
+from pydantic_config import BaseConfig
+
+from verifiers.v1._acp import ACPConfig, ACPHarness, ACPTurn, JsonObject
+from verifiers.v1._clients import ModelContext
+from verifiers.v1._configs.harness import HarnessConfig
+from verifiers.v1._configs.runtime import NetworkPolicyConfig
+from verifiers.v1._runtimes import Runtime
+from verifiers.v1._task import TaskData
+from verifiers.v1._trace import Trace
+from verifiers.v1._utils.logging import get_logger
+from verifiers.v1.harnesses._utils.install import ensure_installed, remove_dir
+
+logger = get_logger(__name__)
+
+BuiltinSkill = Literal["bash", "edit", "fetch", "search"]
+BuiltinTool = Literal["bash", "edit", "fetch", "ipython"]
+
+RLM_REPO = "github.com/PrimeIntellect-ai/nano-rlm.git"
+RLM_CACHE_DIR = "/tmp/vf-rlm"
+RLM_STATE_DIR = "/tmp/vf-rlm-state"
+RLM_RUNTIME_METADATA_KEY = "ai.prime.rlm/runtime-v1"
+RLM_SESSION_METADATA_KEY = "ai.prime.rlm/session-v1"
+
+
+class _SessionSnapshot(BaseModel):
+    model_config = ConfigDict(extra="ignore", strict=True)
+
+    session_id: str = Field(pattern=r"^[A-Za-z0-9._:-]{1,128}$")
+    metrics: dict[str, int | float]
+    last_stop_reason: str | None = None
+
+
+_TRUNCATION_STOPS = {
+    "max_total_tokens": "max_total_tokens",
+    "max_total_turns": "max_turns",
+    "token_budget": "max_output_tokens",
+    "compaction_failed": "compaction_failed",
+    "format_violation": "format_violation",
+}
+
+
+class CompactionConfig(BaseConfig):
+    """Context compaction policy for the RLM agent loop."""
+
+    summarize_at_tokens: PositiveInt | None = None
+    """Compact at this token count. When unset, compact when 16k tokens remain below the
+    model context window when the provider advertises it."""
+    max_compactions: PositiveInt | None = None
+    """Compactions per session before the engine stops compacting; `None` =
+    nano-rlm's default."""
+    max_attempts: PositiveInt | None = None
+    """Summary-generation attempts within one compaction cycle; `None` =
+    nano-rlm's default (5). Set 1 for training without summary resampling."""
+
+
+class RLMHarnessConfig(HarnessConfig):
+    dialect: Literal["chat_completions"] = "chat_completions"
+    version: str = Field(
+        default="8ca926cdd64fd7725b78cf95a4e1667315d3b1f6", min_length=1
+    )
+    """Git ref (branch, tag, or commit) of nano-rlm to install. Must know every
+    field this harness puts on the wire, i.e. be at least the default ref."""
+    max_depth: NonNegativeInt | None = None
+    """Recursion depth RLM may spawn sub-agents to; `None` = nano-rlm's default (1).
+    Set 0 to disable recursion."""
+    builtin_skills: list[BuiltinSkill] = Field(default_factory=lambda: ["edit"])
+    """Built-in rlm skills to enable (the contract's `skills`); `["edit"]` by default,
+    `[]` enables none. The base `skills` field takes SKILL.md paths."""
+    builtin_tools: list[BuiltinTool] | None = None
+    """Native tool selection; None uses nano-rlm's default and is omitted from the
+    runtime contract. Explicit selection requires a nano-rlm ref supporting it."""
+    compaction: CompactionConfig | bool | None = None
+    """Context compaction: a `[compaction]` section (or `true`) enables it with the
+    given settings, `false` disables it (an overflowing session then fails), and
+    unset defers to nano-rlm's default (on, automatic thresholds, bounded by
+    `max_total_tokens`)."""
+    max_concurrent_subagents: PositiveInt | None = None
+    """Concurrent model calls across the session tree, including the root and compaction;
+    `None` = nano-rlm's default (4), independent of recursion depth."""
+    max_subagent_calls: PositiveInt | None = None
+    """Tree-total recursive call cap; `None` uses nano-rlm's default (uncapped)."""
+    delegation_prompt: bool | None = None
+    """Append nano-rlm's delegation guidance (when to spawn children, how to brief,
+    watch, collect and reconcile them) for every agent that can still delegate; `None`
+    uses nano-rlm's default (off)."""
+    exec_timeout: PositiveInt | None = None
+    """IPython/native tool execution timeout in seconds; `None` uses nano-rlm's
+    default (300). Separate from `tool_timeout`, which controls MCP calls."""
+    provider_max_retries: NonNegativeInt | None = None
+    """SDK retries per model call (429, 5xx, connection errors); `None` uses nano-rlm's
+    default (5). Raise it so long rollouts ride out extended rate-limit bursts."""
+    allow_git: bool | None = None
+    """Allow unrestricted Git history queries (e.g. `git log --all`); `None` uses
+    nano-rlm's default (false). Ordinary Git commands remain allowed either way;
+    this is not filesystem or process isolation."""
+    network_guidance: bool | None = None
+    """Keep nano-rlm's prompt guidance that assumes outbound network access (installing
+    extra kernel packages, the online-solutions warning). `None` turns it off when the
+    box allows no network destinations and otherwise uses nano-rlm's default (on)."""
+    max_total_turns: PositiveInt | None = None
+    """Tree-total turn budget (one turn = one work-loop model call, any engine); every
+    engine stops before its next call once spent. `None` = uncapped."""
+    max_total_tokens: NonNegativeInt | None = 10_000_000
+    """Tree-total budget of NEW tokens (completion + uncached prompt) across the session
+    tree; once spent every engine stops and no further sub-agents spawn. 10M by default;
+    `0` removes the budget (the rollout timeout is then the only terminator); `None`
+    defers to nano-rlm's own default (1,000,000)."""
+    max_tool_output_bytes: PositiveInt | None = None
+    """Byte budget for a single tool result entering the conversation (middle truncation);
+    overrides rlm's built-in 20KB default in either direction."""
+    append_to_system_prompt: str | None = None
+    """Appended to the root engine's system prompt, after the taskset's system prompt."""
+    subagent_append_to_system_prompt: str | None = None
+    """Append for sub-agent engines that can still delegate (depth >= 1, below
+    `max_depth`); unset falls back to `append_to_system_prompt`."""
+    leaf_append_to_system_prompt: str | None = None
+    """Append for depth-capped leaf engines; unset falls back to the sub-agent append."""
+
+    @model_validator(mode="after")
+    def reject_disabled_tools(self) -> "RLMHarnessConfig":
+        if self.disabled_tools:
+            raise ValueError(
+                "the rlm harness does not support `disabled_tools`; select the tool "
+                "set with `builtin_tools` and skills with `builtin_skills` instead."
+            )
+        return self
+
+
+class RLMHarness(ACPHarness[RLMHarnessConfig]):
+    APPENDS_SYSTEM_PROMPT = True
+    SUPPORTS_MCP = True
+    SUPPORTS_SKILLS = True
+    _skills_install_dir: str | None = None
+
+    async def setup(self, runtime: Runtime) -> None:
+        if self.config.skills:
+            # Editable skill packages and uv's tool environment must belong to this run.
+            self._skills_install_dir = runtime.temp_path(
+                f"rlm-skills-{secrets.token_hex(16)}", env=self.config.resolved_env
+            )
+            await self.install_skills(runtime, f"{self._skills_home()}/skills")
+        directory = self._install_dir()
+        binary = f"{directory}/bin/rlm"
+        checkout = f"{directory}/checkout"
+        ready = f"{directory}/.ready"
+        # install.sh installs the Python skill packages under $RLM_HOME/skills.
+        home = self._skills_home()
+        home_env = f"RLM_HOME={shlex.quote(home)} " if home else ""
+        # install.sh fetches curl/uv itself; add git only when the image lacks it.
+        install = (
+            f"rm -f {shlex.quote(ready)} && "
+            "(command -v git >/dev/null 2>&1 || "
+            "{ apt-get update -qq && apt-get install -y -qq git; } || dnf install -y -q git || apk add --no-cache git && "
+            f"rm -rf {shlex.quote(checkout)} && git clone https://{RLM_REPO} {shlex.quote(checkout)} && "
+            f"git -C {shlex.quote(checkout)} checkout {shlex.quote(self.config.version)} && "
+            # The editable install needs the files, not the history; agents searching
+            # their workspace for a repository must not find the harness's own.
+            f"rm -rf {shlex.quote(checkout + '/.git')} && "
+            # Unmanaged: install.sh's uv installer then writes no receipt under root's
+            # $HOME/.config/uv, which a task image can point at the agent's workspace.
+            f"{home_env}UV_INSTALL_DIR={shlex.quote(directory + '/bin')} "
+            f"UV_UNMANAGED_INSTALL={shlex.quote(directory + '/bin')} "
+            f"UV_TOOL_BIN_DIR={shlex.quote(directory + '/bin')} "
+            f"UV_TOOL_DIR={shlex.quote(directory + '/tools')} "
+            f"RLM_CHECKOUT_PATH={shlex.quote(checkout)} bash {shlex.quote(checkout + '/install.sh')} && "
+            f"touch {shlex.quote(ready)})"
+        )
+        logger.debug("Ensuring rlm %s is installed", self.config.version)
+        env = self.config.resolved_env.copy()
+        extra_uv_args = env.get("RLM_EXTRA_UV_ARGS", "")
+        env["RLM_EXTRA_UV_ARGS"] = f"{extra_uv_args} --with mcp~=1.28".strip()
+        await ensure_installed(
+            runtime,
+            directory=directory,
+            ready=f"[ -f {shlex.quote(ready)} ] && [ -x {shlex.quote(binary)} ]",
+            install=install,
+            env=env,
+            label="rlm",
+        )
+        await super().setup(runtime)
+
+    def _runtime_metadata(
+        self,
+        ctx: ModelContext,
+        trace: Trace,
+        runtime: Runtime,
+        endpoint: str,
+        secret: str,
+        system_prompt: str | None,
+    ) -> JsonObject:
+        compaction = self.config.compaction
+        policy_knobs: dict[str, Any] = {
+            "max_depth": self.config.max_depth,
+            "max_concurrent_subagents": self.config.max_concurrent_subagents,
+            "max_subagent_calls": self.config.max_subagent_calls,
+            "delegation_prompt": self.config.delegation_prompt,
+            "exec_timeout": self.config.exec_timeout,
+            "allow_git": self.config.allow_git,
+            "network_guidance": self._network_guidance(runtime),
+            "max_total_turns": self.config.max_total_turns,
+            "max_total_tokens": self.config.max_total_tokens or None,
+            "max_tool_output_bytes": self.config.max_tool_output_bytes,
+        }
+        if isinstance(compaction, bool):
+            policy_knobs["compaction"] = compaction
+        elif compaction is not None:
+            policy_knobs["compaction"] = True
+            policy_knobs["summarize_at_tokens"] = compaction.summarize_at_tokens
+            policy_knobs["max_compactions"] = compaction.max_compactions
+            policy_knobs["max_compaction_attempts"] = compaction.max_attempts
+        appends = [
+            text
+            for text in (system_prompt, self.config.append_to_system_prompt)
+            if text
+        ]
+        payload = {
+            "session_id": trace.id,
+            "model": ctx.model,
+            "provider": {
+                "base_url": endpoint,
+                "api_key": secret,
+                **(
+                    {"max_retries": self.config.provider_max_retries}
+                    if self.config.provider_max_retries is not None
+                    else {}
+                ),
+            },
+            # None = passthrough: the key stays off the wire and nano-rlm's own
+            # default applies.
+            "policy": {
+                **{k: v for k, v in policy_knobs.items() if v is not None},
+                # explicit null: nano-rlm reads it as unbounded (its own default is 1M)
+                **(
+                    {"max_total_tokens": None}
+                    if self.config.max_total_tokens == 0
+                    else {}
+                ),
+            },
+            "system_prompt_path": None,
+            "append_to_system_prompt": "\n\n".join(appends) or None,
+            "subagent_append_to_system_prompt": (
+                self.config.subagent_append_to_system_prompt
+            ),
+            "leaf_append_to_system_prompt": self.config.leaf_append_to_system_prompt,
+            "skills": list(self.config.builtin_skills),
+            "kernel_env": dict(runtime.env),
+            "search_api_key": self.config.resolved_env.get("SERPER_API_KEY"),
+        }
+        if (
+            "search" in self.config.builtin_skills
+            and isinstance(runtime.config, NetworkPolicyConfig)
+            and runtime.config.block
+        ):
+            payload["network_block"] = runtime.config.block
+        if self.config.builtin_tools is not None:
+            payload["builtin_tools"] = list(self.config.builtin_tools)
+        return {RLM_RUNTIME_METADATA_KEY: payload}
+
+    def _network_guidance(self, runtime: Runtime) -> bool | None:
+        if self.config.network_guidance is not None:
+            return self.config.network_guidance
+        # The rollout's runtime config already carries the task's network policy.
+        policy = runtime.config
+        if isinstance(policy, NetworkPolicyConfig) and not policy.allow:
+            return False
+        return None
+
+    async def prepare_acp(
+        self,
+        ctx: ModelContext,
+        trace: Trace,
+        runtime: Runtime,
+        endpoint: str,
+        secret: str,
+        mcp_urls: dict[str, str],
+        data: TaskData,
+    ) -> ACPConfig:
+        system_prompt, prompt = self.resolve_prompt(data)
+        return ACPConfig(
+            env={**self.config.resolved_env, "RLM_HOME": self._home(trace)},
+            command=[f"{self._install_dir()}/bin/rlm", "--acp"],
+            prompt=prompt,
+            session_meta=self._runtime_metadata(
+                ctx, trace, runtime, endpoint, secret, system_prompt
+            ),
+        )
+
+    def _consume_snapshot(self, trace: Trace, metadata: dict[str, Any]) -> None:
+        snapshot = _SessionSnapshot.model_validate(
+            metadata.get(RLM_SESSION_METADATA_KEY)
+        )
+        if snapshot.session_id != trace.id:
+            raise ValueError("RLM session snapshot does not match the rollout")
+        trace.record_metrics(snapshot.metrics)
+        if trace.is_format_violation:
+            trace.stop("format_violation")
+        if condition := _TRUNCATION_STOPS.get(snapshot.last_stop_reason or ""):
+            trace.stop(condition)
+
+    def acp_turn_result(self, trace: Trace, result: ACPTurn) -> None:
+        self._consume_snapshot(trace, result.response_metadata)
+
+    def acp_close_result(self, trace: Trace, response_metadata: dict[str, Any]) -> None:
+        if RLM_SESSION_METADATA_KEY in response_metadata:
+            self._consume_snapshot(trace, response_metadata)
+
+    async def cleanup(self, trace: Trace, runtime: Runtime) -> None:
+        await runtime.run(["rm", "-rf", f"{RLM_STATE_DIR}/{trace.id}"], {})
+        if self._skills_install_dir is not None:
+            await remove_dir(
+                runtime, self._skills_install_dir, "RLM skill installation"
+            )
+
+    def _home(self, trace: Trace) -> str:
+        return self._skills_home() or f"{RLM_STATE_DIR}/{trace.id}/home"
+
+    def _skills_home(self) -> str | None:
+        """rlm's home for a run that carries skills: they sit in its `skills/`, where
+        rlm installs and lists them, so the install and the process share it."""
+        if self._skills_install_dir is None:
+            return None
+        return f"{self._skills_install_dir}/home"
+
+    def _install_dir(self) -> str:
+        cache_key = hashlib.sha256(self.config.version.encode()).hexdigest()
+        return self._skills_install_dir or f"{RLM_CACHE_DIR}-{cache_key}"

@@ -5,9 +5,9 @@ import pytest
 from pydantic import Field
 
 import verifiers.v1 as vf
+from verifiers.v1._judge import Judge, JudgeResponse
+from verifiers.v1._utils.loaders import judge_class, judge_config_type, load_judge
 from verifiers.v1.envs.agentic_judge import ScoreConfig
-from verifiers.v1.judge import Judge, JudgeResponse
-from verifiers.v1.utils.loaders import judge_class, judge_config_type, load_judge
 
 RUBRIC_TOML = """
 [[criteria]]

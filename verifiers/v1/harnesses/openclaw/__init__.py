@@ -1,4 +1,4 @@
-from verifiers.v1.harnesses.openclaw.harness import (
+from verifiers.v1.harnesses.openclaw._harness import (
     OpenClawHarness,
     OpenClawHarnessConfig,
 )

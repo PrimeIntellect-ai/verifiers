@@ -1,0 +1,92 @@
+"""Configuration for model-free task validation."""
+
+from pathlib import Path
+from uuid import uuid4
+
+from pydantic import AliasChoices, Field, SerializeAsAny, model_validator
+from pydantic_config import BaseConfig
+
+from verifiers.v1._configs.cli.run import RunConfig
+from verifiers.v1._configs.deployment import DeploymentConfig
+from verifiers.v1._configs.runtime import PrimeConfig, RuntimeConfig
+from verifiers.v1._configs.select import SelectCLIConfig
+from verifiers.v1._configs.taskset import TasksetConfig
+
+
+class CheckTimeoutConfig(BaseConfig):
+    setup: float | None = None
+    """Max wall-clock for the task's `setup` hook."""
+    total: float | None = None
+    """Max wall-clock for the check itself per task, after setup — the gold check's
+    `validate` hook, or the noop check's `finalize` and scoring."""
+
+
+class ValidateConfig(BaseConfig):
+    run: RunConfig = Field(default_factory=RunConfig)
+    """Run identity: `run.name` auto-generates as `<taskset>--validate--<short-id>` and
+    names the run directory under `output_dir`."""
+    taskset: SerializeAsAny[TasksetConfig] = TasksetConfig()
+    select: SelectCLIConfig = SelectCLIConfig()
+    """Which of the taskset's tasks to validate, under `--select.*` (`-n` sets
+    `select.limit`, `-s` sets `select.shuffle`)."""
+    runtime: RuntimeConfig = PrimeConfig()
+    """Where each task's validation hooks run."""
+    deployment: DeploymentConfig = DeploymentConfig()
+    """Task service deployment, including local Compose trust."""
+    timeout: CheckTimeoutConfig = CheckTimeoutConfig()
+    only_setup: bool = False
+    """Run only the setup check: `Task.setup`."""
+    only_gold: bool = False
+    """Run only the gold check: `Task.setup`, then `Task.validate`."""
+    only_noop: bool = False
+    """Run only the noop check: `Task.setup`, then `Task.finalize` and scoring on the
+    untouched task (no reference answer, no agent). Scoring is the task's full rewards,
+    configured judges included. Invalid when it already passes."""
+    max_concurrent: int | None = Field(
+        128, validation_alias=AliasChoices("max_concurrent", "c")
+    )
+    """Max tasks validated in flight at once (and, for a container runtime, live sandboxes)."""
+    verbose: bool = Field(False, validation_alias=AliasChoices("verbose", "v"))
+    """Log at debug level instead of the default info."""
+    output_dir: Path = Field(
+        Path("outputs"), validation_alias=AliasChoices("output_dir", "o")
+    )
+    """Directory that groups related runs. The run (`configs/resolved/validate.json`,
+    `results.jsonl`, `summary.json`, `logs/validate.log`) writes to
+    `output_dir / run.dir`."""
+    resume: bool = Field(False, exclude=True)
+    """Re-run the run's missing, errored, and timed-out tasks in place. The run dir comes
+    from the resolved config (`output_dir / run.dir`), so resume with the run's own
+    config — e.g. `uv run vf-validate @ <run-dir>/configs/resolved/validate.json --resume`.
+    Excluded from the saved config."""
+    clean: bool = Field(False, exclude=True)
+    """Delete the run directory (`output_dir / run.dir`) before running, overwriting a
+    previous run's results. Excluded from the saved config."""
+
+    @property
+    def name(self) -> str:
+        return self.taskset.name
+
+    @model_validator(mode="after")
+    def auto_setup_run_name(self):
+        if self.run.name is None:
+            self.run.name = f"{self.name}--validate--{uuid4().hex[:8]}".lower()
+        if self.run.dir is None:
+            self.run.dir = self.run.name
+        return self
+
+    @model_validator(mode="after")
+    def _validate_only(self):
+        if self.only_setup + self.only_gold + self.only_noop > 1:
+            raise ValueError(
+                "pass at most one of `--only-setup`, `--only-gold` or `--only-noop`"
+            )
+        return self
+
+    @model_validator(mode="before")
+    @classmethod
+    def _resolve_taskset(cls, data):
+        from verifiers.v1._utils.loaders import narrow_plugin_field, taskset_config_type
+
+        narrow_plugin_field(data, "taskset", taskset_config_type)
+        return data

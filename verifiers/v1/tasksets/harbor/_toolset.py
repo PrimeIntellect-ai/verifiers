@@ -1,0 +1,103 @@
+"""Adapt Harbor's task-declared MCP servers to the harness's HTTP transport."""
+
+import os
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from typing import Any, cast
+
+from mcp import Client
+from mcp.client.sse import sse_client
+from mcp.client.stdio import StdioServerParameters, stdio_client
+from mcp.client.streamable_http import streamable_http_client
+from mcp.server.mcpserver import Context, MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
+from mcp.types import CallToolResult, Tool
+from pydantic_config import BaseConfig
+
+from verifiers.v1._mcp import Toolset
+from verifiers.v1._mcp.launch import serve_in_runtime
+from verifiers.v1._runtimes import Runtime
+
+
+class HarborMCPConfig(BaseConfig):
+    server: dict[str, Any]
+    """One declaration already validated by Harbor's task parser."""
+
+
+class HarborMCPAdapter(Toolset[HarborMCPConfig]):
+    @property
+    def server_name(self) -> str:
+        return self.config.server["name"]
+
+    @asynccontextmanager
+    async def serve(self, runtime: Runtime, **kwargs) -> AsyncIterator[str]:
+        # Harbor commands and task-local URLs belong to the task environment.
+        port = await serve_in_runtime(self, runtime, exposed=False)
+        host = "localhost" if runtime.network_restricted else "127.0.0.1"
+        yield f"http://{host}:{port}/mcp"
+
+    async def setup(self) -> None:
+        spec = self.config.server
+        match spec["transport"]:
+            case "stdio":
+                # Keep task variables, excluding the wrapper's state and bind controls.
+                env = {
+                    key: value
+                    for key, value in os.environ.items()
+                    if key
+                    not in {
+                        "VF_CONFIG",
+                        "VF_STATE_URL",
+                        "VF_STATE_SECRET",
+                        "MCP_HOST",
+                        "MCP_PORT",
+                        "MCP_PORT_FILE",
+                    }
+                }
+                transport = stdio_client(
+                    StdioServerParameters(
+                        command=spec["command"], args=spec.get("args", []), env=env
+                    )
+                )
+            case "sse":
+                transport = sse_client(spec["url"])
+            case "streamable-http":
+                transport = streamable_http_client(spec["url"])
+            case other:
+                raise ValueError(f"Unsupported Harbor MCP transport: {other!r}")
+        # ServerBase enters and closes this stack in the same task. Keep upstream
+        # session state across downstream client reconnects for the whole rollout.
+        self.client = await self._exit_stack.enter_async_context(Client(transport))
+
+    def register(self, mcp: MCPServer) -> None:
+        # MCPServer calls these public methods; forward the real catalog and schemas.
+        server = cast(Any, mcp)
+        server.list_tools = self.list_tools
+        server.call_tool = self.call_tool
+
+    async def list_tools(self) -> list[Tool]:
+        tools: list[Tool] = []
+        cursor = None
+        seen_cursors: set[str] = set()
+        while True:
+            page = await self.client.list_tools(cursor=cursor)
+            tools.extend(page.tools)
+            cursor = page.next_cursor
+            if cursor is None:
+                return tools
+            if cursor in seen_cursors:
+                raise ValueError("MCP tools pagination returned a repeated cursor")
+            seen_cursors.add(cursor)
+
+    async def call_tool(
+        self, name: str, arguments: dict[str, Any], context: Context | None = None
+    ) -> CallToolResult:
+        if name not in {tool.name for tool in await self.list_tools()}:
+            raise ToolError(
+                f"MCP tool {name!r} is not listed by server {self.server_name!r}"
+            )
+        return await self.client.call_tool(name, arguments)
+
+
+if __name__ == "__main__":
+    HarborMCPAdapter.run()

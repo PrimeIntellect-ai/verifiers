@@ -3,8 +3,8 @@
 import pytest
 
 import verifiers.v1 as vf
-from verifiers.v1.graph import MessageNode
-from verifiers.v1.types import AssistantMessage, UserMessage
+from verifiers.v1._graph import MessageNode
+from verifiers.v1._types import AssistantMessage, UserMessage
 
 PLUGGED_FNS_PY = """
 from verifiers.v1 import Trace
@@ -154,7 +154,7 @@ def test_a_nan_reward_is_an_error() -> None:
 
 
 def test_failed_scoring_rolls_back_its_drop() -> None:
-    from verifiers.v1.grading import scoring_transaction
+    from verifiers.v1._grading import scoring_transaction
 
     trace = vf.Trace(
         agent=vf.AgentInfo(config=vf.AgentConfig()),

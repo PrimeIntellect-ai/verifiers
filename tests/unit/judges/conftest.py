@@ -5,7 +5,7 @@ import re
 
 import pytest
 
-from verifiers.v1.judge import Judge, JudgeResponse
+from verifiers.v1._judge import Judge, JudgeResponse
 
 
 @pytest.fixture
@@ -45,7 +45,7 @@ def fake_judge_model(monkeypatch):
         if parse is not None:
             response.parsed = parse(response)
         if trace is not None:
-            from verifiers.v1.dialects.chat import message_to_wire
+            from verifiers.v1._dialects.chat import message_to_wire
 
             wire = (
                 [{"role": "user", "content": messages}]

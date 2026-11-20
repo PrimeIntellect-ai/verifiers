@@ -5,7 +5,7 @@ import json
 import pytest
 
 import verifiers.v1 as vf
-from verifiers.v1.judge import Judge, JudgeResponse
+from verifiers.v1._judge import Judge, JudgeResponse
 
 RUBRIC_TOML = """
 [[criteria]]

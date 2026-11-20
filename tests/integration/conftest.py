@@ -15,14 +15,14 @@ from pathlib import Path
 import pytest
 from grid import agent_seats, runtime_config
 
-from verifiers.v1.cli.run import run_episodes
-from verifiers.v1.clients import EvalClientConfig, ModelContext
-from verifiers.v1.configs.cli.run import RunnerConfig
-from verifiers.v1.configs.harness import HarnessConfig
-from verifiers.v1.configs.retries import RetryConfig, RetryRule
-from verifiers.v1.configs.sampling import SamplingConfig
-from verifiers.v1.episode import Episode
-from verifiers.v1.utils.loaders import harness_config_type
+from verifiers.v1._cli.run import run_episodes
+from verifiers.v1._clients import EvalClientConfig, ModelContext
+from verifiers.v1._configs.cli.run import RunnerConfig
+from verifiers.v1._configs.harness import HarnessConfig
+from verifiers.v1._configs.retries import RetryConfig, RetryRule
+from verifiers.v1._configs.sampling import SamplingConfig
+from verifiers.v1._episode import Episode
+from verifiers.v1._utils.loaders import harness_config_type
 
 CI_MODEL = "internal/deepseek-v4.1-flash-1017-ci"
 CI_REASONING_EFFORT = "low"
@@ -206,9 +206,9 @@ async def scripted_model():
     dialect's own encoder when asked. Yields a client config pointing at it."""
     from aiohttp import web
 
-    from verifiers.v1.dialects.anthropic import AnthropicDialect
-    from verifiers.v1.dialects.chat import ChatDialect
-    from verifiers.v1.dialects.responses import ResponsesDialect
+    from verifiers.v1._dialects.anthropic import AnthropicDialect
+    from verifiers.v1._dialects.chat import ChatDialect
+    from verifiers.v1._dialects.responses import ResponsesDialect
 
     def chat(model: str) -> dict:
         message = {"role": "assistant", "content": "OK"}

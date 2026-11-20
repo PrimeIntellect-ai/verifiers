@@ -1,5 +1,5 @@
-from verifiers.v1.harnesses.utils.install import ensure_installed
-from verifiers.v1.runtimes import Runtime
+from verifiers.v1._runtimes import Runtime
+from verifiers.v1.harnesses._utils.install import ensure_installed
 
 NODE_DIR = "/var/tmp/vf-node"
 NODE_BIN_DIR = f"{NODE_DIR}/bin"

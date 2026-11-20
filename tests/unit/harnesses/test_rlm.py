@@ -5,8 +5,8 @@ from types import SimpleNamespace
 import pytest
 
 import verifiers.v1 as vf
-from verifiers.v1.configs.runtime import DockerConfig, NetworkPolicyConfig
-from verifiers.v1.harnesses.rlm.harness import (
+from verifiers.v1._configs.runtime import DockerConfig, NetworkPolicyConfig
+from verifiers.v1.harnesses.rlm._harness import (
     RLM_RUNTIME_METADATA_KEY,
     RLM_SESSION_METADATA_KEY,
     RLMHarness,

@@ -9,10 +9,10 @@ import shutil
 import pytest
 
 import verifiers.v1 as vf
-from verifiers.v1.cli.validate import _run_check
-from verifiers.v1.configs.agent import TimeoutConfig
-from verifiers.v1.configs.cli.validate import ValidateConfig
-from verifiers.v1.tasksets.harbor.taskset import HarborData, HarborTask
+from verifiers.v1._cli.validate import _run_check
+from verifiers.v1._configs.agent import TimeoutConfig
+from verifiers.v1._configs.cli.validate import ValidateConfig
+from verifiers.v1.tasksets.harbor._taskset import HarborData, HarborTask
 
 pytestmark = [
     pytest.mark.docker,

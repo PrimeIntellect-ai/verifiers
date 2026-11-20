@@ -8,8 +8,8 @@ import pytest
 from conftest import CI_RETRIES
 
 import verifiers.v1 as vf
-from verifiers.v1.configs.agent import TimeoutConfig
-from verifiers.v1.tasksets.harbor.taskset import (
+from verifiers.v1._configs.agent import TimeoutConfig
+from verifiers.v1.tasksets.harbor._taskset import (
     CollectHook,
     HarborArtifact,
     HarborData,

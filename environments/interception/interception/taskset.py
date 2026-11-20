@@ -1,7 +1,7 @@
 from pydantic import SerializeAsAny, model_validator
 
 import verifiers.v1 as vf
-from verifiers.v1.utils.loaders import judge_config_type, narrow_plugin_field
+from verifiers.v1._utils.loaders import judge_config_type, narrow_plugin_field
 
 
 class InterceptionTaskConfig(vf.TaskConfig):

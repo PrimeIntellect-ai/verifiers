@@ -3,19 +3,19 @@
 import pytest
 
 import verifiers.v1 as vf
-from verifiers.v1.graph import MessageNode
-from verifiers.v1.harnesses.rlm.harness import (
-    RLM_SESSION_METADATA_KEY,
-    RLMHarness,
-    RLMHarnessConfig,
-)
-from verifiers.v1.semantic import (
+from verifiers.v1._graph import MessageNode
+from verifiers.v1._semantic import (
     ACP_EXTENSION_HEADERS,
     ACP_SEMANTIC_EDGES_METADATA_KEY,
     extract_acp_info,
     routing_session_id,
 )
-from verifiers.v1.types import AssistantMessage, UserMessage
+from verifiers.v1._types import AssistantMessage, UserMessage
+from verifiers.v1.harnesses.rlm._harness import (
+    RLM_SESSION_METADATA_KEY,
+    RLMHarness,
+    RLMHarnessConfig,
+)
 
 
 def _semantic_edge_set() -> vf.SemanticEdgeSet:

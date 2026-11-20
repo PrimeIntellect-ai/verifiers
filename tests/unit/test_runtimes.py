@@ -33,11 +33,11 @@ import pytest
 from pydantic import TypeAdapter, ValidationError
 
 import verifiers.v1 as vf
-from verifiers.v1.configs.runtime import NetworkPolicyConfig
-from verifiers.v1.errors import SandboxError, ToolsetError
-from verifiers.v1.mcp import launch
-from verifiers.v1.mcp.toolset import ToolsetConfig
-from verifiers.v1.runtimes import (
+from verifiers.v1._configs.runtime import NetworkPolicyConfig
+from verifiers.v1._errors import SandboxError, ToolsetError
+from verifiers.v1._mcp import launch
+from verifiers.v1._mcp.toolset import ToolsetConfig
+from verifiers.v1._runtimes import (
     CustomRuntimeConfig,
     CustomRuntimeInfo,
     Runtime,
@@ -48,10 +48,10 @@ from verifiers.v1.runtimes import (
     make_backend,
     provision_runtime,
 )
-from verifiers.v1.runtimes.backends.subprocess import signal_process
-from verifiers.v1.runtimes.compose import ComposeSpec, compose_services
-from verifiers.v1.runtimes.strategies import _deployment_strategy
-from verifiers.v1.utils.compile import resolve_runtime_config
+from verifiers.v1._runtimes.backends.subprocess import signal_process
+from verifiers.v1._runtimes.compose import ComposeSpec, compose_services
+from verifiers.v1._runtimes.strategies import _deployment_strategy
+from verifiers.v1._utils.compile import resolve_runtime_config
 
 RUNTIMES = ["subprocess", "docker", "prime", "plugin"]
 SUPPORTED = {

@@ -1,0 +1,164 @@
+"""NeMo Gym resource-server tasks driven by Verifiers harnesses."""
+
+import asyncio
+import json
+from collections.abc import Iterator
+from pathlib import Path
+from typing import Any, ClassVar, cast
+
+import httpx
+from pydantic import Field
+
+from verifiers.v1._dialects.responses import ResponsesDialect
+from verifiers.v1._mcp import SharedToolsetConfig, Toolset
+from verifiers.v1._runtimes import Runtime, SubprocessConfig, make_backend
+from verifiers.v1._task import Task, TaskConfig, TaskData
+from verifiers.v1._taskset import Taskset, TasksetConfig
+from verifiers.v1._trace import Trace
+from verifiers.v1._utils.decorators import reward
+from verifiers.v1.envs.single_agent import SingleAgentEnv
+
+from ._response import trace_to_nemo_response
+from ._toolset import NeMoGymState, NeMoGymToolset
+
+
+class NeMoGymTaskConfig(TaskConfig):
+    resources_url: str | None = None
+    """Base URL of an existing server; managed tasksets fill this automatically."""
+
+    headers: dict[str, str] = Field(default_factory=dict)
+    """Headers added to seed, direct-tool, MCP, and verification requests."""
+
+    request_timeout: float = Field(60.0, gt=0)
+    """Per-request timeout for this task's Gym HTTP and MCP calls."""
+
+
+class NeMoGymConfig(TasksetConfig):
+    dataset: Path
+    """JSONL rows containing ``responses_create_params`` and verifier metadata."""
+
+    tools: SharedToolsetConfig = SharedToolsetConfig()
+    task: NeMoGymTaskConfig = NeMoGymTaskConfig()
+
+
+class NeMoGymData(TaskData):
+    row: dict[str, Any]
+    """The exact source row sent back to ``/seed_session`` and ``/verify``."""
+
+
+class NeMoGymTask(Task[NeMoGymData, NeMoGymState, NeMoGymTaskConfig]):
+    async def setup(self, trace: Trace, runtime: Runtime) -> None:
+        state = trace.state
+        if self.config.resources_url is None:
+            raise ValueError("set resources_url or use a managed NeMo Gym taskset")
+        state.resources_url = self.config.resources_url.rstrip("/")
+        state.headers = dict(self.config.headers)
+        state.request_timeout = self.config.request_timeout
+        tools = self.data.row["responses_create_params"].get("tools") or []
+        state.direct_tools = {
+            tool["name"]: tool for tool in tools if tool.get("type") == "function"
+        }
+        state.tool_names = list(state.direct_tools)
+
+        response = await state.post("seed_session", self.data.row)
+        response.raise_for_status()
+        state.cookies.update(response.cookies)
+        if metadata := response.json().get("mcp"):
+            state.mcp_url = f"{state.resources_url}/{metadata['url_path'].lstrip('/')}"
+            state.mcp_headers = state.headers | metadata["headers"]
+
+    @reward(weight=1.0)
+    async def nemo_gym(self, trace: Trace) -> float:
+        state = trace.state
+        params = self.data.row["responses_create_params"]
+        response = await state.post(
+            "verify",
+            self.data.row
+            | {"response": trace_to_nemo_response(trace, params, state.tool_names)},
+        )
+        response.raise_for_status()
+        result = response.json()
+        reward = result.pop("reward")
+        del result["responses_create_params"], result["response"]
+        trace.info["nemo_gym"] = result
+        for key, value in result.items():
+            if isinstance(value, (bool, int, float)):
+                trace.record_metric(key, float(value))
+        return float(reward)
+
+
+class NeMoGymTaskset(Taskset[NeMoGymTask, NeMoGymConfig]):
+    resource_server: ClassVar[str | None] = None
+    """Import reference for a package-provided resource server, if managed."""
+
+    @classmethod
+    def toolsets(cls, config: NeMoGymConfig) -> list[Toolset]:
+        return [NeMoGymToolset(config.tools)]
+
+    def load(self) -> Iterator[NeMoGymTask]:
+        path = self.config.dataset.expanduser().resolve()
+        dialect = ResponsesDialect()
+        found = False
+
+        with path.open(encoding="utf-8") as lines:
+            for idx, line in enumerate(filter(str.strip, lines)):
+                found = True
+                row = json.loads(line)
+                request = dialect.parse_request(row["responses_create_params"])
+                yield NeMoGymTask(
+                    NeMoGymData(
+                        name=f"{path.stem}:{idx}",
+                        prompt=request.messages,
+                        row=row,
+                    ),
+                    self.config.task,
+                )
+
+        if not found:
+            raise ValueError(f"NeMo Gym dataset is empty: {path}")
+
+
+class NeMoGymEnv(SingleAgentEnv):
+    """Start a taskset's NeMo resource server once per environment worker."""
+
+    _nemo_runtime: Runtime | None = None
+
+    async def start(self) -> None:
+        taskset = cast(NeMoGymTaskset, self.taskset)
+        config = taskset.config.task
+        if config.resources_url is not None:
+            return
+        entrypoint = taskset.resource_server
+        if entrypoint is None:
+            raise ValueError("set --env.taskset.task.resources-url")
+
+        runtime = self._nemo_runtime = make_backend(SubprocessConfig()).bind()
+        await runtime.backend.start()
+        server = Path(__file__).with_name("_server.py")
+        program = await runtime.prepare_uv_script(server.read_bytes())
+        await runtime.run_background(
+            program,
+            {"NEMO_GYM_RESOURCE_SERVER": entrypoint},
+            "nemo_gym.log",
+        )
+
+        async with httpx.AsyncClient(timeout=1) as client:
+            for _ in range(60):
+                try:
+                    port = int((await runtime.read("nemo_gym.port")).decode())
+                    resources_url = f"http://127.0.0.1:{port}"
+                    await client.get(resources_url)
+                    config.resources_url = resources_url
+                    return
+                except (FileNotFoundError, ValueError, httpx.HTTPError):
+                    pass
+                await asyncio.sleep(0.5)
+        log = (await runtime.read("nemo_gym.log")).decode(errors="replace")[-2000:]
+        raise RuntimeError(f"NeMo Gym server did not start:\n{log}")
+
+    async def stop(self) -> None:
+        if self._nemo_runtime is None:
+            return
+        runtime, self._nemo_runtime = self._nemo_runtime, None
+        cast(NeMoGymTaskset, self.taskset).config.task.resources_url = None
+        await runtime.backend.stop()

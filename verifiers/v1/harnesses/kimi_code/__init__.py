@@ -1,4 +1,4 @@
-from verifiers.v1.harnesses.kimi_code.harness import (
+from verifiers.v1.harnesses.kimi_code._harness import (
     KimiCodeHarness,
     KimiCodeHarnessConfig,
 )

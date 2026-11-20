@@ -34,10 +34,10 @@ import pytest
 from pydantic import TypeAdapter
 
 import verifiers.v1 as vf
-from verifiers.v1.configs.runtime import NetworkPolicyConfig
-from verifiers.v1.harness import Harness
-from verifiers.v1.runtimes import PrimeBackend, RuntimeConfig, backend_cls
-from verifiers.v1.utils.loaders import harness_class, harness_config_type
+from verifiers.v1._configs.runtime import NetworkPolicyConfig
+from verifiers.v1._harness import Harness
+from verifiers.v1._runtimes import PrimeBackend, RuntimeConfig, backend_cls
+from verifiers.v1._utils.loaders import harness_class, harness_config_type
 
 HARNESSES: list[str | dict] = [
     "null",

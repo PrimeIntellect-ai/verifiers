@@ -17,7 +17,7 @@ from PIL import Image
 from pydantic import Field
 
 import verifiers.v1 as vf
-from verifiers.v1.utils.image import image_data_url
+from verifiers.v1._utils.image import image_data_url
 
 COLOR_RGB = {
     "red": (255, 0, 0),

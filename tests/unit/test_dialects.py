@@ -7,9 +7,9 @@ import httpx
 import openai
 import pytest
 
-from verifiers.v1.configs.sampling import SamplingConfig
-from verifiers.v1.dialects import AnthropicDialect, ChatDialect, ResponsesDialect
-from verifiers.v1.errors import ProviderError
+from verifiers.v1._configs.sampling import SamplingConfig
+from verifiers.v1._dialects import AnthropicDialect, ChatDialect, ResponsesDialect
+from verifiers.v1._errors import ProviderError
 
 SAMPLING = SamplingConfig(temperature=0.3, top_p=0.9, reasoning_effort="low")
 
@@ -101,7 +101,7 @@ def test_chat_parse_request_reuses_the_last_requests_equal_prefix():
 
 
 def test_message_hash_is_kept_with_the_message():
-    from verifiers.v1 import graph
+    from verifiers.v1 import _graph as graph
 
     messages = ChatDialect().parse_request({"messages": conversation(2)}).messages
     for message in messages:

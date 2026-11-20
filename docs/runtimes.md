@@ -130,7 +130,11 @@ policies:
 ```python
 from typing import ClassVar
 
-from verifiers.v1.runtimes import CustomRuntimeConfig, CustomRuntimeInfo, RuntimeBackend
+from verifiers.v1._runtimes import (
+    CustomRuntimeConfig,
+    CustomRuntimeInfo,
+    RuntimeBackend,
+)
 
 
 class MyConfig(CustomRuntimeConfig):

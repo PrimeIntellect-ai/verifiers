@@ -4,9 +4,9 @@ import numpy as np
 import pytest
 
 import verifiers.v1 as vf
-from verifiers.v1 import graph
-from verifiers.v1.harnesses.utils.replay import drop_blank_text, strip_text
-from verifiers.v1.types import TurnTokens
+from verifiers.v1 import _graph as graph
+from verifiers.v1._types import TurnTokens
+from verifiers.v1.harnesses._utils.replay import drop_blank_text, strip_text
 
 
 def _response(message: vf.AssistantMessage) -> vf.Response:

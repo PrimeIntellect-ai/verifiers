@@ -10,7 +10,7 @@ from conftest import CI_RETRIES
 from fetch_tool import FetchToolTask, FetchToolTaskConfig
 
 import verifiers.v1 as vf
-from verifiers.v1.configs.agent import TimeoutConfig
+from verifiers.v1._configs.agent import TimeoutConfig
 
 pytestmark = pytest.mark.skipif(
     not os.environ.get("PRIME_API_KEY"), reason="needs PRIME_API_KEY"

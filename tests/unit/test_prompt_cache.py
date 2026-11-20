@@ -4,10 +4,10 @@ from copy import deepcopy
 
 import pytest
 
-from verifiers.v1.clients.prompt_cache import maybe_add_prompt_cache_control
-from verifiers.v1.dialects.anthropic import AnthropicDialect
-from verifiers.v1.dialects.chat import ChatDialect
-from verifiers.v1.dialects.responses import ResponsesDialect
+from verifiers.v1._clients.prompt_cache import maybe_add_prompt_cache_control
+from verifiers.v1._dialects.anthropic import AnthropicDialect
+from verifiers.v1._dialects.chat import ChatDialect
+from verifiers.v1._dialects.responses import ResponsesDialect
 
 CACHE = {"type": "ephemeral"}
 

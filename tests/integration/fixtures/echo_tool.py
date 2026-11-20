@@ -11,7 +11,7 @@ so it would also serve taskset-scoped (`Taskset.toolsets`).
 """
 
 import verifiers.v1 as vf
-from verifiers.v1.types import content_text
+from verifiers.v1._types import content_text
 
 PHRASE = "hello world"
 ECHO_TOKEN = "ok-7f3"  # the tool stamps this; only a real tool call can surface it

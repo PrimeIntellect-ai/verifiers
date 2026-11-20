@@ -8,12 +8,12 @@ the turn protocol.
 import json
 from pathlib import Path
 
-from verifiers.v1.clients import ModelContext
-from verifiers.v1.configs.harness import HarnessConfig
-from verifiers.v1.harness import Harness
-from verifiers.v1.runtimes import ProgramResult, Runtime
-from verifiers.v1.task import TaskData
-from verifiers.v1.trace import Trace
+from verifiers.v1._clients import ModelContext
+from verifiers.v1._configs.harness import HarnessConfig
+from verifiers.v1._harness import Harness
+from verifiers.v1._runtimes import ProgramResult, Runtime
+from verifiers.v1._task import TaskData
+from verifiers.v1._trace import Trace
 
 PROGRAM_SOURCE = (Path(__file__).resolve().parent / "program.py").read_text()
 
