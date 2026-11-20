@@ -136,41 +136,10 @@ def _mark_last_tool(
     return False
 
 
-def _mark_last_text_block(
-    message: dict[str, Any], marker: dict[str, str]
-) -> dict | None:
-    content = message.get("content")
-    if isinstance(content, str):
-        if not content:
-            return None
-        return {
-            **message,
-            "content": [
-                {
-                    "type": "text",
-                    "text": content,
-                    "cache_control": dict(marker),
-                }
-            ],
-        }
-    if not isinstance(content, list):
-        return None
-    for index in range(len(content) - 1, -1, -1):
-        block = content[index]
-        if (
-            isinstance(block, dict)
-            and block.get("type") == "text"
-            and isinstance(block.get("text"), str)
-            and block["text"]
-        ):
-            updated = list(content)
-            updated[index] = {**block, "cache_control": dict(marker)}
-            return {**message, "content": updated}
-    return None
-
-
-def _mark_last_anthropic_block(
-    message: dict[str, Any], marker: dict[str, str]
+def _mark_last_block(
+    message: dict[str, Any],
+    marker: dict[str, str],
+    block_types: frozenset[str] = frozenset({"text"}),
 ) -> dict | None:
     content = message.get("content")
     if isinstance(content, str):
@@ -193,7 +162,7 @@ def _mark_last_anthropic_block(
         if not isinstance(block, dict):
             continue
         block_type = block.get("type")
-        if not isinstance(block_type, str) or block_type not in _ANTHROPIC_BLOCK_TYPES:
+        if not isinstance(block_type, str) or block_type not in block_types:
             continue
         if block_type == "text" and not (
             isinstance(block.get("text"), str) and block["text"]
@@ -247,7 +216,7 @@ def _mark_chat(body: dict[str, Any], marker: dict[str, str]) -> bool:
     updated_messages = list(messages)
     messages_changed = False
     for index in reversed(_leading_instruction_indices(messages)):
-        marked = _mark_last_text_block(messages[index], marker)
+        marked = _mark_last_block(messages[index], marker)
         if marked is not None:
             updated_messages[index] = marked
             messages_changed = True
@@ -262,7 +231,7 @@ def _mark_chat(body: dict[str, Any], marker: dict[str, str]) -> bool:
         and isinstance(last_role, str)
         and last_role in {"user", "tool"}
     ):
-        marked = _mark_last_text_block(last_message, marker)
+        marked = _mark_last_block(last_message, marker)
         if marked is not None:
             updated_messages[-1] = marked
             messages_changed = True
@@ -304,7 +273,7 @@ def _mark_anthropic_messages(body: dict[str, Any], marker: dict[str, str]) -> bo
 
     messages = body.get("messages")
     if isinstance(messages, list) and messages and _has_messages_history(messages):
-        marked = _mark_last_anthropic_block(messages[-1], marker)
+        marked = _mark_last_block(messages[-1], marker, _ANTHROPIC_BLOCK_TYPES)
         if marked is not None:
             body["messages"] = [*messages[:-1], marked]
             applied = True
