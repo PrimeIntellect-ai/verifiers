@@ -30,11 +30,12 @@ ASSIGNMENT = re.compile(
     r"""(?<![\w.-])(?P<target>["']?(?P<key>[A-Za-z_][\w.-]*)["']?[ \t]*\]?[ \t]*)"""
     r"""(?P<separator>:(?P<annotation>[ \t]*(?=[A-Za-z_"'])"""
     r"""(?:[\w.\[\], \t|]|"(?:\\.|[^"\\\r\n])*"|'(?:\\.|[^'\\\r\n])*')+?)=|[:=])\s*"""
-    r'''(?P<value>(?:[rRuU])?(?:"""(?:\\.|(?!""")[^\\])*"""|'''
+    r'''(?P<value>(?i:fr|rf|br|rb|r|u|f|b)?(?:"""(?:\\.|(?!""")[^\\])*"""|'''
     r"'''(?:\\.|(?!''')[^\\])*'''|"
     r""""(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')|[^\s,;#}\]"']+)""",
     re.DOTALL,
 )
+F_STRING = re.compile(r"""(?i)(?:fr|rf|f)(?=["'])""")
 URL = re.compile(r"https?://[^\s<>\"']+")
 AUTHORIZATION = re.compile(r"\b(?:Bearer|Basic)\s+([^\s\"']+)", re.IGNORECASE)
 AUTH_HEADER = re.compile(
@@ -201,14 +202,20 @@ def redact(value):
     secrets: set[str] = set()
 
     def sensitive(key: str) -> bool:
-        key = str(key).rsplit(".", 1)[-1]
-        key = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", key).lower()
-        return bool(SECRET_KEY.search(key)) and not key.endswith("_var")
+        for segment in str(key).split("."):
+            segment = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", segment).lower()
+            if not segment.endswith("_var") and SECRET_KEY.search(segment):
+                return True
+        return False
 
     def strings(item):
-        if isinstance(item, (int, float)) and not isinstance(item, bool):
+        if isinstance(item, bytes):
+            if item:
+                secrets.add(repr(item)[2:-1])
+            item = item.decode("utf-8", errors="backslashreplace")
+        elif isinstance(item, (int, float)) and not isinstance(item, bool):
             item = str(item)
-        if isinstance(item, str) and len(item) >= 4:
+        if isinstance(item, str) and item:
             secrets.add(item)
             secrets.add(json.dumps(item, ensure_ascii=False)[1:-1])
         elif isinstance(item, dict):
@@ -220,7 +227,16 @@ def redact(value):
 
     def assignment_value(raw):
         try:
-            return ast.literal_eval(raw)
+            expression = ast.parse(raw, mode="eval").body
+            if isinstance(expression, ast.JoinedStr):
+                # Collect literal text without evaluating formatted expressions.
+                parts = [
+                    part.value
+                    for part in expression.values
+                    if isinstance(part, ast.Constant)
+                ]
+                return parts if len(parts) != len(expression.values) else "".join(parts)
+            return ast.literal_eval(expression)
         except (ValueError, SyntaxError):
             # Shell quotes permit literal newlines that Python's single-quoted
             # literals reject. Their echoes omit quotes.
@@ -234,8 +250,15 @@ def redact(value):
             if match.start() < end:
                 continue
             start, end = match.span("value")
-            if sensitive(match["key"]) and text[start] in "([{":
-                end = _group_end(text, start)
+            if sensitive(match["key"]):
+                if text[start] in "([{":
+                    end = _group_end(text, start)
+                elif F_STRING.match(text, start):
+                    # A quote in a formatted expression can end the regex match early.
+                    try:
+                        ast.parse(match["value"], mode="eval")
+                    except SyntaxError:
+                        end = _group_end(text, start)
             yield match, end
 
     def discover(item):
@@ -280,7 +303,17 @@ def redact(value):
                     continue
 
     discover(value)
+    marker = r"(?P<marker>\[redacted(?: URL)?\]|%5Bredacted%5D)"
     replacements = sorted(secrets, key=len, reverse=True)
+    echoes = re.compile("|".join([marker, *map(re.escape, replacements)]))
+    key_echoes = re.compile(
+        "|".join(
+            [
+                marker,
+                *(re.escape(secret) for secret in replacements if len(secret) >= 4),
+            ]
+        )
+    )
 
     def url(match):
         try:
@@ -331,17 +364,21 @@ def redact(value):
         parts.append(text[cursor:])
         return "".join(parts)
 
-    def scrub_echoes(text: str) -> str:
-        for secret in replacements:
-            text = text.replace(secret, "[redacted]")
-        return text
+    def scrub_echoes(text: str, *, key: bool = False) -> str:
+        # A one-character credential can occur inside the audit's own field names.
+        if key and text in secrets:
+            return "[redacted]"
+        pattern = key_echoes if key else echoes
+        return pattern.sub(lambda match: match["marker"] or "[redacted]", text)
 
     def scrub(item):
         if isinstance(item, dict):
             cleaned = {}
             suffixes: dict[str, int] = {}
             for key, child in item.items():
-                safe = scrub_echoes(key) if isinstance(key, str) else scrub(key)
+                safe = (
+                    scrub_echoes(key, key=True) if isinstance(key, str) else scrub(key)
+                )
                 unique = safe
                 if unique in cleaned:
                     base = str(safe)
