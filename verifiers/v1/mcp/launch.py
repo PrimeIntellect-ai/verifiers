@@ -64,9 +64,11 @@ _PACKAGE_BUILD_STATES: dict[
 
 # Any HTTP response, including MCP's 406 to a bare GET, proves the server is listening.
 _PROBE = """
-import sys, time, urllib.error, urllib.request
+import os, sys, time, urllib.error, urllib.request
 deadline = time.monotonic() + float(sys.argv[2])
 while True:
+    if os.path.exists(sys.argv[3]):
+        sys.exit(2)
     try:
         urllib.request.urlopen(sys.argv[1], timeout=2); sys.exit(0)
     except urllib.error.HTTPError:
@@ -77,6 +79,27 @@ while True:
     if remaining <= 0:
         sys.exit(1)
     time.sleep(min(1, remaining))
+"""
+
+# Keep the existing parent-death chain when supervising a server process.
+_SUPERVISE = """
+import os, signal, subprocess, sys, traceback
+status = sys.argv[1]
+code = 1
+try:
+    from verifiers.v1.mcp.server import _die_with_parent
+    _die_with_parent()
+    # Runtime teardown signals the process group. Reap the child before returning.
+    signal.signal(signal.SIGTERM, lambda *_: None)
+    signal.signal(signal.SIGINT, lambda *_: None)
+    code = subprocess.call(sys.argv[2:])
+except BaseException:
+    traceback.print_exc()
+finally:
+    with open(status + '.tmp', 'w') as file:
+        file.write(str(code))
+    os.replace(status + '.tmp', status)
+sys.exit(code)
 """
 
 
@@ -404,30 +427,59 @@ async def serve_in_runtime(
     )
     timeout = timeouts.startup
     deadline = loop.time() + (math.inf if timeout is None else timeout)
-    await runtime.run_background(command, env, log)
-    if fixed is not None:
-        port = fixed
-    else:
-        try:
-            port = await _read_back_port(runtime, port_file, deadline)
-        except ToolsetError as e:
-            raise ToolsetError(f"{e}: {await log_tail(runtime, log)}") from e
-    probe = await runtime.run(
-        [
-            python,
-            "-c",
-            _PROBE,
-            f"http://127.0.0.1:{port}/mcp",
-            str(max(deadline - loop.time(), 1)),
-        ],
-        {},
+    exit_file = f"{log}.{uuid.uuid4().hex}.exit"
+    await runtime.run_background(
+        [python, "-c", _SUPERVISE, exit_file, *command], env, log
     )
-    if probe.exit_code != 0:
+
+    async def check_exit() -> None:
+        code: int | None = None
+        with contextlib.suppress(Exception):
+            code = int((await runtime.read(exit_file)).decode().strip())
+        if code is None:
+            return
         raise ToolsetError(
-            f"tool server {server.server_name!r} not serving in runtime after "
-            f"{timeout}s (raise its timeout.startup): {await log_tail(runtime, log)}"
+            f"tool server {server.server_name!r} exited with code {code} "
+            f"before readiness: {await log_tail(runtime, log)}"
         )
-    return port
+
+    async def ready() -> int:
+        if fixed is not None:
+            port = fixed
+        else:
+            try:
+                port = await _read_back_port(runtime, port_file, deadline)
+            except ToolsetError as e:
+                raise ToolsetError(f"{e}: {await log_tail(runtime, log)}") from e
+        probe = await runtime.run(
+            [
+                python,
+                "-c",
+                _PROBE,
+                f"http://127.0.0.1:{port}/mcp",
+                str(max(deadline - loop.time(), 1)),
+                exit_file,
+            ],
+            {},
+        )
+        if probe.exit_code != 0:
+            raise ToolsetError(
+                f"tool server {server.server_name!r} not serving in runtime after "
+                f"{timeout}s (raise its timeout.startup): {await log_tail(runtime, log)}"
+            )
+        return port
+
+    readiness = asyncio.create_task(ready())
+    try:
+        while True:
+            await check_exit()
+            done, _ = await asyncio.wait({readiness}, timeout=1)
+            if done:
+                await check_exit()
+                return await readiness
+    finally:
+        readiness.cancel()
+        await asyncio.gather(readiness, return_exceptions=True)
 
 
 @contextlib.asynccontextmanager
