@@ -47,8 +47,14 @@ def scoring_transaction(trace: Trace):
 
 
 def verifier_runtime(
-    task: Task, solver_runtime: Runtime, base: RuntimeConfig, policy: ScoringConfig
+    task: Task,
+    solver_runtime: Runtime | RuntimeConfig,
+    base: RuntimeConfig,
+    policy: ScoringConfig,
 ) -> RuntimeConfig:
+    solver = (
+        solver_runtime.config if isinstance(solver_runtime, Runtime) else solver_runtime
+    )
     source = policy.runtime or base
     if isinstance(source, PrimeConfig):
         if policy.runtime is not None and source.checkpoint:
@@ -57,8 +63,8 @@ def verifier_runtime(
     # A task without its own image/workdir inherits the actual workspace's values,
     # including a Compose image or split execution configuration.
     task = task.with_data(
-        image=task.data.image or getattr(solver_runtime.config, "image", None),
-        workdir=task.data.workdir or getattr(solver_runtime.config, "workdir", None),
+        image=task.data.image or getattr(solver, "image", None),
+        workdir=task.data.workdir or getattr(solver, "workdir", None),
     )
     if policy.network is not None:
         task = task.with_data(network=policy.network)
@@ -75,7 +81,7 @@ def verifier_runtime(
         for a in task.data.artifacts
         if not PurePosixPath(a.source).is_absolute()
     ]
-    solver_dir = PurePosixPath(getattr(solver_runtime.config, "workdir", "/") or "/app")
+    solver_dir = PurePosixPath(getattr(solver, "workdir", "/") or "/app")
     grader_dir = PurePosixPath(getattr(config, "workdir", "/") or "/app")
     if relative and solver_dir != grader_dir:
         raise TaskError(
@@ -104,8 +110,20 @@ def bind_scoring_env(runtime: Runtime, policy: ScoringConfig) -> Runtime:
     return runtime.with_env({**runtime.env, **resolve_env(policy.env or {})})
 
 
+def scoring_skip_reason(trace: Trace, policy: ScoringConfig) -> str | None:
+    """Explain why this scoring policy skips the trace."""
+    if trace.is_format_violation:
+        return "format_violation"
+    if policy.skip_on_truncated and trace.is_truncated:
+        return "truncated"
+    if policy.skip_on_timeout and trace.is_timeout:
+        return "timeout"
+    return None
+
+
 async def stage_verifier(task: Task, trace: Trace, runtime: Runtime) -> None:
     artifacts = dict(trace.state.artifacts)
+    task.validate_artifacts(artifacts)
     async with boundary(TaskError, "verifier task setup"):
         await invoke(task.setup, {"trace": trace, "runtime": runtime})
     await restore(runtime, artifacts)
@@ -232,6 +250,9 @@ async def grade_submission(
     policy = scoring if scoring is not None else task.scoring
     if policy.mode != "isolated":
         raise ValueError("grade_submission requires isolated scoring")
+    if reason := scoring_skip_reason(trace, policy):
+        trace.info["scoring_skipped"] = reason
+        return
     grader = task.grading_task(runtime, scoring=policy)
     config = verifier_runtime(grader, runtime, trace.agent.config.runtime, policy)
     deployment = Deployment(

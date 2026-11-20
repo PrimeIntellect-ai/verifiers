@@ -18,15 +18,13 @@ or tests build definition, then fall back to the agent environment. Unsupported 
 
 import asyncio
 import hashlib
-import io
+import posixpath
 import shutil
 import subprocess
 import sys
-import tarfile
 import tempfile
 import time
-from collections.abc import Iterator
-from functools import lru_cache
+from collections.abc import Iterator, Mapping
 from pathlib import Path, PurePosixPath
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
@@ -36,11 +34,12 @@ from verifiers.v1.configs.scoring import ScoringConfig
 from verifiers.v1.configs.task import TaskConfig
 from verifiers.v1.configs.taskset import TasksetConfig
 from verifiers.v1.errors import SandboxError, TaskError
-from verifiers.v1.runtimes import Runtime
+from verifiers.v1.runtimes import Runtime, RuntimeConfig
 from verifiers.v1.runtimes.deployment import Deployment
 from verifiers.v1.state import State
 from verifiers.v1.task import Task, TaskData, TaskResources, TaskTimeout
 from verifiers.v1.taskset import Taskset
+from verifiers.v1.tasksets.harbor.files import make_tar, source_digest
 from verifiers.v1.trace import Trace
 from verifiers.v1.utils.artifacts import (
     ARTIFACTS_DIR,
@@ -171,6 +170,14 @@ class HarborData(TaskData):
     tags: list[str] = Field(default_factory=list)
     task_dir: str = ""
     """Host path to the task dir; used to stage tests/ to verify."""
+    source_digest: str | None = None
+    """SHA-256 of the task's source tree; checked before staging cached inputs."""
+    verifier_digest: str | None = None
+    """SHA-256 of the verifier source and its declared environment/configuration."""
+    solver_digest: str | None = None
+    """SHA-256 of the prompt, agent configuration and initial environment sources."""
+    task_version: str | None = None
+    """The task package's declared version, separate from its content identity."""
     upload_environment: bool = False
     """Whether to stage environment/ into the workdir."""
     env: dict[str, str] = Field(default_factory=dict)
@@ -218,6 +225,7 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
     def deployment_spec(self):
         from verifiers.v1.runtimes.compose import ComposeSpec
 
+        self.check_source()
         if (Path(self.data.task_dir) / "environment/docker-compose.yaml").is_file():
             return ComposeSpec(
                 self.data.task_dir,
@@ -226,6 +234,21 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
             )
         return super().deployment_spec()
 
+    def check_source(self) -> None:
+        if (
+            self.data.source_digest is not None
+            and source_digest(Path(self.data.task_dir)) != self.data.source_digest
+        ):
+            raise TaskError("Harbor task source changed after loading; reload the task")
+
+    def validate_artifacts(self, artifacts: Mapping[str, bytes | None]) -> None:
+        if self.scoring.mode == "isolated" and any(
+            PurePosixPath(root).is_relative_to("/tests")
+            or PurePosixPath("/tests").is_relative_to(root)
+            for root in artifacts
+        ):
+            raise TaskError("Harbor artifacts cannot restore into /tests")
+
     @property
     def scoring(self) -> ScoringConfig:
         # Keep tasksets that populate verifier_env compatible with the common policy.
@@ -233,20 +256,33 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
             update={"env": {**self.data.verifier_env, **(self.data.scoring.env or {})}}
         )
 
-    def grading_task(self, runtime: Runtime, *, scoring: ScoringConfig):
+    def grading_task(self, runtime: Runtime | RuntimeConfig, *, scoring: ScoringConfig):
         # Custom Harbor verifiers may still pass verifier_env explicitly to run().
         # Give them the merged raw values, without resolving or mutating solver data.
         task = self.with_data(verifier_env=dict(scoring.env or {}), scoring=scoring)
         if scoring.mode == "shared":
             return task.with_data(verifier=None, verifier_image=None)
+        config = runtime.config if isinstance(runtime, Runtime) else runtime
+        workdir = getattr(config, "workdir", None) or "/app"
+        for artifact in self.data.artifacts:
+            if (
+                artifact.service != "main"
+                and not PurePosixPath(artifact.source).is_absolute()
+            ):
+                continue
+            root = PurePosixPath(
+                posixpath.normpath(posixpath.join(workdir, artifact.source))
+            )
+            if root.is_relative_to("/tests") or PurePosixPath("/tests").is_relative_to(
+                root
+            ):
+                raise TaskError("Harbor artifacts cannot restore into /tests")
         if task.data.verifier is None:
             task = task.with_data(
                 verifier=VerifierConfig(fresh_copy=True, env=task.data.env)
             )
         if task.data.verifier_image is None:
-            task = task.with_data(
-                image=runtime.config.image, workdir=runtime.config.workdir
-            )
+            task = task.with_data(image=config.image, workdir=config.workdir)
         return type(self)(verifier_box_data(task.data), self.config)
 
     async def finalize_services(
@@ -267,6 +303,7 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
     async def setup(
         self, runtime: Runtime, deployment: Deployment | None = None
     ) -> None:
+        self.check_source()
         if deployment is not None:
             declared = {
                 entry.service for entry in (*self.data.collect, *self.data.artifacts)
@@ -359,6 +396,9 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
                     f"{hook.command}\n{detail}"
                 )
         for service, source_runtime in runtimes.items():
+            trace.info.setdefault("harbor_artifact_workdirs", {})[service] = (
+                source_runtime.config.workdir or "/"
+            )
             used = sum(len(data or b"") for data in trace.state.artifacts.values())
             collected = await collect(
                 source_runtime,
@@ -383,11 +423,8 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
             trace.state.artifacts.update(collected)
 
     async def stage_verifier(self, trace: Trace, runtime: Runtime) -> None:
-        if self.scoring.mode == "isolated" and any(
-            PurePosixPath(root).is_relative_to("/tests")
-            for root in trace.state.artifacts
-        ):
-            raise TaskError("Harbor artifacts cannot restore into /tests")
+        self.check_source()
+        self.validate_artifacts(trace.state.artifacts)
         await self.stage_tests(runtime, wipe=self.data.verifier is not None)
         self.verifier_staged = True
 
@@ -862,6 +899,25 @@ def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborD
         category=meta.get("category"),
         tags=meta.get("tags", []),
         task_dir=str(task_dir),
+        source_digest=source_digest(task_dir),
+        solver_digest=hashlib.sha256(
+            (
+                source_digest(task_dir / "environment", task_dir=task_dir)
+                + environment.model_dump_json()
+                + parsed.agent.model_dump_json()
+                + harbor_task.instruction.strip()
+            ).encode()
+        ).hexdigest(),
+        verifier_digest=hashlib.sha256(
+            (
+                source_digest(task_dir / "tests", task_dir=task_dir)
+                + parsed.verifier.model_dump_json()
+                + (
+                    definition.config if definition is not None else environment
+                ).model_dump_json()
+            ).encode()
+        ).hexdigest(),
+        task_version=task.version if task else None,
         compose_build_dockerfile=not harbor_config.ignore_dockerfile,
         upload_environment=upload_environment,
         skills=[{"runtime": environment.skills_dir}] if environment.skills_dir else [],
@@ -1001,17 +1057,6 @@ def parse_verifier_environment(
         fresh_copy=not declared,
         network=harbor_network(network),
     )
-
-
-# Downloaded task directories are immutable. Cache the current task's environment
-# and tests to bound memory while reusing both archives across rollouts.
-@lru_cache(maxsize=2)
-def make_tar(directory: Path) -> bytes:
-    buffer = io.BytesIO()
-    with tarfile.open(fileobj=buffer, mode="w:gz") as tar:
-        for item in sorted(directory.iterdir()):
-            tar.add(item, arcname=item.name)
-    return buffer.getvalue()
 
 
 class HarborTaskset(Taskset[HarborTask, HarborConfig]):

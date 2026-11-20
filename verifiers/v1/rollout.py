@@ -25,6 +25,7 @@ from verifiers.v1.grading import (
     bind_scoring_env,
     grade_task,
     scoring_network,
+    scoring_skip_reason,
     scoring_transaction,
     verifier_runtime,
 )
@@ -39,7 +40,7 @@ from verifiers.v1.runtimes import (
 from verifiers.v1.runtimes.private_network import tool_vms
 from verifiers.v1.session import RolloutLimits, RolloutSession, hook_boundary
 from verifiers.v1.state import state_cls
-from verifiers.v1.task import Task
+from verifiers.v1.task import Task, task_key
 from verifiers.v1.trace import AgentInfo, Trace, TraceTask
 from verifiers.v1.types import Messages, Request, Response, SystemMessage, UserMessage
 from verifiers.v1.utils.artifacts import collect
@@ -161,6 +162,9 @@ class Rollout:
             # The seat's resolved config, role overrides included — the agent
             # this trace can be reproduced with.
             agent=AgentInfo(config=agent_config),
+        )
+        self.trace.info["task_config_sha256"] = task_key(
+            task.config.model_dump(mode="json")
         )
         self.trace._replay_view = harness.replay_view
         if on_trace is not None:
@@ -765,12 +769,8 @@ class Rollout:
     def _scoring_skip_reason(self) -> str | None:
         """Why the resolved scoring policy, or the `skip_scoring` stop that ended this trace,
         skips task scoring for it, if either does."""
-        if self.trace.is_format_violation:
-            return "format_violation"
-        if self._scoring_policy.skip_on_truncated and self.trace.is_truncated:
-            return "truncated"
-        if self._scoring_policy.skip_on_timeout and self.trace.is_timeout:
-            return "timeout"
+        if reason := scoring_skip_reason(self.trace, self._scoring_policy):
+            return reason
         if self.trace.stop_condition in self._skip_scoring_stops:
             return self.trace.stop_condition
         return None

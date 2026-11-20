@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import io
 import json
+import os
 import posixpath
 import re
 import shlex
@@ -12,12 +14,13 @@ import tarfile
 import tempfile
 import time
 import uuid
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, Field, field_validator
 
+from verifiers.v1.utils.files import read_regular
 from verifiers.v1.utils.format import format_time
 from verifiers.v1.utils.logging import get_logger
 
@@ -32,6 +35,12 @@ ARTIFACTS_DIR = "/logs/artifacts"
 MAX_ARTIFACT_BYTES = 32 * 1024 * 1024
 """Default ceiling per collection. Sized for a delta, not a tree: the grading box boots from the
 agent's image, so the repo is already there and only its output has to travel."""
+
+MAX_MANIFEST_BYTES = 1024 * 1024
+
+
+class _ArtifactSizeError(ValueError):
+    """The canonical archives exceed the submission's byte budget."""
 
 
 class Artifact(BaseModel):
@@ -55,13 +64,27 @@ class Artifact(BaseModel):
             or not path.parts
             or ".." in path.parts
             or "\\" in value
-            or path.parts[0] == "manifest.json"
+            or path.parts[0] in ("manifest.json", ".archives")
         ):
             raise ValueError(
                 "artifact destination must be a relative path without '..' or "
-                "backslashes, outside the reserved manifest.json path"
+                "backslashes, outside reserved manifest.json and .archives paths"
             )
         return str(path)
+
+
+def artifact_source(
+    artifact: Artifact, workdir: str, service_workdirs: Mapping[str, str]
+) -> str:
+    """Resolve a declaration against the runtime that captured it."""
+    path = PurePosixPath(artifact.source)
+    if path.is_absolute():
+        return posixpath.normpath(str(path))
+    service = getattr(artifact, "service", "main")
+    directory = service_workdirs.get(service, workdir if service == "main" else None)
+    if not isinstance(directory, str) or not PurePosixPath(directory).is_absolute():
+        raise ValueError(f"No saved artifact workdir for service {service!r}")
+    return posixpath.normpath(str(PurePosixPath(directory) / path))
 
 
 def validate_artifact_mounts(config: RuntimeConfig, sources: Iterable[str]) -> None:
@@ -214,6 +237,8 @@ async def collect(
                 f"declared artifact {source!r} does not exist in the runtime"
             )
         archive = await _tar_out(runtime, artifact, budget)
+        _validate_restore(source, archive)
+        archive = _rebuild(archive, max_bytes=budget)
         budget -= len(archive)
         collected[source] = archive
 
@@ -231,39 +256,58 @@ def save_artifacts(
     artifacts: list[Artifact],
     *,
     workdir: str = "/",
-) -> None:
-    """Save collected files at their declared destinations, with a manifest.
+    service_workdirs: Mapping[str, str] | None = None,
+    max_bytes: int = MAX_ARTIFACT_BYTES,
+) -> str:
+    """Save canonical archives and preview files, with a manifest identifying both.
 
     Unpack each validated archive in isolation before moving its files into the
     saved tree. Failed or conflicting entries are recorded without losing the
     completed trace. Source-mirrored directories may merge: collection splits
     nested declarations out of the implicit convention sweep.
     """
-    declared = {str(PurePosixPath(workdir) / a.source): a for a in artifacts}
+    workdirs = service_workdirs or {}
+    declared = {
+        artifact_source(a, workdir, workdirs): a
+        for a in artifacts
+        if PurePosixPath(a.source).is_absolute()
+        or getattr(a, "service", "main") in {"main", *workdirs}
+    }
     manifest: list[dict] = []
     claims: list[tuple[PurePosixPath, bool]] = []
+    remaining = max_bytes
     directory.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(dir=directory.parent) as temporary:
         saved = Path(temporary) / "artifacts"
         saved.mkdir()
         (saved / "manifest.json").touch()
+        (saved / ".archives").mkdir()
         for source, archive in collected.items():
             artifact = declared.get(source, Artifact(source=source))
-            destination = artifact.destination or artifact.source.lstrip("/")
+            service = getattr(artifact, "service", "main")
+            destination = artifact.destination or (
+                source if service != "main" else artifact.source
+            ).lstrip("/")
             entry = {
                 "source": source,
-                "service": getattr(artifact, "service", "main"),
+                "service": service,
                 "destination": destination,
                 "status": "empty",
             }
             manifest.append(entry)
             try:
                 _validate_restore(source, archive)
-                Artifact.validate_destination(artifact.destination)
-                target = PurePosixPath(destination)
-                entry["destination"] = str(target)
                 if archive is None:
                     continue
+                canonical = _rebuild(archive, max_bytes=remaining)
+                remaining -= len(canonical)
+                digest = hashlib.sha256(canonical).hexdigest()
+                archive_path = f".archives/{digest}.tar"
+                (saved / archive_path).write_bytes(canonical)
+                entry.update(archive=archive_path, sha256=digest, size=len(canonical))
+                Artifact.validate_destination(destination)
+                target = PurePosixPath(destination)
+                entry["destination"] = str(target)
                 with tarfile.open(fileobj=io.BytesIO(archive), mode="r:") as tar:
                     members = tar.getmembers()
                     if not members:
@@ -310,15 +354,89 @@ def save_artifacts(
                                 (Path(unpacked) / member.name).replace(path)
                     claims.append((target, artifact.destination is not None))
                     entry["status"] = "ok"
+            except _ArtifactSizeError:
+                raise
             except (OSError, ValueError, RuntimeError, tarfile.TarError) as exc:
                 entry.update(status="failed", error=str(exc))
                 logger.warning("Failed to save artifact %s - %s", source, exc)
-        (saved / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+        manifest_bytes = (json.dumps(manifest, indent=2) + "\n").encode()
+        if len(manifest_bytes) > MAX_MANIFEST_BYTES:
+            raise ValueError("artifact manifest exceeds the byte limit")
+        (saved / "manifest.json").write_bytes(manifest_bytes)
         if directory.is_symlink():
             raise ValueError(f"artifact directory must not be a symlink: {directory}")
         if directory.exists():
             shutil.rmtree(directory)
         saved.replace(directory)
+    return hashlib.sha256(manifest_bytes).hexdigest()
+
+
+def _read_saved_file(directory: Path, relative: str, limit: int) -> bytes:
+    """Open a saved file through directory descriptors, rejecting links and FIFOs."""
+    flags = os.O_RDONLY | os.O_NOFOLLOW
+    parent = os.open(directory, flags | os.O_DIRECTORY)
+    try:
+        parts = PurePosixPath(relative).parts
+        for name in parts[:-1]:
+            child = os.open(name, flags | os.O_DIRECTORY, dir_fd=parent)
+            os.close(parent)
+            parent = child
+        return read_regular(parts[-1], limit, dir_fd=parent)
+    finally:
+        os.close(parent)
+
+
+def load_artifacts(
+    directory: Path,
+    *,
+    max_bytes: int = MAX_ARTIFACT_BYTES,
+    expected_manifest_sha256: str | None = None,
+) -> dict[str, bytes | None]:
+    """Load complete, hash-checked submissions saved by `save_artifacts`.
+
+    Extracted files are a convenient inspection view; regrading uses only the
+    original canonical archives. Older manifests without archives cannot establish
+    a complete submission and are rejected rather than silently reconstructed.
+    """
+    manifest_bytes = _read_saved_file(directory, "manifest.json", MAX_MANIFEST_BYTES)
+    if (
+        expected_manifest_sha256 is not None
+        and hashlib.sha256(manifest_bytes).hexdigest() != expected_manifest_sha256
+    ):
+        raise ValueError("artifact manifest failed its integrity check")
+    manifest = json.loads(manifest_bytes)
+    if not isinstance(manifest, list):
+        raise TypeError("artifact manifest must be a list")
+    collected: dict[str, bytes | None] = {}
+    remaining = max_bytes
+    for entry in manifest:
+        if not isinstance(entry, dict) or not isinstance(entry.get("source"), str):
+            raise TypeError("invalid artifact manifest entry")
+        source = entry["source"]
+        if source in collected:
+            raise ValueError(f"duplicate artifact root {source!r}")
+        _validate_restore(source, None)
+        if entry.get("status") == "empty" and "archive" not in entry:
+            collected[source] = None
+            continue
+        digest = entry.get("sha256")
+        # Preview failures do not affect a complete, verified archive.
+        if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
+            raise ValueError(f"artifact {source!r} has no complete saved archive")
+        relative = f".archives/{digest}.tar"
+        if entry.get("archive") != relative:
+            raise ValueError(f"invalid archive path for {source!r}")
+        archive = _read_saved_file(directory, relative, remaining)
+        if len(archive) != entry.get("size"):
+            raise ValueError(
+                f"artifact {source!r} exceeds its recorded size or byte budget"
+            )
+        if hashlib.sha256(archive).hexdigest() != digest:
+            raise ValueError(f"artifact {source!r} failed its integrity check")
+        _validate_restore(source, archive)
+        collected[source] = archive
+        remaining -= len(archive)
+    return collected
 
 
 async def restore(runtime: Runtime, collected: dict[str, bytes | None]) -> None:
@@ -429,7 +547,7 @@ def _drop_special_files(archive: bytes) -> tuple[bytes, list[str]]:
     return out.getvalue(), dropped
 
 
-def _rebuild(archive: bytes) -> bytes:
+def _rebuild(archive: bytes, *, max_bytes: int | None = None) -> bytes:
     """Write a fresh archive holding exactly the members Python's tarfile reads.
 
     Validation reads archives with Python's tarfile, but the grading box extracts
@@ -465,6 +583,10 @@ def _rebuild(archive: bytes) -> bytes:
                     f"artifact member {member.name!r} is a link or special file"
                 )
             target.addfile(info, content)
+            if max_bytes is not None and target.offset > max_bytes:
+                raise _ArtifactSizeError("canonical artifacts exceed the byte limit")
+    if max_bytes is not None and out.tell() > max_bytes:
+        raise _ArtifactSizeError("canonical artifacts exceed the byte limit")
     return out.getvalue()
 
 
