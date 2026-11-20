@@ -43,18 +43,18 @@ class _DeploymentStrategy:
     async def start(self, deployment: Deployment) -> None:
         raise NotImplementedError
 
-    async def _prepare_execution(
+    async def prepare_execution(
         self, deployment: Deployment, routes: list[str], state_route: str | None = None
     ) -> None:
         await deployment._harness_backend.prepare_execution(routes)
 
-    async def _stop_execution(self, deployment: Deployment) -> None:
+    async def stop_execution(self, deployment: Deployment) -> None:
         return
 
     async def close(self, deployment: Deployment) -> None:
         return
 
-    async def _prepare_verifier(self, deployment: Deployment) -> None:
+    async def prepare_verifier(self, deployment: Deployment) -> None:
         return
 
     @asynccontextmanager
