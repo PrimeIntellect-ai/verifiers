@@ -109,3 +109,11 @@ def test_rlm_explicit_network_guidance_overrides_runtime_policy(value):
     config = RLMHarnessConfig(id="rlm", network_guidance=value)
     for runtime_config in (DockerConfig(allow=[]), DockerConfig()):
         assert _sent_policy(config, runtime_config)["network_guidance"] is value
+
+
+def test_rlm_image_input_is_opt_in():
+    assert "vision" not in _sent_policy(RLMHarnessConfig(id="rlm"), DockerConfig())
+    assert (
+        _sent_policy(RLMHarnessConfig(id="rlm", vision=True), DockerConfig())["vision"]
+        is True
+    )
