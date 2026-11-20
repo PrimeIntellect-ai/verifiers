@@ -18,7 +18,7 @@ from pydantic_config import cli
 from pydantic_core import from_json
 
 import verifiers.v1 as vf
-from verifiers.v1.cli.output import write_config
+from verifiers.v1.cli.output import output_path, write_config
 from verifiers.v1.cli.resolve import (
     extract_id,
     narrow_taskset_config,
@@ -84,13 +84,6 @@ def validation_mode(config: ValidateConfig) -> str:
     if config.only_noop:
         return "noop"
     return "all"
-
-
-def output_path(config: ValidateConfig) -> Path:
-    """Where this run writes: `output_dir / run.dir` — the same grouping convention as
-    eval and training."""
-    assert config.run.dir is not None
-    return config.output_dir / config.run.dir
 
 
 def _write_rows(path: Path, rows: Sequence[ResultRow]) -> None:
