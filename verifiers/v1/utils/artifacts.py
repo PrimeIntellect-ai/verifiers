@@ -39,6 +39,10 @@ agent's image, so the repo is already there and only its output has to travel.""
 MAX_MANIFEST_BYTES = 1024 * 1024
 
 
+class _ArtifactSizeError(ValueError):
+    """The canonical archives exceed the submission's byte budget."""
+
+
 class Artifact(BaseModel):
     """One path to restore at the same location in another runtime."""
 
@@ -233,6 +237,8 @@ async def collect(
                 f"declared artifact {source!r} does not exist in the runtime"
             )
         archive = await _tar_out(runtime, artifact, budget)
+        _validate_restore(source, archive)
+        archive = _rebuild(archive, max_bytes=budget)
         budget -= len(archive)
         collected[source] = archive
 
@@ -251,6 +257,7 @@ def save_artifacts(
     *,
     workdir: str = "/",
     service_workdirs: Mapping[str, str] | None = None,
+    max_bytes: int = MAX_ARTIFACT_BYTES,
 ) -> str:
     """Save canonical archives and preview files, with a manifest identifying both.
 
@@ -268,6 +275,7 @@ def save_artifacts(
     }
     manifest: list[dict] = []
     claims: list[tuple[PurePosixPath, bool]] = []
+    remaining = max_bytes
     directory.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(dir=directory.parent) as temporary:
         saved = Path(temporary) / "artifacts"
@@ -289,19 +297,17 @@ def save_artifacts(
             manifest.append(entry)
             try:
                 _validate_restore(source, archive)
-                if archive is not None:
-                    canonical = _rebuild(archive)
-                    digest = hashlib.sha256(canonical).hexdigest()
-                    archive_path = f".archives/{digest}.tar"
-                    (saved / archive_path).write_bytes(canonical)
-                    entry.update(
-                        archive=archive_path, sha256=digest, size=len(canonical)
-                    )
+                if archive is None:
+                    continue
+                canonical = _rebuild(archive, max_bytes=remaining)
+                remaining -= len(canonical)
+                digest = hashlib.sha256(canonical).hexdigest()
+                archive_path = f".archives/{digest}.tar"
+                (saved / archive_path).write_bytes(canonical)
+                entry.update(archive=archive_path, sha256=digest, size=len(canonical))
                 Artifact.validate_destination(destination)
                 target = PurePosixPath(destination)
                 entry["destination"] = str(target)
-                if archive is None:
-                    continue
                 with tarfile.open(fileobj=io.BytesIO(archive), mode="r:") as tar:
                     members = tar.getmembers()
                     if not members:
@@ -348,6 +354,8 @@ def save_artifacts(
                                 (Path(unpacked) / member.name).replace(path)
                     claims.append((target, artifact.destination is not None))
                     entry["status"] = "ok"
+            except _ArtifactSizeError:
+                raise
             except (OSError, ValueError, RuntimeError, tarfile.TarError) as exc:
                 entry.update(status="failed", error=str(exc))
                 logger.warning("Failed to save artifact %s - %s", source, exc)
@@ -539,7 +547,7 @@ def _drop_special_files(archive: bytes) -> tuple[bytes, list[str]]:
     return out.getvalue(), dropped
 
 
-def _rebuild(archive: bytes) -> bytes:
+def _rebuild(archive: bytes, *, max_bytes: int | None = None) -> bytes:
     """Write a fresh archive holding exactly the members Python's tarfile reads.
 
     Validation reads archives with Python's tarfile, but the grading box extracts
@@ -575,6 +583,10 @@ def _rebuild(archive: bytes) -> bytes:
                     f"artifact member {member.name!r} is a link or special file"
                 )
             target.addfile(info, content)
+            if max_bytes is not None and target.offset > max_bytes:
+                raise _ArtifactSizeError("canonical artifacts exceed the byte limit")
+    if max_bytes is not None and out.tell() > max_bytes:
+        raise _ArtifactSizeError("canonical artifacts exceed the byte limit")
     return out.getvalue()
 
 

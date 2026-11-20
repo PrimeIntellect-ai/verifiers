@@ -84,9 +84,20 @@ def load_evidence(config: AuditConfig) -> tuple[str, list[dict]]:
     return hashlib.sha256(raw).hexdigest(), records
 
 
+def _json_bytes(value, *, indent: int | None = None) -> bytes:
+    """Keep Unicode text and escape surrogate-escaped filesystem paths."""
+    return json.dumps(value, ensure_ascii=False, indent=indent).encode(
+        "utf-8", errors="backslashreplace"
+    )
+
+
 async def run_audit(config: AuditConfig) -> tuple[Path, int]:
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
-    output = config.output or config.path / "audit" / f"{config.action}-{stamp}.json"
+    directory = config.path / "audit"
+    if config.output is None and config.action == "check":
+        source_path = config.path.resolve()
+        directory = source_path.with_name(f"{source_path.name}.audit")
+    output = config.output or directory / f"{config.action}-{stamp}.json"
     if output.exists() or output.is_symlink():
         raise FileExistsError(f"output already exists: {output}")
     source_sha256, records = load_evidence(config)
@@ -131,11 +142,11 @@ async def run_audit(config: AuditConfig) -> tuple[Path, int]:
             agent=AgentInfo(config=AgentConfig()),
         )
         try:
-            scratch.root_reply = json.dumps(content)
-            encoded = scratch.last_reply.encode()
+            encoded = _json_bytes(content)
             result["evidence_sha256"] = hashlib.sha256(encoded).hexdigest()
             if len(encoded) > MAX_REVIEW_BYTES:
                 raise ValueError(f"review evidence exceeds {MAX_REVIEW_BYTES} bytes")
+            scratch.root_reply = encoded.decode("utf-8")
             result["analysis_score"] = await judge.score(question, scratch)
             result["status"] = "reviewed"
         except Exception as error:
@@ -171,8 +182,8 @@ async def run_audit(config: AuditConfig) -> tuple[Path, int]:
     )
     # Never replace a run, previous review, or a symlink target.
     output.parent.mkdir(parents=True, exist_ok=True)
-    with output.open("x", encoding="utf-8") as stream:
-        stream.write(json.dumps(report, indent=2) + "\n")
+    with output.open("xb") as stream:
+        stream.write(_json_bytes(report, indent=2) + b"\n")
     return output, sum(item["status"] == "error" for item in results)
 
 
