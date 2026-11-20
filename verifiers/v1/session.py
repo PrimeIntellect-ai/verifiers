@@ -15,15 +15,19 @@ or the graph.
 """
 
 import asyncio
+import copy
 import hashlib
 import inspect
 import json
+import weakref
 from collections import Counter
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass, field, replace
+from difflib import SequenceMatcher
 from functools import cached_property
-from typing import get_origin, get_type_hints
+from itertools import chain
+from typing import Any, TypeVar, get_origin, get_type_hints
 
 from pydantic import TypeAdapter
 
@@ -36,6 +40,7 @@ from verifiers.v1.harnesses.utils.compaction import bound_tool_message
 from verifiers.v1.trace import InterceptRecord, Trace
 from verifiers.v1.types import (
     AssistantMessage,
+    Message,
     Messages,
     Request,
     Response,
@@ -55,6 +60,8 @@ logger = get_logger(__name__)
 
 MCPProxy = Callable[[str], AbstractAsyncContextManager[str]]
 ToolResultKey = tuple[int | str, str]
+StopVerdict = tuple[str, dict[str, Any]]
+HookT = TypeVar("HookT", Request, Response, bool)
 
 
 def hook_boundary(handler: Callable, *, allow_trace: bool) -> type:
@@ -77,6 +84,165 @@ def hook_boundary(handler: Callable, *, allow_trace: bool) -> type:
 async def call_hook(handler: Callable, available: dict[type, object]) -> object:
     result = invoke(handler, available)
     return await result if inspect.isawaitable(result) else result
+
+
+def unpack_hook(result: object, expected: type[HookT]) -> tuple[HookT, dict[str, Any]]:
+    """Unpack `value` or `(value, metadata)` returned by an `@intercept` or `@stop` hook."""
+    match result:
+        case (value, Mapping() as info) if all(isinstance(k, str) for k in info):
+            pass
+        case tuple():
+            raise TypeError(f"expected ({expected.__name__}, dict[str, Any])")
+        case value:
+            info = {}
+    if not isinstance(value, expected):
+        raise TypeError(f"expected {expected.__name__}, got {type(value).__name__}")
+    return value, copy.deepcopy(dict(info))
+
+
+def _tool_calls(messages: Iterable[Message]) -> dict[str, ToolCall]:
+    calls: dict[str, ToolCall] = {}
+    for msg in messages:
+        if isinstance(msg, AssistantMessage) and msg.tool_calls:
+            calls.update((call.id, call) for call in msg.tool_calls)
+    return calls
+
+
+def _tool_call(calls: dict[str, ToolCall], message: Message) -> ToolCall | None:
+    if not isinstance(message, ToolMessage):
+        return None
+    return calls.get(
+        message.tool_call_id,
+        ToolCall(id=message.tool_call_id, name=message.name or "", arguments=""),
+    )
+
+
+_POSITIONS: dict[int, tuple[weakref.ref[InterceptRecord], int]] = {}
+
+
+def _bind_pos(rec: InterceptRecord, pos: int) -> None:
+    key = id(rec)
+
+    def forget(ref: weakref.ref[InterceptRecord]) -> None:
+        if (entry := _POSITIONS.get(key)) is not None and entry[0] is ref:
+            del _POSITIONS[key]
+
+    _POSITIONS[key] = weakref.ref(rec, forget), pos
+
+
+def _get_pos(rec: InterceptRecord) -> int | None:
+    entry = _POSITIONS.get(id(rec))
+    return entry[1] if entry is not None and entry[0]() is rec else None
+
+
+def _pop_pos(rec: InterceptRecord) -> int | None:
+    entry = _POSITIONS.pop(id(rec), None)
+    return entry[1] if entry is not None and entry[0]() is rec else None
+
+
+def _make_record(
+    handler: Callable,
+    node: int | None,
+    pos: int,
+    calls: dict[str, ToolCall],
+    message: Message,
+    info: dict[str, Any],
+) -> InterceptRecord:
+    rec = InterceptRecord(
+        handler=handler.__name__,
+        node=node,
+        tool_call=_tool_call(calls, message),
+        info=copy.deepcopy(info),
+    )
+    if node is None:
+        _bind_pos(rec, pos)
+    return rec
+
+
+def _role_key(message: Message) -> tuple[type, str]:
+    return (
+        type(message),
+        message.tool_call_id if isinstance(message, ToolMessage) else "",
+    )
+
+
+def _align_role_slice(
+    before: Messages, after: Messages, nodes: list[int]
+) -> Iterator[tuple[int, int]]:
+    b_keys = [_role_key(m) for m in before]
+    a_keys = [_role_key(m) for m in after]
+    for tag, i1, i2, j1, j2 in SequenceMatcher(
+        None, b_keys, a_keys, autojunk=False
+    ).get_opcodes():
+        if tag == "equal":
+            yield from zip(range(i1, i2), nodes[j1:j2])
+
+
+def _align_nodes(
+    before: Messages, after: Messages, prompt_nodes: list[int]
+) -> dict[int, int]:
+    """Map pre-mediation message indices in `before` to committed `prompt_nodes`."""
+    trimmed = (
+        after[:-1]
+        if after
+        and isinstance(after[-1], UserMessage)
+        and not any(isinstance(m, UserMessage) for m in before)
+        else after
+    )
+    if before == trimmed:
+        return {i: prompt_nodes[i] for i in range(len(trimmed))}
+    b_hashes = [graph.message_hash(m) for m in before]
+    a_hashes = [graph.message_hash(m) for m in trimmed]
+    mapping: dict[int, int] = {}
+    for tag, i1, i2, j1, j2 in SequenceMatcher(
+        None, b_hashes, a_hashes, autojunk=False
+    ).get_opcodes():
+        if tag == "equal":
+            mapping.update(zip(range(i1, i2), prompt_nodes[j1:j2]))
+        elif tag == "replace":
+            mapping.update(
+                (i1 + rel_i, nid)
+                for rel_i, nid in _align_role_slice(
+                    before[i1:i2], trimmed[j1:j2], prompt_nodes[j1:j2]
+                )
+            )
+    return mapping
+
+
+def _diff_request_rewrite(
+    current: Request, result: Request, active: set[int]
+) -> list[int]:
+    """Validate a request rewrite in place and return the positions that changed."""
+    if len(result.messages) != len(current.messages):
+        raise ValueError("request interceptors cannot add or remove messages")
+    if result.tools != current.tools:
+        raise ValueError("request interceptors cannot rewrite tools")
+    changed: list[int] = []
+    for pos, (before, after) in enumerate(
+        zip(current.messages, result.messages, strict=True)
+    ):
+        if before == after:
+            continue
+        if pos not in active:
+            raise ValueError(
+                "request interceptors can only rewrite new user or tool messages"
+            )
+        if type(after) is not type(before):
+            raise TypeError(
+                f"expected {type(before).__name__}, got {type(after).__name__}"
+            )
+        if isinstance(after, ToolMessage):
+            assert isinstance(before, ToolMessage)
+            after = ToolMessage.model_validate(bound_tool_message(after.model_dump()))
+            result.messages[pos] = after
+            if after.tool_call_id != before.tool_call_id or after.name != before.name:
+                raise ValueError(
+                    "request interceptors cannot change a tool-call ID or name"
+                )
+            if after == before:
+                continue
+        changed.append(pos)
+    return changed
 
 
 def same_arguments(call: ToolCall, arguments: object) -> bool:
@@ -166,9 +332,7 @@ class RolloutSession:
     trace: Trace
     network_policy: NetworkPolicyConfig = field(default_factory=NetworkPolicyConfig)
     """The resolved execution policy, including task-level restrictions."""
-    trace_stops: list[Callable[..., Awaitable[bool] | bool]] = field(
-        default_factory=list
-    )
+    trace_stops: list[Callable] = field(default_factory=list)
     limits: RolloutLimits = field(default_factory=RolloutLimits)
     request_interceptors: list[Callable] = field(default_factory=list)
     response_interceptors: list[Callable] = field(default_factory=list)
@@ -221,6 +385,15 @@ class RolloutSession:
     tool_issuers: dict[tuple[str, str], set[int]] = field(default_factory=dict)
     """Sampled nodes that issued a call ID under a replay-equivalent prefix."""
     prepared_users: Counter[str] = field(default_factory=Counter)
+    prepared_rewrites: list[tuple[int, InterceptRecord]] = field(default_factory=list)
+    """`(user_slot, record)` pairs from `prepare_users` awaiting their prompt commit."""
+    _prepared_user_count: int = 0
+    pinned_rewrites: list[tuple[ToolResultKey, InterceptRecord]] = field(
+        default_factory=list
+    )
+    """`(tool_key, record)` pairs for pinned tool results awaiting their node commit."""
+    inflight_rewrites: dict[str, list[InterceptRecord]] = field(default_factory=dict)
+    """Unpinned in-request rewrites keyed by `replay_key`, flushed if the turn never commits."""
     last_request: tuple[list, Messages] = ((), [])
     """The last chat request's raw messages (copied: the server rewrites a body in place) and
     their parse, which the next request's equal prefix reuses instead of parsing again."""
@@ -246,7 +419,7 @@ class RolloutSession:
         self,
         request: Request,
         dialect: DialectName | None = None,
-        known_path: Sequence[int] = (),
+        known_path: Sequence[int] | Mapping[int, int] = (),
     ) -> dict[int, ToolResultKey]:
         """Use the sampled node and call ID for a model-issued tool. A harness-supplied
         call outside the sampled graph uses its conversation prefix instead."""
@@ -273,14 +446,18 @@ class RolloutSession:
             )
             if isinstance(message, AssistantMessage) and message.tool_calls:
                 prefix_hash = prefix.hexdigest()
+                issuer_node: int | None = (
+                    known_path.get(position)
+                    if isinstance(known_path, Mapping)
+                    else (known_path[position] if position < len(known_path) else None)
+                )
                 for call in message.tool_calls:
                     alias = (prefix_hash, call.id)
                     if (
-                        position < len(known_path)
-                        and self.trace.nodes[known_path[position]].sampled
+                        issuer_node is not None
+                        and self.trace.nodes[issuer_node].sampled
                     ):
-                        issuer = known_path[position]
-                        calls[call.id] = (issuer, call.id)
+                        calls[call.id] = (issuer_node, call.id)
                     else:
                         calls[call.id] = alias
         return keys
@@ -313,6 +490,43 @@ class RolloutSession:
             changed = True
         return request.model_copy(update={"messages": messages}) if changed else request
 
+    async def _rewrite_boundary(
+        self,
+        current: Request,
+        active: set[int],
+        node: int | None,
+    ) -> tuple[Request, list[InterceptRecord]]:
+        calls = _tool_calls((*(n.message for n in self.trace.nodes), *current.messages))
+        records: list[InterceptRecord] = []
+        for handler in self.request_interceptors if active else ():
+            raw = await call_hook(
+                handler, {Request: current.model_copy(deep=True), Trace: self.trace}
+            )
+            if raw is None:
+                continue
+            result, info = unpack_hook(raw, Request)
+            changed = _diff_request_rewrite(current, result, active)
+            if not changed:
+                continue
+            current = result
+            records.extend(
+                _make_record(handler, node, pos, calls, current.messages[pos], info)
+                for pos in changed
+            )
+        return current, records
+
+    async def _check_request_stops(self, current: Request) -> StopVerdict | None:
+        for stop in self.request_stops:
+            triggered, info = unpack_hook(
+                await call_hook(
+                    stop, {Request: current.model_copy(deep=True), Trace: self.trace}
+                ),
+                bool,
+            )
+            if triggered:
+                return stop.__name__, info
+        return None
+
     async def rewrite_request(
         self,
         request: Request,
@@ -320,7 +534,8 @@ class RolloutSession:
         run_stops: bool = True,
         dialect: DialectName | None = None,
         known_path: Sequence[int] = (),
-    ) -> tuple[Request, list[InterceptRecord], str | None]:
+        node: int | None = None,
+    ) -> tuple[Request, list[InterceptRecord], StopVerdict | None]:
         """Run typed request interceptors and stops over one canonical request. Only the
         uncommitted tail's user and tool messages may change; a rewritten tool result is
         pinned for the rest of the rollout."""
@@ -361,73 +576,19 @@ class RolloutSession:
         previous = 0
         try:
             for end in boundaries:
-                active = {
-                    position for position in candidates if previous <= position < end
-                }
+                active = {pos for pos in candidates if previous <= pos < end}
                 current = request.model_copy(update={"messages": messages[:end]})
-                for handler in self.request_interceptors if active else []:
-                    candidate = current.model_copy(deep=True)
-                    result = await call_hook(
-                        handler, {Request: candidate, Trace: self.trace}
-                    )
-                    if result is None:
-                        continue
-                    if not isinstance(result, Request):
-                        raise TypeError(
-                            f"expected Request, got {type(result).__name__}"
-                        )
-                    if len(result.messages) != len(current.messages):
-                        raise ValueError(
-                            "request interceptors cannot add or remove messages"
-                        )
-                    if result.tools != current.tools:
-                        raise ValueError("request interceptors cannot rewrite tools")
-                    for position, (before, after) in enumerate(
-                        zip(current.messages, result.messages, strict=True)
-                    ):
-                        if before == after:
-                            continue
-                        if position not in active:
-                            raise ValueError(
-                                "request interceptors can only rewrite new user or tool messages"
-                            )
-                        if type(after) is not type(before):
-                            raise TypeError(
-                                f"expected {type(before).__name__}, got {type(after).__name__}"
-                            )
-                        if isinstance(after, ToolMessage):
-                            after = ToolMessage.model_validate(
-                                bound_tool_message(after.model_dump())
-                            )
-                            result.messages[position] = after
-                        if isinstance(before, ToolMessage) and (
-                            after.tool_call_id != before.tool_call_id
-                            or after.name != before.name
-                        ):
-                            raise ValueError(
-                                "request interceptors cannot change a tool-call ID or name"
-                            )
-                    if result != current:
-                        current = result
-                        records.append(InterceptRecord(handler=handler.__name__))
-
+                current, step_records = await self._rewrite_boundary(
+                    current, active, node
+                )
+                records.extend(step_records)
                 messages[:end] = current.messages
-                stops = self.request_stops if run_stops else []
-                for stop in stops:
-                    candidate = current.model_copy(deep=True)
-                    result = await call_hook(
-                        stop, {Request: candidate, Trace: self.trace}
+                if run_stops and (stopped := await self._check_request_stops(current)):
+                    return (
+                        request.model_copy(update={"messages": messages}),
+                        records,
+                        stopped,
                     )
-                    if not isinstance(result, bool):
-                        raise TypeError(
-                            f"@stop must return bool, got {type(result).__name__}"
-                        )
-                    if result:
-                        return (
-                            request.model_copy(update={"messages": messages}),
-                            records,
-                            stop.__name__,
-                        )
                 previous = end
         except RolloutError:
             raise
@@ -437,6 +598,7 @@ class RolloutSession:
             ) from error
         current = request.model_copy(update={"messages": messages})
         tool_keys = self.tool_result_keys(current, dialect, known_path)
+        pinned_positions: dict[int, ToolResultKey] = {}
         for position in candidates:
             after = current.messages[position]
             if (
@@ -444,16 +606,126 @@ class RolloutSession:
                 and after != request.messages[position]
                 and position in tool_keys
             ):
-                self.pinned_tool_results[tool_keys[position]] = after
+                tkey = tool_keys[position]
+                self.pinned_tool_results[tkey] = after
+                pinned_positions[position] = tkey
+        if node is None and pinned_positions:
+            replaced = set(pinned_positions.values())
+            self.pinned_rewrites = [
+                item for item in self.pinned_rewrites if item[0] not in replaced
+            ]
+            for rec in records:
+                if (pos := _get_pos(rec)) in pinned_positions:
+                    _pop_pos(rec)
+                    self.pinned_rewrites.append((pinned_positions[pos], rec))
         return current, records, None
 
-    def consume_prepared(self, messages: Messages) -> None:
-        """Forget pre-harness user rewrites only after their model request commits."""
-        for message in messages:
+    def stage_rewrites(
+        self, replay_key: str, records: Iterable[InterceptRecord]
+    ) -> None:
+        """Hold unpinned in-request rewrites in case the model call fails before commit."""
+        unpinned = [rec for rec in records if _get_pos(rec) is not None]
+        if unpinned:
+            self.inflight_rewrites[replay_key] = unpinned
+        else:
+            self.inflight_rewrites.pop(replay_key, None)
+
+    def commit_rewrites(
+        self,
+        turn: graph.PendingTurn,
+        last_prompt_node: int | None,
+        request_rewrites: Iterable[InterceptRecord] = (),
+        response_rewrites: Iterable[InterceptRecord] = (),
+        assistant_node: int | None = None,
+        *,
+        pre_request: Request | None = None,
+        replay_key: str | None = None,
+    ) -> None:
+        """Consume prepared user turns and attach committed node ids to buffered rewrites."""
+        if replay_key is not None:
+            self.inflight_rewrites.pop(replay_key, None)
+        for message in turn.tail:
             if isinstance(message, UserMessage) and self.prepared_users:
                 key = graph.message_hash(message)
                 if self.prepared_users[key]:
                     self.prepared_users[key] -= 1
+        prompt_nodes = (
+            []
+            if last_prompt_node is None
+            else graph.path_node_ids(self.trace, last_prompt_node)
+        )
+        tail_nodes = prompt_nodes[turn.tail_start :]
+        base = pre_request if pre_request is not None else Request(messages=turn.prompt)
+        node_by_pos = _align_nodes(base.messages, turn.prompt, prompt_nodes)
+        in_turn: list[tuple[int, InterceptRecord]] = []
+        in_turn_nodes: set[int] = set()
+        for rec in request_rewrites:
+            if (pos := _pop_pos(rec)) is None:
+                continue
+            nid = node_by_pos.get(pos)
+            rec.node = nid
+            if nid is not None:
+                in_turn_nodes.add(nid)
+            in_turn.append((-1 if nid is None else nid, rec))
+        staged: list[tuple[int, InterceptRecord]] = []
+        aligned_nodes = set(node_by_pos.values())
+        users = [
+            nid
+            for nid in tail_nodes
+            if nid in aligned_nodes
+            and isinstance(self.trace.nodes[nid].message, UserMessage)
+            and nid not in in_turn_nodes
+        ]
+        if self._prepared_user_count and users:
+            if self.prepared_rewrites:
+                targets = users[-self._prepared_user_count :]
+                for slot, rec in self.prepared_rewrites:
+                    nid = targets[min(slot, len(targets) - 1)]
+                    rec.node = nid
+                    staged.append((nid, rec))
+                self.prepared_rewrites.clear()
+            self._prepared_user_count = 0
+        staged.extend(in_turn)
+        if self.pinned_rewrites:
+            tool_nodes = {
+                tkey: node_by_pos[pos]
+                for pos, tkey in self.tool_result_keys(
+                    base, turn.dialect, node_by_pos
+                ).items()
+                if pos in node_by_pos
+            }
+            if any(
+                tkey not in tool_nodes and isinstance(tkey[0], str)
+                for tkey, _ in self.pinned_rewrites
+            ):
+                for pos, tkey in self.tool_result_keys(base, turn.dialect).items():
+                    if pos in node_by_pos:
+                        tool_nodes.setdefault(tkey, node_by_pos[pos])
+            remaining: list[tuple[ToolResultKey, InterceptRecord]] = []
+            for tkey, rec in self.pinned_rewrites:
+                if (nid := tool_nodes.get(tkey)) is None:
+                    remaining.append((tkey, rec))
+                    continue
+                rec.node = nid
+                staged.append((nid, rec))
+            self.pinned_rewrites = remaining
+        staged.sort(key=lambda item: item[0])
+        self.trace.request_rewrites.extend(rec for _, rec in staged)
+        for rec in response_rewrites:
+            rec.node = assistant_node
+            self.trace.response_rewrites.append(rec)
+
+    def flush_rewrites(self) -> None:
+        """Flush any request rewrites whose prompt never committed (`node=None`)."""
+        self.trace.request_rewrites.extend(rec for _, rec in self.prepared_rewrites)
+        self.prepared_rewrites.clear()
+        self._prepared_user_count = 0
+        self.trace.request_rewrites.extend(rec for _, rec in self.pinned_rewrites)
+        self.pinned_rewrites.clear()
+        for rec in chain.from_iterable(self.inflight_rewrites.values()):
+            _pop_pos(rec)
+            self.trace.request_rewrites.append(rec)
+        self.inflight_rewrites.clear()
 
     async def prepare_users(
         self, request: Request
@@ -471,28 +743,30 @@ class RolloutSession:
             known_path=known_path,
         )
         tail = rewritten.messages[len(branch) :]
-        self.prepared_users.update(
-            graph.message_hash(message)
-            for message in tail
-            if isinstance(message, UserMessage)
-        )
+        user_slots: dict[int, int] = {}
+        for offset, message in enumerate(tail):
+            if isinstance(message, UserMessage):
+                self.prepared_users[graph.message_hash(message)] += 1
+                user_slots[len(branch) + offset] = self._prepared_user_count
+                self._prepared_user_count += 1
+        for rec in records:
+            if (pos := _get_pos(rec)) in user_slots:
+                _pop_pos(rec)
+                self.prepared_rewrites.append((user_slots[pos], rec))
         return Request(messages=tail), records
 
     async def rewrite_response(
         self, response: Response
-    ) -> tuple[Response, list[InterceptRecord], str | None]:
+    ) -> tuple[Response, list[InterceptRecord], StopVerdict | None]:
         """Run typed response interceptors and stops before harness delivery."""
         records: list[InterceptRecord] = []
         try:
             for handler in self.response_interceptors:
                 candidate = response.model_copy(deep=True)
-                result = await call_hook(
-                    handler, {Response: candidate, Trace: self.trace}
-                )
-                if result is None:
+                raw = await call_hook(handler, {Response: candidate, Trace: self.trace})
+                if raw is None:
                     continue
-                if not isinstance(result, Response):
-                    raise TypeError(f"expected Response, got {type(result).__name__}")
+                result, info = unpack_hook(raw, Response)
                 if result == response:
                     continue
                 unchanged = result.model_copy(
@@ -514,17 +788,16 @@ class RolloutSession:
                         "response interceptors must return an inert text-only message"
                     )
                 response = result.model_copy(update={"finish_reason": "stop"})
-                records.append(InterceptRecord(handler=handler.__name__))
+                records.append(InterceptRecord(handler=handler.__name__, info=info))
 
             for stop in self.response_stops:
                 candidate = response.model_copy(deep=True)
-                result = await call_hook(stop, {Response: candidate, Trace: self.trace})
-                if not isinstance(result, bool):
-                    raise TypeError(
-                        f"@stop must return bool, got {type(result).__name__}"
-                    )
-                if result:
-                    return response, records, stop.__name__
+                triggered, info = unpack_hook(
+                    await call_hook(stop, {Response: candidate, Trace: self.trace}),
+                    bool,
+                )
+                if triggered:
+                    return response, records, (stop.__name__, info)
         except RolloutError:
             raise
         except Exception as error:
@@ -538,12 +811,12 @@ class RolloutSession:
         node: int,
         dialect: DialectName | None = None,
         harness_history: Messages | None = None,
-    ) -> str | None:
+    ) -> StopVerdict | None:
         """Police the tool calls the assistant committed at `node` before the harness sees
         them: the request hooks run over the branch plus an empty result for each call, so a
         `@stop` refuses the whole response and a rewrite becomes that call's verdict — the
         harness's gate denies it and the model sees the rewritten result instead. Returns
-        the name of the stop that fired, if any."""
+        the stop verdict that fired, if any."""
         assistant = self.trace.nodes[node].message
         if not (self.request_interceptors or self.request_stops):
             return None
@@ -577,7 +850,7 @@ class RolloutSession:
                     f"tool call id {call.id!r} was reused in the same assistant turn"
                 )
             request, records, stopped = await self.rewrite_request(
-                request, dialect=dialect, known_path=known_path
+                request, dialect=dialect, known_path=known_path, node=node
             )
             self.trace.request_rewrites.extend(records)
             if stopped is not None:
@@ -590,7 +863,7 @@ class RolloutSession:
             if not self.gates_tools:
                 # The harness would run the call regardless; only ending the rollout keeps
                 # the transcript and the sandbox in agreement.
-                return records[-1].handler
+                return records[-1].handler, records[-1].info
             self.tool_decisions[key] = verdict
         return None
 
@@ -653,10 +926,12 @@ class RolloutSession:
                 f"{len(matches)} proposed calls"
             )
         else:
-            known_path = graph.path_node_ids(self.trace, leaves[0][0])
+            spawn_node = leaves[0][0]
+            known_path = graph.path_node_ids(self.trace, spawn_node)
             *branch, assistant = [self.trace.nodes[i].message for i in known_path]
             assert isinstance(assistant, AssistantMessage)
-            call = ToolCall(id=tool_call_id, name=name, arguments=json.dumps(arguments))
+            args = arguments if isinstance(arguments, str) else json.dumps(arguments)
+            call = ToolCall(id=tool_call_id, name=name, arguments=args)
             assistant = assistant.model_copy(
                 update={"tool_calls": [*(assistant.tool_calls or []), call]}
             )
@@ -666,13 +941,18 @@ class RolloutSession:
                     messages=[*branch, assistant, probe],
                     tools=self.trace.nodes[known_path[0]].tools or None,
                 ),
-                dialect=self.tool_dialects.get(leaves[0][0]),
+                dialect=self.tool_dialects.get(spawn_node),
                 known_path=known_path[:-1],
+                node=spawn_node,
             )
             self.trace.request_rewrites.extend(records)
             if stopped is not None:
-                self.trace.stop(stopped)
-                return {"action": "stop", "reason": stopped}
+                stop_name, stop_info = stopped
+                self.trace.stop(stop_name, info=stop_info)
+                self.trace.notify()
+                return {"action": "stop", "reason": stop_name}
+            if records:
+                self.trace.notify()
             verdict = request.messages[-1]
             assert isinstance(verdict, ToolMessage)
             if verdict == probe:
@@ -706,6 +986,7 @@ class RolloutSession:
         self.released = True
         for task in list(self.tasks):
             task.cancel()
+        self.flush_rewrites()
 
     async def refused(self) -> str | None:
         """The framework's limits (turns / token budget) and `@stop` checks, run before each
@@ -718,11 +999,18 @@ class RolloutSession:
             logger.debug("Reached the %s limit", limit)
             return limit
         for stop in self.trace_stops:
-            result = await call_hook(stop, {Trace: self.trace})
-            if not isinstance(result, bool):
-                raise TaskError(f"@stop must return bool, got {type(result).__name__}")
-            if result:
-                self.trace.stop(stop.__name__)
+            try:
+                triggered, info = unpack_hook(
+                    await call_hook(stop, {Trace: self.trace}), bool
+                )
+            except RolloutError:
+                raise
+            except Exception as error:
+                raise TaskError(
+                    f"@stop {stop.__name__} failed: {type(error).__name__}: {error}"
+                ) from error
+            if triggered:
+                self.trace.stop(stop.__name__, info=info)
                 logger.debug("Stopped by @stop %s", stop.__name__)
                 return stop.__name__
         return None
