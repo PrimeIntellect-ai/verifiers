@@ -26,7 +26,7 @@ from verifiers.v1.configs.runtime import (
     NetworkPolicyConfig,
     intersect_network_hosts,
 )
-from verifiers.v1.configs.sampling import Sampling, SamplingConfig
+from verifiers.v1.configs.sampling import SamplingConfig
 from verifiers.v1.types import Request, Response
 from verifiers.v1.utils.logging import get_logger
 from verifiers.v1.utils.network import parse_network_rule
@@ -362,11 +362,11 @@ class Dialect(ABC, Generic[RespT]):
     def parse_request(self, body: RawRequest) -> Request:
         """The native request -> the typed model request."""
 
-    def parse_sampling(self, body: RawRequest) -> Sampling:
-        """The native request's call settings -> the canonical `Sampling` (for the
+    def parse_sampling(self, body: RawRequest) -> SamplingConfig:
+        """The native request's call settings -> the canonical `SamplingConfig` (for the
         trace's per-call records): the `sampling_fields` whitelist, with this format's
         aliases mapped onto the typed knobs; dialect-specific keys ride as extras."""
-        return Sampling.model_validate(
+        return SamplingConfig.model_validate(
             {k: v for k, v in body.items() if k in self.sampling_fields}
         )
 

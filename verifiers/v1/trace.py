@@ -27,7 +27,7 @@ if TYPE_CHECKING:
 
 from verifiers.v1 import graph
 from verifiers.v1.configs.agent import AgentConfig, WireAgentConfig
-from verifiers.v1.configs.sampling import Sampling
+from verifiers.v1.configs.sampling import SamplingConfig
 from verifiers.v1.errors import ProviderError, stop_condition
 from verifiers.v1.graph import RECORD_FLOAT_DECIMALS, MessageNode
 from verifiers.v1.runtimes import RuntimeInfo
@@ -337,7 +337,7 @@ class ModelCall(BaseModel):
     """Index into `Trace.nodes` of the assistant node this call committed."""
     model: str | None = None
     """The model requested from the provider."""
-    sampling: Sampling | None = None
+    sampling: SamplingConfig | None = None
     """The call's effective sampling settings (may differ from trace-level sampling)."""
     endpoint: str | None = None
     """The provider endpoint path the request went to (e.g. `/chat/completions`)."""
