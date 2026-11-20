@@ -9,8 +9,8 @@ re-verify the harness after every bump.
 The pins are in `verifiers/v1/harnesses/<harness>/harness.py`:
 
 - The `version: PinnedVersion` field of the harness config.
-- Module constants for companion packages, such as `ACP_VERSION`,
-  `MCP_VERSION`, or `PRIME_AGENT_VERSION`.
+- Module constants for companion packages, such as `ACP_VERSION` or
+  `PRIME_AGENT_VERSION`.
 
 Update each pin to a released upstream version. Bump one harness per PR.
 
