@@ -29,7 +29,6 @@ from verifiers.v1.errors import HarnessError
 from verifiers.v1.harnesses.utils.compaction import bound_tool_message
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.runtimes.base import RuntimeBackend, RuntimeProcess
-from verifiers.v1.runtimes.prepared import load_prepared, record_arguments
 from verifiers.v1.runtimes.stdio_rpc import ProcessRPC
 from verifiers.v1.types import ToolCall
 
@@ -117,7 +116,6 @@ async def ensure_daemon_python(
     python = await install_in_runtime(
         extra_cls or NativeRemoteTools, root_rt, label="harness daemon"
     )
-    await load_prepared(root_rt)
     venv_dir = str(Path(python).parent.parent)
     install_key = f"install:{venv_dir}:{_ACP_PKG}"
     if install_key in root_rt.backend.cache.installed:
@@ -130,18 +128,9 @@ async def ensure_daemon_python(
             "\"import importlib.metadata as m; assert m.version('agent-client-protocol') == '0.12.1'\" "
             ">/dev/null 2>&1"
         )
-        rec = shlex.join(
-            [
-                python,
-                *record_arguments(
-                    root_rt, install_key, {"install": venv_dir, "ready": ready}
-                ),
-            ]
-        )
         cmd = (
             'set -e; export PATH="$HOME/.local/bin:$PATH"; '
-            f"({ready}) || uv pip install --python {shlex.quote(venv_dir)} {shlex.quote(_ACP_PKG)} -q; "
-            f"{rec}"
+            f"({ready}) || uv pip install --python {shlex.quote(venv_dir)} {shlex.quote(_ACP_PKG)} -q"
         )
         res = await root_rt.run(["sh", "-c", cmd], {})
         if res.exit_code != 0:

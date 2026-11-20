@@ -404,6 +404,9 @@ class Rollout:
                     harness_config=self._harness_runtime_config
                     if self._split_execution
                     else None,
+                    harness_image=self.harness.HARNESS_IMAGE
+                    if self._split_execution
+                    else None,
                     execution_network=self.runtime_config
                     if self._split_execution
                     else None,
@@ -573,6 +576,11 @@ class Rollout:
                 # Service hosts resolve inside the deployment (Compose names, LAN
                 # names), not as egress.
                 internal = {*services, *self.deployment.hosts.values()}
+                framework_routes = [
+                    url
+                    for url in [self._endpoint, *self._urls.values()]
+                    if urlsplit(url).hostname not in internal
+                ]
                 if self._split_execution:
                     self.deployment.control_routes = [
                         base_url,
@@ -714,11 +722,7 @@ class Rollout:
                     async with asyncio.TaskGroup() as group:
                         group.create_task(
                             self.deployment.prepare_execution(
-                                [
-                                    url
-                                    for url in [self._endpoint, *self._urls.values()]
-                                    if urlsplit(url).hostname not in internal
-                                ],
+                                framework_routes,
                                 state_route=f"{state_base.rstrip('/')}/state",
                             )
                         )

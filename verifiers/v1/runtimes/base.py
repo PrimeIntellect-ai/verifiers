@@ -28,26 +28,22 @@ if TYPE_CHECKING:
 
 logger = get_logger(__name__)
 
-# Ensure `uv` supports both script commands used below. Reuse a compatible installation;
-# upgrade older binaries bundled in task images. Prefer pip on
-# Python images, then fall back to the standalone installer (curl/wget), installing curl + CA
-# certs when a bare image has no downloader. Both install paths land in ~/.local/bin, which we
-# prepend to PATH first. (Installing needs network + one of pip / curl / wget / apt-get / apk.)
-# The standalone installer runs unmanaged (UV_UNMANAGED_INSTALL): it then only places the
-# binaries, without editing shell profiles or writing its self-update receipt to
-# ${XDG_CONFIG_HOME:-$HOME/.config}/uv. That receipt is shared by every user with the same
-# HOME (a task image can give root and the agent user one), and an installer that cannot
-# overwrite another user's receipt fails after it has already installed uv.
-_INSTALL_CURL = (  # only when the image has no downloader; needs a known package manager
-    "{ command -v curl >/dev/null 2>&1 || command -v wget >/dev/null 2>&1; } "
-    "|| { apt-get update -qq && apt-get install -y -qq curl ca-certificates; } "
-    "|| apk add --no-cache curl ca-certificates"
-)
+# Ensure `uv` supports `--script` commands. Prefer pip on Python images, then fall back to
+# downloading uv directly into ~/.local/bin (unmanaged so no shared receipt is written under
+# $HOME/.config/uv when root and an agent user share HOME).
 _DOWNLOAD_UV = (
     "{ command -v curl >/dev/null 2>&1 && curl -LsSf https://astral.sh/uv/install.sh "
     '| UV_UNMANAGED_INSTALL="$HOME/.local/bin" sh; } '
-    "|| { command -v wget >/dev/null 2>&1 && wget -qO- https://astral.sh/uv/install.sh "
-    '| UV_UNMANAGED_INSTALL="$HOME/.local/bin" sh; }'
+    "|| $(command -v python3 || command -v python) -c '"
+    "import io, os, platform, tarfile, urllib.request; "
+    "m = platform.machine().lower(); s = platform.system(); "
+    'arch = "aarch64" if m in ("aarch64", "arm64") else "x86_64"; '
+    'target = f"{arch}-apple-darwin" if s == "Darwin" else f"{arch}-unknown-linux-musl"; '
+    'req = urllib.request.Request(f"https://github.com/astral-sh/uv/releases/latest/download/uv-{target}.tar.gz", headers={"User-Agent": "verifiers"}); '
+    'dest = os.path.expanduser("~/.local/bin"); os.makedirs(dest, exist_ok=True); '
+    'tf = tarfile.open(fileobj=io.BytesIO(urllib.request.urlopen(req, timeout=60).read()), mode="r:gz"); '
+    '[open(os.path.join(dest, os.path.basename(e.name)), "wb").write(tf.extractfile(e).read()) and os.chmod(os.path.join(dest, os.path.basename(e.name)), 0o755) for e in tf if e.isfile()]'
+    "'"
 )
 _ENSURE_UV = (
     'export PATH="$HOME/.local/bin:$PATH" UV_INSTALL_DIR="$HOME/.local/bin"; '
@@ -56,7 +52,7 @@ _ENSURE_UV = (
     "&& uv python find --help 2>/dev/null | grep -q -- '--script'; }; "
     "uv_supports_scripts "
     "|| { pip install -q -U --user uv 2>/dev/null && hash -r && uv_supports_scripts; } "
-    f"|| {{ {{ {_INSTALL_CURL}; {_DOWNLOAD_UV}; }} && hash -r && uv_supports_scripts; }}"
+    f"|| {{ {_DOWNLOAD_UV} && hash -r && uv_supports_scripts; }}"
 )
 
 # The single port a sandbox runtime forwards out for a server hosted in it, e.g. a host
@@ -186,12 +182,8 @@ class RuntimeCache:
 
     uv_interpreters: dict[str, str] = field(default_factory=dict)
     uv_locks: dict[str, asyncio.Lock] = field(default_factory=dict)
-    curl_ready: bool = False
     mcp_sources: set[str] = field(default_factory=set)
     mcp_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
-    prepared: dict[str, dict] = field(default_factory=dict)
-    prepared_loaded: set[str] = field(default_factory=set)
-    prepared_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     setup_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     system_python: str | None = None
     arch: str | None = None

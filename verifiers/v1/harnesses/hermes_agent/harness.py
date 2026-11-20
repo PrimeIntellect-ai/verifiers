@@ -23,12 +23,14 @@ HERMES_DIR = "/var/tmp/vf-hermes-agent-{version}"
 INSTALL = f"""
 set -e
 {_ENSURE_UV}
-command -v curl >/dev/null || (apt-get update -qq && apt-get install -y -qq curl ca-certificates >/dev/null)
 archive=$(mktemp)
 trap 'rm -f "$archive"' EXIT
-curl -fsSL --retry 4 --retry-all-errors --retry-delay 2 --retry-max-time 90 \\
-    "https://codeload.github.com/NousResearch/hermes-agent/tar.gz/refs/tags/$AGENT_HERMES_VERSION" \\
-    -o "$archive"
+$(command -v python3 || command -v python) -c '
+import shutil, sys, urllib.request
+req = urllib.request.Request(sys.argv[1], headers={{"User-Agent": "verifiers"}})
+with urllib.request.urlopen(req, timeout=90) as r, open(sys.argv[2], "wb") as f:
+    shutil.copyfileobj(r, f)
+' "https://codeload.github.com/NousResearch/hermes-agent/tar.gz/refs/tags/$AGENT_HERMES_VERSION" "$archive"
 tar -xzf "$archive" --strip-components=1 -C "$AGENT_HERMES_DIR"
 # Replay one reasoning key: strict providers reject Hermes' duplicated aliases on custom routes.
 # Recheck: https://github.com/NousResearch/hermes-agent/blob/v0.23.2/agent/message_sanitization.py#L733
@@ -61,7 +63,7 @@ class HermesAgentHarness(ACPHarness[HermesAgentHarnessConfig]):
         directory = HERMES_DIR.format(version=self.config.version)
         # Install only tool code in B; no model credentials or A configuration.
         await ensure_installed(
-            runtime._execution_bridge.setup_runtime,
+            runtime._execution_bridge.runtime,
             directory=directory,
             ready=f"test -f {directory}/.ready",
             install=INSTALL,
@@ -155,6 +157,9 @@ class HermesAgentHarness(ACPHarness[HermesAgentHarnessConfig]):
             "approvals": {"mode": "off"},
             # Session titles are UI metadata, not part of the agent conversation.
             "auxiliary": {"title_generation": {"enabled": False}},
+            # Keep MCP and built-in tools eager on the wire so sampled tool names
+            # match the execution gate directly instead of wrapping in `tool_call`.
+            "tools": {"tool_search": {"enabled": "off"}},
             "providers": {"openai": provider},
             # The gateway owns MCP connections and snapshots tools before the first turn.
             "mcp_discovery_timeout": self.config.tool_timeout,

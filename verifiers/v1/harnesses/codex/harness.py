@@ -17,12 +17,10 @@ from verifiers.v1.acp import ACPConfig, ACPHarness, ACPTurn
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig, PinnedVersion
 from verifiers.v1.errors import HarnessError
-from verifiers.v1.harnesses.node import NODE_BIN_DIR, ensure_node
 from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
 from verifiers.v1.harnesses.utils.remote_runtime import prepare_remote_bridge
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.runtimes.deployment import ExecutionConnection
-from verifiers.v1.runtimes.prepared import load_prepared, record_arguments
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
 from verifiers.v1.types import ToolCall
@@ -48,7 +46,6 @@ _EXECUTOR_BUNDLE_LOCKS: dict[tuple[str, str], asyncio.Lock] = {}
 
 INSTALL = r"""
 set -e
-export PATH="/var/tmp/vf-node/bin:$PATH"
 rm -f {ready}
 # Resolve the adapter's bundled CLI to the harness pin, including across minor releases.
 mkdir -p {packages}
@@ -115,7 +112,7 @@ async def _cached_executor_bundle(
 GATE_HOOK = (Path(__file__).resolve().parent / "gate.mjs").read_text()
 GATE_HANDLER = {
     "type": "command",
-    "command": f'{NODE_BIN_DIR}/node "$CODEX_HOME/tool-gate.mjs"',
+    "command": 'node "$CODEX_HOME/tool-gate.mjs"',
     "timeout": 120,
     "async": False,
 }
@@ -170,7 +167,6 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
             raise RuntimeError(f"Codex {failure['category']}: {failure['title']}")
 
     async def setup(self, runtime: Runtime) -> None:
-        await ensure_node(runtime)
         logger.debug(
             "Ensuring Codex %s and codex-acp %s are installed",
             self.config.version,
@@ -201,8 +197,8 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
         self, runtime: Runtime, workspace: Runtime, connection: ExecutionConnection
     ) -> None:
         """Install the static musl Codex binary in B without Node or npm."""
-        target_root = connection.setup_runtime.with_user(None)
-        python = await target_root.resolve_python()
+        target_root = connection.runtime.with_user(None)
+        await target_root.resolve_python()
         b_vendor = _LINUX_VENDOR.get(target_root.backend.cache.arch or "")
         if b_vendor is None:
             raise HarnessError(
@@ -212,41 +208,32 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
         directory = EXECUTOR_DIR.format(version=self.config.version)
         native_bin = NATIVE_EXECUTOR_BIN.format(version=self.config.version)
         ready_check = f"[ -x {shlex.quote(native_bin)} ]"
-        await load_prepared(target_root)
         install_key = f"install:{directory}:native-{triple}-{self.config.version}"
         if install_key not in target_root.backend.cache.installed:
-            bundle = await _cached_executor_bundle(
-                self.config.version, tarball_suffix, triple
-            )
-            archive = f"{directory}.tgz"
-            await target_root.write(archive, bundle)
-            rec = shlex.join(
-                [
-                    python,
-                    *record_arguments(
-                        target_root,
-                        install_key,
-                        {"install": directory, "ready": ready_check},
-                    ),
-                ]
-            )
-            dir_q, arc_q = shlex.quote(directory), shlex.quote(archive)
-            res = await target_root.run(
-                [
-                    "sh",
-                    "-c",
-                    (
-                        f'set -e; stage={dir_q}.tmp.$$; mkdir -p "$stage"; '
-                        f'tar -xzf {arc_q} -C "$stage"; rm -f {arc_q}; '
-                        f'rm -rf {dir_q}; mv "$stage" {dir_q}; chmod -R a+rX {dir_q}; {rec}'
-                    ),
-                ],
-                {},
-            )
-            if res.exit_code != 0:
-                raise HarnessError(
-                    f"Codex executor install failed: {(res.stderr or res.stdout).strip()[-500:]}"
+            probe = await target_root.run(["sh", "-c", ready_check], {})
+            if probe.exit_code != 0:
+                bundle = await _cached_executor_bundle(
+                    self.config.version, tarball_suffix, triple
                 )
+                archive = f"{directory}.tgz"
+                await target_root.write(archive, bundle)
+                dir_q, arc_q = shlex.quote(directory), shlex.quote(archive)
+                res = await target_root.run(
+                    [
+                        "sh",
+                        "-c",
+                        (
+                            f'set -e; stage={dir_q}.tmp.$$; mkdir -p "$stage"; '
+                            f'tar -xzf {arc_q} -C "$stage"; rm -f {arc_q}; '
+                            f'rm -rf {dir_q}; mv "$stage" {dir_q}; chmod -R a+rX {dir_q}'
+                        ),
+                    ],
+                    {},
+                )
+                if res.exit_code != 0:
+                    raise HarnessError(
+                        f"Codex executor install failed: {(res.stderr or res.stdout).strip()[-500:]}"
+                    )
             target_root.backend.cache.installed.add(install_key)
         connection.register(
             "codex",
@@ -276,7 +263,7 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
         return ACPConfig(
             env=env,
             command=[
-                f"{NODE_BIN_DIR}/node",
+                "node",
                 ACP_BIN.format(version=self.config.version, acp_version=ACP_VERSION),
             ],
             prompt=prompt,
@@ -357,7 +344,7 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
         await self.install_skills(runtime, f"{home}/skills")
         if self.config.skills and runtime._execution_bridge is not None:
             await self.install_skills(
-                runtime._execution_bridge.setup_runtime, f"{home}/skills"
+                runtime._execution_bridge.runtime, f"{home}/skills"
             )
         writes = []
         if runtime._execution_bridge is not None:

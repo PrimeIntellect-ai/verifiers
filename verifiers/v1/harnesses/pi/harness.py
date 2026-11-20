@@ -12,7 +12,6 @@ from verifiers.v1.configs.harness import (
     PinnedVersion,
     skill_destination,
 )
-from verifiers.v1.harnesses.node import NODE_BIN_DIR, ensure_node
 from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
 from verifiers.v1.harnesses.utils.remote import NativeRemoteTools, native_tool_names
 from verifiers.v1.harnesses.utils.replay import drop_blank_text
@@ -33,14 +32,13 @@ PACKAGES_DIR = f"{PI_DIR}/mcp"
 PI_BIN = f"{PACKAGES_DIR}/node_modules/.bin/pi"
 ACP_VERSION = "0.0.34"
 ACP_BIN = f"{PACKAGES_DIR}/node_modules/.bin/pi-acp"
-ACP_COMMAND = [f"{NODE_BIN_DIR}/node", ACP_BIN]
+ACP_COMMAND = ["node", ACP_BIN]
 
 GATE_EXTENSION = (Path(__file__).resolve().parent / "gate.mjs").read_text()
 
 INSTALL = r"""
 set -e
 packages=/var/tmp/vf-pi/mcp
-export PATH="/var/tmp/vf-node/bin:$PATH"
 
 versions="$AGENT_PI_VERSION:$AGENT_PI_ACP_VERSION"
 if [ "$(cat "$packages/.versions" 2>/dev/null)" != "$versions" ]; then
@@ -85,7 +83,6 @@ class PiHarness(ACPHarness[PiHarnessConfig]):
         )
 
     async def setup(self, runtime: Runtime) -> None:
-        await ensure_node(runtime)
         logger.debug(
             "Ensuring Pi %s and pi-acp %s are installed",
             self.config.version,
@@ -122,6 +119,9 @@ class PiHarness(ACPHarness[PiHarnessConfig]):
         agent_dir = f"{STATE_ROOT}/{trace.id}"
         skills_dir = f"{agent_dir}/skills"
         await self.install_skills(runtime, skills_dir)
+        if runtime._execution_bridge is not None and self.config.skills:
+            # Pi puts skill file paths in its system prompt for the model to `read`.
+            await self.install_skills(runtime._execution_bridge.runtime, skills_dir)
         reasoning = ctx.sampling.reasoning_effort not in (
             None,
             "none",
@@ -214,7 +214,7 @@ class PiHarness(ACPHarness[PiHarnessConfig]):
         pi_wrapper = f"{agent_dir}/pi"
         await runtime.write(
             pi_wrapper,
-            f'#!/bin/sh\nexec {NODE_BIN_DIR}/node {shlex.join(pi_args)} "$@"\n'.encode(),
+            f'#!/bin/sh\nexec node {shlex.join(pi_args)} "$@"\n'.encode(),
         )
         await runtime.run(["chmod", "+x", pi_wrapper], {})
         env["PI_ACP_PI_COMMAND"] = pi_wrapper

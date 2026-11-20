@@ -112,11 +112,27 @@ class RuntimeCodeExecToolProvider(LocalCodeExecToolProvider):
         super().__init__()
         self.workspace = Path(cwd)
 
+    def _check_absolute_paths(self, argv, cmd):
+        # The runtime already isolates the container filesystem.
+        return None
+
     async def __aenter__(self):
         # The pinned local backend only exposes temporary directories. The
         # runtime already provides isolation and owns this workspace's lifetime.
         self._temp_dir = self.workspace
-        return self.get_code_exec_tool()
+        tool = self.get_code_exec_tool()
+        if "cmd" in getattr(tool.parameters, "model_fields", {}):
+            # LocalCodeExecToolProvider's default schema instructs the model not to use
+            # absolute paths because host runs lack sandboxing; container runs allow them.
+            class ContainerCodeExecutionParams(tool.parameters):
+                pass
+
+            ContainerCodeExecutionParams.model_fields[
+                "cmd"
+            ].description = "Shell command to execute (bash syntax)."
+            ContainerCodeExecutionParams.model_rebuild(force=True)
+            tool.parameters = ContainerCodeExecutionParams
+        return tool
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         self._temp_dir = None
@@ -188,7 +204,10 @@ class RuntimeSessionAgent(SessionAgent):
     """Retain accepted history when a model or summarizer hits its output limit."""
 
     async def run_tool(self, tool_call, run_metadata):
-        if getattr(self, "remote_worker", None) is None:
+        if getattr(self, "remote_worker", None) is None or tool_call.name not in (
+            "code_exec",
+            "fetch_web_page",
+        ):
             return await super().run_tool(tool_call, run_metadata)
         try:
             arguments = json.loads(tool_call.arguments)

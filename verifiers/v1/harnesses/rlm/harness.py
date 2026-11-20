@@ -23,6 +23,7 @@ from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
 from verifiers.v1.harnesses.utils.remote_runtime import prepare_remote_bridge
 from verifiers.v1.runtimes import Runtime
+from verifiers.v1.runtimes.base import _ENSURE_UV
 from verifiers.v1.runtimes.deployment import ExecutionConnection
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
@@ -33,7 +34,7 @@ logger = get_logger(__name__)
 BuiltinSkill = Literal["bash", "edit", "fetch", "search"]
 BuiltinTool = Literal["bash", "edit", "fetch", "ipython"]
 
-RLM_REPO = "github.com/PrimeIntellect-ai/nano-rlm.git"
+RLM_TARBALL_URL = "https://codeload.github.com/PrimeIntellect-ai/nano-rlm/tar.gz"
 RLM_CACHE_DIR = "/tmp/vf-rlm"
 RLM_STATE_DIR = "/tmp/vf-rlm-state"
 RLM_RUNTIME_METADATA_KEY = "ai.prime.rlm/runtime-v1"
@@ -211,27 +212,32 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
         binary = f"{directory}/bin/rlm"
         checkout = f"{directory}/checkout"
         ready = f"{directory}/.ready"
-        # install.sh installs the Python skill packages under $RLM_HOME/skills.
         home = self._skills_home()
         home_env = f"RLM_HOME={shlex.quote(home)} " if home else ""
-        # install.sh fetches curl/uv itself; add git only when the image lacks it.
+        archive_url = f"{RLM_TARBALL_URL}/{self.config.version}"
         install = (
-            f"rm -f {shlex.quote(ready)} && "
-            "(command -v git >/dev/null 2>&1 || "
-            "{ apt-get update -qq && apt-get install -y -qq git; } || dnf install -y -q git || apk add --no-cache git && "
-            f"rm -rf {shlex.quote(checkout)} && git clone https://{RLM_REPO} {shlex.quote(checkout)} && "
-            f"git -C {shlex.quote(checkout)} checkout {shlex.quote(self.config.version)} && "
-            # The editable install needs the files, not the history; agents searching
-            # their workspace for a repository must not find the harness's own.
-            f"rm -rf {shlex.quote(checkout + '/.git')} && "
-            # Unmanaged: install.sh's uv installer then writes no receipt under root's
-            # $HOME/.config/uv, which a task image can point at the agent's workspace.
-            f"{home_env}UV_INSTALL_DIR={shlex.quote(directory + '/bin')} "
-            f"UV_UNMANAGED_INSTALL={shlex.quote(directory + '/bin')} "
-            f"UV_TOOL_BIN_DIR={shlex.quote(directory + '/bin')} "
+            "set -e\n"
+            f"{_ENSURE_UV}\n"
+            f"rm -f {shlex.quote(ready)} && rm -rf {shlex.quote(checkout)} && mkdir -p {shlex.quote(checkout)}\n"
+            "$(command -v python3 || command -v python) -c '"
+            "import io, sys, tarfile, urllib.request; "
+            'req = urllib.request.Request(sys.argv[1], headers={"User-Agent": "verifiers"}); '
+            'tf = tarfile.open(fileobj=io.BytesIO(urllib.request.urlopen(req, timeout=60).read()), mode="r:gz"); '
+            '[setattr(m, "name", m.name.partition("/")[2]) or (m.name and tf.extract(m, sys.argv[2])) for m in tf]'
+            f"' {shlex.quote(archive_url)} {shlex.quote(checkout)}\n"
+            f"SKILL_ARGS=''\n"
+            f"if [ -n {shlex.quote(home or '')} ] && [ -d {shlex.quote((home or '') + '/skills')} ]; then\n"
+            f"  for sd in {shlex.quote((home or '') + '/skills')}/*/; do\n"
+            '    [ -f "$sd/pyproject.toml" ] || continue\n'
+            "    sn=$(grep '^name' \"$sd/pyproject.toml\" | head -1 | sed 's/.*\"\\(.*\\)\".*/\\1/')\n"
+            '    SKILL_ARGS="$SKILL_ARGS --with-editable $sd --with-executables-from $sn"\n'
+            "  done\n"
+            "fi\n"
+            f"{home_env}UV_TOOL_BIN_DIR={shlex.quote(directory + '/bin')} "
             f"UV_TOOL_DIR={shlex.quote(directory + '/tools')} "
-            f"RLM_CHECKOUT_PATH={shlex.quote(checkout)} bash {shlex.quote(checkout + '/install.sh')} && "
-            f"touch {shlex.quote(ready)})"
+            'uv tool install --python "$(command -v python3 || command -v python)" '
+            f"--editable {shlex.quote(checkout)} $SKILL_ARGS $RLM_EXTRA_UV_ARGS\n"
+            f"touch {shlex.quote(ready)}"
         )
         logger.debug("Ensuring rlm %s is installed", self.config.version)
         env = install_env.copy()
@@ -253,7 +259,7 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
         # connection; keeping the listener apart from that session lets detached
         # jobs survive until grading on every runtime.
         self._ensure_skills_dir(runtime)
-        await self._install(connection.setup_runtime, {})
+        await self._install(connection.runtime, {})
         token = secrets.token_urlsafe(32)
         python = f"{self._install_dir()}/tools/rlm/bin/python"
         home = self._skills_home()

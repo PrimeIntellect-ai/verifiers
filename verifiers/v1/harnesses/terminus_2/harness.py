@@ -51,7 +51,7 @@ class Terminus2Harness(Harness[Terminus2HarnessConfig]):
         # Harbor installs tmux during agent.setup(), after the execution
         # network is locked. Provision the system tool in trusted setup.
         await ensure_installed(
-            connection.setup_runtime,
+            connection.runtime,
             directory="/var/tmp/agent-tools/terminus-2",
             ready="command -v tmux >/dev/null 2>&1",
             install=(

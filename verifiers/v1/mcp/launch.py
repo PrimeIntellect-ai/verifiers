@@ -43,7 +43,6 @@ from verifiers.v1.runtimes import (
     provision_backend,
 )
 from verifiers.v1.runtimes.base import _ENSURE_UV
-from verifiers.v1.runtimes.prepared import load_prepared, record_arguments
 from verifiers.v1.state import State
 from verifiers.v1.utils.aio import run_shielded
 from verifiers.v1.utils.logging import get_logger
@@ -353,7 +352,6 @@ async def install_in_runtime(
     # Dependency installation is trusted setup as the backend's default user.
     # The server itself keeps the agent's user when launched.
     runtime = agent_runtime.backend.bind(env=agent_runtime.env).with_user(None)
-    await load_prepared(runtime)
     # Prime VMs mount /tmp as a small tmpfs. Keep dependency installation on the
     # durable runtime filesystem so ordinary installs cannot exhaust the tmpfs.
     # Every runtime runs commands in its working directory; not every config names it.
@@ -382,26 +380,39 @@ async def install_in_runtime(
             if source not in runtime.backend.cache.mcp_sources
         ]
         packages = []
-        for source in pending:
-            src = Path(source)
-            artifact = None
-            if src.suffix == ".dist-info":
-                package, digest = await asyncio.to_thread(
-                    _installed_package_identity, src
+        if pending:
+            resolved = []
+            for source in pending:
+                src = Path(source)
+                artifact = None
+                if src.suffix == ".dist-info":
+                    package, digest = await asyncio.to_thread(
+                        _installed_package_identity, src
+                    )
+                else:
+                    artifact = await _cached_package(src)
+                    package, digest = await asyncio.to_thread(
+                        _package_identity, *artifact
+                    )
+                resolved.append((source, src, artifact, package, digest))
+            checks = " && ".join(
+                f"[ -x {shlex.quote(f'{venv}/bin/python')} ]"
+                + "".join(
+                    f' && [ "$(cat {shlex.quote(f"{venv}/.vf-sources/{pkg}")} 2>/dev/null)" = {shlex.quote(dig)} ]'
+                    for _, _, _, pkg, dig in [item]
                 )
+                for item in resolved
+            )
+            probe = await runtime.run(["sh", "-c", checks], {})
+            if probe.exit_code == 0:
+                runtime.backend.cache.mcp_sources.update(pending)
             else:
-                artifact = await _cached_package(src)
-                package, digest = await asyncio.to_thread(_package_identity, *artifact)
-            key = f"package:{venv}:{package}"
-            prepared = runtime.backend.cache.prepared.get(key)
-            if prepared and prepared["value"]["digest"] == digest:
-                runtime.backend.cache.mcp_sources.add(source)
-            else:
-                name, data = artifact or await _cached_package(src)
-                packages.append((source, name, data, package, digest, key))
+                for source, src, artifact, package, digest in resolved:
+                    name, data = artifact or await _cached_package(src)
+                    packages.append((source, name, data, package, digest))
         if packages:
             setup = (
-                f"set -e; mkdir -p {root_q} {temp_q} {cache_q}; "
+                f"set -e; mkdir -p {root_q} {temp_q} {cache_q} {shlex.quote(f'{venv}/.vf-sources')}; "
                 f"export TMPDIR={temp_q} UV_CACHE_DIR={cache_q}; "
                 'export PATH="$HOME/.local/bin:$PATH"; '
             )
@@ -411,29 +422,13 @@ async def install_in_runtime(
                 # Failed installs can leave the venv behind; retain it when retrying.
                 setup += f"{_ENSURE_UV}; uv venv --allow-existing {venv_q}; "
             # Drain remote writes and installs before cancellation releases the lock.
-            for source, name, data, package, digest, key in packages:
+            for source, name, data, package, digest in packages:
                 remote = f"{root}/{name}"
                 await run_shielded(runtime.write(remote, data))
-                setup += f"uv pip install --python {venv_q} {shlex.quote(remote)}; "
-            # Record only completed installs. The loader also checks each installed
-            # distribution's RECORD, so replacing a venv/package invalidates readiness.
-            for source, name, data, package, digest, key in packages:
+                marker_q = shlex.quote(f"{venv}/.vf-sources/{package}")
                 setup += (
-                    shlex.join(
-                        [
-                            f"{venv}/bin/python",
-                            *record_arguments(
-                                runtime,
-                                key,
-                                {
-                                    "distribution": package,
-                                    "digest": digest,
-                                    "marker": f"{venv}/.vf-sources/{package}",
-                                },
-                            ),
-                        ]
-                    )
-                    + "; "
+                    f"uv pip install --python {venv_q} {shlex.quote(remote)}; "
+                    f"printf %s {shlex.quote(digest)} > {marker_q}; "
                 )
             async with runtime.backend.cache.setup_lock:
                 result = await run_shielded(runtime.run(["sh", "-c", setup], {}))

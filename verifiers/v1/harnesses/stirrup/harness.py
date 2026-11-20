@@ -52,7 +52,7 @@ class StirrupHarness(ACPHarness[StirrupHarnessConfig]):
     async def setup_execution(
         self, runtime: Runtime, workspace: Runtime, connection: ExecutionConnection
     ) -> None:
-        await connection.setup_runtime.prepare_uv_script(self._source(), {})
+        await connection.runtime.prepare_uv_script(self._source(), {})
 
     async def setup(self, runtime: Runtime) -> None:
         await runtime.prepare_uv_script(self._source(), self.config.resolved_env)
@@ -92,8 +92,8 @@ class StirrupHarness(ACPHarness[StirrupHarnessConfig]):
                 raise HarnessError(
                     "could not prepare the Stirrup supervisor working directory"
                 )
-            await self.install_skills(bridge.setup_runtime, skills_dir)
-            worker_program = await bridge.setup_runtime.prepare_uv_script(
+            await self.install_skills(bridge.runtime, skills_dir)
+            worker_program = await bridge.runtime.prepare_uv_script(
                 self._source(), {}, activate=False
             )
             worker = f"stirrup-{trace.id}"

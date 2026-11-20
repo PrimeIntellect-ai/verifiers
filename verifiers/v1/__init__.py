@@ -36,7 +36,11 @@ if TYPE_CHECKING:
         EvalClientConfig,
         TrainClientConfig,
     )
-    from verifiers.v1.configs.deployment import DeploymentConfig
+    from verifiers.v1.configs.deployment import (
+        HARNESS_DOCKERFILE,
+        HARNESS_IMAGE,
+        DeploymentConfig,
+    )
     from verifiers.v1.configs.env import (
         EnvConfig,
         SharedEnvConfig,
@@ -241,6 +245,8 @@ _NAME_TO_MODULE = {
     "Deployment": "verifiers.v1.runtimes.deployment",
     "prime_controller": "verifiers.v1.runtimes.controller",
     "DeploymentConfig": "verifiers.v1.configs.deployment",
+    "HARNESS_DOCKERFILE": "verifiers.v1.configs.deployment",
+    "HARNESS_IMAGE": "verifiers.v1.configs.deployment",
     "DockerConfig": "verifiers.v1.configs.runtime",
     "Env": "verifiers.v1.env",
     "EnvConfig": "verifiers.v1.configs.env",
@@ -596,6 +602,8 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "Deployment",
     "prime_controller",
     "DeploymentConfig",
+    "HARNESS_DOCKERFILE",
+    "HARNESS_IMAGE",
     "ExecutionConnection",
     "ServicesSpec",
     "ScoringConfig",

@@ -6,7 +6,6 @@ from typing import Literal
 from verifiers.v1.acp import ACPConfig, ACPHarness
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import DialectName, HarnessConfig, PinnedVersion
-from verifiers.v1.harnesses.node import NODE_BIN_DIR, ensure_node
 from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
 from verifiers.v1.harnesses.utils.remote import NativeRemoteTools, native_tool_names
 from verifiers.v1.harnesses.utils.replay import drop_blank_text_blocks
@@ -26,7 +25,6 @@ CLAUDE_CONFIG_ROOT = "/tmp/vf-claude"
 CLAUDE_PERMISSIONS = {"defaultMode": "default"}
 ACP_INSTALL = r"""
 set -e
-export PATH="/var/tmp/vf-node/bin:$PATH"
 rm -f {ready}
 npm install --prefix {packages} --no-audit --no-fund \
     --omit=dev \
@@ -63,7 +61,6 @@ class ClaudeCodeHarness(ACPHarness[ClaudeCodeHarnessConfig]):
         )
 
     async def setup(self, runtime: Runtime) -> None:
-        await ensure_node(runtime)
         versions = {"version": self.config.version, "acp_version": ACP_VERSION}
         directory = CLAUDE_ACP_DIR.format(**versions)
         packages = PACKAGES_DIR.format(**versions)
@@ -131,7 +128,7 @@ class ClaudeCodeHarness(ACPHarness[ClaudeCodeHarnessConfig]):
         }
         return ACPConfig(
             env=env,
-            command=[f"{NODE_BIN_DIR}/node", ACP_BIN.format(**versions)],
+            command=["node", ACP_BIN.format(**versions)],
             prompt=prompt or "",
             session_meta=session_meta,
         )

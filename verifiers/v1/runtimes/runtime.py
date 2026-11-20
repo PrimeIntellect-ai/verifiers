@@ -16,15 +16,9 @@ from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.errors import SandboxError
 from verifiers.v1.runtimes.base import (
     _ENSURE_UV,
-    _INSTALL_CURL,
     ProgramResult,
     RuntimeBackend,
     RuntimeProcess,
-)
-from verifiers.v1.runtimes.prepared import (
-    load_prepared,
-    record_arguments,
-    script_directory,
 )
 
 if TYPE_CHECKING:
@@ -231,30 +225,19 @@ class Runtime:
                 self.backend.cache.arch = lines[0].strip()
             python = lines[1].strip() if len(lines) > 1 else ""
             if not python:
-                install = await self.with_user(None).run(
-                    [
-                        "sh",
-                        "-c",
-                        (
-                            "(command -v apk >/dev/null 2>&1 && apk add --no-cache python3 >/dev/null) || "
-                            "(command -v apt-get >/dev/null 2>&1 && apt-get update -qq && apt-get install -y -qq python3 >/dev/null) || "
-                            "(command -v dnf >/dev/null 2>&1 && dnf install -y -q python3 >/dev/null); "
-                            "command -v python3 || command -v python"
-                        ),
-                    ],
-                    {},
-                )
-                python = (
-                    install.stdout.strip().splitlines()[-1]
-                    if install.exit_code == 0 and install.stdout.strip()
-                    else ""
-                )
-            if not python:
                 raise SandboxError(
                     f"no Python 3 interpreter available in runtime {self.name!r}"
                 )
             self.backend.cache.system_python = python
             return python
+
+    def _script_directory(self) -> str:
+        directory = self.backend.scripts_dir
+        if self.user is not None:
+            directory += f"-{self.user}"
+        if self.home is not None:
+            directory += "-" + hashlib.sha256(self.home.encode()).hexdigest()[:16]
+        return directory
 
     async def prepare_uv_script(
         self,
@@ -268,48 +251,78 @@ class Runtime:
         ``activate=False`` invokes the resolved script interpreter directly, keeping
         its environment variables out of child processes spawned by the script.
         """
-        await load_prepared(self)
         data = script.encode() if isinstance(script, str) else script
         digest = hashlib.sha256(data).hexdigest()
         # Each user needs its own writable script dir and uv environment.
-        directory = script_directory(self)
+        directory = self._script_directory()
         path = f"{directory}/{digest}.py"
+        ready_path = f"{path}.ready"
         if path not in self.backend.cache.uv_interpreters:
             async with (
                 self.backend.cache.setup_lock,
                 self.backend.cache.uv_locks.setdefault(path, asyncio.Lock()),
             ):
-                if self.user is not None and not self.backend.cache.curl_ready:
-                    # Only root can install a downloader for the user's uv bootstrap.
-                    curl = await self.with_user(None).run(
-                        ["sh", "-c", _INSTALL_CURL], {}
-                    )
-                    self.backend.cache.curl_ready = curl.exit_code == 0
                 if path not in self.backend.cache.uv_interpreters:
-                    tmp = f"{path}.{uuid.uuid4().hex}.tmp"
-                    await self.write(tmp, data)
-                    record = shlex.join(record_arguments(self, path, {"script": path}))
-                    command = (
-                        f"mv -f {shlex.quote(tmp)} {shlex.quote(path)} "
-                        f"&& {{ {_ENSURE_UV}; }} "
-                        f"&& uv sync --script {shlex.quote(path)} -q --no-config "
-                        f"&& python=$(uv python find --script {shlex.quote(path)} --no-config) "
-                        f'&& "$python" {record} '
-                        '&& printf "%s\\n" "$python"'
+                    path_q = shlex.quote(path)
+                    ready_q = shlex.quote(ready_path)
+                    # Check whether a prepared image or checkpoint already synced this script.
+                    probe = await self.run(
+                        [
+                            "sh",
+                            "-c",
+                            (
+                                f"[ -f {path_q} ] && [ -r {ready_q} ] "
+                                f'&& py=$(cat {ready_q}) && [ -x "$py" ] '
+                                '&& printf "%s\\n" "$py"'
+                            ),
+                        ],
+                        {},
                     )
-                    # Bootstrap dependencies before task networking is restricted;
-                    # keep task offline settings on the returned program's processes.
-                    result = await self.run(
-                        ["sh", "-c", command], {**(env or {}), "UV_OFFLINE": "false"}
-                    )
-                    if result.exit_code != 0:
-                        raise RuntimeError(
-                            "failed to prepare uv script: "
-                            f"{result.stderr.strip()[-2000:]}"
+                    if probe.exit_code == 0 and probe.stdout.strip():
+                        self.backend.cache.uv_interpreters[path] = (
+                            probe.stdout.strip().splitlines()[-1]
                         )
-                    self.backend.cache.uv_interpreters[path] = (
-                        result.stdout.strip().splitlines()[-1]
-                    )
+                    else:
+                        tmp = f"{path}.{uuid.uuid4().hex}.tmp"
+                        await self.write(tmp, data)
+                        share_py = (
+                            {
+                                "UV_PYTHON_INSTALL_DIR": f"{directory}/python",
+                                "UV_CACHE_DIR": f"{directory}/uv-cache",
+                            }
+                            if self.user is None
+                            else {}
+                        )
+                        chmod_cmd = (
+                            f" && chmod -R a+rX {shlex.quote(directory)}"
+                            if self.user is None
+                            else ""
+                        )
+                        command = (
+                            f"mv -f {shlex.quote(tmp)} {path_q} "
+                            f"&& {{ {_ENSURE_UV}; }} "
+                            f"&& uv sync --script {path_q} -q --no-config "
+                            f"&& python=$(uv python find --script {path_q} --no-config) "
+                            f'&& venv=$(dirname "$(dirname "$python")") '
+                            '&& chmod -R a+rX "$venv"'
+                            f"{chmod_cmd} "
+                            f'&& printf "%s" "$python" > {ready_q} '
+                            '&& printf "%s\\n" "$python"'
+                        )
+                        # Bootstrap dependencies before task networking is restricted;
+                        # keep task offline settings on the returned program's processes.
+                        result = await self.run(
+                            ["sh", "-c", command],
+                            {**share_py, **(env or {}), "UV_OFFLINE": "false"},
+                        )
+                        if result.exit_code != 0:
+                            raise RuntimeError(
+                                "failed to prepare uv script: "
+                                f"{result.stderr.strip()[-2000:]}"
+                            )
+                        self.backend.cache.uv_interpreters[path] = (
+                            result.stdout.strip().splitlines()[-1]
+                        )
         interpreter = self.backend.cache.uv_interpreters[path]
         if not activate:
             return [interpreter, path]

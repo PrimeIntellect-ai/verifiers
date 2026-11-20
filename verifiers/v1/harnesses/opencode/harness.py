@@ -6,7 +6,6 @@ from pathlib import Path
 from verifiers.v1.acp import ACPConfig, ACPHarness
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import DialectName, HarnessConfig, PinnedVersion
-from verifiers.v1.harnesses.node import ensure_node
 from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
 from verifiers.v1.harnesses.utils.remote import NativeRemoteTools, native_tool_names
 from verifiers.v1.harnesses.utils.replay import drop_blank_text
@@ -24,7 +23,6 @@ TOOL_GATE = (Path(__file__).resolve().parent / "gate.js").read_bytes()
 
 INSTALL = r"""
 set -e
-export PATH="/var/tmp/vf-node/bin:$PATH"
 npm install --prefix "$AGENT_OPENCODE_DIR" --no-audit --no-fund --omit=dev \
     "@opencode/cli@$AGENT_OPENCODE_VERSION" >/dev/null
 """
@@ -95,7 +93,6 @@ class OpenCodeHarness(ACPHarness[OpenCodeHarnessConfig]):
         return message
 
     async def setup(self, runtime: Runtime) -> None:
-        await ensure_node(runtime)
         directory = f"{OPENCODE_DIR}/{self.config.version}"
         await ensure_installed(
             runtime,

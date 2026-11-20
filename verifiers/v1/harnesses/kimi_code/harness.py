@@ -7,7 +7,6 @@ import tomli_w
 from verifiers.v1.acp import ACPConfig, ACPHarness
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import DialectName, HarnessConfig, PinnedVersion
-from verifiers.v1.harnesses.node import NODE_BIN_DIR, ensure_node
 from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
 from verifiers.v1.harnesses.utils.remote import NativeRemoteTools, native_tool_names
 from verifiers.v1.harnesses.utils.replay import drop_blank_text
@@ -23,14 +22,13 @@ logger = get_logger(__name__)
 KIMI_DIR = "/var/tmp/vf-kimi-code"
 KIMI_BIN = f"{KIMI_DIR}/node_modules/.bin/kimi"
 KIMI_HOME = "/tmp/vf-kimi-code"
-ACP_COMMAND = [f"{NODE_BIN_DIR}/node", KIMI_BIN, "acp"]
+ACP_COMMAND = ["node", KIMI_BIN, "acp"]
 
 # From npm rather than Kimi's installer: code.kimi.com sits behind a WAF that drops
 # traffic from some sandbox providers' datacenter ranges (prime's among them).
 INSTALL = r"""
 set -e
 packages=/var/tmp/vf-kimi-code
-export PATH="/var/tmp/vf-node/bin:$PATH"
 if [ "$(cat "$packages/.version" 2>/dev/null)" != "$AGENT_KIMI_VERSION" ]; then
     npm install --prefix "$packages" --ignore-scripts --no-audit --no-fund --omit=dev \
         "@moonshot-ai/kimi-code@$AGENT_KIMI_VERSION" >/dev/null
@@ -69,7 +67,6 @@ class KimiCodeHarness(ACPHarness[KimiCodeHarnessConfig]):
         )
 
     async def setup(self, runtime: Runtime) -> None:
-        await ensure_node(runtime)
         logger.debug("Ensuring Kimi Code %s is installed", self.config.version)
         await ensure_installed(
             runtime,

@@ -4,7 +4,6 @@ import hashlib
 import shlex
 
 from verifiers.v1.runtimes import Runtime
-from verifiers.v1.runtimes.prepared import load_prepared, record_arguments
 
 
 async def ensure_installed(
@@ -20,14 +19,7 @@ async def ensure_installed(
 ) -> None:
     """Run `install` in `runtime` under a lock, so concurrent rollouts sharing the runtime
     install once and the rest wait. `ready` is a shell test that skips the install when it
-    already holds. The lock is `directory/install.lock` unless the install replaces
-    `directory` itself, in which case pass a `lock` path beside it. `shell` runs the script
-    (e.g. `bash -o pipefail -c` for pipelines).
-
-    The lock is `flock` (Linux, busybox) or `lockf` (macOS/BSD), both released when the holder
-    dies; an image with neither falls back to a symlink spinlock whose owner is recorded as
-    `pid:starttime` so a dead holder is reaped even if its pid was reused."""
-    await load_prepared(runtime.with_user(None))
+    already holds."""
     cache = runtime.backend.cache
     install_key = (
         f"install:{directory}:"
@@ -35,43 +27,13 @@ async def ensure_installed(
     )
     if ready and install_key in cache.installed:
         return
-    record = shlex.join(
-        record_arguments(
-            runtime.with_user(None),
-            install_key,
-            {"install": directory, **({"ready": ready} if ready else {})},
-        )
-    )
-    save_record = f'if py=$(command -v python3 || command -v python 2>/dev/null); then "$py" {record} || true; fi'
-    lock = shlex.quote(lock or f"{directory}/install.lock")
+    lock_q = shlex.quote(lock or f"{directory}/install.lock")
     script = f"({ready}) || ({install})" if ready else install
-    script = f"({script}) && {save_record}"
     run = f"{shlex.join(shell)} {shlex.quote(script)}"
-    # The owner token is pid:starttime (starttime from /proc where readable), so a reused pid
-    # does not pass as the live holder. A lock that is not a symlink (left behind by
-    # flock/lockf) or whose owner is gone is stale and reaped; `kill -0 ""` succeeds under
-    # busybox ash, hence the explicit -z.
-    ident = (
-        'ident() { if [ -r "/proc/$1/stat" ] && s=$(sed "s/^.*) //" "/proc/$1/stat" '
-        '| cut -d" " -f20) && [ -n "$s" ]; then echo "$1:$s"; else echo "$1"; fi; }; '
-        "me=$(ident $$); "
-    )
-    unlock = f'[ "$(readlink {lock} 2>/dev/null)" != "$me" ] || rm -f {lock}'
-    spinlock = (
-        f"{ident}"
-        f'until ln -s "$me" {lock} 2>/dev/null; do owner=$(readlink {lock} 2>/dev/null); '
-        f'pid=${{owner%%:*}}; if [ -z "$owner" ] || ! kill -0 "$pid" 2>/dev/null '
-        f'|| [ "$(ident "$pid")" != "$owner" ]; then '
-        f'[ "$(readlink {lock} 2>/dev/null)" != "$owner" ] || rm -f {lock}; fi; '
-        f"sleep 0.1; done; "
-        f"trap {shlex.quote(unlock)} EXIT; {run}"
-    )
     guarded = (
-        f'mkdir -p "$(dirname {lock})" && '
-        f'if l=$(command -v flock || command -v lockf); then "$l" {lock} {run}; else {spinlock}; fi'
+        f'mkdir -p "$(dirname {lock_q})" && '
+        f'if l=$(command -v flock || command -v lockf); then "$l" {lock_q} {run}; else {run}; fi'
     )
-    # Different harness/script/package installers share uv and the OS package
-    # manager, even when their target directories and filesystem locks differ.
     async with cache.setup_lock:
         if ready and install_key in cache.installed:
             return

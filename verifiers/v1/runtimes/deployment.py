@@ -284,6 +284,7 @@ class Deployment:
         config: DeploymentConfig | None = None,
         borrowed_runtime: Runtime | None = None,
         harness_config: RuntimeConfig | None = None,
+        harness_image: str | None = None,
         execution_network: RuntimeConfig | None = None,
         split: bool = False,
     ):
@@ -298,6 +299,7 @@ class Deployment:
         self.config = config or DeploymentConfig()
         self.borrowed_runtime = borrowed_runtime
         self.harness_config = harness_config
+        self.harness_image = harness_image
         self.execution_network = execution_network or backend.config
         self._split_requested = split
         self.control_routes: list[str] = []

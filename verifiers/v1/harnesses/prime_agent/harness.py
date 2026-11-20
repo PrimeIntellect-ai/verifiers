@@ -49,20 +49,19 @@ if [ ! -x "$prefix/bin/prime-agent" ]; then
         Darwin-arm64) platform=darwin-arm64; sha=6eb082c66f5259b953c38f21c72055d11942fa61372718a5eab25603247bd49c ;;
         *) echo "unsupported prime-agent platform: $(uname -s)-$(uname -m)" >&2; exit 1 ;;
     esac
-    command -v curl >/dev/null || { apt-get update -qq && apt-get install -y -qq curl ca-certificates; } || apk add --no-cache curl ca-certificates
     release_url="$AGENT_PRIME_AGENT_GITHUB_RELEASE_URL/v$PRIME_AGENT_RELEASE_VERSION"
     tarball="prime-agent-$PRIME_AGENT_RELEASE_VERSION-$platform.tar.gz"
     download_dir="$(mktemp -d "$AGENT_PRIME_AGENT_DIR/install.XXXXXX")"
     trap 'rm -rf "$download_dir"' EXIT
-    curl -fsSL --retry 5 --retry-all-errors "$release_url/$tarball" -o "$download_dir/$tarball"
-    printf '%s  %s\n' "$sha" "$tarball" > "$download_dir/SHA256SUMS"
-    if command -v sha256sum >/dev/null; then
-        (cd "$download_dir" && sha256sum -c SHA256SUMS)
-    else
-        (cd "$download_dir" && shasum -a 256 -c SHA256SUMS)
-    fi
     mkdir "$download_dir/bin"
-    tar -xzf "$download_dir/$tarball" -C "$download_dir/bin"
+    $(command -v python3 || command -v python) -c '
+import hashlib, io, sys, tarfile, urllib.request
+req = urllib.request.Request(sys.argv[1], headers={"User-Agent": "verifiers"})
+data = urllib.request.urlopen(req, timeout=60).read()
+assert hashlib.sha256(data).hexdigest() == sys.argv[2], "prime-agent checksum mismatch"
+with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tf:
+    tf.extractall(sys.argv[3])
+' "$release_url/$tarball" "$sha" "$download_dir/bin"
     [ "$("$download_dir/bin/prime-agent" --version)" = "$PRIME_AGENT_RELEASE_VERSION" ]
     mkdir -p "$prefix"
     mv "$download_dir/bin" "$prefix/bin"
@@ -75,6 +74,7 @@ for pyproject in "$prefix/bin/skills/"*/pyproject.toml; do
     set -- "$@" --editable "${pyproject%/pyproject.toml}"
 done
 uv pip install --python "$PRIME_AGENT_KERNEL_VENV/bin/python" "$@"
+chmod -R a+rX "$AGENT_PRIME_AGENT_DIR"
 touch "$prefix/.ready"
 """
 )
@@ -163,7 +163,7 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
     async def setup_execution(
         self, runtime: Runtime, workspace: Runtime, connection: ExecutionConnection
     ) -> None:
-        await self._install(connection.setup_runtime, {})
+        await self._install(connection.runtime, {})
         connection.register(
             "prime_agent",
             [f"{self._kernel_venv()}/bin/python", "-m", "rlm.repl"],
@@ -323,14 +323,18 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
                 protocol="prime",
             )
             # The pinned supervisor uses this interpreter for trusted import
-            # probes and starts every user cell with exactly `-m rlm.repl`.
+            # probes and starts every user cell with `-m rlm.repl`.
             # Only probes use A's installed Python; the persistent kernel is B.
             wrapper = f"{root}/kernel-python"
             source = (
                 "#!/bin/sh\nset -eu\n"
-                'if [ "$#" -eq 2 ] && [ "$1" = "-m" ] && [ "$2" = "rlm.repl" ]; then\n'
-                f"  exec {shlex.join(command)}\n"
-                "fi\n"
+                'prev=""\n'
+                'for arg in "$@"; do\n'
+                '  if [ "$prev" = "-m" ] && [ "$arg" = "rlm.repl" ]; then\n'
+                f"    exec {shlex.join(command)}\n"
+                "  fi\n"
+                '  prev="$arg"\n'
+                "done\n"
                 f'exec {shlex.quote(self._kernel_venv() + "/bin/python")} "$@"\n'
             )
             await runtime.write(wrapper, source.encode())

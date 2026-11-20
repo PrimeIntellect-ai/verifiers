@@ -7,7 +7,6 @@ from typing import Literal
 from verifiers.v1.acp import ACPConfig, ACPHarness
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig, PinnedVersion
-from verifiers.v1.harnesses.node import NODE_BIN_DIR, ensure_node
 from verifiers.v1.harnesses.utils.install import ensure_installed, remove_dir
 from verifiers.v1.harnesses.utils.remote import NativeRemoteTools, native_tool_names
 from verifiers.v1.harnesses.utils.sandbox_tools import RemoteToolsSpec
@@ -20,7 +19,6 @@ USAGE_COMPAT = (Path(__file__).parent / "usage.mjs").read_bytes()
 GATE = (Path(__file__).parent / "gate.mjs").read_bytes()
 INSTALL = r"""
 set -e
-export PATH="/var/tmp/vf-node/bin:$PATH"
 npm install --prefix "$AGENT_DEEPSEEK_DIR" --no-audit --no-fund \
     "@deepseek-ai/dsh@$AGENT_DEEPSEEK_VERSION" >/dev/null
 touch "$AGENT_DEEPSEEK_DIR/.ready"
@@ -51,7 +49,6 @@ class DeepSeekHarness(ACPHarness[DeepSeekHarnessConfig]):
         )
 
     async def setup(self, runtime: Runtime) -> None:
-        await ensure_node(runtime)
         directory = DEEPSEEK_DIR.format(version=self.config.version)
         await ensure_installed(
             runtime,
@@ -124,7 +121,7 @@ class DeepSeekHarness(ACPHarness[DeepSeekHarnessConfig]):
         await runtime.write(usage_path, USAGE_COMPAT)
         return ACPConfig(
             command=[
-                f"{NODE_BIN_DIR}/node",
+                "node",
                 "--import",
                 usage_path,
                 f"{DEEPSEEK_DIR.format(version=self.config.version)}/node_modules/@deepseek-ai/dsh/lib/bin.js",

@@ -163,7 +163,6 @@ class PrimeController:
                         "gateway_auth": auth,
                         "arch": backend.cache.arch,
                         "system_python": backend.cache.system_python,
-                        "prepared_json": getattr(backend, "_prepared_json", ""),
                     }
                 if operation == "stop":
                     await vms[message["sandbox_id"]].stop()

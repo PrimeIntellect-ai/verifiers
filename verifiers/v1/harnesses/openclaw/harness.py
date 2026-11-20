@@ -19,19 +19,19 @@ from verifiers.v1.utils.logging import get_logger
 logger = get_logger(__name__)
 GATE_SOURCE = (Path(__file__).parent / "gate.mjs").read_text()
 
-# OpenClaw and its bundled Node runtime exceed the small /tmp tmpfs in some VMs.
+# OpenClaw exceeds the small /tmp tmpfs in some VMs.
 OPENCLAW_DIR = "/var/tmp/vf-openclaw-{version}"
-OPENCLAW_BIN = f"{OPENCLAW_DIR}/bin/openclaw"
+OPENCLAW_BIN = f"{OPENCLAW_DIR}/node_modules/.bin/openclaw"
 SETUP = r"""
 set -e
+rm -f "$AGENT_OPENCLAW_DIR/.ready"
 if [ ! -x "$VF_OPENCLAW_BIN" ]; then
-    command -v curl >/dev/null || (apt-get update -qq && apt-get install -y -qq curl ca-certificates >/dev/null)
-    curl -fsSL --proto '=https' --tlsv1.2 https://openclaw.ai/install-cli.sh \
-        | bash -s -- --prefix "$AGENT_OPENCLAW_DIR" --version "$AGENT_OPENCLAW_VERSION" --no-onboard
+    npm install --prefix "$AGENT_OPENCLAW_DIR" --no-audit --no-fund --omit=dev \
+        "openclaw@$AGENT_OPENCLAW_VERSION" >/dev/null
 fi
-set -- $(find "$AGENT_OPENCLAW_DIR/tools" -type f -path '*/openclaw/dist/session-accessor.sqlite-transcript-store-*.mjs')
+set -- $(find "$AGENT_OPENCLAW_DIR/node_modules/openclaw/dist" -type f -name 'session-accessor.sqlite-transcript-store-*.mjs')
 [ "$#" -eq 1 ] || { echo "could not locate OpenClaw's transcript sanitizer for replay patch" >&2; exit 1; }
-"$AGENT_OPENCLAW_DIR/tools/node/bin/node" - "$1" <<'NODE'
+node - "$1" <<'NODE'
 const fs = require("node:fs");
 const file = process.argv[2];
 const stat = fs.statSync(file);
@@ -67,6 +67,7 @@ if (patched !== source) {
     }
 }
 NODE
+touch "$AGENT_OPENCLAW_DIR/.ready"
 """
 
 # OpenClaw rejects a model it cannot resolve as the primary model, which makes setting
@@ -97,17 +98,16 @@ cleanup() {
 }
 trap cleanup EXIT
 trap 'exit 143' HUP INT TERM
-root=${VF_OPENCLAW_BIN%/bin/openclaw}
 gateway_attempt=0
 while [ "$gateway_attempt" -lt 5 ]; do
     [ -z "${AGENT_OPENCLAW_GATE_READY:-}" ] || rm -f "$AGENT_OPENCLAW_GATE_READY"
-    port=$("$root/tools/node/bin/node" -e 'const net=require("node:net");const server=net.createServer();server.listen(0,"127.0.0.1",()=>{process.stdout.write(String(server.address().port));server.close();});')
+    port=$(node -e 'const net=require("node:net");const server=net.createServer();server.listen(0,"127.0.0.1",()=>{process.stdout.write(String(server.address().port));server.close();});')
     export OPENCLAW_GATEWAY_PORT="$port"
     # OpenClaw respawns Node; separate groups let the trap reap both process trees.
     setsid "$VF_OPENCLAW_BIN" gateway run </dev/null >"$OPENCLAW_STATE_DIR/gateway.log" &
     gateway_pid=$!
     attempt=0
-    while ! curl -fsS "http://127.0.0.1:$port/readyz" >/dev/null 2>&1; do
+    while ! node -e 'fetch("http://127.0.0.1:"+process.argv[1]+"/readyz").then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))' "$port" >/dev/null 2>&1; do
         if ! kill -0 "$gateway_pid" 2>/dev/null; then
             wait "$gateway_pid" 2>/dev/null || true
             gateway_pid=
@@ -180,6 +180,7 @@ class OpenClawHarness(ACPHarness[OpenClawHarnessConfig]):
         await ensure_installed(
             runtime,
             directory=directory,
+            ready=f'[ -f "{directory}/.ready" ] && [ -x "{binary}" ]',
             install=SETUP,
             env={
                 **self.config.resolved_env,
@@ -188,7 +189,6 @@ class OpenClawHarness(ACPHarness[OpenClawHarnessConfig]):
                 "AGENT_OPENCLAW_VERSION": self.config.version,
             },
             label="OpenClaw",
-            shell=("bash", "-o", "pipefail", "-c"),
         )
         await super().setup(runtime)
 
@@ -320,12 +320,20 @@ class OpenClawHarness(ACPHarness[OpenClawHarnessConfig]):
             },
         }
         if runtime._remote_tools_only:
-            # This adapter preserves the native coding surface. Code Mode uses
-            # the same "exec" name for JavaScript, and requires a different
-            # nested-result transport; keep the shell surface explicit here.
+            # This adapter preserves the native coding surface and any configured MCP
+            # servers. Code Mode uses the same "exec" name for JavaScript, and requires a
+            # different nested-result transport; keep the shell surface explicit here.
             config["tools"].update(
                 {
-                    "allow": ["read", "write", "edit", "exec", "process"],
+                    "allow": [
+                        "read",
+                        "write",
+                        "edit",
+                        "exec",
+                        "process",
+                        "bundle-mcp",
+                        "group:plugins",
+                    ],
                     "codeMode": False,
                     "toolSearch": False,
                 }

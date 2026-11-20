@@ -32,7 +32,6 @@ from verifiers.v1.runtimes.base import (
     parse_gpu,
 )
 from verifiers.v1.runtimes.limiters import creation_limiter
-from verifiers.v1.runtimes.prepared import apply_prepared, load_prepared_command
 from verifiers.v1.runtimes.runtime import Runtime
 from verifiers.v1.utils.aio import run_shielded
 from verifiers.v1.utils.artifacts import validate_runtime_mounts
@@ -390,12 +389,6 @@ class PrimeBackend(RuntimeBackend):
                     self.cache.arch = arch
                 if system_python := info.get("system_python"):
                     self.cache.system_python = system_python
-                if "prepared_json" in info:
-                    apply_prepared(
-                        self.cache,
-                        f"{self.scripts_dir}-prepared",
-                        info["prepared_json"],
-                    )
 
             await run_shielded(create_and_attach())
             return
@@ -483,33 +476,25 @@ class PrimeBackend(RuntimeBackend):
                     self.config.image,
                     self.info.id,
                 )
-            prepared_root = f"{self.scripts_dir}-prepared"
             init_cmd = (
                 f"mkdir -p {shlex.quote(self.config.workdir)} && "
                 '({ getent hosts "$(cat /proc/sys/kernel/hostname)" >/dev/null || '
                 'printf "127.0.1.1 %s\\n" "$(cat /proc/sys/kernel/hostname)" >> /etc/hosts; } 2>/dev/null || true) && '
-                'printf "VF_ARCH=%s\\nVF_PYTHON=%s\\nVF_PREPARED\\n" '
-                '"$(uname -m)" "$(command -v python3 || command -v python || true)" && '
-                + load_prepared_command(prepared_root)
+                'printf "VF_ARCH=%s\\nVF_PYTHON=%s\\n" '
+                '"$(uname -m)" "$(command -v python3 || command -v python || true)"'
             )
             init_response, self._lan_sync_task = await _wait_and_init_sandbox(
                 self, init_cmd, max_attempts=900
             )
-            self._prepared_json = ""
             if init_response.exit_code == 0:
                 self._created_workdirs.add(self.config.workdir)
-                header, _, prepared_out = init_response.stdout.partition(
-                    "VF_PREPARED\n"
-                )
-                for line in header.splitlines():
+                for line in init_response.stdout.splitlines():
                     if line.startswith("VF_ARCH="):
                         self.cache.arch = line.removeprefix("VF_ARCH=").strip() or None
                     elif line.startswith("VF_PYTHON="):
                         self.cache.system_python = (
                             line.removeprefix("VF_PYTHON=").strip() or None
                         )
-                self._prepared_json = prepared_out
-                apply_prepared(self.cache, prepared_root, prepared_out)
             logger.debug(
                 "Started prime runtime %s in %s image=%s",
                 self.info.id,
@@ -581,9 +566,13 @@ class PrimeBackend(RuntimeBackend):
                     )
                 )
                 if config.allow == ["*"]:
-                    policy = (
-                        {"deny": config.block} if config.block else {"allow": ["*"]}
-                    )
+                    control_hosts = getattr(self, "_control_blocked_hosts", frozenset())
+                    deny = [
+                        b
+                        for b in config.block
+                        if not (b in control_hosts and b in hosts)
+                    ]
+                    policy = {"deny": deny} if deny else {"allow": ["*"]}
                 else:
                     entries = list(dict.fromkeys([*hosts, *config.allow]))
                     validate_egress_lists(entries, None)

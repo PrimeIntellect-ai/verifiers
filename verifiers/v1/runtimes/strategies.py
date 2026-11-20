@@ -66,8 +66,15 @@ class _SplitDeployment(_DeploymentStrategy):
             )
         d.backend.env = d.env
         await d.own(d.backend)
+        image_override: dict[str, str] = {}
+        if d.harness_image and "image" not in d.harness_config.model_fields_set:
+            from verifiers.v1.harness import Harness
+
+            image_override["image"] = await Harness.prefetch_image(
+                "docker", image=d.harness_image
+            )
         config = d.harness_config.model_copy(
-            update={"mounts": {}, "workdir": d.backend.config.workdir}
+            update={"mounts": {}, "workdir": d.backend.config.workdir, **image_override}
         )
         harness = make_backend(config, name=f"{d.backend.name}-harness")
         harness.env = {}
@@ -116,7 +123,6 @@ async def _prepare_split_workspace(d):
             parsed.port or (443 if parsed.scheme == "https" else 80),
         ):
             raise SandboxError("task network allowlist includes a framework endpoint")
-    had_task_blocks = bool(policy.block)
     if policy.allow == ["*"] and hosts:
         policy = type(policy).model_validate(
             {
@@ -125,8 +131,8 @@ async def _prepare_split_workspace(d):
             }
         )
     d.execution_backend._control_blocked_hosts = (
-        frozenset(hosts)
-        if policy.allow == ["*"] and not had_task_blocks
+        frozenset(hosts) - set(d.execution_network.block)
+        if policy.allow == ["*"]
         else frozenset()
     )
     if (
@@ -208,7 +214,9 @@ class _PrivateNetworkDeployment(_DeploymentStrategy):
         if d._split_requested:
             d._harness_workdir = d.backend.config.workdir
             h_cfg = _harness_config(
-                d.config.harness, d.execution_network or d.backend.config
+                d.config.harness,
+                d.execution_network or d.backend.config,
+                image=d.harness_image,
             ).model_copy(update={"workdir": d.backend.config.workdir})
             pool = current_harness_pool()
             if pool is None:
@@ -402,11 +410,17 @@ class _NativeComposeDeployment(_PrivateNetworkDeployment):
         await super().close(deployment)
 
 
-def _harness_config(harness: PrimeConfig, workspace: PrimeConfig) -> PrimeConfig:
+def _harness_config(
+    harness: PrimeConfig, workspace: PrimeConfig, *, image: str | None = None
+) -> PrimeConfig:
     """A split harness's VM: placed and labelled like the workspace unless set, and
     under the task's network policy, which the harness would share colocated."""
+    resolved_image = (
+        harness.image if "image" in harness.model_fields_set or not image else image
+    )
     return harness.model_copy(
         update={
+            "image": resolved_image,
             "labels": list(dict.fromkeys([*workspace.labels, *harness.labels])),
             "region": harness.region or workspace.region,
             "creates_per_min": (
