@@ -240,7 +240,7 @@ class Task(Generic[DataT, StateT, ConfigT]):
         trace.dropped = None
         await self.score(trace)
 
-    def _defer_scoring(self) -> Self:
+    def defer_scoring(self) -> Self:
         """An independent copy whose task signals are deferred.
 
         Lifecycle hooks still run normally: in particular, ``finalize`` can prepare

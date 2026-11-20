@@ -478,7 +478,7 @@ This package has no names of its own. Each built-in environment is a package tha
 | Name | Description |
 | --- | --- |
 | `AgenticJudgeEnv`, `AgenticJudgeEnvConfig` | A solver agent, then a judge agent that grades its result. |
-| `JudgeTaskConfig` | Config of the judge task. |
+| `JudgeTask`, `JudgeTaskConfig` | The judge task, built from the solver's trace, and its config. |
 | `ScoreConfig` | How the judge verdicts become rewards. |
 | `Criterion` | One criterion that the judge agent grades. |
 | `TextFile` | One text file that the judge agent receives. |

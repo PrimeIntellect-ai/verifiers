@@ -103,7 +103,7 @@ async def test_defer_scoring_defers_only_task_scoring() -> None:
         task=vf.TraceTask(type="HookTask", data=task.data),
     )
 
-    await task._defer_scoring().score(trace)
+    await task.defer_scoring().score(trace)
     assert trace.rewards == {}
     invalid = trace.model_copy(deep=True)
     invalid.stop("format_violation")

@@ -85,7 +85,7 @@ class Deployment:
     ):
         self.backend = backend
         self.spec = spec
-        self._tool_vms = dict(tool_vms or {})
+        self.tool_vms = dict(tool_vms or {})
         """Tool servers on Prime runtimes of their own, by server name, which join the
         workspace over the rollout's private network."""
         self.env = dict(env or {})
@@ -93,9 +93,7 @@ class Deployment:
         self._borrowed_runtime = borrowed_runtime
         from verifiers.v1._runtimes.strategies import _deployment_strategy
 
-        self._strategy = _deployment_strategy(
-            self.config, backend, spec, self._tool_vms
-        )
+        self._strategy = _deployment_strategy(self.config, backend, spec, self.tool_vms)
         self._target_backends: dict[str, RuntimeBackend] = {}
         self.hosts: dict[str, str] = {}
         """LAN hostnames of native services or tool servers on their own VMs."""

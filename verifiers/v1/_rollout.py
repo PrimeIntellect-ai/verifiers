@@ -418,7 +418,7 @@ class Rollout:
                         # `service` names a task-declared service.
                         placements={
                             name: self.deployment.target(name)
-                            for name in self.deployment._tool_vms
+                            for name in self.deployment.tool_vms
                         },
                     )
                 )

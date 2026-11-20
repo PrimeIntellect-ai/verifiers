@@ -74,7 +74,7 @@ class _PrivateNetworkDeployment(_DeploymentStrategy):
             )
         d.backend.env = d.env
         native = isinstance(d.spec, ServicesSpec)
-        members = d.spec.services if native else d._tool_vms
+        members = d.spec.services if native else d.tool_vms
         self._services = await d._enter(AsyncExitStack())
         vms = await self._services.enter_async_context(
             private_network(

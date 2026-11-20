@@ -934,7 +934,7 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         reward = Reward(score=float(value), weight=float(weight))
         self.rewards[name] = reward
 
-    def _record_judge_call(
+    def record_judge_call(
         self,
         *,
         name: str,

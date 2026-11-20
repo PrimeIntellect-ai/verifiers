@@ -80,7 +80,7 @@ class DecisionJudge(Judge[float, DecisionJudgeConfig]):
         finally:
             # The call was billed even if the score could not be parsed.
             if trace is not None:
-                trace._record_judge_call(
+                trace.record_judge_call(
                     name=self.reward_name, request=request, response=response
                 )
 
