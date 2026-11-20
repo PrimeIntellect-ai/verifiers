@@ -76,13 +76,17 @@ def _validate_solver(saved: Trace, task: Task, policy: ScoringConfig) -> None:
         raise RequiresRerun("Current task requires shared runtime state")
     if resolve_scoring(old.scoring, saved.agent.config.scoring).mode != "isolated":
         raise RequiresRerun("Original task was scored with shared runtime state")
+    if saved.stop_condition == "scoring_timeout":
+        solver_completed = saved.solver_completed_before_scoring_timeout
+    else:
+        solver_completed = (
+            saved.stop_condition in {None, "agent_completed"} and not saved.is_timeout
+        )
     if (
         not saved.is_completed
         or not saved.ok
-        or saved.errors
         or saved.is_format_violation
-        or saved.stop_condition not in {None, "agent_completed", "scoring_timeout"}
-        or (saved.is_timeout and saved.stop_condition != "scoring_timeout")
+        or not solver_completed
     ):
         raise RequiresRerun("Original solver did not complete")
 
@@ -258,6 +262,7 @@ def prepare_replay(
     trace.rewards, trace.metrics, trace.extra_usage = {}, {}, []
     trace.errors, trace.dropped = [], None
     trace.is_timeout = False
+    trace.solver_completed_before_scoring_timeout = False
     if trace.stop_condition == "scoring_timeout":
         trace.stop_condition = "agent_completed"
     for key in (
