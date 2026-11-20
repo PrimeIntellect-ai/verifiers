@@ -25,7 +25,6 @@ from verifiers.v1.dialects.base import Dialect
 CacheRetention = Literal["none", "short", "long"]
 
 _CACHE_MARKERS = frozenset({"cache_control", "prompt_cache_breakpoint"})
-_SCHEMA_KEYS = frozenset({"input_schema", "parameters", "json_schema"})
 _ANTHROPIC_BLOCK_TYPES = frozenset({"text", "image", "tool_result", "document"})
 
 
