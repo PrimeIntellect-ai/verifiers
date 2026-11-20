@@ -87,7 +87,7 @@ class RecordingRuntime:
     async def prepare_uv_script(self, script, env=None, *, activate=True):
         return ["python", "/scripts/program.py"]
 
-    async def run(self, argv, env):
+    async def run(self, argv, env, *, program=None):
         self.argvs.append(list(argv))
         return ProgramResult(exit_code=0, stdout="/app\n", stderr="")
 

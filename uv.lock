@@ -3273,7 +3273,7 @@ toml = [
 
 [[package]]
 name = "prime-sandboxes"
-version = "0.5.9"
+version = "0.5.13"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiofiles" },
@@ -3285,9 +3285,9 @@ dependencies = [
     { name = "pyqwest" },
     { name = "tenacity" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/8d/50/40e351b1fada75c8a166c3e482584912e660d7a143b5a1fa317c2038f2d0/prime_sandboxes-0.5.9.tar.gz", hash = "sha256:4aab8f2ca2dbd1f18cf356bb8c072baa29747cdee0305817d4d4eed7283c8cae", size = 173127, upload-time = "2026-11-10T01:03:33.691Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/ff/3c/746728aa531da2f43dbc885516fb0b6946c46d7c4fb06118f0afa6f30f06/prime_sandboxes-0.5.13.tar.gz", hash = "sha256:cf5bf653ed6b52ddf8fb468a1caf5c56920d7b29caa0cd2f433cf834a47ef260", size = 185562, upload-time = "2026-11-19T04:42:22.627Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/60/77/888edf3076ef91d424f323aad4455e4a2c426cf1dde91728a46e19a029ac/prime_sandboxes-0.5.9-py3-none-any.whl", hash = "sha256:f66355ab2c8384d1ade329c82b9497165c490778031f927c00fefa6101f1536d", size = 93862, upload-time = "2026-11-10T01:03:31.814Z" },
+    { url = "https://files.pythonhosted.org/packages/77/44/4b68135d6672893aa725242faaa8a2cf4c754a4e35dc4131abf8467f4957/prime_sandboxes-0.5.13-py3-none-any.whl", hash = "sha256:1ce8965897f927856acdb20524ecba0a44c564509b07617be0ef84480b21037d", size = 99430, upload-time = "2026-11-19T04:42:20.067Z" },
 ]
 
 [[package]]
@@ -3443,7 +3443,7 @@ name = "protobuf-py"
 version = "0.1.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "protobuf-py-ext", marker = "(platform_machine == 'arm64' and platform_python_implementation == 'CPython' and sys_platform == 'darwin') or (platform_machine == 'aarch64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (platform_machine == 'x86_64' and platform_python_implementation == 'CPython' and sys_platform == 'linux') or (platform_machine == 'AMD64' and platform_python_implementation == 'CPython' and sys_platform == 'win32') or (platform_machine == 'ARM64' and platform_python_implementation == 'CPython' and sys_platform == 'win32')" },
+    { name = "protobuf-py-ext", marker = "platform_machine == 'arm64' and platform_python_implementation == 'CPython' and sys_platform == 'darwin' or (platform_machine == 'aarch64' or platform_machine == 'x86_64') and platform_python_implementation == 'CPython' and sys_platform == 'linux' or (platform_machine == 'AMD64' or platform_machine == 'ARM64') and platform_python_implementation == 'CPython' and sys_platform == 'win32'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/72/ed/02fd902d9c51b7ff53dfc9a745eb11490722edfd30073af889e171f07b8e/protobuf_py-0.1.1.tar.gz", hash = "sha256:6bd08ac4d8f1661965bbe2685429d79043704cdd1ee720a7a89617331742240b", size = 133525, upload-time = "2026-06-24T19:02:15.271Z" }
 wheels = [

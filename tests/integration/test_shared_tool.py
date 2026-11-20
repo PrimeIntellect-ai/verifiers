@@ -22,7 +22,9 @@ async def test_shared_tool(run, harness_runtime, tool_runtime):
         taskset_overrides={"tools": tool_runtime},
     )
     traces = [trace for episode in episodes for trace in episode.traces]
-    assert all(trace.num_branches == 1 for trace in traces)
+    assert all(trace.num_branches == 1 for trace in traces), [
+        f"{error.type}: {error.message[:500]}" for t in traces for error in t.errors
+    ]
     assert len(traces) == 2
     for trace in traces:
         assert trace.ok, [error.message for error in trace.errors]

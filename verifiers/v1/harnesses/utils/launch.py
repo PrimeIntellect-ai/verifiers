@@ -14,6 +14,7 @@ from verifiers.v1.dialects.chat import message_to_wire
 from verifiers.v1.harnesses.utils import compaction, core, mcp
 from verifiers.v1.harnesses.utils.install import remove_dir
 from verifiers.v1.runtimes import ProgramResult, Runtime
+from verifiers.v1.runtimes.base import current_program
 from verifiers.v1.trace import Trace
 from verifiers.v1.types import Messages
 from verifiers.v1.utils import network
@@ -143,7 +144,9 @@ async def launch_chat_program(
         program = await runtime.prepare_uv_script(
             source, config.resolved_env, activate=activate
         )
-        return await runtime.run([*program, *args], process_env)
+        return await runtime.run(
+            [*program, *args], process_env, program=current_program.get()
+        )
     finally:
         for path in prompt_files:
             try:
