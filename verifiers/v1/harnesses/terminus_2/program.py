@@ -6,7 +6,6 @@
 import argparse
 import asyncio
 import os
-import subprocess
 from pathlib import Path, PurePosixPath
 
 from harbor.agents.terminus_2 import Terminus2
@@ -33,40 +32,23 @@ class LocalEnvironment:
         user: str | int | None = None,
     ) -> ExecResult:
         _ = user
-        if self.args.tool_interception_url:
-            content = await asyncio.to_thread(
-                remote_tool,  # noqa: F821 - injected shared client
-                self.args.tool_interception_url,
-                self.args.api_key,
-                "bash",
-                {
-                    "command": command,
-                    "cwd": cwd,
-                    "env": {"TMUX_TMPDIR": os.environ["TMUX_TMPDIR"], **(env or {})},
-                    "timeout": timeout_sec,
-                },
-            )
-            result = remote_shell_result(content)  # noqa: F821
-            return ExecResult(
-                stdout=result["stdout"],
-                stderr=result["stderr"] + result["exception_info"],
-                return_code=result["returncode"],
-            )
-        result = await asyncio.to_thread(
-            subprocess.run,
-            command,
-            shell=True,
-            cwd=cwd,
-            env={**os.environ, **(env or {})},
-            capture_output=True,
-            text=True,
-            timeout=timeout_sec,
-            check=False,
+        content = await asyncio.to_thread(
+            remote_tool,  # noqa: F821 - injected shared client
+            self.args.tool_interception_url,
+            self.args.api_key,
+            "bash",
+            {
+                "command": command,
+                "cwd": cwd,
+                "env": {"TMUX_TMPDIR": os.environ["TMUX_TMPDIR"], **(env or {})},
+                "timeout": timeout_sec,
+            },
         )
+        result = remote_shell_result(content)  # noqa: F821
         return ExecResult(
-            stdout=result.stdout,
-            stderr=result.stderr,
-            return_code=result.returncode,
+            stdout=result["stdout"],
+            stderr=result["stderr"] + result["exception_info"],
+            return_code=result["returncode"],
         )
 
 
@@ -77,7 +59,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model", required=True)
     parser.add_argument("--system-prompt-file", default="")
     parser.add_argument("--task-file", required=True)
-    parser.add_argument("--tool-interception-url", default="")
+    parser.add_argument("--tool-interception-url", required=True)
     return parser.parse_args()
 
 

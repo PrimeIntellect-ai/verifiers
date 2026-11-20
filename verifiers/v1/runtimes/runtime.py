@@ -39,7 +39,6 @@ class Runtime:
     user: str | None = None
     home: str | None = None
     workdir: str | None = None
-    _remote_tools_only: bool = False
     _execution_bridge: ExecutionBridge | None = None
     _lease: Any = None
 
@@ -161,7 +160,14 @@ class Runtime:
     def resolve_path(self, path: str) -> str:
         if path.startswith("/"):
             return path
-        base = self.workdir or getattr(self.backend.config, "workdir", "/app") or "/app"
+        if self.type == "subprocess" and self.backend.info.id:
+            base = self.backend.info.id
+        else:
+            base = (
+                self.workdir
+                or getattr(self.backend.config, "workdir", "/app")
+                or "/app"
+            )
         return f"{base.rstrip('/')}/{path}"
 
     async def write(self, path: str, data: bytes) -> None:
@@ -200,6 +206,13 @@ class Runtime:
         directory = (env or {}).get("TMPDIR") or self.env.get("TMPDIR")
         if not directory and default is not None:
             return default
+        if (
+            not directory
+            and getattr(self, "type", None) == "subprocess"
+            and getattr(getattr(self, "backend", None), "info", None) is not None
+            and self.backend.info.id
+        ):
+            directory = self.backend.info.id
         return str(PurePosixPath(directory or "/tmp").joinpath(*parts))
 
     async def resolve_python(self) -> str:

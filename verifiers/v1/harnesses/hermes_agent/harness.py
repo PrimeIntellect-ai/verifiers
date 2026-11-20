@@ -87,7 +87,6 @@ class HermesAgentHarness(ACPHarness[HermesAgentHarnessConfig]):
     ) -> None:
         config.env["VF_TOOL_GATE_URL"] = url
         config.env["VF_TOOL_GATE_SECRET"] = secret
-        config.env["VF_REMOTE_TOOLS_ONLY"] = "1" if runtime._remote_tools_only else "0"
         config.env["VF_NATIVE_TOOLS"] = json.dumps(sorted(_HERMES_TOOLS))
 
     # Hermes strips stored assistant text and pads missing reasoning with " " on

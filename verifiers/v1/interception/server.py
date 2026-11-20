@@ -359,8 +359,6 @@ class InterceptionServer(Interception):
         config: InterceptionServerConfig | None = None,
         requires_tunnel: bool = False,
         state_service_secrets: Collection[str] = (),
-        *,
-        lan_host: str | None = None,
     ) -> None:
         super().__init__()
         self.sessions: dict[str, RolloutSession] = {}
@@ -376,7 +374,6 @@ class InterceptionServer(Interception):
         self.healthy = True
         if self.tunnel is not None:
             self.tunnel.on_gone = self._handle_tunnel_gone
-        self.lan_host = lan_host
         self.host = "127.0.0.1"
         self.port = 0
         self.base_url = ""  # set by `start`
@@ -610,7 +607,7 @@ class InterceptionServer(Interception):
         # Without a tunnel, local URL translation reaches an ephemeral loopback port.
         # Otherwise the tunnel determines the bind address and publishes it.
         if self.tunnel is None:
-            self.host, bind_port = ("0.0.0.0" if self.lan_host else "127.0.0.1"), 0
+            self.host, bind_port = "127.0.0.1", 0
         else:
             self.host, bind_port = self.tunnel.bind_host, self.tunnel.bind_port
         site = web.TCPSite(self.runner, self.host, bind_port)
@@ -626,7 +623,7 @@ class InterceptionServer(Interception):
             self.port,
         )
         if self.tunnel is None:
-            self.base_url = f"http://{self.lan_host or self.host}:{self.port}"
+            self.base_url = f"http://{self.host}:{self.port}"
         else:
             self.base_url = await self.stack.enter_async_context(
                 self.tunnel.expose(self.port)

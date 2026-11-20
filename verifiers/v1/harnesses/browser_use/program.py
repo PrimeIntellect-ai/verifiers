@@ -210,17 +210,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--initial-messages-file", default="")
     parser.add_argument("--mcp-config", default="")
     parser.add_argument("--tool-interception-url", default="")
-    parser.add_argument("--remote-tools-only", action="store_true")
     parser.add_argument("--execute-code")
     return parser.parse_args()
 
 
 async def main() -> None:
     args = parse_args()
-    system_prompt = read_staged(args.system_prompt_file).decode()
-    initial = json.loads(read_staged(args.initial_messages_file) or b"[]")
-    browser_env = {}
-    if not args.remote_tools_only:
+    if args.execute_code is not None:
         state_dir = Path(args.state_dir)
         state_dir.mkdir(parents=True, exist_ok=True)
         endpoint = (
@@ -237,15 +233,14 @@ async def main() -> None:
                 else "BU_CDP_URL"
             ): endpoint,
         }
-    if args.execute_code is not None:
-        if args.remote_tools_only:
-            raise RuntimeError("the harness sandbox cannot execute browser code")
         print(
             await asyncio.to_thread(run_browser, args.execute_code, browser_env), end=""
         )
         return
-    if args.remote_tools_only and not args.tool_interception_url:
-        raise RuntimeError("split browser-use requires a tool gate")
+    if not args.tool_interception_url:
+        raise RuntimeError("browser-use requires a remote tool gate")
+    system_prompt = read_staged(args.system_prompt_file).decode()
+    initial = json.loads(read_staged(args.initial_messages_file) or b"[]")
     client = AsyncOpenAI(base_url=args.base_url, api_key=args.api_key)
     config = json.loads(args.mcp_config or "{}")
     tools = [BROWSER_TOOL]
@@ -264,31 +259,28 @@ async def main() -> None:
                 break
             for call in message.tool_calls:
                 name = call.function.name
-                if args.tool_interception_url:
-                    try:
-                        arguments = json.loads(call.function.arguments or "{}")
-                    except json.JSONDecodeError:
-                        arguments = call.function.arguments
-                    response = await gate.post(
-                        args.tool_interception_url,
-                        headers={"Authorization": f"Bearer {args.api_key}"},
-                        json={
-                            "tool_call_id": call.id,
-                            "name": name,
-                            "arguments": arguments,
-                        },
-                    )
-                    response.raise_for_status()
-                    decision = response.json()
-                    if decision["action"] == "stop":
-                        raise RuntimeError(decision["reason"])
-                    if decision["action"] == "deny":
-                        messages.append(decision["message"])
-                        continue
-                    if args.remote_tools_only and name not in dispatch:
-                        raise RuntimeError(
-                            "split browser tool gate allowed local execution"
-                        )
+                try:
+                    arguments = json.loads(call.function.arguments or "{}")
+                except json.JSONDecodeError:
+                    arguments = call.function.arguments
+                response = await gate.post(
+                    args.tool_interception_url,
+                    headers={"Authorization": f"Bearer {args.api_key}"},
+                    json={
+                        "tool_call_id": call.id,
+                        "name": name,
+                        "arguments": arguments,
+                    },
+                )
+                response.raise_for_status()
+                decision = response.json()
+                if decision["action"] == "stop":
+                    raise RuntimeError(decision["reason"])
+                if decision["action"] == "deny":
+                    messages.append(decision["message"])
+                    continue
+                if name not in dispatch:
+                    raise RuntimeError("browser tool gate allowed local execution")
                 try:
                     tool_args = json.loads(call.function.arguments or "{}")
                 except json.JSONDecodeError as e:
@@ -300,8 +292,6 @@ async def main() -> None:
                         }
                     )
                     continue
-                # Valid JSON can still be a non-object (`[]`, `42`, `null`); the `.get(...)` calls
-                # below assume a dict, so reject anything else as a tool error rather than crashing.
                 if not isinstance(tool_args, dict):
                     messages.append(
                         {
@@ -311,16 +301,7 @@ async def main() -> None:
                         }
                     )
                     continue
-                if name in dispatch:
-                    content = await call_mcp(servers, dispatch, name, tool_args)
-                elif name == "browser":
-                    content = await asyncio.to_thread(
-                        run_browser,
-                        tool_args.get("code", ""),
-                        browser_env,
-                    )
-                else:
-                    content = f"error: unknown tool {name!r}"
+                content = await call_mcp(servers, dispatch, name, tool_args)
                 messages.append(
                     {"role": "tool", "tool_call_id": call.id, "content": content}
                 )

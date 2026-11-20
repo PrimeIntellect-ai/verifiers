@@ -201,27 +201,7 @@ multiplex = 8
 harness = { cpu = 2, memory = 4 }
 ```
 
-To place the evaluator on the same Prime LAN, pass a trusted, packaged async function to `vf.prime_controller`. The launcher provisions the VMs and delivers the credentials you supply over the controller process's stdin. The controller owns the live trace, callbacks and model client. It dispatches approved tools to the harness over a persistent LAN connection. Each job gets its own process and each rollout gets a private LAN. Reuse the context to share the installed controller VM across jobs.
-
-```python
-# evaluate lives in an importable evaluator package.
-async def evaluate(payload, interception):
-    async with vf.Agent(
-        vf.AgentConfig.model_validate(payload["agent"]), interception=interception
-    ) as agent:
-        trace = await agent.run(make_task(payload["sample"]))
-        return json.loads(trace.to_json())
-
-
-async with vf.prime_controller(evaluate, vf.PrimeConfig(cpu=2, memory=4)) as controller:
-    result = await controller.run(
-        payload, credentials={"PRIME_API_KEY": os.environ["PRIME_API_KEY"]}
-    )
-```
-
-An environment can borrow the same server with `env.serving(interception=interception)`. The program and its dependencies run with evaluator privileges. Keep its package, image and checkpoints under the evaluator operator's control.
-
-Docker uses the evaluator's configured image for the harness, without task environment or mounts, and a host bridge for native workers. Borrowed runtimes (`agent.run(task, runtime=...)`) and local Docker Compose or bind-mount tasks execute directly in their target container. See [split harness execution](harnesses.md#split-execution) for harness-specific details.
+Docker builds or pulls the harness image without task environment or mounts, and uses a host bridge for native workers and Compose or bind-mount workspaces. Borrowed runtimes (`agent.run(task, runtime=...)`) also run split, joining the rollout's private LAN on Prime or connecting over the host bridge on Docker while leaving the borrowed workspace's lifetime to its owner. See [split harness execution](harnesses.md#split-execution) for harness-specific details.
 
 On Prime, return a `ServicesSpec` from `deployment_spec()` to provision one native VM per named service beside the task's `main` workspace. Each service has its own image, resources, filesystem, and egress policy. The VMs join a private LAN for the rollout; they can call each other and the workspace through the names in `deployment.hosts`. Services bind to `0.0.0.0`, since each VM has its own loopback interface. No Docker daemon runs inside these VMs.
 

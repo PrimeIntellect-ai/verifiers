@@ -233,128 +233,50 @@ def frames(buffer):
         del buffer[:size + 4]
         yield packet
 
-class _PrimeMCPBridge:
-    # Supervisor-side MCP client for split Prime Agent sessions (runs inside A).
+_prime_loop = None
+_prime_lock = threading.Lock()
 
-    def __init__(self, configs):
-        self._configs = configs
-        self._lock = threading.Lock()
-        self._loop = None
-        self._sessions = {}
+def _dispatch_prime_mcp(req_id, req_type, req_data):
+    global _prime_loop
+    import rlm, rlm.mcp as _mcp
 
-    def _ensure_loop(self):
-        with self._lock:
-            if self._loop is None:
-                loop = asyncio.new_event_loop()
-                threading.Thread(target=loop.run_forever, daemon=True).start()
-                self._loop = loop
-            return self._loop
+    with _prime_lock:
+        if _prime_loop is None:
+            async def _host_req(rt, payload):
+                if rt == "mcp.config":
+                    return mcp_configs.get(payload.get("server"))
+                if rt == "mcp.list_connections":
+                    return {"connections": [{"connectionId": n, "label": n, "service": n, "status": "connected"} for n in mcp_configs]}
+                if rt in ("mcp.list_plugins", "mcp.search_plugins"):
+                    return {"plugins": [], "nextCursor": None}
+                raise RuntimeError("Supervisor callbacks are unavailable in split execution")
 
-    async def _session(self, server):
-        if server in self._sessions:
-            return self._sessions[server]
-        cfg = self._configs.get(server)
-        if not cfg:
-            raise KeyError(f"MCP server '{server}' is not declared in user settings")
-        import contextlib
-        import inspect
-        from mcp import ClientSession
-        from rlm.mcp_base import _resolve_streamable_http
+            rlm.host_request = _mcp.host_request = _host_req
+            loop = asyncio.new_event_loop()
+            threading.Thread(target=loop.run_forever, daemon=True).start()
+            _prime_loop = loop
 
-        stack = contextlib.AsyncExitStack()
-        try:
-            transport = _resolve_streamable_http()
-            headers = dict(cfg.get("headers") or {})
-            url = cfg["url"]
-            if "headers" in inspect.signature(transport).parameters:
-                streams = await stack.enter_async_context(transport(url, headers=headers))
-            else:
-                import httpx2
-
-                hc = await stack.enter_async_context(
-                    httpx2.AsyncClient(
-                        headers=headers,
-                        timeout=httpx2.Timeout(30.0, read=600.0),
-                        follow_redirects=False,
-                    )
-                )
-                streams = await stack.enter_async_context(transport(url, http_client=hc))
-            session = await stack.enter_async_context(
-                ClientSession(streams[0], streams[1], read_timeout_seconds=600.0)
-            )
-            await session.initialize()
-            tools = {}
-            cursor = None
-            while True:
-                if cursor is None:
-                    resp = await session.list_tools()
-                else:
-                    from mcp.types import PaginatedRequestParams
-
-                    resp = await session.list_tools(params=PaginatedRequestParams(cursor=cursor))
-                for tool in getattr(resp, "tools", None) or ():
-                    name = getattr(tool, "name", None)
-                    if isinstance(name, str):
-                        schema = getattr(tool, "input_schema", None)
-                        if schema is None:
-                            schema = getattr(tool, "inputSchema", None)
-                        tools[name] = {
-                            "name": name,
-                            "description": getattr(tool, "description", "") or "",
-                            "inputSchema": schema if isinstance(schema, dict) else {},
-                        }
-                cursor = getattr(resp, "next_cursor", None) or getattr(resp, "nextCursor", None)
-                if not cursor:
-                    break
-            entry = (stack, session, tools)
-            self._sessions[server] = entry
-            return entry
-        except BaseException:
-            await stack.aclose()
-            raise
-
-    async def _handle(self, req_type, req_data):
-        if req_type == "mcp.list_connections":
-            return {
-                "connections": [
-                    {"connectionId": n, "label": n, "service": n, "status": "connected"}
-                    for n in self._configs
-                ]
-            }
-        if req_type in ("mcp.list_plugins", "mcp.search_plugins"):
-            return {"plugins": [], "nextCursor": None}
-        server = req_data.get("server")
-        if not isinstance(server, str) or not server:
-            raise ValueError("MCP request requires server")
-        _, session, tools = await self._session(server)
+    async def _call():
         if req_type == "mcp.tools":
-            return {"tools": list(tools.values())}
+            return await _mcp.list_tools(req_data["server"])
         if req_type == "mcp.call":
-            from rlm.mcp_base import _parse_result
+            return await _mcp.call_tool(req_data["server"], req_data["tool"], req_data.get("arguments"))
+        if req_type == "mcp.describe":
+            return await _mcp.describe_tool(req_data["server"], req_data["tool"])
+        if req_type == "mcp.search":
+            return await _mcp.search_tools(req_data["query"], req_data.get("server"), req_data.get("limit", 20))
+        return await _mcp.host_request(req_type, req_data)
 
-            tool = req_data.get("tool")
-            if tool not in tools:
-                raise KeyError(f"MCP server '{server}' has no tool '{tool}'")
-            res = await session.call_tool(tool, req_data.get("arguments") or {})
-            return {"value": _parse_result(res)}
-        raise RuntimeError("Supervisor callbacks are unavailable in split execution")
+    def run():
+        try:
+            res = asyncio.run_coroutine_threadsafe(_call(), _prime_loop).result(timeout=630)
+            reply_data = {"status": "ok", "result": res}
+        except Exception as exc:
+            reply_data = {"status": "error", "error": f"{type(exc).__name__}: {exc}"}
+        reply = {"type": "host_reply", "id": req_id, "data": reply_data}
+        rpc("write", data=base64.b64encode((json.dumps(reply) + "\n").encode()).decode())
 
-    def dispatch(self, req_id, req_type, req_data):
-        def run():
-            try:
-                fut = asyncio.run_coroutine_threadsafe(
-                    self._handle(req_type, req_data), self._ensure_loop()
-                )
-                reply_data = {"status": "ok", "result": fut.result(timeout=630)}
-            except Exception as exc:
-                reply_data = {"status": "error", "error": f"{type(exc).__name__}: {exc}"}
-            reply = {"type": "host_reply", "id": req_id, "data": reply_data}
-            rpc("write", data=base64.b64encode((json.dumps(reply) + "\n").encode()).decode())
-
-        threading.Thread(target=run, daemon=True).start()
-
-
-prime_mcp = _PrimeMCPBridge(mcp_configs) if mcp_configs else None
+    threading.Thread(target=run, daemon=True).start()
 
 
 def prime_output(buffer):
@@ -366,14 +288,16 @@ def prime_output(buffer):
         if message.get("event") == "host_request":
             req_data = message.get("data") or {}
             req_type = req_data.get("type", "")
-            if prime_mcp is not None and req_type in (
+            if mcp_configs and req_type in (
                 "mcp.tools",
                 "mcp.call",
+                "mcp.describe",
+                "mcp.search",
                 "mcp.list_connections",
                 "mcp.list_plugins",
                 "mcp.search_plugins",
             ):
-                prime_mcp.dispatch(message["id"], req_type, req_data)
+                _dispatch_prime_mcp(message["id"], req_type, req_data)
                 continue
             # The kernel is arbitrary task code. It cannot drive the supervisor's
             # model, filesystem, harness-state, or delegation callbacks.

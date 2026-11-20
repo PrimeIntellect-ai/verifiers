@@ -81,40 +81,38 @@ class StirrupHarness(ACPHarness[StirrupHarnessConfig]):
         program = await runtime.prepare_uv_script(
             self._source(), self.config.resolved_env, activate=False
         )
-        remote_args = []
-        cwd = None
-        if runtime._remote_tools_only:
-            assert runtime._execution_bridge is not None
-            bridge = runtime._execution_bridge
-            cwd = bridge.runtime.info.workdir
-            created = await runtime.run(["mkdir", "-p", "--", cwd], {})
-            if created.exit_code:
-                raise HarnessError(
-                    "could not prepare the Stirrup supervisor working directory"
-                )
-            await self.install_skills(bridge.runtime, skills_dir)
-            worker_program = await bridge.runtime.prepare_uv_script(
-                self._source(), {}, activate=False
+        if runtime._execution_bridge is None:
+            raise HarnessError("Stirrup requires an execution bridge")
+        bridge = runtime._execution_bridge
+        cwd = bridge.runtime.info.workdir
+        created = await runtime.run(["mkdir", "-p", "--", cwd], {})
+        if created.exit_code:
+            raise HarnessError(
+                "could not prepare the Stirrup supervisor working directory"
             )
-            worker = f"stirrup-{trace.id}"
-            bridge.register(
-                worker,
-                [
-                    *worker_program,
-                    "--execution-worker",
-                    f"--skills-dir={skills_dir}",
-                    "--disabled-tools=" + json.dumps(self.config.disabled_tools or []),
-                ],
-                {},
-            )
-            root = endpoint.removesuffix("/v1").rstrip("/")
-            command = await prepare_remote_bridge(
-                runtime, f"{root}/execution", secret, worker
-            )
-            remote_args = [
-                "--execution-command=" + json.dumps(command),
-                f"--tool-interception-url={root}/tool",
-            ]
+        await self.install_skills(bridge.runtime, skills_dir)
+        worker_program = await bridge.runtime.prepare_uv_script(
+            self._source(), {}, activate=False
+        )
+        worker = f"stirrup-{trace.id}"
+        bridge.register(
+            worker,
+            [
+                *worker_program,
+                "--execution-worker",
+                f"--skills-dir={skills_dir}",
+                "--disabled-tools=" + json.dumps(self.config.disabled_tools or []),
+            ],
+            {},
+        )
+        root = endpoint.removesuffix("/v1").rstrip("/")
+        command = await prepare_remote_bridge(
+            runtime, f"{root}/execution", secret, worker
+        )
+        remote_args = [
+            "--execution-command=" + json.dumps(command),
+            f"--tool-interception-url={root}/tool",
+        ]
         return ACPConfig(
             env=self.config.resolved_env,
             cwd=cwd,

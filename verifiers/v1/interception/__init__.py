@@ -1,5 +1,5 @@
 from collections.abc import AsyncIterator, Iterable
-from contextlib import AsyncExitStack, asynccontextmanager
+from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING
 
 from pydantic_config import BaseConfig
@@ -66,18 +66,6 @@ def make_interception(
     return ElasticInterceptionPool(config, requires_tunnel, state_service_secrets)
 
 
-def _usable_interception(
-    interception: Interception | None, runtime: Runtime
-) -> Interception | None:
-    if (
-        isinstance(interception, InterceptionServer)
-        and interception.lan_host
-        and (runtime.type != "prime" or not runtime._remote_tools_only)
-    ):
-        return None
-    return interception
-
-
 async def start_rollout_interception(
     runtime_is_local: bool,
     toolsets: list,
@@ -112,20 +100,6 @@ async def serve_interception(
     session.state_service_secrets = frozenset(
         tool.state_secret for tool in shared_tools.values() if tool.state_secret
     )
-    interception = _usable_interception(interception, runtime)
-    if isinstance(interception, InterceptionServer) and interception.lan_host:
-        from verifiers.v1.interception.tunnel import PrimeTunnel
-
-        async with AsyncExitStack() as stack:
-            session.state_base_url = f"http://127.0.0.1:{interception.port}"
-            if requires_tunnel(
-                True, [s.config for s in servers], shared_tools.values()
-            ) or any(getattr(s.config, "service", None) for s in servers):
-                session.state_base_url = await stack.enter_async_context(
-                    PrimeTunnel().expose(interception.port)
-                )
-            yield await stack.enter_async_context(interception.acquire(session))
-        return
     if interception is not None:
         async with interception.acquire(session) as slot:
             yield slot

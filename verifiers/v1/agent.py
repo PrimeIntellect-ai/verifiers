@@ -135,14 +135,18 @@ def _check_borrowed_placement(
         )
         expected = resolve_runtime_config(policy_base, task)
         assert isinstance(expected, NetworkPolicyConfig)
+        control_blocked = getattr(
+            runtime.backend, "_control_blocked_hosts", frozenset()
+        )
+        actual_block = set(config.block) - set(control_blocked)
         # Do not inherit extra destinations from a box provisioned for another task.
-        if set(config.allow) != set(expected.allow) or set(config.block) != set(
+        if set(config.allow) != set(expected.allow) or actual_block != set(
             expected.block
         ):
             raise ValueError(
                 f"task {task.data.idx!r} requires allow={expected.allow!r} and "
                 f"block={expected.block!r}, but borrowed runtime {runtime.name!r} "
-                f"has allow={config.allow!r} and block={config.block!r}; use "
+                f"has allow={config.allow!r} and block={sorted(actual_block)!r}; use "
                 "agent.provision(task)"
             )
     if task.data.image is None:
@@ -649,11 +653,6 @@ class Agent:
         # The name in this agent's log prefix; an episode names it after its role.
         self._log_name: str | None = None
         self.runtime_config: RuntimeConfig = config.runtime
-        if interception is None and self.runtime_config.type == "prime":
-            from verifiers.v1.runtimes.controller import current_job
-
-            if job := current_job.get():
-                interception = job.server
         self.interception = interception
         self.limits = RolloutLimits(
             max_turns=config.max_turns,
@@ -1027,34 +1026,28 @@ class Agent:
         if runtime is not None:
             _check_borrowed_placement(task, runtime, self.runtime_config)
             runtime_config = runtime.config
+            control_blocked = getattr(
+                runtime.backend, "_control_blocked_hosts", frozenset()
+            )
+            if control_blocked and isinstance(runtime_config, NetworkPolicyConfig):
+                runtime_config = runtime_config.model_copy(
+                    update={
+                        "block": [
+                            h for h in runtime_config.block if h not in control_blocked
+                        ]
+                    }
+                )
             run_is_local = runtime.is_local
         else:
             runtime_config = resolve_runtime_config(
                 self.runtime_config, task, self._warned_resources
             )
             run_is_local = runtime_is_local(runtime_config)
-        spec = task.deployment_spec()
-        split = (
-            runtime is None
-            and harness.uses_split_sandbox
-            and runtime_config.type == "prime"
-            or (
-                runtime is None
-                and harness.uses_split_sandbox
-                and runtime_config.type == "docker"
-                and spec is None
-                and not getattr(runtime_config, "mounts", None)
-            )
-        )
-        if skills or split:
-            # Skill installations and split execution workers hold run-specific state,
-            # such as RLM's package environment.
-            harness = type(harness)(
-                harness.config.model_copy(update={"skills": skills})
-            )
-        if split:
-            for toolset in task.toolsets(task.config):
-                toolset.validate_split_execution()
+        # Skill installations and split execution workers hold run-specific state,
+        # such as RLM's package environment or Codex's executor cwd.
+        harness = type(harness)(harness.config.model_copy(update={"skills": skills}))
+        for toolset in task.toolsets(task.config):
+            toolset.validate_split_execution()
         validate_pairing(
             harness,
             type(task),

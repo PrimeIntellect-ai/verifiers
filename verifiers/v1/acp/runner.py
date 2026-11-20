@@ -1,24 +1,17 @@
-# /// script
-# requires-python = ">=3.10,<3.15"
-# dependencies = ["agent-client-protocol==0.12.1", "httpx"]
-# ///
 """Run harness segments through an ACP agent."""
 
 import asyncio
 import json
 import os
-import signal
 import sys
-import traceback
 from contextlib import AsyncExitStack, suppress
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from typing import Any
 
 import httpx
 from acp import (
     PROTOCOL_VERSION,
     Client,
-    RequestError,
     image_block,
     spawn_agent_process,
     text_block,
@@ -34,8 +27,6 @@ from acp.schema import (
     RequestPermissionResponse,
     TextContentBlock,
 )
-
-MAX_PACKET_BYTES = 128 * 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -382,101 +373,3 @@ class ACPSession:
                     self.client.gate = None
                 self._reset()
         return response_metadata
-
-
-async def read_packet(stream: asyncio.StreamReader) -> dict | None:
-    try:
-        header = await stream.readexactly(8)
-    except asyncio.IncompleteReadError as error:
-        if not error.partial:
-            return None
-        raise EOFError("ACP session packet ended early") from error
-    size = int.from_bytes(header, "big")
-    if size > MAX_PACKET_BYTES:
-        raise ValueError(f"ACP session packet is too large: {size} bytes")
-    try:
-        return json.loads((await stream.readexactly(size)).decode())
-    except asyncio.IncompleteReadError as error:
-        raise EOFError("ACP session packet ended early") from error
-
-
-def write_packet(stream: Any, value: dict) -> None:
-    data = json.dumps(value, ensure_ascii=False).encode()
-    if len(data) > MAX_PACKET_BYTES:
-        raise ValueError(f"ACP session packet is too large: {len(data)} bytes")
-    stream.write(len(data).to_bytes(8, "big"))
-    stream.write(data)
-    stream.flush()
-
-
-async def serve_stream() -> None:
-    session = ACPSession()
-    reader = asyncio.StreamReader()
-    protocol = asyncio.StreamReaderProtocol(reader)
-    await asyncio.get_running_loop().connect_read_pipe(
-        lambda: protocol, sys.stdin.buffer
-    )
-    tasks: set[asyncio.Task] = set()
-    prompt_lock = asyncio.Lock()
-
-    async def handle(request: dict) -> None:
-        operation = request.get("operation")
-        try:
-            if operation == "prompt":
-                async with prompt_lock:
-                    result = asdict(await session.run(request["config"]))
-            elif operation == "steer":
-                result = await session.steer(
-                    request["message"], request.get("message_id")
-                )
-            elif operation == "shutdown":
-                result = {"response_metadata": await session.close()}
-            else:
-                raise ValueError(f"unknown ACP session operation: {operation!r}")
-            response = {"ok": True, "result": result}
-        except Exception as error:  # noqa: BLE001 - serialize protocol failures
-            traceback.print_exc()
-            response = {
-                "ok": False,
-                "error": f"{type(error).__name__}: {error}",
-                "error_type": type(error).__name__,
-            }
-            if isinstance(error, RequestError) and isinstance(error.data, dict):
-                response["error"] = error.data.get("details") or str(error)
-                response["error_data"] = error.data
-            if operation == "prompt":
-                response["result"] = asdict(session.client.turn_result())
-        response["id"] = request.get("id")
-        write_packet(sys.stdout.buffer, response)
-
-    try:
-        while request := await read_packet(reader):
-            if request.get("operation") == "shutdown":
-                if tasks:
-                    await asyncio.gather(*tasks)
-                await handle(request)
-                break
-            task = asyncio.create_task(handle(request))
-            tasks.add(task)
-            task.add_done_callback(tasks.discard)
-    finally:
-        for task in tasks:
-            task.cancel()
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
-        await session.close()
-
-
-async def main() -> None:
-    task = asyncio.current_task()
-    loop = asyncio.get_running_loop()
-    if task is not None:
-        for sig in (signal.SIGTERM, signal.SIGINT):
-            with suppress(NotImplementedError):
-                loop.add_signal_handler(sig, task.cancel)
-    with suppress(asyncio.CancelledError):
-        await serve_stream()
-
-
-if __name__ == "__main__":
-    asyncio.run(main())

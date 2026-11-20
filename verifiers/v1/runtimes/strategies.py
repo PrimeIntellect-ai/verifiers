@@ -1,4 +1,4 @@
-"""Colocated execution, local Compose, and native Prime service VMs."""
+"""Split execution, local Compose, and native Prime service VMs."""
 
 import asyncio
 import logging
@@ -26,19 +26,44 @@ from verifiers.v1.utils.logging import get_logger
 logger = get_logger(__name__)
 
 
-class _ColocatedDeployment(_DeploymentStrategy):
+async def _start_host_harness(d):
+    """Provision the dedicated harness runtime for host-mediated deployments."""
+    base_config = d.harness_config or d.backend.config
+    updates: dict = {}
+    if "mounts" in type(base_config).model_fields:
+        updates["mounts"] = {}
+    if "workdir" in type(base_config).model_fields and hasattr(
+        d.execution_backend.config, "workdir"
+    ):
+        updates["workdir"] = d.execution_backend.config.workdir
+    if (
+        base_config.type == "docker"
+        and d.harness_image
+        and "image" not in base_config.model_fields_set
+    ):
+        from verifiers.v1.harness import Harness
+
+        updates["image"] = await Harness.prefetch_image("docker", image=d.harness_image)
+    config = base_config.model_copy(update=updates) if updates else base_config
+    harness = make_backend(config, name=f"{d.execution_backend.name}-harness")
+    harness.env = {}
+    await d.own(harness)
+    return harness
+
+
+class _WorkspaceOnlyDeployment(_DeploymentStrategy):
+    """Model-free workspace deployment for `vf-validate` and `grade_submission`."""
+
     async def start(self, d):
         if d.borrowed_runtime is not None:
-            d.execution_backend = d.harness_backend = d.borrowed_runtime.backend
+            d.execution_backend = d.borrowed_runtime.backend
         else:
             d.backend.env = d.env
             await d.own(d.backend)
-            d.execution_backend = d.harness_backend = d.backend
+            d.execution_backend = d.backend
         d.target_backends = {"main": d.execution_backend}
 
     async def prepare_verifier(self, deployment):
-        # Borrowed solvers belong to their caller; owned solvers can release their
-        # resources now that metrics and submission artifacts have been collected.
         if deployment.borrowed_runtime is None:
             try:
                 await deployment.execution_backend.stop()
@@ -48,56 +73,50 @@ class _ColocatedDeployment(_DeploymentStrategy):
                 )
 
 
-class _SplitDeployment(_DeploymentStrategy):
-    """Docker split execution, where workers use the evaluator's host bridge."""
+class _HostSplitDeployment(_DeploymentStrategy):
+    """Split execution on host-mediated runtimes (Docker, Subprocess, Custom)."""
 
     async def start(self, d):
-        if d.borrowed_runtime is not None or d.spec is not None or d.tool_vms:
-            raise ValueError("split deployment requires a dedicated single workspace")
-        if d.backend.type != "docker" or d.harness_config is None:
-            raise ValueError("host-mediated deployment requires Docker")
-        if d.backend.type == "docker" and d.backend.config.mounts:
+        if d.spec is not None or d.tool_vms:
             raise ValueError(
-                "split deployment cannot use Docker bind mounts in the task workspace"
+                "host-mediated split deployment requires a single workspace"
             )
-        if not d.backend.network_restricted:
-            d.backend.config = d.backend.config.model_copy(
-                update={"allow": [], "block": ["*"]}
-            )
-        d.backend.env = d.env
-        await d.own(d.backend)
-        image_override: dict[str, str] = {}
-        if d.harness_image and "image" not in d.harness_config.model_fields_set:
-            from verifiers.v1.harness import Harness
-
-            image_override["image"] = await Harness.prefetch_image(
-                "docker", image=d.harness_image
-            )
-        config = d.harness_config.model_copy(
-            update={"mounts": {}, "workdir": d.backend.config.workdir, **image_override}
-        )
-        harness = make_backend(config, name=f"{d.backend.name}-harness")
-        harness.env = {}
-        await d.own(harness)
-        d.execution_backend = d.backend
-        d.harness_backend = harness
-        d.target_backends = {"main": d.backend}
+        if d.borrowed_runtime is not None:
+            d.execution_backend = d.borrowed_runtime.backend
+        else:
+            if (
+                isinstance(d.backend.config, NetworkPolicyConfig)
+                and not d.backend.network_restricted
+            ):
+                d.backend.config = d.backend.config.model_copy(
+                    update={"allow": [], "block": ["*"]}
+                )
+            d.backend.env = d.env
+            await d.own(d.backend)
+            d.execution_backend = d.backend
+        d.harness_backend = await _start_host_harness(d)
+        d.target_backends = {"main": d.execution_backend}
 
     async def prepare_execution(self, d, routes, state_route=None):
         await d.harness_backend.prepare_execution(routes)
-        await _prepare_split_workspace(d)
+        if isinstance(d.execution_network, NetworkPolicyConfig) and (
+            d.borrowed_runtime is None or d.execution_backend.network_restricted
+        ):
+            await _prepare_split_workspace(d)
 
     async def stop_execution(self, d):
-        await d.execution_backend.stop()
+        if d.borrowed_runtime is None:
+            await d.execution_backend.stop()
 
     async def prepare_verifier(self, d):
-        try:
-            await d.execution_backend.stop()
-        except Exception:
-            logger.warning(
-                "Failed to tear down the solver before grading",
-                exc_info=logger.isEnabledFor(logging.DEBUG),
-            )
+        if d.borrowed_runtime is None:
+            try:
+                await d.execution_backend.stop()
+            except Exception:
+                logger.warning(
+                    "Failed to tear down the solver before grading",
+                    exc_info=logger.isEnabledFor(logging.DEBUG),
+                )
 
 
 async def _prepare_split_workspace(d):
@@ -130,8 +149,9 @@ async def _prepare_split_workspace(d):
                 "block": list(dict.fromkeys([*policy.block, *sorted(hosts)])),
             }
         )
+    prior_control = getattr(d.execution_backend, "_control_blocked_hosts", frozenset())
     d.execution_backend._control_blocked_hosts = (
-        frozenset(hosts) - set(d.execution_network.block)
+        (frozenset(hosts) | prior_control) - set(d.execution_network.block)
         if policy.allow == ["*"]
         else frozenset()
     )
@@ -159,7 +179,15 @@ class _ContainerDeployment(_DeploymentStrategy):
             )
         )
         d.target_backends = dict(services)
-        d.execution_backend = d.harness_backend = services[d.spec.workspace]
+        d.execution_backend = services[d.spec.workspace]
+        if d._has_harness:
+            d.harness_backend = await _start_host_harness(d)
+
+    async def prepare_execution(self, d, routes, state_route=None):
+        if d.harness_backend is not None:
+            await d.harness_backend.prepare_execution(routes)
+        if d.execution_backend.network_restricted:
+            await _prepare_split_workspace(d)
 
     async def stop_execution(self, d):
         await self._stop_main()
@@ -199,31 +227,42 @@ class _PrivateNetworkDeployment(_DeploymentStrategy):
             await pool.aclose()
 
     async def start(self, d):
-        if d.borrowed_runtime is not None:
+        native = isinstance(d.spec, ServicesSpec)
+        members = d.spec.services if native else d.tool_vms
+        borrowed = d.borrowed_runtime is not None
+        if borrowed and (native or members):
             raise ValueError(
                 "a deployment with services on VMs of their own cannot borrow a "
                 "single target"
             )
-        d.backend.env = d.env
-        native = isinstance(d.spec, ServicesSpec)
-        members = d.spec.services if native else d.tool_vms
+        ws_backend = d.borrowed_runtime.backend if borrowed else d.backend
+        if not borrowed:
+            ws_backend.env = d.env
         self._lease = None
         self._owned_pool = None
         self._harness_released = False
         self._net = PrivateNetworkGroup()
-        if d._split_requested:
-            d._harness_workdir = d.backend.config.workdir
+        if d._has_harness:
+            d._harness_workdir = ws_backend.config.workdir
+            control_blocked = getattr(ws_backend, "_control_blocked_hosts", frozenset())
+            net_cfg = d.execution_network or ws_backend.config
+            if control_blocked and isinstance(net_cfg, NetworkPolicyConfig):
+                net_cfg = net_cfg.model_copy(
+                    update={
+                        "block": [h for h in net_cfg.block if h not in control_blocked]
+                    }
+                )
             h_cfg = _harness_config(
                 d.config.harness,
-                d.execution_network or d.backend.config,
+                net_cfg,
                 image=d.harness_image,
-            ).model_copy(update={"workdir": d.backend.config.workdir})
+            ).model_copy(update={"workdir": ws_backend.config.workdir})
             pool = current_harness_pool()
             if pool is None:
                 pool = self._owned_pool = HarnessPool()
             lease = self._lease = await pool.acquire(
                 h_cfg,
-                f"{d.backend.name}-harness",
+                f"{ws_backend.name}-harness",
                 multiplex=d.config.multiplex,
             )
             d._harness_lease = lease
@@ -231,22 +270,24 @@ class _PrivateNetworkDeployment(_DeploymentStrategy):
         self._services = await d.enter(AsyncExitStack())
         vms = await self._services.enter_async_context(
             private_network(
-                d.backend,
+                ws_backend,
                 members,
-                partial(d.own, d.backend),
+                partial(d.own, ws_backend),
                 interconnect=native,
                 networks=self._networks,
                 harness_lease=self._lease,
                 harness_peers=d.tool_services,
+                borrowed_workspace=borrowed,
                 out=self._net,
             )
         )
-        d.target_backends = {"main": d.backend, **vms}
+        d.target_backends = {"main": ws_backend, **vms}
         d.hosts = {name: lan_host(backend) for name, backend in vms.items()}
         if native:
-            d.hosts["main"] = lan_host(d.backend)
-        d.execution_backend = d.backend
-        d.harness_backend = self._lease.backend if self._lease else d.backend
+            d.hosts["main"] = lan_host(ws_backend)
+        d.execution_backend = ws_backend
+        if self._lease is not None:
+            d.harness_backend = self._lease.backend
 
     async def prepare_execution(self, d, routes, state_route=None):
         def own(name, backend):
@@ -267,7 +308,9 @@ class _PrivateNetworkDeployment(_DeploymentStrategy):
             *lan_waiters,
             *(
                 _prepare_split_workspace(d)
-                if name == "main" and self._lease
+                if name == "main"
+                and self._lease
+                and (d.borrowed_runtime is None or backend.network_restricted)
                 else backend.prepare_execution(own(name, backend))
                 for name, backend in d.target_backends.items()
             ),
@@ -277,26 +320,38 @@ class _PrivateNetworkDeployment(_DeploymentStrategy):
     async def stop_execution(self, d):
         # Neither agent VM may reach services while their evidence is collected.
         await asyncio.gather(
-            d.execution_backend.stop(),
+            *(
+                [d.execution_backend.stop()]
+                if getattr(d, "borrowed_runtime", None) is None
+                else []
+            ),
             *([self._release_harness()] if self._lease else []),
         )
 
     async def close(self, deployment):
+        borrowed_rt = getattr(deployment, "borrowed_runtime", None)
+        borrowed_backend = borrowed_rt.backend if borrowed_rt is not None else None
         vms = [
             *(
                 [deployment.execution_backend]
                 if deployment.execution_backend is not None
+                and deployment.execution_backend is not borrowed_backend
                 else []
             ),
-            *getattr(deployment, "target_backends", {}).values(),
+            *(
+                vm
+                for vm in getattr(deployment, "target_backends", {}).values()
+                if vm is not borrowed_backend
+            ),
         ]
         seen: set[int] = set()
         unique = [vm for vm in vms if not (id(vm) in seen or seen.add(id(vm)))]
         tasks = [vm.stop() for vm in unique]
-        if self._lease is not None:
+        if self._lease is not None or borrowed_backend is not None:
 
             async def detach_and_delete() -> None:
                 await self._release_harness()
+                await self._services.aclose()
                 if self._net is not None:
                     await self._net.delete_network()
 
@@ -321,7 +376,11 @@ class _PrivateNetworkDeployment(_DeploymentStrategy):
             return
         for release, what in (
             *([(self._release_harness, "harness VM")] if self._lease else []),
-            (deployment.execution_backend.stop, "workspace VM"),
+            *(
+                [(deployment.execution_backend.stop, "workspace VM")]
+                if getattr(deployment, "borrowed_runtime", None) is None
+                else []
+            ),
             (self._services.aclose, "service VMs"),
         ):
             try:
@@ -413,8 +472,8 @@ class _NativeComposeDeployment(_PrivateNetworkDeployment):
 def _harness_config(
     harness: PrimeConfig, workspace: PrimeConfig, *, image: str | None = None
 ) -> PrimeConfig:
-    """A split harness's VM: placed and labelled like the workspace unless set, and
-    under the task's network policy, which the harness would share colocated."""
+    """A harness VM: placed and labelled like the workspace unless set, and under
+    the task's network policy."""
     resolved_image = (
         harness.image if "image" in harness.model_fields_set or not image else image
     )
@@ -434,7 +493,9 @@ def _harness_config(
     )
 
 
-def _deployment_strategy(config, backend, spec, tool_vms=None, *, split: bool = False):
+def _deployment_strategy(
+    config, backend, spec, tool_vms=None, *, has_harness: bool = False
+):
     if isinstance(spec, ServicesSpec):
         if not isinstance(backend, PrimeBackend):
             raise TypeError("Native service VMs require a Prime workspace")
@@ -456,10 +517,8 @@ def _deployment_strategy(config, backend, spec, tool_vms=None, *, split: bool = 
                 "cannot run Compose services; use ServicesSpec on Prime or local Docker"
             )
         return _ContainerDeployment()
-    if split and backend.type == "docker":
-        return _SplitDeployment()
-    if split and not isinstance(backend, PrimeBackend):
-        raise ValueError("split deployment requires Docker or Prime")
-    if tool_vms or split:
+    if isinstance(backend, PrimeBackend) and (tool_vms or has_harness):
         return _PrivateNetworkDeployment()
-    return _ColocatedDeployment()
+    if has_harness:
+        return _HostSplitDeployment()
+    return _WorkspaceOnlyDeployment()

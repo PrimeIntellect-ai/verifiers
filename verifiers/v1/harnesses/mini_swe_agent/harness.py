@@ -88,18 +88,15 @@ class MiniSWEAgentHarness(Harness[MiniSWEAgentHarnessConfig]):
             "-c",
             f"model.model_kwargs.api_key={secret}",
         ]
+        if not tool_interception_url or runtime._execution_bridge is None:
+            raise ValueError("mini-swe-agent requires a remote tool gate")
         env = {
             **self.config.resolved_env,
             "MSWEA_CONFIGURED": "true",
             "MSWEA_SILENT_STARTUP": "true",
+            "VF_REMOTE_TOOL_URL": tool_interception_url,
+            "VF_REMOTE_TOOL_SECRET": secret,
+            "VF_EXECUTION_CWD": runtime._execution_bridge.runtime.info.workdir,
         }
-        if runtime._remote_tools_only:
-            if not tool_interception_url or runtime._execution_bridge is None:
-                raise ValueError("split mini-swe-agent requires a remote tool gate")
-            env.update(
-                VF_REMOTE_TOOL_URL=tool_interception_url,
-                VF_REMOTE_TOOL_SECRET=secret,
-                VF_EXECUTION_CWD=runtime._execution_bridge.runtime.info.workdir,
-            )
         program = await runtime.prepare_uv_script(source, self.config.resolved_env)
         return await runtime.run([*program, *args], env)

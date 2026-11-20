@@ -123,18 +123,16 @@ class BrowserUseHarness(Harness[BrowserUseHarnessConfig]):
                 for message in prompt
             )
         )
+        if not tool_interception_url:
+            raise HarnessError("browser-use requires a remote tool gate")
         env = {**self.config.resolved_env}
         state = runtime.temp_path(
             f"vf-browser-{trace.id}", env=self.config.resolved_env
         )
-        if runtime._remote_tools_only:
-            if not tool_interception_url:
-                raise HarnessError("split browser-use requires a tool gate")
-            args = ["--remote-tools-only", f"--state-dir={state}"]
-        else:
-            args = await self._browser_args(runtime, state)
-        if tool_interception_url:
-            args.append(f"--tool-interception-url={tool_interception_url}")
+        args = [
+            f"--state-dir={state}",
+            f"--tool-interception-url={tool_interception_url}",
+        ]
         return await launch_chat_program(
             PROGRAM_SOURCE,
             self.config,

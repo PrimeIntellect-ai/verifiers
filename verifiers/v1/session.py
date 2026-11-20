@@ -197,8 +197,6 @@ class RolloutSession:
     server-owned client for its route's endpoint config (one per distinct config) at
     `register` and again when the route changes, so every rollout it multiplexes shares one
     keepalive connection pool instead of opening its own."""
-    state_base_url: str | None = None
-    """State URL for consumers outside an interception server's private LAN."""
     state_service_secrets: frozenset[str] = field(default_factory=frozenset, repr=False)
     proxy_mcp: MCPProxy | None = field(default=None, repr=False)
     """Register a host MCP backend on this session's interception server while serving."""

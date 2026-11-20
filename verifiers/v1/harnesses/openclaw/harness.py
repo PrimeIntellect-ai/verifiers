@@ -202,7 +202,6 @@ class OpenClawHarness(ACPHarness[OpenClawHarnessConfig]):
             f"{directory}/index.mjs",
             GATE_SOURCE.replace("__URL__", json.dumps(url))
             .replace("__SECRET__", json.dumps(secret))
-            .replace("__REMOTE_ONLY__", json.dumps(runtime._remote_tools_only))
             .replace("__NATIVE_TOOLS__", json.dumps(native))
             .replace("__READY__", json.dumps(ready))
             .encode(),
@@ -294,6 +293,7 @@ class OpenClawHarness(ACPHarness[OpenClawHarnessConfig]):
                     "skipBootstrap": True,
                     "sandbox": {"mode": "off"},
                     "model": {"primary": ctx.model},
+                    "models": {ctx.model: {"codeMode": False}},
                     "utilityModel": "",  # Disable background recap model calls.
                 }
             },
@@ -302,6 +302,20 @@ class OpenClawHarness(ACPHarness[OpenClawHarnessConfig]):
                 "fs": {"workspaceOnly": True},
                 "exec": {"host": "gateway", "mode": "full"},
                 "deny": self.config.disabled_tools or [],
+                # This adapter preserves the native coding surface and any configured MCP
+                # servers. Code Mode uses the same "exec" name for JavaScript, and requires a
+                # different nested-result transport; keep the shell surface explicit here.
+                "allow": [
+                    "read",
+                    "write",
+                    "edit",
+                    "exec",
+                    "process",
+                    "bundle-mcp",
+                    "group:plugins",
+                ],
+                "codeMode": False,
+                "toolSearch": False,
             },
             "models": {
                 "providers": {provider: provider_config},
@@ -319,26 +333,6 @@ class OpenClawHarness(ACPHarness[OpenClawHarnessConfig]):
                 }
             },
         }
-        if runtime._remote_tools_only:
-            # This adapter preserves the native coding surface and any configured MCP
-            # servers. Code Mode uses the same "exec" name for JavaScript, and requires a
-            # different nested-result transport; keep the shell surface explicit here.
-            config["tools"].update(
-                {
-                    "allow": [
-                        "read",
-                        "write",
-                        "edit",
-                        "exec",
-                        "process",
-                        "bundle-mcp",
-                        "group:plugins",
-                    ],
-                    "codeMode": False,
-                    "toolSearch": False,
-                }
-            )
-            config["agents"]["defaults"]["models"] = {ctx.model: {"codeMode": False}}
         if self.config.skills:
             config["skills"] = {"load": {"extraDirs": [skills_dir]}}
         if not self.config.use_bundled_skill:

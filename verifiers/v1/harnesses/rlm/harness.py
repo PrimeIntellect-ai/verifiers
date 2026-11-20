@@ -276,8 +276,8 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
             ],
             {"RLM_EXECUTION_TOKEN": token, **({"RLM_HOME": home} if home else {})},
             re.compile(r"^listening on \S+:(\d+)$", re.MULTILINE),
-            # A session that closes stops what is still attached to its kernel, as it
-            # does colocated; a daemon the agent started outlives the harness.
+            # A session that closes stops what is still attached to its kernel; a
+            # daemon the agent started outlives the harness.
             keep_detached=True,
         )
         connection.register(
@@ -398,21 +398,19 @@ class RLMHarness(ACPHarness[RLMHarnessConfig]):
                 "cannot prepare RLM session directory - "
                 + (clip(result.stderr or result.stdout) or "unknown error")
             )
-        if runtime._remote_tools_only:
-            assert runtime._execution_bridge is not None
-            workspace = runtime._execution_bridge.runtime
-            root = endpoint.removesuffix("/v1").rstrip("/")
-            worker_command = await prepare_remote_bridge(
-                runtime,
-                f"{root}/execution",
-                secret,
-                "rlm",
-                protocol="rlm",
-                tool_url=f"{root}/tool",
-            )
-            worker_cwd = workspace.info.workdir
-        else:
-            worker_command, worker_cwd = None, None
+        if runtime._execution_bridge is None:
+            raise RuntimeError("RLM requires an execution bridge")
+        workspace = runtime._execution_bridge.runtime
+        root = endpoint.removesuffix("/v1").rstrip("/")
+        worker_command = await prepare_remote_bridge(
+            runtime,
+            f"{root}/execution",
+            secret,
+            "rlm",
+            protocol="rlm",
+            tool_url=f"{root}/tool",
+        )
+        worker_cwd = workspace.info.workdir
         return ACPConfig(
             env={**self.config.resolved_env, "RLM_HOME": rlm_home},
             command=[f"{self._install_dir()}/bin/rlm", "--acp"],

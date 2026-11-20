@@ -12,9 +12,8 @@ import argparse
 import asyncio
 import json
 import os
-import signal
 import sys
-from contextlib import redirect_stdout, suppress
+from contextlib import redirect_stdout
 from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
@@ -44,7 +43,6 @@ from stirrup.core.agent import SessionAgent
 from stirrup.core.exceptions import OutputTokenLimitError
 from stirrup.core.models import ToolCall, ToolMessage, UserMessage
 from stirrup.tools import LocalCodeExecToolProvider, WebToolProvider
-from stirrup.tools.code_backends.base import CommandResult
 from stirrup.tools.mcp import MCPConfig, MCPToolProvider
 from stirrup.utils.logging import AgentLogger
 
@@ -113,17 +111,13 @@ class RuntimeCodeExecToolProvider(LocalCodeExecToolProvider):
         self.workspace = Path(cwd)
 
     def _check_absolute_paths(self, argv, cmd):
-        # The runtime already isolates the container filesystem.
         return None
 
     async def __aenter__(self):
-        # The pinned local backend only exposes temporary directories. The
-        # runtime already provides isolation and owns this workspace's lifetime.
         self._temp_dir = self.workspace
         tool = self.get_code_exec_tool()
         if "cmd" in getattr(tool.parameters, "model_fields", {}):
-            # LocalCodeExecToolProvider's default schema instructs the model not to use
-            # absolute paths because host runs lack sandboxing; container runs allow them.
+
             class ContainerCodeExecutionParams(tool.parameters):
                 pass
 
@@ -138,77 +132,20 @@ class RuntimeCodeExecToolProvider(LocalCodeExecToolProvider):
         self._temp_dir = None
 
     def _resolve_and_validate_path(self, path: str) -> Path:
-        # Commands and file helpers share the container filesystem. The cwd is
-        # only the base for relative paths; Verifiers owns sandbox isolation.
         if self._temp_dir is None:
             raise RuntimeError("ExecutionEnvironment not started.")
         resolved = Path(path)
         return resolved if resolved.is_absolute() else self._temp_dir / resolved
-
-    async def run_command(self, cmd, *, timeout=None):
-        # The pinned local backend cleans up on timeouts, but not task
-        # cancellation. ACP cancellation must also stop the command's children.
-        process = None
-        completed = False
-        try:
-            process = await asyncio.create_subprocess_exec(
-                "bash",
-                "-c",
-                cmd,
-                cwd=self.workspace,
-                stdin=asyncio.subprocess.DEVNULL,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                start_new_session=True,
-            )
-            stdout, stderr = await asyncio.wait_for(
-                process.communicate(),
-                self._shell_timeout if timeout is None else timeout,
-            )
-            completed = True
-            return CommandResult(
-                exit_code=process.returncode,
-                stdout=stdout.decode(errors="replace"),
-                stderr=stderr.decode(errors="replace"),
-            )
-        except TimeoutError:
-            return CommandResult(
-                exit_code=1,
-                stdout="",
-                stderr="Command timed out",
-                error_kind="timeout",
-            )
-        except Exception as error:  # noqa: BLE001 - shell execution failures are recoverable tool results
-            return CommandResult(
-                exit_code=1,
-                stdout="",
-                stderr=str(error),
-                error_kind="execution_error",
-            )
-        finally:
-            if process is not None and not completed:
-                with suppress(ProcessLookupError):
-                    os.killpg(process.pid, signal.SIGKILL)
-                try:
-                    await asyncio.wait_for(process.wait(), COMMAND_CLEANUP_TIMEOUT)
-                except TimeoutError:
-                    # A detached child can retain the pipes after Bash exits.
-                    # asyncio has no public API to close subprocess read pipes.
-                    for stream in (process.stdout, process.stderr):
-                        stream._transport.close()
-                    with suppress(TimeoutError):
-                        await asyncio.wait_for(process.wait(), COMMAND_CLEANUP_TIMEOUT)
 
 
 class RuntimeSessionAgent(SessionAgent):
     """Retain accepted history when a model or summarizer hits its output limit."""
 
     async def run_tool(self, tool_call, run_metadata):
-        if getattr(self, "remote_worker", None) is None or tool_call.name not in (
-            "code_exec",
-            "fetch_web_page",
-        ):
+        if tool_call.name not in ("code_exec", "fetch_web_page"):
             return await super().run_tool(tool_call, run_metadata)
+        if getattr(self, "remote_worker", None) is None:
+            raise RuntimeError("Stirrup supervisor requires a remote execution worker")
         try:
             arguments = json.loads(tool_call.arguments)
         except json.JSONDecodeError:

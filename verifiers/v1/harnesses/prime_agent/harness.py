@@ -37,40 +37,10 @@ ENV_AGENT_DIR = "PRIME_AGENT_CODING_AGENT_DIR"
 _SPLIT_KERNEL_SHIM = r"""
 import rlm, rlm.mcp as _mcp, rlm.repl as _repl
 
-async def _list_tools(server: str):
-    return (await rlm.host_request("mcp.tools", {"server": server}))["tools"]
-
-async def _call_tool(server: str, tool: str, arguments=None):
-    return (await rlm.host_request("mcp.call", {"server": server, "tool": tool, "arguments": arguments or {}}))["value"]
-
-async def _describe_tool(connection_id: str, tool: str):
-    for item in await _list_tools(connection_id):
-        if item.get("name") == tool:
-            return item
-    raise KeyError(f"MCP server '{connection_id}' has no tool '{tool}'")
-
-async def _search_tools(query: str, connection_id=None, limit: int = 20):
-    q = query.strip().lower()
-    conns = [connection_id] if connection_id else [c["connectionId"] for c in await _mcp.list_connections()]
-    found, searched, unavailable = [], [], []
-    for cid in conns:
-        try:
-            items = await _list_tools(cid)
-        except Exception as exc:
-            if connection_id:
-                raise
-            unavailable.append({"connectionId": cid, "error": str(exc)})
-            continue
-        searched.append(cid)
-        for t in items:
-            if q in t.get("name", "").lower() or q in t.get("description", "").lower():
-                found.append({"connectionId": cid, "name": t.get("name"), "description": t.get("description", "")})
-    return {"tools": found[:limit], "searched": searched, "unavailable": unavailable, "truncated": len(found) > limit}
-
-_mcp.list_tools = _list_tools
-_mcp.call_tool = _call_tool
-_mcp.describe_tool = _describe_tool
-_mcp.search_tools = _search_tools
+_mcp.list_tools = lambda s: rlm.host_request("mcp.tools", {"server": s})
+_mcp.call_tool = lambda s, t, a=None: rlm.host_request("mcp.call", {"server": s, "tool": t, "arguments": a or {}})
+_mcp.describe_tool = lambda c, t: rlm.host_request("mcp.describe", {"server": c, "tool": t})
+_mcp.search_tools = lambda q, connection_id=None, limit=20: rlm.host_request("mcp.search", {"query": q, "server": connection_id, "limit": limit})
 _repl.main()
 """
 
@@ -283,8 +253,10 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
             raise RuntimeError(
                 f"prime-agent state directory failed: {created.stderr.strip()[-500:]}"
             )
+        if runtime._execution_bridge is None:
+            raise RuntimeError("Prime Agent requires an execution bridge")
         await self.install_skills(runtime, skills_dir)
-        if runtime._execution_bridge is not None and self.config.skills:
+        if self.config.skills:
             # Prime Agent puts skill file paths in its system prompt for the kernel to read.
             await self.install_skills(runtime._execution_bridge.runtime, skills_dir)
         reasoning = ctx.sampling.reasoning_effort not in (
@@ -359,58 +331,56 @@ class PrimeAgentHarness(ACPHarness[PrimeAgentHarnessConfig]):
             ]
 
         env = self._env(trace, secret)
-        cwd = None
+        cwd = runtime._execution_bridge.runtime.info.workdir
+        # The supervisor launches its interpreter with the session cwd.
+        # Keep only the directory in A; all task content lives in B.
+        created = await runtime.run(["mkdir", "-p", cwd], {})
+        if created.exit_code:
+            raise RuntimeError("could not prepare Prime Agent supervisor cwd")
+        mcp_configs = None
         bridge_mcp_urls = mcp_urls
-        if runtime._execution_bridge is not None:
-            cwd = runtime._execution_bridge.runtime.info.workdir
-            # The supervisor launches its interpreter with the session cwd.
-            # Keep only the directory in A; all task content lives in B.
-            created = await runtime.run(["mkdir", "-p", cwd], {})
-            if created.exit_code:
-                raise RuntimeError("could not prepare Prime Agent supervisor cwd")
-            mcp_configs = None
-            if mcp_urls:
-                mcp_headers = self.config.resolve_mcp_headers(mcp_urls)
-                mcp_configs = {
-                    name: {
-                        "type": "http",
-                        "url": str(url),
-                        "headers": mcp_headers.get(name, {}),
-                        "credentialSource": "acp",
-                    }
-                    for name, url in mcp_urls.items()
+        if mcp_urls:
+            mcp_headers = self.config.resolve_mcp_headers(mcp_urls)
+            mcp_configs = {
+                name: {
+                    "type": "http",
+                    "url": str(url),
+                    "headers": mcp_headers.get(name, {}),
+                    "credentialSource": "acp",
                 }
-                # Forward MCP configs directly to the split bridge in A instead of B.
-                bridge_mcp_urls = {}
-            command = await prepare_remote_bridge(
-                runtime,
-                f"{endpoint.removesuffix('/v1')}/execution",
-                secret,
-                "prime_agent",
-                protocol="prime",
-                mcp_configs=mcp_configs,
-                python=f"{self._kernel_venv()}/bin/python",
-            )
-            # The pinned supervisor uses this interpreter for trusted import
-            # probes and starts every user cell with `-m rlm.repl`.
-            # Only probes use A's installed Python; the persistent kernel is B.
-            wrapper = f"{root}/kernel-python"
-            source = (
-                "#!/bin/sh\nset -eu\n"
-                'prev=""\n'
-                'for arg in "$@"; do\n'
-                '  if [ "$prev" = "-m" ] && [ "$arg" = "rlm.repl" ]; then\n'
-                f"    exec {shlex.join(command)}\n"
-                "  fi\n"
-                '  prev="$arg"\n'
-                "done\n"
-                f'exec {shlex.quote(self._kernel_venv() + "/bin/python")} "$@"\n'
-            )
-            await runtime.write(wrapper, source.encode())
-            result = await runtime.run(["chmod", "700", wrapper], {})
-            if result.exit_code:
-                raise RuntimeError("could not install Prime Agent execution bridge")
-            env["PRIME_AGENT_KERNEL_PYTHON"] = wrapper
+                for name, url in mcp_urls.items()
+            }
+            # Forward MCP configs directly to the split bridge in A instead of B.
+            bridge_mcp_urls = {}
+        command = await prepare_remote_bridge(
+            runtime,
+            f"{endpoint.removesuffix('/v1')}/execution",
+            secret,
+            "prime_agent",
+            protocol="prime",
+            mcp_configs=mcp_configs,
+            python=f"{self._kernel_venv()}/bin/python",
+        )
+        # The pinned supervisor uses this interpreter for trusted import
+        # probes and starts every user cell with `-m rlm.repl`.
+        # Only probes use A's installed Python; the persistent kernel is B.
+        wrapper = f"{root}/kernel-python"
+        source = (
+            "#!/bin/sh\nset -eu\n"
+            'prev=""\n'
+            'for arg in "$@"; do\n'
+            '  if [ "$prev" = "-m" ] && [ "$arg" = "rlm.repl" ]; then\n'
+            f"    exec {shlex.join(command)}\n"
+            "  fi\n"
+            '  prev="$arg"\n'
+            "done\n"
+            f'exec {shlex.quote(self._kernel_venv() + "/bin/python")} "$@"\n'
+        )
+        await runtime.write(wrapper, source.encode())
+        result = await runtime.run(["chmod", "700", wrapper], {})
+        if result.exit_code:
+            raise RuntimeError("could not install Prime Agent execution bridge")
+        env["PRIME_AGENT_KERNEL_PYTHON"] = wrapper
         return ACPConfig(
             env=env,
             cwd=cwd,

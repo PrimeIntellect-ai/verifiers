@@ -63,20 +63,18 @@ class OpenCodeHarness(ACPHarness[OpenCodeHarnessConfig]):
         config.ready_file = f"{plugin_dir}/ready"
         await runtime.write(f"{plugin_dir}/index.js", TOOL_GATE)
         settings = json.loads(config.env["OPENCODE_CONFIG_CONTENT"])
-        if runtime._remote_tools_only:
-            # Upstream exposes Code Mode's catalog as direct tools when execute is
-            # disabled. Each such tool then passes the replacement executor in A;
-            # no model-authored JavaScript is evaluated by A's Code Mode runtime.
-            settings["permissions"].append(
-                {"action": "execute", "resource": "*", "effect": "deny"}
-            )
+        # Upstream exposes Code Mode's catalog as direct tools when execute is
+        # disabled. Each such tool then passes the replacement executor in A;
+        # no model-authored JavaScript is evaluated by A's Code Mode runtime.
+        settings["permissions"].append(
+            {"action": "execute", "resource": "*", "effect": "deny"}
+        )
         settings.setdefault("plugins", []).append(
             {
                 "package": plugin_dir,
                 "options": {
                     "url": url,
                     "secret": secret,
-                    "remote": runtime._remote_tools_only,
                     "nativeTools": sorted(native_tool_names("opencode")),
                     "readyFile": config.ready_file,
                 },

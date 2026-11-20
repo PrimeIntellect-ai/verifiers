@@ -103,12 +103,13 @@ async def private_network(
     networks: Mapping[str, list[str]] | None = None,
     harness_lease: HarnessLease | None = None,
     harness_peers: Collection[str] = (),
+    borrowed_workspace: bool = False,
     out: PrivateNetworkGroup | None = None,
 ) -> AsyncIterator[dict[str, RuntimeBackend]]:
     """Boot the workspace's VM and one VM per member together, each joining a LAN
-    network of the rollout's own as it boots. A split deployment's pooled `harness_lease`
-    joins too: it may open connections to the workspace, to tool servers' VMs and to the
-    task services in `harness_peers`, and nothing may open one to it."""
+    network of the rollout's own as it boots. A pooled `harness_lease` joins too: it
+    may open connections to the workspace, to tool servers' VMs and to the task services
+    in `harness_peers`, and nothing may open one to it."""
     if not isinstance(workspace, PrimeBackend):
         raise TypeError(
             "tool servers on Prime runtimes of their own join the workspace over a "
@@ -116,8 +117,6 @@ async def private_network(
             f"{workspace.config.type}"
         )
     from prime_sandboxes import LanRule
-
-    from verifiers.v1.runtimes.controller import current_job
 
     tags = {name: _tag(index) for index, name in enumerate(members)}
     memberships = {
@@ -155,16 +154,6 @@ async def private_network(
     async with AsyncExitStack() as stack:
         client = await stack.enter_async_context(leased_client())
         name = f"vf-{uuid.uuid4().hex[:16]}"
-        job = current_job.get()
-        if job and has_harness:
-            rules += [
-                LanRule(
-                    from_=f"tag:{HARNESS_TAG}",
-                    to="tag:vf-controller",
-                    ports=[job.server.port],
-                ),
-                LanRule(from_="tag:vf-controller", to=f"tag:{HARNESS_TAG}"),
-            ]
 
         deleted = False
         delete_lock = asyncio.Lock()
@@ -176,12 +165,7 @@ async def private_network(
                     return
                 for attempt in range(2):
                     try:
-                        if job:
-                            await job.launcher.call(
-                                "delete_network", network_id=network_id
-                            )
-                        else:
-                            await client.delete_lan_network(network_id)
+                        await client.delete_lan_network(network_id)
                         deleted = True
                         return
                     except Exception:
@@ -194,15 +178,7 @@ async def private_network(
                         )
 
         async def create_and_own() -> str:
-            if job:
-                network_id = await job.launcher.call(
-                    "network",
-                    join_controller=has_harness,
-                    name=name,
-                    rules=[rule.model_dump(by_alias=True) for rule in rules],
-                )
-            else:
-                network_id = (await client.create_lan_network(name, rules=rules)).id
+            network_id = (await client.create_lan_network(name, rules=rules)).id
             delete_cb = lambda: run_shielded(delete_network(network_id))
             stack.push_async_callback(delete_cb)
             if out is not None:
@@ -221,7 +197,7 @@ async def private_network(
             else:
                 backend._lan_pending = (network_task, member_tags)
 
-        started_vms: list[RuntimeBackend] = [workspace]
+        started_vms: list[RuntimeBackend] = [] if borrowed_workspace else [workspace]
 
         async def stop_all_vms() -> None:
             await asyncio.gather(
@@ -251,8 +227,36 @@ async def private_network(
                     asyncio.create_task(_keepalive(backend.bind(), every)),
                 )
 
+        async def detach_borrowed_workspace() -> None:
+            net_id = out.network_id if out is not None else None
+            if (
+                not net_id
+                or workspace.stopped
+                or workspace.info.id is None
+                or workspace._client is None
+            ):
+                return
+            try:
+                await workspace._client.remove_lan_member(net_id, workspace.info.id)
+            except Exception:
+                logger.warning(
+                    "Failed to detach borrowed prime workspace %s from LAN %s",
+                    workspace.info.id,
+                    net_id,
+                    exc_info=True,
+                )
+
         async def provision_workspace() -> None:
-            await start_workspace()
+            if borrowed_workspace:
+                from verifiers.v1.runtimes.backends.prime import join_lan
+
+                net_id = await asyncio.shield(network_task)
+                stack.push_async_callback(
+                    lambda: run_shielded(detach_borrowed_workspace())
+                )
+                await join_lan(workspace, net_id, memberships["main"])
+            else:
+                await start_workspace()
             idle_timeout = workspace.config.idle_timeout
             if has_harness and idle_timeout is not None:
                 stack.push_async_callback(
@@ -273,7 +277,8 @@ async def private_network(
                 await harness_lease.release(net_id, healthy=False)
                 raise
 
-        assign_lan(workspace, memberships["main"])
+        if not borrowed_workspace:
+            assign_lan(workspace, memberships["main"])
         try:
             async with asyncio.TaskGroup() as group:
                 group.create_task(run_shielded(network_task))

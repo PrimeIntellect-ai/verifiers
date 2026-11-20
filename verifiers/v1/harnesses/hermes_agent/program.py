@@ -18,50 +18,53 @@ os.environ.setdefault("HERMES_INTERCEPT_TRANSPORT", determine_api_mode(provider)
 # Hermes' plugin pre-tool hooks intentionally fail open. Wrap its common native
 # dispatcher instead: both sequential and concurrent execution pass this point,
 # and a failed gate can never fall back to the local callable.
-if gate_url := os.environ.get("VF_TOOL_GATE_URL"):
-    from agent import tool_executor
+gate_url = os.environ["VF_TOOL_GATE_URL"]
+from agent import tool_executor
 
-    original_dispatch = tool_executor._dispatch_authorized_once
-    gate_secret = os.environ.pop("VF_TOOL_GATE_SECRET")
-    remote_only = os.environ.get("VF_REMOTE_TOOLS_ONLY") == "1"
-    native_tools = set(json.loads(os.environ.get("VF_NATIVE_TOOLS", "[]")))
+original_dispatch = tool_executor._dispatch_authorized_once
+gate_secret = os.environ.pop("VF_TOOL_GATE_SECRET")
+native_tools = set(json.loads(os.environ.get("VF_NATIVE_TOOLS", "[]")))
 
-    def gated_dispatch(agent, state, ref, **kwargs):
-        request = urllib.request.Request(
-            gate_url,
-            data=json.dumps(
-                {"tool_call_id": ref.call_id, "name": ref.name, "arguments": ref.args}
-            ).encode(),
-            headers={
-                "Authorization": f"Bearer {gate_secret}",
-                "Content-Type": "application/json",
-            },
-        )
-        with urllib.request.urlopen(request, timeout=None) as response:
-            verdict = json.load(response)
-        if verdict["action"] == "deny":
-            if kwargs.get("begin_execution") is not None:
-                kwargs["begin_execution"]()
-            state.blocked = not remote_only
-            state.dispatched = remote_only
-            content = verdict["message"]["content"]
-            return content if isinstance(content, str) else json.dumps(content)
-        if verdict["action"] != "allow" or (remote_only and ref.name in native_tools):
-            raise RuntimeError("Split tool gate did not return a remote result")
-        return original_dispatch(agent, state, ref, **kwargs)
 
-    tool_executor._dispatch_authorized_once = gated_dispatch
+def gated_dispatch(agent, state, ref, **kwargs):
+    request = urllib.request.Request(
+        gate_url,
+        data=json.dumps(
+            {"tool_call_id": ref.call_id, "name": ref.name, "arguments": ref.args}
+        ).encode(),
+        headers={
+            "Authorization": f"Bearer {gate_secret}",
+            "Content-Type": "application/json",
+        },
+    )
+    with urllib.request.urlopen(request, timeout=None) as response:
+        verdict = json.load(response)
+    if verdict["action"] == "deny":
+        if kwargs.get("begin_execution") is not None:
+            kwargs["begin_execution"]()
+        state.blocked = False
+        state.dispatched = True
+        content = verdict["message"]["content"]
+        return content if isinstance(content, str) else json.dumps(content)
+    if verdict["action"] != "allow" or ref.name in native_tools:
+        raise RuntimeError("Tool gate did not return a remote result")
+    return original_dispatch(agent, state, ref, **kwargs)
 
-    # The default ACP factory launches a separate gateway, which would not
-    # inherit this dispatcher. Select its native in-process execution owner so
-    # every sequential and concurrent call crosses the installed gate.
-    from acp_adapter import server
 
-    class GatedACPAgent(server.HermesACPAgent):
-        def __new__(cls, session_manager=None):
-            return object.__new__(cls)
+tool_executor._dispatch_authorized_once = gated_dispatch
 
-    server.HermesACPAgent = GatedACPAgent
+# The default ACP factory launches a separate gateway, which would not
+# inherit this dispatcher. Select its native in-process execution owner so
+# every sequential and concurrent call crosses the installed gate.
+from acp_adapter import server
+
+
+class GatedACPAgent(server.HermesACPAgent):
+    def __new__(cls, session_manager=None):
+        return object.__new__(cls)
+
+
+server.HermesACPAgent = GatedACPAgent
 
 from acp_adapter.entry import main
 

@@ -16,7 +16,6 @@ from verifiers.v1.harnesses.utils import compaction, core, mcp
 from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.trace import Trace
 from verifiers.v1.types import Messages
-from verifiers.v1.utils import network
 from verifiers.v1.utils.logging import clip, get_logger
 
 logger = get_logger(__name__)
@@ -39,7 +38,7 @@ CHAT_PROGRAM = (
     '# dependencies = ["openai", "mcp==2.3.0", "httpx", "httpx2", "tenacity", "certifi"]\n'
     "# ///\n"
 )
-CHAT_PROGRAM_SOURCE = bundle_program(CHAT_PROGRAM, network, mcp, compaction, core)
+CHAT_PROGRAM_SOURCE = bundle_program(CHAT_PROGRAM, mcp, compaction, core)
 
 
 class CompactionConfig(BaseConfig):

@@ -330,21 +330,30 @@ class AgenticJudgeEnv(vf.Env[AgenticJudgeEnvConfig]):
             )
             # The workspace already has the verifier's image and network policy.
             # Do not reapply the solver's requirements to an overridden verifier.
-            updates = {
+            updates: dict = {
                 "image": runtime.config.image,
                 "workdir": runtime.config.workdir,
             }
             if isinstance(runtime.config, NetworkPolicyConfig):
-                updates["network"] = NetworkPolicyConfig(
-                    allow=runtime.config.allow, block=runtime.config.block
+                control_blocked = getattr(
+                    runtime.backend, "_control_blocked_hosts", frozenset()
                 )
+                effective_block = [
+                    host for host in runtime.config.block if host not in control_blocked
+                ]
+                clean_cfg = runtime.config.model_copy(update={"block": effective_block})
+                updates["network"] = NetworkPolicyConfig(
+                    allow=clean_cfg.allow, block=clean_cfg.block
+                )
+            else:
+                clean_cfg = runtime.config
             judge_task = judge_task.with_data(**updates)
             # A per-invocation view retains episode accounting and concurrency while
             # binding placement to the already provisioned scoring workspace.
             judge_agent = copy.copy(agents.judge)
-            judge_agent.runtime_config = runtime.config
+            judge_agent.runtime_config = clean_cfg
             judge_agent.config = judge_agent.config.model_copy(
-                update={"runtime": runtime.config}
+                update={"runtime": clean_cfg}
             )
             verdict = await judge_agent.run(judge_task, runtime=runtime)
             if not verdict.ok:

@@ -20,7 +20,7 @@ import sys
 import time
 import uuid
 from collections.abc import Callable
-from contextlib import AsyncExitStack, suppress
+from contextlib import suppress
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
@@ -28,7 +28,7 @@ from typing import Any
 from verifiers.v1.errors import HarnessError
 from verifiers.v1.harnesses.utils.compaction import bound_tool_message
 from verifiers.v1.runtimes import Runtime
-from verifiers.v1.runtimes.base import RuntimeBackend, RuntimeProcess
+from verifiers.v1.runtimes.base import RuntimeBackend
 from verifiers.v1.runtimes.stdio_rpc import ProcessRPC
 from verifiers.v1.types import ToolCall
 
@@ -108,7 +108,9 @@ def match_queued_item(
 async def ensure_daemon_python(
     runtime: Runtime, extra_cls: Callable | None = None
 ) -> str:
-    """Return `.vf-venv/bin/python` on `runtime` with `verifiers` and `acp` installed."""
+    """Return a Python interpreter on `runtime` with `verifiers` and `acp` installed."""
+    if runtime.type == "subprocess":
+        return sys.executable
     from verifiers.v1.harnesses.utils.remote import NativeRemoteTools
     from verifiers.v1.mcp.launch import install_in_runtime
 
@@ -148,7 +150,6 @@ class HarnessDaemonClient:
         self.runtime = runtime
         self.local_gate_url: str = ""
         self._rpc: ProcessRPC | None = None
-        self._stack = AsyncExitStack()
         self._closed = False
 
     @property
@@ -156,23 +157,9 @@ class HarnessDaemonClient:
         return not self._closed and self._rpc is not None and self._rpc._error is None
 
     async def start(self, *, extra_cls: Callable | None = None) -> None:
-        from verifiers.v1.runtimes.controller import current_job
-
         root_rt = self.runtime.backend.bind(env={}).with_user(None)
         python = await ensure_daemon_python(root_rt, extra_cls=extra_cls)
-        argv = [python, "-I", "-u", "-m", __name__]
-        process: RuntimeProcess
-        if current_job.get() and root_rt.type == "prime":
-            from verifiers.v1.runtimes.lan_execution import LanExecution
-            from verifiers.v1.runtimes.private_network import lan_host
-
-            transport = LanExecution(root_rt, lan_host(root_rt.backend), direct=True)
-            self._stack.push_async_callback(transport.close)
-            await transport.start(root_rt)
-            process = await transport.exec(root_rt, argv, {})
-        else:
-            process = await root_rt.exec(argv, {})
-
+        process = await root_rt.exec([python, "-I", "-u", "-m", __name__], {})
         rpc = ProcessRPC(process)
         ready: asyncio.Future[dict] = asyncio.get_running_loop().create_future()
         rpc._pending["__ready__"] = ready
@@ -180,7 +167,6 @@ class HarnessDaemonClient:
             info = await asyncio.wait_for(ready, timeout=45.0)
         except BaseException:
             await rpc.close()
-            await self._stack.aclose()
             raise
         finally:
             rpc._pending.pop("__ready__", None)
@@ -253,12 +239,21 @@ class HarnessDaemonClient:
         self, session_key: str, message: str, message_id: str | None = None
     ) -> dict[str, Any]:
         assert self._rpc is not None
-        return await self._rpc.call(
+        res = await self._rpc.call(
             "acp_steer",
             session_key=session_key,
             message=message,
             message_id=message_id,
         )
+        if (
+            isinstance(res, dict)
+            and res.get("ok") is False
+            and "not_implemented" in res
+        ):
+            raise NotImplementedError(res["not_implemented"])
+        if isinstance(res, dict) and "result" in res:
+            return res["result"]
+        return res
 
     async def acp_close(
         self, session_key: str, *, graceful: bool = False
@@ -273,28 +268,30 @@ class HarnessDaemonClient:
 
     async def aclose(self) -> None:
         self._closed = True
-        try:
-            if self._rpc is not None:
-                with contextlib.suppress(Exception):
-                    await self._rpc.process.abandon()
-                await super(ProcessRPC, self._rpc).close()
-                self._rpc = None
-        finally:
-            await self._stack.aclose()
+        if self._rpc is not None:
+            with contextlib.suppress(Exception):
+                await self._rpc.process.abandon()
+            await self._rpc.close(kill=False)
+            self._rpc = None
 
 
 async def ensure_backend_daemon(
     backend: RuntimeBackend, *, extra_cls: Callable | None = None
 ) -> HarnessDaemonClient | None:
     """Return or start the shared `HarnessDaemonClient` on `backend`, if supported."""
-    if getattr(backend, "type", None) not in ("prime", "docker"):
+    if getattr(backend, "type", None) not in (
+        "prime",
+        "docker",
+        "subprocess",
+        "custom",
+    ):
         return None
     if backend.type == "prime" and (
         getattr(backend, "_client", None) is None
         or not hasattr(backend._client, "open_process")
     ):
         return None
-    if extra_cls is not None:
+    if backend.type != "subprocess" and extra_cls is not None:
         from verifiers.v1.mcp.launch import install_in_runtime
 
         await install_in_runtime(
@@ -626,9 +623,15 @@ async def main() -> None:
             rec = acp_sessions.get(str(message["session_key"]))
             if rec is None or rec["closed"]:
                 return {"outcome": "promptRequired", "reason": "noRunningTurn"}
-            return await rec["session"].steer(
-                message["message"], message.get("message_id")
-            )
+            try:
+                return {
+                    "ok": True,
+                    "result": await rec["session"].steer(
+                        message["message"], message.get("message_id")
+                    ),
+                }
+            except NotImplementedError as error:
+                return {"ok": False, "not_implemented": str(error)}
 
         if op == "acp_close":
             meta = await close_acp_session(

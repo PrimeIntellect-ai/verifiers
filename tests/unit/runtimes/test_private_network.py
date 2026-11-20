@@ -16,10 +16,11 @@ from verifiers.v1.runtimes import (
 )
 from verifiers.v1.runtimes.backends import prime
 from verifiers.v1.runtimes.strategies import (
-    _ColocatedDeployment,
     _ContainerDeployment,
     _deployment_strategy,
+    _HostSplitDeployment,
     _PrivateNetworkDeployment,
+    _WorkspaceOnlyDeployment,
 )
 
 ATLAS = PrimeConfig(image="atlas:1", cpu=4, memory=10)  # open egress by default
@@ -59,12 +60,22 @@ def test_tool_servers_on_prime_runtimes_beside_a_prime_workspace_get_vms():
 
 
 def test_the_deployment_joins_tool_vms_over_a_private_network():
+    monkey_prime = PrimeBackend.__new__(PrimeBackend)
     assert isinstance(
-        _deployment_strategy(None, PrimeBackend, None, {"atlas": ATLAS}),
+        _deployment_strategy(None, monkey_prime, None, {"atlas": ATLAS}),
         _PrivateNetworkDeployment,
     )
     assert isinstance(
-        _deployment_strategy(None, PrimeBackend, None, {}), _ColocatedDeployment
+        _deployment_strategy(None, monkey_prime, None, {}, has_harness=True),
+        _PrivateNetworkDeployment,
+    )
+    assert isinstance(
+        _deployment_strategy(None, monkey_prime, None, {}),
+        _WorkspaceOnlyDeployment,
+    )
+    assert isinstance(
+        _deployment_strategy(None, DockerBackend, None, {}, has_harness=True),
+        _HostSplitDeployment,
     )
     spec = vf.ComposeSpec("task")
     assert isinstance(
@@ -307,7 +318,7 @@ def test_reuse_harness_pools_across_rollouts_and_detaches_each_lan(monkeypatch):
         async with harness_pool_scope():
             for idx in (1, 2):
                 ws = PrimeBackend(PrimeConfig(), name=f"ws{idx}")
-                dep = ws.deploy(config=cfg, split=True)
+                dep = ws.deploy(config=cfg, harness_config=PrimeConfig())
                 await dep.start()
                 h_id = dep.harness_backend.info.id
                 await dep.close()
@@ -413,7 +424,7 @@ def test_multiplex_shares_harness_vm_across_concurrent_rollouts_with_isolated_wo
 
     async def one_rollout(idx: int, workdir: str):
         ws = PrimeBackend(PrimeConfig(workdir=workdir), name=f"ws{idx}")
-        dep = ws.deploy(config=cfg, split=True)
+        dep = ws.deploy(config=cfg, harness_config=PrimeConfig())
         await dep.start()
         assert dep._harness_runtime.info.workdir == workdir
         assert dep.harness_backend.config.workdir == "/app"
@@ -512,7 +523,7 @@ def test_harness_pool_auto_checkpoints_first_vm_for_scale_out_and_cleans_up(
     async def run_scale_out():
         async with harness_pool_scope() as pool:
             ws1 = PrimeBackend(PrimeConfig(), name="ws1")
-            dep1 = ws1.deploy(config=cfg, split=True)
+            dep1 = ws1.deploy(config=cfg, harness_config=PrimeConfig())
             await dep1.start()
             dep1._harness_lease.notify_setup_complete()
             while pool._auto_checkpoint_tasks:
@@ -521,7 +532,7 @@ def test_harness_pool_auto_checkpoints_first_vm_for_scale_out_and_cleans_up(
             # While dep1 still holds VM A #1 (multiplex=1), dep2 scales out to VM A #2
             # using the auto-minted checkpoint from VM A #1!
             ws2 = PrimeBackend(PrimeConfig(), name="ws2")
-            dep2 = ws2.deploy(config=cfg, split=True)
+            dep2 = ws2.deploy(config=cfg, harness_config=PrimeConfig())
             await dep2.start()
             await dep1.close()
             await dep2.close()
@@ -603,7 +614,7 @@ def test_harness_pool_evicts_expired_auto_checkpoint_and_cleans_cancelled_mint(
         pool1._clock = lambda: now
         async with harness_pool_scope(pool1):
             ws1 = PrimeBackend(PrimeConfig(), name="ws1")
-            dep1 = ws1.deploy(config=cfg, split=True)
+            dep1 = ws1.deploy(config=cfg, harness_config=PrimeConfig())
             await dep1.start()
             dep1._harness_lease.notify_setup_complete()
             while pool1._auto_checkpoint_tasks:
@@ -612,7 +623,7 @@ def test_harness_pool_evicts_expired_auto_checkpoint_and_cleans_cancelled_mint(
             # Advance past usable TTL: scale-out falls back to cold boot (`checkpoint=None`).
             now += 3601.0
             ws2 = PrimeBackend(PrimeConfig(), name="ws2")
-            dep2 = ws2.deploy(config=cfg, split=True)
+            dep2 = ws2.deploy(config=cfg, harness_config=PrimeConfig())
             await dep2.start()
             await dep1.close()
             await dep2.close()
@@ -621,7 +632,7 @@ def test_harness_pool_evicts_expired_auto_checkpoint_and_cleans_cancelled_mint(
         # Start a new pool whose mint is cancelled mid-wait on scope exit; cp is still deleted.
         async with harness_pool_scope():
             ws3 = PrimeBackend(PrimeConfig(image="other:1"), name="ws3")
-            dep3 = ws3.deploy(config=cfg, split=True)
+            dep3 = ws3.deploy(config=cfg, harness_config=PrimeConfig())
             await dep3.start()
             dep3._harness_lease.notify_setup_complete()
             await asyncio.wait_for(wait_started.wait(), timeout=2.0)

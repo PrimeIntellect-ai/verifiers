@@ -84,15 +84,7 @@ async def _join_lan_fast(
 async def join_lan(backend: PrimeBackend, network_id: str, tags: list[str]) -> None:
     if backend.info.id is None:
         return
-    if backend._launcher is not None:
-        await backend._launcher.call(
-            "join_network",
-            network_id=network_id,
-            sandbox_id=backend.info.id,
-            tags=tags,
-        )
-    else:
-        await _join_lan_fast(backend._client, network_id, backend.info.id, tags)
+    await _join_lan_fast(backend._client, network_id, backend.info.id, tags)
 
 
 async def _resolve_and_join_lan(backend: PrimeBackend) -> None:
@@ -327,7 +319,6 @@ class PrimeBackend(RuntimeBackend):
         self.config = config.model_copy(update={"workdir": config.workdir or "/app"})
         self.info = PrimeRuntimeInfo(**self.config.model_dump())
         self._client = None
-        self._launcher = None
         # A LAN network (id, tags) to join as the sandbox boots: prime-sandboxes joins it
         # once it is running, within `wait_for_creation` on the creating client.
         self.lan: tuple[str, list[str]] | None = None
@@ -359,36 +350,6 @@ class PrimeBackend(RuntimeBackend):
 
     async def start(self) -> None:
         from prime_sandboxes import APIError, CreateSandboxRequest
-
-        from verifiers.v1.runtimes.controller import current_job
-
-        if job := current_job.get():
-            self._launcher = job.launcher
-
-            async def create_and_attach():
-                info = await self._launcher.call(
-                    "create",
-                    config=self.config.model_dump(mode="json"),
-                    name=self.name,
-                    env=self.env,
-                    lan=self.lan,
-                )
-                self.info.id, self.info.image_cached = info["id"], info["image_cached"]
-                self._created_workdirs.add(self.config.workdir)
-                self._client = _lease_client()
-                if self.lan is None and self._lan_pending is not None:
-                    self._lan_sync_task = asyncio.create_task(
-                        _resolve_and_join_lan(self)
-                    )
-                if auth := info.get("gateway_auth"):
-                    await self._client._auth_cache.set(self.info.id, auth)
-                if arch := info.get("arch"):
-                    self.cache.arch = arch
-                if system_python := info.get("system_python"):
-                    self.cache.system_python = system_python
-
-            await run_shielded(create_and_attach())
-            return
 
         started = time.perf_counter()
         self._client = _lease_client()
@@ -660,10 +621,6 @@ class PrimeBackend(RuntimeBackend):
         return PrimeProcess(process)
 
     async def expose(self, port: int) -> str:
-        if self._launcher is not None:
-            return await self._launcher.call(
-                "expose", sandbox_id=self.info.id, port=port
-            )
         """Publish `port` through a LAN network whose `internet` rule exposes it on this
         sandbox. The URL has no Prime authentication."""
         from prime_sandboxes import LanRule
@@ -793,7 +750,7 @@ class PrimeBackend(RuntimeBackend):
         # Synchronous atexit backstop (the async client can't run once the loop is gone): delete
         # the sandbox via the sync client, so the costly resource isn't left to its max-lifetime.
         # Idempotent — the async `stop` deletes it on the normal path, a second delete 404s.
-        if self._launcher is None and self.info.id is not None:
+        if self.info.id is not None:
             from prime_sandboxes import SandboxClient
             from prime_sandboxes.core import APIClient
 
@@ -818,10 +775,7 @@ class PrimeBackend(RuntimeBackend):
         try:
             try:
                 if self.info.id is not None:  # keep info.id available after teardown
-                    if self._launcher is not None:
-                        await self._launcher.call("stop", sandbox_id=self.info.id)
-                    else:
-                        await client.delete(self.info.id)
+                    await client.delete(self.info.id)
             except Exception as e:  # noqa: BLE001 - provider teardown is best-effort
                 logger.warning(
                     "Failed to delete prime runtime %s - %s: %s",

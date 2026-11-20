@@ -27,15 +27,6 @@ async def serve(handler) -> None:
         while chunk := await reader.read(65536):
             yield chunk
 
-    async def write(packet):
-        sys.stdout.buffer.write(packet)
-        sys.stdout.buffer.flush()
-
-    await serve_stream(handler, chunks(), write)
-
-
-async def serve_stream(handler, chunks, write) -> None:
-    """Serve a framed, bidirectional byte stream. EOF cancels pending operations."""
     tasks: set[asyncio.Task] = set()
     lock = asyncio.Lock()
 
@@ -48,10 +39,11 @@ async def serve_stream(handler, chunks, write) -> None:
                 {"id": message["id"], "error": f"{type(error).__name__}: {error}"}
             )
         async with lock:
-            await write(packet)
+            sys.stdout.buffer.write(packet)
+            sys.stdout.buffer.flush()
 
     try:
-        async for message in frames(chunks):
+        async for message in frames(chunks()):
             task = asyncio.create_task(reply(message))
             tasks.add(task)
             task.add_done_callback(tasks.discard)

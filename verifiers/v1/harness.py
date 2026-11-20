@@ -230,15 +230,6 @@ class Harness(ABC, Generic[ConfigT]):
             return target
         return target
 
-    @property
-    def uses_split_sandbox(self) -> bool:
-        """Whether this harness runs in a dedicated split sandbox on Docker/Prime."""
-        return (
-            not self.EXECUTES_CODE
-            or type(self).remote_tools is not Harness.remote_tools
-            or type(self).setup_execution is not Harness.setup_execution
-        )
-
     async def setup(self, runtime: Runtime) -> None:
         """Provision this harness through `runtime` before its execution timeout starts."""
 
@@ -266,79 +257,64 @@ class Harness(ABC, Generic[ConfigT]):
 
     async def install_skills(self, runtime: Runtime, dest: str) -> None:
         """Install `config.skills` in the program's discovery directory.
-        Runtime roots are copied in place (or bridged from the split workspace);
+        Runtime roots are copied in place (or bridged from the workspace);
         host skill folders are uploaded."""
         bridge = getattr(runtime, "_execution_bridge", None)
         for skill in self.config.skills:
             target_dir = skill_destination(skill, dest)
             if isinstance(skill, dict):
-                if bridge is not None:
-                    archived = await bridge.runtime.run(
+                if bridge is None:
+                    copied = await runtime.run(
                         [
                             "sh",
                             "-e",
                             "-c",
-                            '[ -d "$1" ] && tar -C "$1" -cf - . | base64',
+                            '[ -d "$1" ] && mkdir -p -- "$2" && tar -C "$1" -cf - . | tar -xpf - -C "$2"',
                             "vf-skills",
                             skill["runtime"],
-                        ],
-                        {},
-                    )
-                    if archived.exit_code:
-                        raise RuntimeError(
-                            f"installing runtime skills from {skill['runtime']!r} failed: {archived.stderr}"
-                        )
-                    archive_path = runtime.temp_path(
-                        f"vf-skills-{os.urandom(8).hex()}.tar.b64"
-                    )
-                    await runtime.write(archive_path, archived.stdout.encode())
-                    extracted = await runtime.run(
-                        [
-                            "sh",
-                            "-e",
-                            "-c",
-                            'mkdir -p -- "$2" && base64 -d < "$1" | tar -xpf - -C "$2"; rm -f -- "$1"',
-                            "vf-skills",
-                            archive_path,
                             target_dir,
                         ],
                         {},
                     )
-                    if extracted.exit_code:
+                    if copied.exit_code:
                         raise RuntimeError(
-                            f"installing runtime skills from {skill['runtime']!r} failed: {extracted.stderr}"
+                            f"installing runtime skills from {skill['runtime']!r} failed: {copied.stderr}"
                         )
                     continue
-                result = await runtime.run(
+                archived = await bridge.runtime.run(
                     [
                         "sh",
                         "-e",
                         "-c",
-                        r"""
-[ -d "$1" ]
-source=$(CDPATH= cd -- "$1/." && pwd -P)
-mkdir -p -- "$2"
-target=$(CDPATH= cd -- "$2/." && pwd -P)
-[ "$source" != "$target" ] || exit 0
-# A source such as "." must not copy the destination back into itself.
-exclude=$(printf '%s' "./${target#"${source%/}/"}" | sed 's/[][\\*?]/\\&/g')
-# POSIX sh returns only the extractor's status; fd 3 also reports producer failure.
-copy_failed=$(
-    exec 3>&1
-    { tar -C "$source" --exclude="$exclude" -cf - . || printf failed >&3; } |
-        tar -xpf - -C "$target"
-)
-[ -z "$copy_failed" ]
-""",
+                        '[ -d "$1" ] && tar -C "$1" -cf - . | base64',
                         "vf-skills",
                         skill["runtime"],
+                    ],
+                    {},
+                )
+                if archived.exit_code:
+                    raise RuntimeError(
+                        f"installing runtime skills from {skill['runtime']!r} failed: {archived.stderr}"
+                    )
+                archive_path = runtime.temp_path(
+                    f"vf-skills-{os.urandom(8).hex()}.tar.b64"
+                )
+                await runtime.write(archive_path, archived.stdout.encode())
+                extracted = await runtime.run(
+                    [
+                        "sh",
+                        "-e",
+                        "-c",
+                        'mkdir -p -- "$2" && base64 -d < "$1" | tar -xpf - -C "$2"; rm -f -- "$1"',
+                        "vf-skills",
+                        archive_path,
                         target_dir,
                     ],
                     {},
                 )
-                if result.exit_code:
+                if extracted.exit_code:
                     raise RuntimeError(
-                        f"installing runtime skills from {skill['runtime']!r} failed: {result.stderr}"
+                        f"installing runtime skills from {skill['runtime']!r} failed: {extracted.stderr}"
                     )
                 continue
             # Resolve so `.`/`..` entries get their real folder name (and can't

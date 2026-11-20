@@ -22,8 +22,8 @@ export default {
         if (!response.ok) throw new Error(`tool gate returned HTTP ${response.status}`);
         const decision = await response.json();
         if (decision.action === "allow") {
-          if (__REMOTE_ONLY__ && native.has(event.toolName)) {
-            throw new Error("split execution returned a local allow");
+          if (native.has(event.toolName)) {
+            throw new Error("tool gate returned a local allow for a native tool");
           }
           return;
         }

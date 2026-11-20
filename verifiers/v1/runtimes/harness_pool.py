@@ -189,7 +189,6 @@ class HarnessLease:
         if self._released:
             return
         self._released = True
-        from verifiers.v1.runtimes.controller import current_job
 
         if self._lan_task is not None:
             if not self._lan_task.done():
@@ -205,16 +204,9 @@ class HarnessLease:
             and not self.backend.stopped
         ):
             try:
-                if job := current_job.get():
-                    await job.launcher.call(
-                        "leave_network",
-                        network_id=network_id,
-                        sandbox_id=self.backend.info.id,
-                    )
-                else:
-                    await self.backend._client.remove_lan_member(
-                        network_id, self.backend.info.id
-                    )
+                await self.backend._client.remove_lan_member(
+                    network_id, self.backend.info.id
+                )
             except Exception as error:
                 detached = False
                 logger.warning(
@@ -280,11 +272,9 @@ class HarnessPool:
     def maybe_auto_checkpoint(self, entry: _PooledHarness) -> None:
         """Mint a background filesystem checkpoint of `entry` so scale-out VMs boot warm."""
         from verifiers.v1.runtimes.backends.prime import leased_client
-        from verifiers.v1.runtimes.controller import current_job
 
         if (
             self._closed
-            or current_job.get() is not None
             or not entry.healthy
             or entry.backend._client is None
             or entry.backend.info.id is None

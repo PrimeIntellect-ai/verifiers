@@ -197,7 +197,7 @@ class ExecutionConnection(ExecutionBridge):
         `close` stops the worker and every process its tools started, detached or not;
         with `keep_detached`, for a worker that stops what is still attached to a
         session as the session closes, only the worker and its own process group, so
-        a daemon its tools started keeps running, as after a colocated harness exits.
+        a daemon its tools started keeps running after the harness exits.
         """
         marker = self._workers.mark(runtime, keep_detached=keep_detached)
         log = runtime.temp_path(f"vf-exec-{marker[_MARK]}.log")
@@ -246,7 +246,10 @@ class _DeploymentStrategy:
     async def prepare_execution(
         self, deployment: Deployment, routes: list[str], state_route: str | None = None
     ) -> None:
-        await deployment.harness_backend.prepare_execution(routes)
+        if deployment.harness_backend is not None:
+            await deployment.harness_backend.prepare_execution(routes)
+        else:
+            await deployment.execution_backend.prepare_execution(routes)
 
     async def stop_execution(self, deployment: Deployment) -> None:
         return
@@ -286,7 +289,6 @@ class Deployment:
         harness_config: RuntimeConfig | None = None,
         harness_image: str | None = None,
         execution_network: RuntimeConfig | None = None,
-        split: bool = False,
     ):
         self.backend = backend
         self.spec = spec
@@ -294,19 +296,23 @@ class Deployment:
         """Tool servers on Prime runtimes of their own, by server name, which join the
         workspace over the rollout's private network."""
         self.tool_services = frozenset(tool_services)
-        """Task services that host tool servers, which a split harness connects to."""
+        """Task services that host tool servers, which the harness connects to."""
         self.env = dict(env or {})
         self.config = config or DeploymentConfig()
         self.borrowed_runtime = borrowed_runtime
         self.harness_config = harness_config
         self.harness_image = harness_image
         self.execution_network = execution_network or backend.config
-        self._split_requested = split
+        self._has_harness = harness_config is not None or harness_image is not None
         self.control_routes: list[str] = []
         from verifiers.v1.runtimes.strategies import _deployment_strategy
 
         self._strategy = _deployment_strategy(
-            self.config, backend, spec, self.tool_vms, split=split
+            self.config,
+            backend,
+            spec,
+            self.tool_vms,
+            has_harness=self._has_harness,
         )
         self.target_backends: dict[str, RuntimeBackend] = {}
         self.hosts: dict[str, str] = {}
@@ -336,9 +342,11 @@ class Deployment:
     async def start(self) -> None:
         try:
             await self._strategy.start(self)
-            if self.harness_backend is None or self.execution_backend is None:
+            if self.execution_backend is None or (
+                self._has_harness and self.harness_backend is None
+            ):
                 raise ValueError(
-                    "deployment strategy must bind harness and execution roles"
+                    "deployment strategy must bind execution and harness roles"
                 )
         except BaseException:
             try:
@@ -350,18 +358,15 @@ class Deployment:
                 )
             raise
 
-    @property
-    def split(self) -> bool:
-        """Whether the harness runs apart from the workspace, on a VM of its own."""
-        return (
-            self.harness_backend is not None
-            and self.harness_backend is not self.execution_backend
-        )
-
     def connection(self, workspace: Runtime) -> ExecutionConnection:
-        """Bind split execution to one connection, independent of the runtime backend."""
-        if not self.split:
-            raise ValueError("only a split deployment connects its harness's tools")
+        """Bind workspace execution to one connection, independent of the runtime backend."""
+        if (
+            self.harness_backend is None
+            or self.harness_backend is self.execution_backend
+        ):
+            raise ValueError(
+                "harness execution requires a dedicated harness runtime apart from the workspace"
+            )
         connection = ExecutionConnection(workspace)
         if isinstance(self.execution_backend, PrimeBackend):
             from verifiers.v1.runtimes.private_network import lan_host

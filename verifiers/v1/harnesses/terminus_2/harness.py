@@ -93,11 +93,15 @@ class Terminus2Harness(Harness[Terminus2HarnessConfig]):
         task_file = await stage_text(
             runtime, trace, "task.txt", prompt, env=self.config.resolved_env
         )
+        if not tool_interception_url or runtime._execution_bridge is None:
+            raise ValueError("Terminus 2 requires a remote tool gate")
+        execution_runtime = runtime._execution_bridge.runtime
         args = [
             f"--base-url={endpoint}",
             f"--api-key={secret}",
             f"--model={ctx.model}",
             f"--task-file={task_file}",
+            f"--tool-interception-url={tool_interception_url}",
         ]
         if system_prompt:
             path = await stage_text(
@@ -108,13 +112,7 @@ class Terminus2Harness(Harness[Terminus2HarnessConfig]):
                 env=self.config.resolved_env,
             )
             args.append(f"--system-prompt-file={path}")
-        execution_runtime = runtime
-        if runtime._remote_tools_only:
-            if not tool_interception_url or runtime._execution_bridge is None:
-                raise ValueError("split Terminus 2 requires a remote tool gate")
-            args.append(f"--tool-interception-url={tool_interception_url}")
-            execution_runtime = runtime._execution_bridge.runtime
-            await execution_runtime.run(["mkdir", "-p", "-m", "700", tmux_dir], {})
+        await execution_runtime.run(["mkdir", "-p", "-m", "700", tmux_dir], {})
         try:
             source = self._source()
             program = await runtime.prepare_uv_script(source, self.config.resolved_env)

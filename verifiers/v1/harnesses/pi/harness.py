@@ -116,10 +116,12 @@ class PiHarness(ACPHarness[PiHarnessConfig]):
         data: TaskData,
     ) -> ACPConfig:
         system_prompt, prompt = self.resolve_prompt(data)
+        if runtime._execution_bridge is None:
+            raise RuntimeError("Pi requires an execution bridge")
         agent_dir = f"{STATE_ROOT}/{trace.id}"
         skills_dir = f"{agent_dir}/skills"
         await self.install_skills(runtime, skills_dir)
-        if runtime._execution_bridge is not None and self.config.skills:
+        if self.config.skills:
             # Pi puts skill file paths in its system prompt for the model to `read`.
             await self.install_skills(runtime._execution_bridge.runtime, skills_dir)
         reasoning = ctx.sampling.reasoning_effort not in (

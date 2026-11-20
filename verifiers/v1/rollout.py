@@ -144,19 +144,6 @@ class Rollout:
         self._grader = None
         self.deployment = None
         self._deployment_config = agent_config.deployment
-        spec = task.deployment_spec()
-        self._split_execution = (
-            runtime is None
-            and harness.uses_split_sandbox
-            and runtime_config.type == "prime"
-            or (
-                runtime is None
-                and harness.uses_split_sandbox
-                and runtime_config.type == "docker"
-                and spec is None
-                and not getattr(runtime_config, "mounts", None)
-            )
-        )
         self._lost: RuntimeLoss | None = None
         self._has_user = has_user
         self._timeouts = timeouts
@@ -319,17 +306,15 @@ class Rollout:
         self.trace.notify()
         if self._borrowed_runtime is None:
             workspace_config = self.runtime_config
-            if self._split_execution:
-                if not isinstance(
-                    workspace_config, NetworkPolicyConfig
-                ) or workspace_config.type not in ("docker", "prime"):
-                    raise ValueError("split deployment requires Docker or Prime")
-                # Provision B with an enforceable policy from its first process.
-                # Trusted setup runs before the final task policy is installed.
-                if not workspace_config.network_restricted:
-                    workspace_config = workspace_config.model_copy(
-                        update={"allow": [], "block": ["*"]}
-                    )
+            # Provision B with an enforceable policy from its first process.
+            # Trusted setup runs before the final task policy is installed.
+            if (
+                isinstance(workspace_config, NetworkPolicyConfig)
+                and not workspace_config.network_restricted
+            ):
+                workspace_config = workspace_config.model_copy(
+                    update={"allow": [], "block": ["*"]}
+                )
             self.runtime = make_backend(workspace_config, name=self.trace.id).bind()
         elif (
             self._borrowed_runtime is not None
@@ -374,11 +359,8 @@ class Rollout:
                 async with boundary(ToolsetError, "building tool servers"):
                     toolsets = self.task.toolsets(self.task.config)
                 spec = self.task.deployment_spec()
-                if self._split_execution:
-                    if self._borrowed_runtime is not None:
-                        raise HarnessError("split deployment cannot borrow a runtime")
-                    for toolset in toolsets:
-                        toolset.validate_split_execution()
+                for toolset in toolsets:
+                    toolset.validate_split_execution()
                 self.deployment = runtime.backend.deploy(
                     spec=spec,
                     # Tool servers on Prime VMs of their own boot with the workspace.
@@ -396,20 +378,13 @@ class Rollout:
                     env=runtime.env,
                     config=self._deployment_config,
                     borrowed_runtime=self._borrowed_runtime,
-                    harness_config=self._harness_runtime_config
-                    if self._split_execution
-                    else None,
-                    harness_image=self.harness.HARNESS_IMAGE
-                    if self._split_execution
-                    else None,
-                    execution_network=self.runtime_config
-                    if self._split_execution
-                    else None,
-                    split=self._split_execution,
+                    harness_config=self._harness_runtime_config,
+                    harness_image=self.harness.HARNESS_IMAGE,
+                    execution_network=self.runtime_config,
                 )
                 try:
                     warmup_task: asyncio.Task[None] | None = None
-                    if self._split_execution or any(
+                    if not runtime.is_local or any(
                         not runtime_is_local(t.config.runtime)
                         for t in toolsets
                         if hasattr(t.config, "runtime")
@@ -451,10 +426,9 @@ class Rollout:
                                     await warmed_server.__aexit__(None, None, None)
                     self._deployment_started = True
                     runtime = self.runtime = self.deployment.workspace
-                    if self.deployment.split:
-                        self.trace.agent.harness_runtime = (
-                            self.deployment._harness_runtime.info.model_copy()
-                        )
+                    self.trace.agent.harness_runtime = (
+                        self.deployment._harness_runtime.info.model_copy()
+                    )
                 finally:
                     # Providers may assign an ID before startup fails; retain it for diagnostics.
                     self.trace.agent.runtime = runtime.info.model_copy()
@@ -503,10 +477,7 @@ class Rollout:
                     self._agent_runtime = await resolve_agent_runtime(
                         runtime, self.task.data.agent_user, self.task.data.agent_home
                     )
-                    if self._split_execution:
-                        await self._setup_split_harness()
-                    else:
-                        await self.harness.setup(self._agent_runtime)
+                    await self._setup_harness()
                 logger.debug(
                     "Set up %s harness in %s",
                     self.harness.config.name,
@@ -530,7 +501,6 @@ class Rollout:
                         self._shared_tools,
                     )
                 )
-                state_base = self._session.state_base_url or base_url
                 self._endpoint = self._agent_runtime.host_url(
                     f"{base_url.rstrip('/')}/v1"
                 )
@@ -551,7 +521,7 @@ class Rollout:
                         state_secret=state_secret,
                         proxy_mcp=self._session.proxy_mcp,
                         state_route=self.trace.id,
-                        state_base=state_base,
+                        state_base=base_url,
                         services=services,
                         hosts=self.deployment.hosts,
                         # Tool servers on VMs of their own, by server name; an explicit
@@ -576,18 +546,11 @@ class Rollout:
                     for url in [self._endpoint, *self._urls.values()]
                     if urlsplit(url).hostname not in internal
                 ]
-                if self._split_execution:
-                    self.deployment.control_routes = [
-                        base_url,
-                        *(
-                            [state_base]
-                            if state_base != base_url
-                            and urlsplit(state_base).hostname != "127.0.0.1"
-                            else []
-                        ),
-                        self._endpoint,
-                        *self._urls.values(),
-                    ]
+                self.deployment.control_routes = [
+                    base_url,
+                    self._endpoint,
+                    *self._urls.values(),
+                ]
                 harness_data = self.trace.task.data
                 async with boundary(HarnessError, "opening harness session"):
                     policy = self._session.network_policy
@@ -692,11 +655,6 @@ class Rollout:
                                 )
                             }
                             if self.harness.SUPPORTS_TOOL_INTERCEPTION
-                            and (
-                                self._session.request_interceptors
-                                or self._session.request_stops
-                                or self._split_execution
-                            )
                             else {}
                         )
                         self._harness_session = await self.harness.session(
@@ -718,7 +676,7 @@ class Rollout:
                         group.create_task(
                             self.deployment.prepare_execution(
                                 framework_routes,
-                                state_route=f"{state_base.rstrip('/')}/state",
+                                state_route=f"{base_url.rstrip('/')}/state",
                             )
                         )
                         if isinstance(self._session.remote_tool_handler, SandboxTools):
@@ -736,8 +694,9 @@ class Rollout:
                         group.create_task(open_session())
                 except ExceptionGroup as failed:
                     raise failed.exceptions[0]
-                if self._split_execution:
-                    self.trace.agent.runtime = runtime.info.model_copy()
+                self.trace.agent.runtime = runtime.info.model_copy()
+                if self._borrowed_runtime is not None:
+                    self.trace.agent.runtime.borrowed = True
         except TimeoutError as e:
             # Only our expired setup budget owns the timeout; a provider can
             # raise its own TimeoutError before the overall deadline.
@@ -766,7 +725,7 @@ class Rollout:
         logger.debug("Starting agent")
         return not self._session.stopped
 
-    async def _setup_split_harness(self) -> None:
+    async def _setup_harness(self) -> None:
         """Bind adapters and native workers to the workspace, with one lifecycle."""
         workspace = self._agent_runtime
         bridge = self._session.execution_bridge = self.deployment.connection(workspace)
@@ -780,7 +739,6 @@ class Rollout:
             self._stack.push_async_callback(handler.aclose)
         self._agent_runtime = replace(
             self.deployment._harness_runtime,
-            _remote_tools_only=True,
             _execution_bridge=bridge,
         )
 
@@ -920,12 +878,11 @@ class Rollout:
             self._session.execution_bridge, "_abandon_on_close"
         ):
             self._session.execution_bridge._abandon_on_close = True
-        leased = getattr(self.deployment, "_harness_lease", None) is not None
         if (
             isinstance(self._harness_session, ACPHarnessSession)
             and type(self.harness).acp_close_result is ACPHarness.acp_close_result
         ):
-            self._harness_session._close_mode = "kill" if leased else "abandon"
+            self._harness_session._graceful_close = False
 
     async def _cleanup_harness(
         self, runtime: Runtime, *, runtime_stopping: bool = False
@@ -1010,9 +967,8 @@ class Rollout:
             and target.type == "prime"
             and isinstance(self._harness_session, ACPHarnessSession)
             and type(self.harness).acp_close_result is ACPHarness.acp_close_result
-            and self._harness_session._close_mode == "graceful"
         ):
-            self._harness_session._close_mode = "kill"
+            self._harness_session._graceful_close = False
         if self._harness_session is not None:
             try:
                 await self._harness_session.close()

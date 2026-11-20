@@ -341,35 +341,35 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
         mcp_urls: dict[str, str],
     ) -> dict[str, str]:
         home = self.trace_home(trace)
+        if runtime._execution_bridge is None:
+            raise HarnessError("Codex requires an execution bridge")
         await self.install_skills(runtime, f"{home}/skills")
-        if self.config.skills and runtime._execution_bridge is not None:
+        if self.config.skills:
             await self.install_skills(
                 runtime._execution_bridge.runtime, f"{home}/skills"
             )
-        writes = []
-        if runtime._execution_bridge is not None:
-            command = await prepare_remote_bridge(
-                runtime,
-                f"{endpoint.removesuffix('/v1')}/execution",
-                secret,
-                "codex",
-                protocol="codex",
+        command = await prepare_remote_bridge(
+            runtime,
+            f"{endpoint.removesuffix('/v1')}/execution",
+            secret,
+            "codex",
+            protocol="codex",
+        )
+        # The pinned native environment provider routes every filesystem and
+        # process operation through this stdio worker. Removing the local
+        # environment also prevents explicit environment_id="local" fallback.
+        environments = {
+            "default": "task",
+            "include_local": False,
+            "environments": [
+                {"id": "task", "program": command[0], "args": command[1:]}
+            ],
+        }
+        writes = [
+            runtime.write(
+                f"{home}/environments.toml", tomli_w.dumps(environments).encode()
             )
-            # The pinned native environment provider routes every filesystem and
-            # process operation through this stdio worker. Removing the local
-            # environment also prevents explicit environment_id="local" fallback.
-            environments = {
-                "default": "task",
-                "include_local": False,
-                "environments": [
-                    {"id": "task", "program": command[0], "args": command[1:]}
-                ],
-            }
-            writes.append(
-                runtime.write(
-                    f"{home}/environments.toml", tomli_w.dumps(environments).encode()
-                )
-            )
+        ]
         mcp_headers = self.config.resolve_mcp_headers(mcp_urls)
         # The app server and its ACP sessions must start with the same provider.
         settings = {

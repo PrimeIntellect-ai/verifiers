@@ -298,10 +298,9 @@ class LanProcess(RuntimeProcess):
 class LanExecution:
     """Select LAN once for the deployment, underneath every harness adapter."""
 
-    def __init__(self, harness: Runtime, host: str, *, direct: bool = False) -> None:
+    def __init__(self, harness: Runtime, host: str) -> None:
         self.harness = harness
         self.host = host
-        self.direct = direct
         self._python = ""
         self._processes: list[LanProcess] = []
         self._closed = False
@@ -314,9 +313,6 @@ class LanExecution:
     ) -> LanProcess:
         if self._closed:
             raise SandboxError("LAN execution transport is closed")
-        if self.direct:
-            for rt in (self.harness, runtime):
-                await rt.wait_lan_ready()
         python = self._python or await runtime.resolve_python()
         process_id = uuid.uuid4().hex
         owner = await runtime.backend.exec(
