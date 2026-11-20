@@ -62,8 +62,8 @@ async def append_episode(
 async def append_trace(
     results_dir: Path, trace: Trace, lock: asyncio.Lock, env: str = ""
 ) -> None:
-    """Append one finished trace as a single-agent rollout episode — debug and replay,
-    which complete trace-at-a-time, both go through here."""
+    """Append one finished trace as a single-agent rollout episode, for callers that
+    complete trace-at-a-time (debug)."""
     episode = Episode(
         env=EnvInfo(id=env),
         task=trace.task,

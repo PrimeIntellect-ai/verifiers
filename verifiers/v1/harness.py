@@ -326,7 +326,7 @@ copy_failed=$(
         differ from `trace.task.data`, the run's recorded view); model calls must
         reach the interception server at `endpoint` (bearer token `secret`);
         `mcp_urls` are the task's tool servers to wire in. Each harness owns the
-        env its program needs (the bash/compact harnesses set OPENAI_*).
+        env its program needs (the compact harness sets OPENAI_*).
 
         The interception is the contract, not the process: a harness may run its
         loop in-process instead of launching a program, as long as every model call

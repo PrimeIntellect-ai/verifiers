@@ -853,7 +853,7 @@ class Rollout:
                         # The submission is collected: close the solver's session, then
                         # capture its metrics before the workspace stops and the verifier
                         # starts. Neither counts against finalization; the metrics count
-                        # against scoring, as they did when they ran first.
+                        # against scoring.
                         interlude_started = loop.time()
                         await self._close_harness()
                         metrics_started = loop.time()
@@ -1000,7 +1000,7 @@ class Rollout:
             trace.split_agent_time()
             if runtime is not None:
                 await self._cleanup_harness(runtime)
-            # Tear down here — the env's `score()` (later) needs only the traces,
+            # Tear down here — the env's `finalize()` (later) needs only the traces,
             # not a live runtime. A borrowed runtime is its creator's to tear down,
             # not this rollout's.
             started = time.perf_counter()

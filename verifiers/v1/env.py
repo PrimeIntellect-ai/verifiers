@@ -397,7 +397,7 @@ class Env(ABC, Generic[ConfigT]):
     @contextlib.asynccontextmanager
     async def serving(self):
         """Hold the env-level serving resources for the duration of an eval; plan and
-        run slots inside. Torn down on exit (`teardown()`, then the framework's)."""
+        run slots inside. Torn down on exit (`stop()`, then the framework's)."""
         async with self.shared_tools() as shared:
             interception = make_interception(
                 self.config.interception,
