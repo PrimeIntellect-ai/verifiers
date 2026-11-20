@@ -1,6 +1,8 @@
 """Run Claude Code through the Claude Agent SDK ACP adapter."""
 
 import json
+import shlex
+from functools import partial
 from typing import Literal
 
 from verifiers.v1.acp import ACPConfig, ACPHarness
@@ -12,7 +14,7 @@ from verifiers.v1.harnesses.utils.replay import drop_blank_text_blocks
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
-from verifiers.v1.types import Message
+from verifiers.v1.types import AssistantMessage, Message, ToolCall
 
 CLAUDE_ACP_DIR = "/var/tmp/vf-claude-agent-acp-{version}-{acp_version}"
 PACKAGES_DIR = f"{CLAUDE_ACP_DIR}/packages"
@@ -46,9 +48,45 @@ class ClaudeCodeHarness(ACPHarness[ClaudeCodeHarnessConfig]):
     SUPPORTS_SKILLS = True
     SUPPORTS_TOOL_INTERCEPTION = True
 
-    # Claude Code 2.1.327 filters each whitespace-only text block on replay.
-    def replay_view(self, message: Message, dialect: DialectName | None) -> Message:
-        return drop_blank_text_blocks(message)
+    def replay_view(
+        self,
+        message: Message,
+        dialect: DialectName | None,
+        *,
+        workdir: str | None = None,
+    ) -> Message:
+        # Claude Code filters whitespace-only blocks and strips the Bash tool's
+        # redundant `cd <cwd> && ` before storing its input for replay.
+        message = drop_blank_text_blocks(message)
+        if (
+            not workdir
+            or not isinstance(message, AssistantMessage)
+            or not message.tool_calls
+        ):
+            return message
+        prefix = f"cd {workdir} && "
+        calls = [self._replay_bash_call(call, prefix) for call in message.tool_calls]
+        return (
+            message.model_copy(update={"tool_calls": calls})
+            if calls != message.tool_calls
+            else message
+        )
+
+    @staticmethod
+    def _replay_bash_call(call: ToolCall, prefix: str) -> ToolCall:
+        if call.name != "Bash" or call.namespace is not None or call.type != "function":
+            return call
+        try:
+            arguments = json.loads(call.arguments)
+        except json.JSONDecodeError:
+            return call
+        command = arguments.get("command") if isinstance(arguments, dict) else None
+        if isinstance(command, str) and command.startswith(prefix):
+            while command.startswith(prefix):
+                command = command.removeprefix(prefix)
+            arguments["command"] = command
+            return call.model_copy(update={"arguments": json.dumps(arguments)})
+        return call
 
     async def setup(self, runtime: Runtime) -> None:
         await ensure_node(runtime)
@@ -83,6 +121,9 @@ class ClaudeCodeHarness(ACPHarness[ClaudeCodeHarnessConfig]):
         mcp_urls: dict[str, str],
         data: TaskData,
     ) -> ACPConfig:
+        workdir = getattr(runtime.config, "workdir", None)
+        if workdir and workdir.startswith("/") and shlex.quote(workdir) == workdir:
+            trace._replay_view = partial(self.replay_view, workdir=workdir)
         system_prompt, prompt = self.resolve_prompt(data)
         config_dir = self.config_dir(trace)
         await runtime.write(
