@@ -41,6 +41,7 @@ from verifiers.v1.types import (
     Messages,
     SamplerSupport,
     Tool,
+    ToolCall,
     ToolMessage,
     Usage,
     content_text,
@@ -330,6 +331,14 @@ class TraceTask(BaseModel, Generic[DataT]):
 
 class InterceptRecord(BaseModel):
     handler: str
+    node: int | None = None
+    """Index into `Trace.nodes` of the intercepted message node, or the issuing
+    assistant node when a tool call was gated before execution."""
+    tool_call: ToolCall | None = None
+    """The tool call whose execution or output was intercepted, when applicable."""
+    info: dict[str, Any] = Field(default_factory=dict)
+    """Hook-supplied metadata (for example matched rule or reason)."""
+    _pos: int | None = PrivateAttr(default=None)
 
 
 class Reward(BaseModel):
@@ -636,6 +645,8 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     """Whether the trace completed successfully."""
     stop_condition: str | None = None
     """What stopped the trace."""
+    stop_info: dict[str, Any] = Field(default_factory=dict)
+    """Metadata attached when stopping (for example matched rule or reason)."""
     is_timeout: bool = False
     """Whether a stage deadline (setup, agent, finalize, or scoring) expired."""
     errors: list[Error] = Field(default_factory=list)
@@ -957,12 +968,18 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         if response.usage is not None:
             self.extra_usage.append(response.usage)
 
-    def stop(self, condition: str, override: bool = False) -> None:
+    def stop(
+        self,
+        condition: str,
+        override: bool = False,
+        info: Mapping[str, Any] | None = None,
+    ) -> None:
         """Stop the trace with a stop condition. The first condition wins unless
         `override` replaces it."""
         self.is_completed = True
         if override or self.stop_condition is None:
             self.stop_condition = condition
+            self.stop_info = copy.deepcopy(dict(info)) if info else {}
 
     def drop(self, reason: str) -> None:
         """Leave the trace out of reward means and training batches. The first reason

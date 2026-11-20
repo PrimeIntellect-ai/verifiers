@@ -502,11 +502,10 @@ class Rollout:
                         has_system = system_prompt is not None
                         if has_system:
                             messages.insert(0, SystemMessage(content=system_prompt))
-                        prepared, rewrites = await self._session.prepare_users(
+                        prepared, _ = await self._session.prepare_users(
                             Request(messages=messages)
                         )
                         messages = prepared.messages
-                        self.trace.request_rewrites.extend(rewrites)
                         if has_system:
                             messages = messages[1:]
                         rewritten_prompt = (
@@ -614,11 +613,10 @@ class Rollout:
             async with deadline:
                 assert self._harness_session is not None
                 if messages is not None and self._session.request_interceptors:
-                    prepared, rewrites = await self._session.prepare_users(
+                    prepared, _ = await self._session.prepare_users(
                         Request(messages=messages)
                     )
                     messages = prepared.messages
-                    self.trace.request_rewrites.extend(rewrites)
                     if self._session.stopped:
                         return False
                 self._session.on_turn_input = on_input
@@ -797,6 +795,7 @@ class Rollout:
         if self._closed:
             return self.trace
         self._closed = True
+        self._session.flush_rewrites()
         trace = self.trace
         skip_reason = self._scoring_skip_reason()
         runtime = self.runtime
