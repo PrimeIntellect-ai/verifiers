@@ -43,9 +43,6 @@ from verifiers.v1.utils.scope import run_scope
 
 logger = get_logger(__name__)
 
-EFFECTIVELY_UNBOUNDED_SECONDS = 30 * 24 * 60 * 60
-"""Safety deadline for APIs that require a finite bound. Normal execution remains
-bounded by idle detection or rollout cancellation; 30 days is above any real run."""
 _CHECKPOINT_DURABLE_SECONDS = 600
 """How long a snapshot may take to become restorable. With 1,000 boxes paused together
 (2026-11-19), the last ones took 294 s."""

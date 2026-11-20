@@ -196,9 +196,9 @@ class Rollout:
         self._collect_artifacts = collect_artifacts
         self._checkpointing = checkpoint
         self._durable: dict[str, asyncio.Task[None]] = {}
+        """The snapshots still on their way to restorable, by checkpoint id."""
         self._captures: set[asyncio.Task] = set()
         """Snapshots being taken (`_checkpoint`), for `_settle_checkpoints` to wait for."""
-        """The snapshots still on their way to restorable, by checkpoint id."""
         self._attempt = attempt
         self._restore: Checkpoint | None = None
         self.restored_turns: int | None = None
@@ -231,12 +231,7 @@ class Rollout:
             self.trace = Trace(
                 **({"id": trace_id} if trace_id is not None else {}),
                 attempt=attempt,
-                task=TraceTask(
-                    type=type(task).__name__,
-                    data=task.data,
-                    key=task.key,
-                    hash=task.hash,
-                ),
+                task=TraceTask.from_task(task),
                 state=state_cls(type(task))(),
                 # The seat's resolved config, role overrides included — the agent
                 # this trace can be reproduced with.
@@ -1396,7 +1391,7 @@ class Rollout:
                         # The submission is collected: close the solver's session, then
                         # capture its metrics before the workspace stops and the verifier
                         # starts. Neither counts against finalization; the metrics count
-                        # against scoring, as they did when they ran first.
+                        # against scoring.
                         interlude_started = loop.time()
                         await self._close_harness()
                         metrics_started = loop.time()
@@ -1546,7 +1541,7 @@ class Rollout:
             # A failed attempt's retry restores the newest snapshot, which must be
             # durable before the box goes.
             await self._settle_checkpoints(wait=not trace.ok)
-            # Tear down here — the env's `score()` (later) needs only the traces,
+            # Tear down here — the env's `finalize()` (later) needs only the traces,
             # not a live runtime. A borrowed runtime is its creator's to tear down,
             # not this rollout's.
             started = time.perf_counter()

@@ -30,6 +30,3 @@ class SamplingConfig(BaseModel):
             layer.pop("extra_body", None)
             normalized.update(layer)
         return normalized
-
-
-Sampling = SamplingConfig

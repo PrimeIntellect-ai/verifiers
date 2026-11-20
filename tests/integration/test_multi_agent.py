@@ -6,7 +6,7 @@ import json
 
 async def test_multi_agent_env(run):
     """An `Env` subclass shipped with its taskset (duet): two roles run the
-    task, `score()` episodes a sibling-dependent metric, and one episode carries
+    task, `finalize()` records a sibling-dependent metric, and one episode carries
     two role-stamped traces."""
     (episode,) = await run(
         "duet",

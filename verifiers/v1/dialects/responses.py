@@ -19,7 +19,7 @@ from openai.types.responses.response_usage import (
 from pydantic import BaseModel, ConfigDict
 
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
-from verifiers.v1.configs.sampling import Sampling, SamplingConfig
+from verifiers.v1.configs.sampling import SamplingConfig
 from verifiers.v1.dialects.base import (
     Dialect,
     RawRequest,
@@ -503,7 +503,7 @@ class ResponsesDialect(Dialect[OpenAIResponse]):
         # trailing `[DONE]`, so the turn-ending event is the final event, not the sentinel.
         return any(marker in chunk for marker in _TERMINAL_MARKERS)
 
-    def parse_sampling(self, body: RawRequest) -> Sampling:
+    def parse_sampling(self, body: RawRequest) -> SamplingConfig:
         settings = {k: v for k, v in body.items() if k in self.sampling_fields}
         # Lift `reasoning.effort` onto the typed knob; keep any other reasoning keys
         # (e.g. `summary`) as the wire sent them.
@@ -517,7 +517,7 @@ class ResponsesDialect(Dialect[OpenAIResponse]):
                 settings.pop("reasoning")
         if "max_output_tokens" in settings:
             settings["max_tokens"] = settings.pop("max_output_tokens")
-        return Sampling.model_validate(settings)
+        return SamplingConfig.model_validate(settings)
 
     def parse_request(self, body: RawRequest) -> Request:
         prompt: Messages = []
