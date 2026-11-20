@@ -9,6 +9,9 @@ on:
     # This will trigger the workflow for pull requests to any branch
     types: [opened, synchronize, reopened]
 
+permissions:
+  contents: read
+
 jobs:
   ruff:
     name: Ruff
@@ -20,11 +23,11 @@ jobs:
           submodules: true
       # Pin to the ruff uv.lock resolves, so CI and `uv run ruff` agree.
       - name: Lint
-        uses: astral-sh/ruff-action@v4.1.0
+        uses: astral-sh/ruff-action@278981a28ce3188b1e39527901f38254bf3aac89 # v4.1.0
         with:
           version: "0.16.0"
       - name: Format
-        uses: astral-sh/ruff-action@v4.1.0
+        uses: astral-sh/ruff-action@278981a28ce3188b1e39527901f38254bf3aac89 # v4.1.0
         with:
           version: "0.16.0"
           args: "format --check"
@@ -41,7 +44,7 @@ jobs:
         with:
           python-version: "3.13"
       - name: Install uv
-        uses: astral-sh/setup-uv@v10.0.1
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
       - name: Install dependencies
         run: uv sync
       - name: Run ty

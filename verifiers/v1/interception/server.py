@@ -27,7 +27,6 @@ import hashlib
 import json
 import secrets
 import time
-import traceback
 from collections.abc import AsyncIterator, Awaitable, Collection, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
@@ -764,19 +763,7 @@ class InterceptionServer(Interception):
                 finish_reason=finish_reason,
                 usage=usage,
                 time=TimeSpan(start=started, end=time.time()),
-                error=None
-                if error is None
-                else Error(
-                    type=type(error).__name__,
-                    message=str(error),
-                    status_code=getattr(error, "status_code", None),
-                    # Provider errors already carry the actionable upstream diagnostic.
-                    # Format from the exception object: the record is written in a
-                    # `finally`, where the ambient exception state is already cleared.
-                    traceback=None
-                    if isinstance(error, ProviderError)
-                    else "".join(traceback.format_exception(error)),
-                ),
+                error=None if error is None else Error.from_exception(error),
                 policy=PolicyEvent(
                     code=PROVIDER_CAPABILITY_POLICY_CODE,
                     paths=policy_paths,

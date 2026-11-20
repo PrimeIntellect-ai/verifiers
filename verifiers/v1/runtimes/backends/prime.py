@@ -42,9 +42,6 @@ from verifiers.v1.utils.scope import run_scope
 
 logger = get_logger(__name__)
 
-EFFECTIVELY_UNBOUNDED_SECONDS = 30 * 24 * 60 * 60
-"""Safety deadline for APIs that require a finite bound. Normal execution remains
-bounded by idle detection or rollout cancellation; 30 days is above any real run."""
 _OUTPUT_TAIL_BYTES = 10 * 1024 * 1024
 """Maximum retained bytes per command output stream."""
 _PUBLIC_DOMAIN = "sandbox-v2-prod.pinfra.io"

@@ -60,7 +60,7 @@ if TYPE_CHECKING:
         RuntimeConfig,
         SubprocessConfig,
     )
-    from verifiers.v1.configs.sampling import Sampling, SamplingConfig
+    from verifiers.v1.configs.sampling import SamplingConfig
     from verifiers.v1.configs.scoring import ScoringConfig
     from verifiers.v1.configs.select import (
         SelectCLIConfig,
@@ -307,7 +307,6 @@ _NAME_TO_MODULE = {
     "RuntimeConfig": "verifiers.v1.configs.runtime",
     "RuntimeInfo": "verifiers.v1.runtimes",
     "RuntimeProcess": "verifiers.v1.runtimes",
-    "Sampling": "verifiers.v1.configs.sampling",
     "SamplingConfig": "verifiers.v1.configs.sampling",
     "SamplerSupport": "verifiers.v1.types",
     "SandboxError": "verifiers.v1.errors",
@@ -415,7 +414,6 @@ __all__ = [  # noqa: RUF022 - grouped by public API area
     "Messages",
     "Request",
     "Response",
-    "Sampling",
     "SamplingConfig",
     "SystemMessage",
     "TextContentPart",

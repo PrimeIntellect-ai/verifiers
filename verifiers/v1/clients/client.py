@@ -10,7 +10,7 @@ from verifiers.v1.configs.client import (
     ClientConfig,
     TrainClientConfig,
 )
-from verifiers.v1.configs.sampling import Sampling, SamplingConfig
+from verifiers.v1.configs.sampling import SamplingConfig
 from verifiers.v1.dialects import Dialect
 from verifiers.v1.errors import ProviderError
 from verifiers.v1.graph import PendingTurn
@@ -89,7 +89,7 @@ class ModelContext:
 
     model: str
     client: ClientConfig
-    sampling: Sampling = field(default_factory=Sampling)
+    sampling: SamplingConfig = field(default_factory=SamplingConfig)
 
 
 class RouteRejected(Exception):
@@ -126,7 +126,7 @@ class ModelRoute:
         *,
         model: str | None = None,
         client: ClientConfig | None = None,
-        sampling: Sampling | None = None,
+        sampling: SamplingConfig | None = None,
     ) -> None:
         """Change the model, client or sampling of the rollout's next turns; a value left
         out stays as it is. Raises `RouteRejected`, leaving the route unchanged, when the

@@ -18,7 +18,7 @@ from openai.types.chat import ChatCompletion
 from openai.types.chat.chat_completion import Choice
 
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
-from verifiers.v1.configs.sampling import Sampling, SamplingConfig
+from verifiers.v1.configs.sampling import SamplingConfig
 from verifiers.v1.dialects.base import (
     Dialect,
     RawRequest,
@@ -549,13 +549,13 @@ class ChatDialect(Dialect[ChatCompletion]):
                     tool_names[call.id] = call.name
         return Request(messages=messages, tools=parse_tools(body.get("tools")))
 
-    def parse_sampling(self, body: RawRequest) -> Sampling:
+    def parse_sampling(self, body: RawRequest) -> SamplingConfig:
         settings = {k: v for k, v in body.items() if k in self.sampling_fields}
         # Canonicalize the max-tokens alias; when both ride the wire (an eval override
         # on top of a harness's `max_completion_tokens`), the override wins.
         if (mct := settings.pop("max_completion_tokens", None)) is not None:
             settings.setdefault("max_tokens", mct)
-        return Sampling.model_validate(settings)
+        return SamplingConfig.model_validate(settings)
 
     def parse_response(self, response: ChatCompletion) -> Response:
         return response_from_wire(response)

@@ -37,7 +37,7 @@
     },
     {
       "source": "/v1/evaluation",
-      "destination": "/evaluation"
+      "destination": "/getting_started"
     },
     {
       "source": "/v1/harnesses",

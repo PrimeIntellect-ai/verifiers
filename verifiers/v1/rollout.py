@@ -169,12 +169,7 @@ class Rollout:
         self.trace: Trace = Trace(
             **({"id": trace_id} if trace_id is not None else {}),
             attempt=attempt,
-            task=TraceTask(
-                type=type(task).__name__,
-                data=task.data,
-                key=task.key,
-                hash=task.hash,
-            ),
+            task=TraceTask.from_task(task),
             state=state_cls(type(task))(),
             # The seat's resolved config, role overrides included — the agent
             # this trace can be reproduced with.
@@ -1155,7 +1150,7 @@ class Rollout:
                         # The submission is collected: close the solver's session, then
                         # capture its metrics before the workspace stops and the verifier
                         # starts. Neither counts against finalization; the metrics count
-                        # against scoring, as they did when they ran first.
+                        # against scoring.
                         interlude_started = loop.time()
                         await self._close_harness()
                         metrics_started = loop.time()
@@ -1304,7 +1299,7 @@ class Rollout:
             trace.split_agent_time()
             if runtime is not None:
                 await self._cleanup_harness(runtime, runtime_stopping=True)
-            # Tear down here — the env's `score()` (later) needs only the traces,
+            # Tear down here — the env's `finalize()` (later) needs only the traces,
             # not a live runtime. A borrowed runtime is its creator's to tear down,
             # not this rollout's.
             started = time.perf_counter()

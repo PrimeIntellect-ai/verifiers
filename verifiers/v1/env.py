@@ -68,16 +68,6 @@ class RunSlot:
     done: bool = False
     started: float | None = None
 
-    @classmethod
-    def finished(cls, episode: Episode) -> "RunSlot":
-        return cls(
-            task=Task(episode.task.data),
-            id=episode.id,
-            traces=list(episode.traces),
-            episode=episode,
-            done=True,
-        )
-
 
 ConfigT = TypeVar("ConfigT", bound=EnvConfig)
 
@@ -260,12 +250,7 @@ class Env(ABC, Generic[ConfigT]):
             **({"id": episode_id} if episode_id is not None else {}),
             attempt=attempt,
             env=EnvInfo(id=self.config.env_id),
-            task=TraceTask(
-                type=type(task).__name__,
-                data=task.data,
-                key=task.key,
-                hash=task.hash,
-            ),
+            task=TraceTask.from_task(task),
         )
         agents = self._episode_agents(ctx, episode.traces, on_trace, on_discard)
         try:
@@ -412,7 +397,7 @@ class Env(ABC, Generic[ConfigT]):
     @contextlib.asynccontextmanager
     async def serving(self, interception: Interception | None = None):
         """Hold the env-level serving resources for the duration of an eval; plan and
-        run slots inside. Torn down on exit (`teardown()`, then the framework's)."""
+        run slots inside. Torn down on exit (`stop()`, then the framework's)."""
         from verifiers.v1.runtimes.harness_pool import harness_pool_scope
 
         async with harness_pool_scope(), self.shared_tools() as shared:

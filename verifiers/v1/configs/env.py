@@ -53,10 +53,7 @@ class SharedEnvConfig(BaseConfig):
     dispatched training episode — is also one live agent run, whatever `run()` fans
     out to internally. Raise it where per-episode latency matters and the
     multiplication is wanted: `--env.max-concurrent-agents None` plays an episode's
-    `best-of-n` attempts together, so `-c` episodes carry `-c * n` live runs. Not
-    spelled `max_concurrent`: that key used to bound a served worker's agent runs
-    across episodes, and taking it as this one silently multiplies it by the episodes
-    in flight."""
+    `best-of-n` attempts together, so `-c` episodes carry `-c * n` live runs."""
     interception: InterceptionConfig = ElasticInterceptionPoolConfig()
     """The interception shape: `elastic` (default), `server`, or `static`."""
 

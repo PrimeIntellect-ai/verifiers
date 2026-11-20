@@ -1,6 +1,5 @@
 """Task x agent fit: what refuses before any work happens. `Agent.run` applies
-these per run, on the task the agent actually receives; `SingleAgentEnv` applies
-them at construction where the pairing is statically decidable."""
+these per run, on the task the agent actually receives."""
 
 from collections.abc import Collection
 
