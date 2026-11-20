@@ -497,8 +497,11 @@ async def compose_services(
             ):
                 owner = mode.removeprefix("service:")
 
+            # The VM project already resolved the authored image or build.
             main = config.model_dump(
-                include={"image", "workdir"}, exclude_defaults=True, exclude_none=True
+                include={"image", "workdir"} if local else {"workdir"},
+                exclude_defaults=True,
+                exclude_none=True,
             )
             if spec.image_override:
                 main["image"] = config.image

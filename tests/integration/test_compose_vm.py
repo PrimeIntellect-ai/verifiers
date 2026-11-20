@@ -8,6 +8,7 @@ import pytest
 
 import verifiers.v1 as vf
 from verifiers.v1.configs.agent import TimeoutConfig
+from verifiers.v1.runtimes.compose import VM_HOST_IMAGE
 from verifiers.v1.tasksets.harbor.taskset import (
     HarborConfig,
     HarborTask,
@@ -15,10 +16,13 @@ from verifiers.v1.tasksets.harbor.taskset import (
 )
 
 IMAGE = "public.ecr.aws/docker/library/python@sha256:b701198cb708b68d9413ca67d6311bd97c9389a2c5fe4da0511fc652642366cd"
+WORKSPACE_IMAGE = "vf-compose-workspace:latest"
 
 COMPOSE = f"""\
 services:
   main:
+    image: {WORKSPACE_IMAGE}
+    pull_policy: build
     build:
       context: .
       args:
@@ -74,6 +78,7 @@ class ComposeVMTask(HarborTask):
 
     async def setup(self, runtime, deployment=None):
         await super().setup(runtime, deployment)
+        assert runtime.config.image == WORKSPACE_IMAGE
         if deployment is not None:
             assert set(deployment.target_backends) == {"main", "world"}
             result = await runtime.run(
@@ -184,10 +189,18 @@ async def test_compose_vm(tmp_path, scoring_mode, monkeypatch):
         'service = "world"\n'
         'command = "mkdir -p /evidence && cp /logs/world/answer /evidence/answer"\n'
     )
-    task = ComposeVMTask(parse_task(tmp_path, 0, HarborConfig()))
+    harbor = HarborConfig(compose_host_image=VM_HOST_IMAGE)
+    task = ComposeVMTask(parse_task(tmp_path, 0, harbor))
+    assert task.deployment_spec().host_image == VM_HOST_IMAGE
     config = vf.AgentConfig(
         model="unused",
-        runtime=vf.PrimeConfig(cpu=2, memory=4, disk=10, labels=["vf-ci"]),
+        runtime=vf.PrimeConfig(
+            image="vf-compose-fallback:latest",
+            cpu=2,
+            memory=4,
+            disk=10,
+            labels=["vf-ci"],
+        ),
         deployment=vf.DeploymentConfig(compose_mode="vm"),
         scoring=vf.ScoringConfig(
             mode=scoring_mode, retries=vf.RetryConfig(max_retries=0)

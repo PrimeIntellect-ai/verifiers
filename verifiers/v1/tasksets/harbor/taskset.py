@@ -112,6 +112,8 @@ class HarborConfig(TasksetConfig):
     instead of rejecting it. The Dockerfile is NOT built, so the task scores against the
     harness image rather than its declared environment — only correct when that image already
     has what the task needs (e.g. you've pointed the runtime at the right image)."""
+    compose_host_image: str | None = Field(None, min_length=1)
+    """Host image for Prime Compose deployments explicitly placed in VM mode."""
     ignore_separate_verifier: bool = False
     """Grade every task in the agent's own box, even one whose `[verifier]` asks for a
     separate one. Trades the isolation for a sandbox per task; useful when provisioning
@@ -886,6 +888,7 @@ def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborD
         tags=meta.get("tags", []),
         task_dir=str(task_dir),
         compose_build_dockerfile=not harbor_config.ignore_dockerfile,
+        compose_host_image=harbor_config.compose_host_image,
         upload_environment=upload_environment,
         skills=[{"runtime": environment.skills_dir}] if environment.skills_dir else [],
         **environment.model_dump(
