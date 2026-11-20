@@ -638,6 +638,8 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
     """What stopped the trace."""
     is_timeout: bool = False
     """Whether a stage deadline (setup, agent, finalize, or scoring) expired."""
+    solver_completed_before_scoring_timeout: bool = False
+    """Whether the solver completed before scoring overwrote its stop condition."""
     errors: list[Error] = Field(default_factory=list)
     """Every error captured across attempts, oldest to newest."""
     dropped: str | None = None
@@ -983,6 +985,10 @@ class Trace(BaseModel, Generic[DataT, StateT, AgentConfigT]):
         """Record a stage deadline's expiry, and stop the trace as `<stage>_timeout`.
         The deadline is what ended the trace, so it replaces any earlier stop
         condition (a finalize deadline can expire after `agent_completed`)."""
+        if stage == "scoring" and self.stop_condition != "scoring_timeout":
+            self.solver_completed_before_scoring_timeout = (
+                self.stop_condition == "agent_completed" and not self.is_timeout
+            )
         self.is_timeout = True
         self.stop(f"{stage}_timeout", override=True)
 
