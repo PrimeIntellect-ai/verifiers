@@ -68,16 +68,6 @@ class RunSlot:
     done: bool = False
     started: float | None = None
 
-    @classmethod
-    def finished(cls, episode: Episode) -> "RunSlot":
-        return cls(
-            task=Task(episode.task.data),
-            id=episode.id,
-            traces=list(episode.traces),
-            episode=episode,
-            done=True,
-        )
-
 
 ConfigT = TypeVar("ConfigT", bound=EnvConfig)
 
