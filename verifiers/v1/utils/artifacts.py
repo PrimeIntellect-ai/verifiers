@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import glob
+import hashlib
 import io
 import json
+import os
 import posixpath
 import re
 import shlex
@@ -12,12 +15,13 @@ import tarfile
 import tempfile
 import time
 import uuid
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, Field, field_validator
 
+from verifiers.v1.utils.files import read_regular
 from verifiers.v1.utils.format import format_time
 from verifiers.v1.utils.logging import get_logger
 
@@ -32,6 +36,12 @@ ARTIFACTS_DIR = "/logs/artifacts"
 MAX_ARTIFACT_BYTES = 32 * 1024 * 1024
 """Default ceiling per collection. Sized for a delta, not a tree: the grading box boots from the
 agent's image, so the repo is already there and only its output has to travel."""
+
+MAX_MANIFEST_BYTES = 1024 * 1024
+
+
+class _ArtifactSizeError(ValueError):
+    """The canonical archives exceed the submission's byte budget."""
 
 
 class Artifact(BaseModel):
@@ -55,13 +65,27 @@ class Artifact(BaseModel):
             or not path.parts
             or ".." in path.parts
             or "\\" in value
-            or path.parts[0] == "manifest.json"
+            or path.parts[0] in ("manifest.json", ".archives")
         ):
             raise ValueError(
                 "artifact destination must be a relative path without '..' or "
-                "backslashes, outside the reserved manifest.json path"
+                "backslashes, outside reserved manifest.json and .archives paths"
             )
         return str(path)
+
+
+def artifact_source(
+    artifact: Artifact, workdir: str, service_workdirs: Mapping[str, str]
+) -> str:
+    """Resolve a declaration against the runtime that captured it."""
+    path = PurePosixPath(artifact.source)
+    if path.is_absolute():
+        return posixpath.normpath(str(path))
+    service = getattr(artifact, "service", "main")
+    directory = service_workdirs.get(service, workdir if service == "main" else None)
+    if not isinstance(directory, str) or not PurePosixPath(directory).is_absolute():
+        raise ValueError(f"No saved artifact workdir for service {service!r}")
+    return posixpath.normpath(str(PurePosixPath(directory) / path))
 
 
 def validate_artifact_mounts(config: RuntimeConfig, sources: Iterable[str]) -> None:
@@ -82,13 +106,19 @@ def validate_artifact_mounts(config: RuntimeConfig, sources: Iterable[str]) -> N
                 )
 
 
-async def validate_runtime_mounts(runtime: Runtime, sources: Iterable[str]) -> None:
+async def validate_runtime_mounts(
+    runtime: Runtime, sources: Iterable[str], *, workspace: bool = False
+) -> None:
     """Reject relocated mounts and aliases that bypass lexical overlap checks."""
     mounts = getattr(runtime.config, "mounts", {})
-    if not mounts:
+    if not mounts and not workspace:
         return
     sources = list(sources)
-    validate_artifact_mounts(runtime.config, sources)
+    if workspace:
+        if any(not mount.read_only for mount in mounts.values()):
+            raise ValueError("Independent workspaces require read-only mounts")
+    else:
+        validate_artifact_mounts(runtime.config, sources)
     workdir = PurePosixPath(getattr(runtime.config, "workdir", None) or "/")
     paths: set[str] = set()
     for source in [*mounts, ARTIFACTS_DIR, *sources]:
@@ -103,6 +133,8 @@ async def validate_runtime_mounts(runtime: Runtime, sources: Iterable[str]) -> N
         '"$mount_path" >&2; exit 1; fi; done',
         "validate mount and artifact paths",
     )
+    if not mounts:
+        return
     # Read procfs through exec: file downloads may require seeking to EOF.
     mountinfo = await _run(runtime, "cat /proc/self/mountinfo", "read mount table")
     records = [line.split() for line in mountinfo.splitlines()]
@@ -123,6 +155,7 @@ async def collect(
     *,
     max_bytes: int = MAX_ARTIFACT_BYTES,
     sweep: bool = True,
+    workspace: bool = False,
 ) -> dict[str, bytes | None]:
     """Tar the convention dir (when `sweep`) and every declared path out of `runtime`.
 
@@ -134,6 +167,8 @@ async def collect(
     implicit convention sweep is exempt — most tasks never write there.
 
     Each source is archived separately so its exclude patterns stay local.
+    Workspace copies preserve container links and exclude read-only mounts; their
+    caller supplies every input root and restores into a fresh matching runtime.
     """
     started = time.perf_counter()
     # Resolve relative sources against the runtime workdir. Joining also normalises
@@ -144,6 +179,32 @@ async def collect(
         a.model_copy(update={"source": str(workdir / a.source)})
         for a in artifacts or []
     ]
+    mounts = getattr(runtime.config, "mounts", {})
+    if workspace:
+        # Validate every requested path before dropping nested roots or mount inputs.
+        await validate_runtime_mounts(
+            runtime, (a.source for a in declared), workspace=True
+        )
+        for artifact in declared:
+            _validate_restore(artifact.source, None, workspace=True)
+        roots = {PurePosixPath(a.source) for a in declared}
+        declared = [
+            a.model_copy(
+                update={
+                    "exclude": [
+                        *a.exclude,
+                        *(
+                            m.lstrip("/")
+                            for m in mounts
+                            if PurePosixPath(m).is_relative_to(a.source)
+                        ),
+                    ]
+                }
+            )
+            for a in declared
+            if not any(PurePosixPath(a.source).is_relative_to(m) for m in mounts)
+            and not any(parent in roots for parent in PurePosixPath(a.source).parents)
+        ]
     convention = PurePosixPath(ARTIFACTS_DIR)
     declared_paths = [PurePosixPath(artifact.source) for artifact in declared]
     if not sweep or convention in declared_paths:
@@ -193,7 +254,7 @@ async def collect(
 
     existence: list[str] = []
     for sources in batches:
-        await validate_runtime_mounts(runtime, sources)
+        await validate_runtime_mounts(runtime, sources, workspace=workspace)
         output = await _run(
             runtime,
             f"for source in {shlex.join(sources)}; do "
@@ -213,7 +274,9 @@ async def collect(
             raise RuntimeError(
                 f"declared artifact {source!r} does not exist in the runtime"
             )
-        archive = await _tar_out(runtime, artifact, budget)
+        archive = await _tar_out(runtime, artifact, budget, literal_excludes=workspace)
+        _validate_restore(source, archive, workspace=workspace)
+        archive = _rebuild(archive, max_bytes=budget)
         budget -= len(archive)
         collected[source] = archive
 
@@ -231,39 +294,58 @@ def save_artifacts(
     artifacts: list[Artifact],
     *,
     workdir: str = "/",
-) -> None:
-    """Save collected files at their declared destinations, with a manifest.
+    service_workdirs: Mapping[str, str] | None = None,
+    max_bytes: int = MAX_ARTIFACT_BYTES,
+) -> str:
+    """Save canonical archives and preview files, with a manifest identifying both.
 
     Unpack each validated archive in isolation before moving its files into the
     saved tree. Failed or conflicting entries are recorded without losing the
     completed trace. Source-mirrored directories may merge: collection splits
     nested declarations out of the implicit convention sweep.
     """
-    declared = {str(PurePosixPath(workdir) / a.source): a for a in artifacts}
+    workdirs = service_workdirs or {}
+    declared = {
+        artifact_source(a, workdir, workdirs): a
+        for a in artifacts
+        if PurePosixPath(a.source).is_absolute()
+        or getattr(a, "service", "main") in {"main", *workdirs}
+    }
     manifest: list[dict] = []
     claims: list[tuple[PurePosixPath, bool]] = []
+    remaining = max_bytes
     directory.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(dir=directory.parent) as temporary:
         saved = Path(temporary) / "artifacts"
         saved.mkdir()
         (saved / "manifest.json").touch()
+        (saved / ".archives").mkdir()
         for source, archive in collected.items():
             artifact = declared.get(source, Artifact(source=source))
-            destination = artifact.destination or artifact.source.lstrip("/")
+            service = getattr(artifact, "service", "main")
+            destination = artifact.destination or (
+                source if service != "main" else artifact.source
+            ).lstrip("/")
             entry = {
                 "source": source,
-                "service": getattr(artifact, "service", "main"),
+                "service": service,
                 "destination": destination,
                 "status": "empty",
             }
             manifest.append(entry)
             try:
                 _validate_restore(source, archive)
-                Artifact.validate_destination(artifact.destination)
-                target = PurePosixPath(destination)
-                entry["destination"] = str(target)
                 if archive is None:
                     continue
+                canonical = _rebuild(archive, max_bytes=remaining)
+                remaining -= len(canonical)
+                digest = hashlib.sha256(canonical).hexdigest()
+                archive_path = f".archives/{digest}.tar"
+                (saved / archive_path).write_bytes(canonical)
+                entry.update(archive=archive_path, sha256=digest, size=len(canonical))
+                Artifact.validate_destination(destination)
+                target = PurePosixPath(destination)
+                entry["destination"] = str(target)
                 with tarfile.open(fileobj=io.BytesIO(archive), mode="r:") as tar:
                     members = tar.getmembers()
                     if not members:
@@ -310,28 +392,105 @@ def save_artifacts(
                                 (Path(unpacked) / member.name).replace(path)
                     claims.append((target, artifact.destination is not None))
                     entry["status"] = "ok"
+            except _ArtifactSizeError:
+                raise
             except (OSError, ValueError, RuntimeError, tarfile.TarError) as exc:
                 entry.update(status="failed", error=str(exc))
                 logger.warning("Failed to save artifact %s - %s", source, exc)
-        (saved / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+        manifest_bytes = (json.dumps(manifest, indent=2) + "\n").encode()
+        if len(manifest_bytes) > MAX_MANIFEST_BYTES:
+            raise ValueError("artifact manifest exceeds the byte limit")
+        (saved / "manifest.json").write_bytes(manifest_bytes)
         if directory.is_symlink():
             raise ValueError(f"artifact directory must not be a symlink: {directory}")
         if directory.exists():
             shutil.rmtree(directory)
         saved.replace(directory)
+    return hashlib.sha256(manifest_bytes).hexdigest()
 
 
-async def restore(runtime: Runtime, collected: dict[str, bytes | None]) -> None:
+def _read_saved_file(directory: Path, relative: str, limit: int) -> bytes:
+    """Open a saved file through directory descriptors, rejecting links and FIFOs."""
+    flags = os.O_RDONLY | os.O_NOFOLLOW
+    parent = os.open(directory, flags | os.O_DIRECTORY)
+    try:
+        parts = PurePosixPath(relative).parts
+        for name in parts[:-1]:
+            child = os.open(name, flags | os.O_DIRECTORY, dir_fd=parent)
+            os.close(parent)
+            parent = child
+        return read_regular(parts[-1], limit, dir_fd=parent)
+    finally:
+        os.close(parent)
+
+
+def load_artifacts(
+    directory: Path,
+    *,
+    max_bytes: int = MAX_ARTIFACT_BYTES,
+    expected_manifest_sha256: str | None = None,
+) -> dict[str, bytes | None]:
+    """Load complete, hash-checked submissions saved by `save_artifacts`.
+
+    Extracted files are a convenient inspection view; regrading uses only the
+    original canonical archives. Older manifests without archives cannot establish
+    a complete submission and are rejected rather than silently reconstructed.
+    """
+    manifest_bytes = _read_saved_file(directory, "manifest.json", MAX_MANIFEST_BYTES)
+    if (
+        expected_manifest_sha256 is not None
+        and hashlib.sha256(manifest_bytes).hexdigest() != expected_manifest_sha256
+    ):
+        raise ValueError("artifact manifest failed its integrity check")
+    manifest = json.loads(manifest_bytes)
+    if not isinstance(manifest, list):
+        raise TypeError("artifact manifest must be a list")
+    collected: dict[str, bytes | None] = {}
+    remaining = max_bytes
+    for entry in manifest:
+        if not isinstance(entry, dict) or not isinstance(entry.get("source"), str):
+            raise TypeError("invalid artifact manifest entry")
+        source = entry["source"]
+        if source in collected:
+            raise ValueError(f"duplicate artifact root {source!r}")
+        _validate_restore(source, None)
+        if entry.get("status") == "empty" and "archive" not in entry:
+            collected[source] = None
+            continue
+        digest = entry.get("sha256")
+        # Preview failures do not affect a complete, verified archive.
+        if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
+            raise ValueError(f"artifact {source!r} has no complete saved archive")
+        relative = f".archives/{digest}.tar"
+        if entry.get("archive") != relative:
+            raise ValueError(f"invalid archive path for {source!r}")
+        archive = _read_saved_file(directory, relative, remaining)
+        if len(archive) != entry.get("size"):
+            raise ValueError(
+                f"artifact {source!r} exceeds its recorded size or byte budget"
+            )
+        if hashlib.sha256(archive).hexdigest() != digest:
+            raise ValueError(f"artifact {source!r} failed its integrity check")
+        _validate_restore(source, archive)
+        collected[source] = archive
+        remaining -= len(archive)
+    return collected
+
+
+async def restore(
+    runtime: Runtime, collected: dict[str, bytes | None], *, workspace: bool = False
+) -> None:
     """Extract `collected` in `runtime` at the original absolute paths.
 
     Archive bytes are untrusted: the agent controls both their source files and the
     runtime tooling that creates them. Every archive is therefore validated on the host
     before the grading runtime is changed. Regular files, directories, and confined links
-    can travel; link chains and extraction through symlinks cannot.
+    can travel; extraction through symlinks cannot. Workspace copies additionally
+    preserve read-only mounts, image links and directories owned by non-root users.
     """
     if not collected:
         return
-    await validate_runtime_mounts(runtime, collected)
+    await validate_runtime_mounts(runtime, collected, workspace=workspace)
     # Restoring into the subprocess runtime would extract absolute paths onto the
     # developer's filesystem, so refuse it before any archive reaches the host.
     if getattr(runtime.config, "type", None) == "subprocess":
@@ -339,8 +498,55 @@ async def restore(runtime: Runtime, collected: dict[str, bytes | None]) -> None:
             "refusing to restore artifacts into the subprocess runtime: extraction "
             "writes to absolute paths on the host. Grade in a container."
         )
+    cleanup = []
     for root, archive in collected.items():
-        _validate_restore(root, archive)
+        _validate_restore(root, archive, workspace=workspace)
+        if not workspace:
+            cleanup.append(f"rm -rf -- {shlex.quote(root)}")
+            continue
+        mounts = [
+            PurePosixPath(m)
+            for m in getattr(runtime.config, "mounts", {})
+            if PurePosixPath(m).is_relative_to(root)
+        ]
+        directory = False
+        if archive is not None:
+            with tarfile.open(fileobj=io.BytesIO(archive)) as tar:
+                for member in tar:
+                    path = PurePosixPath("/") / member.name
+                    if path == PurePosixPath(root):
+                        directory = member.isdir()
+                    if any(
+                        path.is_relative_to(m)
+                        or (m.is_relative_to(path) and not member.isdir())
+                        for m in mounts
+                    ):
+                        raise ValueError("Workspace archive overlaps a read-only mount")
+        if not mounts:
+            # Owning /app need not permit removing its entry from the root directory.
+            cleanup.append(
+                f"if test -d {shlex.quote(root)}; then "
+                f"find {shlex.quote(root)} -mindepth 1 -maxdepth 1 "
+                "-exec rm -rf -- {} +; "
+                f"else rm -f -- {shlex.quote(root)}; fi"
+                if directory
+                else f"rm -rf -- {shlex.quote(root)}"
+            )
+            continue
+        # Keep mount targets and their ancestors without entering mounted trees.
+        preserve = {
+            p for m in mounts for p in (m, *m.parents) if p.is_relative_to(root)
+        }
+        patterns = {
+            p: shlex.quote(glob.escape(str(p).replace("\\", "\\\\"))) for p in preserve
+        }
+        prune = " -o ".join(f"-path {patterns[m]}" for m in mounts)
+        keep = " ".join(f"! -path {patterns[p]}" for p in sorted(preserve))
+        # BusyBox find may not flush a batched -exec when combined with -prune.
+        cleanup.append(
+            f"find {shlex.quote(root)} -mindepth 1 \\( {prune} \\) -prune -o "
+            f"\\( {keep} -prune -exec rm -rf -- {{}} \\; \\)"
+        )
     collected = {
         root: None if archive is None else _rebuild(archive)
         for root, archive in collected.items()
@@ -348,13 +554,12 @@ async def restore(runtime: Runtime, collected: dict[str, bytes | None]) -> None:
     # Clear every root up front, not per entry: a later nested root would otherwise
     # delete content an earlier one just restored. Clearing also drops any file or
     # symlink the image left at the target.
-    roots = " ".join(shlex.quote(root) for root in collected)
     # Container exec requires its configured cwd to exist, including while a
     # submission replaces the entire working directory (or one of its parents).
     workdir = shlex.quote(getattr(runtime.config, "workdir", None) or "/")
     await _run(
         runtime,
-        f"rm -rf -- {roots} && mkdir -p -- {workdir}",
+        " && ".join([*cleanup, f"mkdir -p -- {workdir}"]),
         "clear artifact roots",
     )
     for root, archive in collected.items():
@@ -369,15 +574,33 @@ async def restore(runtime: Runtime, collected: dict[str, bytes | None]) -> None:
         )
 
 
-async def _tar_out(runtime: Runtime, artifact: Artifact, budget: int) -> bytes:
+async def _tar_out(
+    runtime: Runtime, artifact: Artifact, budget: int, *, literal_excludes: bool = False
+) -> bytes:
     path = f"/tmp/artifact-{uuid.uuid4().hex}.tar"
+    source = artifact.source.lstrip("/")
+    prefix = ""
     excludes = " ".join(f"--exclude={shlex.quote(p)}" for p in artifact.exclude)
+    if literal_excludes and artifact.exclude:
+        # GNU/BusyBox match the leading './' literally; BSD ignores it unless
+        # anchored with '^'. Escape patterns so mount names match exactly.
+        prefix = (
+            'tar_anchor=.; case "$(tar --version 2>/dev/null)" in '
+            "bsdtar*) tar_anchor=^.; esac; "
+        )
+        excludes = " ".join(
+            '--exclude="$tar_anchor"/'
+            + shlex.quote(glob.escape(p.replace("\\", "\\\\")).replace("$", "[$]"))
+            for p in artifact.exclude
+        )
+        source = "./" + source
     try:
         # macOS tar otherwise adds AppleDouble sidecars next to a directory root.
         await _run(
             runtime,
-            f"COPYFILE_DISABLE=1 tar -cf {shlex.quote(path)} -C / {excludes} -- "
-            f"{shlex.quote(artifact.source.lstrip('/'))}",
+            prefix
+            + f"COPYFILE_DISABLE=1 tar -cf {shlex.quote(path)} -C / {excludes} -- "
+            f"{shlex.quote(source)}",
             f"collect artifact {artifact.source!r}",
         )
         # The runtime enforces the remaining collection budget while transferring the
@@ -429,7 +652,7 @@ def _drop_special_files(archive: bytes) -> tuple[bytes, list[str]]:
     return out.getvalue(), dropped
 
 
-def _rebuild(archive: bytes) -> bytes:
+def _rebuild(archive: bytes, *, max_bytes: int | None = None) -> bytes:
     """Write a fresh archive holding exactly the members Python's tarfile reads.
 
     Validation reads archives with Python's tarfile, but the grading box extracts
@@ -465,10 +688,16 @@ def _rebuild(archive: bytes) -> bytes:
                     f"artifact member {member.name!r} is a link or special file"
                 )
             target.addfile(info, content)
+            if max_bytes is not None and target.offset > max_bytes:
+                raise _ArtifactSizeError("canonical artifacts exceed the byte limit")
+    if max_bytes is not None and out.tell() > max_bytes:
+        raise _ArtifactSizeError("canonical artifacts exceed the byte limit")
     return out.getvalue()
 
 
-def _validate_restore(root: str, archive: bytes | None) -> None:
+def _validate_restore(
+    root: str, archive: bytes | None, *, workspace: bool = False
+) -> None:
     """Reject archive content that could restore outside its declared root."""
     root_path = PurePosixPath(root)
     if (
@@ -543,6 +772,11 @@ def _validate_restore(root: str, archive: bytes | None) -> None:
                     raise RuntimeError(
                         f"artifact member {str(member_path)!r} traverses a symlink"
                     )
+            # Workspace copies stay in containers and preserve the image's links.
+            # Member paths and hard links remain confined; extraction cannot walk
+            # through a symlink. Saved submission artifacts keep stricter targets.
+            if workspace:
+                return
             relative_root = root_path.relative_to("/")
             for member_path, linkname in symlinks.items():
                 target = PurePosixPath(linkname)

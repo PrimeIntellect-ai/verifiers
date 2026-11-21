@@ -5,7 +5,7 @@ import contextlib
 import logging
 import time
 from collections.abc import Awaitable, Callable
-from contextlib import AsyncExitStack
+from contextlib import AbstractAsyncContextManager, AsyncExitStack, nullcontext
 from dataclasses import dataclass
 from urllib.parse import urlsplit
 
@@ -25,6 +25,7 @@ from verifiers.v1.grading import (
     bind_scoring_env,
     grade_task,
     scoring_network,
+    scoring_skip_reason,
     scoring_transaction,
     verifier_runtime,
 )
@@ -39,7 +40,7 @@ from verifiers.v1.runtimes import (
 from verifiers.v1.runtimes.private_network import tool_vms
 from verifiers.v1.session import RolloutLimits, RolloutSession, hook_boundary
 from verifiers.v1.state import state_cls
-from verifiers.v1.task import Task
+from verifiers.v1.task import Task, task_key
 from verifiers.v1.trace import AgentInfo, Trace, TraceTask
 from verifiers.v1.types import Messages, Request, Response, SystemMessage, UserMessage
 from verifiers.v1.utils.artifacts import collect
@@ -126,10 +127,12 @@ class Rollout:
         on_trace: Callable[[Trace], None] | None = None,
         collect_artifacts: bool = False,
         on_score: Callable[[Trace, Runtime], Awaitable[None]] | None = None,
+        scoring_context: Callable[[Trace], AbstractAsyncContextManager] = nullcontext,
         trace_id: str | None = None,
         attempt: int = 1,
     ) -> None:
         self._on_score = on_score
+        self._scoring_context = scoring_context
         self.task = task
         self.harness = harness
         self.route = route
@@ -156,6 +159,9 @@ class Rollout:
             # The seat's resolved config, role overrides included — the agent
             # this trace can be reproduced with.
             agent=AgentInfo(config=agent_config),
+        )
+        self.trace.info["task_config_sha256"] = task_key(
+            task.config.model_dump(mode="json")
         )
         self.trace._replay_view = harness.replay_view
         if on_trace is not None:
@@ -760,12 +766,8 @@ class Rollout:
     def _scoring_skip_reason(self) -> str | None:
         """Why the resolved scoring policy, or the `skip_scoring` stop that ended this trace,
         skips task scoring for it, if either does."""
-        if self.trace.is_format_violation:
-            return "format_violation"
-        if self._scoring_policy.skip_on_truncated and self.trace.is_truncated:
-            return "truncated"
-        if self._scoring_policy.skip_on_timeout and self.trace.is_timeout:
-            return "timeout"
+        if reason := scoring_skip_reason(self.trace, self._scoring_policy):
+            return reason
         if self.trace.stop_condition in self._skip_scoring_stops:
             return self.trace.stop_condition
         return None
@@ -920,11 +922,15 @@ class Rollout:
                                     self._scoring_policy,
                                     self.deployment,
                                     on_score=self._on_score,
+                                    scoring_context=self._scoring_context,
                                     scoring_elapsed=scoring_elapsed,
                                 )
                             except TimeoutError:
                                 self.timeout("scoring")
-                                if self._on_score is not None:
+                                if (
+                                    self._on_score is not None
+                                    or self.task.judge_executor is not None
+                                ):
                                     self.fail(
                                         TaskError(
                                             "verification exceeded its scoring deadline"
@@ -934,7 +940,8 @@ class Rollout:
                             with (
                                 scoring_transaction(trace)
                                 if self._on_score is not None
-                                else contextlib.nullcontext()
+                                or self.task.judge_executor is not None
+                                else nullcontext()
                             ):
                                 scoring_runtime = runtime
                                 if not self._scoring_task.scoring_deferred:
@@ -955,14 +962,18 @@ class Rollout:
                                                 self._scoring_policy.network,
                                             )
                                         )
-                                await self._scoring_task.score(
-                                    trace, scoring_runtime, self.deployment
-                                )
-                                if self._on_score is not None:
-                                    await self._on_score(trace, scoring_runtime)
+                                async with self._scoring_context(trace):
+                                    await self._scoring_task.score(
+                                        trace, scoring_runtime, self.deployment
+                                    )
+                                    if self._on_score is not None:
+                                        await self._on_score(trace, scoring_runtime)
                 except TimeoutError:
                     self.timeout("scoring")
-                    if self._on_score is not None:
+                    if (
+                        self._on_score is not None
+                        or self.task.judge_executor is not None
+                    ):
                         self.fail(
                             TaskError("verification exceeded its scoring deadline")
                         )

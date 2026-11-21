@@ -13,10 +13,10 @@ import copy
 import hashlib
 import inspect
 import json
-from collections.abc import Callable, Mapping
-from typing import TYPE_CHECKING, Any, ClassVar, Generic, Self
+from collections.abc import Awaitable, Callable, Mapping
+from typing import TYPE_CHECKING, Annotated, Any, ClassVar, Generic, Self
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, SerializeAsAny
 from typing_extensions import TypeVar
 
 from verifiers.v1.configs.harness import SkillSource
@@ -38,8 +38,9 @@ from verifiers.v1.utils.logging import get_logger
 
 if TYPE_CHECKING:
     from verifiers.v1.judge import Judge
+    from verifiers.v1.judges.agent import AgentJudgeRequest
     from verifiers.v1.mcp import Toolset
-    from verifiers.v1.runtimes import Runtime
+    from verifiers.v1.runtimes import Runtime, RuntimeConfig
     from verifiers.v1.runtimes.compose import ComposeSpec
     from verifiers.v1.runtimes.deployment import Deployment, ServicesSpec
     from verifiers.v1.trace import Trace
@@ -143,10 +144,26 @@ class TaskData(BaseModel):
         return "\n\n".join(text for text in texts if text)
 
 
+class _WireArtifact(Artifact):
+    model_config = ConfigDict(extra="allow")
+
+
 class WireTaskData(TaskData):
     """Wire form that preserves task-specific fields without importing the task class."""
 
     model_config = ConfigDict(extra="allow")
+    artifacts: list[
+        Annotated[
+            SerializeAsAny[Artifact],
+            BeforeValidator(
+                lambda entry: (
+                    _WireArtifact.model_validate(entry)
+                    if isinstance(entry, dict)
+                    else entry
+                )
+            ),
+        ]
+    ] = Field(default_factory=list)
 
 
 DataT = TypeVar("DataT", bound=TaskData)
@@ -156,6 +173,13 @@ ConfigT = TypeVar("ConfigT", bound=TaskConfig, default=TaskConfig)
 class Task(Generic[DataT, StateT, ConfigT]):
     NEEDS_CONTAINER: ClassVar[bool] = False
     """Whether the task needs a containerized environment (isolated filesystem, ...)."""
+
+    AUTHORED_JUDGES: ClassVar[bool] = False
+    """Task grading owns judge requests; an agentic environment adds no default judge."""
+    judge_executor: Callable[[AgentJudgeRequest, Runtime], Awaitable[Trace]] | None = (
+        None
+    )
+    """Bound by an agentic environment to its configured, non-training judge."""
 
     def __init__(self, data: DataT, config: ConfigT | None = None) -> None:
         self.data = data
@@ -202,7 +226,9 @@ class Task(Generic[DataT, StateT, ConfigT]):
         """Task scoring defaults, including any task-format-specific defaults."""
         return self.data.scoring
 
-    def grading_task(self, runtime: Runtime, *, scoring: ScoringConfig) -> Self:
+    def grading_task(
+        self, runtime: Runtime | RuntimeConfig, *, scoring: ScoringConfig
+    ) -> Self:
         """Adapt scoring inputs to the resolved policy without changing the solver task."""
         return self
 
@@ -220,6 +246,10 @@ class Task(Generic[DataT, StateT, ConfigT]):
 
     async def stage_verifier(self, trace: Trace, runtime: Runtime) -> None:
         """Prepare trusted verifier-only inputs after artifacts are restored."""
+        return
+
+    def validate_artifacts(self, artifacts: Mapping[str, bytes | None]) -> None:
+        """Reject task-specific artifact roots before the verifier is modified."""
         return
 
     async def validate(self, runtime: Runtime) -> bool | None:

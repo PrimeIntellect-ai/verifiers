@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 import math
 import secrets
 import shlex
@@ -20,7 +21,7 @@ from typing import TYPE_CHECKING
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
-from verifiers.v1.errors import ToolsetError
+from verifiers.v1.errors import SandboxError, ToolsetError
 from verifiers.v1.interception.tunnel import PrimeTunnel
 from verifiers.v1.mcp.server import (
     STATE_ROUTE_PARAM,
@@ -38,7 +39,7 @@ from verifiers.v1.runtimes import (
 from verifiers.v1.runtimes.base import _ENSURE_UV
 from verifiers.v1.state import State
 from verifiers.v1.utils.aio import run_shielded
-from verifiers.v1.utils.logging import get_logger
+from verifiers.v1.utils.logging import clip, get_logger
 
 if TYPE_CHECKING:
     from verifiers.v1.mcp.toolset import Toolset
@@ -77,6 +78,54 @@ while True:
     if remaining <= 0:
         sys.exit(1)
     time.sleep(min(1, remaining))
+"""
+
+# A detached supervisor owns the server's process group. A shutdown marker stops
+# it without keeping a provider stream open or signalling a remotely recorded PID.
+# A launch that arrives after cancellation sees the marker and exits.
+_BACKGROUND = """
+import contextlib, os, pathlib, signal, subprocess, sys, time
+control = pathlib.Path(sys.argv[1])
+control.with_suffix('.started').touch()
+process = None
+try:
+    if not control.exists():
+        process = subprocess.Popen(sys.argv[2:], start_new_session=True)
+        while not control.exists() and process.poll() is None:
+            time.sleep(0.1)
+finally:
+    if process is not None:
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(process.pid, signal.SIGTERM)
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
+        finally:
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(process.pid, signal.SIGKILL)
+            process.wait()
+    control.with_suffix('.done').touch()
+"""
+
+_STOP_BACKGROUND = """
+import pathlib, sys, time
+control = pathlib.Path(sys.argv[1])
+control.touch()
+started = control.with_suffix('.started')
+# An unacknowledged launch may never arrive. Leave the stop marker so a
+# supervisor that arrives later will exit before starting its child.
+if sys.argv[2] == 'unacknowledged' and not started.exists():
+    sys.exit(0)
+done = control.with_suffix('.done')
+deadline = time.monotonic() + 10
+while not done.exists():
+    if time.monotonic() >= deadline:
+        raise TimeoutError('tool server did not stop')
+    time.sleep(0.1)
+done.unlink()
+started.unlink(missing_ok=True)
+control.unlink(missing_ok=True)
 """
 
 
@@ -342,6 +391,7 @@ async def _read_back_port(runtime: Runtime, path: str, deadline: float) -> int:
         await asyncio.sleep(min(1, remaining))
 
 
+@contextlib.asynccontextmanager
 async def serve_in_runtime(
     server: ServerBase,
     runtime: Runtime,
@@ -350,13 +400,20 @@ async def serve_in_runtime(
     listen_all: bool = False,
     state_url: str | None = None,
     state_secret: str = "",
-) -> int:
-    """Start a server and return its bound port.
+) -> AsyncIterator[int]:
+    """Serve a process for the toolset's lifetime and yield its bound port.
 
     Exposed servers use the runtime's forwarded port when one is configured. Otherwise,
     the OS chooses a port and reports it through a file. With a state channel, the server
     fetches the current rollout task from the adjacent `/task` endpoint.
     """
+    if isinstance(server.config, BaseToolsetConfig) and server.config.user is not None:
+        try:
+            runtime = await runtime.resolve_user(server.config.user)
+        except (SandboxError, ValueError) as exc:
+            raise ToolsetError(
+                f"tool server {server.server_name!r} cannot run as user {server.config.user!r}"
+            ) from exc
     # A shared server has a private service secret but no fixed state URL. Set
     # both controls explicitly so a subprocess cannot inherit stale host values.
     env = {
@@ -404,30 +461,67 @@ async def serve_in_runtime(
     )
     timeout = timeouts.startup
     deadline = loop.time() + (math.inf if timeout is None else timeout)
-    await runtime.run_background(command, env, log)
-    if fixed is not None:
-        port = fixed
-    else:
-        try:
-            port = await _read_back_port(runtime, port_file, deadline)
-        except ToolsetError as e:
-            raise ToolsetError(f"{e}: {await log_tail(runtime, log)}") from e
-    probe = await runtime.run(
-        [
-            python,
-            "-c",
-            _PROBE,
-            f"http://127.0.0.1:{port}/mcp",
-            str(max(deadline - loop.time(), 1)),
-        ],
-        {},
-    )
-    if probe.exit_code != 0:
-        raise ToolsetError(
-            f"tool server {server.server_name!r} not serving in runtime after "
-            f"{timeout}s (raise its timeout.startup): {await log_tail(runtime, log)}"
+    control = runtime.temp_path(f"tool-process-{uuid.uuid4().hex}", env=env)
+    launch_acknowledged = False
+    try:
+        await run_shielded(
+            runtime.run_background(
+                [python, "-c", _BACKGROUND, control, *command], env, log
+            )
         )
-    return port
+        launch_acknowledged = True
+        if fixed is not None:
+            port = fixed
+        else:
+            try:
+                port = await _read_back_port(runtime, port_file, deadline)
+            except ToolsetError as e:
+                raise ToolsetError(f"{e}: {await log_tail(runtime, log)}") from e
+        probe = await runtime.run(
+            [
+                python,
+                "-c",
+                _PROBE,
+                f"http://127.0.0.1:{port}/mcp",
+                str(max(deadline - loop.time(), 1)),
+            ],
+            {},
+        )
+        if probe.exit_code != 0:
+            raise ToolsetError(
+                f"tool server {server.server_name!r} not serving in runtime after "
+                f"{timeout}s (raise its timeout.startup): {await log_tail(runtime, log)}"
+            )
+        yield port
+    finally:
+        # A borrowed workspace survives this toolset, so stop its server explicitly.
+        try:
+            result = await run_shielded(
+                asyncio.wait_for(
+                    runtime.run(
+                        [
+                            python,
+                            "-c",
+                            _STOP_BACKGROUND,
+                            control,
+                            "acknowledged" if launch_acknowledged else "unacknowledged",
+                        ],
+                        {},
+                    ),
+                    15,
+                )
+            )
+            if result.exit_code:
+                raise ToolsetError(result.stderr.strip())
+        except Exception as error:
+            # Teardown must not replace an existing startup or grading failure.
+            logger.warning(
+                "Failed to stop tool server %s - %s: %s",
+                server.server_name,
+                type(error).__name__,
+                clip(str(error)),
+                exc_info=logger.isEnabledFor(logging.DEBUG),
+            )
 
 
 @contextlib.asynccontextmanager
@@ -507,17 +601,19 @@ async def _serve(
             backend = await stack.enter_async_context(provision_backend(cfg.runtime))
             runtime = backend.bind()
 
-        port = await serve_in_runtime(
-            server,
-            runtime,
-            exposed=host is None,
-            listen_all=host is not None,
-            state_url=(
-                runtime.host_url(f"{state_base.rstrip('/')}/state")
-                if state_base
-                else None
-            ),
-            state_secret=state_secret,
+        port = await stack.enter_async_context(
+            serve_in_runtime(
+                server,
+                runtime,
+                exposed=host is None,
+                listen_all=host is not None,
+                state_url=(
+                    runtime.host_url(f"{state_base.rstrip('/')}/state")
+                    if state_base
+                    else None
+                ),
+                state_secret=state_secret,
+            )
         )
         if host is not None:
             yield _ServedServer(f"http://{host}:{port}/mcp", runtime)

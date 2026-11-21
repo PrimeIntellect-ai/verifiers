@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import json
+from collections.abc import Iterable
 from functools import cache
 from pathlib import Path
 
 from pydantic import TypeAdapter
 
-from verifiers.v1.episode import EnvInfo, Episode
+from verifiers.v1.episode import EnvInfo, Episode, WireEpisode
 from verifiers.v1.state import StateT
 from verifiers.v1.task import DataT
 from verifiers.v1.trace import AgentConfigT, Trace
@@ -24,21 +26,47 @@ def write_episode(
 ) -> None:
     """Serialize and append one rollout episode in the worker thread."""
     # Preserve fields declared by typed Trace subclasses nested in the episode.
-    data = type_adapter(type(episode)).dump_json(episode, exclude_none=True)
     for trace in episode.traces:
         if trace.state.artifacts:
             if trace.id == ".." or Path(trace.id).parts != (trace.id,):
                 raise ValueError(
                     f"trace ID must be a single path component: {trace.id!r}"
                 )
-            save_artifacts(
+            trace.info["artifact_manifest_sha256"] = save_artifacts(
                 results_dir / "artifacts" / trace.id,
                 trace.state.artifacts,
                 trace.task.data.artifacts,
                 workdir=getattr(trace.agent.runtime, "workdir", None) or "/",
+                service_workdirs=trace.info.get("harbor_artifact_workdirs"),
+                max_bytes=trace.task.data.artifact_max_bytes,
             )
+    data = type_adapter(type(episode)).dump_json(episode, exclude_none=True)
     with (results_dir / TRACES_FILE).open("ab") as f:
         f.write(data + b"\n")
+
+
+def read_episodes(results_dir: Path, trace_type: type) -> list[WireEpisode]:
+    """Load a run's saved rollouts from `traces.jsonl` with traces typed as
+    `trace_type` (`Trace[WireTaskData, ...]` reads any taskset's file without
+    importing it)."""
+    with (results_dir / TRACES_FILE).open(encoding="utf-8") as f:
+        return parse_episodes(f, trace_type)
+
+
+def parse_episodes(lines: Iterable[str], trace_type: type) -> list[WireEpisode]:
+    """Parse saved episodes from JSONL lines, including bounded in-memory snapshots."""
+    trace_adapter = type_adapter(trace_type)
+    episodes: list[WireEpisode] = []
+    for line in lines:
+        if not line.strip():
+            continue
+        row = json.loads(line)
+        record = WireEpisode.model_validate({**row, "traces": []})
+        record.traces = [
+            trace_adapter.validate_python(trace) for trace in row["traces"]
+        ]
+        episodes.append(record)
+    return episodes
 
 
 async def append_episode(

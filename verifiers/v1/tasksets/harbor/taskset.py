@@ -18,29 +18,38 @@ or tests build definition, then fall back to the agent environment. Unsupported 
 
 import asyncio
 import hashlib
-import io
+import posixpath
 import shutil
 import subprocess
 import sys
-import tarfile
 import tempfile
 import time
-from collections.abc import Iterator
-from functools import lru_cache
+from collections.abc import Iterator, Mapping
 from pathlib import Path, PurePosixPath
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SerializationInfo,
+    TypeAdapter,
+    ValidationError,
+    field_serializer,
+)
 
 from verifiers.v1.configs.runtime import NetworkPolicyConfig
 from verifiers.v1.configs.scoring import ScoringConfig
 from verifiers.v1.configs.task import TaskConfig
 from verifiers.v1.configs.taskset import TasksetConfig
 from verifiers.v1.errors import SandboxError, TaskError
-from verifiers.v1.runtimes import Runtime
+from verifiers.v1.mcp import ToolsetConfig
+from verifiers.v1.runtimes import Runtime, RuntimeConfig
 from verifiers.v1.runtimes.deployment import Deployment
 from verifiers.v1.state import State
 from verifiers.v1.task import Task, TaskData, TaskResources, TaskTimeout
 from verifiers.v1.taskset import Taskset
+from verifiers.v1.tasksets.harbor.files import make_tar, source_digest
+from verifiers.v1.tasksets.harbor.judge import HarborJudgeConfig
 from verifiers.v1.trace import Trace
 from verifiers.v1.utils.artifacts import (
     ARTIFACTS_DIR,
@@ -72,11 +81,31 @@ REWARD_SCALAR_ADAPTER = TypeAdapter(
 class HarborTaskConfig(TaskConfig):
     reward_key: str = Field("reward", min_length=1)
     """Named verifier value used as the training reward; other values remain metrics."""
+    judge: HarborJudgeConfig | None = None
+    """Native model, endpoint and sampling overrides for authored judges."""
     mcp_servers: list[dict] = Field(default_factory=list)
     """Task-declared connections, bound from HarborData during construction."""
+    mcp: ToolsetConfig = ToolsetConfig()
+    """Execution settings for task-authored MCP tools, placed in the task runtime by default."""
+
+    @field_serializer("mcp")
+    def _mcp_settings(self, mcp: ToolsetConfig, info: SerializationInfo) -> dict:
+        return mcp.model_dump(mode=info.mode, exclude_unset=True)
+
+    @field_serializer("judge")
+    def _judge_overrides(
+        self, judge: HarborJudgeConfig | None, info: SerializationInfo
+    ) -> dict | None:
+        return (
+            judge.model_dump(mode=info.mode, exclude_unset=True)
+            if judge is not None
+            else None
+        )
 
 
 class HarborConfig(TasksetConfig):
+    path: Path | None = None
+    """Local task directory; skips downloading a dataset when set."""
     artifact_max_bytes: int = Field(MAX_ARTIFACT_BYTES, gt=0)
     """Total archive bytes collected from one solver, across all its services."""
     task: HarborTaskConfig = HarborTaskConfig()
@@ -171,6 +200,14 @@ class HarborData(TaskData):
     tags: list[str] = Field(default_factory=list)
     task_dir: str = ""
     """Host path to the task dir; used to stage tests/ to verify."""
+    source_digest: str | None = None
+    """SHA-256 of the task's source tree; checked before staging cached inputs."""
+    verifier_digest: str | None = None
+    """SHA-256 of the verifier source and its declared environment/configuration."""
+    solver_digest: str | None = None
+    """SHA-256 of the prompt, agent configuration and initial environment sources."""
+    task_version: str | None = None
+    """The task package's declared version, separate from its content identity."""
     upload_environment: bool = False
     """Whether to stage environment/ into the workdir."""
     env: dict[str, str] = Field(default_factory=dict)
@@ -199,6 +236,7 @@ class HarborData(TaskData):
 class HarborTask(Task[HarborData, State, HarborTaskConfig]):
     """Stage and run Harbor's verifier inside the task's live runtime."""
 
+    AUTHORED_JUDGES = True
     verifier_staged: bool = False
 
     def __init__(self, data: HarborData, config: HarborTaskConfig | None = None):
@@ -211,13 +249,18 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
         from .toolset import HarborMCPAdapter, HarborMCPConfig
 
         return super().toolsets(config) + [
-            HarborMCPAdapter(HarborMCPConfig(server=server))
+            HarborMCPAdapter(
+                HarborMCPConfig(
+                    **config.mcp.model_dump(exclude_unset=True), server=server
+                )
+            )
             for server in config.mcp_servers
         ]
 
     def deployment_spec(self):
         from verifiers.v1.runtimes.compose import ComposeSpec
 
+        self.check_source()
         if (Path(self.data.task_dir) / "environment/docker-compose.yaml").is_file():
             return ComposeSpec(
                 self.data.task_dir,
@@ -226,6 +269,21 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
             )
         return super().deployment_spec()
 
+    def check_source(self) -> None:
+        if (
+            self.data.source_digest is not None
+            and source_digest(Path(self.data.task_dir)) != self.data.source_digest
+        ):
+            raise TaskError("Harbor task source changed after loading; reload the task")
+
+    def validate_artifacts(self, artifacts: Mapping[str, bytes | None]) -> None:
+        if self.scoring.mode == "isolated" and any(
+            PurePosixPath(root).is_relative_to("/tests")
+            or PurePosixPath("/tests").is_relative_to(root)
+            for root in artifacts
+        ):
+            raise TaskError("Harbor artifacts cannot restore into /tests")
+
     @property
     def scoring(self) -> ScoringConfig:
         # Keep tasksets that populate verifier_env compatible with the common policy.
@@ -233,21 +291,38 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
             update={"env": {**self.data.verifier_env, **(self.data.scoring.env or {})}}
         )
 
-    def grading_task(self, runtime: Runtime, *, scoring: ScoringConfig):
+    def grading_task(self, runtime: Runtime | RuntimeConfig, *, scoring: ScoringConfig):
         # Custom Harbor verifiers may still pass verifier_env explicitly to run().
         # Give them the merged raw values, without resolving or mutating solver data.
         task = self.with_data(verifier_env=dict(scoring.env or {}), scoring=scoring)
         if scoring.mode == "shared":
             return task.with_data(verifier=None, verifier_image=None)
+        config = runtime.config if isinstance(runtime, Runtime) else runtime
+        workdir = getattr(config, "workdir", None) or "/app"
+        for artifact in self.data.artifacts:
+            if (
+                artifact.service != "main"
+                and not PurePosixPath(artifact.source).is_absolute()
+            ):
+                continue
+            root = PurePosixPath(
+                posixpath.normpath(posixpath.join(workdir, artifact.source))
+            )
+            if root.is_relative_to("/tests") or PurePosixPath("/tests").is_relative_to(
+                root
+            ):
+                raise TaskError("Harbor artifacts cannot restore into /tests")
         if task.data.verifier is None:
             task = task.with_data(
                 verifier=VerifierConfig(fresh_copy=True, env=task.data.env)
             )
         if task.data.verifier_image is None:
-            task = task.with_data(
-                image=runtime.config.image, workdir=runtime.config.workdir
-            )
-        return type(self)(verifier_box_data(task.data), self.config)
+            task = task.with_data(image=config.image, workdir=config.workdir)
+        task.data = verifier_box_data(task.data)
+        task.config = task.config.model_copy(
+            update={"mcp_servers": task.data.mcp_servers}
+        )
+        return task
 
     async def finalize_services(
         self, trace: Trace, targets: dict[str, Runtime]
@@ -267,6 +342,7 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
     async def setup(
         self, runtime: Runtime, deployment: Deployment | None = None
     ) -> None:
+        self.check_source()
         if deployment is not None:
             declared = {
                 entry.service for entry in (*self.data.collect, *self.data.artifacts)
@@ -359,6 +435,9 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
                     f"{hook.command}\n{detail}"
                 )
         for service, source_runtime in runtimes.items():
+            trace.info.setdefault("harbor_artifact_workdirs", {})[service] = (
+                source_runtime.config.workdir or "/"
+            )
             used = sum(len(data or b"") for data in trace.state.artifacts.values())
             collected = await collect(
                 source_runtime,
@@ -383,11 +462,8 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
             trace.state.artifacts.update(collected)
 
     async def stage_verifier(self, trace: Trace, runtime: Runtime) -> None:
-        if self.scoring.mode == "isolated" and any(
-            PurePosixPath(root).is_relative_to("/tests")
-            for root in trace.state.artifacts
-        ):
-            raise TaskError("Harbor artifacts cannot restore into /tests")
+        self.check_source()
+        self.validate_artifacts(trace.state.artifacts)
         await self.stage_tests(runtime, wipe=self.data.verifier is not None)
         self.verifier_staged = True
 
@@ -400,11 +476,11 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
         """
         # Harbor's dedicated verifier image owns the complete test suite and its
         # dependencies. Mixing it with packaged tests can retain obsolete helpers.
-        stage = "test -f /tests/test.sh"
+        stage = "test -d /tests"
         if self.data.verifier is None or self.data.verifier_image is None:
-            await runtime.write(
-                "/tmp/tests.tgz", make_tar(Path(self.data.task_dir) / "tests")
-            )
+            tests = Path(self.data.task_dir) / "tests"
+            wipe = wipe or not (tests / "test.sh").is_file()
+            await runtime.write("/tmp/tests.tgz", make_tar(tests))
             stage = (
                 f"{'rm -rf /tests && ' if wipe else ''}"
                 "mkdir -p /tests && tar -xzf /tmp/tests.tgz -C /tests"
@@ -431,7 +507,8 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
             (
                 runtime,
                 (
-                    "rm -f /logs/verifier/reward.json /logs/verifier/reward.txt && "
+                    "rm -f /logs/verifier/reward.json /logs/verifier/reward.txt "
+                    "/logs/verifier/reward-details.json && "
                     f"{stage}"
                 ),
             ),
@@ -442,6 +519,14 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
                     f"staging tests failed (exit {result.exit_code}): "
                     f"{(result.stderr or result.stdout).strip()[-500:]}"
                 )
+        if (await runtime.run(["test", "-f", "/tests/test.sh"], {})).exit_code:
+            from .judge import prepare_authored
+
+            # Install before the verifier's execution network policy takes effect.
+            # A shared box still carries the solver's restrictions at this point.
+            if self.scoring.mode == "shared":
+                await runtime.backend.prepare_setup()
+            await prepare_authored(runtime, resolve_env(self.scoring.env or {}))
 
     @reward(weight=1.0)
     async def solved(self, runtime: Runtime, trace: Trace) -> float | dict[str, float]:
@@ -466,6 +551,18 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
     async def run_verifier(
         self, runtime: Runtime, trace: Trace
     ) -> float | dict[str, float]:
+        trace.info.pop("harbor_judge", None)
+        script = await runtime.run(["test", "-f", "/tests/test.sh"], {})
+        if script.exit_code:
+            from .judge import grade_authored
+
+            scores = await grade_authored(
+                self, runtime, trace, resolve_env(self.scoring.env or {})
+            )
+            trace.record_metrics(
+                {k: v for k, v in scores.items() if k != self.config.reward_key}
+            )
+            return {self.config.reward_key: scores[self.config.reward_key]}
         # By absolute path, in the runtime's configured workdir: Harbor execs the
         # script the same way, and scripts do grade the agent's work at `$PWD`.
         # The reward file is authoritative even when the script exits nonzero.
@@ -679,7 +776,9 @@ def download_command(config: HarborConfig, output_dir: Path) -> list[str]:
 
 
 def dataset_dir(config: HarborConfig) -> Path:
-    """Download/cache a Hub or legacy-registry package selected by the config."""
+    """Use local tasks or download/cache the selected Harbor package."""
+    if config.path is not None:
+        return config.path.expanduser()
     out = cache_dir(config)
     if out.is_dir():
         return out
@@ -777,7 +876,14 @@ def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborD
     from harbor.models.task.task import Task as HarborModelTask
     from harbor.models.task.verifier_mode import resolve_verifier_environment_definition
 
-    harbor_task = HarborModelTask(task_dir)
+    tests_dir = task_dir / "tests"
+    harbor_task = HarborModelTask(
+        task_dir,
+        disable_verification=not (tests_dir / "test.sh").is_file()
+        and any(
+            p.is_file() and p.suffix in {".toml", ".py"} for p in tests_dir.rglob("*")
+        ),
+    )
     parsed = harbor_task.config
     if parsed.steps:
         raise ValueError(
@@ -862,6 +968,25 @@ def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborD
         category=meta.get("category"),
         tags=meta.get("tags", []),
         task_dir=str(task_dir),
+        source_digest=source_digest(task_dir),
+        solver_digest=hashlib.sha256(
+            (
+                source_digest(task_dir / "environment", task_dir=task_dir)
+                + environment.model_dump_json()
+                + parsed.agent.model_dump_json()
+                + harbor_task.instruction.strip()
+            ).encode()
+        ).hexdigest(),
+        verifier_digest=hashlib.sha256(
+            (
+                source_digest(task_dir / "tests", task_dir=task_dir)
+                + parsed.verifier.model_dump_json()
+                + (
+                    definition.config if definition is not None else environment
+                ).model_dump_json()
+            ).encode()
+        ).hexdigest(),
+        task_version=task.version if task else None,
         compose_build_dockerfile=not harbor_config.ignore_dockerfile,
         upload_environment=upload_environment,
         skills=[{"runtime": environment.skills_dir}] if environment.skills_dir else [],
@@ -1001,17 +1126,6 @@ def parse_verifier_environment(
         fresh_copy=not declared,
         network=harbor_network(network),
     )
-
-
-# Downloaded task directories are immutable. Cache the current task's environment
-# and tests to bound memory while reusing both archives across rollouts.
-@lru_cache(maxsize=2)
-def make_tar(directory: Path) -> bytes:
-    buffer = io.BytesIO()
-    with tarfile.open(fileobj=buffer, mode="w:gz") as tar:
-        for item in sorted(directory.iterdir()):
-            tar.add(item, arcname=item.name)
-    return buffer.getvalue()
 
 
 class HarborTaskset(Taskset[HarborTask, HarborConfig]):
