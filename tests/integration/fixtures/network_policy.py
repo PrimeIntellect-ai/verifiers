@@ -33,16 +33,25 @@ EXPECTED = {
 # refused connection, a proxy refusal, a DNS failure, or a timeout means it was not.
 PROBE = f"""
 import json, urllib.error, urllib.request
-report = {{}}
-for name, url in {{"blocked": "https://{BLOCKED}", "allowed": "https://{ALLOWED}/simple/"}}.items():
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+
+def probe(url):
     try:
-        urllib.request.urlopen(url, timeout=15)
-        report[name] = "ok"
+        with urllib.request.urlopen(url, timeout=15):
+            return "ok"
     except urllib.error.HTTPError:
-        report[name] = "ok"
-    except Exception:
-        report[name] = "denied"
-open({REPORT!r}, "w").write(json.dumps(report))
+        return "ok"
+    except OSError:
+        return "denied"
+
+pending = Path({REPORT!r} + ".pending")
+pending.touch()
+urls = {{"blocked": "https://{BLOCKED}", "allowed": "https://{ALLOWED}/simple/"}}
+with ThreadPoolExecutor(max_workers=len(urls)) as pool:
+    report = dict(zip(urls, pool.map(probe, urls.values())))
+pending.write_text(json.dumps(report))
+pending.replace({REPORT!r})
 print(json.dumps(report))
 """
 
@@ -53,7 +62,11 @@ class NetworkPolicyTask(vf.Task):
 
     @vf.reward(weight=1.0)
     async def policy_held(self, trace: vf.Trace, runtime: Runtime) -> float:
-        result = await runtime.run(["cat", REPORT], {})
+        # A shell can return a job handle while its two requests are still in flight.
+        collect = 'while [ -e "$1.pending" ]; do sleep 0.2; done; cat "$1"'
+        result = await runtime.run(
+            ["timeout", "45", "sh", "-c", collect, "sh", REPORT], {}
+        )
         report = json.loads(result.stdout) if result.exit_code == 0 else None
         trace.info["network_report"] = report
         return float(report == EXPECTED[self.data.name])
