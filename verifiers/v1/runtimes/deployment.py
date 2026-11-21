@@ -166,12 +166,31 @@ class Deployment:
 
     @asynccontextmanager
     async def verifier(
-        self, config: RuntimeConfig, env: dict[str, str]
+        self,
+        config: RuntimeConfig,
+        env: dict[str, str],
+        *,
+        spec: ComposeSpec | None = None,
     ) -> AsyncIterator[Runtime]:
         # Parent ownership is registered before acquisition, including cancellation.
         stack = AsyncExitStack()
         self._stack.push_async_callback(stack.aclose)
         async with stack:
+            if spec is not None:
+                from verifiers.v1.runtimes.builds import (
+                    prepare_verifier_image,
+                    prime_verifier_user,
+                )
+
+                config, env, user = await prepare_verifier_image(config, spec, env)
+                backend = await stack.enter_async_context(
+                    provision_backend(config, env=env)
+                )
+                runtime = backend.bind()
+                if isinstance(config, PrimeConfig):
+                    user = await prime_verifier_user(runtime, user)
+                yield runtime.with_user(user)
+                return
             backend = await stack.enter_async_context(
                 self._strategy.verifier(self, config, env)
             )

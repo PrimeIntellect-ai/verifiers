@@ -396,7 +396,7 @@ async def prepare_native(config: PrimeConfig, spec: ComposeSpec, env: dict[str, 
         project.argv[project.argv.index("-f") :] = ["-f", str(prepared_path)]
         # Stopped inspection containers need neither networks nor disk quotas.
         # Preserve the VM topology and storage settings in project.config.
-        await project.run("create")
+        await project.run("create", *(["--build"] if spec.file is None else []))
         containers = await project.run(
             "ps", "--all", "--format", "{{.ID}} {{.Service}}"
         )
@@ -438,9 +438,13 @@ async def prepare_native(config: PrimeConfig, spec: ComposeSpec, env: dict[str, 
             item = inspected[name]
             metadata = item["Config"]
             user = metadata.get("User") or None
-            if user == "0":
+            if spec.file is not None and user == "0":
                 user = "root"
-            if user and not re.fullmatch(r"[a-z_][a-z0-9_-]*[$]?", user):
+            if (
+                spec.file is not None
+                and user
+                and not re.fullmatch(r"[a-z_][a-z0-9_-]*[$]?", user)
+            ):
                 raise SandboxError(
                     f"Native Compose service {name!r} requires a named user without a group override"
                 )
@@ -468,7 +472,9 @@ async def prepare_native(config: PrimeConfig, spec: ComposeSpec, env: dict[str, 
                 exclude={"image", "workdir", "cpu", "memory", "disk"}
             )
             options.update(
-                image=item["Image"], workdir=metadata.get("WorkingDir") or "/"
+                image=item["Image"],
+                workdir=metadata.get("WorkingDir")
+                or ("/app" if spec.file is None else "/"),
             )
             authored = {
                 "cpu": definition.get("cpus", limits.get("cpus")),

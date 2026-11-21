@@ -206,6 +206,10 @@ class Task(Generic[DataT, StateT, ConfigT]):
         """Adapt scoring inputs to the resolved policy without changing the solver task."""
         return self
 
+    def verifier_spec(self) -> ComposeSpec | None:
+        """Optional build or service definition for the isolated grading environment."""
+        return None
+
     async def finalize_services(
         self, trace: Trace, targets: dict[str, Runtime]
     ) -> None:
