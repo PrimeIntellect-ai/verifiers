@@ -112,6 +112,8 @@ class HarborConfig(TasksetConfig):
     instead of rejecting it. The Dockerfile is NOT built, so the task scores against the
     harness image rather than its declared environment — only correct when that image already
     has what the task needs (e.g. you've pointed the runtime at the right image)."""
+    compose_host_image: str | None = Field(None, min_length=1)
+    """Host image for Prime Compose deployments explicitly placed in VM mode."""
     ignore_separate_verifier: bool = False
     """Grade every task in the agent's own box, even one whose `[verifier]` asks for a
     separate one. Trades the isolation for a sandbox per task; useful when provisioning
@@ -180,6 +182,8 @@ class HarborData(TaskData):
     """Task-declared MCP servers, preserved for served-task reconstruction."""
     compose_build_dockerfile: bool = False
     """Use environment/Dockerfile when Compose's workspace has no image or build."""
+    compose_host_image: str | None = None
+    """Image for a Compose VM host, optionally including baked-in service images."""
     verifier_image: str | None = None
     """Pullable image for a separate verifier, containing the complete `/tests` suite.
     Takes precedence over verifier_build."""
@@ -225,6 +229,7 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
                 self.data.task_dir,
                 image_override=self.data.image is not None,
                 build_dockerfile=self.data.compose_build_dockerfile,
+                host_image=self.data.compose_host_image,
             )
         return super().deployment_spec()
 
@@ -763,7 +768,10 @@ def resolve_image(
     if compose.is_file():
         import yaml
 
-        main = yaml.safe_load(compose.read_text())["services"].get("main", {})
+        definition = yaml.safe_load(compose.read_text())
+        if definition.get("include"):
+            return None
+        main = definition["services"].get("main", {})
         if (
             main.get("image")
             or "build" in main
@@ -880,6 +888,7 @@ def parse_task(task_dir: Path, idx: int, harbor_config: HarborConfig) -> HarborD
         tags=meta.get("tags", []),
         task_dir=str(task_dir),
         compose_build_dockerfile=not harbor_config.ignore_dockerfile,
+        compose_host_image=harbor_config.compose_host_image,
         upload_environment=upload_environment,
         skills=[{"runtime": environment.skills_dir}] if environment.skills_dir else [],
         **environment.model_dump(
@@ -946,11 +955,16 @@ def parse_verifier_extras(
     if services:
         compose = task_dir / "environment" / "docker-compose.yaml"
         declared: set[str] = set()
+        includes = False
         if compose.is_file():
             import yaml
 
-            declared = set(yaml.safe_load(compose.read_text())["services"])
-        if missing := services - declared:
+            definition = yaml.safe_load(compose.read_text())
+            declared = set(definition.get("services", {}))
+            includes = bool(definition.get("include"))
+        # Included models resolve on the deployment host. setup() checks all hook
+        # targets against the running deployment once those services are known.
+        if not includes and (missing := services - declared):
             raise ValueError(
                 f"{task_dir.name}: artifacts or collect hooks target services "
                 f"{sorted(missing)} that environment/docker-compose.yaml does not declare"
