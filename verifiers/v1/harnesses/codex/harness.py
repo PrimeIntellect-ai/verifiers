@@ -1,14 +1,18 @@
 """Run Codex through its App Server-backed ACP adapter."""
 
 import asyncio
+import contextlib
+import gzip
 import hashlib
 import io
 import json
-import shlex
+import shutil
 import tarfile
 import tomllib
-from pathlib import Path
+import uuid
+from pathlib import Path, PurePosixPath
 from typing import Literal
+from weakref import WeakValueDictionary
 
 import httpx
 import tomli_w
@@ -24,6 +28,7 @@ from verifiers.v1.runtimes.deployment import ExecutionConnection
 from verifiers.v1.task import TaskData
 from verifiers.v1.trace import Trace
 from verifiers.v1.types import ToolCall
+from verifiers.v1.utils.aio import run_shielded
 from verifiers.v1.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -41,8 +46,10 @@ _LINUX_VENDOR = {
     "aarch64": ("linux-arm64", "aarch64-unknown-linux-musl"),
     "arm64": ("linux-arm64", "aarch64-unknown-linux-musl"),
 }
-_EXECUTOR_BUNDLE_CACHE: dict[tuple[str, str], bytes] = {}
-_EXECUTOR_BUNDLE_LOCKS: dict[tuple[str, str], asyncio.Lock] = {}
+_EXECUTOR_FILES: dict[tuple[str, str], dict[str, bytes]] = {}
+_EXECUTOR_LOCKS: WeakValueDictionary[
+    tuple[asyncio.AbstractEventLoop, str, str], asyncio.Lock
+] = WeakValueDictionary()
 
 INSTALL = r"""
 set -e
@@ -60,53 +67,131 @@ touch {ready}
 """
 
 
-async def _cached_executor_bundle(
+def _executor_lock(version: str, triple: str) -> asyncio.Lock:
+    return _EXECUTOR_LOCKS.setdefault(
+        (asyncio.get_running_loop(), version, triple), asyncio.Lock()
+    )
+
+
+async def _executor_files(
     version: str, tarball_suffix: str, triple: str
-) -> bytes:
-    """Download and repack Codex's static musl executor once per host process."""
+) -> dict[str, bytes]:
+    """Cache the compressed worker executables once per evaluator process."""
     key = (version, triple)
-    if cached := _EXECUTOR_BUNDLE_CACHE.get(key):
-        return cached
-    lock = _EXECUTOR_BUNDLE_LOCKS.setdefault(key, asyncio.Lock())
-    async with lock:
-        if cached := _EXECUTOR_BUNDLE_CACHE.get(key):
-            return cached
+    if key in _EXECUTOR_FILES:
+        return _EXECUTOR_FILES[key]
+    async with _executor_lock(version, triple):
+        if key in _EXECUTOR_FILES:
+            return _EXECUTOR_FILES[key]
         url = f"https://registry.npmjs.org/@openai/codex/-/codex-{version}-{tarball_suffix}.tgz"
         async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
-            resp = await client.get(url, headers={"User-Agent": "verifiers"})
-            resp.raise_for_status()
-            raw = resp.content
+            response = await client.get(url)
+            response.raise_for_status()
 
-        def repack() -> bytes:
+        def extract() -> dict[str, bytes]:
+            files = {}
             prefix = f"package/vendor/{triple}/"
-            wanted = {"bin/codex", "codex-resources/bwrap", "codex-path/rg"}
-            found: set[str] = set()
-            buf = io.BytesIO()
-            with (
-                tarfile.open(fileobj=io.BytesIO(raw), mode="r:gz") as src,
-                tarfile.open(fileobj=buf, mode="w:gz", compresslevel=1) as dst,
-            ):
-                for member in src:
-                    if not member.name.startswith(prefix):
+            with tarfile.open(
+                fileobj=io.BytesIO(response.content), mode="r:gz"
+            ) as archive:
+                for member in archive:
+                    path = member.name.removeprefix(prefix)
+                    if path == member.name or path not in {
+                        "bin/codex",
+                        "codex-resources/bwrap",
+                        "codex-path/rg",
+                    }:
                         continue
-                    rel = member.name[len(prefix) :]
-                    if rel in wanted:
-                        stream = src.extractfile(member)
-                        if stream is None:
-                            raise RuntimeError(f"missing content for {rel}")
-                        data = stream.read()
-                        info = tarfile.TarInfo(name=rel)
-                        info.size = len(data)
-                        info.mode = 0o755
-                        dst.addfile(info, io.BytesIO(data))
-                        found.add(rel)
-            if "bin/codex" not in found:
-                raise RuntimeError("codex binary missing from archive")
-            return buf.getvalue()
+                    source = archive.extractfile(member)
+                    if source is None:
+                        raise HarnessError(
+                            f"missing content for Codex executor file {path}"
+                        )
+                    buffer = io.BytesIO()
+                    with gzip.GzipFile(
+                        fileobj=buffer, mode="wb", compresslevel=1
+                    ) as encoded:
+                        shutil.copyfileobj(source, encoded, length=1024 * 1024)
+                    files[path] = buffer.getvalue()
+            if "bin/codex" not in files:
+                raise HarnessError("codex binary missing from archive")
+            return files
 
-        bundle = await asyncio.to_thread(repack)
-        _EXECUTOR_BUNDLE_CACHE[key] = bundle
-        return bundle
+        _EXECUTOR_FILES[key] = await asyncio.to_thread(extract)
+        return _EXECUTOR_FILES[key]
+
+
+_PUBLISH_EXECUTOR = """
+stage=$1; parent=$2; suffix=$3; shift 3
+for file do
+    if [ -n "$suffix" ]; then gzip -d "$stage/$file$suffix"; fi
+    chmod 755 "$stage/$file"
+done
+chmod -R a+rX "$stage"
+mv "$stage" "$parent/" || test -x "$parent/${stage##*/}/bin/codex"
+"""
+
+
+async def _install_executor(
+    runtime: Runtime, version: str, tarball_suffix: str, triple: str
+) -> None:
+    directory = PurePosixPath(EXECUTOR_DIR.format(version=version))
+    cache = runtime.backend.cache
+    key = f"codex-executor:{directory}:{triple}"
+    async with cache.setup_lock:
+        if key in cache.installed:
+            return
+        probe = await runtime.run(
+            [
+                "sh",
+                "-c",
+                'if [ -x "$1" ]; then echo ready; elif command -v gzip >/dev/null; then echo gzip; else echo raw; fi',
+                "codex",
+                str(directory / "bin/codex"),
+            ],
+            {},
+        )
+        if probe.exit_code:
+            raise HarnessError(f"Codex executor check failed: {probe.stderr.strip()}")
+        if probe.stdout.strip() != "ready":
+            files = await _executor_files(version, tarball_suffix, triple)
+            scratch = directory.parent / f".codex-{uuid.uuid4().hex}"
+            staged = scratch / directory.name
+            suffix = ".gz" if probe.stdout.strip() == "gzip" else ""
+            try:
+                for path, data in files.items():
+                    target = str(staged / (path + suffix))
+                    if suffix:
+                        await runtime.write(target, data)
+                    else:
+                        # Keep at most one large uncompressed executor in flight per pin.
+                        async with _executor_lock(version, triple):
+                            await runtime.write(
+                                target, await asyncio.to_thread(gzip.decompress, data)
+                            )
+                # Rename a complete package into its parent. A concurrent publisher can
+                # win the rename; its complete, versioned installation is equally usable.
+                result = await runtime.run(
+                    [
+                        "sh",
+                        "-ec",
+                        _PUBLISH_EXECUTOR,
+                        "codex",
+                        str(staged),
+                        str(directory.parent),
+                        suffix,
+                        *files,
+                    ],
+                    {},
+                )
+                if result.exit_code:
+                    raise HarnessError(
+                        f"Codex executor install failed: {(result.stderr or result.stdout).strip()[-500:]}"
+                    )
+            finally:
+                with contextlib.suppress(Exception):
+                    await run_shielded(runtime.run(["rm", "-rf", str(scratch)], {}))
+        cache.installed.add(key)
 
 
 GATE_HOOK = (Path(__file__).resolve().parent / "gate.mjs").read_text()
@@ -204,34 +289,9 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
         tarball_suffix, triple = b_vendor
         directory = EXECUTOR_DIR.format(version=self.config.version)
         native_bin = NATIVE_EXECUTOR_BIN.format(version=self.config.version)
-        ready_check = f"[ -x {shlex.quote(native_bin)} ]"
-        install_key = f"install:{directory}:native-{triple}-{self.config.version}"
-        if install_key not in target_root.backend.cache.installed:
-            probe = await target_root.run(["sh", "-c", ready_check], {})
-            if probe.exit_code != 0:
-                bundle = await _cached_executor_bundle(
-                    self.config.version, tarball_suffix, triple
-                )
-                archive = f"{directory}.tgz"
-                await target_root.write(archive, bundle)
-                dir_q, arc_q = shlex.quote(directory), shlex.quote(archive)
-                res = await target_root.run(
-                    [
-                        "sh",
-                        "-c",
-                        (
-                            f'set -e; stage={dir_q}.tmp.$$; mkdir -p "$stage"; '
-                            f'tar -xzf {arc_q} -C "$stage"; rm -f {arc_q}; '
-                            f'rm -rf {dir_q}; mv "$stage" {dir_q}; chmod -R a+rX {dir_q}'
-                        ),
-                    ],
-                    {},
-                )
-                if res.exit_code != 0:
-                    raise HarnessError(
-                        f"Codex executor install failed: {(res.stderr or res.stdout).strip()[-500:]}"
-                    )
-            target_root.backend.cache.installed.add(install_key)
+        await _install_executor(
+            target_root, self.config.version, tarball_suffix, triple
+        )
         connection.register(
             "codex",
             [native_bin, "exec-server", "--listen", "stdio"],

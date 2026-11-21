@@ -109,8 +109,8 @@ async def test_split_execution(run, harness, harness_runtime):
     working directory and environment through the evaluator relay."""
     runtime = {**harness_runtime, "workdir": "/workspace"}
     if harness.id in {"claude-code", "codex", "pi"}:
-        # These harnesses must also work on task images without a Python interpreter.
-        runtime["image"] = "ubuntu:24.04"
+        # Exercise the worker adapters on an image that ships neither Python nor tar.
+        runtime["image"] = "rockylinux/rockylinux:9-minimal"
     (episode,) = await run(
         "split-execution-v1",
         harness=harness,
