@@ -43,27 +43,27 @@ def run_install(tmp_path, version, monkeypatch, *, checksum=None, missing_hash=F
     bindir.mkdir()
     url_log = tmp_path / "urls"
     (bindir / "uname").write_text(
-        "#!/bin/sh\ncase \"$1\" in -s) echo Linux;; -m) echo x86_64;; esac\n"
+        '#!/bin/sh\ncase "$1" in -s) echo Linux;; -m) echo x86_64;; esac\n'
     )
     (bindir / "curl").write_text(
         "#!/bin/sh\n"
         "output=; url=\n"
-        "while [ \"$#\" -gt 0 ]; do\n"
-        "  if [ \"$1\" = -o ]; then output=$2; shift 2; else url=$1; shift; fi\n"
+        'while [ "$#" -gt 0 ]; do\n'
+        '  if [ "$1" = -o ]; then output=$2; shift 2; else url=$1; shift; fi\n'
         "done\n"
         f"printf '%s\\n' \"$url\" >> {url_log}\n"
         f"printf '%s' '{payload.decode()}' > \"$output\"\n"
     )
     (bindir / "tar").write_text(
         "#!/bin/sh\n"
-        "while [ \"$#\" -gt 0 ]; do if [ \"$1\" = -C ]; then dest=$2; shift 2; else shift; fi; done\n"
+        'while [ "$#" -gt 0 ]; do if [ "$1" = -C ]; then dest=$2; shift 2; else shift; fi; done\n'
         "cat > \"$dest/prime-agent\" <<'SCRIPT'\n"
         "#!/bin/sh\n"
-        "if [ \"$1\" = --version ]; then printf '%s\\n' \"$PRIME_AGENT_RELEASE_VERSION\"; fi\n"
-        "SCRIPT\nchmod +x \"$dest/prime-agent\"\n"
+        'if [ "$1" = --version ]; then printf \'%s\\n\' "$PRIME_AGENT_RELEASE_VERSION"; fi\n'
+        'SCRIPT\nchmod +x "$dest/prime-agent"\n'
     )
     (bindir / "uv").write_text(
-        "#!/bin/sh\ncase \"$*\" in *--help*) echo --script;; esac\nexit 0\n"
+        '#!/bin/sh\ncase "$*" in *--help*) echo --script;; esac\nexit 0\n'
     )
     for executable in bindir.iterdir():
         executable.chmod(0o755)
@@ -108,7 +108,9 @@ def run_install(tmp_path, version, monkeypatch, *, checksum=None, missing_hash=F
 
 
 @pytest.mark.parametrize("version", ["0.10.5", "0.10.2"])
-def test_install_verifies_checksum_from_selected_release(tmp_path, monkeypatch, version):
+def test_install_verifies_checksum_from_selected_release(
+    tmp_path, monkeypatch, version
+):
     result, urls = run_install(tmp_path, version, monkeypatch)
 
     assert result.returncode == 0, result.stderr
@@ -130,7 +132,10 @@ def test_install_fails_closed_when_pinned_asset_hash_is_missing(tmp_path, monkey
     result, _ = run_install(tmp_path, "0.10.2", monkeypatch, missing_hash=True)
 
     assert result.returncode != 0
-    assert "no SHA256 configured for Prime Agent release asset prime-agent-0.10.2-linux-x64.tar.gz" in result.stderr
+    assert (
+        "no SHA256 configured for Prime Agent release asset prime-agent-0.10.2-linux-x64.tar.gz"
+        in result.stderr
+    )
 
 
 def test_install_fails_closed_on_checksum_mismatch(tmp_path, monkeypatch):
