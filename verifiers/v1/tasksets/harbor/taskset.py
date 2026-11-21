@@ -401,7 +401,19 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
         # Harbor's dedicated verifier image owns the complete test suite and its
         # dependencies. Mixing it with packaged tests can retain obsolete helpers.
         stage = "test -f /tests/test.sh"
+        clear = ""
         if self.data.verifier is None or self.data.verifier_image is None:
+            # The packaged tests must be all that is in /tests: in a shared box the
+            # agent may have left a conftest.py or pytest.ini there, which the tests
+            # would load. An existing directory is emptied in place, keeping its owner,
+            # mode and any mount; anything else (a symlink, a file, nothing) is replaced
+            # by a directory owned like the archive, so the staging user can unpack it.
+            clear = (
+                "if [ -d /tests ] && [ ! -L /tests ]; "
+                "then find /tests -mindepth 1 -delete; "
+                "else rm -f /tests && mkdir /tests && "
+                'chown "$(stat -c %u:%g /tmp/tests.tgz)" /tests; fi && '
+            )
             await runtime.write(
                 "/tmp/tests.tgz", make_tar(Path(self.data.task_dir) / "tests")
             )
@@ -426,7 +438,7 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
             (
                 setup,
                 (
-                    f"{'rm -rf /logs/verifier && ' if isolated else ''}"
+                    f"{clear}{'rm -rf /logs/verifier && ' if isolated else ''}"
                     f"mkdir -p /logs/verifier {ARTIFACTS_DIR} && "
                     f"chmod 777 /logs/verifier {ARTIFACTS_DIR}"
                 ),
