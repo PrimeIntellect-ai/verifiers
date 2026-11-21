@@ -104,6 +104,9 @@ class RecordingRuntime:
         self.argvs.append(list(argv))
         return ProgramResult(exit_code=0, stdout="/app\n", stderr="")
 
+    async def run_background(self, argv, env, log):
+        self.argvs.append(list(argv))
+
     async def write(self, path: str, data: bytes) -> None:
         self.files[path] = data
 

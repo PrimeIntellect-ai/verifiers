@@ -6,7 +6,8 @@ from dataclasses import dataclass
 
 from pydantic import BaseModel, ConfigDict, StrictStr, ValidationError
 
-from verifiers.v1.errors import HarnessError
+from verifiers.v1.errors import HarnessError, SandboxError
+from verifiers.v1.harnesses.utils.remote_files import read_text
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.types import ToolCall, ToolMessage
 
@@ -23,38 +24,25 @@ class _EditArgs(BaseModel):
     new_str: StrictStr
 
 
-_EDIT_SCRIPT = r"""
-import sys
-from pathlib import Path
-
-path, old, new = sys.argv[1:]
-if not path:
-    print("error: 'path' is required")
-elif not old:
-    print("error: 'old_str' must be a non-empty string")
-else:
-    target = Path(path)
-    if not target.is_absolute():
-        target = Path.cwd() / target
-    if not target.exists():
-        print(f"error: {path} not found")
-    else:
-        try:
-            content = target.read_text()
-        except Exception as error:
-            print(f"error: could not read {path}: {error}")
-        else:
-            count = content.count(old)
-            if count != 1:
-                print(f"error: old_str must appear exactly once in {path} (found {count})")
-            else:
-                try:
-                    target.write_text(content.replace(old, new, 1))
-                except Exception as error:
-                    print(f"error: could not write {path}: {error}")
-                else:
-                    print(f"Edited {path}")
-"""
+async def _edit(runtime: Runtime, args: _EditArgs) -> str:
+    if not args.path:
+        return "error: 'path' is required"
+    if not args.old_str:
+        return "error: 'old_str' must be a non-empty string"
+    try:
+        original = await read_text(runtime, args.path, normalize=True)
+    except (SandboxError, OSError, ValueError) as error:
+        return f"error: could not read {args.path}: {error}"
+    count = original.count(args.old_str)
+    if count != 1:
+        return f"error: old_str must appear exactly once in {args.path} (found {count})"
+    try:
+        await runtime.write(
+            args.path, original.replace(args.old_str, args.new_str, 1).encode()
+        )
+    except (SandboxError, OSError, ValueError) as error:
+        return f"error: could not write {args.path}: {error}"
+    return f"Edited {args.path}"
 
 
 @dataclass(frozen=True)
@@ -89,22 +77,9 @@ class BashRemoteTools:
                                 result = await self.runtime.run(
                                     ["bash", "-c", parsed.command], {}
                                 )
+                                content = result.stdout + result.stderr
                             else:
-                                result = await self.runtime.run(
-                                    [
-                                        "python3",
-                                        "-c",
-                                        _EDIT_SCRIPT,
-                                        parsed.path,
-                                        parsed.old_str,
-                                        parsed.new_str,
-                                    ],
-                                    {},
-                                )
+                                content = await _edit(self.runtime, parsed)
                     except TimeoutError:
                         content = "error: tool timed out after 3600 seconds"
-                    else:
-                        content = result.stdout + result.stderr
-                        if call.name == "edit":
-                            content = content.removesuffix("\n")
         return ToolMessage(tool_call_id=call.id, name=call.name, content=content)

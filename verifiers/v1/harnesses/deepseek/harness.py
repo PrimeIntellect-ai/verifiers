@@ -39,7 +39,7 @@ class DeepSeekHarness(ACPHarness[DeepSeekHarnessConfig]):
     SUPPORTS_TOOL_INTERCEPTION = True
 
     async def remote_tools(self, runtime: Runtime, data: TaskData) -> RemoteToolsSpec:
-        return native_remote_tools("deepseek", self.config.disabled_tools)
+        return native_remote_tools(runtime, "deepseek", self.config.disabled_tools)
 
     async def setup(self, runtime: Runtime) -> None:
         directory = DEEPSEEK_DIR.format(version=self.config.version)

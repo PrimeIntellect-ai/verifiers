@@ -57,7 +57,7 @@ class KimiCodeHarness(ACPHarness[KimiCodeHarnessConfig]):
         return drop_blank_text(message)
 
     async def remote_tools(self, runtime: Runtime, data: TaskData) -> RemoteToolsSpec:
-        return native_remote_tools("kimi_code", self.config.disabled_tools)
+        return native_remote_tools(runtime, "kimi_code", self.config.disabled_tools)
 
     async def setup(self, runtime: Runtime) -> None:
         logger.debug("Ensuring Kimi Code %s is installed", self.config.version)

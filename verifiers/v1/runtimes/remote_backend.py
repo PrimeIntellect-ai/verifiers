@@ -1,12 +1,14 @@
-"""Runtime operations issued from A through the common workspace worker stream."""
+"""Run approved harness tools through the evaluator's bound workspace runtime."""
 
 import asyncio
 import base64
 import contextlib
+import uuid
+
+import httpx
 
 from verifiers.v1.configs.runtime import CustomRuntimeConfig
 from verifiers.v1.errors import SandboxError
-from verifiers.v1.runtimes.backends.subprocess import SubprocessProcess
 from verifiers.v1.runtimes.base import (
     BaseRuntimeInfo,
     RuntimeBackend,
@@ -14,21 +16,28 @@ from verifiers.v1.runtimes.base import (
     collect_process,
 )
 from verifiers.v1.runtimes.runtime import Runtime
-from verifiers.v1.runtimes.stdio_rpc import ProcessRPC
 
 
 class RemoteProcess(RuntimeProcess):
-    def __init__(self, rpc: ProcessRPC, identifier: str):
-        self.rpc, self.identifier = rpc, identifier
+    def __init__(self, backend: "RemoteBackend", identifier: str):
+        self.backend, self.identifier = backend, identifier
         self.stdout, self.stderr = self._stream("stdout"), self._stream("stderr")
         self._stdin_lock = asyncio.Lock()
 
     async def _call(self, operation: str, **values):
-        return await self.rpc.call(operation, process_id=self.identifier, **values)
+        return await self.backend.call(operation, self.identifier, **values)
 
     async def _stream(self, stream: str):
-        while (data := await self._call("read", stream=stream)) is not None:
-            yield base64.b64decode(data, validate=True)
+        previous = None
+        while True:
+            request_id = uuid.uuid4().hex
+            result = await self._call(
+                "read", stream=stream, request_id=request_id, acknowledge_read=previous
+            )
+            if result["eof"]:
+                return
+            previous = request_id
+            yield base64.b64decode(result["data"], validate=True)
 
     async def write(self, data: bytes) -> None:
         async with self._stdin_lock:
@@ -39,10 +48,10 @@ class RemoteProcess(RuntimeProcess):
                 )
 
     async def wait(self) -> int:
-        return await self._call("wait")
+        return (await self._call("wait"))["exit_code"]
 
     async def poll(self) -> int | None:
-        return await self._call("poll")
+        return (await self._call("poll"))["exit_code"]
 
     async def terminate(self) -> None:
         await self._call("terminate")
@@ -52,44 +61,66 @@ class RemoteProcess(RuntimeProcess):
 
 
 class RemoteBackend(RuntimeBackend):
-    """Internal view of B's process worker, not a provisionable sandbox provider.
+    """Harness-side view of the task user and workspace bound by the evaluator."""
 
-    B is bound to its task user. Resource ownership and port publication stay
-    with the evaluator's deployment, outside this credential-free proxy.
-    """
-
-    def __init__(self, command: list[str]):
+    def __init__(self, url: str, secret: str, adapter_key: str):
         super().__init__()
-        self.command = command
+        self.url, self.adapter_key = url, adapter_key
         self.config = CustomRuntimeConfig(import_path=f"{__name__}.RemoteBackend")
         self.info = BaseRuntimeInfo()
-        self.rpc: ProcessRPC | None = None
-        self._start_lock = asyncio.Lock()
+        self.client = httpx.AsyncClient(
+            headers={"Authorization": f"Bearer {secret}"},
+            timeout=httpx.Timeout(None, connect=10),
+            # Blocked stdout/stderr reads must leave a connection for stdin and signals.
+            limits=httpx.Limits(max_connections=None, max_keepalive_connections=8),
+        )
 
     async def start(self) -> None:
-        """Open the workspace worker when an approved tool first needs a process."""
-        async with self._start_lock:
-            if self.stopped:
-                raise SandboxError("workspace execution is closed")
-            if self.rpc is None:
-                process = await asyncio.create_subprocess_exec(
-                    *self.command,
-                    stdin=asyncio.subprocess.PIPE,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                    start_new_session=True,
-                )
-                self.rpc = ProcessRPC(SubprocessProcess(process))
+        """The evaluator already provisioned the workspace."""
+
+    async def call(
+        self,
+        operation: str,
+        process_id: str,
+        *,
+        request_id: str | None = None,
+        **arguments,
+    ) -> dict:
+        body = dict(
+            arguments,
+            operation=operation,
+            process_id=process_id,
+            request_id=request_id or uuid.uuid4().hex,
+        )
+        for attempt in range(3):
+            try:
+                response = await self.client.post(self.url, json=body)
+                response.raise_for_status()
+                return response.json()
+            except httpx.HTTPStatusError as error:
+                raise SandboxError(
+                    f"workspace {operation} failed: {error.response.text[:500]}"
+                ) from error
+            except httpx.TransportError as error:
+                if attempt == 2:
+                    raise SandboxError(
+                        f"workspace {operation} failed: {error}"
+                    ) from error
+                await asyncio.sleep(0.2 * (attempt + 1))
+        raise AssertionError("unreachable")
 
     async def exec(
         self, runtime: Runtime, argv: list[str], env: dict[str, str]
     ) -> RuntimeProcess:
-        await self.start()
-        assert self.rpc is not None
-        identifier = await self.rpc.call(
-            "exec", argv=argv, env=runtime.process_env(env)
+        identifier = uuid.uuid4().hex
+        await self.call(
+            "exec",
+            identifier,
+            argv=argv,
+            env=runtime.process_env(env),
+            adapter_key=self.adapter_key,
         )
-        return RemoteProcess(self.rpc, identifier)
+        return RemoteProcess(self, identifier)
 
     async def write(self, runtime: Runtime, path: str, data: bytes) -> None:
         process = await runtime.exec(
@@ -116,14 +147,7 @@ class RemoteBackend(RuntimeBackend):
             raise SandboxError(f"write {path!r}: {result.stderr[-500:]}")
 
     async def teardown(self) -> None:
-        async with self._start_lock:
-            rpc, self.rpc = self.rpc, None
-        if rpc is not None:
-            try:
-                async with asyncio.timeout(5):
-                    await rpc.call("close")
-            finally:
-                await rpc.close()
+        await self.client.aclose()
 
     async def expose(self, port: int) -> str:
         raise SandboxError("workspace port publication is owned by the deployment")

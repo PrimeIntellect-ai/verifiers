@@ -153,20 +153,22 @@ class WorkerGroup:
 class ExecutionConnection(ExecutionBridge):
     """One execution connection and lifecycle for a split workspace.
 
-    Native workers and the adapter workspace worker register their stdio commands
-    against the same workspace runtime over provider stdio.
+    Native workers and approved tool commands use the same bound workspace runtime.
     Workspace-local listeners can outlive a session for grading.
     """
 
     def __init__(self, runtime: Runtime) -> None:
         super().__init__(runtime)
         self._workers = WorkerGroup()
+        self._stdio_marker: dict[str, str] | None = None
         self._abandon_on_close = False
 
     async def _exec(self, argv: list[str], env: dict[str, str]):
         # Track descendants independently of worker process groups, so failed
         # startup or forced worker termination still gets reaped before grading.
-        env = {**env, **self._workers.mark(self.runtime)}
+        if self._stdio_marker is None:
+            self._stdio_marker = self._workers.mark(self.runtime)
+        env = {**env, **self._stdio_marker}
         return await super()._exec(argv, env)
 
     async def serve(

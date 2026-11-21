@@ -76,7 +76,7 @@ class PiHarness(ACPHarness[PiHarnessConfig]):
         return message
 
     async def remote_tools(self, runtime: Runtime, data: TaskData) -> RemoteToolsSpec:
-        return native_remote_tools("pi", self.config.disabled_tools)
+        return native_remote_tools(runtime, "pi", self.config.disabled_tools)
 
     async def setup(self, runtime: Runtime) -> None:
         logger.debug(

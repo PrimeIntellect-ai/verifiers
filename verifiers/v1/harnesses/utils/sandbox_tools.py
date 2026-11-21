@@ -1,11 +1,6 @@
-"""Run tool adapters in `VM A`, with workspace execution over the native worker bridge.
+"""Run approved tools in the harness and relay their workspace operations to the evaluator."""
 
-The evaluator sends policy-approved calls to the adapter, which runs in the
-harness and connects to the credential-free worker over the execution relay.
-"""
-
-import inspect
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 
 from verifiers.v1.runtimes import Runtime
@@ -24,6 +19,7 @@ class RemoteToolsSpec:
     defer_until_gate: bool = False
 
     native_tools: frozenset[str] | None = None
+    prepare_tool: Callable[[ToolCall], Awaitable[None]] | None = None
 
 
 class SandboxTools:
@@ -36,27 +32,31 @@ class SandboxTools:
         self._daemon: HarnessDaemonClient | None = None
 
     async def prepare(self) -> None:
-        from verifiers.v1.harnesses.utils.launch import bundle_program
-        from verifiers.v1.runtimes import rpc_wire, workspace_worker
-
-        source = bundle_program(inspect.getsource(workspace_worker), rpc_wire)
-        worker_python = await self.connection.runtime.resolve_python()
-        self.connection.register(
-            "tool-adapter", [worker_python, "-I", "-u", "-c", source], {}
-        )
         self._daemon = await ensure_backend_daemon(
             self.runtime.backend, extra_cls=self.spec.factory
         )
 
     async def connect(self, url: str, secret: str) -> None:
-        from verifiers.v1.harnesses.utils.remote_runtime import prepare_remote_bridge
-
         assert self._daemon is not None
-        command = await prepare_remote_bridge(self.runtime, url, secret, "tool-adapter")
-        await self._daemon.configure_tools(self.spec.factory, self.spec.kwargs, command)
+        await self._daemon.configure_tools(
+            self.spec.factory,
+            self.spec.kwargs,
+            url,
+            secret,
+            self.connection.adapter_key,
+        )
 
     async def __call__(self, call: ToolCall) -> ToolMessage:
         assert self._daemon is not None
+        if self.spec.prepare_tool is not None:
+            try:
+                await self.spec.prepare_tool(call)
+            except Exception as error:  # noqa: BLE001 - preparation errors belong to this tool call
+                return ToolMessage(
+                    tool_call_id=call.id,
+                    name=call.name,
+                    content=f"error: could not prepare {call.name}: {error}",
+                )
         return await self._daemon.execute_tool(call)
 
     async def aclose(self) -> None:

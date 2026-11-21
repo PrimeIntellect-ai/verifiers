@@ -108,7 +108,7 @@ class HarnessDaemonClient:
         self._rpc = rpc
 
     async def configure_tools(
-        self, factory: Callable, kwargs: dict, command: list[str]
+        self, factory: Callable, kwargs: dict, url: str, secret: str, adapter_key: str
     ) -> None:
         assert self._rpc is not None
         factory_name = getattr(factory, "__qualname__", None)
@@ -119,7 +119,9 @@ class HarnessDaemonClient:
             module=factory.__module__,
             factory=factory_name,
             kwargs=kwargs,
-            command=command,
+            url=url,
+            secret=secret,
+            adapter_key=adapter_key,
         )
 
     async def execute_tool(self, call: ToolCall) -> ToolMessage:
@@ -235,7 +237,9 @@ async def main() -> None:
             if tools is not None:
                 raise HarnessError("workspace tools are already configured")
             factory = _resolve_factory(message["module"], message["factory"])
-            backend = RemoteBackend(message["command"])
+            backend = RemoteBackend(
+                message["url"], message["secret"], message["adapter_key"]
+            )
             tools = (backend, factory(backend.bind(), **message["kwargs"]))
             return None
 

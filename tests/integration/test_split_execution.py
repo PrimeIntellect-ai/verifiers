@@ -107,10 +107,14 @@ server.run()
 async def test_split_execution(run, harness, harness_runtime):
     """The agent loop runs on the harness's VM; its tools act on the workspace's files,
     working directory and environment through the evaluator relay."""
+    runtime = {**harness_runtime, "workdir": "/workspace"}
+    if harness.id in {"claude-code", "codex", "pi"}:
+        # These harnesses must also work on task images without a Python interpreter.
+        runtime["image"] = "ubuntu:24.04"
     (episode,) = await run(
         "split-execution-v1",
         harness=harness,
-        runtime={**harness_runtime, "workdir": "/workspace"},
+        runtime=runtime,
         env={"agent": {"timeout": TIMEOUTS}},
         max_turns=10,
         max_tokens=8192,

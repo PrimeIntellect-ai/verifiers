@@ -195,7 +195,7 @@ On Docker and Prime, rollouts automatically provision a separate sandbox for the
 
 Each rollout owns its harness sandbox. Docker uses `ghcr.io/primeintellect-ai/verifiers-harness:v1` and Prime uses `prime/primeintellect/verifiers-harness:v1`. The task can select its own workspace image. With a borrowed workspace (`agent.run(task, runtime=...)`), the caller controls the workspace lifetime. Use `agent.provision()` or `verifiers.v1.runtimes.provision_runtime()` for a borrowable Docker workspace so the runtime can enforce the policy when the rollout starts.
 
-Harness adapters send tool calls through the evaluator's authenticated relay. The evaluator authorizes each call, transports process I/O to the registered workspace worker, and records the result. Prime service VMs can also use a private LAN for service traffic. See [split harness execution](harnesses.md#split-execution).
+Harness adapters send tool calls through the evaluator's authenticated relay. The evaluator authorizes each call, uses the sandbox provider to exchange I/O with workspace processes, and records the result. Prime service VMs can also use a private LAN for service traffic. See [split harness execution](harnesses.md#split-execution).
 
 On Prime, return a `ServicesSpec` from `deployment_spec()` to provision one native VM per named service beside the task's `main` workspace. Each service has its own image, resources, filesystem, and egress policy. The VMs join a private LAN for the rollout; they can call each other and the workspace through the names in `deployment.hosts`. Services bind to `0.0.0.0`, since each VM has its own loopback interface. No Docker daemon runs inside these VMs.
 

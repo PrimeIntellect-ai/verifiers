@@ -3,6 +3,7 @@ from typing import Literal
 
 from verifiers.v1.clients import ModelContext
 from verifiers.v1.configs.harness import HarnessConfig, PinnedVersion
+from verifiers.v1.errors import HarnessError
 from verifiers.v1.harness import Harness
 from verifiers.v1.harnesses.utils.install import ensure_installed
 from verifiers.v1.harnesses.utils.launch import stage_text
@@ -40,10 +41,7 @@ class Terminus2Harness(Harness[Terminus2HarnessConfig]):
         )
 
     async def remote_tools(self, runtime: Runtime, data: TaskData):
-        # tmux must survive between commands inside the same filesystem namespace.
-        return RemoteToolsSpec(
-            remote_shell_tools, {"persistent": True}, defer_until_gate=True
-        )
+        return RemoteToolsSpec(remote_shell_tools, defer_until_gate=True)
 
     async def setup_execution(
         self, runtime: Runtime, connection: ExecutionConnection
@@ -113,7 +111,28 @@ class Terminus2Harness(Harness[Terminus2HarnessConfig]):
             )
             args.append(f"--system-prompt-file={path}")
         await execution_runtime.run(["mkdir", "-p", "-m", "700", tmux_dir], {})
+        tmux_env = {"TMUX_TMPDIR": tmux_dir}
         try:
+            # Keep the server alive between tool calls, including on providers
+            # that reap descendants when an individual command session closes.
+            await execution_runtime.run_background(
+                ["tmux", "-D"], tmux_env, f"{tmux_dir}/server.log"
+            )
+            ready = await execution_runtime.run(
+                [
+                    "sh",
+                    "-c",
+                    (
+                        'socket="$TMUX_TMPDIR/tmux-$(id -u)/default"; '
+                        'i=0; until [ -S "$socket" ]; do '
+                        'if [ "$i" -ge 300 ]; then cat "$TMUX_TMPDIR/server.log" >&2; exit 1; fi; '
+                        "i=$((i+1)); sleep 0.1; done"
+                    ),
+                ],
+                tmux_env,
+            )
+            if ready.exit_code:
+                raise HarnessError(f"Terminus 2 tmux failed to start: {ready.stderr}")
             source = self._source()
             program = await runtime.prepare_uv_script(source, self.config.resolved_env)
             return await runtime.run([*program, *args], env)
@@ -127,7 +146,7 @@ class Terminus2Harness(Harness[Terminus2HarnessConfig]):
                         "-c",
                         'tmux kill-server >/dev/null 2>&1 || true; rm -rf "$TMUX_TMPDIR"',
                     ],
-                    {"TMUX_TMPDIR": tmux_dir},
+                    tmux_env,
                 )
             except Exception:
                 # Runtime teardown is the final backstop; preserve the rollout's

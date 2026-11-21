@@ -34,9 +34,7 @@ class MiniSWEAgentHarness(Harness[MiniSWEAgentHarnessConfig]):
         )
 
     async def remote_tools(self, runtime: Runtime, data: TaskData):
-        return RemoteToolsSpec(
-            remote_shell_tools, {"persistent": False}, defer_until_gate=True
-        )
+        return RemoteToolsSpec(remote_shell_tools, defer_until_gate=True)
 
     async def setup(self, runtime: Runtime) -> None:
         source = self._source()

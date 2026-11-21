@@ -51,7 +51,7 @@ class ClaudeCodeHarness(ACPHarness[ClaudeCodeHarnessConfig]):
         return drop_blank_text_blocks(message)
 
     async def remote_tools(self, runtime: Runtime, data: TaskData) -> RemoteToolsSpec:
-        return native_remote_tools("claude_code", self.config.disabled_tools)
+        return native_remote_tools(runtime, "claude_code", self.config.disabled_tools)
 
     async def setup(self, runtime: Runtime) -> None:
         versions = {"version": self.config.version, "acp_version": ACP_VERSION}

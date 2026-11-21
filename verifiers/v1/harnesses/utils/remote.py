@@ -1,7 +1,6 @@
-"""Typed native coding tools bound to the execution side of a split rollout.
+"""Native coding tool adapters for the harness sandbox.
 
-Only the dispatcher runs on the host. File access and commands use the supplied
-Runtime, so neither model arguments nor workspace files are evaluated on the host.
+File access and commands use the bound workspace Runtime.
 """
 
 import asyncio
@@ -16,7 +15,9 @@ from typing import Literal
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, ValidationError
 
-from verifiers.v1.errors import HarnessError, SandboxError
+from verifiers.v1.errors import SandboxError
+from verifiers.v1.harnesses.utils.remote_files import file_tool
+from verifiers.v1.harnesses.utils.remote_search import prepare_ripgrep, ripgrep_path
 from verifiers.v1.harnesses.utils.sandbox_tools import RemoteToolsSpec
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.runtimes.base import RuntimeProcess
@@ -198,179 +199,26 @@ def native_tool_names(harness: str) -> frozenset[str]:
 
 
 def native_remote_tools(
-    harness: str, disabled_tools: list[str] | None
+    runtime: Runtime, harness: str, disabled_tools: list[str] | None
 ) -> RemoteToolsSpec:
+    names = native_tool_names(harness)
+    disabled = disabled_tools or []
+    target = ripgrep_path(runtime)
+
+    async def prepare(call: ToolCall) -> None:
+        if (
+            call.name.lower() == "grep"
+            and call.name in names
+            and not any(fnmatch.fnmatchcase(call.name, pat) for pat in disabled)
+        ):
+            await prepare_ripgrep(runtime, target)
+
     return RemoteToolsSpec(
         NativeRemoteTools,
-        {"harness": harness, "disabled_tools": disabled_tools or []},
-        native_tools=native_tool_names(harness),
+        {"harness": harness, "disabled_tools": disabled, "rg": target},
+        native_tools=names,
+        prepare_tool=prepare,
     )
-
-
-# The worker receives validated JSON as an argv element, never shell source. It
-# deliberately has no imports of verifiers, provider clients, or host credentials.
-_FILES = r"""
-import fnmatch, glob, json, os, re, sys
-from pathlib import Path
-
-operation, raw, cwd = sys.argv[1:]
-a = json.loads(raw)
-if cwd:
-    os.chdir(cwd)
-try:
-    p = Path(a.get("path", "."))
-    if operation == "read":
-        lines = ([path.name + ("/" if path.is_dir() else "") + "\n" for path in sorted(p.iterdir())]
-                 if p.is_dir() else p.read_text().splitlines(keepends=True))
-        offset = a["offset"]
-        if offset == 0:
-            raise ValueError("line offsets are 1-based")
-        start = max(0, offset - 1 if offset > 0 else len(lines) + offset)
-        selected = lines[start:start + a["limit"]]
-        if selected:
-            selected[0] = selected[0][a["column_offset"]:]
-        result = "".join(f"{i + start + 1}\t{line}" for i, line in enumerate(selected))[:a["max_chars"]]
-    elif operation == "write":
-        p.parent.mkdir(parents=True, exist_ok=True)
-        with p.open("a" if a["mode"] == "append" else "w", newline="") as stream:
-            stream.write(a["content"])
-        result = f"Wrote {len(a['content'].encode())} bytes to {p}"
-    elif operation == "edit":
-        with p.open(newline="") as stream:
-            original = stream.read()
-        crlf = "\r\n" in original and "\n" not in original.replace("\r\n", "")
-        content = original.replace("\r\n", "\n") if crlf else original
-        count = content.count(a["old"])
-        if count == 0 or (count != 1 and not a["replace_all"]):
-            raise ValueError(f"old string must match {'at least once' if a['replace_all'] else 'exactly once'} (found {count})")
-        updated = content.replace(a["old"], a["new"], -1 if a["replace_all"] else 1)
-        with p.open("w", newline="") as stream:
-            stream.write(updated.replace("\n", "\r\n") if crlf else updated)
-        result = f"Edited {p}"
-    elif operation == "glob":
-        matches = sorted(str(p / path) for path in glob.glob(a["pattern"], root_dir=p, recursive=True) if (p / path).is_file())
-        start, limit = a["offset"], a["limit"]
-        result = "\n".join(matches[start:start + limit if limit else None])
-    elif operation == "ls":
-        result = "\n".join(sorted(path.name + ("/" if path.is_dir() else "") for path in p.iterdir())[:a["limit"]])
-    elif operation == "grep":
-        flags = (re.I if a["ignore_case"] else 0) | (re.S | re.M if a["multiline"] else 0)
-        regex = re.compile(re.escape(a["pattern"]) if a["literal"] else a["pattern"], flags)
-        result_lines = []
-        for path in sorted([p] if p.is_file() else p.rglob("*")):
-            if not path.is_file() or ".git" in path.parts:
-                continue
-            if a["glob"] and not fnmatch.fnmatch(str(path), a["glob"]):
-                continue
-            try:
-                text = path.read_text()
-            except (UnicodeError, OSError):
-                continue
-            matches = list(regex.finditer(text))
-            if not matches:
-                continue
-            if a["output_mode"] == "files_with_matches":
-                result_lines.append(str(path))
-            elif a["output_mode"] in ("count", "count_matches"):
-                result_lines.append(f"{path}:{len(matches)}")
-            else:
-                lines = text.splitlines()
-                selected = set()
-                for match in matches:
-                    line = text.count("\n", 0, match.start())
-                    end = text.count("\n", 0, match.end())
-                    selected.update(range(max(0, line - max(a["before"], a["context"])), min(len(lines), end + max(a["after"], a["context"]) + 1)))
-                result_lines.extend(f"{path}:{i + 1}:{lines[i]}" for i in sorted(selected))
-        start, limit = a["offset"], a["limit"]
-        result = "\n".join(result_lines[start:start + limit if limit else None])
-    elif operation == "directory":
-        if a["cd"] is not None:
-            os.chdir(a["cd"])
-        result = os.getcwd()
-    elif operation == "patch":
-        lines = a["patch"].strip().splitlines()
-        if not lines or lines[0] != "*** Begin Patch" or lines[-1] != "*** End Patch":
-            raise ValueError("patch must start with *** Begin Patch and end with *** End Patch")
-        pending = {}
-        changes = []
-        i = 1
-        while i < len(lines) - 1:
-            header = lines[i]
-            i += 1
-            if header.startswith("*** Add File: "):
-                path = Path(header[len("*** Add File: "):])
-                content = []
-                while i < len(lines) - 1 and not lines[i].startswith("*** "):
-                    if not lines[i].startswith("+"):
-                        raise ValueError("added file lines must start with +")
-                    content.append(lines[i][1:])
-                    i += 1
-                pending[path] = "\n".join(content) + "\n"
-                changes.append(f"A {path}")
-            elif header.startswith("*** Delete File: "):
-                path = Path(header[len("*** Delete File: "):])
-                if not path.is_file():
-                    raise ValueError(f"file does not exist: {path}")
-                pending[path] = None
-                changes.append(f"D {path}")
-            elif header.startswith("*** Update File: "):
-                path = Path(header[len("*** Update File: "):])
-                target = path
-                if lines[i].startswith("*** Move to: "):
-                    target = Path(lines[i][len("*** Move to: "):])
-                    i += 1
-                original = pending[path] if path in pending else path.read_text()
-                if original is None:
-                    raise ValueError(f"file was already deleted: {path}")
-                content = original.splitlines()
-                position = 0
-                while i < len(lines) - 1 and not (lines[i].startswith("*** ") and lines[i] != "*** End of File"):
-                    context = None
-                    if lines[i].startswith("@@"):
-                        context = lines[i][3:] if lines[i].startswith("@@ ") else None
-                        i += 1
-                    old, new = [], []
-                    while i < len(lines) - 1 and not lines[i].startswith(("@@", "*** ")):
-                        line = lines[i]
-                        if not line or line[0] not in " +-":
-                            raise ValueError("invalid patch update line")
-                        if line[0] in " -":
-                            old.append(line[1:])
-                        if line[0] in " +":
-                            new.append(line[1:])
-                        i += 1
-                    end = lines[i] == "*** End of File"
-                    if end:
-                        i += 1
-                    if context is not None:
-                        position = content.index(context, position) + 1
-                    candidates = range(position, len(content) - len(old) + 1) if old else [len(content)]
-                    found = next((start for start in candidates if content[start:start + len(old)] == old and (not end or start + len(old) == len(content))), None)
-                    if found is None:
-                        raise ValueError(f"patch context not found in {path}")
-                    content[found:found + len(old)] = new
-                    position = found + len(new)
-                pending[target] = "\n".join(content) + "\n"
-                if target != path:
-                    pending[path] = None
-                changes.append(f"M {target}")
-            else:
-                raise ValueError(f"invalid patch header: {header}")
-        for path, content in pending.items():
-            if content is None:
-                path.unlink()
-            else:
-                path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_text(content)
-        result = "Success. Updated the following files:\n" + "\n".join(changes)
-    else:
-        raise ValueError("unknown file operation")
-    if len(result) > 100000:
-        result = result[:100000] + "\n[Output truncated; narrow the query or read a smaller range]"
-    print(json.dumps({"content": result}))
-except (OSError, ValueError, UnicodeError, re.error, IndexError, TypeError) as error:
-    print(json.dumps({"content": f"error: {error}", "error": True}))
-"""
 
 
 @dataclass
@@ -384,6 +232,7 @@ class NativeRemoteTools:
     runtime: Runtime
     harness: str
     disabled_tools: tuple[str, ...] = ()
+    rg: str = "rg"
     _cwd: str = ""
     _pending_cwd: str | None = None
     _shell: RuntimeProcess | None = None
@@ -410,7 +259,6 @@ class NativeRemoteTools:
         process = await self.runtime.exec(["bash", "-c", command], {})
         task_id = uuid.uuid4().hex
         job = _Job(process, f"/tmp/verifiers-background-{task_id}.log")
-        self._jobs[task_id] = job
         await self.runtime.write(job.log, b"")
 
         async def collect(stream):
@@ -432,6 +280,7 @@ class NativeRemoteTools:
                 job.output += b"\nerror: background command timed out"
 
         job.done = asyncio.create_task(complete())
+        self._jobs[task_id] = job
         return f"task_id: {task_id}\nstatus: running\noutput_path: {job.log}\nRead output_path for the latest output (last 100000 bytes)"
 
     async def _persistent_bash(
@@ -595,6 +444,7 @@ class NativeRemoteTools:
                     if operation == "task_stop" and job.status is None:
                         await job.process.kill()
                     if args.block or operation == "task_stop":
+                        assert job.done is not None
                         try:
                             await asyncio.wait_for(
                                 asyncio.shield(job.done), args.timeout / 1000
@@ -684,25 +534,21 @@ class NativeRemoteTools:
                         and "output_mode" not in args.model_fields_set
                     ):
                         args.output_mode = "content"
-                result = await self.runtime.run(
-                    [
-                        "python3",
-                        "-c",
-                        _FILES,
-                        operation,
-                        args.model_dump_json(),
-                        self._cwd,
-                    ],
-                    {},
-                )
-                if result.exit_code:
-                    raise HarnessError(
-                        f"split {self.harness} file worker failed: {result.stderr}"
+                try:
+                    content = await file_tool(
+                        self.runtime, operation, args.model_dump(), self._cwd, self.rg
                     )
-                response = json.loads(result.stdout)
-                content = response["content"]
-                if operation == "directory" and not response.get("error"):
-                    self._cwd = content
-                    if isinstance(args, _Directory) and args.cd is not None:
-                        self._pending_cwd = content
+                except (
+                    OSError,
+                    SandboxError,
+                    ValueError,
+                    IndexError,
+                    TypeError,
+                ) as error:
+                    content = f"error: {error}"
+                else:
+                    if operation == "directory":
+                        self._cwd = content
+                        if isinstance(args, _Directory) and args.cd is not None:
+                            self._pending_cwd = content
         return ToolMessage(tool_call_id=call.id, name=call.name, content=content)

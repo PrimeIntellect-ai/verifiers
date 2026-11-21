@@ -18,13 +18,15 @@ Web search is not built into `bash`; attach an MCP toolset or use a harness with
 
 ## Split execution
 
-The harness runs the model loop in its own environment. The evaluator relays tool I/O to registered workers in the task workspace. Codex uses its native exec-server, RLM its execution worker, and Prime Agent its remote kernel. Other coding harnesses run adapters in the harness environment and use a credential-free workspace worker for task operations. Browser Use runs its browser code in the workspace. `null` runs a tool-less model loop.
+The harness runs the model loop in its own environment. Claude Code and Pi run their tool adapters there and send approved operations through the evaluator relay. The evaluator uses the sandbox provider to run commands as the task user, so these adapters work on task images without Python. Codex uses its native exec-server in the workspace, RLM its execution worker, and Prime Agent its remote kernel. Browser Use runs its browser code in the workspace. `null` runs a tool-less model loop.
 
 Request interceptors check calls before execution without changing the transport. A native gate can return a replacement tool result; where a tool has no such gate, a blocked call ends the rollout before delivery. Codex Code Mode is rejected when request interception is active because its nested `write_stdin` calls have no upstream gate. OpenCode and OpenClaw expose direct tools instead of Code Mode. RLM's framed connection always checks its execution gate and preserves nano-rlm's capability-checked, cell-scoped supervisor callbacks. Its native listener is reachable only over loopback inside the workspace and keeps detached jobs alive for grading after the session closes. Prime Agent workers block supervisor callbacks.
 
 The default coding tools, skills, composed services, and separate MCP servers are supported. Harbor task-local MCP servers run in the workspace and use the execution relay to reach the harness. Adapters reject optional tools they cannot isolate, including agent delegation, provider integrations, interactive questions, and Claude notebook editing; an unsupported tool never falls back to running in the harness sandbox.
 
 The shared file adapters support text and image reads, exact text edits, and basic glob and regex search. They do not reproduce every upstream output format, fuzzy edit rule, ignore-file rule, advanced search option, or PDF/media reader. Background jobs expose status and output files; native automatic completion notifications are not available in every adapter.
+
+Read can page through large text files. Edits and patches that read a whole file support files up to 16 MiB. Grep runs in the workspace. On its first call, the evaluator supplies a pinned ripgrep binary if the image lacks a suitable one.
 
 ## A minimal harness implementation
 

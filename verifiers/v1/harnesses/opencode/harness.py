@@ -43,7 +43,7 @@ class OpenCodeHarness(ACPHarness[OpenCodeHarnessConfig]):
     SUPPORTS_TOOL_INTERCEPTION = True
 
     async def remote_tools(self, runtime: Runtime, data: TaskData) -> RemoteToolsSpec:
-        return native_remote_tools("opencode", self.config.disabled_tools)
+        return native_remote_tools(runtime, "opencode", self.config.disabled_tools)
 
     def can_gate_tool(self, call: ToolCall) -> bool:
         # OpenCode builds its Code Mode wrapper after registry transforms.

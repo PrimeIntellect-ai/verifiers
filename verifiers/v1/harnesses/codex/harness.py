@@ -193,11 +193,13 @@ class CodexHarness(ACPHarness[CodexHarnessConfig]):
     ) -> None:
         """Install the static musl Codex binary in B without Node or npm."""
         target_root = connection.runtime.with_user(None)
-        await target_root.resolve_python()
-        b_vendor = _LINUX_VENDOR.get(target_root.backend.cache.arch or "")
+        arch = target_root.backend.cache.arch
+        if not arch:
+            arch = (await target_root.run(["uname", "-m"], {})).stdout.strip()
+        b_vendor = _LINUX_VENDOR.get(arch)
         if b_vendor is None:
             raise HarnessError(
-                f"unsupported workspace architecture for Codex executor: {target_root.backend.cache.arch!r}"
+                f"unsupported workspace architecture for Codex executor: {arch!r}"
             )
         tarball_suffix, triple = b_vendor
         directory = EXECUTOR_DIR.format(version=self.config.version)

@@ -4,6 +4,7 @@ import asyncio
 import base64
 import fnmatch
 import json
+import shlex
 import uuid
 from dataclasses import dataclass, field
 from typing import Literal
@@ -56,63 +57,32 @@ class _Process(BaseModel):
     timeout: float = Field(default=0, ge=0)
 
 
-# This worker is started inside B. Its control pipe carries only stdin bytes and
-# EOF; PTYs, file descriptors, child environments, and shell code stay in B.
+# Encode stdin chunks so EOF can close the child's pipe without closing the
+# provider's control stream. A PTY receives the terminal's EOF character.
 _WORKER = r"""
-import base64, errno, json, os, pty, selectors, subprocess, sys
-a = json.loads(sys.argv[1])
-if a["workdir"]:
-    os.chdir(a["workdir"])
-master = None
-if a["pty"]:
-    master, slave = pty.openpty()
-    proc = subprocess.Popen(["bash", "-c", a["command"]], stdin=slave,
-                            stdout=slave, stderr=slave, env={**os.environ, **a["env"]})
-    os.close(slave)
-    output = master
-else:
-    proc = subprocess.Popen(["bash", "-c", a["command"]], stdin=subprocess.PIPE,
-                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                            env={**os.environ, **a["env"]})
-    output = proc.stdout.fileno()
-selector = selectors.DefaultSelector()
-selector.register(output, selectors.EVENT_READ, "output")
-selector.register(sys.stdin.fileno(), selectors.EVENT_READ, "input")
-pending = b""
-while True:
-    for key, _ in selector.select():
-        if key.data == "output":
-            try:
-                data = os.read(output, 65536)
-            except OSError as error:
-                if error.errno != errno.EIO:
-                    raise
-                data = b""
-            if not data:
-                raise SystemExit(proc.wait())
-            sys.stdout.buffer.write(data)
-            sys.stdout.buffer.flush()
-        else:
-            data = os.read(sys.stdin.fileno(), 65536)
-            if not data:
-                proc.kill()
-                raise SystemExit(proc.wait())
-            pending += data
-            while b"\n" in pending:
-                line, pending = pending.split(b"\n", 1)
-                message = json.loads(line)
-                chunk = base64.b64decode(message["data"])
-                if master is not None:
-                    if chunk:
-                        os.write(master, chunk)
-                    if message["eof"]:
-                        os.write(master, b"\x04")
-                else:
-                    if chunk:
-                        proc.stdin.write(chunk)
-                        proc.stdin.flush()
-                    if message["eof"]:
-                        proc.stdin.close()
+if [[ -n $1 ]]; then cd -- "$1" || exit; fi
+exec 0< <(
+    while IFS= read -r data; do
+        if [[ $data == . ]]; then
+            [[ $2 == pty ]] || break
+            printf '\004'
+        elif [[ -n $data ]]; then
+            printf '%s' "$data" | base64 -d || break
+        fi
+    done
+)
+reader=$!
+trap 'kill "$reader" 2>/dev/null || :' EXIT
+if [[ $2 != pty ]]; then
+    bash -c "$3" 2>&1
+elif [[ $OSTYPE == darwin* ]] && command -v script >/dev/null; then
+    script -qe /dev/null bash -c "$3"
+elif script --version 2>/dev/null | grep -q util-linux; then
+    script -qe -c "$3" /dev/null
+else
+    # Minimal images may have Python's standard library in place of script(1).
+    python3 -c 'import os, pty, sys; sys.exit(os.waitstatus_to_exitcode(pty.spawn(sys.argv[1:])))' bash -c "$3"
+fi
 """
 
 
@@ -228,8 +198,27 @@ class OpenClawRemoteTools:
         try:
             if call.name == "exec":
                 args = _Exec.model_validate_json(call.arguments)
+                command = shlex.join(
+                    [
+                        "env",
+                        "--",
+                        *(f"{k}={v}" for k, v in args.env.items()),
+                        "bash",
+                        "-c",
+                        args.command,
+                    ]
+                )
                 process = await self.runtime.exec(
-                    ["python3", "-u", "-c", _WORKER, args.model_dump_json()], {}
+                    [
+                        "bash",
+                        "-c",
+                        _WORKER,
+                        "openclaw",
+                        args.workdir or "",
+                        "pty" if args.pty else "pipe",
+                        command,
+                    ],
+                    {},
                 )
                 session = _Session(process, args.command)
                 self.sessions[session_id := uuid.uuid4().hex] = session
@@ -324,12 +313,7 @@ class OpenClawRemoteTools:
                     + args.literal.encode()
                 )
             await session.process.write(
-                (
-                    json.dumps(
-                        {"data": base64.b64encode(data).decode(), "eof": args.eof}
-                    )
-                    + "\n"
-                ).encode()
+                base64.b64encode(data) + b"\n" + (b".\n" if args.eof else b"")
             )
         if args.action == "poll":
             await session.wait(min(args.timeout, 30000) / 1000)
