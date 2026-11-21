@@ -114,7 +114,7 @@ class LanStream:
 
     def request(self, body):
         request_id = body["request_id"]
-        for attempt in range(3):
+        for attempt in range(5):
             connection = None
             future = concurrent.futures.Future()
             try:
@@ -138,9 +138,9 @@ class LanStream:
                 raise
             except (EOFError, OSError, concurrent.futures.TimeoutError):
                 self.disconnect(connection)
-                if attempt == 2:
+                if attempt == 4:
                     raise
-                time.sleep(0.2 * (attempt + 1))
+                time.sleep(0.3 * (attempt + 1))
             finally:
                 with self.lock:
                     if self.pending.get(request_id) is future:

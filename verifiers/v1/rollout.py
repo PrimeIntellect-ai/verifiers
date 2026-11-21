@@ -818,26 +818,27 @@ class Rollout:
             # An expired rollout deadline is the agent breaking its time budget: a
             # timeout stop. A TimeoutError from the harness's own I/O with no
             # expired deadline stays the raw failure.
-            if self.deadline_at is not None and (loop.time() >= self.deadline_at):
-                self.timeout("agent")
-            elif loss := await self._workspace_lost():
+            if loss := await self._workspace_lost():
                 self._workspace_gone(loss)
+            elif self.deadline_at is not None and (loop.time() >= self.deadline_at):
+                self.timeout("agent")
             else:
                 self.fail(e)
             return False
         except Exception as e:  # noqa: BLE001 - harness boundary records every rollout failure
             if self._session.stopped:
                 return False
+            # A harness that dies with its workspace, or loses its tools' worker
+            # there, can either fail immediately or hang until the agent deadline.
+            # Check provider workspace loss before recording a timeout or failure.
+            if loss := await self._workspace_lost():
+                self._workspace_gone(loss)
+                return False
             # A runtime can report the cancellation the deadline caused as its own
             # error (Prime's SDK raises one for a cancelled request); the expired
             # deadline is still the outcome.
             if deadline.expired():
                 self.timeout("agent")
-                return False
-            # A harness that dies with its workspace, or loses its tools' worker
-            # there, fails here; the provider says whether the workspace is gone.
-            if loss := await self._workspace_lost():
-                self._workspace_gone(loss)
                 return False
             real = self._session.error
             if real is not None and isinstance(e, RolloutError):

@@ -12,7 +12,7 @@ import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
-from verifiers.v1.errors import HarnessError
+from verifiers.v1.errors import HarnessError, SandboxError
 from verifiers.v1.runtimes import Runtime
 from verifiers.v1.runtimes.bridge import ExecutionBridge
 from verifiers.v1.runtimes.harness_daemon import (
@@ -41,6 +41,9 @@ class SandboxTools:
         self.uses_local_gate = not spec.defer_until_gate
         self.local_gate_url: str | None = None
         self._endpoint: dict | None = None
+        self._command: list[str] | None = None
+        self._interception_url: str | None = None
+        self._secret: str = ""
         self._daemon: HarnessDaemonClient | None = None
         self._slot_id = uuid.uuid4().hex
         self._configured = False
@@ -108,6 +111,9 @@ class SandboxTools:
             command = await prepare_remote_bridge(
                 self.runtime, url, secret, "tool-adapter"
             )
+        self._command = command
+        self._interception_url = interception_url if self.uses_local_gate else None
+        self._secret = secret
         await self._daemon.register_tool_slot(
             slot_id=self._slot_id,
             module=self.spec.factory.__module__,
@@ -115,16 +121,42 @@ class SandboxTools:
             kwargs=self.spec.kwargs,
             endpoint=self._endpoint,
             command=command,
-            interception_url=interception_url if self.uses_local_gate else None,
+            interception_url=self._interception_url,
             secret=secret,
         )
         self._configured = True
 
     async def __call__(self, call: ToolCall) -> ToolMessage:
-        if not self._configured or self._daemon is None:
+        if not self._configured:
             raise HarnessError("sandbox tool adapter is not connected")
-        result = await self._daemon.execute_tool_slot(self._slot_id, call.model_dump())
-        return ToolMessage.model_validate(result)
+        call_dict = call.model_dump()
+        for attempt in range(2):
+            if self._daemon is None or not self._daemon.alive:
+                self._daemon = await ensure_backend_daemon(
+                    self.runtime.backend, extra_cls=self.spec.factory
+                )
+                if self._daemon is None:
+                    raise HarnessError(
+                        "split harness runtime does not support daemon RPC"
+                    )
+                await self._daemon.register_tool_slot(
+                    slot_id=self._slot_id,
+                    module=self.spec.factory.__module__,
+                    factory=self.spec.factory.__qualname__,
+                    kwargs=self.spec.kwargs,
+                    endpoint=self._endpoint,
+                    command=self._command,
+                    interception_url=self._interception_url,
+                    secret=self._secret,
+                )
+            try:
+                result = await self._daemon.execute_tool_slot(self._slot_id, call_dict)
+                return ToolMessage.model_validate(result)
+            except SandboxError:
+                if attempt == 0 and (self._daemon is None or not self._daemon.alive):
+                    continue
+                raise
+        raise HarnessError("sandbox tool adapter execution failed")
 
     async def aclose(self) -> None:
         if self._daemon is not None:

@@ -531,6 +531,8 @@ async def prepare_remote_bridge(
     endpoint_file = ""
     bridge = getattr(runtime, "_execution_bridge", None)
     if bridge is not None and worker in bridge.commands:
+        for rt in (runtime, bridge.runtime):
+            await rt.wait_lan_ready()
         endpoint = await bridge.prewarm(worker)
         if endpoint is not None:
             endpoint_file = runtime.temp_path(

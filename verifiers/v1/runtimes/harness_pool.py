@@ -138,7 +138,6 @@ class HarnessLease:
         if (
             self.entry.load == 1
             and self.entry.applied_sig is not None
-            and not self.backend.cache.mcp_sources
             and self.backend._egress_enforced
         ):
 
@@ -334,7 +333,9 @@ class HarnessPool:
     ) -> HarnessLease:
         from verifiers.v1.runtimes.backends.prime import PrimeBackend
 
-        cap = max(1, min(multiplex, MAX_LANS_PER_SANDBOX))
+        cap = (
+            1 if config.allow != ["*"] else max(1, min(multiplex, MAX_LANS_PER_SANDBOX))
+        )
         key = _pool_key(config)
         workdir = config.workdir or "/app"
         to_stop: list[PrimeBackend] = []
@@ -355,16 +356,7 @@ class HarnessPool:
                         bucket.remove(entry)
                         to_stop.append(entry.backend)
             candidates = [
-                entry
-                for entry in bucket
-                if entry.healthy
-                and entry.load < cap
-                and not (
-                    entry.load > 0
-                    and entry.applied_sig is not None
-                    and entry.backend.config.allow != ["*"]
-                    and not entry.backend.cache.mcp_sources
-                )
+                entry for entry in bucket if entry.healthy and entry.load < cap
             ]
             if candidates:
                 selected = min(
