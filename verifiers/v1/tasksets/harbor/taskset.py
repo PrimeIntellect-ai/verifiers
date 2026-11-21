@@ -405,9 +405,12 @@ class HarborTask(Task[HarborData, State, HarborTaskConfig]):
             await runtime.write(
                 "/tmp/tests.tgz", make_tar(Path(self.data.task_dir) / "tests")
             )
+            # The archive holds the hidden tests: left in /tmp, it stays readable by
+            # whatever `test.sh` runs as another user, however /tests is protected.
             stage = (
                 f"{'rm -rf /tests && ' if wipe else ''}"
-                "mkdir -p /tests && tar -xzf /tmp/tests.tgz -C /tests"
+                "mkdir -p /tests && tar -xzf /tmp/tests.tgz -C /tests && "
+                "rm /tmp/tests.tgz"
             )
         # Verifier subprocesses can use different users; opening their log directory
         # requires its owner or root, even when it is already writable. A grading box
